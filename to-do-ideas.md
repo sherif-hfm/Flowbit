@@ -18,7 +18,7 @@
 - /api/instances/{id} endpoint return a lot of data may need enhancement
 
 --------------------------- done ---------------------------
-- add shared varibales - variables across instances (done)
+- add shared variables - variables across instances (done)
 - add Conditional events (Intermediate conditional catch)  (done)
 - add user task condition (done)
 - in editor add view tool only so not change item by mistake (done)
