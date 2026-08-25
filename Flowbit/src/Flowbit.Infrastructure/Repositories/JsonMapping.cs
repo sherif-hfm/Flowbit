@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Flowbit.Service.Models;
+using Flowbit.Shared.Dtos;
 
 namespace Flowbit.Infrastructure.Repositories;
 
@@ -25,6 +26,17 @@ internal static class JsonMapping
     {
         var json = JsonSerializer.Serialize(values, Options);
         return JsonDocument.Parse(json);
+    }
+
+    public static JsonDocument? ToJsonDocument(
+        IReadOnlyList<SharedVariableWriteCorrelationDto>? values)
+    {
+        if (values is null || values.Count == 0)
+        {
+            return null;
+        }
+
+        return JsonDocument.Parse(JsonSerializer.Serialize(values, Options));
     }
 
     public static JsonDocument? ToJsonDocument(
@@ -57,6 +69,21 @@ internal static class JsonMapping
         }
 
         return JsonSerializer.Deserialize<List<string>>(document.RootElement.GetRawText(), Options) ?? [];
+    }
+
+    public static IReadOnlyList<SharedVariableWriteCorrelationDto> ToSharedVariableWrites(
+        JsonDocument? document)
+    {
+        if (document is null
+            || document.RootElement.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+        {
+            return [];
+        }
+
+        return JsonSerializer.Deserialize<List<SharedVariableWriteCorrelationDto>>(
+                   document.RootElement.GetRawText(),
+                   Options)
+               ?? [];
     }
 
     public static SequenceFlowAdministrativeActionRecord? ToAdministrativeAction(

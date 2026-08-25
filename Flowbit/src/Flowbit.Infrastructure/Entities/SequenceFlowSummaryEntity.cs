@@ -28,6 +28,8 @@ public sealed class SequenceFlowSummaryEntity
 
     public JsonDocument? LastActionValuesJson { get; set; }
 
+    public JsonDocument? LastActionSharedVariableWritesJson { get; set; }
+
     public JsonDocument? LastActionAdministrativeActionJson { get; set; }
 
     public long TraversalCount { get; set; }
@@ -45,6 +47,8 @@ public sealed class SequenceFlowSummaryEntity
     public string? LastTraversalKind { get; set; }
 
     public JsonDocument? LastTraversalValuesJson { get; set; }
+
+    public JsonDocument? LastTraversalSharedVariableWritesJson { get; set; }
 
     public JsonDocument? LastTraversalAdministrativeActionJson { get; set; }
 }

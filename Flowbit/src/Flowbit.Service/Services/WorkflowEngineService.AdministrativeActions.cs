@@ -177,16 +177,16 @@ public sealed partial class WorkflowEngineService
             actor,
             flowValues,
             cancellationToken);
-        foreach (var pair in flowValues)
-        {
-            await runtime.AddVariableAsync(
-                state.Instance.Id,
-                pair.Key,
-                state.Flow.Id,
-                actor.User,
-                pair.Value,
-                cancellationToken);
-        }
+        await WriteVariablesAsync(
+            state.Workflow.Definition,
+            state.Workflow.Id,
+            state.Instance.Id,
+            flowValues,
+            state.Flow.Id,
+            nodeExecutionId: null,
+            actor,
+            cancellationToken,
+            request.Reason);
 
         var flowInfo = await LoadSequenceFlowInfoAsync(
             state.Instance.Id,

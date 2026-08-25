@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Flowbit.Shared.Dtos;
 using Flowbit.Shared.Models;
 
 namespace Flowbit.Service.Models;
@@ -513,6 +514,7 @@ public sealed record InstanceHistoryRecord(
 {
     public long? AdministrativeActionBatchId { get; init; }
     public string? Reason { get; init; }
+    public IReadOnlyList<SharedVariableWriteCorrelationDto> SharedVariableWrites { get; init; } = [];
 }
 
 public sealed record SequenceFlowOccurrenceWriteRecord(
@@ -535,6 +537,7 @@ public sealed record SequenceFlowOccurrenceWriteRecord(
     long? DelegationId = null)
 {
     public SequenceFlowAdministrativeActionRecord? AdministrativeAction { get; init; }
+    public IReadOnlyList<SharedVariableWriteCorrelationDto> SharedVariableWrites { get; init; } = [];
 }
 
 public sealed record SequenceFlowAdministrativeActionRecord(
@@ -562,6 +565,7 @@ public sealed record SequenceFlowEvidenceRecord(
     long? DelegationId = null)
 {
     public SequenceFlowAdministrativeActionRecord? AdministrativeAction { get; init; }
+    public IReadOnlyList<SharedVariableWriteCorrelationDto> SharedVariableWrites { get; init; } = [];
 }
 
 public sealed record SequenceFlowSummaryRecord(

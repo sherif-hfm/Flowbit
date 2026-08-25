@@ -2387,6 +2387,16 @@ const CONDITIONAL_DELIVERY_MODE_OPTIONS = [
   { value: CONDITIONAL_DELIVERY_MODE.DURABLE_ASYNC, label: "Durable async (latch, then move in a worker)" }
 ];
 const VARIABLE_DATA_TYPES = ["string", "number", "boolean", "date", "datetime", "json"];
+const VARIABLE_SCOPE = { INSTANCE: "instance", SHARED: "shared" };
+const VARIABLE_SCOPE_OPTIONS = [
+  { value: VARIABLE_SCOPE.INSTANCE, label: "Instance (private to one workflow instance)" },
+  { value: VARIABLE_SCOPE.SHARED, label: "Shared (deployment-wide catalog value)" }
+];
+const SHARED_VARIABLE_ACCESS = { READ: "read", READ_WRITE: "readWrite" };
+const SHARED_VARIABLE_ACCESS_OPTIONS = [
+  { value: SHARED_VARIABLE_ACCESS.READ, label: "Read only" },
+  { value: SHARED_VARIABLE_ACCESS.READ_WRITE, label: "Read and write" }
+];
 const MULTI_INSTANCE_MODE_OPTIONS = [
   { value: "parallel", label: "Parallel" },
   { value: "sequential", label: "Sequential" }
@@ -2409,6 +2419,104 @@ function canonicalizeKnownValue(value, supported, fallback) {
   const canonical = supported.find(candidate =>
     candidate.toLowerCase() === value.toLowerCase());
   return canonical ?? value;
+}
+function processVariableScope(variable) {
+  return canonicalizeKnownValue(
+    variable && variable.scope,
+    [VARIABLE_SCOPE.INSTANCE, VARIABLE_SCOPE.SHARED],
+    VARIABLE_SCOPE.INSTANCE);
+}
+function isSharedProcessVariable(variable) {
+  return processVariableScope(variable) === VARIABLE_SCOPE.SHARED;
+}
+function isWritableProcessVariable(variable) {
+  return !isSharedProcessVariable(variable) ||
+    variable.access === SHARED_VARIABLE_ACCESS.READ_WRITE;
+}
+function findProcessVariable(name, variables = model.variables) {
+  if (typeof name !== "string" || !name.trim()) return null;
+  const key = name.trim().toLowerCase();
+  return (Array.isArray(variables) ? variables : []).find(variable =>
+    variable && typeof variable.name === "string" &&
+    variable.name.trim().toLowerCase() === key) || null;
+}
+let writableTargetSuggestionId = 0;
+function attachWritableTargetSuggestions(input, onMatch, sharedOnly = false, predicate = null) {
+  const writable = (model.variables || [])
+    .filter(variable => variable && variable.name && variable.name.trim() &&
+      isWritableProcessVariable(variable) &&
+      (!sharedOnly || isSharedProcessVariable(variable)) &&
+      (!predicate || predicate(variable)));
+  if (writable.length === 0) return;
+  const list = document.createElement("datalist");
+  list.id = `writable-process-variable-${++writableTargetSuggestionId}`;
+  writable.forEach(variable => {
+    const option = document.createElement("option");
+    option.value = variable.name;
+    option.label = `${variable.dataType}${variable.isArray ? "[]" : ""}` +
+      (isSharedProcessVariable(variable) ? ` · shared ${variable.access}` : " · instance");
+    list.appendChild(option);
+  });
+  input.setAttribute("list", list.id);
+  input.parentElement?.appendChild(list);
+  input.addEventListener("change", () => {
+    const match = findProcessVariable(input.value);
+    if (match && isWritableProcessVariable(match)) onMatch?.(match);
+  });
+}
+function expressionIndexIsQuoted(source, targetIndex) {
+  let quote = null;
+  for (let index = 0; index < targetIndex; index++) {
+    const ch = source[index];
+    if (quote) {
+      if (ch === "\\") index++;
+      else if (ch === quote) {
+        if (source[index + 1] === quote) index++;
+        else quote = null;
+      }
+    } else if (ch === "'" || ch === '"') {
+      quote = ch;
+    }
+  }
+  return quote !== null;
+}
+function sharedVariablesReferencedByExpression(expression, variables = model.variables) {
+  if (typeof expression !== "string" || !expression) return [];
+  return (Array.isArray(variables) ? variables : [])
+    .filter(variable => isSharedProcessVariable(variable) &&
+      typeof variable.name === "string" && variable.name.trim())
+    .filter(variable => {
+      const escaped = variable.name.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const bracketed = new RegExp(`\\[\\s*${escaped}\\s*\\]`, "i");
+      const bare = new RegExp(`(^|[^A-Za-z0-9_])${escaped}([^A-Za-z0-9_]|$)`, "i");
+      const bracketedMatch = bracketed.exec(expression);
+      if (bracketedMatch && !expressionIndexIsQuoted(expression, bracketedMatch.index)) return true;
+      const bareMatch = bare.exec(expression);
+      return !!bareMatch && !expressionIndexIsQuoted(
+        expression,
+        bareMatch.index + (bareMatch[1] ? bareMatch[1].length : 0));
+    });
+}
+function normalizeVariableBinding(variable, allowShared) {
+  if (!variable || typeof variable !== "object") return variable;
+  const scope = allowShared ? processVariableScope(variable) : VARIABLE_SCOPE.INSTANCE;
+  if (!allowShared || scope === VARIABLE_SCOPE.INSTANCE) {
+    delete variable.scope;
+    delete variable.sharedKey;
+    delete variable.access;
+    return variable;
+  }
+  if (scope !== VARIABLE_SCOPE.SHARED) return variable;
+  variable.scope = VARIABLE_SCOPE.SHARED;
+  variable.sharedKey = typeof variable.sharedKey === "string"
+    ? variable.sharedKey.trim() : "";
+  variable.access = canonicalizeKnownValue(
+    variable.access,
+    [SHARED_VARIABLE_ACCESS.READ, SHARED_VARIABLE_ACCESS.READ_WRITE],
+    variable.access);
+  variable.required = false;
+  variable.defaultValue = null;
+  return variable;
 }
 function normalizeConditionalDefinition(value) {
   if (value === undefined || value === null) return value;
@@ -4956,7 +5064,7 @@ function addProcessVariablesSection() {
 
   const hint = document.createElement("p");
   hint.className = "empty-note";
-  hint.textContent = "Instance-scoped variables initialized from their default at start and updated by Script Task nodes. Usable in gateway conditions, service-task templates, and validation rules.";
+  hint.textContent = "Declare instance variables or bind a local alias to a deployment-wide shared variable. Shared declarations snapshot the catalog contract and must use durable async conditional waits.";
   inspector.appendChild(hint);
 
   if (model.variables.length === 0) {
@@ -5350,8 +5458,13 @@ function renderNodeInspector() {
         }));
       }
       const results = (model.variables || [])
-        .filter(v => v.dataType === "json" && !v.isArray && Array.isArray(v.defaultValue))
-        .map(v => ({ value: v.name, label: v.name }));
+        .filter(v => v.dataType === "json" && !v.isArray &&
+          isWritableProcessVariable(v) &&
+          (isSharedProcessVariable(v) || Array.isArray(v.defaultValue)))
+        .map(v => ({
+          value: v.name,
+          label: isSharedProcessVariable(v) ? `${v.name} (shared read/write)` : v.name
+        }));
       selectField("Result JSON variable", [{ value: "", label: "— select json —" }].concat(results),
         node.multiInstance.resultVariable || "", v => { node.multiInstance.resultVariable = v; });
       const miHint = document.createElement("p");
@@ -5382,9 +5495,14 @@ function renderNodeInspector() {
     bhint.textContent = "When the host task fails, the token exits through this boundary's single outgoing flow (the error path).";
     inspector.appendChild(bhint);
 
-    field("Error variable (optional)", "text", node.errorVariable ?? "", v => {
+    const errorVariableInput = field("Error variable (optional)", "text", node.errorVariable ?? "", v => {
       node.errorVariable = v.trim() ? v : null;
     });
+    attachWritableTargetSuggestions(
+      errorVariableInput,
+      match => { node.errorVariable = match.name; renderInspector(); },
+      false,
+      variable => variable.dataType === "string" && !variable.isArray);
   }
 
   if (isTimerBoundaryEventType(node.type)) {
@@ -5682,7 +5800,14 @@ function renderServiceSection(node) {
     const n = Math.round(+v);
     service.timeoutSeconds = Number.isFinite(n) && n > 0 ? n : 1;
   });
-  field("Status variable (optional)", "text", service.statusVariable, v => { service.statusVariable = v; });
+  const statusVariableInput = field(
+    "Status variable (optional)", "text", service.statusVariable,
+    v => { service.statusVariable = v; });
+  attachWritableTargetSuggestions(
+    statusVariableInput,
+    match => { service.statusVariable = match.name; renderInspector(); },
+    false,
+    variable => variable.dataType === "number" && !variable.isArray);
 
   renderErrorBoundarySection(node);
 
@@ -5761,7 +5886,7 @@ function renderServiceSection(node) {
 
   const outHint = document.createElement("p");
   outHint.className = "empty-note";
-  outHint.textContent = "Each mapping creates or updates a typed instance variable. The response path may be blank only when a default value is configured.";
+  outHint.textContent = "Each mapping creates or updates a typed instance variable, or a shared alias with read/write access. Read-only shared aliases are not offered as targets. The response path may be blank only when a default value is configured.";
   inspector.appendChild(outHint);
 
   service.outputMappings.forEach((mapping, index) => {
@@ -5776,6 +5901,12 @@ function renderServiceSection(node) {
     varInput.value = mapping.variable;
     varInput.oninput = () => { mapping.variable = varInput.value; };
     varField.appendChild(varInput);
+    attachWritableTargetSuggestions(varInput, match => {
+      mapping.variable = match.name;
+      mapping.dataType = match.dataType;
+      mapping.isArray = !!match.isArray;
+      renderInspector();
+    });
     box.appendChild(varField);
 
     const pathField = document.createElement("div");
@@ -5843,11 +5974,41 @@ function renderConditionalSection(node) {
     return;
   }
 
-  textareaField(
+  const conditionInput = textareaField(
     "Condition (NCalc)",
     typeof conditional.condition === "string" ? conditional.condition : "",
     value => { conditional.condition = value; },
     4);
+
+  const sharedBindings = (model.variables || []).filter(variable =>
+    isSharedProcessVariable(variable) && variable.name && variable.name.trim());
+  if (sharedBindings.length > 0) {
+    const palette = document.createElement("div");
+    palette.className = "field inspector-card";
+    const paletteLabel = document.createElement("label");
+    paletteLabel.textContent = "Insert shared dependency";
+    palette.appendChild(paletteLabel);
+    const buttons = document.createElement("div");
+    buttons.style.cssText = "display:flex;flex-wrap:wrap;gap:6px";
+    sharedBindings.forEach(variable => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = variable.name;
+      button.title = `Shared key ${variable.sharedKey || "(missing)"}`;
+      button.onclick = () => {
+        const separator = conditional.condition && !/\s$/.test(conditional.condition) ? " " : "";
+        conditional.condition = `${conditional.condition || ""}${separator}[${variable.name}]`;
+        renderInspector();
+      };
+      buttons.appendChild(button);
+    });
+    palette.appendChild(buttons);
+    const paletteHint = document.createElement("p");
+    paletteHint.className = "empty-note";
+    paletteHint.textContent = "Shared values are deployment-wide. Any conditional wait that observes one must use durable async delivery.";
+    palette.appendChild(paletteHint);
+    inspector.appendChild(palette);
+  }
 
   const currentMode = conditional.deliveryMode == null
     ? CONDITIONAL_DELIVERY_MODE.ATOMIC
@@ -5865,7 +6026,26 @@ function renderConditionalSection(node) {
     } else {
       conditional.deliveryMode = value;
     }
+    renderInspector();
   });
+
+  const referencedShared = sharedVariablesReferencedByExpression(
+    typeof conditional.condition === "string" ? conditional.condition : "");
+  if (referencedShared.length > 0) {
+    const dependency = document.createElement("p");
+    dependency.className = "empty-note";
+    dependency.textContent = "Shared dependencies: " + referencedShared.map(variable =>
+      `${variable.name} → ${variable.sharedKey || "missing key"}`).join(", ");
+    inspector.appendChild(dependency);
+    if (currentMode !== CONDITIONAL_DELIVERY_MODE.DURABLE_ASYNC) {
+      const warning = document.createElement("p");
+      warning.className = "empty-note";
+      warning.style.color = "var(--warning-text)";
+      warning.textContent = "Save validation requires Durable async because this condition observes a shared variable.";
+      inspector.appendChild(warning);
+      conditionInput.setAttribute("aria-invalid", "true");
+    }
+  }
 
   const hint = document.createElement("p");
   hint.className = "empty-note";
@@ -5945,8 +6125,8 @@ function renderMessageSection(node) {
   const outHint = document.createElement("p");
   outHint.className = "empty-note";
   outHint.textContent = isStart
-    ? "Each mapping declares and creates a typed start variable. The payload path may be blank only when a default value is configured."
-    : "Each mapping creates or updates a typed instance variable. The payload path may be blank only when a default value is configured.";
+    ? "Each mapping declares a typed start output. It may target a compatible shared alias with read/write access. The payload path may be blank only when a default value is configured."
+    : "Each mapping creates or updates a typed instance variable, or a shared alias with read/write access. The payload path may be blank only when a default value is configured.";
   inspector.appendChild(outHint);
 
   message.outputMappings.forEach((mapping, index) => {
@@ -5961,6 +6141,12 @@ function renderMessageSection(node) {
     varInput.value = mapping.variable;
     varInput.oninput = () => { mapping.variable = varInput.value; };
     varField.appendChild(varInput);
+    attachWritableTargetSuggestions(varInput, match => {
+      mapping.variable = match.name;
+      mapping.dataType = match.dataType;
+      mapping.isArray = !!match.isArray;
+      renderInspector();
+    });
     box.appendChild(varField);
 
     const pathField = document.createElement("div");
@@ -6838,14 +7024,17 @@ function renderAssignmentsSection(node) {
 
   const hint = document.createElement("p");
   hint.className = "empty-note";
-  hint.textContent = "Sets process variables during the pass-through hop. Each expression is NCalc and may read other variables (including earlier assignments in this same list), sys.*/config.* context (use [sys.user] bracket syntax for dotted names), and instance-lifetime flow summaries such as FlowInfo(201, 'actions.last.userRoles'). Evaluated in order, coerced to the target's data type.";
+  hint.textContent = "Sets instance process variables and shared aliases with read/write access during the pass-through hop. Each expression is NCalc and may read other variables (including shared read-only aliases and earlier assignments in this list), sys.*/config.* context (use [sys.user] bracket syntax for dotted names), and instance-lifetime flow summaries such as FlowInfo(201, 'actions.last.userRoles'). Evaluated in order and coerced to the target contract.";
   inspector.appendChild(hint);
 
-  const declared = (model.variables || []).filter(v => v.name && v.name.trim());
+  const allDeclared = (model.variables || []).filter(v => v.name && v.name.trim());
+  const declared = allDeclared.filter(isWritableProcessVariable);
   if (declared.length === 0) {
     const p = document.createElement("p");
     p.className = "empty-note";
-    p.textContent = "No process variables declared. Deselect everything and add them under the Workflow panel first.";
+    p.textContent = allDeclared.length === 0
+      ? "No process variables declared. Deselect everything and add them under the Workflow panel first."
+      : "No writable process variables. Shared read-only bindings can be used in expressions but cannot be assignment targets.";
     inspector.appendChild(p);
   }
 
@@ -6858,7 +7047,10 @@ function renderAssignmentsSection(node) {
     varField.innerHTML = "<label>Variable</label>";
     const varSelect = document.createElement("select");
     const opts = [{ value: "", label: "— select process variable —" }].concat(
-      declared.map(v => ({ value: v.name, label: `${v.name} (${v.dataType}${v.isArray ? "[]" : ""})` }))
+      declared.map(v => ({
+        value: v.name,
+        label: `${v.name} (${v.dataType}${v.isArray ? "[]" : ""}${isSharedProcessVariable(v) ? ` · shared ${v.access}` : ""})`
+      }))
     );
     varSelect.innerHTML = opts.map(o => `<option value="${o.value}" ${o.value === assignment.variable ? "selected" : ""}>${o.label}</option>`).join("");
     varSelect.onchange = () => { assignment.variable = varSelect.value; };
@@ -6911,7 +7103,7 @@ function renderJavaScriptSection(node) {
     "<code>execution.setVariable(name, value)</code>, <code>execution.getVariables()</code>, " +
     "<code>execution.hasVariable(name)</code>, and, when FlowInfo is enabled above, " +
     "<code>execution.getFlowInfo(201).actions.last.userRoles</code>. <b>setVariable</b> targets must be declared process " +
-    "variables (declared under the Workflow panel); the value is coerced to the declared data type " +
+    "variables (declared under the Workflow panel) and shared targets must have read/write access; the value is coerced to the declared data type " +
     "and its validation rule re-checked. Dynamic <code>eval</code>/<code>Function</code> compilation is disabled; " +
     "execution and JSON values are bounded by server-configured limits.";
   inspector.appendChild(hint);
@@ -6925,7 +7117,8 @@ function renderJavaScriptSection(node) {
   } else {
     const p = document.createElement("p");
     p.className = "empty-note";
-    p.textContent = "Declared process variables: " + declared.map(v => v.name).join(", ");
+    p.textContent = "Declared process variables: " + declared.map(v =>
+      isSharedProcessVariable(v) ? `${v.name} (shared ${v.access})` : v.name).join(", ");
     inspector.appendChild(p);
   }
 
@@ -6985,7 +7178,10 @@ function getAllAvailableVariables() {
           dataType: v.dataType || "string",
           isArray: !!v.isArray,
           isProcessVar: true,
-          source: "Process"
+          canWrite: isWritableProcessVariable(v),
+          source: isSharedProcessVariable(v)
+            ? `Shared: ${v.sharedKey || "missing key"} (${v.access || "missing access"})`
+            : "Process"
         });
       }
     });
@@ -7109,7 +7305,7 @@ function openJsEditor(nodeId) {
       const sourceDiv = document.createElement("div");
       sourceDiv.style.cssText = "font-size: 9px; color: var(--muted); word-break: break-all;";
       if (v.isProcessVar) {
-        sourceDiv.innerHTML = `Source: <span style="color: var(--green);">Process Variable</span>`;
+        sourceDiv.innerHTML = `Source: <span style="color: var(--green);">${v.source}</span>${v.canWrite ? "" : " (Read-only)"}`;
       } else {
         sourceDiv.innerHTML = `Source: <span>${v.source}</span> (Read-only)`;
       }
@@ -7134,11 +7330,13 @@ function openJsEditor(nodeId) {
       setBtn.type = "button";
       setBtn.textContent = "set";
       setBtn.style.cssText = "padding: 3px 6px; font-size: 11px; flex: 1; margin: 0; background: var(--panel-2); border-color: var(--control-border);";
-      if (!v.isProcessVar) {
+      if (!v.isProcessVar || !v.canWrite) {
         setBtn.disabled = true;
         setBtn.style.opacity = "0.4";
         setBtn.style.cursor = "not-allowed";
-        setBtn.title = "Declare as a Process variable in the Workflow panel to make this writeable";
+        setBtn.title = v.isProcessVar
+          ? "This shared binding has read-only access"
+          : "Declare as a Process variable in the Workflow panel to make this writeable";
       } else {
         setBtn.onclick = () => {
           insertAtCursor(textarea, `execution.setVariable("${v.name}", value)`);
@@ -7545,6 +7743,7 @@ function field(label, type, value, onInput, disabled = false) {
   }
   f.appendChild(input);
   inspector.appendChild(f);
+  return input;
 }
 function textareaField(label, value, onInput, rows = 3) {
   const f = document.createElement("div");
@@ -7556,6 +7755,7 @@ function textareaField(label, value, onInput, rows = 3) {
   input.oninput = () => onInput(input.value);
   f.appendChild(input);
   inspector.appendChild(f);
+  return input;
 }
 function renderInboxVisibilityConditionField(node) {
   const f = document.createElement("div");
@@ -7746,6 +7946,7 @@ function renderAttributesSection(owner) {
   }
 }
 function variableRow(owner, variable, hideRequired) {
+  normalizeVariableBinding(variable, !!hideRequired);
   const box = document.createElement("div");
   box.className = "field inspector-card";
 
@@ -7755,7 +7956,9 @@ function variableRow(owner, variable, hideRequired) {
 
   const badge = document.createElement("div");
   badge.className = "badge";
-  badge.textContent = `variable #${variable.id}`;
+  badge.textContent = hideRequired && isSharedProcessVariable(variable)
+    ? `shared variable #${variable.id}`
+    : `variable #${variable.id}`;
   box.appendChild(badge);
 
   const nameField = document.createElement("div");
@@ -7767,7 +7970,80 @@ function variableRow(owner, variable, hideRequired) {
   nameInput.value = variable.name;
   nameInput.oninput = () => { variable.name = nameInput.value; };
   nameField.appendChild(nameInput);
+  if (!hideRequired) {
+    attachWritableTargetSuggestions(nameInput, match => {
+      variable.name = match.name;
+      variable.dataType = match.dataType;
+      variable.isArray = !!match.isArray;
+      renderInspector();
+    }, true);
+  }
   box.appendChild(nameField);
+
+  if (hideRequired) {
+    const scopeField = document.createElement("div");
+    scopeField.className = "field";
+    scopeField.innerHTML = "<label>Storage scope</label>";
+    const scopeSelect = document.createElement("select");
+    const currentScope = processVariableScope(variable);
+    const scopeOptions = VARIABLE_SCOPE_OPTIONS.slice();
+    if (!scopeOptions.some(option => option.value === currentScope)) {
+      scopeOptions.push({ value: String(currentScope), label: String(currentScope) + " (unsupported imported value)" });
+    }
+    scopeSelect.innerHTML = scopeOptions.map(option =>
+      `<option value="${option.value}" ${option.value === processVariableScope(variable) ? "selected" : ""}>${option.label}</option>`).join("");
+    scopeSelect.onchange = () => {
+      if (scopeSelect.value === VARIABLE_SCOPE.SHARED) {
+        variable.scope = VARIABLE_SCOPE.SHARED;
+        variable.sharedKey = variable.sharedKey || variable.name || "";
+        variable.access = SHARED_VARIABLE_ACCESS.READ;
+        variable.required = false;
+        variable.defaultValue = null;
+      } else {
+        delete variable.scope;
+        delete variable.sharedKey;
+        delete variable.access;
+      }
+      renderInspector();
+    };
+    scopeField.appendChild(scopeSelect);
+    box.appendChild(scopeField);
+
+    if (isSharedProcessVariable(variable)) {
+      const keyField = document.createElement("div");
+      keyField.className = "field";
+      keyField.innerHTML = "<label>Shared catalog key</label>";
+      const keyInput = document.createElement("input");
+      keyInput.type = "text";
+      keyInput.value = variable.sharedKey || "";
+      keyInput.placeholder = "finance.usdToSar";
+      keyInput.oninput = () => { variable.sharedKey = keyInput.value; };
+      keyField.appendChild(keyInput);
+      const keyHint = document.createElement("p");
+      keyHint.className = "empty-note";
+      keyHint.textContent = "The API matches this deployment-wide key case-insensitively. The variable name above remains the local expression alias.";
+      keyField.appendChild(keyHint);
+      box.appendChild(keyField);
+
+      const accessField = document.createElement("div");
+      accessField.className = "field";
+      accessField.innerHTML = "<label>Access</label>";
+      const accessSelect = document.createElement("select");
+      const accessOptions = [{ value: "", label: "— select access —" }]
+        .concat(SHARED_VARIABLE_ACCESS_OPTIONS);
+      if (variable.access && !accessOptions.some(option => option.value === variable.access)) {
+        accessOptions.push({ value: variable.access, label: variable.access + " (unsupported imported value)" });
+      }
+      accessSelect.innerHTML = accessOptions.map(option =>
+        `<option value="${option.value}" ${option.value === variable.access ? "selected" : ""}>${option.label}</option>`).join("");
+      accessSelect.onchange = () => {
+        variable.access = accessSelect.value;
+        renderInspector();
+      };
+      accessField.appendChild(accessSelect);
+      box.appendChild(accessField);
+    }
+  }
 
   const typeField = document.createElement("div");
   typeField.className = "field";
@@ -7777,16 +8053,31 @@ function variableRow(owner, variable, hideRequired) {
     .map(type => `<option value="${type}" ${type === variable.dataType ? "selected" : ""}>${type}</option>`)
     .join("");
   typeSelect.onchange = () => { variable.dataType = typeSelect.value; };
+  const sharedProducerTarget = !hideRequired &&
+    isSharedProcessVariable(findProcessVariable(variable.name));
+  typeSelect.disabled = sharedProducerTarget;
   typeField.appendChild(typeSelect);
   box.appendChild(typeField);
 
-  box.appendChild(variableCheckbox("Array", variable.isArray, checked => { variable.isArray = checked; }));
+  const arrayField = variableCheckbox("Array", variable.isArray, checked => { variable.isArray = checked; });
+  if (sharedProducerTarget) {
+    arrayField.querySelector("input").disabled = true;
+    const targetHint = document.createElement("p");
+    targetHint.className = "empty-note";
+    targetHint.textContent = "This producer writes the matching shared alias. Its type is inherited from the workflow shared-variable binding.";
+    box.appendChild(targetHint);
+  }
+  box.appendChild(arrayField);
 
   if (hideRequired) {
-    // Process variables are computed (never user-supplied); required is meaningless.
+    // Process variables are computed or shared bindings; required is meaningless.
     const note = document.createElement("p");
     note.className = "empty-note";
-    note.textContent = "Process variable: initialized at start, then updated by automatic tasks.";
+    note.textContent = isSharedProcessVariable(variable)
+      ? (isWritableProcessVariable(variable)
+          ? "Shared binding: all workflow instances read the catalog value and this workflow may update it."
+          : "Shared binding: all workflow instances read the catalog value; producer targets are disabled for this alias.")
+      : "Instance variable: initialized at start, then updated by workflow producers.";
     note.style.margin = "0";
     box.appendChild(note);
     box.appendChild(variableCheckbox("Allow null", !!variable.nullable, checked => {
@@ -7804,7 +8095,7 @@ function variableRow(owner, variable, hideRequired) {
   // The initial/default value field shows for process variables (always) and for
   // optional start/flow variables. A nullable process variable may leave it blank;
   // non-nullable process variables still require a concrete initial value.
-  if (hideRequired || !variable.required) {
+  if ((hideRequired && !isSharedProcessVariable(variable)) || (!hideRequired && !variable.required)) {
     const defField = document.createElement("div");
     defField.className = "field";
     defField.innerHTML = hideRequired
@@ -7834,7 +8125,9 @@ function variableRow(owner, variable, hideRequired) {
   valField.appendChild(valInput);
   const valHint = document.createElement("p");
   valHint.className = "empty-note";
-  valHint.textContent = 'NCalc expression checked at start / flow-take. Helper functions: Len(s), IsNullOrEmpty(s), Contains(s, sub), StartsWith(s, p), EndsWith(s, p), Lower(s), Upper(s), Trim(s), IsMatch(s, pattern).';
+  valHint.textContent = isSharedProcessVariable(variable)
+    ? "Snapshot the catalog validation exactly. Import/publish fails if this contract differs from the current shared-variable catalog."
+    : 'NCalc expression checked at start / flow-take. Helper functions: Len(s), IsNullOrEmpty(s), Contains(s, sub), StartsWith(s, p), EndsWith(s, p), Lower(s), Upper(s), Trim(s), IsMatch(s, pattern).';
   valField.appendChild(valHint);
   box.appendChild(valField);
 
@@ -9933,6 +10226,24 @@ function validateModelForSave(candidate) {
   const nodes = Array.isArray(candidate && candidate.flowNodes) ? candidate.flowNodes : [];
   const flows = Array.isArray(candidate && candidate.sequenceFlows) ? candidate.sequenceFlows : [];
   const processVariables = Array.isArray(candidate && candidate.variables) ? candidate.variables : [];
+  const isSharedProcessVariable = variable => variable && variable.scope === "shared";
+  const isWritableProcessVariable = variable => !isSharedProcessVariable(variable) ||
+    variable.access === "readWrite";
+  const sharedVariablesReferencedByExpression = (expression, variables) => {
+    if (typeof expression !== "string" || !expression) return [];
+    return (Array.isArray(variables) ? variables : [])
+      .filter(variable => isSharedProcessVariable(variable) &&
+        typeof variable.name === "string" && variable.name.trim())
+      .filter(variable => {
+        const escaped = variable.name.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const bracketed = new RegExp(`\\[\\s*${escaped}\\s*\\]`, "i").exec(expression);
+        if (bracketed && !isInsideQuotedExpressionText(expression, bracketed.index)) return true;
+        const bare = new RegExp(`(^|[^A-Za-z0-9_])${escaped}([^A-Za-z0-9_]|$)`, "i").exec(expression);
+        return !!bare && !isInsideQuotedExpressionText(
+          expression,
+          bare.index + (bare[1] ? bare[1].length : 0));
+      });
+  };
   const hasText = value => typeof value === "string" && value.trim().length > 0;
   const hasMappingDefault = value => value !== null && value !== undefined;
   const countItems = value => Array.isArray(value) ? value.length : 0;
@@ -10504,6 +10815,69 @@ function validateModelForSave(candidate) {
     }
   }
 
+  const hasOwn = (value, property) => !!value &&
+    Object.prototype.hasOwnProperty.call(value, property);
+  const sharedKeys = new Map();
+  for (const variable of processVariables) {
+    if (!variable || typeof variable !== "object") continue;
+    const name = hasText(variable.name) ? variable.name.trim() : "(unnamed)";
+    const scope = variable.scope == null || variable.scope === "instance"
+      ? "instance" : variable.scope;
+    if (scope !== "instance" && scope !== "shared") {
+      errors.push("Process variable '" + name + "' has unsupported scope '" +
+        String(variable.scope) + "'.");
+      continue;
+    }
+    if (scope === "instance") {
+      if (hasOwn(variable, "sharedKey") || hasOwn(variable, "access")) {
+        errors.push("Instance process variable '" + name +
+          "' cannot define sharedKey or access.");
+      }
+      continue;
+    }
+    if (!hasText(variable.sharedKey)) {
+      errors.push("Shared process variable '" + name + "' must have a sharedKey.");
+    } else {
+      const sharedKey = variable.sharedKey.trim();
+      if (unicodeLength(sharedKey) > 300) {
+        errors.push("Shared process variable '" + name +
+          "' sharedKey cannot exceed 300 Unicode characters.");
+      }
+      if (/^(sys|config|setting|mi|gateway)\./i.test(sharedKey)) {
+        errors.push("Shared process variable '" + name + "' sharedKey '" +
+          sharedKey + "' uses a reserved context prefix.");
+      }
+      const key = sharedKey.toLowerCase();
+      if (sharedKeys.has(key)) {
+        errors.push("Shared key '" + sharedKey +
+          "' is bound more than once; keys are case-insensitive.");
+      } else {
+        sharedKeys.set(key, name);
+      }
+    }
+    if (variable.access !== "read" && variable.access !== "readWrite") {
+      errors.push("Shared process variable '" + name +
+        "' must explicitly set access to read or readWrite.");
+    }
+    if (variable.required === true) {
+      errors.push("Shared process variable '" + name + "' cannot be required.");
+    }
+    if (variable.defaultValue !== null && variable.defaultValue !== undefined) {
+      errors.push("Shared process variable '" + name + "' cannot define defaultValue.");
+    }
+  }
+  for (const [variables, owner] of [
+    ...nodes.map(node => [node && node.variables, "flow node #" + String(node && node.id)]),
+    ...flows.map(flow => [flow && flow.variables, "sequence flow #" + String(flow && flow.id)])
+  ]) {
+    for (const variable of Array.isArray(variables) ? variables : []) {
+      if (hasOwn(variable, "scope") || hasOwn(variable, "sharedKey") || hasOwn(variable, "access")) {
+        errors.push("Variable '" + String(variable && variable.name || "") + "' on " +
+          owner + " cannot define scope, sharedKey, or access; bind shared variables only at workflow level.");
+      }
+    }
+  }
+
   const reservedIdempotencyHeaders = new Set([
     "authorization", "proxy-authorization", "cookie", "host", "content-length",
     "content-type", "content-encoding", "transfer-encoding", "connection",
@@ -10576,6 +10950,17 @@ function validateModelForSave(candidate) {
       } else if (!node.usesFlowInfo && validatorContainsDirectJavaScriptFlowInfoCall(node.script)) {
         errors.push(label + " calls execution.getFlowInfo but usesFlowInfo is false.");
       }
+      for (const variable of processVariables.filter(variable =>
+          isSharedProcessVariable(variable) && !isWritableProcessVariable(variable) &&
+          hasText(variable.name))) {
+        const escaped = variable.name.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const setter = new RegExp(
+          `\\bexecution\\s*\\.\\s*setVariable\\s*\\(\\s*(['\"])${escaped}\\1\\s*,`, "i");
+        if (setter.test(node.script || "")) {
+          errors.push(label + " cannot set read-only shared variable '" +
+            variable.name.trim() + "'.");
+        }
+      }
       continue;
     }
 
@@ -10599,6 +10984,10 @@ function validateModelForSave(candidate) {
       } else if (!processByName.has(assignment.variable.trim().toLowerCase())) {
         errors.push(label + " assigns '" + assignment.variable.trim() +
           "' which is not a declared process variable.");
+      } else if (!isWritableProcessVariable(
+          processByName.get(assignment.variable.trim().toLowerCase()))) {
+        errors.push(label + " cannot assign read-only shared variable '" +
+          assignment.variable.trim() + "'.");
       }
       if (!hasText(assignment.expression)) {
         errors.push(label + " assignment for '" + String(assignment.variable || "") +
@@ -10648,8 +11037,12 @@ function validateModelForSave(candidate) {
         errors.push("Variable '" + name + "' on " + owner +
           " cannot be nullable; nullable is supported only for process variables.");
       }
-      if (requireDefault && !variable.nullable && !hasDefault) {
+      const sharedBinding = requireDefault && isSharedProcessVariable(variable);
+      if (requireDefault && !sharedBinding && !variable.nullable && !hasDefault) {
         errors.push("Process variable '" + name + "' must have a defaultValue.");
+      }
+      if (sharedBinding && hasDefault) {
+        errors.push("Shared process variable '" + name + "' cannot define a defaultValue.");
       }
       if (!requireDefault && variable.required && hasDefault) {
         errors.push("Required variable '" + name + "' on " + owner +
@@ -10668,6 +11061,29 @@ function validateModelForSave(candidate) {
   }
   for (const flow of flows) {
     validateVariableContracts(flow && flow.variables, "sequence flow #" + String(flow && flow.id), false, false);
+  }
+
+  function validateDeclaredProducerVariables(variables, owner) {
+    for (const variable of Array.isArray(variables) ? variables : []) {
+      if (!hasText(variable && variable.name)) continue;
+      const processVariable = processByName.get(variable.name.trim().toLowerCase());
+      if (!processVariable || !isSharedProcessVariable(processVariable)) continue;
+      if (!isWritableProcessVariable(processVariable)) {
+        errors.push(owner + " variable '" + variable.name.trim() +
+          "' cannot target a read-only shared variable.");
+      } else if (variable.dataType !== processVariable.dataType ||
+          !!variable.isArray !== !!processVariable.isArray) {
+        errors.push(owner + " variable '" + variable.name.trim() +
+          "' must match shared variable type " + processVariable.dataType +
+          (processVariable.isArray ? "[]" : "") + ".");
+      }
+    }
+  }
+  for (const node of nodes) {
+    validateDeclaredProducerVariables(node && node.variables, "Flow node #" + String(node && node.id));
+  }
+  for (const flow of flows) {
+    validateDeclaredProducerVariables(flow && flow.variables, "Sequence flow #" + String(flow && flow.id));
   }
 
   function validateTypedOutputMappings(label, mappings, pathKind, enforceProcessContract) {
@@ -10706,6 +11122,10 @@ function validateModelForSave(candidate) {
       }
 
       const processVariable = processByName.get(key);
+      if (processVariable && !isWritableProcessVariable(processVariable)) {
+        errors.push(label + " output mapping '" + variableName +
+          "' cannot target a read-only shared variable.");
+      }
       if (enforceProcessContract && processVariable &&
           (mapping.dataType !== processVariable.dataType || mapping.isArray !== !!processVariable.isArray)) {
         errors.push(label + " output mapping '" + variableName + "' must match process variable '" +
@@ -10725,6 +11145,9 @@ function validateModelForSave(candidate) {
       errors.push(label + " '" + name + "' uses a reserved context prefix.");
     }
     const processVariable = processByName.get(name.toLowerCase());
+    if (processVariable && !isWritableProcessVariable(processVariable)) {
+      errors.push(label + " '" + name + "' cannot target a read-only shared variable.");
+    }
     if (processVariable &&
         (processVariable.dataType !== expectedType || !!processVariable.isArray)) {
       errors.push(label + " '" + name + "' must target a scalar " + expectedType + " process variable.");
@@ -11022,6 +11445,14 @@ function validateModelForSave(candidate) {
         conditional.deliveryMode !== "durableAsync") {
       errors.push(label + " deliveryMode must be atomic or durableAsync.");
     }
+    const sharedDependencies = sharedVariablesReferencedByExpression(
+      conditional.condition,
+      processVariables);
+    if (sharedDependencies.length > 0 && conditional.deliveryMode !== "durableAsync") {
+      errors.push(label + " observes shared variable " +
+        sharedDependencies.map(variable => "'" + variable.name.trim() + "'").join(", ") +
+        " and must explicitly use deliveryMode='durableAsync'.");
+    }
   }
 
   const messageStarts = nodes.filter(candidate => candidate && candidate.type === "messageStartEvent");
@@ -11085,17 +11516,41 @@ function validateModelForSave(candidate) {
       }
     }
 
-    const entryNames = entry.type === "timerStartEvent"
+    const entryTargets = entry.type === "timerStartEvent"
       ? []
       : entry.type === "messageStartEvent"
-      ? ((entry.message && entry.message.outputMappings) || []).map(mapping => mapping && mapping.variable)
-      : (entry.variables || []).map(variable => variable && variable.name);
-    if (entry.idempotency) entryNames.push(entry.idempotency.variable);
-    if (entry.businessKey) entryNames.push(entry.businessKey.variable);
-    const collision = entryNames.find(name => hasText(name) && processByName.has(name.trim().toLowerCase()));
-    if (collision) {
-      errors.push("Entry event #" + entry.id + " variable '" + collision.trim() +
-        "' collides with a process variable; names are case-insensitive.");
+      ? ((entry.message && entry.message.outputMappings) || []).map(mapping => ({
+          name: mapping && mapping.variable,
+          dataType: mapping && mapping.dataType,
+          isArray: !!(mapping && mapping.isArray)
+        }))
+      : (entry.variables || []).map(variable => ({
+          name: variable && variable.name,
+          dataType: variable && variable.dataType,
+          isArray: !!(variable && variable.isArray)
+        }));
+    for (const target of entryTargets) {
+      if (!hasText(target.name)) continue;
+      const processVariable = processByName.get(target.name.trim().toLowerCase());
+      if (!processVariable) continue;
+      if (!isSharedProcessVariable(processVariable)) {
+        errors.push("Entry event #" + entry.id + " variable '" + target.name.trim() +
+          "' collides with a process variable; only a compatible readWrite shared binding may be an entry output target.");
+      } else if (!isWritableProcessVariable(processVariable)) {
+        errors.push("Entry event #" + entry.id + " cannot write read-only shared variable '" +
+          target.name.trim() + "'.");
+      } else if (target.dataType !== processVariable.dataType ||
+          target.isArray !== !!processVariable.isArray) {
+        errors.push("Entry event #" + entry.id + " producer '" + target.name.trim() +
+          "' must match shared variable type " + processVariable.dataType +
+          (processVariable.isArray ? "[]" : "") + ".");
+      }
+    }
+    for (const identityName of [entry.idempotency?.variable, entry.businessKey?.variable]) {
+      if (hasText(identityName) && processByName.has(identityName.trim().toLowerCase())) {
+        errors.push("Entry event #" + entry.id + " identity variable '" +
+          identityName.trim() + "' cannot bind to a process variable; business-key and idempotency values are instance-scoped.");
+      }
     }
   }
 
@@ -11504,10 +11959,12 @@ function validateModelForSave(candidate) {
 
     const resultName = hasText(multi.resultVariable) ? multi.resultVariable.trim() : "";
     const result = resultName ? processByName.get(resultName.toLowerCase()) : null;
+    const sharedResult = result && isSharedProcessVariable(result);
     if (!result || result.dataType !== "json" || result.isArray ||
-        !Array.isArray(result.defaultValue)) {
+        !isWritableProcessVariable(result) ||
+        (!sharedResult && !Array.isArray(result.defaultValue))) {
       errors.push(label +
-        " resultVariable must reference a scalar JSON process variable whose defaultValue is a JSON array.");
+        " resultVariable must reference a writable scalar JSON process variable whose defaultValue is a JSON array for instance scope.");
     }
 
     if (multi.source === "collection") {
@@ -11716,7 +12173,12 @@ async function save() {
     return;
   }
   const canonical = JSON.parse(JSON.stringify(model));
+  canonical.variables = (canonical.variables || []).map(variable => {
+    normalizeVariableBinding(variable, true);
+    return variable;
+  });
   canonical.flowNodes.forEach(node => {
+    (node.variables || []).forEach(variable => normalizeVariableBinding(variable, false));
     if (isMessageStartEventType(node.type) || isTimerStartEventType(node.type)) {
       delete node.variables;
     }
@@ -11730,6 +12192,8 @@ async function save() {
       delete node.conditional.deliveryMode;
     }
   });
+  canonical.sequenceFlows.forEach(flow =>
+    (flow.variables || []).forEach(variable => normalizeVariableBinding(variable, false)));
   const data = JSON.stringify(canonical, null, 2);
 
   if (window.showSaveFilePicker) {
@@ -11760,8 +12224,8 @@ async function save() {
   a.click();
   URL.revokeObjectURL(a.href);
 }
-function normalizeVariable(v) {
-  return {
+function normalizeVariable(v, allowShared = false) {
+  const normalized = {
     id: v.id,
     name: v.name ?? v.label ?? `Variable ${v.id}`,
     dataType: v.dataType ?? "string",
@@ -11771,6 +12235,22 @@ function normalizeVariable(v) {
     defaultValue: v.required ? null : (v.defaultValue ?? null),
     validation: (v.validation ?? "").trim() === "" ? null : v.validation
   };
+  if (allowShared) {
+    const scope = processVariableScope(v);
+    if (scope !== VARIABLE_SCOPE.INSTANCE) {
+      normalized.scope = scope;
+      normalized.sharedKey = typeof v.sharedKey === "string" ? v.sharedKey.trim() : v.sharedKey;
+      normalized.access = canonicalizeKnownValue(
+        v.access,
+        [SHARED_VARIABLE_ACCESS.READ, SHARED_VARIABLE_ACCESS.READ_WRITE],
+        v.access);
+    }
+    if (scope === VARIABLE_SCOPE.SHARED) {
+      normalized.required = false;
+      normalized.defaultValue = null;
+    }
+  }
+  return normalized;
 }
 function mapLegacyNodeType(s) {
   const t = s.type ?? "task";
@@ -11883,7 +12363,7 @@ function migrateLegacyToNew(obj) {
 function loadFromObject(obj) {
   if (Array.isArray(obj.flowNodes)) {
     // Already BPMN schema.
-    const loadedProcessVariables = (obj.variables || []).map(normalizeVariable);
+    const loadedProcessVariables = (obj.variables || []).map(variable => normalizeVariable(variable, true));
     model = {
       id: obj.id ?? 1,
       name: obj.name ?? "Workflow",

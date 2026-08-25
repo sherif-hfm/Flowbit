@@ -28,6 +28,8 @@ public sealed class InstanceHistoryEntity
 
     public JsonDocument? Payload { get; set; }
 
+    public JsonDocument? SharedVariableWritesJson { get; set; }
+
     public string? Note { get; set; }
 
     public DateTimeOffset PerformedAt { get; set; } = DateTimeOffset.UtcNow;

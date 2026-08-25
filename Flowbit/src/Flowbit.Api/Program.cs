@@ -47,8 +47,17 @@ try
                 ValidAudience = jwtAudience,
                 IssuerSigningKey = signingKey
             };
-        });
-    builder.Services.AddAuthorization();
+        })
+        .AddScheme<SharedVariableClientAuthenticationOptions, SharedVariableClientAuthenticationHandler>(
+            SharedVariableClientAuthenticationDefaults.Scheme,
+            options =>
+            {
+                options.MaxClientIdRunes = 300;
+                options.MaxClientSecretBytes = 512;
+            });
+    builder.Services.AddAuthorization(SharedVariableAuthorizationPolicies.AddPolicies);
+    builder.Services.AddScoped<IAuthorizationHandler, SharedVariableAccessAuthorizationHandler>();
+    builder.Services.AddScoped<ISharedVariableCallerResolver, SharedVariableCallerResolver>();
 
     builder.Services.AddOpenApi(options =>
     {
@@ -92,6 +101,14 @@ try
                     configured client id/secret + required custom header, not the user JWT. The
                     `/api/task-distribution` endpoints are also `AllowAnonymous` and authenticate
                     with workflow-family `X-Client-Id` / `X-Client-Secret` headers.
+
+                    Shared-variable catalog list/detail and explicit current-value endpoints accept
+                    either the bearer JWT used by Flowbit.Ui or a managed deployment-wide API client.
+                    A client's write scope permits only `PUT /api/shared-variables/{key}/value`;
+                    contract creation, description/lifecycle changes, blockers, and full history are
+                    JWT-administrator-only. API clients send exactly one `X-Client-Id` and one
+                    `X-Client-Secret` header. Supplying bearer and client credentials together is
+                    rejected. API-client creation, rotation, and revocation are also JWT-only.
 
                     ## Status codes
                     - 200 OK, 201 Created, 204 No Content for success
@@ -154,6 +171,16 @@ try
                 {
                     Name = "Settings",
                     Description = "Role-protected administration of engine and workflow settings."
+                },
+                new()
+                {
+                    Name = "Shared Variables",
+                    Description = "Deployment-wide typed variables with metadata-only catalog responses and explicit value routes."
+                },
+                new()
+                {
+                    Name = "Shared Variable Clients",
+                    Description = "JWT-administrator-only lifecycle management for shared-variable API clients."
                 }
             };
 
@@ -167,6 +194,20 @@ try
             };
             document.Components.SecuritySchemes = document.Components.SecuritySchemes ?? new Dictionary<string, IOpenApiSecurityScheme>();
             document.Components.SecuritySchemes["Bearer"] = securityScheme;
+            document.Components.SecuritySchemes["SharedVariableClientId"] = new OpenApiSecurityScheme
+            {
+                Type = SecuritySchemeType.ApiKey,
+                In = ParameterLocation.Header,
+                Name = SharedVariableClientAuthenticationDefaults.ClientIdHeader,
+                Description = "Managed shared-variable API client identifier. Must be sent with X-Client-Secret."
+            };
+            document.Components.SecuritySchemes["SharedVariableClientSecret"] = new OpenApiSecurityScheme
+            {
+                Type = SecuritySchemeType.ApiKey,
+                In = ParameterLocation.Header,
+                Name = SharedVariableClientAuthenticationDefaults.ClientSecretHeader,
+                Description = "Managed shared-variable API client secret. Must be sent with X-Client-Id."
+            };
 
             return Task.CompletedTask;
         });
@@ -189,6 +230,29 @@ try
                 {
                     [new OpenApiSecuritySchemeReference("Bearer", context.Document)] = []
                 });
+
+                var acceptsSharedVariableClient = endpointMetadata?
+                    .OfType<IAuthorizeData>()
+                    .Any(data => string.Equals(
+                            data.Policy,
+                            SharedVariableAuthorizationPolicies.Read,
+                            StringComparison.Ordinal)
+                        || string.Equals(
+                            data.Policy,
+                            SharedVariableAuthorizationPolicies.Write,
+                            StringComparison.Ordinal)) == true;
+                if (acceptsSharedVariableClient)
+                {
+                    operation.Security.Add(new OpenApiSecurityRequirement
+                    {
+                        [new OpenApiSecuritySchemeReference(
+                            "SharedVariableClientId",
+                            context.Document)] = [],
+                        [new OpenApiSecuritySchemeReference(
+                            "SharedVariableClientSecret",
+                            context.Document)] = []
+                    });
+                }
             }
 
             if (operation.Parameters is not null)
@@ -359,6 +423,7 @@ try
 
     app.UseHttpsRedirection();
 
+    app.UseMiddleware<SharedVariableCredentialSourceMiddleware>();
     app.UseAuthentication();
     app.UseAuthorization();
 
@@ -377,6 +442,8 @@ try
     app.MapWorkflowJobEndpoints();
     app.MapUserDelegationEndpoints();
     app.MapSettingsEndpoints();
+    app.MapSharedVariableEndpoints();
+    app.MapSharedVariableClientEndpoints();
 
     app.Run();
 }

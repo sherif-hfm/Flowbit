@@ -818,6 +818,9 @@ namespace Flowbit.Infrastructure.Data.Migrations
                     b.Property<JsonDocument>("Payload")
                         .HasColumnType("jsonb");
 
+                    b.Property<JsonDocument>("SharedVariableWritesJson")
+                        .HasColumnType("jsonb");
+
                     b.Property<DateTimeOffset>("PerformedAt")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("timestamp with time zone")
@@ -935,10 +938,10 @@ namespace Flowbit.Infrastructure.Data.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("NodeExecutionId");
+
                     b.HasIndex("InstanceVariableUpdateAuditId", "InstanceId")
                         .HasFilter("\"InstanceVariableUpdateAuditId\" IS NOT NULL");
-
-                    b.HasIndex("NodeExecutionId");
 
                     b.HasIndex("VariableName", "InstanceId");
 
@@ -1005,16 +1008,14 @@ namespace Flowbit.Infrastructure.Data.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasAlternateKey("Id", "InstanceId");
-
                     b.HasIndex("BatchId")
                         .HasFilter("\"BatchId\" IS NOT NULL");
+
+                    b.HasIndex("WorkflowDefinitionId");
 
                     b.HasIndex("BatchItemId", "BatchId", "InstanceId")
                         .IsUnique()
                         .HasFilter("\"BatchItemId\" IS NOT NULL");
-
-                    b.HasIndex("WorkflowDefinitionId");
 
                     b.HasIndex("InstanceId", "PerformedAt", "Id");
 
@@ -1230,8 +1231,6 @@ namespace Flowbit.Infrastructure.Data.Migrations
                         .HasColumnType("jsonb");
 
                     b.HasKey("Id");
-
-                    b.HasAlternateKey("Id", "BatchId", "InstanceId");
 
                     b.HasIndex("CapturedWorkflowDefinitionId");
 
@@ -1716,6 +1715,9 @@ namespace Flowbit.Infrastructure.Data.Migrations
                     b.Property<JsonDocument>("ValuesJson")
                         .HasColumnType("jsonb");
 
+                    b.Property<JsonDocument>("SharedVariableWritesJson")
+                        .HasColumnType("jsonb");
+
                     b.Property<long>("WorkflowDefinitionId")
                         .HasColumnType("bigint");
 
@@ -1782,6 +1784,9 @@ namespace Flowbit.Infrastructure.Data.Migrations
                     b.Property<JsonDocument>("LastActionValuesJson")
                         .HasColumnType("jsonb");
 
+                    b.Property<JsonDocument>("LastActionSharedVariableWritesJson")
+                        .HasColumnType("jsonb");
+
                     b.Property<string>("LastTraversalActingFor")
                         .HasMaxLength(300)
                         .HasColumnType("character varying(300)");
@@ -1812,6 +1817,9 @@ namespace Flowbit.Infrastructure.Data.Migrations
                     b.Property<JsonDocument>("LastTraversalValuesJson")
                         .HasColumnType("jsonb");
 
+                    b.Property<JsonDocument>("LastTraversalSharedVariableWritesJson")
+                        .HasColumnType("jsonb");
+
                     b.Property<int>("SequenceFlowId")
                         .HasColumnType("integer");
 
@@ -1824,6 +1832,655 @@ namespace Flowbit.Infrastructure.Data.Migrations
                         .IsUnique();
 
                     b.ToTable("sequence_flow_summaries", "flowbit");
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.SharedVariableClientEntity", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<int>("ActiveSecretVersion")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("ClientId")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .UseCollation("C");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<string>("CreatedById")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<string>("CreatedByKind")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<string>("DisplayName")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<DateTimeOffset?>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long>("Revision")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("RevocationReason")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.Property<DateTimeOffset?>("RevokedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.PrimitiveCollection<List<string>>("Scopes")
+                        .IsRequired()
+                        .HasColumnType("text[]");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<string>("UpdatedById")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<string>("UpdatedByKind")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ClientId")
+                        .IsUnique();
+
+                    b.HasIndex("Status", "Id");
+
+                    b.ToTable("shared_variable_clients", "flowbit", t =>
+                        {
+                            t.HasCheckConstraint("CK_shared_variable_clients_revision", "\"Revision\" > 0");
+
+                            t.HasCheckConstraint("CK_shared_variable_clients_revocation_shape", "(\"Status\" = 'revoked' AND \"RevokedAt\" IS NOT NULL) OR (\"Status\" = 'active' AND \"RevokedAt\" IS NULL)");
+
+                            t.HasCheckConstraint("CK_shared_variable_clients_secret_version", "\"ActiveSecretVersion\" > 0");
+
+                            t.HasCheckConstraint("CK_shared_variable_clients_status", "\"Status\" IN ('active', 'revoked')");
+                        });
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.SharedVariableClientSecretEntity", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("Algorithm")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<long>("ClientId")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<byte[]>("Digest")
+                        .IsRequired()
+                        .HasColumnType("bytea");
+
+                    b.Property<int>("Iterations")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTimeOffset?>("RevokedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<byte[]>("Salt")
+                        .IsRequired()
+                        .HasColumnType("bytea");
+
+                    b.Property<DateTimeOffset?>("ValidUntil")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("Version")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ClientId", "Version")
+                        .IsUnique();
+
+                    b.ToTable("shared_variable_client_secrets", "flowbit", t =>
+                        {
+                            t.HasCheckConstraint("CK_shared_variable_client_secrets_digest", "octet_length(\"Digest\") >= 32");
+
+                            t.HasCheckConstraint("CK_shared_variable_client_secrets_iterations", "\"Iterations\" BETWEEN 100000 AND 2000000");
+
+                            t.HasCheckConstraint("CK_shared_variable_client_secrets_salt", "octet_length(\"Salt\") >= 16");
+
+                            t.HasCheckConstraint("CK_shared_variable_client_secrets_version", "\"Version\" > 0");
+                        });
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.SharedVariableCurrentValueEntity", b =>
+                {
+                    b.Property<long>("SharedVariableId")
+                        .HasColumnType("bigint");
+
+                    b.Property<bool>("IsDeleted")
+                        .HasColumnType("boolean");
+
+                    b.Property<long>("Revision")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTimeOffset>("SetAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<long>("SourceRevisionId")
+                        .HasColumnType("bigint");
+
+                    b.Property<JsonDocument>("ValueJson")
+                        .HasColumnType("jsonb");
+
+                    b.HasKey("SharedVariableId");
+
+                    b.HasIndex("Revision");
+
+                    b.HasIndex("SourceRevisionId")
+                        .IsUnique();
+
+                    b.HasIndex("ValueJson")
+                        .HasDatabaseName("IX_shared_variable_current_values_ValueJson_gin")
+                        .HasFilter("NOT \"IsDeleted\"");
+
+                    NpgsqlIndexBuilderExtensions.HasMethod(b.HasIndex("ValueJson"), "gin");
+
+                    b.ToTable("shared_variable_current_values", "flowbit", t =>
+                        {
+                            t.HasCheckConstraint("CK_shared_variable_current_values_revision", "\"Revision\" > 0");
+
+                            t.HasCheckConstraint("CK_shared_variable_current_values_shape", "(\"IsDeleted\" AND \"ValueJson\" IS NULL) OR (NOT \"IsDeleted\" AND \"ValueJson\" IS NOT NULL)");
+                        });
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.SharedVariableEntity", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<DateTimeOffset?>("ArchivedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<string>("CreatedById")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<string>("CreatedByKind")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<long>("CurrentRevision")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("DataType")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.Property<bool>("IsArray")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("Key")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("citext");
+
+                    b.Property<bool>("Nullable")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<string>("UpdatedById")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<string>("UpdatedByKind")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<string>("Validation")
+                        .HasMaxLength(4000)
+                        .HasColumnType("character varying(4000)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Key")
+                        .IsUnique();
+
+                    b.HasIndex("Status", "Key");
+
+                    b.ToTable("shared_variables", "flowbit", t =>
+                        {
+                            t.HasCheckConstraint("CK_shared_variables_archive_shape", "(\"Status\" = 'archived' AND \"ArchivedAt\" IS NOT NULL) OR (\"Status\" = 'active' AND \"ArchivedAt\" IS NULL)");
+
+                            t.HasCheckConstraint("CK_shared_variables_revision", "\"CurrentRevision\" >= 0");
+
+                            t.HasCheckConstraint("CK_shared_variables_status", "\"Status\" IN ('active', 'archived')");
+                        });
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.SharedVariableRequestEntity", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("CallerId")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)")
+                        .UseCollation("C");
+
+                    b.Property<string>("CallerKind")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .UseCollation("C");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<string>("Operation")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<byte[]>("RequestHash")
+                        .IsRequired()
+                        .HasColumnType("bytea");
+
+                    b.Property<string>("RequestId")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)")
+                        .UseCollation("C");
+
+                    b.Property<JsonDocument>("ResponseJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
+
+                    b.Property<long>("ResultRevision")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("SharedKey")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("citext");
+
+                    b.Property<long>("SharedVariableId")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("SharedVariableId", "ResultRevision");
+
+                    b.HasIndex("CallerKind", "CallerId", "RequestId")
+                        .IsUnique();
+
+                    b.ToTable("shared_variable_requests", "flowbit", t =>
+                        {
+                            t.HasCheckConstraint("CK_shared_variable_requests_hash", "octet_length(\"RequestHash\") = 32");
+
+                            t.HasCheckConstraint("CK_shared_variable_requests_revision", "\"ResultRevision\" > 0");
+                        });
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.SharedVariableRevisionEntity", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("CallerId")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<string>("CallerKind")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<bool>("HasValue")
+                        .HasColumnType("boolean");
+
+                    b.Property<long?>("InstanceId")
+                        .HasColumnType("bigint");
+
+                    b.Property<long?>("NodeExecutionId")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("Operation")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("Reason")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.Property<string>("RequestId")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)")
+                        .UseCollation("C");
+
+                    b.Property<long>("Revision")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("SharedVariableId")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<int?>("SourceActionId")
+                        .HasColumnType("integer");
+
+                    b.Property<bool>("ValueChanged")
+                        .HasColumnType("boolean");
+
+                    b.Property<JsonDocument>("ValueJson")
+                        .HasColumnType("jsonb");
+
+                    b.Property<long?>("WorkflowDefinitionId")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("InstanceId");
+
+                    b.HasIndex("NodeExecutionId");
+
+                    b.HasIndex("Revision")
+                        .IsUnique();
+
+                    b.HasIndex("WorkflowDefinitionId");
+
+                    b.HasIndex("SharedVariableId", "Revision")
+                        .IsUnique();
+
+                    b.ToTable("shared_variable_revisions", "flowbit", t =>
+                        {
+                            t.HasCheckConstraint("CK_shared_variable_revisions_operation", "\"Operation\" IN ('create', 'set', 'deleteValue', 'updateDescription', 'archive', 'reactivate')");
+
+                            t.HasCheckConstraint("CK_shared_variable_revisions_revision", "\"Revision\" > 0");
+
+                            t.HasCheckConstraint("CK_shared_variable_revisions_value_shape", "(\"HasValue\" AND \"ValueJson\" IS NOT NULL) OR (NOT \"HasValue\" AND \"ValueJson\" IS NULL)");
+                        });
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.SharedVariableRevisionStateEntity", b =>
+                {
+                    b.Property<short>("Id")
+                        .HasColumnType("smallint");
+
+                    b.Property<long>("LastRevision")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("now()");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("shared_variable_revision_state", "flowbit", t =>
+                        {
+                            t.HasCheckConstraint("CK_shared_variable_revision_state_revision", "\"LastRevision\" >= 0");
+
+                            t.HasCheckConstraint("CK_shared_variable_revision_state_singleton", "\"Id\" = 1");
+                        });
+
+                    b.HasData(
+                        new
+                        {
+                            Id = (short)1,
+                            LastRevision = 0L,
+                            UpdatedAt = new DateTimeOffset(new DateTime(2026, 8, 24, 0, 0, 0, 0, DateTimeKind.Unspecified), new TimeSpan(0, 0, 0, 0, 0))
+                        });
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.SharedVariableWakeDeliveryEntity", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<Guid>("ActivationId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("AttemptCount")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTimeOffset>("AvailableAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<DateTimeOffset?>("CompletedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<long>("InstanceId")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("LastError")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.Property<DateTimeOffset?>("LeaseExpiresAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long>("LeaseGeneration")
+                        .HasColumnType("bigint");
+
+                    b.Property<Guid?>("LeaseToken")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("LeasedBy")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<int>("NodeId")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<long>("TokenId")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<long>("WakeId")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("WorkflowDefinitionId")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TokenId");
+
+                    b.HasIndex("WorkflowDefinitionId");
+
+                    b.HasIndex("InstanceId", "Status", "Id");
+
+                    b.HasIndex("Status", "AvailableAt", "Id");
+
+                    b.HasIndex("WakeId", "TokenId", "ActivationId")
+                        .IsUnique();
+
+                    b.ToTable("shared_variable_wake_deliveries", "flowbit", t =>
+                        {
+                            t.HasCheckConstraint("CK_shared_variable_wake_deliveries_attempts", "\"AttemptCount\" >= 0");
+
+                            t.HasCheckConstraint("CK_shared_variable_wake_deliveries_lease_shape", "(\"Status\" = 'leased' AND \"LeaseToken\" IS NOT NULL AND \"LeasedBy\" IS NOT NULL AND \"LeaseExpiresAt\" IS NOT NULL) OR (\"Status\" <> 'leased' AND \"LeaseToken\" IS NULL AND \"LeasedBy\" IS NULL AND \"LeaseExpiresAt\" IS NULL)");
+
+                            t.HasCheckConstraint("CK_shared_variable_wake_deliveries_status", "\"Status\" IN ('pending', 'leased', 'completed', 'failed', 'cancelled')");
+                        });
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.SharedVariableWakeEntity", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<int>("AttemptCount")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTimeOffset>("AvailableAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<DateTimeOffset?>("CompletedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<string>("LastError")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.Property<DateTimeOffset?>("LeaseExpiresAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long>("LeaseGeneration")
+                        .HasColumnType("bigint");
+
+                    b.Property<Guid?>("LeaseToken")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("LeasedBy")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<long>("Revision")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("RevisionId")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("SharedVariableId")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("now()");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("RevisionId")
+                        .IsUnique();
+
+                    b.HasIndex("SharedVariableId");
+
+                    b.HasIndex("Status", "AvailableAt", "Id");
+
+                    b.ToTable("shared_variable_wakes", "flowbit", t =>
+                        {
+                            t.HasCheckConstraint("CK_shared_variable_wakes_attempts", "\"AttemptCount\" >= 0");
+
+                            t.HasCheckConstraint("CK_shared_variable_wakes_lease_shape", "(\"Status\" = 'leased' AND \"LeaseToken\" IS NOT NULL AND \"LeasedBy\" IS NOT NULL AND \"LeaseExpiresAt\" IS NOT NULL) OR (\"Status\" <> 'leased' AND \"LeaseToken\" IS NULL AND \"LeasedBy\" IS NULL AND \"LeaseExpiresAt\" IS NULL)");
+
+                            t.HasCheckConstraint("CK_shared_variable_wakes_status", "\"Status\" IN ('pending', 'leased', 'completed', 'failed', 'cancelled')");
+                        });
                 });
 
             modelBuilder.Entity("Flowbit.Infrastructure.Entities.TimerSubscriptionEntity", b =>
@@ -2078,10 +2735,10 @@ namespace Flowbit.Infrastructure.Data.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasDefaultValueSql("now()");
 
-                    b.Property<long>("InstanceId")
+                    b.Property<long?>("InboxVisibilityConditionId")
                         .HasColumnType("bigint");
 
-                    b.Property<long?>("InboxVisibilityConditionId")
+                    b.Property<long>("InstanceId")
                         .HasColumnType("bigint");
 
                     b.Property<int?>("ItemIndex")
@@ -2273,6 +2930,106 @@ namespace Flowbit.Infrastructure.Data.Migrations
                     b.ToTable("workflow_definitions", "flowbit", t =>
                         {
                             t.HasCheckConstraint("CK_workflow_definitions_default_activation", "(\"IsPublished\" AND \"IsDefault\" AND \"DefaultActivationId\" IS NOT NULL AND \"DefaultActivatedAt\" IS NOT NULL) OR ((NOT \"IsPublished\" OR NOT \"IsDefault\") AND \"DefaultActivationId\" IS NULL AND \"DefaultActivatedAt\" IS NULL)");
+                        });
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.WorkflowDefinitionSharedVariableBindingEntity", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("Access")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<string>("Alias")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("citext");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<string>("SharedKey")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("citext");
+
+                    b.Property<long>("SharedVariableId")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("WorkflowDefinitionId")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("SharedVariableId", "WorkflowDefinitionId");
+
+                    b.HasIndex("WorkflowDefinitionId", "Alias")
+                        .IsUnique();
+
+                    b.HasIndex("WorkflowDefinitionId", "SharedVariableId")
+                        .IsUnique()
+                        .HasDatabaseName("IX_workflow_definition_shared_variable_bindings_WorkflowDefin~1");
+
+                    b.ToTable("workflow_definition_shared_variable_bindings", "flowbit", t =>
+                        {
+                            t.HasCheckConstraint("CK_workflow_definition_shared_variable_bindings_access", "\"Access\" IN ('read', 'readWrite')");
+                        });
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.WorkflowDefinitionSharedVariableDependencyEntity", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("NodeExternalId")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<int>("NodeId")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("SharedKey")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("citext");
+
+                    b.Property<long>("SharedVariableId")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("WorkflowDefinitionId")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("SharedVariableId", "WorkflowDefinitionId", "NodeId");
+
+                    b.HasIndex("WorkflowDefinitionId", "NodeId", "SharedVariableId", "Kind")
+                        .IsUnique();
+
+                    b.ToTable("workflow_definition_shared_variable_dependencies", "flowbit", t =>
+                        {
+                            t.HasCheckConstraint("CK_workflow_definition_shared_variable_dependencies_kind", "\"Kind\" IN ('conditionalCatch')");
                         });
                 });
 
@@ -3173,6 +3930,9 @@ namespace Flowbit.Infrastructure.Data.Migrations
                         .IsRequired()
                         .HasColumnType("jsonb");
 
+                    b.Property<JsonDocument>("SharedVariableRevisionsJson")
+                        .HasColumnType("jsonb");
+
                     b.Property<int>("SizeBytes")
                         .HasColumnType("integer");
 
@@ -3444,15 +4204,15 @@ namespace Flowbit.Infrastructure.Data.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
+                    b.HasOne("Flowbit.Infrastructure.Entities.NodeExecutionEntity", "NodeExecution")
+                        .WithMany()
+                        .HasForeignKey("NodeExecutionId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
                     b.HasOne("Flowbit.Infrastructure.Entities.InstanceVariableUpdateAuditEntity", "InstanceVariableUpdateAudit")
                         .WithMany("Variables")
                         .HasForeignKey("InstanceVariableUpdateAuditId", "InstanceId")
                         .HasPrincipalKey("Id", "InstanceId")
-                        .OnDelete(DeleteBehavior.Restrict);
-
-                    b.HasOne("Flowbit.Infrastructure.Entities.NodeExecutionEntity", "NodeExecution")
-                        .WithMany()
-                        .HasForeignKey("NodeExecutionId")
                         .OnDelete(DeleteBehavior.Restrict);
 
                     b.Navigation("Instance");
@@ -3469,12 +4229,6 @@ namespace Flowbit.Infrastructure.Data.Migrations
                         .HasForeignKey("BatchId")
                         .OnDelete(DeleteBehavior.Restrict);
 
-                    b.HasOne("Flowbit.Infrastructure.Entities.InstanceVariableUpdateBatchItemEntity", "BatchItem")
-                        .WithOne()
-                        .HasForeignKey("Flowbit.Infrastructure.Entities.InstanceVariableUpdateAuditEntity", "BatchItemId", "BatchId", "InstanceId")
-                        .HasPrincipalKey("Flowbit.Infrastructure.Entities.InstanceVariableUpdateBatchItemEntity", "Id", "BatchId", "InstanceId")
-                        .OnDelete(DeleteBehavior.Restrict);
-
                     b.HasOne("Flowbit.Infrastructure.Entities.WorkflowInstanceEntity", "Instance")
                         .WithMany("VariableUpdates")
                         .HasForeignKey("InstanceId")
@@ -3486,6 +4240,12 @@ namespace Flowbit.Infrastructure.Data.Migrations
                         .HasForeignKey("WorkflowDefinitionId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
+
+                    b.HasOne("Flowbit.Infrastructure.Entities.InstanceVariableUpdateBatchItemEntity", "BatchItem")
+                        .WithOne()
+                        .HasForeignKey("Flowbit.Infrastructure.Entities.InstanceVariableUpdateAuditEntity", "BatchItemId", "BatchId", "InstanceId")
+                        .HasPrincipalKey("Flowbit.Infrastructure.Entities.InstanceVariableUpdateBatchItemEntity", "Id", "BatchId", "InstanceId")
+                        .OnDelete(DeleteBehavior.Restrict);
 
                     b.Navigation("Batch");
 
@@ -3521,7 +4281,6 @@ namespace Flowbit.Infrastructure.Data.Migrations
                     b.Navigation("CapturedWorkflowDefinition");
 
                     b.Navigation("Instance");
-
                 });
 
             modelBuilder.Entity("Flowbit.Infrastructure.Entities.InstanceVariableUpdateBatchJobLinkEntity", b =>
@@ -3684,6 +4443,133 @@ namespace Flowbit.Infrastructure.Data.Migrations
                     b.Navigation("Instance");
                 });
 
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.SharedVariableClientSecretEntity", b =>
+                {
+                    b.HasOne("Flowbit.Infrastructure.Entities.SharedVariableClientEntity", "Client")
+                        .WithMany("Secrets")
+                        .HasForeignKey("ClientId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Client");
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.SharedVariableCurrentValueEntity", b =>
+                {
+                    b.HasOne("Flowbit.Infrastructure.Entities.SharedVariableEntity", "SharedVariable")
+                        .WithOne("CurrentValue")
+                        .HasForeignKey("Flowbit.Infrastructure.Entities.SharedVariableCurrentValueEntity", "SharedVariableId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Flowbit.Infrastructure.Entities.SharedVariableRevisionEntity", "SourceRevision")
+                        .WithOne("CurrentValue")
+                        .HasForeignKey("Flowbit.Infrastructure.Entities.SharedVariableCurrentValueEntity", "SourceRevisionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("SharedVariable");
+
+                    b.Navigation("SourceRevision");
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.SharedVariableRequestEntity", b =>
+                {
+                    b.HasOne("Flowbit.Infrastructure.Entities.SharedVariableEntity", "SharedVariable")
+                        .WithMany()
+                        .HasForeignKey("SharedVariableId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("SharedVariable");
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.SharedVariableRevisionEntity", b =>
+                {
+                    b.HasOne("Flowbit.Infrastructure.Entities.WorkflowInstanceEntity", "Instance")
+                        .WithMany()
+                        .HasForeignKey("InstanceId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Flowbit.Infrastructure.Entities.NodeExecutionEntity", "NodeExecution")
+                        .WithMany()
+                        .HasForeignKey("NodeExecutionId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Flowbit.Infrastructure.Entities.SharedVariableEntity", "SharedVariable")
+                        .WithMany("Revisions")
+                        .HasForeignKey("SharedVariableId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Flowbit.Infrastructure.Entities.WorkflowDefinitionEntity", "WorkflowDefinition")
+                        .WithMany()
+                        .HasForeignKey("WorkflowDefinitionId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.Navigation("Instance");
+
+                    b.Navigation("NodeExecution");
+
+                    b.Navigation("SharedVariable");
+
+                    b.Navigation("WorkflowDefinition");
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.SharedVariableWakeDeliveryEntity", b =>
+                {
+                    b.HasOne("Flowbit.Infrastructure.Entities.WorkflowInstanceEntity", "Instance")
+                        .WithMany()
+                        .HasForeignKey("InstanceId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Flowbit.Infrastructure.Entities.ExecutionTokenEntity", "Token")
+                        .WithMany()
+                        .HasForeignKey("TokenId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Flowbit.Infrastructure.Entities.SharedVariableWakeEntity", "Wake")
+                        .WithMany("Deliveries")
+                        .HasForeignKey("WakeId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Flowbit.Infrastructure.Entities.WorkflowDefinitionEntity", "WorkflowDefinition")
+                        .WithMany()
+                        .HasForeignKey("WorkflowDefinitionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Instance");
+
+                    b.Navigation("Token");
+
+                    b.Navigation("Wake");
+
+                    b.Navigation("WorkflowDefinition");
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.SharedVariableWakeEntity", b =>
+                {
+                    b.HasOne("Flowbit.Infrastructure.Entities.SharedVariableRevisionEntity", "RevisionRecord")
+                        .WithOne("Wake")
+                        .HasForeignKey("Flowbit.Infrastructure.Entities.SharedVariableWakeEntity", "RevisionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Flowbit.Infrastructure.Entities.SharedVariableEntity", "SharedVariable")
+                        .WithMany("Wakes")
+                        .HasForeignKey("SharedVariableId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("RevisionRecord");
+
+                    b.Navigation("SharedVariable");
+                });
+
             modelBuilder.Entity("Flowbit.Infrastructure.Entities.TimerSubscriptionEntity", b =>
                 {
                     b.HasOne("Flowbit.Infrastructure.Entities.WorkflowInstanceEntity", "Instance")
@@ -3750,17 +4636,6 @@ namespace Flowbit.Infrastructure.Data.Migrations
                     b.Navigation("Token");
                 });
 
-            modelBuilder.Entity("Flowbit.Infrastructure.Entities.WorkflowDefinitionUserTaskConditionEntity", b =>
-                {
-                    b.HasOne("Flowbit.Infrastructure.Entities.WorkflowDefinitionEntity", "WorkflowDefinition")
-                        .WithMany("UserTaskInboxVisibilityConditions")
-                        .HasForeignKey("WorkflowDefinitionId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("WorkflowDefinition");
-                });
-
             modelBuilder.Entity("Flowbit.Infrastructure.Entities.WorkflowBusinessKeyClaimEntity", b =>
                 {
                     b.HasOne("Flowbit.Infrastructure.Entities.WorkflowInstanceEntity", null)
@@ -3772,6 +4647,55 @@ namespace Flowbit.Infrastructure.Data.Migrations
                         .WithMany()
                         .HasForeignKey("LastInstanceId")
                         .OnDelete(DeleteBehavior.Restrict);
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.WorkflowDefinitionSharedVariableBindingEntity", b =>
+                {
+                    b.HasOne("Flowbit.Infrastructure.Entities.SharedVariableEntity", "SharedVariable")
+                        .WithMany("DefinitionBindings")
+                        .HasForeignKey("SharedVariableId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Flowbit.Infrastructure.Entities.WorkflowDefinitionEntity", "WorkflowDefinition")
+                        .WithMany("SharedVariableBindings")
+                        .HasForeignKey("WorkflowDefinitionId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("SharedVariable");
+
+                    b.Navigation("WorkflowDefinition");
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.WorkflowDefinitionSharedVariableDependencyEntity", b =>
+                {
+                    b.HasOne("Flowbit.Infrastructure.Entities.SharedVariableEntity", "SharedVariable")
+                        .WithMany("DefinitionDependencies")
+                        .HasForeignKey("SharedVariableId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Flowbit.Infrastructure.Entities.WorkflowDefinitionEntity", "WorkflowDefinition")
+                        .WithMany("SharedVariableDependencies")
+                        .HasForeignKey("WorkflowDefinitionId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("SharedVariable");
+
+                    b.Navigation("WorkflowDefinition");
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.WorkflowDefinitionUserTaskConditionEntity", b =>
+                {
+                    b.HasOne("Flowbit.Infrastructure.Entities.WorkflowDefinitionEntity", "WorkflowDefinition")
+                        .WithMany("UserTaskInboxVisibilityConditions")
+                        .HasForeignKey("WorkflowDefinitionId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("WorkflowDefinition");
                 });
 
             modelBuilder.Entity("Flowbit.Infrastructure.Entities.WorkflowIdempotencyClaimEntity", b =>
@@ -4069,6 +4993,36 @@ namespace Flowbit.Infrastructure.Data.Migrations
                     b.Navigation("UserTasks");
                 });
 
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.SharedVariableClientEntity", b =>
+                {
+                    b.Navigation("Secrets");
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.SharedVariableEntity", b =>
+                {
+                    b.Navigation("CurrentValue");
+
+                    b.Navigation("DefinitionBindings");
+
+                    b.Navigation("DefinitionDependencies");
+
+                    b.Navigation("Revisions");
+
+                    b.Navigation("Wakes");
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.SharedVariableRevisionEntity", b =>
+                {
+                    b.Navigation("CurrentValue");
+
+                    b.Navigation("Wake");
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.SharedVariableWakeEntity", b =>
+                {
+                    b.Navigation("Deliveries");
+                });
+
             modelBuilder.Entity("Flowbit.Infrastructure.Entities.TimerSubscriptionEntity", b =>
                 {
                     b.Navigation("Jobs");
@@ -4090,6 +5044,10 @@ namespace Flowbit.Infrastructure.Data.Migrations
                     b.Navigation("NodeExecutions");
 
                     b.Navigation("SequenceFlowOccurrences");
+
+                    b.Navigation("SharedVariableBindings");
+
+                    b.Navigation("SharedVariableDependencies");
 
                     b.Navigation("SourceVersionChangeBatches");
 

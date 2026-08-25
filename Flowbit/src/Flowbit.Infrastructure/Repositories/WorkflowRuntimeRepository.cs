@@ -300,10 +300,27 @@ public sealed class WorkflowRuntimeRepository(
                 JOIN flowbit.workflow_definition_user_task_conditions inbox_condition
                   ON inbox_condition."Id" = target."InboxVisibilityConditionId"
                 LEFT JOIN LATERAL (
-                    SELECT jsonb_object_agg(value."VariableName", value."ValueJson") AS "ValuesJson"
-                    FROM flowbit.instance_variable_current_values value
-                    WHERE value."InstanceId" = target."InstanceId"
-                      AND value."VariableName" = ANY(inbox_condition."VariableNames")
+                    SELECT jsonb_object_agg(effective."VariableName", effective."ValueJson") AS "ValuesJson"
+                    FROM (
+                        SELECT value."VariableName", value."ValueJson"
+                        FROM flowbit.instance_variable_current_values value
+                        WHERE value."InstanceId" = target."InstanceId"
+                          AND value."VariableName" = ANY(inbox_condition."VariableNames")
+                          AND NOT EXISTS (
+                              SELECT 1
+                              FROM flowbit.workflow_definition_shared_variable_bindings binding
+                              WHERE binding."WorkflowDefinitionId" = target."WorkflowDefinitionId"
+                                AND binding."Alias"::text = value."VariableName"
+                          )
+                        UNION ALL
+                        SELECT binding."Alias"::text, current_value."ValueJson"
+                        FROM flowbit.workflow_definition_shared_variable_bindings binding
+                        JOIN flowbit.shared_variable_current_values current_value
+                          ON current_value."SharedVariableId" = binding."SharedVariableId"
+                         AND NOT current_value."IsDeleted"
+                        WHERE binding."WorkflowDefinitionId" = target."WorkflowDefinitionId"
+                          AND binding."Alias"::text = ANY(inbox_condition."VariableNames")
+                    ) effective
                 ) inbox_values ON TRUE
                 WHERE flowbit.evaluate_inbox_visibility_condition(
                     inbox_condition."ProgramJson",
@@ -3831,10 +3848,27 @@ public sealed class WorkflowRuntimeRepository(
                 LEFT JOIN flowbit.workflow_definition_user_task_conditions inbox_condition
                        ON inbox_condition."Id" = ut."InboxVisibilityConditionId"
                 LEFT JOIN LATERAL (
-                    SELECT jsonb_object_agg(value."VariableName", value."ValueJson") AS "ValuesJson"
-                    FROM flowbit.instance_variable_current_values value
-                    WHERE value."InstanceId" = w."Id"
-                      AND value."VariableName" = ANY(inbox_condition."VariableNames")
+                    SELECT jsonb_object_agg(effective."VariableName", effective."ValueJson") AS "ValuesJson"
+                    FROM (
+                        SELECT value."VariableName", value."ValueJson"
+                        FROM flowbit.instance_variable_current_values value
+                        WHERE value."InstanceId" = w."Id"
+                          AND value."VariableName" = ANY(inbox_condition."VariableNames")
+                          AND NOT EXISTS (
+                              SELECT 1
+                              FROM flowbit.workflow_definition_shared_variable_bindings binding
+                              WHERE binding."WorkflowDefinitionId" = w."WorkflowDefinitionId"
+                                AND binding."Alias"::text = value."VariableName"
+                          )
+                        UNION ALL
+                        SELECT binding."Alias"::text, current_value."ValueJson"
+                        FROM flowbit.workflow_definition_shared_variable_bindings binding
+                        JOIN flowbit.shared_variable_current_values current_value
+                          ON current_value."SharedVariableId" = binding."SharedVariableId"
+                         AND NOT current_value."IsDeleted"
+                        WHERE binding."WorkflowDefinitionId" = w."WorkflowDefinitionId"
+                          AND binding."Alias"::text = ANY(inbox_condition."VariableNames")
+                    ) effective
                 ) inbox_values ON inbox_condition."Id" IS NOT NULL
                 WHERE ut."Id" = @taskId
                 """,
@@ -3880,10 +3914,27 @@ public sealed class WorkflowRuntimeRepository(
                        ON inbox_condition."WorkflowDefinitionId" = w."WorkflowDefinitionId"
                       AND inbox_condition."NodeId" = @nodeId
                 LEFT JOIN LATERAL (
-                    SELECT jsonb_object_agg(value."VariableName", value."ValueJson") AS "ValuesJson"
-                    FROM flowbit.instance_variable_current_values value
-                    WHERE value."InstanceId" = w."Id"
-                      AND value."VariableName" = ANY(inbox_condition."VariableNames")
+                    SELECT jsonb_object_agg(effective."VariableName", effective."ValueJson") AS "ValuesJson"
+                    FROM (
+                        SELECT value."VariableName", value."ValueJson"
+                        FROM flowbit.instance_variable_current_values value
+                        WHERE value."InstanceId" = w."Id"
+                          AND value."VariableName" = ANY(inbox_condition."VariableNames")
+                          AND NOT EXISTS (
+                              SELECT 1
+                              FROM flowbit.workflow_definition_shared_variable_bindings binding
+                              WHERE binding."WorkflowDefinitionId" = w."WorkflowDefinitionId"
+                                AND binding."Alias"::text = value."VariableName"
+                          )
+                        UNION ALL
+                        SELECT binding."Alias"::text, current_value."ValueJson"
+                        FROM flowbit.workflow_definition_shared_variable_bindings binding
+                        JOIN flowbit.shared_variable_current_values current_value
+                          ON current_value."SharedVariableId" = binding."SharedVariableId"
+                         AND NOT current_value."IsDeleted"
+                        WHERE binding."WorkflowDefinitionId" = w."WorkflowDefinitionId"
+                          AND binding."Alias"::text = ANY(inbox_condition."VariableNames")
+                    ) effective
                 ) inbox_values ON inbox_condition."Id" IS NOT NULL
                 WHERE w."Id" = @instanceId
                 """,
@@ -4127,10 +4178,27 @@ public sealed class WorkflowRuntimeRepository(
                 JOIN flowbit.workflow_definition_user_task_conditions inbox_condition
                   ON inbox_condition."Id" = target."InboxVisibilityConditionId"
                 LEFT JOIN LATERAL (
-                    SELECT jsonb_object_agg(value."VariableName", value."ValueJson") AS "ValuesJson"
-                    FROM flowbit.instance_variable_current_values value
-                    WHERE value."InstanceId" = target."InstanceId"
-                      AND value."VariableName" = ANY(inbox_condition."VariableNames")
+                    SELECT jsonb_object_agg(effective."VariableName", effective."ValueJson") AS "ValuesJson"
+                    FROM (
+                        SELECT value."VariableName", value."ValueJson"
+                        FROM flowbit.instance_variable_current_values value
+                        WHERE value."InstanceId" = target."InstanceId"
+                          AND value."VariableName" = ANY(inbox_condition."VariableNames")
+                          AND NOT EXISTS (
+                              SELECT 1
+                              FROM flowbit.workflow_definition_shared_variable_bindings binding
+                              WHERE binding."WorkflowDefinitionId" = target."WorkflowDefinitionId"
+                                AND binding."Alias"::text = value."VariableName"
+                          )
+                        UNION ALL
+                        SELECT binding."Alias"::text, current_value."ValueJson"
+                        FROM flowbit.workflow_definition_shared_variable_bindings binding
+                        JOIN flowbit.shared_variable_current_values current_value
+                          ON current_value."SharedVariableId" = binding."SharedVariableId"
+                         AND NOT current_value."IsDeleted"
+                        WHERE binding."WorkflowDefinitionId" = target."WorkflowDefinitionId"
+                          AND binding."Alias"::text = ANY(inbox_condition."VariableNames")
+                    ) effective
                 ) inbox_values ON TRUE
                 WHERE flowbit.evaluate_inbox_visibility_condition(
                     inbox_condition."ProgramJson",
@@ -5414,7 +5482,8 @@ public sealed class WorkflowRuntimeRepository(
         string? actingFor = null,
         long? delegationId = null,
         string? reason = null,
-        long? administrativeActionBatchId = null)
+        long? administrativeActionBatchId = null,
+        IReadOnlyList<SharedVariableWriteCorrelationDto>? sharedVariableWrites = null)
     {
         var workflowDefinitionId = await GetCurrentWorkflowDefinitionIdAsync(instanceId, cancellationToken);
         dbContext.InstanceHistory.Add(new InstanceHistoryEntity
@@ -5432,6 +5501,7 @@ public sealed class WorkflowRuntimeRepository(
             ActingFor = actingFor,
             DelegationId = delegationId,
             Payload = JsonMapping.ToJsonDocument(payload),
+            SharedVariableWritesJson = JsonMapping.ToJsonDocument(sharedVariableWrites),
             Note = note,
             Reason = reason,
             AdministrativeActionBatchId = administrativeActionBatchId,
@@ -5488,7 +5558,8 @@ public sealed class WorkflowRuntimeRepository(
         long? delegationId = null,
         string? note = null,
         string? reason = null,
-        long? administrativeActionBatchId = null)
+        long? administrativeActionBatchId = null,
+        IReadOnlyList<SharedVariableWriteCorrelationDto>? sharedVariableWrites = null)
     {
         var workflowDefinitionId = await GetCurrentWorkflowDefinitionIdAsync(instanceId, cancellationToken);
         dbContext.InstanceHistory.Add(new InstanceHistoryEntity
@@ -5504,6 +5575,7 @@ public sealed class WorkflowRuntimeRepository(
             ActingFor = actingFor,
             DelegationId = delegationId,
             Payload = JsonMapping.ToJsonDocument(payload),
+            SharedVariableWritesJson = JsonMapping.ToJsonDocument(sharedVariableWrites),
             Note = note,
             Reason = reason,
             AdministrativeActionBatchId = administrativeActionBatchId,
@@ -5778,6 +5850,7 @@ public sealed class WorkflowRuntimeRepository(
             ActingFor = occurrence.ActingFor,
             DelegationId = occurrence.DelegationId,
             ValuesJson = JsonMapping.ToJsonDocument(occurrence.Values),
+            SharedVariableWritesJson = JsonMapping.ToJsonDocument(occurrence.SharedVariableWrites),
             AdministrativeActionJson = JsonMapping.ToJsonDocument(occurrence.AdministrativeAction),
             OccurredAt = occurrence.OccurredAt
         });
@@ -5811,6 +5884,8 @@ public sealed class WorkflowRuntimeRepository(
             summary.LastActionOccurredAt = occurrence.OccurredAt;
             summary.LastActionKind = occurrence.Kind;
             summary.LastActionValuesJson = JsonMapping.ToJsonDocument(occurrence.Values);
+            summary.LastActionSharedVariableWritesJson =
+                JsonMapping.ToJsonDocument(occurrence.SharedVariableWrites);
             summary.LastActionAdministrativeActionJson =
                 JsonMapping.ToJsonDocument(occurrence.AdministrativeAction);
         }
@@ -5825,6 +5900,8 @@ public sealed class WorkflowRuntimeRepository(
             summary.LastTraversalOccurredAt = occurrence.OccurredAt;
             summary.LastTraversalKind = occurrence.Kind;
             summary.LastTraversalValuesJson = JsonMapping.ToJsonDocument(occurrence.Values);
+            summary.LastTraversalSharedVariableWritesJson =
+                JsonMapping.ToJsonDocument(occurrence.SharedVariableWrites);
             summary.LastTraversalAdministrativeActionJson =
                 JsonMapping.ToJsonDocument(occurrence.AdministrativeAction);
         }
@@ -6455,7 +6532,9 @@ public sealed class WorkflowRuntimeRepository(
             entity.DelegationId)
         {
             AdministrativeActionBatchId = entity.AdministrativeActionBatchId,
-            Reason = entity.Reason
+            Reason = entity.Reason,
+            SharedVariableWrites = JsonMapping.ToSharedVariableWrites(
+                entity.SharedVariableWritesJson)
         };
 
     private static MessageDeliveryReceiptRecord ToRecord(MessageDeliveryReceiptEntity entity) =>
@@ -6483,6 +6562,7 @@ public sealed class WorkflowRuntimeRepository(
                 entity.LastActionOccurredAt,
                 entity.LastActionKind,
                 entity.LastActionValuesJson,
+                entity.LastActionSharedVariableWritesJson,
                 entity.LastActionActingFor,
                 entity.LastActionDelegationId,
                 entity.LastActionAdministrativeActionJson),
@@ -6493,6 +6573,7 @@ public sealed class WorkflowRuntimeRepository(
                 entity.LastTraversalOccurredAt,
                 entity.LastTraversalKind,
                 entity.LastTraversalValuesJson,
+                entity.LastTraversalSharedVariableWritesJson,
                 entity.LastTraversalActingFor,
                 entity.LastTraversalDelegationId,
                 entity.LastTraversalAdministrativeActionJson));
@@ -6503,6 +6584,7 @@ public sealed class WorkflowRuntimeRepository(
         DateTimeOffset? occurredAt,
         string? kind,
         JsonDocument? valuesJson,
+        JsonDocument? sharedVariableWritesJson,
         string? actingFor,
         long? delegationId,
         JsonDocument? administrativeActionJson) =>
@@ -6518,6 +6600,8 @@ public sealed class WorkflowRuntimeRepository(
                 delegationId)
             {
                 AdministrativeAction =
-                    JsonMapping.ToAdministrativeAction(administrativeActionJson)
+                    JsonMapping.ToAdministrativeAction(administrativeActionJson),
+                SharedVariableWrites = JsonMapping.ToSharedVariableWrites(
+                    sharedVariableWritesJson)
             };
 }

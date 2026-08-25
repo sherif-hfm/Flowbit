@@ -463,6 +463,9 @@ public sealed record InstanceSummaryDto(
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public InstanceJobSummaryDto? Jobs { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<SharedVariableBindingMetadataDto>? SharedVariables { get; init; }
 }
 
 /// <summary>
@@ -521,6 +524,8 @@ public sealed record InstanceDetailDto(
     /// instance, including the actor, reason, and correlated history rows.
     /// </summary>
     public IReadOnlyList<InstanceVariableUpdateAuditDto> VariableUpdates { get; init; } = [];
+
+    public IReadOnlyList<SharedVariableBindingMetadataDto> SharedVariables { get; init; } = [];
 }
 
 /// <summary>The updated instance and audit entry returned after a workflow version change.</summary>
@@ -663,6 +668,12 @@ public sealed record InstanceHistoryDto(
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public long? AdministrativeActionBatchId { get; init; }
+
+    /// <summary>
+    /// Value-free shared writes committed by this transition. Shared values
+    /// are deliberately excluded from the instance-history payload.
+    /// </summary>
+    public IReadOnlyList<SharedVariableWriteCorrelationDto> SharedVariableWrites { get; init; } = [];
 }
 
 /// <summary>
@@ -753,6 +764,9 @@ public sealed record InboxItemDto(
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public IReadOnlyDictionary<string, JsonElement>? Variables { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<SharedVariableBindingMetadataDto>? SharedVariables { get; init; }
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public DelegatedTaskAccessDto? DelegatedAccess { get; init; }

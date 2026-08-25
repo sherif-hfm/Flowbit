@@ -45,4 +45,8 @@ public sealed class WorkflowDefinitionEntity
     public List<AdministrativeActionBatchItemEntity> AdministrativeActionBatchItems { get; set; } = [];
 
     public List<WorkflowDefinitionUserTaskConditionEntity> UserTaskInboxVisibilityConditions { get; set; } = [];
+
+    public List<WorkflowDefinitionSharedVariableBindingEntity> SharedVariableBindings { get; set; } = [];
+
+    public List<WorkflowDefinitionSharedVariableDependencyEntity> SharedVariableDependencies { get; set; } = [];
 }

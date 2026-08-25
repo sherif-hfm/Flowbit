@@ -30,7 +30,8 @@ public sealed partial class WorkflowEngineService(
     ILogger<WorkflowEngineService> logger,
     IInstanceVariableUpdateRepository? variableUpdates = null,
     IInstanceVariableMutationTracker? variableMutationTracker = null,
-    IConditionalEventDependencyPlanCache? conditionalEventPlans = null)
+    IConditionalEventDependencyPlanCache? conditionalEventPlans = null,
+    IWorkflowVariableStore? workflowVariables = null)
     : IWorkflowEngineService, IWorkflowJobProcessor,
       IInstanceVersionChangeBatchExecutor, IConditionalEventRuntimeCoordinator
 {
@@ -92,7 +93,11 @@ public sealed partial class WorkflowEngineService(
             return;
         }
 
-        var stored = await LoadVariablesAsync(instance.Id, cancellationToken);
+        var stored = await LoadVariablesAsync(
+            instance.Id,
+            workflow.Definition,
+            cancellationToken,
+            lockSharedValues: true);
         var flowInfo = await LoadSequenceFlowInfoAsync(
             instance.Id,
             workflow.Definition,
@@ -577,8 +582,15 @@ public sealed partial class WorkflowEngineService(
 
             // Resolve templated defaults and run NCalc validation against the final values
             // overlaid with sys.*/config.* context, then persist each resolved value.
+            var sharedStartValues = workflowVariables is null
+                ? new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase)
+                : await workflowVariables.MergeEffectiveValuesAsync(
+                    workflow.Definition,
+                    new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase),
+                    lockSharedValues: true,
+                    cancellationToken);
             var startContext = WithContext(
-                new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase),
+                sharedStartValues,
                 actor, instance, workflow.Definition, startEvent);
             if (idempotency is not null)
             {
@@ -593,17 +605,15 @@ public sealed partial class WorkflowEngineService(
                     instance.CurrentNodeExecutionId);
             }
             var startValues = ResolveAndValidateVariables(startEvent.Variables, variableValues, startContext);
-            foreach (var pair in startValues)
-            {
-                await runtime.AddVariableAsync(
-                    instance.Id,
-                    pair.Key,
-                    null,
-                    startedBy,
-                    pair.Value,
-                    cancellationToken,
-                    instance.CurrentNodeExecutionId);
-            }
+            await WriteVariablesAsync(
+                workflow.Definition,
+                workflow.Id,
+                instance.Id,
+                startValues,
+                sourceActionId: null,
+                instance.CurrentNodeExecutionId,
+                actor,
+                cancellationToken);
 
             // Initialize process-level variables from their authored defaults so every
             // declared name is readable from hop 0. Defaults are templated/coerced like
@@ -614,22 +624,21 @@ public sealed partial class WorkflowEngineService(
                 processContext[pair.Key] = pair.Value;
             }
             var processValues = ResolveAndValidateVariables(
-                workflow.Definition.Variables,
+                workflow.Definition.Variables.Where(variable =>
+                    !string.Equals(variable.Scope, VariableScopes.Shared, StringComparison.Ordinal)).ToList(),
                 null,
                 processContext,
                 enforceRequired: false,
                 materializeNullableNullDefaults: true);
-            foreach (var pair in processValues)
-            {
-                await runtime.AddVariableAsync(
-                    instance.Id,
-                    pair.Key,
-                    null,
-                    startedBy,
-                    pair.Value,
-                    cancellationToken,
-                    instance.CurrentNodeExecutionId);
-            }
+            await WriteVariablesAsync(
+                workflow.Definition,
+                workflow.Id,
+                instance.Id,
+                processValues,
+                sourceActionId: null,
+                instance.CurrentNodeExecutionId,
+                actor,
+                cancellationToken);
 
             // Flush variables so pass-through gateways can read them within this transaction.
             await unitOfWork.SaveChangesAsync(cancellationToken);
@@ -800,20 +809,25 @@ public sealed partial class WorkflowEngineService(
         // Every typed output mapping plus the implicit idempotency variable is an
         // instance variable. Resolution and validation completed before reservation;
         // persistence remains inside the start transaction.
+        var sharedStartValues = workflowVariables is null
+            ? new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase)
+            : await workflowVariables.MergeEffectiveValuesAsync(
+                definition,
+                new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase),
+                lockSharedValues: true,
+                cancellationToken);
         var startContext = WithContext(
-            new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase),
+            sharedStartValues,
             actor, instance, definition, startEvent);
-        foreach (var pair in mappedValues)
-        {
-            await runtime.AddVariableAsync(
-                instance.Id,
-                pair.Key,
-                null,
-                performedBy,
-                pair.Value,
-                cancellationToken,
-                instance.CurrentNodeExecutionId);
-        }
+        await WriteVariablesAsync(
+            definition,
+            workflow.Id,
+            instance.Id,
+            mappedValues,
+            sourceActionId: null,
+            instance.CurrentNodeExecutionId,
+            actor,
+            cancellationToken);
 
         // Initialize process-level variables from their authored defaults.
         var processContext = new Dictionary<string, JsonElement>(startContext, StringComparer.OrdinalIgnoreCase);
@@ -822,22 +836,21 @@ public sealed partial class WorkflowEngineService(
             processContext[pair.Key] = pair.Value;
         }
         var processValues = ResolveAndValidateVariables(
-            definition.Variables,
+            definition.Variables.Where(variable =>
+                !string.Equals(variable.Scope, VariableScopes.Shared, StringComparison.Ordinal)).ToList(),
             null,
             processContext,
             enforceRequired: false,
             materializeNullableNullDefaults: true);
-        foreach (var pair in processValues)
-        {
-            await runtime.AddVariableAsync(
-                instance.Id,
-                pair.Key,
-                null,
-                performedBy,
-                pair.Value,
-                cancellationToken,
-                instance.CurrentNodeExecutionId);
-        }
+        await WriteVariablesAsync(
+            definition,
+            workflow.Id,
+            instance.Id,
+            processValues,
+            sourceActionId: null,
+            instance.CurrentNodeExecutionId,
+            actor,
+            cancellationToken);
 
         await unitOfWork.SaveChangesAsync(cancellationToken);
         var flowInfo = await LoadSequenceFlowInfoAsync(
@@ -1015,11 +1028,25 @@ public sealed partial class WorkflowEngineService(
         var jobSummaries = await jobs.GetInstanceJobSummariesAsync(
             paged.Items.Select(item => item.Id).ToArray(),
             cancellationToken);
+        var sharedMetadataByWorkflowId = new Dictionary<long, IReadOnlyList<SharedVariableBindingMetadataDto>>();
+        if (includeVariables && workflowVariables is not null)
+        {
+            var workflowRecords = await definitions.GetManyAsync(
+                paged.Items.Select(item => item.WorkflowId).Distinct().ToArray(),
+                cancellationToken);
+            foreach (var pair in workflowRecords)
+            {
+                sharedMetadataByWorkflowId[pair.Key] = await workflowVariables.DescribeBindingsAsync(
+                    pair.Value.Definition,
+                    cancellationToken);
+            }
+        }
         var items = paged.Items.Select(row =>
         {
             var summary = ToSummary(row);
-            return jobSummaries.TryGetValue(row.Id, out var jobsForInstance)
-                ? summary with
+            if (jobSummaries.TryGetValue(row.Id, out var jobsForInstance))
+            {
+                summary = summary with
                 {
                     Jobs = new InstanceJobSummaryDto(
                         jobsForInstance.OpenCount,
@@ -1027,8 +1054,15 @@ public sealed partial class WorkflowEngineService(
                         jobsForInstance.RunningCount,
                         jobsForInstance.IncidentCount,
                         jobsForInstance.NearestDueAt)
-                }
-                : summary;
+                };
+            }
+            if (sharedMetadataByWorkflowId.TryGetValue(
+                    row.WorkflowId,
+                    out var sharedMetadata))
+            {
+                summary = summary with { SharedVariables = sharedMetadata };
+            }
+            return summary;
         }).ToArray();
         return new PagedResult<InstanceSummaryDto>(
             items,
@@ -1155,6 +1189,28 @@ public sealed partial class WorkflowEngineService(
                 throw new WorkflowDomainException($"Workflow definition #{id} was not found.");
             }
         }
+        var sharedMetadataByWorkflowId = new Dictionary<long, IReadOnlyList<SharedVariableBindingMetadataDto>>();
+        if (includeVariables && workflowVariables is not null)
+        {
+            foreach (var pair in definitionsById)
+            {
+                sharedMetadataByWorkflowId[pair.Key] = await workflowVariables.DescribeBindingsAsync(
+                    pair.Value.Definition,
+                    cancellationToken);
+            }
+        }
+        var sharedValuesByWorkflowId = new Dictionary<long, IReadOnlyDictionary<string, JsonElement>>();
+        if (workflowVariables is not null)
+        {
+            foreach (var pair in definitionsById)
+            {
+                sharedValuesByWorkflowId[pair.Key] = await workflowVariables.MergeEffectiveValuesAsync(
+                    pair.Value.Definition,
+                    new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase),
+                    lockSharedValues: false,
+                    cancellationToken);
+            }
+        }
 
         var canActByTask = new Dictionary<long, bool>();
         var hasBypassClaimByTask = new Dictionary<long, bool>();
@@ -1172,9 +1228,32 @@ public sealed partial class WorkflowEngineService(
             accessByTask[taskKey] = access;
             var instance = ToInboxInstanceRecord(row, workflow);
             var execution = row.MultiInstanceProgress?.Execution;
+            var instanceVariables = row.Variables
+                ?? new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
+            var effectiveVariables = new Dictionary<string, JsonElement>(
+                instanceVariables,
+                StringComparer.OrdinalIgnoreCase);
+            foreach (var binding in workflow.Definition.Variables.Where(variable =>
+                         string.Equals(variable.Scope, VariableScopes.Shared, StringComparison.Ordinal)
+                         && !string.IsNullOrWhiteSpace(variable.Name)))
+            {
+                // A retained legacy instance row must not shadow a shared
+                // binding, including a catalog contract that currently has no
+                // value.
+                effectiveVariables.Remove(binding.Name!);
+            }
+            if (sharedValuesByWorkflowId.TryGetValue(
+                    row.WorkflowDefinitionId,
+                    out var sharedValues))
+            {
+                foreach (var pair in sharedValues)
+                {
+                    effectiveVariables[pair.Key] = pair.Value.Clone();
+                }
+            }
             var eligible = GetEligibleUserTaskFlows(
                 instance, workflow, node, task, execution, access.ExecutionActor,
-                row.Variables ?? new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase),
+                effectiveVariables,
                 visibilityContext.AsOf);
             canActByTask[taskKey] = eligible.Count > 0;
             hasBypassClaimByTask[taskKey] = eligible.Any(flow => CanBypassClaim(flow, normalizedRoles));
@@ -1187,7 +1266,8 @@ public sealed partial class WorkflowEngineService(
         var items = paged.Items.Select(row => ToInboxItem(row, normalizedUser, normalizedRoles,
             accessByTask, attributesByTask, canActByTask, hasBypassClaimByTask,
             row.MultiInstanceExecutionId is long executionId ? progressByExecution.GetValueOrDefault(executionId) : null,
-            includeVariables)).ToList();
+            includeVariables,
+            sharedMetadataByWorkflowId.GetValueOrDefault(row.WorkflowDefinitionId))).ToList();
         return new PagedResult<InboxItemDto>(items, paged.Page, paged.PageSize, paged.TotalCount);
     }
 
@@ -1217,7 +1297,8 @@ public sealed partial class WorkflowEngineService(
         Dictionary<long, bool>? canActByTask = null,
         Dictionary<long, bool>? hasBypassClaimByTask = null,
         MultiInstanceProgressDto? multiInstance = null,
-        bool includeVariables = false)
+        bool includeVariables = false,
+        IReadOnlyList<SharedVariableBindingMetadataDto>? sharedVariables = null)
     {
         var claimedByMe = string.Equals(row.ClaimedBy, normalizedUser, StringComparison.OrdinalIgnoreCase);
         var authorizationKey = InboxAuthorizationKey(row);
@@ -1293,6 +1374,7 @@ public sealed partial class WorkflowEngineService(
             row.InstanceUpdatedAt)
         {
             Variables = includeVariables ? row.Variables : null,
+            SharedVariables = includeVariables ? sharedVariables : null,
             DelegatedAccess = access.ToDto(),
             Attributes = attributesByTask[authorizationKey]
         };
@@ -1471,7 +1553,10 @@ public sealed partial class WorkflowEngineService(
         }
         if (access is null) return [];
 
-        var stored = await LoadVariablesAsync(instance.Id, cancellationToken);
+        var stored = await LoadVariablesAsync(
+            instance.Id,
+            cancellationToken,
+            lockSharedValues: false);
         var context = WithContext(
             stored, executionActor, instance, workflow.Definition, node,
             visibilityContext.AsOf);
@@ -2099,7 +2184,11 @@ public sealed partial class WorkflowEngineService(
             .Distinct()
             .ToList();
         var workflow = await GetWorkflowAsync(instance.WorkflowDefinitionId, cancellationToken);
-        var stored = await LoadVariablesAsync(instance.Id, cancellationToken);
+        var stored = await LoadVariablesAsync(
+            instance.Id,
+            workflow.Definition,
+            cancellationToken,
+            lockSharedValues: false);
         var progressRecords = await runtime.GetMultiInstanceProgressAsync(executionIds, cancellationToken);
         var progressCache = progressRecords.ToDictionary(pair => pair.Key, pair => ToProgress(pair.Value));
         var executionsById = progressRecords.ToDictionary(pair => pair.Key, pair => pair.Value.Execution);
@@ -2183,7 +2272,10 @@ public sealed partial class WorkflowEngineService(
         if (!RoleAllowed(node, roles))
             return [];
 
-        var stored = await LoadVariablesAsync(instance.Id, cancellationToken);
+        var stored = await LoadVariablesAsync(
+            instance.Id,
+            cancellationToken,
+            lockSharedValues: false);
         var context = WithContext(
             stored, actor, instance, workflow.Definition, node,
             visibilityContext.AsOf);
@@ -2259,10 +2351,17 @@ public sealed partial class WorkflowEngineService(
         var context = new Dictionary<string, JsonElement>(storedContext, StringComparer.OrdinalIgnoreCase);
         foreach (var pair in values) context[pair.Key] = pair.Value;
 
-        foreach (var pair in values)
-        {
-            await runtime.AddVariableAsync(instance.Id, pair.Key, flow.Id, actor.User, pair.Value, cancellationToken);
-        }
+        var writeResults = await WriteVariablesWithResultsAsync(
+            workflow.Definition,
+            workflow.Id,
+            instance.Id,
+            values,
+            flow.Id,
+            executionToken.CurrentNodeExecutionId,
+            actor,
+            cancellationToken);
+        var persistedValues = InstanceSubmittedValues(values, writeResults);
+        var sharedVariableWrites = SharedWriteCorrelations(writeResults);
 
         var flowInfo = await LoadSequenceFlowInfoAsync(
             instance.Id, workflow.Definition, cancellationToken);
@@ -2275,13 +2374,14 @@ public sealed partial class WorkflowEngineService(
             flow,
             "interrupt",
             actor,
-            values,
+            persistedValues,
             context,
             null,
             null,
             flowInfo,
             true,
-            cancellationToken);
+            cancellationToken,
+            sharedVariableWrites: sharedVariableWrites);
         await transaction.CommitAsync(cancellationToken);
         return await BuildDetailAsync(instance.Id, cancellationToken);
     }
@@ -2526,7 +2626,8 @@ public sealed partial class WorkflowEngineService(
         SequenceFlowInfoSnapshot? flowInfo,
         bool directParentInterrupt,
         CancellationToken cancellationToken,
-        AdministrativeBatchFlowContext? administrativeBatch = null)
+        AdministrativeBatchFlowContext? administrativeBatch = null,
+        IReadOnlyList<SharedVariableWriteCorrelationDto>? sharedVariableWrites = null)
     {
         var user = NormalizeUser(actor.User);
         await RecordSequenceFlowOccurrenceAsync(
@@ -2547,7 +2648,8 @@ public sealed partial class WorkflowEngineService(
             actor: actor,
             values: directParentInterrupt ? variableValues : null,
             cancellationToken: cancellationToken,
-            administrativeBatch: administrativeBatch);
+            administrativeBatch: administrativeBatch,
+            sharedVariableWrites: directParentInterrupt ? sharedVariableWrites : null);
         await runtime.CloseMultiInstanceAsync(
             execution.Id,
             winning.Id,
@@ -2568,6 +2670,7 @@ public sealed partial class WorkflowEngineService(
                 timeProvider.GetUtcNow(),
                 CloneDictionary(variableValues)
                 ?? new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase),
+                sharedVariableWrites ?? [],
                 actor.ActingFor,
                 actor.DelegationId)
             : null;
@@ -2575,15 +2678,16 @@ public sealed partial class WorkflowEngineService(
             execution.Id,
             parentInterrupt,
             cancellationToken);
-        await runtime.AddVariableAsync(
+        await WriteVariableAsync(
+            workflow.Definition,
+            workflow.Id,
             instance.Id,
             execution.ResultVariable,
-            node.Id,
-            user,
             result,
-            cancellationToken,
-            actingFor: actor.ActingFor,
-            delegationId: actor.DelegationId);
+            node.Id,
+            nodeExecutionId: null,
+            actor,
+            cancellationToken);
         context[execution.ResultVariable] = result;
         await runtime.AddMultiInstanceHistoryAsync(
             instance.Id,
@@ -2603,7 +2707,8 @@ public sealed partial class WorkflowEngineService(
             actor.ActingFor,
             actor.DelegationId,
             administrativeBatch?.Reason,
-            administrativeBatch?.BatchId);
+            administrativeBatch?.BatchId,
+            directParentInterrupt ? sharedVariableWrites : null);
 
         var token = await runtime.GetExecutionTokenAsync(execution.TokenId, true, cancellationToken)
             ?? throw new WorkflowConflictException("The multi-instance parent token no longer exists.");
@@ -2978,12 +3083,24 @@ public sealed partial class WorkflowEngineService(
             workflow.Definition,
             cancellationToken,
             force: administrativeBatch is not null);
+        var writeResults = await WriteVariablesWithResultsAsync(
+            workflow.Definition,
+            workflow.Id,
+            instance.Id,
+            flowValues,
+            flow.Id,
+            task.NodeExecutionId,
+            executionActor,
+            cancellationToken);
+        var persistedFlowValues = InstanceSubmittedValues(flowValues, writeResults);
+        var sharedVariableWrites = SharedWriteCorrelations(writeResults);
+
         await runtime.CompleteUserTaskAsync(
             task.Id,
             flow.Id,
             performedBy ?? "anonymous",
             SnapshotRoles(executionActor.Roles),
-            flowValues,
+            persistedFlowValues,
             cancellationToken,
             executionActor.ActingFor,
             executionActor.DelegationId,
@@ -3006,25 +3123,12 @@ public sealed partial class WorkflowEngineService(
             isAction: true,
             isTraversal: !node.AsyncAfter,
             actor: executionActor,
-            values: flowValues,
+            values: persistedFlowValues,
             cancellationToken: cancellationToken,
-            administrativeBatch: administrativeBatch);
+            administrativeBatch: administrativeBatch,
+            sharedVariableWrites: sharedVariableWrites);
 
-        foreach (var pair in flowValues)
-        {
-            await runtime.AddVariableAsync(
-                instance.Id,
-                pair.Key,
-                flow.Id,
-                performedBy,
-                pair.Value,
-                cancellationToken,
-                task.NodeExecutionId,
-                executionActor.ActingFor,
-                executionActor.DelegationId);
-        }
-
-        var payload = CloneDictionary(flowValues) ?? [];
+        var payload = CloneDictionary(persistedFlowValues) ?? [];
         await runtime.AddUserTaskActionHistoryAsync(
             instance.Id,
             task.TokenId,
@@ -3041,7 +3145,8 @@ public sealed partial class WorkflowEngineService(
                 ? null
                 : NodeExecutionCompletionReasons.AdministrativeAction,
             reason: administrativeBatch?.Reason,
-            administrativeActionBatchId: administrativeBatch?.BatchId);
+            administrativeActionBatchId: administrativeBatch?.BatchId,
+            sharedVariableWrites: sharedVariableWrites);
 
         if (!await runtime.SetExecutionTokenAutomaticActivationCountAsync(
                 token.Id,
@@ -3347,6 +3452,7 @@ public sealed partial class WorkflowEngineService(
         // authenticated client becomes sys.user for defaults and NCalc rules.
         var outputContext = WithContext(stored, actor, instance, workflow.Definition, node);
         var mappedValues = await ApplyMessageOutputsAsync(
+            workflow.Id,
             instance.Id,
             node.Id,
             performedBy,
@@ -3355,6 +3461,7 @@ public sealed partial class WorkflowEngineService(
             message.Payload,
             outputContext,
             token.CurrentNodeExecutionId,
+            actor,
             cancellationToken);
         foreach (var pair in mappedValues)
         {
@@ -3606,8 +3713,15 @@ public sealed partial class WorkflowEngineService(
         var messageConfig = node.Message
             ?? throw new WorkflowDomainException(
                 $"Message start event #{node.Id} has no message configuration.");
+        var sharedValues = workflowVariables is null
+            ? new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase)
+            : await workflowVariables.MergeEffectiveValuesAsync(
+                definition,
+                new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase),
+                lockSharedValues: false,
+                cancellationToken);
         var authContext = BuildAuthContext(
-            new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase),
+            sharedValues,
             instance: null,
             definition,
             node);
@@ -4342,6 +4456,7 @@ public sealed partial class WorkflowEngineService(
     // Message catch failures throw before any AddVariableAsync call, so the
     // endpoint returns 400 and the locked instance remains on the catch node.
     private async Task<Dictionary<string, JsonElement>> ApplyMessageOutputsAsync(
+        long workflowDefinitionId,
         long instanceId,
         int nodeId,
         string? setBy,
@@ -4350,6 +4465,7 @@ public sealed partial class WorkflowEngineService(
         JsonElement? payload,
         Dictionary<string, JsonElement> contextBase,
         long? nodeExecutionId,
+        ActorContext actor,
         CancellationToken cancellationToken)
     {
         var mappings = message.OutputMappings
@@ -4362,17 +4478,15 @@ public sealed partial class WorkflowEngineService(
             processVariables,
             payload,
             contextBase);
-        foreach (var pair in values)
-        {
-            await runtime.AddVariableAsync(
-                instanceId,
-                pair.Key,
-                nodeId,
-                setBy,
-                pair.Value,
-                cancellationToken,
-                nodeExecutionId);
-        }
+        await WriteVariablesAsync(
+            new WorkflowModel { Variables = processVariables.ToList() },
+            workflowDefinitionId,
+            instanceId,
+            values,
+            nodeId,
+            nodeExecutionId,
+            actor,
+            cancellationToken);
         return values;
     }
 
@@ -4796,16 +4910,16 @@ public sealed partial class WorkflowEngineService(
                 if (!string.IsNullOrWhiteSpace(boundary.ErrorVariable))
                 {
                     var errorValue = JsonSerializer.SerializeToElement(outcome.Reason ?? string.Empty);
-                    await runtime.AddVariableAsync(
+                    await WriteVariableAsync(
+                        definition,
+                        instance.WorkflowDefinitionId,
                         instance.Id,
                         boundary.ErrorVariable!,
-                        boundary.Id,
-                        actor.User,
                         errorValue,
-                        cancellationToken,
+                        boundary.Id,
                         token.CurrentNodeExecutionId,
-                        actor.ActingFor,
-                        actor.DelegationId);
+                        actor,
+                        cancellationToken);
                     storedOverlay[boundary.ErrorVariable!] = errorValue;
                 }
 
@@ -7486,15 +7600,16 @@ public sealed partial class WorkflowEngineService(
         }
 
         var emptyResult = JsonSerializer.SerializeToElement(Array.Empty<object>());
-        await runtime.AddVariableAsync(
+        await WriteVariableAsync(
+            definition,
+            instance.WorkflowDefinitionId,
             instance.Id,
             multi.ResultVariable,
-            node.Id,
-            actor.User,
             emptyResult,
-            cancellationToken,
-            actingFor: actor.ActingFor,
-            delegationId: actor.DelegationId);
+            node.Id,
+            nodeExecutionId: null,
+            actor,
+            cancellationToken);
         var outcomeIds = OutgoingFlows(instance.WorkflowDefinitionId, definition, node.Id)
             .Where(f => f.IsSelectable && !f.IsDefault && !f.CancelRemainingInstances)
             .Select(f => f.Id).ToList();
@@ -8192,18 +8307,15 @@ public sealed partial class WorkflowEngineService(
                     payload,
                     contextBase);
 
+                await WriteVariablesForInstanceAsync(
+                    instanceId,
+                    values,
+                    nodeId,
+                    nodeExecutionId,
+                    actor,
+                    cancellationToken);
                 foreach (var pair in values)
                 {
-                    await runtime.AddVariableAsync(
-                        instanceId,
-                        pair.Key,
-                        nodeId,
-                        setBy,
-                        pair.Value,
-                        cancellationToken,
-                        nodeExecutionId,
-                        actor.ActingFor,
-                        actor.DelegationId);
                     storedOverlay[pair.Key] = pair.Value;
                 }
             }
@@ -8233,16 +8345,14 @@ public sealed partial class WorkflowEngineService(
         }
 
         var value = JsonSerializer.SerializeToElement(statusCode);
-        await runtime.AddVariableAsync(
+        await WriteVariableForInstanceAsync(
             instanceId,
             service.StatusVariable,
-            nodeId,
-            setBy,
             value,
-            cancellationToken,
+            nodeId,
             nodeExecutionId,
-            actor.ActingFor,
-            actor.DelegationId);
+            actor,
+            cancellationToken);
         storedOverlay[service.StatusVariable] = value;
     }
 
@@ -8350,6 +8460,12 @@ public sealed partial class WorkflowEngineService(
         // overlay already carries the coerced writes on top of the stored values.
         foreach (var target in writes.Select(w => w.Target).Distinct())
         {
+            if (string.Equals(target.Scope, VariableScopes.Shared, StringComparison.Ordinal)
+                && target.Access != Flowbit.Shared.Models.SharedVariableAccessModes.ReadWrite)
+            {
+                return TaskExecutionOutcome.Fail(
+                    $"Script task #{node.Id} cannot write read-only shared variable '{target.Name}'.");
+            }
             if (string.IsNullOrWhiteSpace(target.Validation))
             {
                 continue;
@@ -8362,7 +8478,16 @@ public sealed partial class WorkflowEngineService(
                 continue;
             }
 
-            if (!SequenceFlowConditionEvaluator.Evaluate(target.Validation, overlay))
+            IReadOnlyDictionary<string, JsonElement> validationContext = overlay;
+            if (string.Equals(target.Scope, VariableScopes.Shared, StringComparison.Ordinal)
+                && overlay.TryGetValue(target.Name, out var sharedCandidate))
+            {
+                validationContext = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["value"] = sharedCandidate
+                };
+            }
+            if (!SequenceFlowConditionEvaluator.Evaluate(target.Validation, validationContext))
             {
                 logger.LogWarning("Script task #{NodeId} on instance {InstanceId}: variable '{Variable}' failed validation '{Validation}'.",
                     node.Id, instance.Id, target.Name, target.Validation);
@@ -8372,18 +8497,41 @@ public sealed partial class WorkflowEngineService(
         }
 
         var performedBy = actor.User;
+        if (workflowVariables is null)
+        {
+            foreach (var (target, value) in writes)
+            {
+                await runtime.AddVariableAsync(
+                    instance.Id,
+                    target.Name!,
+                    node.Id,
+                    performedBy,
+                    value,
+                    cancellationToken,
+                    instance.CurrentNodeExecutionId,
+                    actor.ActingFor,
+                    actor.DelegationId);
+            }
+        }
+        else
+        {
+            _ = await workflowVariables.WriteAsync(
+                definition,
+                instance.WorkflowDefinitionId,
+                instance.Id,
+                writes.Select(write => new WorkflowVariableWrite(
+                    write.Target.Name,
+                    write.Value,
+                    node.Id,
+                    instance.CurrentNodeExecutionId,
+                    performedBy,
+                    actor.ActingFor,
+                    actor.DelegationId)).ToArray(),
+                actor,
+                cancellationToken);
+        }
         foreach (var (target, value) in writes)
         {
-            await runtime.AddVariableAsync(
-                instance.Id,
-                target.Name!,
-                node.Id,
-                performedBy,
-                value,
-                cancellationToken,
-                instance.CurrentNodeExecutionId,
-                actor.ActingFor,
-                actor.DelegationId);
             storedOverlay[target.Name!] = value;
         }
 
@@ -8581,7 +8729,40 @@ public sealed partial class WorkflowEngineService(
 
     private async Task<Dictionary<string, JsonElement>> LoadVariablesAsync(
         long instanceId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool lockSharedValues = true)
+    {
+        if (workflowVariables is null)
+        {
+            return (await runtime.LoadLatestVariableVersionsAsync(
+                    instanceId,
+                    cancellationToken))
+                .ToDictionary(
+                    variable => variable.Name,
+                    variable => variable.Value,
+                    StringComparer.OrdinalIgnoreCase);
+        }
+
+        var instance = await runtime.GetInstanceAsync(instanceId, cancellationToken);
+        if (instance is null)
+        {
+            return [];
+        }
+        var workflow = await GetWorkflowAsync(
+            instance.WorkflowDefinitionId,
+            cancellationToken);
+        return await LoadVariablesAsync(
+            instanceId,
+            workflow.Definition,
+            cancellationToken,
+            lockSharedValues);
+    }
+
+    private async Task<Dictionary<string, JsonElement>> LoadVariablesAsync(
+        long instanceId,
+        WorkflowModel definition,
+        CancellationToken cancellationToken,
+        bool lockSharedValues = true)
     {
         var stored = await runtime.LoadLatestVariableVersionsAsync(
             instanceId,
@@ -8592,8 +8773,224 @@ public sealed partial class WorkflowEngineService(
             result[variable.Name] = variable.Value;
         }
 
-        return result;
+        if (workflowVariables is null)
+        {
+            return result;
+        }
+
+        return await workflowVariables.MergeEffectiveValuesAsync(
+            definition,
+            result,
+            lockSharedValues,
+            cancellationToken);
     }
+
+    private async Task WriteVariablesAsync(
+        WorkflowModel definition,
+        long workflowDefinitionId,
+        long instanceId,
+        IReadOnlyDictionary<string, JsonElement> values,
+        int? sourceActionId,
+        long? nodeExecutionId,
+        ActorContext actor,
+        CancellationToken cancellationToken,
+        string? reason = null)
+    {
+        _ = await WriteVariablesWithResultsAsync(
+            definition,
+            workflowDefinitionId,
+            instanceId,
+            values,
+            sourceActionId,
+            nodeExecutionId,
+            actor,
+            cancellationToken,
+            reason);
+    }
+
+    private async Task<IReadOnlyList<WorkflowVariableWriteResult>> WriteVariablesWithResultsAsync(
+        WorkflowModel definition,
+        long workflowDefinitionId,
+        long instanceId,
+        IReadOnlyDictionary<string, JsonElement> values,
+        int? sourceActionId,
+        long? nodeExecutionId,
+        ActorContext actor,
+        CancellationToken cancellationToken,
+        string? reason = null)
+    {
+        if (values.Count == 0)
+        {
+            return [];
+        }
+
+        if (workflowVariables is null)
+        {
+            var results = new List<WorkflowVariableWriteResult>(values.Count);
+            foreach (var pair in values)
+            {
+                await runtime.AddVariableAsync(
+                    instanceId,
+                    pair.Key,
+                    sourceActionId,
+                    actor.User,
+                    pair.Value,
+                    cancellationToken,
+                    nodeExecutionId,
+                    actor.ActingFor,
+                    actor.DelegationId);
+                results.Add(new WorkflowVariableWriteResult(
+                    pair.Key,
+                    VariableScopes.Instance,
+                    null,
+                    null,
+                    ValueChanged: true));
+            }
+            return results;
+        }
+
+        var writes = values.Select(pair => new WorkflowVariableWrite(
+            pair.Key,
+            pair.Value,
+            sourceActionId,
+            nodeExecutionId,
+            actor.User,
+            actor.ActingFor,
+            actor.DelegationId,
+            Reason: reason)).ToArray();
+        return await workflowVariables.WriteAsync(
+            definition,
+            workflowDefinitionId,
+            instanceId,
+            writes,
+            actor,
+            cancellationToken);
+    }
+
+    private static Dictionary<string, JsonElement> InstanceSubmittedValues(
+        IReadOnlyDictionary<string, JsonElement> submittedValues,
+        IReadOnlyList<WorkflowVariableWriteResult> writeResults)
+    {
+        var instanceAliases = writeResults
+            .Where(result => string.Equals(
+                result.Scope,
+                VariableScopes.Instance,
+                StringComparison.Ordinal))
+            .Select(result => result.Alias)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return submittedValues
+            .Where(pair => instanceAliases.Contains(pair.Key))
+            .ToDictionary(
+                pair => pair.Key,
+                pair => pair.Value.Clone(),
+                StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static IReadOnlyList<SharedVariableWriteCorrelationDto> SharedWriteCorrelations(
+        IReadOnlyList<WorkflowVariableWriteResult> writeResults) =>
+        writeResults
+            .Where(result => string.Equals(
+                    result.Scope,
+                    VariableScopes.Shared,
+                    StringComparison.Ordinal)
+                && result.SharedKey is not null
+                && result.SharedRevision is not null)
+            .OrderBy(result => result.Alias, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(result => result.Alias, StringComparer.Ordinal)
+            .Select(result => new SharedVariableWriteCorrelationDto(
+                result.Alias,
+                result.SharedKey!,
+                result.SharedRevision!.Value,
+                result.ValueChanged))
+            .ToArray();
+
+    private Task WriteVariableAsync(
+        WorkflowModel definition,
+        long workflowDefinitionId,
+        long instanceId,
+        string alias,
+        JsonElement value,
+        int? sourceActionId,
+        long? nodeExecutionId,
+        ActorContext actor,
+        CancellationToken cancellationToken,
+        string? reason = null) =>
+        WriteVariablesAsync(
+            definition,
+            workflowDefinitionId,
+            instanceId,
+            new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase)
+            {
+                [alias] = value
+            },
+            sourceActionId,
+            nodeExecutionId,
+            actor,
+            cancellationToken,
+            reason);
+
+    private async Task WriteVariablesForInstanceAsync(
+        long instanceId,
+        IReadOnlyDictionary<string, JsonElement> values,
+        int? sourceActionId,
+        long? nodeExecutionId,
+        ActorContext actor,
+        CancellationToken cancellationToken,
+        string? reason = null)
+    {
+        if (workflowVariables is null)
+        {
+            await WriteVariablesAsync(
+                new WorkflowModel(),
+                workflowDefinitionId: 0,
+                instanceId,
+                values,
+                sourceActionId,
+                nodeExecutionId,
+                actor,
+                cancellationToken,
+                reason);
+            return;
+        }
+
+        var instance = await runtime.GetInstanceAsync(instanceId, cancellationToken)
+            ?? throw new WorkflowConflictException(
+                $"Workflow instance #{instanceId} no longer exists while writing variables.");
+        var workflow = await GetWorkflowAsync(
+            instance.WorkflowDefinitionId,
+            cancellationToken);
+        await WriteVariablesAsync(
+            workflow.Definition,
+            workflow.Id,
+            instanceId,
+            values,
+            sourceActionId,
+            nodeExecutionId,
+            actor,
+            cancellationToken,
+            reason);
+    }
+
+    private Task WriteVariableForInstanceAsync(
+        long instanceId,
+        string alias,
+        JsonElement value,
+        int? sourceActionId,
+        long? nodeExecutionId,
+        ActorContext actor,
+        CancellationToken cancellationToken,
+        string? reason = null) =>
+        WriteVariablesForInstanceAsync(
+            instanceId,
+            new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase)
+            {
+                [alias] = value
+            },
+            sourceActionId,
+            nodeExecutionId,
+            actor,
+            cancellationToken,
+            reason);
 
     // Returns a copy of the stored variables overlaid with read-only context
     // (sys.*/config.*/setting.*). Context wins on collision so it can never be
@@ -8922,6 +9319,11 @@ public sealed partial class WorkflowEngineService(
         var userTasks = workSummaries.TryGetValue(id, out var workSummary)
             ? ToUserTaskWorkSummary(workSummary)
             : null;
+        var sharedVariableMetadata = workflowVariables is null
+            ? []
+            : await workflowVariables.DescribeBindingsAsync(
+                workflow.Definition,
+                cancellationToken);
 
         return new InstanceDetailDto(
             instance.Id,
@@ -8976,7 +9378,8 @@ public sealed partial class WorkflowEngineService(
             ComplexGatewayStates = projection.ComplexGatewayStates,
             Completion = projection.Completion,
             VersionChanges = versionChanges,
-            VariableUpdates = variableUpdateAudits
+            VariableUpdates = variableUpdateAudits,
+            SharedVariables = sharedVariableMetadata
         };
     }
 
@@ -9588,7 +9991,10 @@ public sealed partial class WorkflowEngineService(
                              || token.NodeId != task.NodeId)
             return new UserTaskPresentation(disabled, attributes);
 
-        var stored = await LoadVariablesAsync(instance.Id, cancellationToken);
+        var stored = await LoadVariablesAsync(
+            instance.Id,
+            cancellationToken,
+            lockSharedValues: false);
         var executionsById = new Dictionary<long, MultiInstanceExecutionRecord>();
         IReadOnlyDictionary<long, MultiInstanceActorStateRecord> actorStates =
             new Dictionary<long, MultiInstanceActorStateRecord>();
@@ -9680,7 +10086,10 @@ public sealed partial class WorkflowEngineService(
         CancellationToken cancellationToken,
         DateTimeOffset? capturedAt = null)
     {
-        var stored = await LoadVariablesAsync(instance.Id, cancellationToken);
+        var stored = await LoadVariablesAsync(
+            instance.Id,
+            cancellationToken,
+            lockSharedValues: false);
         return GetEligibleUserTaskFlows(
             instance, workflow, node, task, execution, actor, stored, capturedAt);
     }
@@ -9835,6 +10244,7 @@ public sealed partial class WorkflowEngineService(
         IReadOnlyList<string> UserRoles,
         DateTimeOffset CompletedAt,
         IReadOnlyDictionary<string, JsonElement> Variables,
+        IReadOnlyList<SharedVariableWriteCorrelationDto> SharedVariableWrites,
         string? ActingFor,
         long? DelegationId);
 
@@ -9874,7 +10284,8 @@ public sealed partial class WorkflowEngineService(
                 delegationId = parentInterrupt.DelegationId,
                 userRoles = parentInterrupt.UserRoles,
                 completedAt = (DateTimeOffset?)parentInterrupt.CompletedAt,
-                variables = parentInterrupt.Variables
+                variables = parentInterrupt.Variables,
+                sharedVariableWrites = parentInterrupt.SharedVariableWrites
             });
         }
         return JsonSerializer.SerializeToElement(results);
@@ -10203,7 +10614,8 @@ public sealed partial class WorkflowEngineService(
         ActorContext actor,
         Dictionary<string, JsonElement>? values,
         CancellationToken cancellationToken,
-        AdministrativeBatchFlowContext? administrativeBatch = null)
+        AdministrativeBatchFlowContext? administrativeBatch = null,
+        IReadOnlyList<SharedVariableWriteCorrelationDto>? sharedVariableWrites = null)
     {
         if (flowInfo is null && administrativeBatch is null)
         {
@@ -10233,7 +10645,8 @@ public sealed partial class WorkflowEngineService(
             {
                 AdministrativeAction = administrativeBatch is null
                     ? null
-                    : ToSequenceFlowAdministrativeAction(administrativeBatch.Request)
+                    : ToSequenceFlowAdministrativeAction(administrativeBatch.Request),
+                SharedVariableWrites = sharedVariableWrites ?? []
             },
             cancellationToken);
 
@@ -10280,7 +10693,8 @@ public sealed partial class WorkflowEngineService(
             {
                 ActingFor = evidence.ActingFor,
                 DelegationId = evidence.DelegationId,
-                AdministrativeAction = evidence.AdministrativeAction
+                AdministrativeAction = evidence.AdministrativeAction,
+                SharedVariableWrites = evidence.SharedVariableWrites
             };
 
     private static string SequenceFlowTraversalKind(string nodeType) => nodeType switch

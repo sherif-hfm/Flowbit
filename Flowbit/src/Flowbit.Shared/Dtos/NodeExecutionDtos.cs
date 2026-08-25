@@ -120,6 +120,22 @@ public sealed record NodeExecutionVariableChangeDto(
 }
 
 /// <summary>
+/// One deployment-wide shared-variable revision attributed to this execution.
+/// The key/revision pair is the durable correlation; shared history is kept
+/// separately from instance variable history.
+/// </summary>
+public sealed record NodeExecutionSharedVariableChangeDto(
+    long RevisionId,
+    string Key,
+    long Revision,
+    string Operation,
+    bool ValueChanged,
+    bool HasValue,
+    int? SourceActionId,
+    string CallerId,
+    DateTimeOffset CreatedAt);
+
+/// <summary>
 /// Authorized detail for one node execution. VariableChanges contains only
 /// writes explicitly attributed to this execution; it is not an instance
 /// snapshot and does not include unrelated historical or current values.
@@ -157,4 +173,6 @@ public sealed record NodeExecutionDetailDto : NodeExecutionSummaryDto
     public NodeExecutionErrorDto? Error { get; init; }
 
     public required IReadOnlyList<NodeExecutionVariableChangeDto> VariableChanges { get; init; }
+
+    public IReadOnlyList<NodeExecutionSharedVariableChangeDto> SharedVariableChanges { get; init; } = [];
 }

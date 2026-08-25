@@ -104,6 +104,36 @@ public sealed class ConditionalEventDefinitionTests
     }
 
     [Fact]
+    public void Analyze_RequiresDurableAsyncForSharedDependencies()
+    {
+        var definition = CreateDefinition("Amount >= 10", ConditionalEventDeliveryModes.Atomic);
+        var amount = definition.Variables.Single(variable => variable.Name == "Amount");
+        amount.Scope = VariableScopes.Shared;
+        amount.SharedKey = "finance.threshold";
+        amount.Access = SharedVariableAccessModes.Read;
+        amount.DefaultValue = null;
+
+        var error = Assert.Throws<WorkflowDomainException>(() => analyzer.Analyze(definition));
+
+        Assert.Contains("durableAsync", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Analyze_AcceptsDurableAsyncSharedDependencies()
+    {
+        var definition = CreateDefinition("Amount >= 10", ConditionalEventDeliveryModes.DurableAsync);
+        var amount = definition.Variables.Single(variable => variable.Name == "Amount");
+        amount.Scope = VariableScopes.Shared;
+        amount.SharedKey = "finance.threshold";
+        amount.Access = SharedVariableAccessModes.Read;
+        amount.DefaultValue = null;
+
+        var plan = analyzer.Analyze(definition);
+
+        Assert.Equal(["Amount"], plan.EventsByNodeId[2].Dependencies.ToArray());
+    }
+
+    [Fact]
     public void Analyze_RecognizesEveryStaticPersistedVariableProducer()
     {
         var definition = CreateDefinition("ProcessValue");

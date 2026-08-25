@@ -57,6 +57,7 @@ builder.Services.AddHostedService<JobDispatcher>();
 builder.Services.AddHostedService<QueueTelemetryService>();
 builder.Services.AddHostedService<JobCleanupService>();
 builder.Services.AddHostedService<TimerStartReconciliationService>();
+builder.Services.AddHostedService<SharedVariableWakeDispatcher>();
 builder.Services.AddSingleton<WorkerTelemetry>();
 builder.Services.AddHealthChecks()
     .AddCheck(

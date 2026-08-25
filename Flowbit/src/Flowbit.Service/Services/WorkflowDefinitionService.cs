@@ -7,6 +7,8 @@ using Flowbit.Service.Abstractions;
 using Flowbit.Service.Models;
 using Flowbit.Shared.Dtos;
 using Flowbit.Shared.Models;
+using NCalc;
+using NCalc.Helpers;
 
 namespace Flowbit.Service.Services;
 
@@ -17,13 +19,22 @@ public sealed class WorkflowDefinitionService(
     ILogger<WorkflowDefinitionService> logger,
     DurableProcessingOptions? durableProcessingOptions = null,
     IConditionalEventDefinitionAnalyzer? conditionalEventAnalyzer = null,
-    IConditionalEventDependencyPlanCache? conditionalEventPlanCache = null)
+    IConditionalEventDependencyPlanCache? conditionalEventPlanCache = null,
+    ISharedVariableRepository? sharedVariables = null)
     : IWorkflowDefinitionService
 {
     private readonly DurableProcessingOptions durableProcessing =
         durableProcessingOptions ?? new DurableProcessingOptions();
     private readonly IConditionalEventDefinitionAnalyzer conditionalAnalyzer =
         conditionalEventAnalyzer ?? new ConditionalEventDefinitionAnalyzer();
+    private static readonly HashSet<string> SharedValidationFunctions = new(
+        BuiltInFunctionHelper.GetBuiltInFunctionNames()
+            .Concat([
+                "Length", "Len", "IsNullOrEmpty", "IsNullOrWhiteSpace",
+                "Contains", "StartsWith", "EndsWith", "Lower", "Upper",
+                "Trim", "IsMatch"
+            ]),
+        StringComparer.OrdinalIgnoreCase);
     private static readonly HashSet<string> ReservedIdempotencyHeaders = new(StringComparer.OrdinalIgnoreCase)
     {
         "Authorization",
@@ -75,8 +86,10 @@ public sealed class WorkflowDefinitionService(
         ValidateAuthoredAsyncTimerMetadata(definition);
         ValidateAuthoredInboxVisibilityMetadata(definition);
         ValidateAuthoredConditionalEventMetadata(definition);
+        ValidateAuthoredSharedVariableMetadata(definition);
         WorkflowModelMigrator.Normalize(definition);
         ValidateDefinition(definition);
+        await ValidateSharedCatalogBindingsAsync(definition, cancellationToken);
         EnsureDurablePublicationAllowed(definition, publish);
         var name = definition.Name.Trim();
         var created = await definitions.AddAsync(name, definition, publish, cancellationToken);
@@ -107,8 +120,10 @@ public sealed class WorkflowDefinitionService(
         ValidateAuthoredAsyncTimerMetadata(definition);
         ValidateAuthoredInboxVisibilityMetadata(definition);
         ValidateAuthoredConditionalEventMetadata(definition);
+        ValidateAuthoredSharedVariableMetadata(definition);
         WorkflowModelMigrator.Normalize(definition);
         ValidateDefinition(definition);
+        await ValidateSharedCatalogBindingsAsync(definition, cancellationToken);
         EnsureDurablePublicationAllowed(definition, publish);
         var name = string.IsNullOrWhiteSpace(definition.Name) ? source.Name : definition.Name.Trim();
         var created = await definitions.AddAsync(name, definition, publish, cancellationToken);
@@ -125,6 +140,9 @@ public sealed class WorkflowDefinitionService(
             logger.LogInformation("Publish workflow {WorkflowId}: definition not found.", id);
             return false;
         }
+        await ValidateSharedCatalogBindingsAsync(
+            definition.Definition,
+            cancellationToken);
         EnsureDurablePublicationAllowed(definition.Definition, publish: true);
         var published = await definitions.SetPublishedAsync(id, true, cancellationToken);
         if (published)
@@ -160,6 +178,9 @@ public sealed class WorkflowDefinitionService(
             logger.LogInformation("Set default workflow {WorkflowId}: definition not found.", id);
             return false;
         }
+        await ValidateSharedCatalogBindingsAsync(
+            definition.Definition,
+            cancellationToken);
         EnsureDurablePublicationAllowed(definition.Definition, publish: true);
         var set = await definitions.SetDefaultAsync(id, true, cancellationToken);
         if (set)
@@ -196,6 +217,67 @@ public sealed class WorkflowDefinitionService(
             $"{DurableProcessingOptions.SectionName}:PublicationEnabled is false; "
             + "async, timer, and durable conditional definitions cannot be published until the durable worker is ready.");
     }
+
+    private async Task ValidateSharedCatalogBindingsAsync(
+        WorkflowModel definition,
+        CancellationToken cancellationToken)
+    {
+        var bindings = (definition.Variables ?? [])
+            .Where(variable => variable is not null
+                && string.Equals(
+                    variable.Scope,
+                    VariableScopes.Shared,
+                    StringComparison.Ordinal))
+            .OrderBy(variable => variable.SharedKey, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (bindings.Length == 0)
+        {
+            return;
+        }
+        if (sharedVariables is null)
+        {
+            throw new WorkflowDomainException(
+                "Shared-variable storage is not configured; shared workflow bindings cannot be saved.");
+        }
+
+        foreach (var binding in bindings)
+        {
+            var key = binding.SharedKey!;
+            var catalog = await sharedVariables.GetByKeyAsync(
+                key,
+                includeArchived: true,
+                cancellationToken);
+            if (catalog is null)
+            {
+                throw new WorkflowDomainException(
+                    $"Shared process variable '{binding.Name}' references unknown catalog key '{key}'.");
+            }
+            if (!string.Equals(catalog.Key, key, StringComparison.Ordinal))
+            {
+                throw new WorkflowDomainException(
+                    $"Shared key '{key}' must use the catalog's canonical casing '{catalog.Key}'.");
+            }
+            if (!string.Equals(catalog.Status, SharedVariableStatuses.Active, StringComparison.Ordinal))
+            {
+                throw new WorkflowDomainException(
+                    $"Shared process variable '{binding.Name}' references archived catalog key '{catalog.Key}'.");
+            }
+            if (!string.Equals(catalog.DataType, binding.DataType, StringComparison.Ordinal)
+                || catalog.IsArray != binding.IsArray
+                || catalog.Nullable != binding.Nullable
+                || !string.Equals(
+                    NormalizeContractRule(catalog.Validation),
+                    NormalizeContractRule(binding.Validation),
+                    StringComparison.Ordinal))
+            {
+                throw new WorkflowDomainException(
+                    $"Shared process variable '{binding.Name}' contract does not match catalog key '{catalog.Key}'.");
+            }
+        }
+    }
+
+    private static string? NormalizeContractRule(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
     public async Task<bool> DeleteAsync(long id, CancellationToken cancellationToken)
     {
@@ -271,6 +353,7 @@ public sealed class WorkflowDefinitionService(
 
         ValidateProcessVariables(definition.Variables);
         ValidateEntryProcessVariableCollisions(definition);
+        ValidateSharedVariableProducerAccess(definition);
 
         var nodeIds = definition.FlowNodes.Select(n => n.Id).ToHashSet();
         var incomingByNodeId = nodeIds.ToDictionary(
@@ -2441,11 +2524,16 @@ public sealed class WorkflowDefinitionService(
 
         var result = definition.Variables.SingleOrDefault(v =>
             string.Equals(v.Name, multi.ResultVariable, StringComparison.OrdinalIgnoreCase));
+        var sharedResult = result is not null
+            && string.Equals(result.Scope, VariableScopes.Shared, StringComparison.Ordinal);
         if (result is null || result.DataType != WorkflowVariableTypes.Json || result.IsArray
-            || result.DefaultValue is null || result.DefaultValue.Value.ValueKind != JsonValueKind.Array)
+            || (!sharedResult
+                && (result.DefaultValue is null
+                    || result.DefaultValue.Value.ValueKind != JsonValueKind.Array)))
         {
             throw new WorkflowDomainException(
-                $"User task #{node.Id} resultVariable must reference a declared json process variable initialized to [].");
+                $"User task #{node.Id} resultVariable must reference a declared json process variable"
+                + (sharedResult ? "." : " initialized to []."));
         }
 
         if (multi.Source == MultiInstanceSources.Collection)
@@ -2732,6 +2820,19 @@ public sealed class WorkflowDefinitionService(
 
     private static void ValidateVariables(IEnumerable<VariableModel> variables, string owner)
     {
+        foreach (var variable in variables)
+        {
+            if (variable is not null
+                && (!string.IsNullOrWhiteSpace(variable.Scope)
+                    || !string.IsNullOrWhiteSpace(variable.SharedKey)
+                    || !string.IsNullOrWhiteSpace(variable.Access)))
+            {
+                throw new WorkflowDomainException(
+                    $"Variable '{variable.Name}' on {owner} cannot define scope, sharedKey, or access; "
+                    + "shared bindings are supported only on top-level process variables.");
+            }
+        }
+
         ValidateVariables(
             variables,
             owner,
@@ -2740,24 +2841,192 @@ public sealed class WorkflowDefinitionService(
             allowNullable: false);
     }
 
-    // Process-level variables are computed (never user-supplied). Non-nullable
-    // declarations require a concrete default; nullable declarations may omit it
-    // and are initialized to a persisted JSON null at instance start.
+    // Instance process variables are computed and retain the historical default
+    // contract. Shared declarations are aliases for catalog-owned values, so a
+    // workflow must not initialize them.
     private static void ValidateProcessVariables(IEnumerable<VariableModel> variables)
     {
+        var materialized = variables.ToList();
         ValidateVariables(
-            variables,
+            materialized,
             "process variables",
-            requireDefault: true,
-            allowRequiredDefault: false,
+            requireDefault: false,
+            allowRequiredDefault: true,
             allowNullable: true);
+
+        foreach (var variable in materialized)
+        {
+            var scope = string.IsNullOrWhiteSpace(variable.Scope)
+                ? VariableScopes.Instance
+                : variable.Scope;
+            if (scope == VariableScopes.Instance)
+            {
+                if (variable.DefaultValue is null && !variable.Nullable)
+                {
+                    throw new WorkflowDomainException(
+                        $"Variable '{variable.Name}' on process variables must have a defaultValue unless nullable is true.");
+                }
+                if (!string.IsNullOrWhiteSpace(variable.SharedKey)
+                    || !string.IsNullOrWhiteSpace(variable.Access))
+                {
+                    throw new WorkflowDomainException(
+                        $"Instance process variable '{variable.Name}' cannot define sharedKey or access.");
+                }
+                continue;
+            }
+
+            if (scope != VariableScopes.Shared)
+            {
+                throw new WorkflowDomainException(
+                    $"Process variable '{variable.Name}' has unsupported scope '{variable.Scope}'.");
+            }
+            if (string.IsNullOrWhiteSpace(variable.SharedKey))
+            {
+                throw new WorkflowDomainException(
+                    $"Shared process variable '{variable.Name}' requires sharedKey.");
+            }
+            if (variable.SharedKey.EnumerateRunes().Count() > 300)
+            {
+                throw new WorkflowDomainException(
+                    $"Shared process variable '{variable.Name}' sharedKey must contain at most 300 Unicode scalar values.");
+            }
+            if (variable.Access is not (Flowbit.Shared.Models.SharedVariableAccessModes.Read
+                or Flowbit.Shared.Models.SharedVariableAccessModes.ReadWrite))
+            {
+                throw new WorkflowDomainException(
+                    $"Shared process variable '{variable.Name}' access must be 'read' or 'readWrite'.");
+            }
+            if (variable.Required || variable.DefaultValue is not null)
+            {
+                throw new WorkflowDomainException(
+                    $"Shared process variable '{variable.Name}' cannot define required or defaultValue; "
+                    + "its value is owned by the shared-variable catalog.");
+            }
+
+            ValidateSharedVariableRule(variable);
+        }
+
+        var duplicateSharedKey = materialized
+            .Where(variable => string.Equals(
+                variable.Scope,
+                VariableScopes.Shared,
+                StringComparison.Ordinal))
+            .GroupBy(variable => variable.SharedKey!, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault(group => group.Count() > 1)?.Key;
+        if (duplicateSharedKey is not null)
+        {
+            throw new WorkflowDomainException(
+                $"Shared catalog key '{duplicateSharedKey}' may be bound to only one local alias per workflow definition.");
+        }
+    }
+
+    private static void ValidateAuthoredSharedVariableMetadata(WorkflowModel definition)
+    {
+        foreach (var variable in definition.Variables ?? [])
+        {
+            if (variable is null)
+            {
+                continue;
+            }
+
+            var authoredScope = variable.Scope?.Trim();
+            if (string.Equals(authoredScope, VariableScopes.Shared, StringComparison.OrdinalIgnoreCase))
+            {
+                if (string.IsNullOrWhiteSpace(variable.SharedKey))
+                {
+                    throw new WorkflowDomainException(
+                        $"Shared process variable '{variable.Name}' requires sharedKey.");
+                }
+                if (string.IsNullOrWhiteSpace(variable.Access))
+                {
+                    throw new WorkflowDomainException(
+                        $"Shared process variable '{variable.Name}' requires explicit access 'read' or 'readWrite'.");
+                }
+            }
+            else if (!string.IsNullOrWhiteSpace(variable.SharedKey)
+                     || !string.IsNullOrWhiteSpace(variable.Access))
+            {
+                throw new WorkflowDomainException(
+                    $"Process variable '{variable.Name}' can define sharedKey/access only when scope is 'shared'.");
+            }
+        }
+
+        foreach (var (variables, owner) in EnumerateNonProcessVariableOwners(definition))
+        {
+            foreach (var variable in variables)
+            {
+                if (variable is not null
+                    && (!string.IsNullOrWhiteSpace(variable.Scope)
+                        || !string.IsNullOrWhiteSpace(variable.SharedKey)
+                        || !string.IsNullOrWhiteSpace(variable.Access)))
+                {
+                    throw new WorkflowDomainException(
+                        $"Variable '{variable.Name}' on {owner} cannot define scope, sharedKey, or access; "
+                        + "shared bindings are supported only on top-level process variables.");
+                }
+            }
+        }
+    }
+
+    private static IEnumerable<(IEnumerable<VariableModel> Variables, string Owner)>
+        EnumerateNonProcessVariableOwners(WorkflowModel definition)
+    {
+        foreach (var node in definition.FlowNodes ?? [])
+        {
+            if (node is not null)
+            {
+                yield return (node.Variables ?? [], $"flow node #{node.Id}");
+            }
+        }
+        foreach (var flow in definition.SequenceFlows ?? [])
+        {
+            if (flow is not null)
+            {
+                yield return (flow.Variables ?? [], $"sequence flow #{flow.Id}");
+            }
+        }
+    }
+
+    private static void ValidateSharedVariableRule(VariableModel variable)
+    {
+        if (string.IsNullOrWhiteSpace(variable.Validation))
+        {
+            return;
+        }
+
+        var expression = new Expression(
+            variable.Validation,
+            ExpressionOptions.CaseInsensitiveStringComparer
+            | ExpressionOptions.AllowNullParameter);
+        if (expression.HasErrors())
+        {
+            throw new WorkflowDomainException(
+                $"Shared process variable '{variable.Name}' has an invalid validation expression.");
+        }
+
+        var invalidParameter = expression.GetParameterNames()
+            .FirstOrDefault(name => !string.Equals(name, "value", StringComparison.OrdinalIgnoreCase)
+                                    && !string.Equals(name, "null", StringComparison.OrdinalIgnoreCase));
+        if (invalidParameter is not null)
+        {
+            throw new WorkflowDomainException(
+                $"Shared process variable '{variable.Name}' validation may reference only 'value'; "
+                + $"found '{invalidParameter}'.");
+        }
+
+        var invalidFunction = expression.GetFunctionNames()
+            .FirstOrDefault(name => !SharedValidationFunctions.Contains(name));
+        if (invalidFunction is not null)
+        {
+            throw new WorkflowDomainException(
+                $"Shared process variable '{variable.Name}' validation uses unsupported function '{invalidFunction}'.");
+        }
     }
 
     private static void ValidateEntryProcessVariableCollisions(WorkflowModel definition)
     {
-        var processNames = definition.Variables
-            .Select(variable => variable.Name)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var processVariables = definition.Variables
+            .ToDictionary(variable => variable.Name, StringComparer.OrdinalIgnoreCase);
 
         foreach (var entry in definition.FlowNodes.Where(node => BpmnFlowNodeTypes.IsEntry(node.Type)))
         {
@@ -2767,15 +3036,95 @@ public sealed class WorkflowDefinitionService(
                     .Select(mapping => mapping.Variable) ?? []
                 : entry.Variables.Select(variable => variable.Name);
 
-            var reservedEntryNames = entryNames
-                .Concat(entry.Idempotency is null ? [] : [entry.Idempotency.Variable])
-                .Concat(entry.BusinessKey is null ? [] : [entry.BusinessKey.Variable]);
+            foreach (var entryName in entryNames)
+            {
+                if (!processVariables.TryGetValue(entryName, out var processVariable))
+                {
+                    continue;
+                }
 
-            var collision = reservedEntryNames.FirstOrDefault(processNames.Contains);
-            if (collision is not null)
+                if (!string.Equals(processVariable.Scope, VariableScopes.Shared, StringComparison.Ordinal)
+                    || processVariable.Access != Flowbit.Shared.Models.SharedVariableAccessModes.ReadWrite)
+                {
+                    throw new WorkflowDomainException(
+                        $"Entry event #{entry.Id} variable '{entryName}' collides with a process variable; "
+                        + "only a compatible readWrite shared process variable may be an entry output target.");
+                }
+            }
+
+            var identityCollision = new[]
+                {
+                    entry.Idempotency?.Variable,
+                    entry.BusinessKey?.Variable
+                }
+                .Where(name => !string.IsNullOrWhiteSpace(name))
+                .FirstOrDefault(name => processVariables.ContainsKey(name!));
+            if (identityCollision is not null)
             {
                 throw new WorkflowDomainException(
-                    $"Entry event #{entry.Id} variable '{collision}' collides with a process variable; variable names are case-insensitive.");
+                    $"Entry event #{entry.Id} identity variable '{identityCollision}' collides with a process variable; "
+                    + "business-key and idempotency values are always instance-scoped.");
+            }
+        }
+    }
+
+    private static void ValidateSharedVariableProducerAccess(WorkflowModel definition)
+    {
+        var sharedByAlias = definition.Variables
+            .Where(variable => string.Equals(
+                variable.Scope,
+                VariableScopes.Shared,
+                StringComparison.Ordinal))
+            .ToDictionary(variable => variable.Name, StringComparer.OrdinalIgnoreCase);
+        if (sharedByAlias.Count == 0)
+        {
+            return;
+        }
+
+        void RequireWritable(string? target, string owner)
+        {
+            if (string.IsNullOrWhiteSpace(target)
+                || !sharedByAlias.TryGetValue(target.Trim(), out var declaration))
+            {
+                return;
+            }
+
+            if (declaration.Access != Flowbit.Shared.Models.SharedVariableAccessModes.ReadWrite)
+            {
+                throw new WorkflowDomainException(
+                    $"{owner} targets read-only shared variable alias '{declaration.Name}'. "
+                    + "Change the binding access to 'readWrite' or select an instance variable.");
+            }
+        }
+
+        foreach (var node in definition.FlowNodes)
+        {
+            foreach (var variable in node.Variables ?? [])
+            {
+                RequireWritable(variable.Name, $"Flow node #{node.Id} variable");
+            }
+            foreach (var mapping in node.Service?.OutputMappings ?? [])
+            {
+                RequireWritable(mapping?.Variable, $"Service task #{node.Id} output mapping");
+            }
+            RequireWritable(node.Service?.StatusVariable, $"Service task #{node.Id} statusVariable");
+            foreach (var mapping in node.Message?.OutputMappings ?? [])
+            {
+                RequireWritable(mapping?.Variable, $"Message event #{node.Id} output mapping");
+            }
+            RequireWritable(node.ErrorVariable, $"Error boundary event #{node.Id} errorVariable");
+            foreach (var assignment in node.Assignments ?? [])
+            {
+                RequireWritable(assignment?.Variable, $"Script task #{node.Id} assignment");
+            }
+            RequireWritable(node.MultiInstance?.ResultVariable, $"Multi-instance task #{node.Id} resultVariable");
+        }
+
+        foreach (var flow in definition.SequenceFlows)
+        {
+            foreach (var variable in flow.Variables ?? [])
+            {
+                RequireWritable(variable.Name, $"Sequence flow #{flow.Id} variable");
             }
         }
     }

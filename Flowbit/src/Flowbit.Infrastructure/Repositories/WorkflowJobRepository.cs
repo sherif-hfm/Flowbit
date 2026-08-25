@@ -921,11 +921,15 @@ public sealed class WorkflowJobRepository(
 
         using var variables = ToDocument(stage.Variables);
         using var outputVersions = ToDocument(stage.OutputVariableVersions);
+        using var sharedVariableRevisions = stage.SharedVariableRevisions is null
+            ? null
+            : ToDocument(stage.SharedVariableRevisions);
         using var invocation = CloneDocument(stage.Invocation);
         using var flowInfo = CloneDocument(stage.FlowInfo);
         var size = Utf8Size(invocation)
             + Utf8Size(variables)
             + Utf8Size(outputVersions)
+            + Utf8Size(sharedVariableRevisions)
             + Utf8Size(flowInfo);
         if (size > maxSnapshotBytes)
         {
@@ -939,6 +943,7 @@ public sealed class WorkflowJobRepository(
             InvocationJson = CloneDocument(invocation),
             VariablesJson = CloneDocument(variables)!,
             OutputVariableVersionsJson = CloneDocument(outputVersions)!,
+            SharedVariableRevisionsJson = CloneDocument(sharedVariableRevisions),
             FlowInfoJson = CloneDocument(flowInfo),
             EvaluationTime = stage.EvaluationTime,
             SizeBytes = size,
@@ -2714,7 +2719,10 @@ public sealed class WorkflowJobRepository(
             CloneElement(entity.FlowInfoJson),
             entity.EvaluationTime,
             entity.SizeBytes,
-            entity.CreatedAt);
+            entity.CreatedAt,
+            entity.SharedVariableRevisionsJson is null
+                ? null
+                : ToLongDictionary(entity.SharedVariableRevisionsJson));
 
     private static WorkflowJobAttemptRecord MapAttempt(WorkflowJobAttemptEntity entity) =>
         new(

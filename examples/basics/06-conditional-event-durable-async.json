@@ -1,5 +1,5 @@
 {
-  "id": "conditional-event-async",
+  "id": "example-conditional-event-async",
   "name": "conditional event async",
   "initialEventId": 1,
   "variables": [

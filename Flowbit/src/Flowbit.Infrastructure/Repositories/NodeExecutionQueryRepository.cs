@@ -205,9 +205,30 @@ public sealed class NodeExecutionQueryRepository(AppDbContext dbContext)
                 new NpgsqlParameter("instanceId", row.InstanceId))
             .ToListAsync(cancellationToken);
 
+        var sharedVariableRows = await dbContext.SharedVariableRevisions
+            .AsNoTracking()
+            .Include(revision => revision.SharedVariable)
+            .Where(revision => revision.NodeExecutionId == id
+                               && revision.InstanceId == row.InstanceId)
+            .OrderBy(revision => revision.Id)
+            .ToListAsync(cancellationToken);
+        var sharedVariableChanges = sharedVariableRows
+            .Select(revision => new NodeExecutionSharedVariableChangeDto(
+                revision.Id,
+                revision.SharedVariable.Key,
+                revision.Revision,
+                revision.Operation,
+                revision.ValueChanged,
+                revision.HasValue,
+                revision.SourceActionId,
+                revision.CallerId,
+                revision.CreatedAt))
+            .ToList();
+
         return ToDetail(
             row,
-            variableRows.Select(ToVariableChange).ToList());
+            variableRows.Select(ToVariableChange).ToList(),
+            sharedVariableChanges);
     }
 #pragma warning restore EF1002
 
@@ -584,7 +605,8 @@ public sealed class NodeExecutionQueryRepository(AppDbContext dbContext)
 
     private static NodeExecutionDetailDto ToDetail(
         NodeExecutionPageRow row,
-        IReadOnlyList<NodeExecutionVariableChangeDto> variableChanges) =>
+        IReadOnlyList<NodeExecutionVariableChangeDto> variableChanges,
+        IReadOnlyList<NodeExecutionSharedVariableChangeDto> sharedVariableChanges) =>
         new()
         {
             Id = row.Id,
@@ -639,7 +661,8 @@ public sealed class NodeExecutionQueryRepository(AppDbContext dbContext)
             Error = row.ErrorCode is null && row.ErrorDescription is null
                 ? null
                 : new NodeExecutionErrorDto(row.ErrorCode, row.ErrorDescription),
-            VariableChanges = variableChanges
+            VariableChanges = variableChanges,
+            SharedVariableChanges = sharedVariableChanges
         };
 
     private static NodeExecutionMultiInstanceDto? ToMultiInstance(

@@ -21,6 +21,7 @@ public static class WorkflowModelMigrator
         model.CancelRoles = NormalizeRoles(model.CancelRoles);
         model.UnclaimRoles = NormalizeRoles(model.UnclaimRoles);
         model.TaskAssignmentRoles = NormalizeRoles(model.TaskAssignmentRoles);
+        NormalizeVariableBindings(model.Variables, allowShared: true);
 
         foreach (var node in model.FlowNodes)
         {
@@ -35,6 +36,7 @@ public static class WorkflowModelMigrator
             flow.Roles = NormalizeRoles(flow.Roles);
             flow.CanActWithoutClaimRoles = NormalizeRoles(flow.CanActWithoutClaimRoles);
             flow.Variables ??= [];
+            NormalizeVariableBindings(flow.Variables, allowShared: false);
             if (!flow.CanActWithoutClaim)
             {
                 flow.CanActWithoutClaimRoles = [];
@@ -223,6 +225,56 @@ public static class WorkflowModelMigrator
         .Distinct(StringComparer.OrdinalIgnoreCase)
         .ToList();
 
+    private static void NormalizeVariableBindings(
+        IEnumerable<VariableModel> variables,
+        bool allowShared)
+    {
+        foreach (var variable in variables)
+        {
+            if (variable is null)
+            {
+                continue;
+            }
+
+            var scope = string.IsNullOrWhiteSpace(variable.Scope)
+                ? VariableScopes.Instance
+                : CanonicalizeKnown(
+                    variable.Scope.Trim(),
+                    VariableScopes.Instance,
+                    VariableScopes.Shared);
+            if (!allowShared || scope == VariableScopes.Instance)
+            {
+                // Missing scope is the canonical, backwards-compatible wire
+                // representation for an instance-scoped declaration.
+                variable.Scope = null;
+                variable.SharedKey = null;
+                variable.Access = null;
+                continue;
+            }
+
+            if (scope != VariableScopes.Shared)
+            {
+                // Preserve unsupported top-level values so definition validation
+                // can report them instead of silently changing storage semantics.
+                variable.Scope = scope;
+                continue;
+            }
+
+            variable.Scope = VariableScopes.Shared;
+            variable.SharedKey = TrimToNull(variable.SharedKey);
+            variable.Access = string.IsNullOrWhiteSpace(variable.Access)
+                ? SharedVariableAccessModes.Read
+                : CanonicalizeKnown(
+                    variable.Access.Trim(),
+                    SharedVariableAccessModes.Read,
+                    SharedVariableAccessModes.ReadWrite);
+            // Shared declarations snapshot the catalog contract. Their current
+            // value belongs to the catalog and is never initialized by a workflow.
+            variable.Required = false;
+            variable.DefaultValue = null;
+        }
+    }
+
     private static List<WorkflowAttributeModel> NormalizeAttributes(
         List<WorkflowAttributeModel>? attributes)
     {
@@ -362,6 +414,7 @@ public static class WorkflowModelMigrator
         node.Attributes = NormalizeAttributes(node.Attributes);
         node.Roles = NormalizeRoles(node.Roles);
         node.Variables ??= [];
+        NormalizeVariableBindings(node.Variables, allowShared: false);
         node.Assignments ??= [];
 
         if (BpmnFlowNodeTypes.IsAsyncCapableTask(node.Type))

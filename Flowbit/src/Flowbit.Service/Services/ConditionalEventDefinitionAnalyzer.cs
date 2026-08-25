@@ -46,6 +46,14 @@ public sealed class ConditionalEventDefinitionAnalyzer
         }
 
         var canonicalVariables = BuildCanonicalVariableMap(definition);
+        var sharedAliases = (definition.Variables ?? [])
+            .Where(variable => variable is not null
+                && string.Equals(
+                    variable.Scope,
+                    VariableScopes.Shared,
+                    StringComparison.Ordinal))
+            .Select(variable => variable.Name.Trim())
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var entries = ImmutableDictionary.CreateBuilder<int, ConditionalEventPlanEntry>();
         var inverse = new Dictionary<string, SortedSet<int>>(
             StringComparer.OrdinalIgnoreCase);
@@ -116,6 +124,13 @@ public sealed class ConditionalEventDefinitionAnalyzer
                     throw new WorkflowDomainException(
                         $"Conditional catch event #{node.Id} condition may reference at most "
                         + $"{ConditionalDefinitionRules.MaxDependencies} stored variables.");
+                }
+                if (deliveryMode != ConditionalEventDeliveryModes.DurableAsync
+                    && dependencies.Any(sharedAliases.Contains))
+                {
+                    throw new WorkflowDomainException(
+                        $"Conditional catch event #{node.Id} references a shared variable "
+                        + "and therefore requires deliveryMode 'durableAsync'.");
                 }
 
                 var entry = new ConditionalEventPlanEntry(

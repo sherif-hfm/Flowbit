@@ -3,6 +3,7 @@ using System.Text.Json;
 using Flowbit.Service.Abstractions;
 using Flowbit.Service.Models;
 using Flowbit.Shared.Dtos;
+using Flowbit.Shared.Models;
 
 namespace Flowbit.Service.Services;
 
@@ -163,6 +164,24 @@ public sealed class InstanceVariableUpdateBatchService(
         {
             throw new WorkflowConflictException(
                 "The selected workflow family changed while the batch was being frozen.");
+        }
+
+        var sharedAliases = represented.Values
+            .SelectMany(definition => definition.Definition.Variables)
+            .Where(variable => string.Equals(
+                variable.Scope,
+                VariableScopes.Shared,
+                StringComparison.Ordinal))
+            .Select(variable => variable.Name)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var sharedTarget = writes
+            .Select(write => write.Name)
+            .FirstOrDefault(sharedAliases.Contains);
+        if (sharedTarget is not null)
+        {
+            throw new WorkflowDomainException(
+                $"Administrative instance variable batches cannot target shared alias '{sharedTarget}'. "
+                + "Use PUT /api/shared-variables/{key}/value with the catalog key instead.");
         }
 
         var now = timeProvider.GetUtcNow();

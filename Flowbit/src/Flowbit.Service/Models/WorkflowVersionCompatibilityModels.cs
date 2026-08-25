@@ -130,6 +130,7 @@ public static class WorkflowVersionCompatibilityCodes
     public const string VariableTypeIncompatible = "variable_type_incompatible";
     public const string VariableValidationFailed = "variable_validation_failed";
     public const string VariableUndeclaredInTarget = "variable_undeclared_in_target";
+    public const string SharedVariableBindingChanged = "shared_variable_binding_changed";
 
     public const string ObservedFlowMissing = "observed_flow_missing";
     public const string ObservedFlowEndpointsChanged = "observed_flow_endpoints_changed";

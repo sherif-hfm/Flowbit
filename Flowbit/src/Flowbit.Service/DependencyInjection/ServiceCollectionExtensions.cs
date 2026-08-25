@@ -16,7 +16,10 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton<IConditionalEventDefinitionAnalyzer, ConditionalEventDefinitionAnalyzer>();
         services.TryAddSingleton<IConditionalEventDependencyPlanCache, ConditionalEventDependencyPlanCache>();
         services.AddScoped<IInstanceVariableMutationTracker, InstanceVariableMutationTracker>();
+        services.AddScoped<IWorkflowVariableStore, WorkflowVariableStore>();
         services.AddScoped<IWorkflowDefinitionService, WorkflowDefinitionService>();
+        services.AddScoped<ISharedVariableService, SharedVariableService>();
+        services.AddScoped<ISharedVariableClientService, SharedVariableClientService>();
         services.AddScoped<WorkflowEngineService>();
         services.AddScoped<IWorkflowEngineService>(provider =>
             provider.GetRequiredService<WorkflowEngineService>());

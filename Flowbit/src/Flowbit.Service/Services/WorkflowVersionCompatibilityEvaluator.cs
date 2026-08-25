@@ -30,6 +30,7 @@ public static class WorkflowVersionCompatibilityEvaluator
         var targetNodes = IndexNodes(target);
 
         ValidateEnvelope(context, blockers);
+        ValidateSharedVariableBindings(source, target, blockers);
         var activeNodeIds = ValidateActiveNodes(
             context,
             sourceNodes,
@@ -522,6 +523,77 @@ public static class WorkflowVersionCompatibilityEvaluator
             }
         }
     }
+
+    private static void ValidateSharedVariableBindings(
+        WorkflowModel source,
+        WorkflowModel target,
+        ICollection<WorkflowVersionCompatibilityIssue> blockers)
+    {
+        var sourceByAlias = source.Variables
+            .Where(variable => string.Equals(
+                variable.Scope,
+                VariableScopes.Shared,
+                StringComparison.Ordinal))
+            .ToDictionary(variable => variable.Name, StringComparer.OrdinalIgnoreCase);
+        var targetByAlias = target.Variables
+            .Where(variable => string.Equals(
+                variable.Scope,
+                VariableScopes.Shared,
+                StringComparison.Ordinal))
+            .ToDictionary(variable => variable.Name, StringComparer.OrdinalIgnoreCase);
+        var aliases = sourceByAlias.Keys
+            .Concat(targetByAlias.Keys)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Order(StringComparer.OrdinalIgnoreCase);
+        foreach (var alias in aliases)
+        {
+            if (!sourceByAlias.TryGetValue(alias, out var sourceBinding)
+                || !targetByAlias.TryGetValue(alias, out var targetBinding)
+                || !string.Equals(sourceBinding.Name, targetBinding.Name, StringComparison.Ordinal)
+                || !string.Equals(sourceBinding.SharedKey, targetBinding.SharedKey, StringComparison.Ordinal)
+                || !string.Equals(sourceBinding.Access, targetBinding.Access, StringComparison.Ordinal)
+                || !string.Equals(sourceBinding.DataType, targetBinding.DataType, StringComparison.Ordinal)
+                || sourceBinding.IsArray != targetBinding.IsArray
+                || sourceBinding.Nullable != targetBinding.Nullable
+                || !string.Equals(
+                    NormalizeRule(sourceBinding.Validation),
+                    NormalizeRule(targetBinding.Validation),
+                    StringComparison.Ordinal))
+            {
+                blockers.Add(Issue(
+                    WorkflowVersionCompatibilityCodes.SharedVariableBindingChanged,
+                    $"Shared variable binding '{alias}' must keep identical alias casing, key, access, and contract while an instance is running.",
+                    variableName: alias));
+            }
+        }
+
+        // A name that changes from instance to shared (or back) is also blocked,
+        // even when it was not present in both shared maps above.
+        var sourceAll = source.Variables.ToDictionary(
+            variable => variable.Name,
+            StringComparer.OrdinalIgnoreCase);
+        var targetAll = target.Variables.ToDictionary(
+            variable => variable.Name,
+            StringComparer.OrdinalIgnoreCase);
+        foreach (var alias in sourceAll.Keys.Intersect(targetAll.Keys, StringComparer.OrdinalIgnoreCase))
+        {
+            var sourceScope = sourceAll[alias].Scope ?? VariableScopes.Instance;
+            var targetScope = targetAll[alias].Scope ?? VariableScopes.Instance;
+            if (!string.Equals(sourceScope, targetScope, StringComparison.Ordinal)
+                && !blockers.Any(issue => issue.Code
+                    == WorkflowVersionCompatibilityCodes.SharedVariableBindingChanged
+                    && string.Equals(issue.VariableName, alias, StringComparison.OrdinalIgnoreCase)))
+            {
+                blockers.Add(Issue(
+                    WorkflowVersionCompatibilityCodes.SharedVariableBindingChanged,
+                    $"Variable '{alias}' cannot change between instance and shared scope while an instance is running.",
+                    variableName: alias));
+            }
+        }
+    }
+
+    private static string? NormalizeRule(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
     private static void ValidateObservedFlows(
         WorkflowVersionCompatibilityContext context,

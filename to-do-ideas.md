@@ -1,7 +1,7 @@
 
 - add login option UI project like user/pass or integration with identity providers, also add  role management  
 
-- add shared varibales - variables across instances
+
 - add Conditional events (Interrupting conditional boundary)  
 - add Conditional events (Non-interrupting boundaries)  
 - receive task
@@ -18,6 +18,7 @@
 - /api/instances/{id} endpoint return a lot of data may need enhancement
 
 --------------------------- done ---------------------------
+- add shared varibales - variables across instances (done)
 - add Conditional events (Intermediate conditional catch)  (done)
 - add user task condition (done)
 - in editor add view tool only so not change item by mistake (done)

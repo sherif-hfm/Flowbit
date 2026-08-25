@@ -3537,6 +3537,110 @@ public sealed class DefinitionValidationTests
         ]
     };
 
+    [Fact]
+    public void ValidateDefinition_AcceptsTypedSharedBindingWithoutWorkflowDefault()
+    {
+        var model = CreateTerminalModel(BpmnFlowNodeTypes.EndEvent);
+        model.Variables =
+        [
+            new VariableModel
+            {
+                Name = "fxRate",
+                Scope = VariableScopes.Shared,
+                SharedKey = "finance.usdToSar",
+                Access = SharedVariableAccessModes.ReadWrite,
+                DataType = WorkflowVariableTypes.Number,
+                Nullable = false,
+                Validation = "value > 0"
+            }
+        ];
+
+        ValidateDefinition(CreateService(out _), model);
+    }
+
+    [Fact]
+    public void ValidateDefinition_RejectsSharedValidationThatReadsWorkflowState()
+    {
+        var model = CreateTerminalModel(BpmnFlowNodeTypes.EndEvent);
+        model.Variables =
+        [
+            new VariableModel
+            {
+                Name = "fxRate",
+                Scope = VariableScopes.Shared,
+                SharedKey = "finance.usdToSar",
+                Access = SharedVariableAccessModes.Read,
+                DataType = WorkflowVariableTypes.Number,
+                Validation = "value > minimumRate"
+            }
+        ];
+
+        var error = Assert.Throws<WorkflowDomainException>(() =>
+            ValidateDefinition(CreateService(out _), model));
+
+        Assert.Contains("only 'value'", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ValidateDefinition_RejectsDuplicateSharedKeyAliasesCaseInsensitively()
+    {
+        var model = CreateTerminalModel(BpmnFlowNodeTypes.EndEvent);
+        model.Variables =
+        [
+            new VariableModel
+            {
+                Name = "primaryRate",
+                Scope = VariableScopes.Shared,
+                SharedKey = "finance.usdToSar",
+                Access = SharedVariableAccessModes.Read,
+                DataType = WorkflowVariableTypes.Number
+            },
+            new VariableModel
+            {
+                Name = "secondaryRate",
+                Scope = VariableScopes.Shared,
+                SharedKey = "FINANCE.USDTOSAR",
+                Access = SharedVariableAccessModes.Read,
+                DataType = WorkflowVariableTypes.Number
+            }
+        ];
+
+        var error = Assert.Throws<WorkflowDomainException>(() =>
+            ValidateDefinition(CreateService(out _), model));
+
+        Assert.Contains("only one local alias", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ValidateDefinition_RejectsReadOnlySharedProducerTarget()
+    {
+        var model = CreateTerminalModel(BpmnFlowNodeTypes.EndEvent);
+        model.Variables =
+        [
+            new VariableModel
+            {
+                Name = "fxRate",
+                Scope = VariableScopes.Shared,
+                SharedKey = "finance.usdToSar",
+                Access = SharedVariableAccessModes.Read,
+                DataType = WorkflowVariableTypes.Number
+            }
+        ];
+        model.SequenceFlows.Single(flow => flow.Id == 201).Variables =
+        [
+            new VariableModel
+            {
+                Name = "fxRate",
+                DataType = WorkflowVariableTypes.Number
+            }
+        ];
+
+        var error = Assert.Throws<WorkflowDomainException>(() =>
+            ValidateDefinition(CreateService(out _), model));
+
+        Assert.Contains("read-only shared", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static WorkflowModel CreateTerminalModel(string terminalType) => new()
     {
         Id = "terminal-validation",
@@ -3574,6 +3678,27 @@ public sealed class DefinitionValidationTests
             options ?? new ServiceTaskOptions(),
             NullLogger<WorkflowDefinitionService>.Instance,
             durableProcessing);
+    }
+
+    private static void ValidateDefinition(
+        WorkflowDefinitionService service,
+        WorkflowModel definition)
+    {
+        var method = typeof(WorkflowDefinitionService).GetMethod(
+            "ValidateDefinition",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("Workflow definition validator was not found.");
+        try
+        {
+            method.Invoke(service, [definition]);
+        }
+        catch (System.Reflection.TargetInvocationException exception)
+            when (exception.InnerException is not null)
+        {
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo
+                .Capture(exception.InnerException)
+                .Throw();
+        }
     }
 
     internal static WorkflowModel LoadModel(string fileName)

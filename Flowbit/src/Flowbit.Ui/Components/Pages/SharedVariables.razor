@@ -1,0 +1,452 @@
+@page "/shared-variables"
+@implements IDisposable
+@using System.Net
+@using System.Text.Json
+@using Flowbit.Ui.Auth
+@inject WorkflowApiClient Api
+@inject TokenState Token
+@inject IJSRuntime JS
+
+<PageTitle>Shared Variables · Flowbit</PageTitle>
+
+<PageHeader Eyebrow="Manage" Title="Shared variables"
+            Description="Manage typed deployment-wide values shared by workflow definitions and instances. Keys and type contracts are immutable after creation.">
+    <Actions>
+        <a class="btn btn-outline-primary" href="shared-variable-clients"><AppIcon Name="token" /> API clients</a>
+        <button class="btn btn-outline-primary" @onclick="OpenCreate" disabled="@(!Token.HasToken || busy)"><AppIcon Name="plus" /> Add variable</button>
+        <button class="btn btn-primary" @onclick="LoadAsync" disabled="@(!Token.HasToken || busy)"><AppIcon Name="refresh" /> Refresh</button>
+    </Actions>
+</PageHeader>
+
+@if (!string.IsNullOrWhiteSpace(error))
+{
+    <div class="alert alert-danger" role="alert">@error</div>
+}
+@if (!string.IsNullOrWhiteSpace(success))
+{
+    <div class="alert alert-success" role="status">@success</div>
+}
+
+@if (!Token.HasToken)
+{
+    <section class="panel">
+        <EmptyState Icon="token" Title="An administrative identity is required"
+                    Description="Set an identity carrying the configured shared-variable administrator role.">
+            <a class="btn btn-primary" href="token">Set test identity</a>
+        </EmptyState>
+    </section>
+}
+else
+{
+    @if (formOpen)
+    {
+        <section class="panel mb-3" aria-labelledby="shared-variable-form-heading">
+            <div class="section-heading">
+                <div>
+                    <h2 id="shared-variable-form-heading">@(editing is null ? "Add shared variable" : $"Update {editing.Key}")</h2>
+                    <p>@(editing is null ? "Choose the permanent key and type contract, then optionally set its first value." : $"Revision {editing.Revision:N0}. Updates use optimistic concurrency and append an immutable history entry.")</p>
+                </div>
+                <button type="button" class="btn-close" aria-label="Close shared variable form" @onclick="CloseForm" disabled="@busy"></button>
+            </div>
+            @if (!string.IsNullOrWhiteSpace(formError))
+            {
+                <div class="alert alert-danger" role="alert">
+                    @formError
+                    @if (editConflict)
+                    {
+                        <button class="btn btn-sm btn-outline-danger ms-2" @onclick="ReloadEditAsync" disabled="@busy">Load current revision</button>
+                    }
+                </div>
+            }
+            <div class="form-grid">
+                <div>
+                    <label class="form-label" for="shared-variable-key">Key</label>
+                    <input id="shared-variable-key" class="form-control" maxlength="300" autocomplete="off"
+                           placeholder="finance.usdToSar" readonly="@(editing is not null)"
+                           @bind="formKey" @bind:event="oninput" />
+                </div>
+                <div>
+                    <label class="form-label" for="shared-variable-type">Data type</label>
+                    <select id="shared-variable-type" class="form-select" disabled="@(editing is not null)" @bind="formDataType">
+                        @foreach (var type in DataTypes) { <option value="@type">@type</option> }
+                    </select>
+                </div>
+                <div class="d-flex flex-wrap align-items-end gap-4">
+                    <div class="form-check mb-2"><input id="shared-variable-array" class="form-check-input" type="checkbox" disabled="@(editing is not null)" @bind="formIsArray" /><label class="form-check-label" for="shared-variable-array">Array</label></div>
+                    <div class="form-check mb-2"><input id="shared-variable-nullable" class="form-check-input" type="checkbox" disabled="@(editing is not null)" @bind="formNullable" /><label class="form-check-label" for="shared-variable-nullable">Nullable</label></div>
+                    @if (editing is null)
+                    {
+                        <div class="form-check mb-2"><input id="shared-variable-has-value" class="form-check-input" type="checkbox" @bind="formHasValue" /><label class="form-check-label" for="shared-variable-has-value">Set initial value</label></div>
+                    }
+                </div>
+                <div class="full">
+                    <label class="form-label" for="shared-variable-value">JSON value</label>
+                    <textarea id="shared-variable-value" class="form-control font-monospace" rows="7" spellcheck="false"
+                              disabled="@(editing is null && !formHasValue)" @bind="formValue" @bind:event="oninput"></textarea>
+                    <div class="form-text">The JSON root must match the catalog type, array, nullability, and validation contract.</div>
+                </div>
+                @if (editing is null)
+                {
+                    <div class="full">
+                        <label class="form-label" for="shared-variable-validation">Validation (NCalc, optional)</label>
+                        <input id="shared-variable-validation" class="form-control" maxlength="4000" placeholder="value &gt; 0" @bind="formValidation" @bind:event="oninput" />
+                        <div class="form-text">Shared validation may reference only <span class="mono-id">value</span> and the supported pure helper functions.</div>
+                    </div>
+                }
+                <div class="full">
+                    <label class="form-label" for="shared-variable-description">Description (optional)</label>
+                    <textarea id="shared-variable-description" class="form-control" rows="3" maxlength="1000" @bind="formDescription" @bind:event="oninput"></textarea>
+                </div>
+                <div class="full">
+                    <label class="form-label" for="shared-variable-reason">Change reason (optional)</label>
+                    <input id="shared-variable-reason" class="form-control" maxlength="1000" @bind="formReason" @bind:event="oninput" />
+                </div>
+            </div>
+            <div class="d-flex justify-content-end gap-2 mt-3">
+                <button class="btn btn-outline-secondary" @onclick="CloseForm" disabled="@busy">Cancel</button>
+                @if (editing is null)
+                {
+                    <button class="btn btn-primary" @onclick="CreateAsync" disabled="@busy">@(busy ? "Creating…" : "Create variable")</button>
+                }
+                else
+                {
+                    <button class="btn btn-outline-primary" @onclick="SaveDescriptionAsync" disabled="@busy">Save description</button>
+                    <button class="btn btn-primary" @onclick="SaveValueAsync" disabled="@busy">@(busy ? "Saving…" : "Save value revision")</button>
+                }
+            </div>
+        </section>
+    }
+
+    @if (selected is not null)
+    {
+        <section class="panel mb-3" aria-labelledby="shared-variable-detail-heading">
+            <div class="section-heading">
+                <div><h2 id="shared-variable-detail-heading">@selected.Key history</h2><p>Immutable revisions, newest first.</p></div>
+                <button type="button" class="btn-close" aria-label="Close history" @onclick="CloseDetail"></button>
+            </div>
+            @if (blockers is not null)
+            {
+                <div class="d-flex flex-wrap gap-2 mb-3">
+                    <StatusBadge Status="@(blockers.CanArchive ? "success" : "warning")" Text="@(blockers.CanArchive ? "Can archive" : "Archive blocked")" />
+                    <span class="data-subtitle mt-1">@blockers.PublishedDefinitionCount published definitions · @blockers.RunningInstanceCount running instances · @blockers.PendingWakeCount pending wakes</span>
+                </div>
+                @if (blockers.Reasons.Count > 0) { <ul>@foreach (var reason in blockers.Reasons) { <li>@reason</li> }</ul> }
+            }
+            @if (historyLoading)
+            {
+                <div class="skeleton" role="status"></div>
+            }
+            else if (history.Count == 0)
+            {
+                <p class="text-secondary mb-0">No revisions were returned.</p>
+            }
+            else
+            {
+                <div class="table-responsive">
+                    <table class="table align-middle">
+                        <thead><tr><th>Revision</th><th>Operation</th><th>Value</th><th>Caller</th><th>Source</th><th>Time</th></tr></thead>
+                        <tbody>
+                        @foreach (var revision in history)
+                        {
+                            <tr>
+                                <td>#@revision.Revision</td>
+                                <td>@revision.Operation@if (!string.IsNullOrWhiteSpace(revision.Reason)) { <span class="data-subtitle">@revision.Reason</span> }</td>
+                                <td><span class="mono-id text-break">@RevisionValue(revision)</span></td>
+                                <td>@revision.CallerId<span class="data-subtitle">@revision.CallerKind</span></td>
+                                <td>@revision.Source</td>
+                                <td>@revision.CreatedAt.ToLocalTime().ToString("g")</td>
+                            </tr>
+                        }
+                        </tbody>
+                    </table>
+                </div>
+                <div class="d-flex justify-content-between align-items-center mt-3">
+                    <button class="btn btn-sm btn-outline-secondary" @onclick="PreviousHistoryPageAsync" disabled="@(historyLoading || historyPage <= 1)">Newer revisions</button>
+                    <span class="data-subtitle">History page @historyPage</span>
+                    <button class="btn btn-sm btn-outline-secondary" @onclick="NextHistoryPageAsync" disabled="@(historyLoading || history.Count < HistoryPageSize)">Older revisions</button>
+                </div>
+            }
+        </section>
+    }
+
+    <section class="filter-panel" aria-labelledby="shared-variable-filter-heading">
+        <div class="section-heading mb-0"><div><h2 id="shared-variable-filter-heading">Find variables</h2><p>Search runs against the deployment-wide catalog.</p></div></div>
+        <div class="filter-grid mt-3">
+            <div class="filter-span-2"><label class="form-label" for="shared-variable-search">Key or description</label><input id="shared-variable-search" class="form-control" @bind="search" @bind:event="oninput" /></div>
+            <div><label class="form-label" for="shared-variable-status">Status</label><select id="shared-variable-status" class="form-select" @bind="status"><option value="">All statuses</option><option value="active">Active only</option><option value="archived">Archived only</option></select></div>
+            <div class="d-flex align-items-end"><button class="btn btn-primary w-100" @onclick="ApplyFilterAsync" disabled="@busy">Search</button></div>
+        </div>
+    </section>
+
+    <section class="panel panel-flush" aria-labelledby="shared-variable-results-heading">
+        <div class="section-heading"><div><h2 id="shared-variable-results-heading">Catalog</h2><p>@ResultSummary</p></div></div>
+        @if (loading && result is null) { <div class="p-3"><div class="skeleton" role="status"></div></div> }
+        else if (result is null) { <EmptyState Icon="alert" Title="Shared variables unavailable" Description="Use Refresh to retry. Authorization and API errors appear above." /> }
+        else if (result.Items.Count == 0) { <EmptyState Icon="settings" Title="No shared variables" Description="No catalog entry matches this filter." /> }
+        else
+        {
+            <div class="table-responsive">
+                <table class="table align-middle">
+                    <thead><tr><th>Key</th><th>Contract</th><th>Current value</th><th>Revision</th><th><span class="visually-hidden">Actions</span></th></tr></thead>
+                    <tbody>
+                    @foreach (var item in result.Items)
+                    {
+                        <tr>
+                            <td><span class="data-title">@item.Key</span><span class="data-subtitle">@item.Description</span></td>
+                            <td><span class="mono-id">@Contract(item)</span><span class="data-subtitle">@(string.IsNullOrWhiteSpace(item.Validation) ? "No validation" : item.Validation)</span></td>
+                            <td><span class="mono-id">@(item.HasValue ? "Set (fetch to update)" : "Unset")</span><span class="data-subtitle"><StatusBadge Status="@(item.Status == "active" ? "success" : "neutral")" Text="@item.Status" /></span></td>
+                            <td>#@item.Revision<span class="data-subtitle">@item.UpdatedAt.ToLocalTime().ToString("g")</span></td>
+                            <td class="text-end"><div class="d-flex flex-wrap justify-content-end gap-2">
+                                <button class="btn btn-sm btn-outline-secondary" @onclick="() => OpenDetailAsync(item)" disabled="@busy">History</button>
+                                @if (item.Status == "active")
+                                {
+                                    <button class="btn btn-sm btn-outline-primary" @onclick="() => OpenEditAsync(item)" disabled="@busy">Update</button>
+                                    <button class="btn btn-sm btn-outline-danger" @onclick="() => ArchiveAsync(item)" disabled="@busy">Archive</button>
+                                }
+                                else
+                                {
+                                    <button class="btn btn-sm btn-outline-primary" @onclick="() => ReactivateAsync(item)" disabled="@busy">Reactivate</button>
+                                }
+                            </div></td>
+                        </tr>
+                    }
+                    </tbody>
+                </table>
+            </div>
+            <div class="d-flex justify-content-between align-items-center p-3 border-top">
+                <button class="btn btn-sm btn-outline-secondary" @onclick="PreviousPageAsync" disabled="@(busy || result.Page <= 1)">Previous</button>
+                <span class="data-subtitle">Page @result.Page of @TotalPages</span>
+                <button class="btn btn-sm btn-outline-secondary" @onclick="NextPageAsync" disabled="@(busy || result.Page >= TotalPages)">Next</button>
+            </div>
+        }
+    </section>
+}
+
+@code {
+    private static readonly string[] DataTypes = ["string", "number", "boolean", "date", "datetime", "json"];
+    private static readonly JsonSerializerOptions PrettyJson = new() { WriteIndented = true };
+    private PagedResult<SharedVariableMetadataDto>? result;
+    private SharedVariableMetadataDto? editing;
+    private SharedVariableValueDto? currentValue;
+    private SharedVariableMetadataDto? selected;
+    private SharedVariableLifecycleBlockersDto? blockers;
+    private IReadOnlyList<SharedVariableRevisionDto> history = [];
+    private string? search;
+    private string? status;
+    private string? error;
+    private string? success;
+    private string? formError;
+    private string formKey = string.Empty;
+    private string formDataType = "string";
+    private string formValue = "null";
+    private string? formValidation;
+    private string? formDescription;
+    private string? formReason;
+    private bool formIsArray;
+    private bool formNullable;
+    private bool formHasValue = true;
+    private bool formOpen;
+    private bool loading;
+    private bool busy;
+    private bool historyLoading;
+    private bool editConflict;
+    private int page = 1;
+    private int historyPage = 1;
+    private const int PageSize = 25;
+    private const int HistoryPageSize = 50;
+    private int TotalPages => result is null ? 1 : Math.Max(1, (int)Math.Ceiling(result.TotalCount / (double)result.PageSize));
+    private string ResultSummary => result is null ? "Not loaded" : $"{result.TotalCount:N0} matching variables";
+
+    protected override async Task OnInitializedAsync() { Token.Changed += OnTokenChanged; if (Token.HasToken) await LoadAsync(); }
+
+    private async Task LoadAsync()
+    {
+        if (!Token.HasToken) { result = null; return; }
+        try
+        {
+            loading = true; busy = true; error = null;
+            result = await Api.GetSharedVariablesAsync(new SharedVariableListRequest(search, status, page, PageSize, status != "active"));
+        }
+        catch (WorkflowApiException ex) { result = null; error = FriendlyError(ex); }
+        finally { loading = false; busy = false; }
+    }
+
+    private void OpenCreate()
+    {
+        editing = null; formKey = string.Empty; formDataType = "string"; formValue = "null";
+        formValidation = formDescription = formReason = formError = null; editConflict = false;
+        formIsArray = formNullable = false; formHasValue = true; formOpen = true;
+    }
+
+    private void SetEdit(SharedVariableMetadataDto item, SharedVariableValueDto value)
+    {
+        editing = item; currentValue = value; formKey = item.Key; formDataType = item.DataType; formIsArray = item.IsArray;
+        formNullable = item.Nullable; formHasValue = value.HasValue;
+        formValue = value.HasValue && value.Value is JsonElement storedValue
+            ? JsonSerializer.Serialize(storedValue, PrettyJson) : "null";
+        formValidation = item.Validation; formDescription = item.Description; formReason = formError = null; editConflict = false; formOpen = true;
+    }
+
+    private async Task OpenEditAsync(SharedVariableMetadataDto item)
+    {
+        try
+        {
+            busy = true; error = null;
+            var metadata = await Api.GetSharedVariableAsync(item.Key);
+            var value = await Api.GetSharedVariableValueAsync(item.Key);
+            if (metadata is null || value is null) { error = "The shared variable no longer exists."; await LoadAsync(); return; }
+            if (metadata.Revision != value.Revision)
+            {
+                metadata = await Api.GetSharedVariableAsync(item.Key);
+                value = await Api.GetSharedVariableValueAsync(item.Key);
+            }
+            if (metadata is null || value is null || metadata.Revision != value.Revision)
+            {
+                error = "The shared variable changed while its value was loading. Try Update again.";
+                return;
+            }
+            SetEdit(metadata, value);
+        }
+        catch (WorkflowApiException ex) { error = FriendlyError(ex); }
+        finally { busy = false; }
+    }
+
+    private async Task ReloadEditAsync()
+    {
+        if (editing is null) return;
+        await OpenEditAsync(editing);
+    }
+
+    private async Task CreateAsync()
+    {
+        formError = null;
+        if (string.IsNullOrWhiteSpace(formKey)) { formError = "Key is required."; return; }
+        JsonElement? parsed = null;
+        if (formHasValue)
+        {
+            if (!TryParseJson(formValue, out var value, out formError)) return;
+            parsed = value;
+        }
+        try
+        {
+            busy = true; success = error = null;
+            await Api.CreateSharedVariableAsync(new CreateSharedVariableRequest(
+                formKey.Trim(), formDataType, formIsArray, formNullable, formHasValue, parsed,
+                Null(formValidation), Null(formDescription), Guid.NewGuid().ToString("N"), Null(formReason)));
+            success = $"Created shared variable {formKey.Trim()}.";
+            CloseForm(); await LoadAsync();
+        }
+        catch (WorkflowApiException ex) { editConflict = ex.StatusCode == HttpStatusCode.Conflict; formError = FriendlyError(ex); }
+        finally { busy = false; }
+    }
+
+    private async Task SaveValueAsync()
+    {
+        if (editing is null || currentValue is null) return;
+        formError = null;
+        if (!TryParseJson(formValue, out var value, out formError)) return;
+        try
+        {
+            busy = true; success = error = null;
+            var updated = await Api.UpdateSharedVariableValueAsync(
+                editing.Key,
+                new UpdateSharedVariableValueRequest(
+                    value, editing.Revision, Guid.NewGuid().ToString("N"), Null(formReason)));
+            currentValue = updated;
+            editing = editing with { Revision = updated.Revision, HasValue = updated.HasValue, UpdatedAt = updated.UpdatedAt };
+            formHasValue = updated.HasValue; formReason = null; editConflict = false;
+            success = $"Updated the current value for {editing.Key} at revision {updated.Revision}.";
+            await LoadAsync();
+        }
+        catch (WorkflowApiException ex) { editConflict = ex.StatusCode == HttpStatusCode.Conflict; formError = FriendlyError(ex); }
+        finally { busy = false; }
+    }
+
+    private async Task SaveDescriptionAsync()
+    {
+        if (editing is null || currentValue is null) return;
+        formError = null;
+        try
+        {
+            busy = true; success = error = null;
+            var updated = await Api.UpdateSharedVariableDescriptionAsync(
+                editing.Key,
+                new UpdateSharedVariableDescriptionRequest(
+                    Null(formDescription), editing.Revision, Guid.NewGuid().ToString("N"), Null(formReason)));
+            editing = updated;
+            currentValue = currentValue with { Revision = updated.Revision, UpdatedAt = updated.UpdatedAt };
+            formDescription = updated.Description; formReason = null; editConflict = false;
+            success = $"Updated the description for {updated.Key} at revision {updated.Revision}.";
+            await LoadAsync();
+        }
+        catch (WorkflowApiException ex) { editConflict = ex.StatusCode == HttpStatusCode.Conflict; formError = FriendlyError(ex); }
+        finally { busy = false; }
+    }
+
+    private async Task OpenDetailAsync(SharedVariableMetadataDto item)
+    {
+        selected = item; blockers = null; history = []; historyPage = 1; historyLoading = true; error = null;
+        try
+        {
+            var historyTask = Api.GetSharedVariableHistoryAsync(item.Key, historyPage, HistoryPageSize);
+            var blockersTask = Api.GetSharedVariableLifecycleBlockersAsync(item.Key);
+            await Task.WhenAll(historyTask, blockersTask);
+            history = historyTask.Result; blockers = blockersTask.Result;
+        }
+        catch (WorkflowApiException ex) { error = FriendlyError(ex); }
+        finally { historyLoading = false; }
+    }
+
+    private async Task LoadHistoryPageAsync()
+    {
+        if (selected is null) return;
+        try { historyLoading = true; error = null; history = await Api.GetSharedVariableHistoryAsync(selected.Key, historyPage, HistoryPageSize); }
+        catch (WorkflowApiException ex) { error = FriendlyError(ex); }
+        finally { historyLoading = false; }
+    }
+
+    private async Task PreviousHistoryPageAsync() { if (historyPage > 1) { historyPage--; await LoadHistoryPageAsync(); } }
+    private async Task NextHistoryPageAsync() { if (history.Count == HistoryPageSize) { historyPage++; await LoadHistoryPageAsync(); } }
+
+    private async Task ArchiveAsync(SharedVariableMetadataDto item)
+    {
+        try
+        {
+            busy = true; error = success = null;
+            var lifecycle = await Api.GetSharedVariableLifecycleBlockersAsync(item.Key);
+            if (lifecycle is null) { error = "The variable no longer exists."; return; }
+            if (!lifecycle.CanArchive) { selected = item; blockers = lifecycle; historyPage = 1; history = await Api.GetSharedVariableHistoryAsync(item.Key, historyPage, HistoryPageSize); error = "Archive is blocked by active workflow usage. Review the lifecycle details."; return; }
+            if (!await JS.InvokeAsync<bool>("confirm", $"Archive shared variable {item.Key}? Existing history is retained.")) return;
+            await Api.ArchiveSharedVariableAsync(item.Key, new ArchiveSharedVariableRequest(item.Revision, Guid.NewGuid().ToString("N"), "Archived from Flowbit.Ui"));
+            success = $"Archived {item.Key}."; await LoadAsync();
+        }
+        catch (WorkflowApiException ex) { error = FriendlyError(ex); }
+        finally { busy = false; }
+    }
+
+    private async Task ReactivateAsync(SharedVariableMetadataDto item)
+    {
+        try
+        {
+            busy = true; error = success = null;
+            await Api.ReactivateSharedVariableAsync(item.Key, new ReactivateSharedVariableRequest(item.Revision, Guid.NewGuid().ToString("N"), "Reactivated from Flowbit.Ui"));
+            success = $"Reactivated {item.Key}."; await LoadAsync();
+        }
+        catch (WorkflowApiException ex) { error = FriendlyError(ex); }
+        finally { busy = false; }
+    }
+
+    private async Task ApplyFilterAsync() { page = 1; await LoadAsync(); }
+    private async Task PreviousPageAsync() { if (page > 1) { page--; await LoadAsync(); } }
+    private async Task NextPageAsync() { if (page < TotalPages) { page++; await LoadAsync(); } }
+    private void CloseForm() { formOpen = false; editing = null; currentValue = null; formError = null; editConflict = false; }
+    private void CloseDetail() { selected = null; blockers = null; history = []; historyPage = 1; }
+    private void OnTokenChanged() => _ = InvokeAsync(async () => { result = null; CloseForm(); CloseDetail(); error = success = null; page = 1; await LoadAsync(); });
+    private static bool TryParseJson(string raw, out JsonElement value, out string? parseError) { try { using var doc = JsonDocument.Parse(raw); value = doc.RootElement.Clone(); parseError = null; return true; } catch (JsonException ex) { value = default; parseError = $"Enter valid JSON. {ex.Message}"; return false; } }
+    private static string Contract(SharedVariableMetadataDto item) => item.DataType + (item.IsArray ? "[]" : "") + (item.Nullable ? " · nullable" : "");
+    private static string RevisionValue(SharedVariableRevisionDto item) => !item.HasValue ? "(unset)" : item.Value is JsonElement value ? Short(JsonSerializer.Serialize(value)) : "null";
+    private static string Short(string value) => value.Length <= 120 ? value : value[..120] + "…";
+    private static string? Null(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    private static string FriendlyError(WorkflowApiException ex) => ex.StatusCode switch { HttpStatusCode.Forbidden => "This identity does not have the configured shared-variable role.", HttpStatusCode.Conflict => "The catalog changed or this operation conflicts with active usage. Refresh and try again.", _ => ex.Message ?? "The shared-variable request failed." };
+    public void Dispose() => Token.Changed -= OnTokenChanged;
+}

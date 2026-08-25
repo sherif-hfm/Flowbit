@@ -2,6 +2,7 @@ using System.Text.Json;
 using Flowbit.Service.Abstractions;
 using Flowbit.Service.Models;
 using Flowbit.Shared.Dtos;
+using Flowbit.Shared.Models;
 
 namespace Flowbit.Service.Services;
 
@@ -11,7 +12,8 @@ public sealed class InstanceVariableUpdateService(
     IInstanceVariableUpdateRepository updates,
     IInstanceVariableUpdateBatchRepository batches,
     IUnitOfWork unitOfWork,
-    IConditionalEventRuntimeCoordinator conditionalEvents)
+    IConditionalEventRuntimeCoordinator conditionalEvents,
+    IWorkflowDefinitionRepository? definitions = null)
     : IInstanceVariableUpdateService, IInstanceVariableUpdateExecutor
 {
     private static readonly JsonSerializerOptions JsonOptions =
@@ -167,6 +169,31 @@ public sealed class InstanceVariableUpdateService(
                 return Skipped(
                     InstanceVariableUpdateSkipCodes.WorkflowFamilyChanged,
                     "The workflow instance no longer belongs to the selected workflow family.");
+            }
+
+            if (definitions is not null)
+            {
+                var workflow = await definitions.GetAsync(
+                    instance.WorkflowDefinitionId,
+                    cancellationToken)
+                    ?? throw new WorkflowConflictException(
+                        "The workflow definition no longer exists.");
+                var sharedAliases = workflow.Definition.Variables
+                    .Where(variable => string.Equals(
+                        variable.Scope,
+                        VariableScopes.Shared,
+                        StringComparison.Ordinal))
+                    .Select(variable => variable.Name)
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                var sharedTarget = request.Variables
+                    .Select(variable => variable.Name)
+                    .FirstOrDefault(sharedAliases.Contains);
+                if (sharedTarget is not null)
+                {
+                    throw new WorkflowDomainException(
+                        $"Administrative instance variable updates cannot target shared alias '{sharedTarget}'. "
+                        + "Use PUT /api/shared-variables/{key}/value with the catalog key instead.");
+                }
             }
 
             var warnings = await BuildActiveJobWarningsAsync(

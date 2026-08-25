@@ -107,6 +107,212 @@ public sealed class WorkflowApiClient(HttpClient httpClient)
         await EnsureSuccessAsync(response, cancellationToken);
     }
 
+    public async Task<PagedResult<SharedVariableMetadataDto>> GetSharedVariablesAsync(
+        SharedVariableListRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        var parameters = new List<string>
+        {
+            $"page={Math.Max(1, request.Page)}",
+            $"pageSize={Math.Clamp(request.PageSize, 1, 200)}",
+            $"includeArchived={request.IncludeArchived.ToString().ToLowerInvariant()}"
+        };
+        if (!string.IsNullOrWhiteSpace(request.Search))
+            parameters.Add($"search={Uri.EscapeDataString(request.Search.Trim())}");
+        if (!string.IsNullOrWhiteSpace(request.Status))
+            parameters.Add($"status={Uri.EscapeDataString(request.Status.Trim())}");
+
+        using var response = await httpClient.GetAsync(
+            $"/api/shared-variables?{string.Join("&", parameters)}",
+            cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<PagedResult<SharedVariableMetadataDto>>(cancellationToken)
+            ?? new PagedResult<SharedVariableMetadataDto>([], request.Page, request.PageSize, 0);
+    }
+
+    public async Task<SharedVariableMetadataDto?> GetSharedVariableAsync(
+        string key,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await httpClient.GetAsync(
+            $"/api/shared-variables/{Uri.EscapeDataString(key)}", cancellationToken);
+        if (response.StatusCode == HttpStatusCode.NotFound) return null;
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<SharedVariableMetadataDto>(cancellationToken);
+    }
+
+    public async Task<SharedVariableMetadataDto> CreateSharedVariableAsync(
+        CreateSharedVariableRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await httpClient.PostAsJsonAsync(
+            "/api/shared-variables", request, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<SharedVariableMetadataDto>(cancellationToken)
+            ?? throw new InvalidOperationException("The API returned an empty shared variable.");
+    }
+
+    public async Task<SharedVariableMetadataDto> UpdateSharedVariableDescriptionAsync(
+        string key,
+        UpdateSharedVariableDescriptionRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        using var message = new HttpRequestMessage(
+            HttpMethod.Patch,
+            $"/api/shared-variables/{Uri.EscapeDataString(key)}")
+        {
+            Content = JsonContent.Create(request)
+        };
+        using var response = await httpClient.SendAsync(message, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<SharedVariableMetadataDto>(cancellationToken)
+            ?? throw new InvalidOperationException("The API returned an empty shared variable.");
+    }
+
+    public async Task<SharedVariableValueDto?> GetSharedVariableValueAsync(
+        string key,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await httpClient.GetAsync(
+            $"/api/shared-variables/{Uri.EscapeDataString(key)}/value", cancellationToken);
+        if (response.StatusCode == HttpStatusCode.NotFound) return null;
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<SharedVariableValueDto>(cancellationToken);
+    }
+
+    public async Task<SharedVariableValueDto> UpdateSharedVariableValueAsync(
+        string key,
+        UpdateSharedVariableValueRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await httpClient.PutAsJsonAsync(
+            $"/api/shared-variables/{Uri.EscapeDataString(key)}/value", request, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<SharedVariableValueDto>(cancellationToken)
+            ?? throw new InvalidOperationException("The API returned an empty shared-variable value.");
+    }
+
+    public Task<SharedVariableMetadataDto> ArchiveSharedVariableAsync(
+        string key,
+        ArchiveSharedVariableRequest request,
+        CancellationToken cancellationToken = default) =>
+        PostSharedVariableActionAsync(key, "archive", request, cancellationToken);
+
+    public Task<SharedVariableMetadataDto> ReactivateSharedVariableAsync(
+        string key,
+        ReactivateSharedVariableRequest request,
+        CancellationToken cancellationToken = default) =>
+        PostSharedVariableActionAsync(key, "reactivate", request, cancellationToken);
+
+    public async Task<IReadOnlyList<SharedVariableRevisionDto>> GetSharedVariableHistoryAsync(
+        string key,
+        int page = 1,
+        int pageSize = 50,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await httpClient.GetAsync(
+            $"/api/shared-variables/{Uri.EscapeDataString(key)}/history?page={Math.Max(1, page)}&pageSize={Math.Clamp(pageSize, 1, 200)}",
+            cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<IReadOnlyList<SharedVariableRevisionDto>>(cancellationToken)
+            ?? [];
+    }
+
+    public async Task<SharedVariableLifecycleBlockersDto?> GetSharedVariableLifecycleBlockersAsync(
+        string key,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await httpClient.GetAsync(
+            $"/api/shared-variables/{Uri.EscapeDataString(key)}/lifecycle-blockers", cancellationToken);
+        if (response.StatusCode == HttpStatusCode.NotFound) return null;
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<SharedVariableLifecycleBlockersDto>(cancellationToken);
+    }
+
+    public async Task<PagedResult<SharedVariableClientDto>> GetSharedVariableClientsAsync(
+        int page = 1,
+        int pageSize = 50,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await httpClient.GetAsync(
+            $"/api/shared-variable-clients?page={Math.Max(1, page)}&pageSize={Math.Clamp(pageSize, 1, 200)}",
+            cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<PagedResult<SharedVariableClientDto>>(cancellationToken)
+            ?? new PagedResult<SharedVariableClientDto>([], page, pageSize, 0);
+    }
+
+    public async Task<SharedVariableClientDto?> GetSharedVariableClientAsync(
+        long id,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await httpClient.GetAsync(
+            $"/api/shared-variable-clients/{id}", cancellationToken);
+        if (response.StatusCode == HttpStatusCode.NotFound) return null;
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<SharedVariableClientDto>(cancellationToken);
+    }
+
+    public async Task<CreateSharedVariableClientResult> CreateSharedVariableClientAsync(
+        CreateSharedVariableClientRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await httpClient.PostAsJsonAsync(
+            "/api/shared-variable-clients", request, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<CreateSharedVariableClientResult>(cancellationToken)
+            ?? throw new InvalidOperationException("The API returned an empty shared-variable client result.");
+    }
+
+    public async Task<SharedVariableClientDto> UpdateSharedVariableClientAsync(
+        long id,
+        UpdateSharedVariableClientRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await httpClient.PutAsJsonAsync(
+            $"/api/shared-variable-clients/{id}", request, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<SharedVariableClientDto>(cancellationToken)
+            ?? throw new InvalidOperationException("The API returned an empty shared-variable client.");
+    }
+
+    public async Task<RotateSharedVariableClientSecretResult> RotateSharedVariableClientSecretAsync(
+        long id,
+        RotateSharedVariableClientSecretRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await httpClient.PostAsJsonAsync(
+            $"/api/shared-variable-clients/{id}/rotate", request, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<RotateSharedVariableClientSecretResult>(cancellationToken)
+            ?? throw new InvalidOperationException("The API returned an empty secret rotation result.");
+    }
+
+    public async Task<SharedVariableClientDto> RevokeSharedVariableClientAsync(
+        long id,
+        RevokeSharedVariableClientRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await httpClient.PostAsJsonAsync(
+            $"/api/shared-variable-clients/{id}/revoke", request, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<SharedVariableClientDto>(cancellationToken)
+            ?? throw new InvalidOperationException("The API returned an empty shared-variable client.");
+    }
+
+    private async Task<SharedVariableMetadataDto> PostSharedVariableActionAsync<TRequest>(
+        string key,
+        string action,
+        TRequest request,
+        CancellationToken cancellationToken)
+    {
+        using var response = await httpClient.PostAsJsonAsync(
+            $"/api/shared-variables/{Uri.EscapeDataString(key)}/{action}", request, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<SharedVariableMetadataDto>(cancellationToken)
+            ?? throw new InvalidOperationException("The API returned an empty shared variable.");
+    }
+
     public async Task<IReadOnlyList<WorkflowSummaryDto>> GetWorkflowsAsync(CancellationToken cancellationToken = default) =>
         await httpClient.GetFromJsonAsync<IReadOnlyList<WorkflowSummaryDto>>(
             "/api/workflows",

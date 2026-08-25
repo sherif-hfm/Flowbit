@@ -6,7 +6,7 @@ format, an `example-*` workflow id, integer node and sequence-flow ids, and no
 legacy properties. The examples are intentionally focused: combine their
 patterns when building a production workflow.
 
-The catalog contains 32 workflows. Automated tests recursively discover every
+The catalog contains 36 workflows. Automated tests recursively discover every
 JSON file, deserialize it, validate it with the runtime's strict JavaScript
 parser, load and render it in the editor, and verify that this page links it.
 Tests never call the REST or message endpoints described below.
@@ -29,6 +29,10 @@ values. Adjust them before production use.
 | --- | --- | --- | --- | --- |
 | [Lanes, external IDs, and variable scopes](basics/01-lanes-external-ids-and-variable-scopes.json) | As `Requester`, supply required `requestId`; optional typed values have defaults. | A `FinanceReviewer` approves an eligible stored request with `approvalNote`; a `FinanceManager` may approve or escalate with `escalationReason`. | Demonstrates lanes; node/flow `externalId`; process, start, and action scopes; every data type; arrays; a nullable process value; defaults; validation; and stored-state action conditions. | API and database; no Worker or configuration. |
 | [Two-step approval with role-protected return](basics/02-two-step-approval.json) | No values or special start role. | Complete `approval1`, then an `admin` may take `back` from `approval2` for another visit or complete the second approval normally. | Demonstrates an ordinary role-protected return flow that remains available for normal execution and can be selected by administrative batch tooling. | API and database; no Worker or configuration. |
+| [Required user-task assignment](basics/03-user-task-assignment.json) | No values. | A `Manager` assigns the pending work; the assigned actor completes it. | Demonstrates a user task that must be explicitly assigned before action. | Authenticated API and database; no Worker or configuration. |
+| [Inbox visibility from actor claims](basics/04-inbox-task-condition.json) | Supply numeric `depId`. | An actor whose allowlisted `depId` claim matches the stored value sees and completes the task. | Demonstrates PostgreSQL-authoritative inbox visibility using stored state and caller claims. | Authenticated API and database with the actor claim allowlisted; no Worker. |
+| [Intermediate conditional event](basics/05-conditional-event.json) | `amount` defaults to zero. | Update the amount while the sibling branch is active, then confirm the user task. | An atomic conditional catch continues when its stored-variable predicate becomes true. | API and database; no Worker or configuration. |
+| [Durable asynchronous conditional event](basics/06-conditional-event-durable-async.json) | `amount` defaults to zero. | Update the amount while the sibling branch is active, then confirm the user task. | A durable conditional catch latches a wake job and resumes through worker processing. | API, database, and `Flowbit.Worker`; no external configuration. |
 
 ## User tasks
 

@@ -6,11 +6,16 @@ using Flowbit.Infrastructure.Entities;
 using Flowbit.Service.Abstractions;
 using Flowbit.Service.Models;
 using Flowbit.Service.Services;
+using Flowbit.Shared.Dtos;
 using Flowbit.Shared.Models;
 
 namespace Flowbit.Infrastructure.Repositories;
 
-public sealed class WorkflowDefinitionRepository(AppDbContext dbContext, IMemoryCache cache) : IWorkflowDefinitionRepository
+public sealed class WorkflowDefinitionRepository(
+    AppDbContext dbContext,
+    IMemoryCache cache,
+    ISharedVariableRepository? sharedVariables = null,
+    IConditionalEventDefinitionAnalyzer? conditionalEventAnalyzer = null) : IWorkflowDefinitionRepository
 {
     private static readonly JsonSerializerOptions CloneOptions = new(JsonSerializerDefaults.Web);
 
@@ -24,6 +29,10 @@ public sealed class WorkflowDefinitionRepository(AppDbContext dbContext, IMemory
     };
 
     private const string KeyPrefix = "wf:def:";
+    private readonly ISharedVariableRepository sharedVariableRepository =
+        sharedVariables ?? new SharedVariableRepository(dbContext);
+    private readonly IConditionalEventDefinitionAnalyzer conditionalAnalyzer =
+        conditionalEventAnalyzer ?? new ConditionalEventDefinitionAnalyzer();
     public async Task<IReadOnlyList<WorkflowDefinitionRecord>> ListLatestAsync(CancellationToken cancellationToken)
     {
         var definitions = await dbContext.WorkflowDefinitions.AsNoTracking()
@@ -218,6 +227,7 @@ public sealed class WorkflowDefinitionRepository(AppDbContext dbContext, IMemory
             });
         }
         await dbContext.SaveChangesAsync(cancellationToken);
+        await PersistSharedVariableProjectionAsync(entity.Id, definition, cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         var record = ToRecord(entity);
 
@@ -226,6 +236,59 @@ public sealed class WorkflowDefinitionRepository(AppDbContext dbContext, IMemory
         cache.Set(KeyPrefix + entity.Id, CloneRecord(record), CacheOptions);
 
         return record;
+    }
+
+    private Task PersistSharedVariableProjectionAsync(
+        long workflowDefinitionId,
+        WorkflowModel definition,
+        CancellationToken cancellationToken)
+    {
+        var sharedByAlias = (definition.Variables ?? [])
+            .Where(variable => variable is not null
+                && string.Equals(variable.Scope, VariableScopes.Shared, StringComparison.Ordinal)
+                && !string.IsNullOrWhiteSpace(variable.Name)
+                && !string.IsNullOrWhiteSpace(variable.SharedKey))
+            .ToDictionary(variable => variable.Name, StringComparer.OrdinalIgnoreCase);
+        var bindings = sharedByAlias.Values
+            .Select(variable => new SharedVariableDefinitionBindingProjection(
+                variable.SharedKey!.Trim(),
+                variable.Access ?? SharedVariableAccessModes.Read,
+                variable.Name.Trim()))
+            .ToArray();
+        if (bindings.Length == 0)
+        {
+            return sharedVariableRepository.ReplaceDefinitionProjectionAsync(
+                workflowDefinitionId,
+                [],
+                [],
+                cancellationToken);
+        }
+
+        var plan = conditionalAnalyzer.Analyze(definition);
+        var dependencies = plan.EventsByNodeId.Values
+            .SelectMany(entry => entry.Dependencies
+                .Where(sharedByAlias.ContainsKey)
+                .Select(alias =>
+                {
+                    var variable = sharedByAlias[alias];
+                    var node = definition.FlowNodes.Single(item => item.Id == entry.NodeId);
+                    return new SharedVariableConditionalDependencyProjection(
+                        variable.SharedKey!.Trim(),
+                        entry.NodeId,
+                        node.ExternalId);
+                }))
+            .DistinctBy(dependency => new
+            {
+                Key = dependency.SharedKey.ToUpperInvariant(),
+                dependency.NodeId,
+                dependency.Kind
+            })
+            .ToArray();
+        return sharedVariableRepository.ReplaceDefinitionProjectionAsync(
+            workflowDefinitionId,
+            bindings,
+            dependencies,
+            cancellationToken);
     }
 
     public async Task<bool> SetPublishedAsync(long id, bool isPublished, CancellationToken cancellationToken)
@@ -253,6 +316,7 @@ public sealed class WorkflowDefinitionRepository(AppDbContext dbContext, IMemory
                 await publishTransaction.CommitAsync(cancellationToken);
                 return true;
             }
+            await EnsureSharedVariablesActiveForPublishAsync(id, cancellationToken);
             var scopeActive = await dbContext.WorkflowBusinessKeyScopes
                 .AnyAsync(scope => scope.WorkflowKey == target.WorkflowKey, cancellationToken);
             var hasBusinessKeys = HasBusinessKeys(target.Definition);
@@ -332,6 +396,46 @@ public sealed class WorkflowDefinitionRepository(AppDbContext dbContext, IMemory
         }
 
         return affected > 0;
+    }
+
+    private async Task EnsureSharedVariablesActiveForPublishAsync(
+        long workflowDefinitionId,
+        CancellationToken cancellationToken)
+    {
+        var keys = await dbContext.WorkflowDefinitionSharedVariableBindings
+            .AsNoTracking()
+            .Where(binding => binding.WorkflowDefinitionId == workflowDefinitionId)
+            .Select(binding => binding.SharedKey)
+            .Distinct()
+            .ToArrayAsync(cancellationToken);
+        if (keys.Length == 0)
+        {
+            return;
+        }
+
+        _ = await sharedVariableRepository.LockCurrentAsync(
+            keys,
+            includeArchived: true,
+            cancellationToken);
+        var catalog = await dbContext.SharedVariables
+            .AsNoTracking()
+            .Where(variable => keys.Contains(variable.Key))
+            .Select(variable => new { variable.Key, variable.Status })
+            .ToListAsync(cancellationToken);
+        var byKey = catalog.ToDictionary(item => item.Key, StringComparer.OrdinalIgnoreCase);
+        foreach (var key in keys)
+        {
+            if (!byKey.TryGetValue(key, out var variable))
+            {
+                throw new WorkflowDomainException(
+                    $"Shared variable key '{key}' no longer exists in the deployment catalog.");
+            }
+            if (variable.Status != SharedVariableStatuses.Active)
+            {
+                throw new WorkflowDomainException(
+                    $"Shared variable key '{variable.Key}' is archived and the workflow cannot be published.");
+            }
+        }
     }
 
     public async Task<bool> SetDefaultAsync(long id, bool isDefault, CancellationToken cancellationToken)

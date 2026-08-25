@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Flowbit.Shared.Dtos;
 
 namespace Flowbit.Service.Models;
 
@@ -51,6 +52,9 @@ public sealed record SequenceFlowLastOccurrence(
     [JsonPropertyName("administrativeAction")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public SequenceFlowAdministrativeActionRecord? AdministrativeAction { get; init; }
+
+    [JsonPropertyName("sharedVariableWrites")]
+    public IReadOnlyList<SharedVariableWriteCorrelationDto> SharedVariableWrites { get; init; } = [];
 }
 
 /// <summary>

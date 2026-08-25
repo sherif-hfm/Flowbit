@@ -12,6 +12,27 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     public DbSet<WorkflowDefinitionUserTaskConditionEntity> WorkflowDefinitionUserTaskConditions =>
         Set<WorkflowDefinitionUserTaskConditionEntity>();
 
+    public DbSet<SharedVariableEntity> SharedVariables => Set<SharedVariableEntity>();
+    public DbSet<SharedVariableRevisionStateEntity> SharedVariableRevisionStates =>
+        Set<SharedVariableRevisionStateEntity>();
+    public DbSet<SharedVariableRevisionEntity> SharedVariableRevisions =>
+        Set<SharedVariableRevisionEntity>();
+    public DbSet<SharedVariableCurrentValueEntity> SharedVariableCurrentValues =>
+        Set<SharedVariableCurrentValueEntity>();
+    public DbSet<SharedVariableRequestEntity> SharedVariableRequests =>
+        Set<SharedVariableRequestEntity>();
+    public DbSet<SharedVariableClientEntity> SharedVariableClients =>
+        Set<SharedVariableClientEntity>();
+    public DbSet<SharedVariableClientSecretEntity> SharedVariableClientSecrets =>
+        Set<SharedVariableClientSecretEntity>();
+    public DbSet<WorkflowDefinitionSharedVariableBindingEntity> WorkflowDefinitionSharedVariableBindings =>
+        Set<WorkflowDefinitionSharedVariableBindingEntity>();
+    public DbSet<WorkflowDefinitionSharedVariableDependencyEntity> WorkflowDefinitionSharedVariableDependencies =>
+        Set<WorkflowDefinitionSharedVariableDependencyEntity>();
+    public DbSet<SharedVariableWakeEntity> SharedVariableWakes => Set<SharedVariableWakeEntity>();
+    public DbSet<SharedVariableWakeDeliveryEntity> SharedVariableWakeDeliveries =>
+        Set<SharedVariableWakeDeliveryEntity>();
+
     public DbSet<WorkflowInstanceEntity> WorkflowInstances => Set<WorkflowInstanceEntity>();
 
     public DbSet<WorkflowInstanceVersionChangeEntity> WorkflowInstanceVersionChanges =>
@@ -158,6 +179,342 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 .WithMany(e => e.UserTaskInboxVisibilityConditions)
                 .HasForeignKey(e => e.WorkflowDefinitionId)
                 .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<SharedVariableEntity>(entity =>
+        {
+            entity.ToTable("shared_variables", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_shared_variables_status",
+                    "\"Status\" IN ('active', 'archived')");
+                table.HasCheckConstraint(
+                    "CK_shared_variables_revision",
+                    "\"CurrentRevision\" >= 0");
+                table.HasCheckConstraint(
+                    "CK_shared_variables_archive_shape",
+                    "(\"Status\" = 'archived' AND \"ArchivedAt\" IS NOT NULL) OR "
+                    + "(\"Status\" = 'active' AND \"ArchivedAt\" IS NULL)");
+            });
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Key).HasColumnType("citext").HasMaxLength(300).IsRequired();
+            entity.Property(e => e.DataType).HasMaxLength(32).IsRequired();
+            entity.Property(e => e.Validation).HasMaxLength(4000);
+            entity.Property(e => e.Description).HasMaxLength(1000);
+            entity.Property(e => e.Status).HasMaxLength(16).IsRequired();
+            entity.Property(e => e.CreatedByKind).HasMaxLength(16).IsRequired();
+            entity.Property(e => e.CreatedById).HasMaxLength(300).IsRequired();
+            entity.Property(e => e.UpdatedByKind).HasMaxLength(16).IsRequired();
+            entity.Property(e => e.UpdatedById).HasMaxLength(300).IsRequired();
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+            entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
+            entity.HasIndex(e => e.Key).IsUnique();
+            entity.HasIndex(e => new { e.Status, e.Key });
+        });
+
+        modelBuilder.Entity<SharedVariableRevisionStateEntity>(entity =>
+        {
+            entity.ToTable("shared_variable_revision_state", table =>
+            {
+                table.HasCheckConstraint("CK_shared_variable_revision_state_singleton", "\"Id\" = 1");
+                table.HasCheckConstraint("CK_shared_variable_revision_state_revision", "\"LastRevision\" >= 0");
+            });
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Id).ValueGeneratedNever();
+            entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
+            entity.HasData(new SharedVariableRevisionStateEntity
+            {
+                Id = 1,
+                LastRevision = 0,
+                UpdatedAt = new DateTimeOffset(2026, 8, 24, 0, 0, 0, TimeSpan.Zero)
+            });
+        });
+
+        modelBuilder.Entity<SharedVariableRevisionEntity>(entity =>
+        {
+            entity.ToTable("shared_variable_revisions", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_shared_variable_revisions_operation",
+                    "\"Operation\" IN ('create', 'set', 'deleteValue', 'updateDescription', 'archive', 'reactivate')");
+                table.HasCheckConstraint(
+                    "CK_shared_variable_revisions_value_shape",
+                    "(\"HasValue\" AND \"ValueJson\" IS NOT NULL) OR "
+                    + "(NOT \"HasValue\" AND \"ValueJson\" IS NULL)");
+                table.HasCheckConstraint("CK_shared_variable_revisions_revision", "\"Revision\" > 0");
+            });
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Operation).HasMaxLength(32).IsRequired();
+            entity.Property(e => e.ValueJson).HasColumnType("jsonb");
+            entity.Property(e => e.CallerKind).HasMaxLength(16).IsRequired();
+            entity.Property(e => e.CallerId).HasMaxLength(300).IsRequired();
+            entity.Property(e => e.Source).HasMaxLength(32).IsRequired();
+            entity.Property(e => e.RequestId).HasMaxLength(300).UseCollation("C");
+            entity.Property(e => e.Reason).HasMaxLength(1000);
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+            entity.HasIndex(e => e.Revision).IsUnique();
+            entity.HasIndex(e => new { e.SharedVariableId, e.Revision }).IsUnique();
+            entity.HasIndex(e => e.WorkflowDefinitionId);
+            entity.HasIndex(e => e.InstanceId);
+            entity.HasIndex(e => e.NodeExecutionId);
+            entity.HasOne(e => e.SharedVariable)
+                .WithMany(e => e.Revisions)
+                .HasForeignKey(e => e.SharedVariableId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.WorkflowDefinition)
+                .WithMany()
+                .HasForeignKey(e => e.WorkflowDefinitionId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.Instance)
+                .WithMany()
+                .HasForeignKey(e => e.InstanceId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.NodeExecution)
+                .WithMany()
+                .HasForeignKey(e => e.NodeExecutionId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<SharedVariableCurrentValueEntity>(entity =>
+        {
+            entity.ToTable("shared_variable_current_values", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_shared_variable_current_values_shape",
+                    "(\"IsDeleted\" AND \"ValueJson\" IS NULL) OR "
+                    + "(NOT \"IsDeleted\" AND \"ValueJson\" IS NOT NULL)");
+                table.HasCheckConstraint("CK_shared_variable_current_values_revision", "\"Revision\" > 0");
+            });
+            entity.HasKey(e => e.SharedVariableId);
+            entity.Property(e => e.ValueJson).HasColumnType("jsonb");
+            entity.Property(e => e.SetAt).HasDefaultValueSql("now()");
+            entity.HasIndex(e => e.SourceRevisionId).IsUnique();
+            entity.HasIndex(e => e.Revision);
+            entity.HasIndex(e => e.ValueJson)
+                .HasDatabaseName("IX_shared_variable_current_values_ValueJson_gin")
+                .HasMethod("gin")
+                .HasFilter("NOT \"IsDeleted\"");
+            entity.HasOne(e => e.SharedVariable)
+                .WithOne(e => e.CurrentValue)
+                .HasForeignKey<SharedVariableCurrentValueEntity>(e => e.SharedVariableId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.SourceRevision)
+                .WithOne(e => e.CurrentValue)
+                .HasForeignKey<SharedVariableCurrentValueEntity>(e => e.SourceRevisionId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<SharedVariableRequestEntity>(entity =>
+        {
+            entity.ToTable("shared_variable_requests", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_shared_variable_requests_hash",
+                    "octet_length(\"RequestHash\") = 32");
+                table.HasCheckConstraint("CK_shared_variable_requests_revision", "\"ResultRevision\" > 0");
+            });
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.CallerKind).HasMaxLength(16).UseCollation("C").IsRequired();
+            entity.Property(e => e.CallerId).HasMaxLength(300).UseCollation("C").IsRequired();
+            entity.Property(e => e.RequestId).HasMaxLength(300).UseCollation("C").IsRequired();
+            entity.Property(e => e.Operation).HasMaxLength(32).IsRequired();
+            entity.Property(e => e.SharedKey).HasColumnType("citext").HasMaxLength(300).IsRequired();
+            entity.Property(e => e.RequestHash).HasColumnType("bytea").IsRequired();
+            entity.Property(e => e.ResponseJson).HasColumnType("jsonb").IsRequired();
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+            entity.HasIndex(e => new { e.CallerKind, e.CallerId, e.RequestId }).IsUnique();
+            entity.HasIndex(e => new { e.SharedVariableId, e.ResultRevision });
+            entity.HasOne(e => e.SharedVariable)
+                .WithMany()
+                .HasForeignKey(e => e.SharedVariableId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<SharedVariableClientEntity>(entity =>
+        {
+            entity.ToTable("shared_variable_clients", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_shared_variable_clients_status",
+                    "\"Status\" IN ('active', 'revoked')");
+                table.HasCheckConstraint("CK_shared_variable_clients_revision", "\"Revision\" > 0");
+                table.HasCheckConstraint(
+                    "CK_shared_variable_clients_secret_version",
+                    "\"ActiveSecretVersion\" > 0");
+                table.HasCheckConstraint(
+                    "CK_shared_variable_clients_revocation_shape",
+                    "(\"Status\" = 'revoked' AND \"RevokedAt\" IS NOT NULL) OR "
+                    + "(\"Status\" = 'active' AND \"RevokedAt\" IS NULL)");
+            });
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.ClientId).HasMaxLength(100).UseCollation("C").IsRequired();
+            entity.Property(e => e.DisplayName).HasMaxLength(300).IsRequired();
+            entity.Property(e => e.Scopes).HasColumnType("text[]").IsRequired();
+            entity.Property(e => e.Status).HasMaxLength(16).IsRequired();
+            entity.Property(e => e.CreatedByKind).HasMaxLength(16).IsRequired();
+            entity.Property(e => e.CreatedById).HasMaxLength(300).IsRequired();
+            entity.Property(e => e.UpdatedByKind).HasMaxLength(16).IsRequired();
+            entity.Property(e => e.UpdatedById).HasMaxLength(300).IsRequired();
+            entity.Property(e => e.RevocationReason).HasMaxLength(1000);
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+            entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
+            entity.HasIndex(e => e.ClientId).IsUnique();
+            entity.HasIndex(e => new { e.Status, e.Id });
+        });
+
+        modelBuilder.Entity<SharedVariableClientSecretEntity>(entity =>
+        {
+            entity.ToTable("shared_variable_client_secrets", table =>
+            {
+                table.HasCheckConstraint("CK_shared_variable_client_secrets_version", "\"Version\" > 0");
+                table.HasCheckConstraint(
+                    "CK_shared_variable_client_secrets_iterations",
+                    "\"Iterations\" BETWEEN 100000 AND 2000000");
+                table.HasCheckConstraint(
+                    "CK_shared_variable_client_secrets_salt",
+                    "octet_length(\"Salt\") >= 16");
+                table.HasCheckConstraint(
+                    "CK_shared_variable_client_secrets_digest",
+                    "octet_length(\"Digest\") >= 32");
+            });
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Algorithm).HasMaxLength(32).IsRequired();
+            entity.Property(e => e.Salt).HasColumnType("bytea").IsRequired();
+            entity.Property(e => e.Digest).HasColumnType("bytea").IsRequired();
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+            entity.HasIndex(e => new { e.ClientId, e.Version }).IsUnique();
+            entity.HasOne(e => e.Client)
+                .WithMany(e => e.Secrets)
+                .HasForeignKey(e => e.ClientId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<WorkflowDefinitionSharedVariableBindingEntity>(entity =>
+        {
+            entity.ToTable("workflow_definition_shared_variable_bindings", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_workflow_definition_shared_variable_bindings_access",
+                    "\"Access\" IN ('read', 'readWrite')");
+            });
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Alias).HasColumnType("citext").HasMaxLength(300).IsRequired();
+            entity.Property(e => e.SharedKey).HasColumnType("citext").HasMaxLength(300).IsRequired();
+            entity.Property(e => e.Access).HasMaxLength(16).IsRequired();
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+            entity.HasIndex(e => new { e.WorkflowDefinitionId, e.Alias }).IsUnique();
+            entity.HasIndex(e => new { e.WorkflowDefinitionId, e.SharedVariableId }).IsUnique();
+            entity.HasIndex(e => new { e.SharedVariableId, e.WorkflowDefinitionId });
+            entity.HasOne(e => e.WorkflowDefinition)
+                .WithMany(e => e.SharedVariableBindings)
+                .HasForeignKey(e => e.WorkflowDefinitionId)
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(e => e.SharedVariable)
+                .WithMany(e => e.DefinitionBindings)
+                .HasForeignKey(e => e.SharedVariableId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<WorkflowDefinitionSharedVariableDependencyEntity>(entity =>
+        {
+            entity.ToTable("workflow_definition_shared_variable_dependencies", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_workflow_definition_shared_variable_dependencies_kind",
+                    "\"Kind\" IN ('conditionalCatch')");
+            });
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.SharedKey).HasColumnType("citext").HasMaxLength(300).IsRequired();
+            entity.Property(e => e.NodeExternalId).HasMaxLength(300);
+            entity.Property(e => e.Kind).HasMaxLength(32).IsRequired();
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+            entity.HasIndex(e => new { e.WorkflowDefinitionId, e.NodeId, e.SharedVariableId, e.Kind }).IsUnique();
+            entity.HasIndex(e => new { e.SharedVariableId, e.WorkflowDefinitionId, e.NodeId });
+            entity.HasOne(e => e.WorkflowDefinition)
+                .WithMany(e => e.SharedVariableDependencies)
+                .HasForeignKey(e => e.WorkflowDefinitionId)
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(e => e.SharedVariable)
+                .WithMany(e => e.DefinitionDependencies)
+                .HasForeignKey(e => e.SharedVariableId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<SharedVariableWakeEntity>(entity =>
+        {
+            entity.ToTable("shared_variable_wakes", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_shared_variable_wakes_status",
+                    "\"Status\" IN ('pending', 'leased', 'completed', 'failed', 'cancelled')");
+                table.HasCheckConstraint(
+                    "CK_shared_variable_wakes_lease_shape",
+                    "(\"Status\" = 'leased' AND \"LeaseToken\" IS NOT NULL "
+                    + "AND \"LeasedBy\" IS NOT NULL AND \"LeaseExpiresAt\" IS NOT NULL) OR "
+                    + "(\"Status\" <> 'leased' AND \"LeaseToken\" IS NULL "
+                    + "AND \"LeasedBy\" IS NULL AND \"LeaseExpiresAt\" IS NULL)");
+                table.HasCheckConstraint("CK_shared_variable_wakes_attempts", "\"AttemptCount\" >= 0");
+            });
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Status).HasMaxLength(16).IsRequired();
+            entity.Property(e => e.LeasedBy).HasMaxLength(300);
+            entity.Property(e => e.LastError).HasMaxLength(1000);
+            entity.Property(e => e.AvailableAt).HasDefaultValueSql("now()");
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+            entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
+            entity.HasIndex(e => e.RevisionId).IsUnique();
+            entity.HasIndex(e => new { e.Status, e.AvailableAt, e.Id });
+            entity.HasOne(e => e.SharedVariable)
+                .WithMany(e => e.Wakes)
+                .HasForeignKey(e => e.SharedVariableId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.RevisionRecord)
+                .WithOne(e => e.Wake)
+                .HasForeignKey<SharedVariableWakeEntity>(e => e.RevisionId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<SharedVariableWakeDeliveryEntity>(entity =>
+        {
+            entity.ToTable("shared_variable_wake_deliveries", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_shared_variable_wake_deliveries_status",
+                    "\"Status\" IN ('pending', 'leased', 'completed', 'failed', 'cancelled')");
+                table.HasCheckConstraint(
+                    "CK_shared_variable_wake_deliveries_lease_shape",
+                    "(\"Status\" = 'leased' AND \"LeaseToken\" IS NOT NULL "
+                    + "AND \"LeasedBy\" IS NOT NULL AND \"LeaseExpiresAt\" IS NOT NULL) OR "
+                    + "(\"Status\" <> 'leased' AND \"LeaseToken\" IS NULL "
+                    + "AND \"LeasedBy\" IS NULL AND \"LeaseExpiresAt\" IS NULL)");
+                table.HasCheckConstraint("CK_shared_variable_wake_deliveries_attempts", "\"AttemptCount\" >= 0");
+            });
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Status).HasMaxLength(16).IsRequired();
+            entity.Property(e => e.LeasedBy).HasMaxLength(300);
+            entity.Property(e => e.LastError).HasMaxLength(1000);
+            entity.Property(e => e.AvailableAt).HasDefaultValueSql("now()");
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+            entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
+            entity.HasIndex(e => new { e.WakeId, e.TokenId, e.ActivationId }).IsUnique();
+            entity.HasIndex(e => new { e.Status, e.AvailableAt, e.Id });
+            entity.HasIndex(e => new { e.InstanceId, e.Status, e.Id });
+            entity.HasOne(e => e.Wake)
+                .WithMany(e => e.Deliveries)
+                .HasForeignKey(e => e.WakeId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.Instance)
+                .WithMany()
+                .HasForeignKey(e => e.InstanceId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.WorkflowDefinition)
+                .WithMany()
+                .HasForeignKey(e => e.WorkflowDefinitionId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.Token)
+                .WithMany()
+                .HasForeignKey(e => e.TokenId)
+                .OnDelete(DeleteBehavior.Restrict);
         });
 
         modelBuilder.Entity<WorkflowInstanceEntity>(entity =>
@@ -717,6 +1074,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(e => e.UserRoles).HasColumnType("text[]").IsRequired().HasDefaultValueSql("'{}'::text[]");
             entity.Property(e => e.ActingFor).HasMaxLength(UserTaskConstraints.MaxActorNameLength);
             entity.Property(e => e.ValuesJson).HasColumnType("jsonb");
+            entity.Property(e => e.SharedVariableWritesJson).HasColumnType("jsonb");
             entity.Property(e => e.AdministrativeActionJson).HasColumnType("jsonb");
             entity.Property(e => e.OccurredAt).HasDefaultValueSql("now()");
             entity.HasIndex(e => new { e.InstanceId, e.SequenceFlowId, e.Id })
@@ -743,12 +1101,14 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(e => e.LastActionActingFor).HasMaxLength(UserTaskConstraints.MaxActorNameLength);
             entity.Property(e => e.LastActionKind).HasMaxLength(32);
             entity.Property(e => e.LastActionValuesJson).HasColumnType("jsonb");
+            entity.Property(e => e.LastActionSharedVariableWritesJson).HasColumnType("jsonb");
             entity.Property(e => e.LastActionAdministrativeActionJson).HasColumnType("jsonb");
             entity.Property(e => e.LastTraversalUser).HasMaxLength(300);
             entity.Property(e => e.LastTraversalUserRoles).HasColumnType("text[]").IsRequired().HasDefaultValueSql("'{}'::text[]");
             entity.Property(e => e.LastTraversalActingFor).HasMaxLength(UserTaskConstraints.MaxActorNameLength);
             entity.Property(e => e.LastTraversalKind).HasMaxLength(32);
             entity.Property(e => e.LastTraversalValuesJson).HasColumnType("jsonb");
+            entity.Property(e => e.LastTraversalSharedVariableWritesJson).HasColumnType("jsonb");
             entity.Property(e => e.LastTraversalAdministrativeActionJson).HasColumnType("jsonb");
             entity.HasIndex(e => new { e.InstanceId, e.SequenceFlowId }).IsUnique();
             entity.HasOne(e => e.Instance)
@@ -819,6 +1179,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.HasKey(e => e.Id);
             entity.HasIndex(e => e.WorkflowDefinitionId);
             entity.Property(e => e.Payload).HasColumnType("jsonb");
+            entity.Property(e => e.SharedVariableWritesJson).HasColumnType("jsonb");
             entity.Property(e => e.PerformedBy).HasMaxLength(300);
             entity.Property(e => e.ActingFor).HasMaxLength(UserTaskConstraints.MaxActorNameLength);
             entity.Property(e => e.Note).HasMaxLength(1000);
@@ -1572,6 +1933,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(e => e.InvocationJson).HasColumnType("jsonb");
             entity.Property(e => e.VariablesJson).HasColumnType("jsonb").IsRequired();
             entity.Property(e => e.OutputVariableVersionsJson).HasColumnType("jsonb").IsRequired();
+            entity.Property(e => e.SharedVariableRevisionsJson).HasColumnType("jsonb");
             entity.Property(e => e.FlowInfoJson).HasColumnType("jsonb");
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
             entity.HasIndex(e => e.CreatedAt);

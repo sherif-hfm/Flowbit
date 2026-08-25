@@ -992,10 +992,17 @@ public sealed partial class WorkflowEngineService
                 var versions = await runtime.LoadLatestVariableVersionsAsync(
                     instance.Id,
                     cancellationToken);
-                var stored = versions.ToDictionary(
+                var instanceStored = versions.ToDictionary(
                     item => item.Name,
                     item => item.Value,
                     StringComparer.OrdinalIgnoreCase);
+                var stored = workflowVariables is null
+                    ? instanceStored
+                    : await workflowVariables.MergeEffectiveValuesAsync(
+                        workflow.Definition,
+                        instanceStored,
+                        lockSharedValues: true,
+                        cancellationToken);
                 var context = WithContext(
                     stored,
                     actor,
@@ -1060,6 +1067,31 @@ public sealed partial class WorkflowEngineService
                 {
                     outputVersions[missing] = 0;
                 }
+                Dictionary<string, long>? inputSharedRevisions = null;
+                if (workflowVariables is not null)
+                {
+                    var sharedRevisions = await workflowVariables.LoadSharedRevisionsAsync(
+                        workflow.Definition,
+                        lockForUpdate: false,
+                        cancellationToken);
+                    var referencedSharedRevisions = sharedRevisions
+                        .Where(pair => snapshotContext.ContainsKey(pair.Key))
+                        .ToDictionary(
+                            pair => pair.Key,
+                            pair => pair.Value,
+                            StringComparer.OrdinalIgnoreCase);
+                    if (referencedSharedRevisions.Count > 0)
+                    {
+                        inputSharedRevisions = referencedSharedRevisions;
+                    }
+                    foreach (var outputName in outputNames)
+                    {
+                        if (sharedRevisions.TryGetValue(outputName, out var revision))
+                        {
+                            outputVersions[outputName] = revision;
+                        }
+                    }
+                }
 
                 snapshot = await jobs.SaveStageAsync(
                     fence,
@@ -1068,7 +1100,8 @@ public sealed partial class WorkflowEngineService
                         snapshotContext,
                         outputVersions,
                         null,
-                        evaluationTime),
+                        evaluationTime,
+                        inputSharedRevisions),
                     DefaultMaxSnapshotBytes,
                     cancellationToken)
                     ?? throw new WorkflowConflictException(
@@ -1205,10 +1238,17 @@ public sealed partial class WorkflowEngineService
                 var versions = await runtime.LoadLatestVariableVersionsAsync(
                     instance.Id,
                     cancellationToken);
-                var stored = versions.ToDictionary(
+                var instanceStored = versions.ToDictionary(
                     item => item.Name,
                     item => item.Value,
                     StringComparer.OrdinalIgnoreCase);
+                var stored = workflowVariables is null
+                    ? instanceStored
+                    : await workflowVariables.MergeEffectiveValuesAsync(
+                        definition,
+                        instanceStored,
+                        lockSharedValues: true,
+                        cancellationToken);
                 var context = WithContext(
                     stored,
                     actor,
@@ -1259,6 +1299,31 @@ public sealed partial class WorkflowEngineService
                 {
                     outputVersions[boundaryErrorVariable] = 0;
                 }
+                Dictionary<string, long>? inputSharedRevisions = null;
+                if (workflowVariables is not null)
+                {
+                    var sharedRevisions = await workflowVariables.LoadSharedRevisionsAsync(
+                        definition,
+                        lockForUpdate: false,
+                        cancellationToken);
+                    var referencedSharedRevisions = sharedRevisions
+                        .Where(pair => snapshotContext.ContainsKey(pair.Key))
+                        .ToDictionary(
+                            pair => pair.Key,
+                            pair => pair.Value,
+                            StringComparer.OrdinalIgnoreCase);
+                    if (referencedSharedRevisions.Count > 0)
+                    {
+                        inputSharedRevisions = referencedSharedRevisions;
+                    }
+                    foreach (var pair in sharedRevisions)
+                    {
+                        if (outputVersions.ContainsKey(pair.Key))
+                        {
+                            outputVersions[pair.Key] = pair.Value;
+                        }
+                    }
+                }
 
                 snapshot = await jobs.SaveStageAsync(
                     fence,
@@ -1269,7 +1334,8 @@ public sealed partial class WorkflowEngineService
                         flowInfo is null
                             ? null
                             : JsonSerializer.SerializeToElement(flowInfo),
-                        evaluationTime),
+                        evaluationTime,
+                        inputSharedRevisions),
                     DefaultMaxSnapshotBytes,
                     cancellationToken)
                     ?? throw new WorkflowConflictException(
@@ -1420,6 +1486,7 @@ public sealed partial class WorkflowEngineService
             await EnsureOutputVersionsCurrentAsync(
                 instance.Id,
                 snapshot.OutputVariableVersions,
+                definition,
                 cancellationToken);
             outcome = await ApplyStagedServiceResultAsync(
                 instance,
@@ -1465,8 +1532,9 @@ public sealed partial class WorkflowEngineService
                                 StringComparison.OrdinalIgnoreCase))
                             .ToDictionary(
                                 pair => pair.Key,
-                                pair => pair.Value,
-                                StringComparer.OrdinalIgnoreCase),
+                            pair => pair.Value,
+                            StringComparer.OrdinalIgnoreCase),
+                        definition,
                         cancellationToken);
                 }
                 var reason = error.ValueKind == JsonValueKind.String
@@ -1491,20 +1559,17 @@ public sealed partial class WorkflowEngineService
                             pair => pair.Key,
                             pair => pair.Value,
                             StringComparer.OrdinalIgnoreCase),
+                    definition,
                     cancellationToken);
-                foreach (var pair in writes)
-                {
-                    await runtime.AddVariableAsync(
-                        instance.Id,
-                        pair.Key,
-                        node.Id,
-                        actor.User,
-                        pair.Value,
-                        cancellationToken,
-                        token.CurrentNodeExecutionId,
-                        actor.ActingFor,
-                        actor.DelegationId);
-                }
+                await WriteVariablesAsync(
+                    definition,
+                    instance.WorkflowDefinitionId,
+                    instance.Id,
+                    writes,
+                    node.Id,
+                    token.CurrentNodeExecutionId,
+                    actor,
+                    cancellationToken);
                 outcome = TaskExecutionOutcome.Ok();
             }
             activityAlreadyExecuted = true;
@@ -1993,6 +2058,12 @@ public sealed partial class WorkflowEngineService
 
         foreach (var target in writes.Select(write => write.Target).Distinct())
         {
+            if (string.Equals(target.Scope, VariableScopes.Shared, StringComparison.Ordinal)
+                && target.Access != Flowbit.Shared.Models.SharedVariableAccessModes.ReadWrite)
+            {
+                throw new WorkflowDomainException(
+                    $"Script task #{node.Id} cannot write read-only shared variable '{target.Name}'.");
+            }
             if (string.IsNullOrWhiteSpace(target.Validation)
                 || target.Nullable
                    && overlay.TryGetValue(target.Name!, out var nullableValue)
@@ -2000,7 +2071,16 @@ public sealed partial class WorkflowEngineService
             {
                 continue;
             }
-            if (!SequenceFlowConditionEvaluator.Evaluate(target.Validation, overlay))
+            IReadOnlyDictionary<string, JsonElement> validationContext = overlay;
+            if (string.Equals(target.Scope, VariableScopes.Shared, StringComparison.Ordinal)
+                && overlay.TryGetValue(target.Name!, out var sharedCandidate))
+            {
+                validationContext = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["value"] = sharedCandidate
+                };
+            }
+            if (!SequenceFlowConditionEvaluator.Evaluate(target.Validation, validationContext))
             {
                 throw new WorkflowDomainException(
                     $"Variable '{target.Name}' failed validation: '{target.Validation}'.");
@@ -2019,6 +2099,7 @@ public sealed partial class WorkflowEngineService
     private async Task EnsureOutputVersionsCurrentAsync(
         long instanceId,
         IReadOnlyDictionary<string, long> expected,
+        WorkflowModel definition,
         CancellationToken cancellationToken)
     {
         if (expected.Count == 0)
@@ -2032,9 +2113,20 @@ public sealed partial class WorkflowEngineService
                 item => item.Name,
                 item => item.Version,
                 StringComparer.OrdinalIgnoreCase);
+        var sharedRevisions = workflowVariables is null
+            ? new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase)
+            : new Dictionary<string, long>(
+                await workflowVariables.LoadSharedRevisionsAsync(
+                    definition,
+                    lockForUpdate: true,
+                    cancellationToken),
+                StringComparer.OrdinalIgnoreCase);
         foreach (var pair in expected)
         {
-            if (actual.GetValueOrDefault(pair.Key) != pair.Value)
+            var current = sharedRevisions.TryGetValue(pair.Key, out var sharedRevision)
+                ? sharedRevision
+                : actual.GetValueOrDefault(pair.Key);
+            if (current != pair.Value)
             {
                 throw new WorkflowOutputVersionConflictException(
                     $"Output variable '{pair.Key}' changed while async work was running.");

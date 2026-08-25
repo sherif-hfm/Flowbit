@@ -223,6 +223,36 @@ else if (execution is not null)
                     </div>
                 }
             </section>
+
+            @if (execution.SharedVariableChanges.Count > 0)
+            {
+                <section class="panel panel-flush" aria-labelledby="execution-shared-variables-heading">
+                    <div class="section-heading">
+                        <div><h2 id="execution-shared-variables-heading">Shared-variable revisions</h2><p>Deployment-wide writes attributed to this node execution. Values remain in the protected shared-variable catalog.</p></div>
+                        <a class="section-link" href="shared-variables">Manage catalog <AppIcon Name="chevron-right" /></a>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="table align-middle">
+                            <caption class="visually-hidden">Shared-variable revisions attributed to node execution #@execution.Id</caption>
+                            <thead><tr><th scope="col">Key</th><th scope="col">Revision</th><th scope="col">Operation</th><th scope="col">Effect</th><th scope="col">Source action</th><th scope="col">Caller</th><th scope="col">Committed</th></tr></thead>
+                            <tbody>
+                            @foreach (var change in execution.SharedVariableChanges)
+                            {
+                                <tr>
+                                    <td><strong>@change.Key</strong><span class="data-subtitle">History row #@change.RevisionId</span></td>
+                                    <td>#@change.Revision</td>
+                                    <td>@change.Operation</td>
+                                    <td>@(change.ValueChanged ? "Value changed" : "Metadata / lifecycle only")<span class="data-subtitle">@(change.HasValue ? "Value set" : "Value unset")</span></td>
+                                    <td>@(change.SourceActionId?.ToString() ?? "—")</td>
+                                    <td>@change.CallerId</td>
+                                    <td title="@change.CreatedAt.ToString("O")">@change.CreatedAt.ToLocalTime().ToString("g")</td>
+                                </tr>
+                            }
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
+            }
         </div>
 
         <aside class="dashboard-stack">

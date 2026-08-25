@@ -71,6 +71,120 @@ public sealed class EditorConditionalEventTests
     }
 
     [Fact]
+    public void Validator_RequiresDurableAsyncForSharedVariableDependency()
+    {
+        var candidate = ValidCandidate();
+        ((JsonArray)candidate["variables"]!).Add(new JsonObject
+        {
+            ["id"] = 1,
+            ["name"] = "approvalSignal",
+            ["dataType"] = "boolean",
+            ["isArray"] = false,
+            ["nullable"] = false,
+            ["required"] = false,
+            ["defaultValue"] = null,
+            ["validation"] = null,
+            ["scope"] = "shared",
+            ["sharedKey"] = "approvals.signal",
+            ["access"] = "read"
+        });
+        var conditional = (JsonObject)((JsonArray)candidate["flowNodes"]!)[1]!["conditional"]!;
+        conditional["condition"] = "[approvalSignal] == true";
+
+        Assert.Contains(
+            "Conditional catch event #2 observes shared variable 'approvalSignal' and must explicitly use deliveryMode='durableAsync'.",
+            Validate(candidate));
+
+        conditional["deliveryMode"] = "durableAsync";
+        Assert.Empty(Validate(candidate));
+
+        conditional.Remove("deliveryMode");
+        conditional["condition"] = "'approvalSignal' == 'approvalSignal'";
+        Assert.DoesNotContain(Validate(candidate), error =>
+            error.Contains("must explicitly use deliveryMode='durableAsync'", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Validator_RequiresExplicitSharedAccessAndRejectsNestedBindings()
+    {
+        var candidate = ValidCandidate("durableAsync");
+        var shared = new JsonObject
+        {
+            ["id"] = 1,
+            ["name"] = "signal",
+            ["dataType"] = "boolean",
+            ["isArray"] = false,
+            ["nullable"] = true,
+            ["required"] = false,
+            ["defaultValue"] = null,
+            ["validation"] = null,
+            ["scope"] = "shared",
+            ["sharedKey"] = "events.signal"
+        };
+        ((JsonArray)candidate["variables"]!).Add(shared);
+
+        Assert.Contains(
+            "Shared process variable 'signal' must explicitly set access to read or readWrite.",
+            Validate(candidate));
+
+        shared["access"] = "readWrite";
+        var nested = new JsonObject
+        {
+            ["id"] = 1,
+            ["name"] = "nested",
+            ["dataType"] = "string",
+            ["isArray"] = false,
+            ["required"] = false,
+            ["defaultValue"] = null,
+            ["scope"] = "shared",
+            ["sharedKey"] = "invalid.nested",
+            ["access"] = "readWrite"
+        };
+        ((JsonArray)((JsonArray)candidate["flowNodes"]!)[1]!["variables"]!).Add(nested);
+
+        Assert.Contains(Validate(candidate), error =>
+            error.Contains("bind shared variables only at workflow level", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Validator_RejectsReadOnlySharedAssignmentTarget()
+    {
+        var candidate = ValidCandidate();
+        var shared = new JsonObject
+        {
+            ["id"] = 1,
+            ["name"] = "signal",
+            ["dataType"] = "boolean",
+            ["isArray"] = false,
+            ["nullable"] = false,
+            ["required"] = false,
+            ["defaultValue"] = null,
+            ["validation"] = null,
+            ["scope"] = "shared",
+            ["sharedKey"] = "events.signal",
+            ["access"] = "read"
+        };
+        ((JsonArray)candidate["variables"]!).Add(shared);
+        var task = (JsonObject)((JsonArray)candidate["flowNodes"]!)[1]!;
+        task["type"] = "scriptTask";
+        task.Remove("conditional");
+        task["scriptFormat"] = "ncalc";
+        task["assignments"] = new JsonArray(new JsonObject
+        {
+            ["variable"] = "signal",
+            ["expression"] = "true"
+        });
+
+        Assert.Contains(Validate(candidate), error =>
+            error.Contains("Script task #2", StringComparison.Ordinal) &&
+            error.Contains("cannot assign read-only shared variable 'signal'", StringComparison.Ordinal));
+
+        shared["access"] = "readWrite";
+        Assert.DoesNotContain(Validate(candidate), error =>
+            error.Contains("read-only shared variable", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void EditorSource_ContainsConditionalPaletteAndBpmnMarker()
     {
         var html = ReadEditorSource();

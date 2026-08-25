@@ -662,7 +662,8 @@ public interface IWorkflowRuntimeRepository
         string? actingFor = null,
         long? delegationId = null,
         string? reason = null,
-        long? administrativeActionBatchId = null);
+        long? administrativeActionBatchId = null,
+        IReadOnlyList<SharedVariableWriteCorrelationDto>? sharedVariableWrites = null);
 
     Task AddUserTaskActionHistoryAsync(
         long instanceId,
@@ -678,7 +679,8 @@ public interface IWorkflowRuntimeRepository
         long? delegationId = null,
         string? note = null,
         string? reason = null,
-        long? administrativeActionBatchId = null);
+        long? administrativeActionBatchId = null,
+        IReadOnlyList<SharedVariableWriteCorrelationDto>? sharedVariableWrites = null);
 
     Task AddUserTaskHistoryAsync(
         long instanceId,

@@ -1,5 +1,5 @@
 {
-  "id": "conditional-event",
+  "id": "example-conditional-event",
   "name": "conditional event",
   "initialEventId": 1,
   "variables": [

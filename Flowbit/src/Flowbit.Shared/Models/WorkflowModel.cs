@@ -1457,6 +1457,33 @@ public sealed class VariableModel
     public string Name { get; set; } = string.Empty;
 
     /// <summary>
+    /// Optional storage scope for a top-level process variable. A missing value
+    /// retains the historical instance-scoped behavior; <c>shared</c> binds the
+    /// local variable name to a deployment-wide shared-variable catalog entry.
+    /// Node and sequence-flow input declarations cannot set this property.
+    /// </summary>
+    [JsonPropertyName("scope")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Scope { get; set; }
+
+    /// <summary>
+    /// Deployment-wide catalog key used when <see cref="Scope"/> is
+    /// <see cref="VariableScopes.Shared"/>. The workflow's <see cref="Name"/>
+    /// remains the local expression and producer alias.
+    /// </summary>
+    [JsonPropertyName("sharedKey")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? SharedKey { get; set; }
+
+    /// <summary>
+    /// Requested shared-variable access (<c>read</c> or <c>readWrite</c>).
+    /// Present only for shared top-level declarations.
+    /// </summary>
+    [JsonPropertyName("access")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Access { get; set; }
+
+    /// <summary>
     /// The data type of the variable (string, number, boolean, date, datetime).
     /// </summary>
     [JsonPropertyName("dataType")]
@@ -1731,6 +1758,18 @@ public static class WorkflowVariableTypes
     public const string Date = "date";
     public const string DateTime = "datetime";
     public const string Json = "json";
+}
+
+public static class VariableScopes
+{
+    public const string Instance = "instance";
+    public const string Shared = "shared";
+}
+
+public static class SharedVariableAccessModes
+{
+    public const string Read = "read";
+    public const string ReadWrite = "readWrite";
 }
 
 public sealed class WorkflowIdConverter : JsonConverter<string>
