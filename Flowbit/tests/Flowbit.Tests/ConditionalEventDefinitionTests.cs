@@ -104,7 +104,7 @@ public sealed class ConditionalEventDefinitionTests
     }
 
     [Fact]
-    public void Analyze_RequiresDurableAsyncForSharedDependencies()
+    public void Analyze_AcceptsAtomicSharedDependenciesForOutboxDelivery()
     {
         var definition = CreateDefinition("Amount >= 10", ConditionalEventDeliveryModes.Atomic);
         var amount = definition.Variables.Single(variable => variable.Name == "Amount");
@@ -113,9 +113,12 @@ public sealed class ConditionalEventDefinitionTests
         amount.Access = SharedVariableAccessModes.Read;
         amount.DefaultValue = null;
 
-        var error = Assert.Throws<WorkflowDomainException>(() => analyzer.Analyze(definition));
+        var plan = analyzer.Analyze(definition);
 
-        Assert.Contains("durableAsync", error.Message, StringComparison.Ordinal);
+        Assert.Equal(
+            ConditionalEventDeliveryModes.Atomic,
+            plan.EventsByNodeId[2].DeliveryMode);
+        Assert.Equal(["Amount"], plan.EventsByNodeId[2].Dependencies.ToArray());
     }
 
     [Fact]

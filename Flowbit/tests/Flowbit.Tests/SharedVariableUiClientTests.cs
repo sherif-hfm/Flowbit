@@ -5,6 +5,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using Flowbit.Shared.Dtos;
 using WorkflowApiClient = FlowbitUi::Flowbit.Ui.Clients.WorkflowApiClient;
+using WorkflowApiException = FlowbitUi::Flowbit.Ui.Clients.WorkflowApiException;
 using Xunit;
 
 namespace Flowbit.Tests;
@@ -123,6 +124,120 @@ public sealed class SharedVariableUiClientTests
                 Assert.Equal(5, body.RootElement.GetProperty("expectedRevision").GetInt64());
                 Assert.Equal(48, body.RootElement.GetProperty("gracePeriodHours").GetInt32());
             });
+    }
+
+    [Fact]
+    public async Task SharedIncidentListRetryAndResolveUseOperatorRoutesAndReason()
+    {
+        var incident = new SharedVariableIncidentDto(
+            17,
+            "delivery",
+            5,
+            9,
+            5,
+            9,
+            "examples.service.status",
+            44,
+            101,
+            7,
+            12,
+            Guid.NewGuid(),
+            3,
+            "delivery_failed",
+            "open",
+            "Delivery failed",
+            "test detail",
+            null,
+            null,
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow,
+            null);
+        using var handler = new RecordingHandler(
+            Response(new PagedResult<SharedVariableIncidentDto>(
+                [incident with { Details = null }],
+                2,
+                25,
+                26)),
+            Response(incident),
+            Response(incident with
+            {
+                Status = "resolved",
+                ResolvedBy = "retry-admin",
+                Details = null
+            }),
+            Response(incident with
+            {
+                Status = "resolved",
+                ResolvedBy = "admin",
+                Details = null
+            }));
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("https://flowbit.test") };
+        var client = new WorkflowApiClient(http);
+
+        var page = await client.GetSharedVariableIncidentsAsync("open", 2, 25);
+        var detail = await client.GetSharedVariableIncidentAsync(17);
+        var retried = await client.RetrySharedVariableIncidentAsync(17);
+        var resolved = await client.ResolveSharedVariableIncidentAsync(17, "Recovered manually");
+
+        Assert.Equal(26, page.TotalCount);
+        Assert.Null(Assert.Single(page.Items).Details);
+        Assert.Equal(17, detail?.Id);
+        Assert.Equal("test detail", detail?.Details);
+        Assert.Equal("retry-admin", retried.ResolvedBy);
+        Assert.Null(retried.Details);
+        Assert.Equal("admin", resolved.ResolvedBy);
+        Assert.Null(resolved.Details);
+        Assert.Collection(
+            handler.Requests,
+            request => Assert.Equal(
+                "/api/shared-variable-incidents?page=2&pageSize=25&status=open",
+                request.PathAndQuery),
+            request =>
+            {
+                Assert.Equal(HttpMethod.Get, request.Method);
+                Assert.Equal("/api/shared-variable-incidents/17", request.PathAndQuery);
+            },
+            request =>
+            {
+                Assert.Equal(HttpMethod.Post, request.Method);
+                Assert.Equal("/api/shared-variable-incidents/17/retry", request.PathAndQuery);
+            },
+            request =>
+            {
+                Assert.Equal(HttpMethod.Post, request.Method);
+                Assert.Equal("/api/shared-variable-incidents/17/resolve", request.PathAndQuery);
+                using var body = JsonDocument.Parse(request.Body!);
+                Assert.Equal("Recovered manually", body.RootElement.GetProperty("reason").GetString());
+            });
+    }
+
+    [Fact]
+    public async Task SharedIncidentDetailReturnsNullForNotFound()
+    {
+        using var handler = new RecordingHandler(new HttpResponseMessage(HttpStatusCode.NotFound));
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("https://flowbit.test") };
+        var client = new WorkflowApiClient(http);
+
+        var incident = await client.GetSharedVariableIncidentAsync(404);
+
+        Assert.Null(incident);
+        Assert.Equal("/api/shared-variable-incidents/404", Assert.Single(handler.Requests).PathAndQuery);
+    }
+
+    [Fact]
+    public async Task SharedIncidentListPreservesStructuredApiErrors()
+    {
+        using var handler = new RecordingHandler(Response(
+            new { error = "Unknown shared-variable incident status." },
+            HttpStatusCode.BadRequest));
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("https://flowbit.test") };
+        var client = new WorkflowApiClient(http);
+
+        var exception = await Assert.ThrowsAsync<WorkflowApiException>(() =>
+            client.GetSharedVariableIncidentsAsync("unknown"));
+
+        Assert.Equal(HttpStatusCode.BadRequest, exception.StatusCode);
+        Assert.Equal("Unknown shared-variable incident status.", exception.Message);
     }
 
     private static SharedVariableValueDto Value(string key, long revision) => new(

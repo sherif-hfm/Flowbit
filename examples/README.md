@@ -6,7 +6,7 @@ format, an `example-*` workflow id, integer node and sequence-flow ids, and no
 legacy properties. The examples are intentionally focused: combine their
 patterns when building a production workflow.
 
-The catalog contains 36 workflows. Automated tests recursively discover every
+The catalog contains 38 workflows. Automated tests recursively discover every
 JSON file, deserialize it, validate it with the runtime's strict JavaScript
 parser, load and render it in the editor, and verify that this page links it.
 Tests never call the REST or message endpoints described below.
@@ -33,6 +33,7 @@ values. Adjust them before production use.
 | [Inbox visibility from actor claims](basics/04-inbox-task-condition.json) | Supply numeric `depId`. | An actor whose allowlisted `depId` claim matches the stored value sees and completes the task. | Demonstrates PostgreSQL-authoritative inbox visibility using stored state and caller claims. | Authenticated API and database with the actor claim allowlisted; no Worker. |
 | [Intermediate conditional event](basics/05-conditional-event.json) | `amount` defaults to zero. | Update the amount while the sibling branch is active, then confirm the user task. | An atomic conditional catch continues when its stored-variable predicate becomes true. | API and database; no Worker or configuration. |
 | [Durable asynchronous conditional event](basics/06-conditional-event-durable-async.json) | `amount` defaults to zero. | Update the amount while the sibling branch is active, then confirm the user task. | A durable conditional catch latches a wake job and resumes through worker processing. | API, database, and `Flowbit.Worker`; no external configuration. |
+| [Shared-variable conditional event](basics/07-shared-variables-conditional-event.json) | Create active catalog key `examples.approval.amount` as a non-nullable scalar number and give it an initial value. | Update the catalog value above 500, then complete **Confirm Threshold Approval**. | A durable conditional wait observes deployment-wide state without copying the value into instance-variable history. | API, database, `Flowbit.Worker`, and the documented catalog prerequisite. |
 
 ## User tasks
 
@@ -67,6 +68,7 @@ and response contracts. The definitions contain no public service URL or secret.
 | --- | --- | --- | --- | --- |
 | [REST templating and typed output](service-tasks/01-rest-templating-and-typed-output.json) | `ExampleRequester` supplies required `requestId` and `customerId`; other request values have defaults. | `ExampleReviewer` completes review after a successful call. | URL/header/body interpolation feeds a REST call; status plus declared/dynamic typed mappings, arrays, defaults, and validation commit atomically. | API, database, controlled mock API, `${config.exampleApiBaseUrl}`, and `${config.exampleApiToken}`; no Worker. |
 | [REST error boundary and error end](service-tasks/02-rest-error-boundary-and-error-end.json) | `ExampleRequester` supplies `requestId` and `resourceId`. | `ExampleOperator` retries after fixing the mock or ends with a domain fault. | HTTP status and error variables are captured; retry can succeed, while the terminal route produces `EXAMPLE.REST_FAILURE`. | API, database, controlled failing mock, and the same two trusted REST settings; no Worker. |
+| [Async REST output to shared state](service-tasks/03-rest-shared-variable-output.json) | Create active catalog key `examples.service.status` as a non-nullable scalar string. | Start an instance; no user action is required. | An async-before REST call maps a non-empty `status` response into the shared catalog exactly once; the boundary faults the instance on failure. | API, database, `Flowbit.Worker`, controlled mock API, `${config.exampleApiBaseUrl}`, and the catalog prerequisite. |
 
 ## Messages
 

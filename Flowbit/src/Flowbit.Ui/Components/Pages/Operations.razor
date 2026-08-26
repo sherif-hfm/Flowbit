@@ -4,7 +4,7 @@
 <PageTitle>Jobs &amp; incidents · Flowbit</PageTitle>
 
 <PageHeader Eyebrow="Operations" Title="Jobs &amp; incidents"
-            Description="Inspect durable async work, timer activity, retries, and workflow incidents.">
+            Description="Inspect durable async work, timer activity, workflow incidents, and shared-variable wake recovery.">
     <Actions>
         <button class="btn btn-outline-secondary" @onclick="LoadAsync" disabled="@loading">
             <AppIcon Name="refresh" /> @(loading ? "Refreshing…" : "Refresh")
@@ -39,15 +39,15 @@
                     Tone="success"
                     Hint="@($"Observed {statistics.ObservedAt.ToLocalTime():T}")" />
         <MetricCard Label="Open incidents"
-                    Value="@statistics.OpenIncidentCount.ToString("N0")"
+                    Value="@((statistics.OpenIncidentCount + statistics.OpenSharedVariableIncidentCount).ToString("N0"))"
                     Icon="alert"
                     Tone="danger"
-                    Hint="Jobs requiring attention" />
+                    Hint="@($"{statistics.OpenIncidentCount:N0} workflow · {statistics.OpenSharedVariableIncidentCount:N0} shared")" />
     </section>
 }
 
 <section class="panel panel-flush mb-4" aria-labelledby="incident-heading">
-    <div class="section-heading px-3 pt-3">
+    <div class="section-heading flex-wrap px-3 pt-3">
         <div>
             <h2 id="incident-heading">Incidents</h2>
             <p>@(incidents is null ? "Loading incidents…" : $"{incidents.TotalCount:N0} matching incidents")</p>
@@ -139,6 +139,168 @@
                 <button class="btn btn-outline-secondary btn-sm"
                         disabled="@string.IsNullOrWhiteSpace(incidents.NextCursor)"
                         @onclick="NextIncidentPageAsync">Next</button>
+            </div>
+        </div>
+    }
+</section>
+
+<section class="panel panel-flush mb-4" aria-labelledby="shared-incident-heading">
+    <div class="section-heading flex-wrap px-3 pt-3">
+        <div>
+            <h2 id="shared-incident-heading">Shared-variable incidents</h2>
+            <p>@(sharedIncidents is null ? "Loading shared-variable incidents…" : $"{sharedIncidents.TotalCount:N0} matching incidents")</p>
+        </div>
+        <select class="form-select form-select-sm w-auto" aria-label="Shared-variable incident status"
+                @bind="sharedIncidentStatus" @bind:after="ResetAndLoadSharedIncidentsAsync">
+            <option value="open">Open</option>
+            <option value="resolved">Resolved</option>
+            <option value="">All</option>
+        </select>
+    </div>
+    <div class="px-3 pb-3">
+        <label class="form-label small mb-1" for="shared-incident-resolution-reason">Resolution reason</label>
+        <input id="shared-incident-resolution-reason"
+               class="form-control form-control-sm"
+               style="max-width: 38rem"
+               maxlength="1000"
+               autocomplete="off"
+               placeholder="Required when resolving an incident"
+               @bind="sharedIncidentResolutionReason"
+               @bind:event="oninput" />
+    </div>
+
+    @if (selectedSharedIncident is not null)
+    {
+        <div class="alert alert-secondary mx-3 mb-3" role="region" aria-labelledby="shared-incident-detail-heading">
+            <div class="d-flex align-items-start justify-content-between gap-3">
+                <div>
+                    <h3 id="shared-incident-detail-heading" class="h6 mb-1">Shared-variable incident #@selectedSharedIncident.Id</h3>
+                    <p class="mb-0">@selectedSharedIncident.Summary</p>
+                </div>
+                <button type="button" class="btn btn-sm btn-outline-secondary"
+                        @onclick="CloseSharedIncidentDetail">Close</button>
+            </div>
+            <dl class="row small mt-3 mb-0">
+                <dt class="col-sm-3">Failure type</dt>
+                <dd class="col-sm-9"><code>@selectedSharedIncident.Type</code></dd>
+                <dt class="col-sm-3">Durable work</dt>
+                <dd class="col-sm-9">
+                    @selectedSharedIncident.WorkKind · wake #@selectedSharedIncident.OriginalWakeId
+                    @if (selectedSharedIncident.OriginalDeliveryId is long detailDeliveryId)
+                    {
+                        <span> · delivery #@detailDeliveryId</span>
+                    }
+                </dd>
+                <dt class="col-sm-3">Diagnostics</dt>
+                <dd class="col-sm-9 mb-0" style="white-space: pre-wrap; overflow-wrap: anywhere">@(string.IsNullOrWhiteSpace(selectedSharedIncident.Details) ? "No additional diagnostic details were recorded." : selectedSharedIncident.Details)</dd>
+            </dl>
+        </div>
+    }
+
+    @if (sharedIncidents is null)
+    {
+        <div class="p-3" role="status"><div class="skeleton"></div></div>
+    }
+    else if (sharedIncidents.Items.Count == 0)
+    {
+        <div class="p-3"><EmptyState Icon="check" Title="No matching shared-variable incidents"
+                                   Description="There is no shared wake work requiring attention in the selected state." /></div>
+    }
+    else
+    {
+        <div class="table-responsive">
+            <table class="table align-middle mb-0">
+                <caption class="visually-hidden">Shared-variable wake incidents and recovery actions</caption>
+                <thead>
+                    <tr>
+                        <th scope="col">Incident</th>
+                        <th scope="col">Shared key</th>
+                        <th scope="col">Work</th>
+                        <th scope="col">Problem</th>
+                        <th scope="col">Updated</th>
+                        <th scope="col" class="text-end">Action</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var incident in sharedIncidents.Items)
+                    {
+                        <tr>
+                            <td>
+                                <span class="mono-id">#@incident.Id</span>
+                                <StatusBadge Status="@incident.Status" />
+                                @if (!string.IsNullOrWhiteSpace(incident.ResolvedBy))
+                                {
+                                    <span class="data-subtitle">Resolved by @incident.ResolvedBy</span>
+                                }
+                                @if (!string.IsNullOrWhiteSpace(incident.ResolutionReason))
+                                {
+                                    <span class="data-subtitle" title="@incident.ResolutionReason">@incident.ResolutionReason</span>
+                                }
+                            </td>
+                            <td>
+                                <span class="data-title">@incident.SharedKey</span>
+                                <span class="data-subtitle">Revision @incident.Revision</span>
+                            </td>
+                            <td>
+                                <span>@incident.WorkKind</span>
+                                <span class="data-subtitle">Original wake #@incident.OriginalWakeId</span>
+                                @if (incident.OriginalDeliveryId is long deliveryId)
+                                {
+                                    <span class="data-subtitle">Original delivery #@deliveryId</span>
+                                }
+                                @if (incident.InstanceId is long instanceId)
+                                {
+                                    <a class="data-subtitle" href="@($"instances/{instanceId}")">Instance #@instanceId</a>
+                                }
+                                @if (incident.NodeId is int nodeId)
+                                {
+                                    <span class="data-subtitle">Node #@nodeId</span>
+                                }
+                            </td>
+                            <td>
+                                <span>@incident.Summary</span>
+                                <span class="data-subtitle">@incident.Type</span>
+                            </td>
+                            <td title="@incident.UpdatedAt.ToString("O")">@incident.UpdatedAt.ToLocalTime().ToString("g")</td>
+                            <td class="text-end">
+                                <button class="btn btn-sm btn-outline-secondary me-2"
+                                        aria-label="View details for shared-variable incident #@incident.Id"
+                                        disabled="@(loadingSharedIncidentId is not null)"
+                                        @onclick="() => ShowSharedIncidentAsync(incident.Id)">
+                                    @(loadingSharedIncidentId == incident.Id ? "Loading…" : "Details")
+                                </button>
+                                @if (string.Equals(incident.Status, "open", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    <div class="d-inline-flex gap-2">
+                                        <button class="btn btn-sm btn-primary"
+                                                aria-label="Retry shared-variable incident #@incident.Id"
+                                                disabled="@(workingSharedIncidentId is not null)"
+                                                @onclick="() => RetrySharedIncidentAsync(incident.Id)">
+                                            @(workingSharedIncidentId == incident.Id ? "Working…" : "Retry")
+                                        </button>
+                                        <button class="btn btn-sm btn-outline-danger"
+                                                aria-label="Resolve shared-variable incident #@incident.Id"
+                                                disabled="@(workingSharedIncidentId is not null || string.IsNullOrWhiteSpace(sharedIncidentResolutionReason))"
+                                                @onclick="() => ResolveSharedIncidentAsync(incident.Id)">
+                                            Resolve
+                                        </button>
+                                    </div>
+                                }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+        <div class="pagination-bar">
+            <span class="pagination-copy">Page @sharedIncidentPage · @sharedIncidents.TotalCount.ToString("N0") total</span>
+            <div class="d-flex gap-2">
+                <button class="btn btn-outline-secondary btn-sm"
+                        disabled="@(sharedIncidentPage <= 1)"
+                        @onclick="PreviousSharedIncidentPageAsync">Previous</button>
+                <button class="btn btn-outline-secondary btn-sm"
+                        disabled="@(sharedIncidentPage * PageSize >= sharedIncidents.TotalCount)"
+                        @onclick="NextSharedIncidentPageAsync">Next</button>
             </div>
         </div>
     }
@@ -241,11 +403,18 @@
     private JobQueueStatisticsDto? statistics;
     private PagedResult<JobSummaryDto>? jobs;
     private PagedResult<IncidentSummaryDto>? incidents;
+    private PagedResult<SharedVariableIncidentDto>? sharedIncidents;
+    private SharedVariableIncidentDto? selectedSharedIncident;
     private string jobStatus = string.Empty;
     private string incidentStatus = "open";
+    private string sharedIncidentStatus = "open";
+    private string sharedIncidentResolutionReason = string.Empty;
+    private int sharedIncidentPage = 1;
     private readonly List<string?> jobCursors = [null];
     private readonly List<string?> incidentCursors = [null];
     private long? retryingIncidentId;
+    private long? workingSharedIncidentId;
+    private long? loadingSharedIncidentId;
     private long? cancellingInstanceId;
     private bool loading;
     private string? error;
@@ -262,7 +431,8 @@
             await Task.WhenAll(
                 LoadStatisticsAsync(),
                 LoadJobsAsync(),
-                LoadIncidentsAsync());
+                LoadIncidentsAsync(),
+                LoadSharedIncidentsAsync());
         }
         catch (Exception ex)
         {
@@ -283,6 +453,12 @@
     private async Task LoadIncidentsAsync() =>
         incidents = await Api.GetIncidentsAsync(incidentStatus, incidentCursors[^1], PageSize);
 
+    private async Task LoadSharedIncidentsAsync() =>
+        sharedIncidents = await Api.GetSharedVariableIncidentsAsync(
+            sharedIncidentStatus,
+            sharedIncidentPage,
+            PageSize);
+
     private async Task ResetAndLoadJobsAsync()
     {
         jobCursors.Clear();
@@ -295,6 +471,12 @@
         incidentCursors.Clear();
         incidentCursors.Add(null);
         await SafeLoadAsync(LoadIncidentsAsync);
+    }
+
+    private async Task ResetAndLoadSharedIncidentsAsync()
+    {
+        sharedIncidentPage = 1;
+        await SafeLoadAsync(LoadSharedIncidentsAsync);
     }
 
     private async Task PreviousJobPageAsync()
@@ -333,6 +515,22 @@
         }
         incidentCursors.Add(incidents.NextCursor);
         await SafeLoadAsync(LoadIncidentsAsync);
+    }
+
+    private async Task PreviousSharedIncidentPageAsync()
+    {
+        sharedIncidentPage = Math.Max(1, sharedIncidentPage - 1);
+        await SafeLoadAsync(LoadSharedIncidentsAsync);
+    }
+
+    private async Task NextSharedIncidentPageAsync()
+    {
+        if (sharedIncidents is null || sharedIncidentPage * PageSize >= sharedIncidents.TotalCount)
+        {
+            return;
+        }
+        sharedIncidentPage++;
+        await SafeLoadAsync(LoadSharedIncidentsAsync);
     }
 
     private async Task RetryIncidentAsync(long id)
@@ -380,6 +578,89 @@
         finally
         {
             cancellingInstanceId = null;
+        }
+    }
+
+    private async Task RetrySharedIncidentAsync(long id)
+    {
+        workingSharedIncidentId = id;
+        notice = null;
+        error = null;
+        try
+        {
+            var result = await Api.RetrySharedVariableIncidentAsync(id);
+            if (selectedSharedIncident?.Id == id)
+            {
+                selectedSharedIncident = result;
+            }
+            notice = $"Shared-variable incident #{id} was granted one additional attempt and queued.";
+            await Task.WhenAll(
+                LoadSharedIncidentsAsync(),
+                LoadStatisticsAsync());
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            workingSharedIncidentId = null;
+        }
+    }
+
+    private async Task ShowSharedIncidentAsync(long id)
+    {
+        loadingSharedIncidentId = id;
+        error = null;
+        try
+        {
+            selectedSharedIncident = await Api.GetSharedVariableIncidentAsync(id)
+                ?? throw new InvalidOperationException($"Shared-variable incident #{id} no longer exists.");
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            loadingSharedIncidentId = null;
+        }
+    }
+
+    private void CloseSharedIncidentDetail() => selectedSharedIncident = null;
+
+    private async Task ResolveSharedIncidentAsync(long id)
+    {
+        var reason = sharedIncidentResolutionReason.Trim();
+        if (reason.Length == 0)
+        {
+            error = "Enter a resolution reason before resolving a shared-variable incident.";
+            return;
+        }
+
+        workingSharedIncidentId = id;
+        notice = null;
+        error = null;
+        try
+        {
+            var result = await Api.ResolveSharedVariableIncidentAsync(id, reason);
+            if (selectedSharedIncident?.Id == id)
+            {
+                selectedSharedIncident = result;
+            }
+            sharedIncidentResolutionReason = string.Empty;
+            notice = $"Shared-variable incident #{id} was resolved and its work was cancelled.";
+            await Task.WhenAll(
+                LoadSharedIncidentsAsync(),
+                LoadStatisticsAsync());
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            workingSharedIncidentId = null;
         }
     }
 

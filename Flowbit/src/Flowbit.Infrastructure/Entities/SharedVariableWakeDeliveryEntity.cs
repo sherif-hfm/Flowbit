@@ -14,8 +14,10 @@ public sealed class SharedVariableWakeDeliveryEntity
     public long LeaseGeneration { get; set; }
     public string? LeasedBy { get; set; }
     public DateTimeOffset? LeaseExpiresAt { get; set; }
+    public DateTimeOffset? HeartbeatAt { get; set; }
     public DateTimeOffset AvailableAt { get; set; } = DateTimeOffset.UtcNow;
     public int AttemptCount { get; set; }
+    public int MaxAttempts { get; set; } = 25;
     public string? LastError { get; set; }
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
@@ -25,4 +27,5 @@ public sealed class SharedVariableWakeDeliveryEntity
     public WorkflowInstanceEntity Instance { get; set; } = null!;
     public WorkflowDefinitionEntity WorkflowDefinition { get; set; } = null!;
     public ExecutionTokenEntity Token { get; set; } = null!;
+    public List<SharedVariableWakeIncidentEntity> Incidents { get; set; } = [];
 }

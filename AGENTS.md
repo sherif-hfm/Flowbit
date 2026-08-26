@@ -1588,6 +1588,264 @@ Process variables differ from start/flow variables in a few respects:
 - The editor surfaces them in the "Workflow" inspector panel (shown when nothing
   is selected), separate from the per-node / per-flow variable editors.
 
+### Shared variables
+
+A process variable may bind its workflow-local alias to a deployment-wide
+catalog value. Shared bindings are supported only in the top-level
+`model.variables` collection; start-event and sequence-flow input declarations
+must remain instance scoped.
+
+```jsonc
+{
+  "id": 1,
+  "name": "approvalAmount",              // local expression/producer alias
+  "scope": "shared",                     // canonical, case-sensitive value
+  "sharedKey": "examples.approval.amount", // exact catalog key
+  "access": "read",                      // "read" | "readWrite"
+  "dataType": "number",
+  "isArray": false,
+  "nullable": false,
+  "validation": null
+}
+```
+
+The authoring and publication contract is:
+
+- Missing `scope` retains historical instance storage. A shared binding must use
+  the canonical string `scope: "shared"`; recognized alternative casing is
+  normalized only while loading legacy JSON and new/republished definitions are
+  persisted canonically.
+- `sharedKey` is required only for shared bindings. Catalog/API lookup is
+  case-insensitive, but a saved definition must author the catalog's exact
+  canonical casing; runtime then locks those canonical keys in ordinal order.
+  `access` is required and must be canonical `read` or `readWrite`. The
+  workflow's `name` remains the alias used by the engine's existing
+  case-insensitive expression, template, mapping, assignment, and
+  `execution.*` script semantics.
+- Shared-only fields on a node/flow input variable, or `sharedKey`/`access` on an
+  instance variable, are invalid. Shared aliases and keys must be unique within
+  a definition under their validated canonical comparison rules.
+- The catalog entry must already exist and be active when a definition is saved
+  or published. Its `dataType`, `isArray`, `nullable`, and normalized validation
+  expression must match exactly. A definition requests access; it cannot change
+  the catalog contract or lifecycle.
+- `read` permits evaluation and templating only. Every authored producer target
+  (mapping, assignment, submitted value, service status, or error variable) must
+  bind to `readWrite`. JavaScript has a dynamic target name, so any shared alias
+  it may mutate must be declared `readWrite`.
+- Shared values are not copied into `instance_variables`, instance responses,
+  ordinary instance history, durable job list rows, or other value-free
+  projections. Workflow write correlations carry only alias, key, revision, and
+  whether the value changed.
+
+#### Catalog, current value, and revisions
+
+`shared_variables` is the catalog/lifecycle row. The optional current JSON value
+is projected separately in `shared_variable_current_values`, while
+`shared_variable_revisions` is the immutable audit history. `HasValue`
+distinguishes an explicitly stored JSON null from a key which has never been
+set. Archiving keeps catalog, current, and history state but prevents new
+runtime use; open definition/instance/job/wait/wake/incident references remain
+lifecycle blockers.
+
+Two revisions have deliberately different meanings:
+
+- `Revision` advances for every committed catalog/audit mutation, including
+  description and lifecycle changes and identical-value writes. It remains the
+  public API compare-and-swap value.
+- `ValueRevision` starts at `0` and advances only when effective value state
+  changes: a real set/change or unset. Description/lifecycle mutations and an
+  identical-value write leave it unchanged and do not enqueue a wake.
+
+Revision allocation is PostgreSQL-owned and globally unique. Rollbacks may
+leave gaps, and revisions belonging to different shared keys are not a
+commit-order timestamp. Delivery predecessor ordering applies only within the
+same shared key; same-key writes already serialize on the catalog/current row.
+Migrations backfill `ValueRevision` from each key's latest
+`ValueChanged = true` revision and repair the current projection to that same
+revision. During the rolling writer replacement, an `AFTER INSERT OR UPDATE OF
+Revision` trigger on `shared_variable_current_values` also advances the owning
+catalog row's `CurrentRevision` and `ValueRevision`. This makes an effective write from a legacy
+binary visible to a new value-fenced worker; new writers' explicit update is
+idempotent with the trigger.
+
+Durable job snapshots dual-write the legacy catalog revision map and nullable
+`SharedOutputValueVersionsJson`. New workers compare `ValueRevision` for shared
+output targets, so a description, lifecycle, or identical-value mutation does
+not create an output conflict. A snapshot without the value-version map uses the
+legacy conservative catalog-revision check. Keep dual-writing until all legacy
+workers have been replaced.
+
+#### Access plans and lock ordering
+
+`SharedVariableAccessPlan` is immutable and cached by immutable workflow-
+definition ID. It derives conditional dependencies from the parsed
+conditional-event plan and producer targets from actual mappings, assignments,
+submitted variables, status variables, and error variables. A JavaScript node
+with dynamic `setVariable` conservatively includes that node's `readWrite`
+bindings. Never infer dependencies with substring matching and never lock every
+definition-level `readWrite` declaration merely because it exists.
+
+For a transition, compute the exact aliases used by the current node/action.
+Acquire normal runtime locks first in the established order (instance; active
+gateway execution/state/branch; token; multi-instance execution; active/pending
+user task, with IDs ascending inside each group), then lock the selected shared
+catalog/current rows by exact key in ordinal key order. Do not hold a shared row
+lock while calling an external service. At conditional-event entry, lock and
+reload that node's exact shared dependencies before the first evaluation and
+wait registration; an updater can then either observe the registered wait or be
+observed by the entry evaluation, so no wake is lost.
+
+Across one synchronous transaction segment, every newly acquired shared key
+must be nondecreasing under `StringComparer.Ordinal`. The definition-time proof
+models the engine's whole FIFO queue (including parallel/inclusive branches),
+node and selected-flow producers, error paths, script/service output validation,
+and single or combined atomic conditional wakes. `asyncBefore` is a pre-node
+reset; service/script `asyncAfter` also has the engine's implicit pre-node
+durable stage. An `asyncAfter` wait, a user/message/timer/conditional resting
+position, or a durable conditional latch resets downstream acquisition. Resume
+and finalization start a new segment but include the resumed node/output fence
+and its synchronous continuation. New, published, and default definitions that
+can descend are rejected with the exact conflicting keys. The bounded plan
+cache repeats the proof by immutable definition ID before runtime locking, so an
+already-published unsafe definition fails with an operational conflict before
+it can acquire a shared row; operators must drain/republish it.
+
+There is one temporary rollout exception to exact locking. While
+`shared_variable_revision_state.AllocatorMode = 'legacy'`, the first shared
+lock, write, or output value fence in a workflow transaction prelocks every
+catalog key bound by that immutable definition, distinct and ordinal. This
+prevents a mixed-version single-key writer from forming a catalog-key/singleton-
+allocator cycle with a new multi-key transition. The PostgreSQL repository
+requires an ambient transaction for that guard. After the fenced sequence
+cutover changes `AllocatorMode` to `sequence`, the same call is a no-op and
+per-node/per-flow exact locking is the permanent steady state. Treat the legacy
+prelock's broader contention as temporary stage-1 serialization, not as the
+long-term access-plan contract.
+
+Any new or republished REST `serviceTask` that reads a shared alias in its URL,
+headers, body, output default, mapping validation, or target validation, or
+writes one through a node variable, output/status target, or attached boundary
+error target, must set `asyncBefore: true`. Shared-bound service invocation uses the existing short
+stage/commit, unlocked HTTP invoke, and fenced finalize protocol. Before enabling
+this validation in an existing deployment, inventory already-published unsafe
+definitions; republish them with `asyncBefore` or drain all affected instances.
+
+#### Wake delivery, incidents, and recovery
+
+Each effective shared value change writes a durable, coalescing wake. PostgreSQL
+`clock_timestamp()` is authoritative for availability, leasing, heartbeat,
+expiry, retry scheduling, and completion; lease requests never contain
+application time. The worker defaults are:
+
+- `SharedWakeMaxConcurrency = 8`
+- `SharedWakeExpansionConcurrency = 2`
+- `SharedWakeBatchSize = 32`
+- maximum expansion page size `500`
+- `MaxAttempts = 25` persisted on each wake and delivery
+
+The dispatcher leases only work it can start under its bounded concurrency. An
+expansion or delivery gets an independent heartbeat/lease guard and cancels its
+local operation as soon as ownership is lost. Acquisition, heartbeat,
+processing, and finalization failures are isolated; a non-cancellation failure
+must not terminate the background dispatcher. Lease duration reuses the durable
+worker setting and validates to 15-1800 seconds. Shutdown stops acquisition,
+allows the configured drain interval, and relies on database expiry for any
+remaining leases. Repository command-timeout settings apply to all wake work.
+
+Expansion stores `ExpansionCursorTokenId`, creates at most 500 deliveries in one
+short transaction, and revalidates work kind, worker ID, lease token,
+generation, and lease expiry on every page. The existing unique
+wake/token/activation constraint is the retry-idempotency fence. Stale heartbeat
+or finalization is a normal explicit `LeaseLost` result, not an exception that
+can kill the dispatcher. Deliveries for one key respect their predecessor;
+cross-key revisions never block one another. Wake processing is latest-state and
+coalescing: a delivery causes the waiting condition to load current catalog
+values, not reconstruct a historical revision snapshot. A shared-dependent
+conditional catch may use the default `atomic` mode or `durableAsync`: the wake
+delivery evaluates and advances an atomic wait in its locked instance
+transaction, while durable async preserves the existing durable latch/job
+protocol. Both modes fence the exact token and activation.
+
+After `MaxAttempts`, finalization atomically changes the work to `incident` and
+creates exactly one `shared_variable_wake_incident`. Open incidents remain
+shared-variable lifecycle blockers. JWT administrators operate them through:
+
+- `GET /api/shared-variable-incidents`
+- `GET /api/shared-variable-incidents/{id}`
+- `POST /api/shared-variable-incidents/{id}/retry`
+- `POST /api/shared-variable-incidents/{id}/resolve`
+
+Retry is fenced, grants exactly one additional attempt, and queues using
+database time. Resolve requires a nonblank reason, marks the work cancelled,
+and records the administrator identity and resolution timestamp. The Operations
+UI exposes list/detail/retry/resolve, statistics, and telemetry. Retain completed
+or cancelled wake/delivery work for 30 days and resolved incidents for 90 days;
+never clean open incidents.
+
+#### Validation, authorization, security, and deployment
+
+There is one nullability rule across API, synchronous script, asynchronous
+script, worker, and repository paths: when the catalog contract has
+`nullable: true`, JSON null is accepted and custom validation is skipped.
+Concrete values run the same type/array and validation pipeline everywhere.
+Script contract failures are task failures, and validation plus persistence must
+sit inside task-failure conversion so an attached error boundary is followed and
+no partial batch commits. Database failures, lost leases, archived keys,
+invariants, and optimistic/value-revision conflicts remain operational
+conflicts/incidents and must not be converted into authored business errors.
+
+JWT users follow the existing shared-variable administrator policy. API clients
+authenticate separately and require exact `shared-variables.read` and/or
+`shared-variables.write` scopes; incident recovery is never granted by those
+client scopes. Production assumes ingress rate limiting for client
+authentication and one trusted deployment domain. Per-key ACLs are not part of
+this contract.
+
+Shared-variable history is immutable and may contain every previous value. It
+is audit data, **not a secret store**: never put passwords, access tokens,
+private keys, or other credentials in shared variables.
+
+Production deployment is migration-first:
+
+1. Stop every legacy shared-wake worker before applying the migration. The
+   transactional outbox may accumulate safely while wake processing is paused;
+   this prevents a legacy re-lease from incrementing an exhausted row beyond
+   the new `MaxAttempts` constraint. Because the shared dispatcher runs in the
+   same Worker executable as other durable processors, a whole-process stop also
+   pauses jobs, timers, and messages; their database queues remain durable until
+   the replacement Worker starts after the API/service rollout.
+2. Apply the additive schema (value revisions, cursor/heartbeat/attempt fields,
+   incident table, runnable/expired/cleanup indexes) and the compatibility
+   allocator function backed by the existing singleton row.
+3. Deploy every API/service writer to call that function and dual-write both job
+   snapshot revision maps. Run
+   `Flowbit/tools/shared-variable-rest-inventory.sql`. Its first result must be
+   empty after unsafe REST definitions are republished or their instances are
+   drained. Its second result conservatively lists every published multi-key
+   shared definition; verify each was saved/republished through the monotonic
+   validator, or drain it before deployment. Validation-expression matching in
+   this SQL inventory is intentionally conservative and may require review of
+   false positives. During this legacy-allocator stage, new workflow writers
+   temporarily prelock each immutable definition's complete shared-key set.
+4. Deploy the new Worker, then the UI, and verify leases, incidents, telemetry,
+   and Operations recovery before resuming wake processing at normal capacity.
+5. After every writer is upgraded, seed a PostgreSQL sequence, switch the
+   allocator function to pure `nextval`, and set the allocator row to sequence
+   mode. The database trigger rejects any later legacy `LastRevision` update,
+   making old binaries fail safely. That trigger rejection is the intentional
+   compatibility fail-safe equivalent of renaming/removing the old allocator
+   table, while retaining the row as the EF-compatible cutover/audit marker. Invoke
+   `SELECT flowbit.cutover_shared_variable_revision_sequence();`; the operation
+   is fenced and idempotent. The workflow compatibility prelock becomes a no-op
+   immediately, leaving only exact monotonic node/flow locks.
+6. Enable cleanup only after retention metrics are visible.
+
+The deployed component order is migration -> API/service -> Worker -> UI.
+Mixed legacy replicas are prohibited after the sequence cutover. Per-key ACLs,
+key-grammar changes, an explicit public unset API, metadata-query optimization,
+and broader editor-validation parity remain follow-up work.
+
 ### ServiceTaskConfig
 The connector configuration on a `serviceTask` flow node (`flowNode.service`).
 The editor currently offers only REST, but persists the connector discriminator

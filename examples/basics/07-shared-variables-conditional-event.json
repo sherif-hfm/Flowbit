@@ -1,6 +1,6 @@
 {
-  "id": "07-shared-variables-conditional-event",
-  "name": "shared-variables-conditional-event",
+  "id": "example-shared-variable-conditional-event",
+  "name": "Shared Variable Conditional Event",
   "initialEventId": 1,
   "variables": [
     {
@@ -13,7 +13,7 @@
       "defaultValue": null,
       "validation": null,
       "scope": "shared",
-      "sharedKey": "amount",
+      "sharedKey": "examples.approval.amount",
       "access": "read"
     }
   ],
@@ -21,7 +21,7 @@
   "flowNodes": [
     {
       "id": 1,
-      "name": "start",
+      "name": "Start Shared Approval",
       "externalId": null,
       "attributes": [],
       "type": "startEvent",
@@ -41,7 +41,7 @@
     },
     {
       "id": 3,
-      "name": "confirm",
+      "name": "Confirm Threshold Approval",
       "externalId": null,
       "attributes": [],
       "type": "userTask",
@@ -65,7 +65,7 @@
     },
     {
       "id": 5,
-      "name": "condition",
+      "name": "Wait For Shared Amount",
       "externalId": null,
       "attributes": [],
       "type": "intermediateConditionalCatchEvent",
@@ -83,13 +83,13 @@
       "assignee": null,
       "assignments": [],
       "conditional": {
-        "condition": "[amount] > 500 ",
+        "condition": "[amount] > 500",
         "deliveryMode": "durableAsync"
       }
     },
     {
       "id": 7,
-      "name": "end",
+      "name": "Approval Confirmed",
       "externalId": null,
       "attributes": [],
       "type": "endEvent",

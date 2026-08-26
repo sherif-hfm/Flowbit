@@ -15,6 +15,7 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton(TimeProvider.System);
         services.TryAddSingleton<IConditionalEventDefinitionAnalyzer, ConditionalEventDefinitionAnalyzer>();
         services.TryAddSingleton<IConditionalEventDependencyPlanCache, ConditionalEventDependencyPlanCache>();
+        services.TryAddSingleton<ISharedVariableAccessPlanCache, SharedVariableAccessPlanCache>();
         services.AddScoped<IInstanceVariableMutationTracker, InstanceVariableMutationTracker>();
         services.AddScoped<IWorkflowVariableStore, WorkflowVariableStore>();
         services.AddScoped<IWorkflowDefinitionService, WorkflowDefinitionService>();

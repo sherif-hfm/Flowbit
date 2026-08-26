@@ -128,6 +128,11 @@ public static class SharedVariableValueValidator
                 throw new WorkflowDomainException(
                     $"Shared variable '{key}' is not nullable.");
             }
+
+            // Nullable is the complete null contract across workflow inputs,
+            // scripts, service outputs, and direct catalog writes. Authored
+            // validation expressions apply only to non-null values.
+            return;
         }
         else if (!TypedOutputValueValidator.IsValid(value, dataType, isArray))
         {

@@ -45,6 +45,26 @@ public sealed class WorkerOperationalSurfaceTests
             Array.Empty<WorkflowJobLeaseRecord>(),
             TimeSpan.FromMilliseconds(12.5),
             DateTimeOffset.UtcNow);
+        telemetry.RecordSharedWakeAcquisition(
+            expansion: true,
+            count: 2,
+            TimeSpan.FromMilliseconds(5));
+        telemetry.SharedWakeStarted(expansion: true);
+        telemetry.RecordSharedWakeDeliveriesCreated(7);
+        telemetry.RecordSharedWakeHeartbeatSucceeded(
+            SharedVariableWakeWorkKinds.Expansion);
+        telemetry.RecordSharedWakeHeartbeatSucceeded(
+            SharedVariableWakeWorkKinds.Delivery);
+        telemetry.RecordSharedWakeHeartbeatFailed(
+            SharedVariableWakeWorkKinds.Delivery);
+        telemetry.RecordSharedWakeRetry();
+        telemetry.RecordSharedWakeFinalizationIncident();
+        telemetry.RecordSharedWakeIncidentSnapshot(9);
+        telemetry.RecordSharedWakeCleanup(wakes: 3, deliveries: 4, incidents: 1);
+        telemetry.SharedWakeFinished(
+            expansion: true,
+            succeeded: true,
+            TimeSpan.FromMilliseconds(20));
         using var runtimeMeter = new Meter("Flowbit.Runtime.Jobs");
         runtimeMeter.CreateCounter<long>("flowbit.jobs.output_conflicts").Add(2);
         runtimeMeter.CreateCounter<long>("flowbit.jobs.automatic_loop_limit").Add(1);
@@ -76,6 +96,50 @@ public sealed class WorkerOperationalSurfaceTests
             "flowbit_jobs_instance_lock_wait_seconds_sum 0.025",
             metrics,
             StringComparison.Ordinal);
+        Assert.Contains(
+            "flowbit_worker_shared_wake_expansions_acquired_total 2",
+            metrics,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "flowbit_worker_shared_wake_deliveries_created_total 7",
+            metrics,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "flowbit_worker_shared_wake_retries_scheduled_total 1",
+            metrics,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "flowbit_worker_shared_wake_heartbeat_succeeded_total{work_kind=\"expansion\"} 1",
+            metrics,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "flowbit_worker_shared_wake_heartbeat_succeeded_total{work_kind=\"delivery\"} 1",
+            metrics,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "flowbit_worker_shared_wake_heartbeat_failed_total{work_kind=\"expansion\"} 0",
+            metrics,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "flowbit_worker_shared_wake_heartbeat_failed_total{work_kind=\"delivery\"} 1",
+            metrics,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "flowbit_worker_shared_wake_incidents_finalization_opened_total 1",
+            metrics,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "flowbit_worker_shared_wake_incidents_open 9",
+            metrics,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "flowbit_worker_shared_wake_cleanup_deliveries_total 4",
+            metrics,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "flowbit_worker_shared_wake_expansion_duration_seconds_sum 0.02",
+            metrics,
+            StringComparison.Ordinal);
     }
 
     [Fact]
@@ -86,5 +150,52 @@ public sealed class WorkerOperationalSurfaceTests
         var exception = Assert.Throws<InvalidOperationException>(options.Validate);
 
         Assert.Contains("HealthListenUrl", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SharedWakeDefaultsAndBoundsAreValidated()
+    {
+        var defaults = new WorkerOptions();
+
+        Assert.Equal(8, defaults.SharedWakeMaxConcurrency);
+        Assert.Equal(2, defaults.SharedWakeExpansionConcurrency);
+        Assert.Equal(32, defaults.SharedWakeBatchSize);
+        Assert.Equal(500, defaults.SharedWakeExpansionPageSize);
+
+        var concurrency = new WorkerOptions
+        {
+            SharedWakeMaxConcurrency = 1,
+            SharedWakeExpansionConcurrency = 2
+        };
+        var page = new WorkerOptions { SharedWakeExpansionPageSize = 501 };
+        var shortLease = new WorkerOptions { LeaseSeconds = 14 };
+        var longLease = new WorkerOptions { LeaseSeconds = 1801 };
+        var lateLeaseCheck = new WorkerOptions
+        {
+            LeaseSeconds = 15,
+            HeartbeatSeconds = 1,
+            LeaseCheckMilliseconds = 60_000
+        };
+
+        Assert.Contains(
+            "SharedWakeExpansionConcurrency",
+            Assert.Throws<InvalidOperationException>(concurrency.Validate).Message,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "SharedWakeExpansionPageSize",
+            Assert.Throws<InvalidOperationException>(page.Validate).Message,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "LeaseSeconds",
+            Assert.Throws<InvalidOperationException>(shortLease.Validate).Message,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "LeaseSeconds",
+            Assert.Throws<InvalidOperationException>(longLease.Validate).Message,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "LeaseCheckMilliseconds",
+            Assert.Throws<InvalidOperationException>(lateLeaseCheck.Validate).Message,
+            StringComparison.Ordinal);
     }
 }

@@ -11,6 +11,7 @@ the JSON—they do not invoke the endpoint.
 | --- | --- | --- | --- | --- |
 | [`01-rest-templating-and-typed-output.json`](01-rest-templating-and-typed-output.json) | Required `requestId` and `customerId`; optional `locale`, `quantity`, `urgent`, and `requestTags` have defaults. Start as `ExampleRequester`. | `ExampleReviewer` takes **Complete review** after the call succeeds. | URL/header/body placeholders are rendered; a 2xx mock response atomically writes the status plus declared and dynamic typed outputs. | API and database, a local/private mock API, and the two trusted configuration values below. No Worker. |
 | [`02-rest-error-boundary-and-error-end.json`](02-rest-error-boundary-and-error-end.json) | Required `requestId` and `resourceId`. Start as `ExampleRequester`. | `ExampleOperator` supplies `retryReason` and takes **Retry REST call**, or takes **End with domain fault** with the optional `faultNote`. | A non-2xx/timeout/network failure writes `serviceStatus`, captures `serviceError`, and rests at the operator task. The terminal action faults the instance with `EXAMPLE.REST_FAILURE`. | API and database, a local/private failing mock route, and the two trusted configuration values below. No Worker. |
+| [`03-rest-shared-variable-output.json`](03-rest-shared-variable-output.json) | No start values. Before import, create active shared key `examples.service.status` as a non-nullable scalar string with no validation rule. | Start the workflow; no user action is required. | The worker invokes `GET /shared-state` through an async-before job and atomically stores the response `status` in the shared catalog. A caught failure reaches `EXAMPLE.SHARED_STATUS_FAILURE`. | API, database, Worker, a local/private mock route, `${config.exampleApiBaseUrl}`, and the shared catalog prerequisite. |
 
 ## Required trusted configuration
 
@@ -25,6 +26,18 @@ Do not replace the token reference with a committed credential. For local
 testing, point the base URL only at a mock service you control. The authored
 timeouts are deliberately short and the connector performs no retries; retry in
 the second definition is an explicit operator action.
+
+For `03-rest-shared-variable-output.json`, configure `GET /shared-state` to
+return a bounded, non-secret state payload such as:
+
+```json
+{ "status": "available" }
+```
+
+The shared binding deliberately uses `asyncBefore`; definitions that read or
+write shared values through REST must not hold catalog locks across network I/O.
+The example is one-shot and must not be converted into an unbounded refresh
+loop. Shared revisions are immutable audit data, not credential storage.
 
 ## Success mock contract
 

@@ -5064,7 +5064,7 @@ function addProcessVariablesSection() {
 
   const hint = document.createElement("p");
   hint.className = "empty-note";
-  hint.textContent = "Declare instance variables or bind a local alias to a deployment-wide shared variable. Shared declarations snapshot the catalog contract and must use durable async conditional waits.";
+  hint.textContent = "Declare instance variables or bind a local alias to a deployment-wide shared variable. Shared declarations snapshot the catalog contract; conditional waits may use atomic or durable async delivery.";
   inspector.appendChild(hint);
 
   if (model.variables.length === 0) {
@@ -11444,14 +11444,6 @@ function validateModelForSave(candidate) {
         conditional.deliveryMode !== "atomic" &&
         conditional.deliveryMode !== "durableAsync") {
       errors.push(label + " deliveryMode must be atomic or durableAsync.");
-    }
-    const sharedDependencies = sharedVariablesReferencedByExpression(
-      conditional.condition,
-      processVariables);
-    if (sharedDependencies.length > 0 && conditional.deliveryMode !== "durableAsync") {
-      errors.push(label + " observes shared variable " +
-        sharedDependencies.map(variable => "'" + variable.name.trim() + "'").join(", ") +
-        " and must explicitly use deliveryMode='durableAsync'.");
     }
   }
 

@@ -444,6 +444,7 @@ try
     app.MapSettingsEndpoints();
     app.MapSharedVariableEndpoints();
     app.MapSharedVariableClientEndpoints();
+    app.MapSharedVariableIncidentEndpoints();
 
     app.Run();
 }

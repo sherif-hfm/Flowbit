@@ -1,4 +1,5 @@
 using Flowbit.Service.Abstractions;
+using Flowbit.Service.Models;
 
 namespace Flowbit.Worker;
 
@@ -14,31 +15,72 @@ public sealed class QueueTelemetryService(
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(5));
-        while (!stoppingToken.IsCancellationRequested)
+        try
         {
-            try
+            while (!stoppingToken.IsCancellationRequested)
             {
-                await using var scope = scopeFactory.CreateAsyncScope();
-                var repository = scope.ServiceProvider
-                    .GetRequiredService<IWorkflowJobRepository>();
-                telemetry.RecordQueueSnapshot(
-                    await repository.GetQueueStatisticsAsync(stoppingToken));
-            }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-            {
-                break;
-            }
-            catch (Exception exception)
-            {
-                logger.LogDebug(
-                    exception,
-                    "Could not sample durable queue telemetry.");
-            }
+                await SampleJobQueueAsync(stoppingToken);
+                await SampleSharedWakeIncidentsAsync(stoppingToken);
 
-            if (!await timer.WaitForNextTickAsync(stoppingToken))
-            {
-                break;
+                if (!await timer.WaitForNextTickAsync(stoppingToken))
+                {
+                    break;
+                }
             }
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            // Normal host shutdown.
+        }
+    }
+
+    private async Task SampleJobQueueAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using var scope = scopeFactory.CreateAsyncScope();
+            var repository = scope.ServiceProvider
+                .GetRequiredService<IWorkflowJobRepository>();
+            telemetry.RecordQueueSnapshot(
+                await repository.GetQueueStatisticsAsync(cancellationToken));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogDebug(
+                exception,
+                "Could not sample durable queue telemetry.");
+        }
+    }
+
+    private async Task SampleSharedWakeIncidentsAsync(
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using var scope = scopeFactory.CreateAsyncScope();
+            var repository = scope.ServiceProvider
+                .GetRequiredService<ISharedVariableRepository>();
+            var (_, totalCount) = await repository.SearchWakeIncidentsAsync(
+                new SharedVariableWakeIncidentQuery(
+                    Status: SharedVariableWakeIncidentStatuses.Open,
+                    Offset: 0,
+                    Limit: 1),
+                cancellationToken);
+            telemetry.RecordSharedWakeIncidentSnapshot(totalCount);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogDebug(
+                exception,
+                "Could not sample shared-variable wake incident telemetry.");
         }
     }
 }

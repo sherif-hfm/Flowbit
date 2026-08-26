@@ -11,6 +11,7 @@ public sealed class SharedVariableEntity
     public string? Description { get; set; }
     public string Status { get; set; } = "active";
     public long CurrentRevision { get; set; }
+    public long ValueRevision { get; set; }
     public string CreatedByKind { get; set; } = string.Empty;
     public string CreatedById { get; set; } = string.Empty;
     public string UpdatedByKind { get; set; } = string.Empty;
@@ -24,4 +25,5 @@ public sealed class SharedVariableEntity
     public List<WorkflowDefinitionSharedVariableBindingEntity> DefinitionBindings { get; set; } = [];
     public List<WorkflowDefinitionSharedVariableDependencyEntity> DefinitionDependencies { get; set; } = [];
     public List<SharedVariableWakeEntity> Wakes { get; set; } = [];
+    public List<SharedVariableWakeIncidentEntity> WakeIncidents { get; set; } = [];
 }

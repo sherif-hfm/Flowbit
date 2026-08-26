@@ -8,7 +8,8 @@ namespace Flowbit.Service.Services;
 public sealed class WorkflowJobOperationsService(
     IWorkflowJobRepository repository,
     IEngineSettingsRepository engineSettings,
-    TimeProvider timeProvider) : IWorkflowJobOperationsService
+    TimeProvider timeProvider,
+    ISharedVariableRepository? sharedVariables = null) : IWorkflowJobOperationsService
 {
     public const string RequiredRoleSettingKey = "WorkflowJobs.RequiredRole";
     public const string DefaultRequiredRole = "admin";
@@ -22,6 +23,17 @@ public sealed class WorkflowJobOperationsService(
         var queueLagSeconds = statistics.OldestRunnableDueAt is { } oldestDueAt
             ? Math.Max(0d, (statistics.ObservedAt - oldestDueAt).TotalSeconds)
             : 0d;
+        var openSharedVariableIncidentCount = 0L;
+        if (sharedVariables is not null)
+        {
+            var sharedIncidentPage = await sharedVariables.SearchWakeIncidentsAsync(
+                new SharedVariableWakeIncidentQuery(
+                    Status: SharedVariableWakeIncidentStatuses.Open,
+                    Offset: 0,
+                    Limit: 1),
+                cancellationToken);
+            openSharedVariableIncidentCount = sharedIncidentPage.TotalCount;
+        }
         return new JobQueueStatisticsDto(
             statistics.RunnableDepth,
             statistics.OldestRunnableDueAt,
@@ -29,7 +41,8 @@ public sealed class WorkflowJobOperationsService(
             statistics.TimerControlRunnableCount,
             statistics.ActiveLeaseCount,
             statistics.OpenIncidentCount,
-            statistics.ObservedAt);
+            statistics.ObservedAt,
+            openSharedVariableIncidentCount);
     }
 
     public async Task<PagedResult<JobSummaryDto>> SearchJobsAsync(

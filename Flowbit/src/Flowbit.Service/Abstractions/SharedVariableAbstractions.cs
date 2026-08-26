@@ -33,6 +33,20 @@ public interface ISharedVariableRepository
         bool includeArchived,
         CancellationToken cancellationToken);
 
+    Task<IReadOnlyDictionary<string, SharedVariableValueStamp>> LoadValueStampsAsync(
+        IReadOnlyCollection<string> keys,
+        bool includeArchived,
+        CancellationToken cancellationToken);
+
+    Task<IReadOnlyDictionary<string, SharedVariableValueStamp>> LockValueStampsAsync(
+        IReadOnlyCollection<string> keys,
+        bool includeArchived,
+        CancellationToken cancellationToken);
+
+    Task PrelockDefinitionKeysForLegacyAllocatorAsync(
+        IReadOnlyCollection<string> keys,
+        CancellationToken cancellationToken);
+
     Task<SharedVariableMutationResult> CreateAsync(
         SharedVariableCreateCommand command,
         CancellationToken cancellationToken);
@@ -65,22 +79,58 @@ public interface ISharedVariableRepository
         SharedVariableWakeLeaseRequest request,
         CancellationToken cancellationToken);
 
-    Task ExpandWakeAsync(
+    Task<bool> HeartbeatWakeAsync(
+        SharedVariableWakeFence fence,
+        TimeSpan leaseDuration,
+        CancellationToken cancellationToken);
+
+    Task<bool> IsWakeLeaseAliveAsync(
         SharedVariableWakeFence fence,
         CancellationToken cancellationToken);
 
-    Task CompleteWakeExpansionAsync(
+    Task<SharedVariableWakeExpansionPageResult> ExpandWakePageAsync(
         SharedVariableWakeFence fence,
-        string? error,
+        int pageSize,
+        CancellationToken cancellationToken);
+
+    Task<SharedVariableWakeFinalizationResult> CompleteWakeExpansionAsync(
+        SharedVariableWakeFence fence,
+        SharedVariableWakeFailure? failure,
         CancellationToken cancellationToken);
 
     Task<IReadOnlyList<SharedVariableWakeDeliveryRecord>> LeaseWakeDeliveriesAsync(
         SharedVariableWakeLeaseRequest request,
         CancellationToken cancellationToken);
 
-    Task CompleteWakeDeliveryAsync(
+    Task<SharedVariableWakeFinalizationResult> CompleteWakeDeliveryAsync(
         SharedVariableWakeFence fence,
-        string? error,
+        SharedVariableWakeFailure? failure,
+        CancellationToken cancellationToken);
+
+    Task<(IReadOnlyList<SharedVariableWakeIncidentRecord> Items, long TotalCount)>
+        SearchWakeIncidentsAsync(
+            SharedVariableWakeIncidentQuery query,
+            CancellationToken cancellationToken);
+
+    Task<SharedVariableWakeIncidentRecord?> GetWakeIncidentAsync(
+        long incidentId,
+        CancellationToken cancellationToken);
+
+    Task<SharedVariableWakeIncidentRecord?> RetryWakeIncidentAsync(
+        long incidentId,
+        string resolvedBy,
+        CancellationToken cancellationToken);
+
+    Task<SharedVariableWakeIncidentRecord?> ResolveWakeIncidentAsync(
+        long incidentId,
+        string resolvedBy,
+        string reason,
+        CancellationToken cancellationToken);
+
+    Task<SharedVariableWakeCleanupResult> CleanupWakeOutboxAsync(
+        DateTimeOffset completedBefore,
+        DateTimeOffset resolvedIncidentsBefore,
+        int batchSize,
         CancellationToken cancellationToken);
 }
 

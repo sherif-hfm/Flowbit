@@ -5,6 +5,7 @@ namespace Flowbit.Worker;
 public sealed class JobCleanupService(
     IServiceScopeFactory scopeFactory,
     WorkerOptions options,
+    TimeProvider timeProvider,
     WorkerTelemetry telemetry,
     ILogger<JobCleanupService> logger) : BackgroundService
 {
@@ -35,9 +36,41 @@ public sealed class JobCleanupService(
 
     private async Task CleanupAsync(CancellationToken cancellationToken)
     {
+        try
+        {
+            await CleanupJobsAsync(cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "Durable job retention cleanup failed.");
+        }
+
+        try
+        {
+            await CleanupSharedVariableWakesAsync(cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(
+                exception,
+                "Shared-variable wake retention cleanup failed.");
+        }
+    }
+
+    private async Task CleanupJobsAsync(CancellationToken cancellationToken)
+    {
         await using var scope = scopeFactory.CreateAsyncScope();
-        var repository = scope.ServiceProvider.GetRequiredService<IWorkflowJobRepository>();
-        var now = DateTimeOffset.UtcNow;
+        var repository = scope.ServiceProvider
+            .GetRequiredService<IWorkflowJobRepository>();
+        var now = timeProvider.GetUtcNow();
         var result = await repository.CleanupAsync(
             now.AddDays(-options.CompletedJobRetentionDays),
             now.AddDays(-options.ResolvedIncidentRetentionDays),
@@ -55,6 +88,32 @@ public sealed class JobCleanupService(
                 result.JobsDeleted,
                 result.AttemptsDeleted,
                 result.SnapshotsDeleted,
+                result.IncidentsDeleted);
+        }
+    }
+
+    private async Task CleanupSharedVariableWakesAsync(
+        CancellationToken cancellationToken)
+    {
+        await using var scope = scopeFactory.CreateAsyncScope();
+        var repository = scope.ServiceProvider
+            .GetRequiredService<ISharedVariableRepository>();
+        var now = timeProvider.GetUtcNow();
+        var result = await repository.CleanupWakeOutboxAsync(
+            now.AddDays(-options.SharedWakeCompletedRetentionDays),
+            now.AddDays(-options.SharedWakeResolvedIncidentRetentionDays),
+            options.SharedWakeCleanupBatchSize,
+            cancellationToken);
+        telemetry.RecordSharedWakeCleanup(
+            result.WakesDeleted,
+            result.DeliveriesDeleted,
+            result.IncidentsDeleted);
+        if (result.WakesDeleted + result.DeliveriesDeleted + result.IncidentsDeleted > 0)
+        {
+            logger.LogInformation(
+                "Shared-variable wake cleanup deleted {Wakes} wakes, {Deliveries} deliveries, and {Incidents} incidents.",
+                result.WakesDeleted,
+                result.DeliveriesDeleted,
                 result.IncidentsDeleted);
         }
     }

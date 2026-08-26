@@ -1,3 +1,4 @@
+using System.Reflection;
 using Flowbit.Service.Abstractions;
 using Flowbit.Service.Models;
 using Flowbit.Service.Services;
@@ -145,6 +146,34 @@ public sealed class WorkflowJobOperationsServiceTests
         Assert.Equal(6, result.ActiveLeaseCount);
         Assert.Equal(2, result.OpenIncidentCount);
         Assert.Equal(observedAt, result.ObservedAt);
+    }
+
+    [Fact]
+    public async Task QueueStatisticsIncludeOnlyTheOpenSharedVariableIncidentCount()
+    {
+        var repository = new StubJobRepository();
+        var sharedVariables = DispatchProxy.Create<
+            ISharedVariableRepository,
+            SharedIncidentRepositoryProxy>();
+        var proxy = (SharedIncidentRepositoryProxy)(object)sharedVariables;
+        proxy.TotalCount = 7;
+        var service = new WorkflowJobOperationsService(
+            repository,
+            new StubEngineSettingsRepository(null),
+            TimeProvider.System,
+            sharedVariables);
+
+        var result = await service.GetQueueStatisticsAsync(
+            new ActorContext("operator", ["admin"], new Dictionary<string, string>()),
+            CancellationToken.None);
+
+        Assert.Equal(7, result.OpenSharedVariableIncidentCount);
+        Assert.NotNull(proxy.Query);
+        Assert.Equal(SharedVariableWakeIncidentStatuses.Open, proxy.Query.Status);
+        Assert.Null(proxy.Query.WorkKind);
+        Assert.Null(proxy.Query.SharedKey);
+        Assert.Equal(0, proxy.Query.Offset);
+        Assert.Equal(1, proxy.Query.Limit);
     }
 
     [Fact]
@@ -379,6 +408,26 @@ public sealed class WorkflowJobOperationsServiceTests
             DateTimeOffset resolvedIncidentsBefore,
             int batchSize,
             CancellationToken cancellationToken) => throw new NotSupportedException();
+    }
+
+    public class SharedIncidentRepositoryProxy : DispatchProxy
+    {
+        public long TotalCount { get; set; }
+        public SharedVariableWakeIncidentQuery? Query { get; private set; }
+
+        protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
+        {
+            if (targetMethod?.Name != nameof(ISharedVariableRepository.SearchWakeIncidentsAsync))
+            {
+                throw new NotSupportedException(
+                    $"Unexpected shared-variable repository call {targetMethod?.Name}.");
+            }
+
+            Query = (SharedVariableWakeIncidentQuery)args![0]!;
+            return Task.FromResult((
+                (IReadOnlyList<SharedVariableWakeIncidentRecord>)[],
+                TotalCount));
+        }
     }
 
     private static WorkflowJobRecord CreateJob(

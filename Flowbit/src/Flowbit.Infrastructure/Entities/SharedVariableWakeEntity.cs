@@ -11,8 +11,11 @@ public sealed class SharedVariableWakeEntity
     public long LeaseGeneration { get; set; }
     public string? LeasedBy { get; set; }
     public DateTimeOffset? LeaseExpiresAt { get; set; }
+    public DateTimeOffset? HeartbeatAt { get; set; }
     public DateTimeOffset AvailableAt { get; set; } = DateTimeOffset.UtcNow;
     public int AttemptCount { get; set; }
+    public int MaxAttempts { get; set; } = 25;
+    public long ExpansionCursorTokenId { get; set; }
     public string? LastError { get; set; }
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
@@ -21,4 +24,5 @@ public sealed class SharedVariableWakeEntity
     public SharedVariableEntity SharedVariable { get; set; } = null!;
     public SharedVariableRevisionEntity RevisionRecord { get; set; } = null!;
     public List<SharedVariableWakeDeliveryEntity> Deliveries { get; set; } = [];
+    public List<SharedVariableWakeIncidentEntity> Incidents { get; set; } = [];
 }

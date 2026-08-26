@@ -5,6 +5,7 @@ using Flowbit.Shared.Dtos;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Metadata;
 using Microsoft.AspNetCore.Routing;
 using Xunit;
 
@@ -71,6 +72,7 @@ public sealed class SharedVariableEndpointMetadataTests
             .Select(property => property.Name)
             .ToArray();
         Assert.Contains(nameof(SharedVariableMetadataDto.HasValue), metadataProperties);
+        Assert.Contains(nameof(SharedVariableMetadataDto.ValueRevision), metadataProperties);
         Assert.DoesNotContain("Value", metadataProperties);
 
         var valueProperties = typeof(SharedVariableValueDto)
@@ -79,7 +81,7 @@ public sealed class SharedVariableEndpointMetadataTests
             .Order(StringComparer.Ordinal)
             .ToArray();
         Assert.Equal(
-            new[] { "HasValue", "Key", "Revision", "UpdatedAt", "Value" }
+            new[] { "HasValue", "Key", "Revision", "UpdatedAt", "Value", "ValueRevision" }
                 .Order(StringComparer.Ordinal),
             valueProperties);
         Assert.DoesNotContain(
@@ -122,6 +124,52 @@ public sealed class SharedVariableEndpointMetadataTests
             typeof(UpdateSharedVariableClientRequest)
                 .GetProperties()
                 .Select(property => property.Name));
+    }
+
+    [Fact]
+    public void SharedWakeIncidentRecoveryRoutesAreJwtAdministratorOnly()
+    {
+        var builder = WebApplication.CreateBuilder();
+        using var app = builder.Build();
+        app.MapSharedVariableIncidentEndpoints();
+
+        var endpoints = ((IEndpointRouteBuilder)app).DataSources
+            .SelectMany(source => source.Endpoints)
+            .OfType<RouteEndpoint>()
+            .ToArray();
+
+        AssertPolicy(
+            endpoints,
+            "/api/shared-variable-incidents/",
+            HttpMethods.Get,
+            SharedVariableAuthorizationPolicies.Administrator);
+        AssertPolicy(
+            endpoints,
+            "/api/shared-variable-incidents/{incidentId:long}",
+            HttpMethods.Get,
+            SharedVariableAuthorizationPolicies.Administrator);
+        AssertPolicy(
+            endpoints,
+            "/api/shared-variable-incidents/{incidentId:long}/retry",
+            HttpMethods.Post,
+            SharedVariableAuthorizationPolicies.Administrator);
+        AssertPolicy(
+            endpoints,
+            "/api/shared-variable-incidents/{incidentId:long}/resolve",
+            HttpMethods.Post,
+            SharedVariableAuthorizationPolicies.Administrator);
+        var resolve = Assert.Single(endpoints, endpoint =>
+            string.Equals(
+                endpoint.RoutePattern.RawText,
+                "/api/shared-variable-incidents/{incidentId:long}/resolve",
+                StringComparison.Ordinal)
+            && endpoint.Metadata.GetMetadata<HttpMethodMetadata>()?.HttpMethods
+                .Contains(HttpMethods.Post) == true);
+        Assert.Equal(
+            16 * 1024,
+            resolve.Metadata.GetMetadata<IRequestSizeLimitMetadata>()?.MaxRequestBodySize);
+        Assert.All(endpoints, endpoint =>
+            Assert.Null(endpoint.Metadata.GetMetadata<IAllowAnonymous>()));
     }
 
     private static void AssertPolicy(

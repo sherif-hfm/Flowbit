@@ -85,7 +85,6 @@ public sealed partial class WorkflowEngineService
                 workflow.Definition)
             ?? ConditionalEventDependencyPlan.Empty;
         if (!plan.EventsByNodeId.TryGetValue(node.Id, out var eventPlan)
-            || eventPlan.DeliveryMode != ConditionalEventDeliveryModes.DurableAsync
             || !eventPlan.Dependencies.Any(dependency => aliases.Contains(
                 dependency,
                 StringComparer.OrdinalIgnoreCase)))
@@ -97,7 +96,8 @@ public sealed partial class WorkflowEngineService
         var stored = await LoadVariablesAsync(
             instance.Id,
             cancellationToken,
-            lockSharedValues: true);
+            lockSharedValues: true,
+            sharedAccessNodeId: token.NodeId);
         var flowInfo = await LoadSequenceFlowInfoAsync(
             instance.Id,
             workflow.Definition,
@@ -115,6 +115,7 @@ public sealed partial class WorkflowEngineService
             routingQueue,
             forceDurableTokenIds,
             maxTriggers: 10_000,
+            onlyTokenId: delivery.TokenId,
             cancellationToken);
 
         while (routingQueue.Count > 0

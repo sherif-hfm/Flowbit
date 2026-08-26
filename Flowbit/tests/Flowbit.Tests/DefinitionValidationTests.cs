@@ -30,7 +30,10 @@ public sealed class DefinitionValidationTests
             new ScriptOptions(),
             NullLogger<JintScriptEvaluator>.Instance);
 
-        await CreateService(out _, scriptEvaluator: evaluator)
+        await CreateService(
+                out _,
+                scriptEvaluator: evaluator,
+                sharedVariables: CreateExampleWorkflowSharedCatalog())
             .CreateAsync(model, false, CancellationToken.None);
     }
 
@@ -3641,6 +3644,260 @@ public sealed class DefinitionValidationTests
         Assert.Contains("read-only shared", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public async Task CreateAsync_RequiresAsyncBeforeWhenRestServiceReadsSharedAlias()
+    {
+        var model = CreateOutputMappingModel();
+        model.Variables.Add(new VariableModel
+        {
+            Id = 20,
+            Name = "sharedStatus",
+            Scope = VariableScopes.Shared,
+            SharedKey = "tests.service.status",
+            Access = SharedVariableAccessModes.Read,
+            DataType = WorkflowVariableTypes.String,
+            Nullable = false
+        });
+        var serviceNode = model.FlowNodes.Single(node =>
+            BpmnFlowNodeTypes.IsServiceTask(node.Type));
+        serviceNode.Service!.Url = "https://tests.local/${sharedStatus}";
+        var catalog = TestSharedVariableCatalog.Create(
+            TestSharedVariableCatalog.Active(
+                10,
+                "tests.service.status",
+                WorkflowVariableTypes.String));
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _, sharedVariables: catalog).CreateAsync(
+                Clone(model),
+                false,
+                CancellationToken.None));
+
+        Assert.Contains("asyncBefore=true", error.Message, StringComparison.Ordinal);
+        serviceNode.AsyncBefore = true;
+        await CreateService(out _, sharedVariables: catalog).CreateAsync(
+            model,
+            false,
+            CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task CreateAsync_RequiresAsyncBeforeWhenRestOutputDefaultReadsSharedAlias()
+    {
+        var model = CreateOutputMappingModel();
+        model.Variables.Add(new VariableModel
+        {
+            Id = 20,
+            Name = "sharedStatus",
+            Scope = VariableScopes.Shared,
+            SharedKey = "tests.service.status",
+            Access = SharedVariableAccessModes.Read,
+            DataType = WorkflowVariableTypes.String,
+            Nullable = false
+        });
+        var serviceNode = model.FlowNodes.Single(node =>
+            BpmnFlowNodeTypes.IsServiceTask(node.Type));
+        serviceNode.Service!.OutputMappings[0].DefaultValue =
+            JsonSerializer.SerializeToElement("${sharedStatus}");
+        var catalog = TestSharedVariableCatalog.Create(
+            TestSharedVariableCatalog.Active(
+                10,
+                "tests.service.status",
+                WorkflowVariableTypes.String));
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _, sharedVariables: catalog).CreateAsync(
+                Clone(model),
+                false,
+                CancellationToken.None));
+
+        Assert.Contains("asyncBefore=true", error.Message, StringComparison.Ordinal);
+        serviceNode.AsyncBefore = true;
+        await CreateService(out _, sharedVariables: catalog).CreateAsync(
+            model,
+            false,
+            CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task CreateAsync_DoesNotWidenRestServicePlanWithProducerOnAnotherNode()
+    {
+        var model = CreateOutputMappingModel();
+        model.Variables.Add(new VariableModel
+        {
+            Id = 20,
+            Name = "sharedStatus",
+            Scope = VariableScopes.Shared,
+            SharedKey = "tests.service.status",
+            Access = SharedVariableAccessModes.ReadWrite,
+            DataType = WorkflowVariableTypes.String,
+            Nullable = false
+        });
+        var script = model.FlowNodes.Single(node =>
+            BpmnFlowNodeTypes.IsMessageCatch(node.Type));
+        script.Type = BpmnFlowNodeTypes.ScriptTask;
+        script.Message = null;
+        script.ScriptFormat = ScriptFormats.NCalc;
+        script.Assignments =
+        [
+            new AssignmentModel
+            {
+                Variable = "sharedStatus",
+                Expression = "'updated'"
+            }
+        ];
+        var catalog = TestSharedVariableCatalog.Create(
+            TestSharedVariableCatalog.Active(
+                10,
+                "tests.service.status",
+                WorkflowVariableTypes.String));
+
+        await CreateService(out _, sharedVariables: catalog).CreateAsync(
+            model,
+            false,
+            CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task CreateAsync_RequiresAsyncBeforeWhenRestErrorValidationReadsSharedAlias()
+    {
+        var model = CreateOutputMappingModel();
+        model.Variables.Add(new VariableModel
+        {
+            Id = 20,
+            Name = "sharedGuard",
+            Scope = VariableScopes.Shared,
+            SharedKey = "tests.service.guard",
+            Access = SharedVariableAccessModes.Read,
+            DataType = WorkflowVariableTypes.String,
+            Nullable = false
+        });
+        model.Variables.Add(new VariableModel
+        {
+            Id = 21,
+            Name = "serviceError",
+            DataType = WorkflowVariableTypes.String,
+            Nullable = true,
+            Validation = "sharedGuard == 'ready'"
+        });
+        var host = model.FlowNodes.Single(node =>
+            BpmnFlowNodeTypes.IsServiceTask(node.Type));
+        model.FlowNodes.Add(new FlowNodeModel
+        {
+            Id = 50,
+            Name = "Service error",
+            Type = BpmnFlowNodeTypes.ErrorBoundaryEvent,
+            AttachedToRef = host.Id,
+            ErrorVariable = "serviceError"
+        });
+        model.SequenceFlows.Add(new SequenceFlowModel
+        {
+            Id = 501,
+            SourceRef = 50,
+            TargetRef = 4
+        });
+        var catalog = TestSharedVariableCatalog.Create(
+            TestSharedVariableCatalog.Active(
+                10,
+                "tests.service.guard",
+                WorkflowVariableTypes.String));
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _, sharedVariables: catalog).CreateAsync(
+                Clone(model),
+                false,
+                CancellationToken.None));
+
+        Assert.Contains("asyncBefore=true", error.Message, StringComparison.Ordinal);
+        host.AsyncBefore = true;
+        await CreateService(out _, sharedVariables: catalog).CreateAsync(
+            model,
+            false,
+            CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task CreateAsync_RejectsReverseSharedLockOrderAndAcceptsBoundaries()
+    {
+        var catalog = CreateLockOrderCatalog();
+        var reverse = CreateSharedLockOrderModel(
+            firstKey: "tests.lock.z",
+            secondKey: "tests.lock.a");
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _, sharedVariables: catalog).CreateAsync(
+                Clone(reverse),
+                false,
+                CancellationToken.None));
+
+        Assert.Contains("monotonic", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("tests.lock.a", error.Message, StringComparison.Ordinal);
+        Assert.Contains("tests.lock.z", error.Message, StringComparison.Ordinal);
+
+        var ordinal = CreateSharedLockOrderModel(
+            firstKey: "tests.lock.a",
+            secondKey: "tests.lock.z");
+        await CreateService(out _, sharedVariables: catalog).CreateAsync(
+            ordinal,
+            false,
+            CancellationToken.None);
+
+        reverse.FlowNodes.Single(node => node.Id == 3).AsyncBefore = true;
+        await CreateService(out _, sharedVariables: catalog).CreateAsync(
+            reverse,
+            false,
+            CancellationToken.None);
+
+        var implicitPreNode = CreateSharedLockOrderModel(
+            firstKey: "tests.lock.z",
+            secondKey: "tests.lock.a");
+        implicitPreNode.FlowNodes.Single(node => node.Id == 3).AsyncAfter = true;
+        await CreateService(out _, sharedVariables: catalog).CreateAsync(
+            implicitPreNode,
+            false,
+            CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task SetDefaultAsync_RejectsLegacyPublishedUnsafeSharedRestDefinition()
+    {
+        var model = CreateOutputMappingModel();
+        model.Variables.Add(new VariableModel
+        {
+            Id = 20,
+            Name = "sharedStatus",
+            Scope = VariableScopes.Shared,
+            SharedKey = "tests.service.status",
+            Access = SharedVariableAccessModes.Read,
+            DataType = WorkflowVariableTypes.String,
+            Nullable = false
+        });
+        var serviceNode = model.FlowNodes.Single(node =>
+            BpmnFlowNodeTypes.IsServiceTask(node.Type));
+        serviceNode.Service!.Url = "https://tests.local/${sharedStatus}";
+        serviceNode.AsyncBefore = false;
+        var catalog = TestSharedVariableCatalog.Create(
+            TestSharedVariableCatalog.Active(
+                10,
+                "tests.service.status",
+                WorkflowVariableTypes.String));
+        var service = CreateService(out var repository, sharedVariables: catalog);
+        repository.Source = new WorkflowDefinitionRecord(
+            77,
+            model.Name,
+            model.Id,
+            1,
+            model,
+            IsPublished: true,
+            IsDefault: false,
+            DateTimeOffset.UtcNow);
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            service.SetDefaultAsync(77, CancellationToken.None));
+
+        Assert.Contains("asyncBefore=true", error.Message, StringComparison.Ordinal);
+    }
+
     private static WorkflowModel CreateTerminalModel(string terminalType) => new()
     {
         Id = "terminal-validation",
@@ -3669,7 +3926,8 @@ public sealed class DefinitionValidationTests
         out CapturingDefinitionRepository repository,
         ServiceTaskOptions? options = null,
         IScriptEvaluator? scriptEvaluator = null,
-        DurableProcessingOptions? durableProcessing = null)
+        DurableProcessingOptions? durableProcessing = null,
+        ISharedVariableRepository? sharedVariables = null)
     {
         repository = new CapturingDefinitionRepository();
         return new WorkflowDefinitionService(
@@ -3677,8 +3935,96 @@ public sealed class DefinitionValidationTests
             scriptEvaluator ?? new ParseOnlyScriptEvaluator(),
             options ?? new ServiceTaskOptions(),
             NullLogger<WorkflowDefinitionService>.Instance,
-            durableProcessing);
+            durableProcessing,
+            sharedVariables: sharedVariables ?? CreateExampleWorkflowSharedCatalog());
     }
+
+    private static ISharedVariableRepository CreateExampleWorkflowSharedCatalog() =>
+        TestSharedVariableCatalog.Create(
+            TestSharedVariableCatalog.Active(
+                1,
+                "examples.approval.amount",
+                WorkflowVariableTypes.Number),
+            TestSharedVariableCatalog.Active(
+                2,
+                "examples.service.status",
+                WorkflowVariableTypes.String));
+
+    private static ISharedVariableRepository CreateLockOrderCatalog() =>
+        TestSharedVariableCatalog.Create(
+            TestSharedVariableCatalog.Active(
+                101,
+                "tests.lock.a",
+                WorkflowVariableTypes.Number),
+            TestSharedVariableCatalog.Active(
+                102,
+                "tests.lock.z",
+                WorkflowVariableTypes.Number));
+
+    private static WorkflowModel CreateSharedLockOrderModel(
+        string firstKey,
+        string secondKey) => new()
+    {
+        Id = "definition-shared-lock-order",
+        Name = "Definition shared lock order",
+        InitialEventId = 1,
+        Variables =
+        [
+            new VariableModel
+            {
+                Id = 1,
+                Name = "firstShared",
+                Scope = VariableScopes.Shared,
+                SharedKey = firstKey,
+                Access = SharedVariableAccessModes.ReadWrite,
+                DataType = WorkflowVariableTypes.Number,
+                Nullable = false
+            },
+            new VariableModel
+            {
+                Id = 2,
+                Name = "secondShared",
+                Scope = VariableScopes.Shared,
+                SharedKey = secondKey,
+                Access = SharedVariableAccessModes.ReadWrite,
+                DataType = WorkflowVariableTypes.Number,
+                Nullable = false
+            }
+        ],
+        FlowNodes =
+        [
+            new FlowNodeModel { Id = 1, Name = "Start", Type = BpmnFlowNodeTypes.StartEvent },
+            new FlowNodeModel
+            {
+                Id = 2,
+                Name = "Write first",
+                Type = BpmnFlowNodeTypes.ScriptTask,
+                ScriptFormat = ScriptFormats.NCalc,
+                Assignments =
+                [
+                    new AssignmentModel { Variable = "firstShared", Expression = "1" }
+                ]
+            },
+            new FlowNodeModel
+            {
+                Id = 3,
+                Name = "Write second",
+                Type = BpmnFlowNodeTypes.ScriptTask,
+                ScriptFormat = ScriptFormats.NCalc,
+                Assignments =
+                [
+                    new AssignmentModel { Variable = "secondShared", Expression = "2" }
+                ]
+            },
+            new FlowNodeModel { Id = 4, Name = "End", Type = BpmnFlowNodeTypes.EndEvent }
+        ],
+        SequenceFlows =
+        [
+            new SequenceFlowModel { Id = 101, SourceRef = 1, TargetRef = 2 },
+            new SequenceFlowModel { Id = 201, SourceRef = 2, TargetRef = 3 },
+            new SequenceFlowModel { Id = 301, SourceRef = 3, TargetRef = 4 }
+        ]
+    };
 
     private static void ValidateDefinition(
         WorkflowDefinitionService service,

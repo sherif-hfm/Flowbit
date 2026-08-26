@@ -100,7 +100,8 @@ public sealed record JobQueueStatisticsDto(
     long TimerControlRunnableCount,
     long ActiveLeaseCount,
     long OpenIncidentCount,
-    DateTimeOffset ObservedAt);
+    DateTimeOffset ObservedAt,
+    long OpenSharedVariableIncidentCount = 0);
 
 public sealed record InstanceJobSummaryDto(
     long OpenCount,

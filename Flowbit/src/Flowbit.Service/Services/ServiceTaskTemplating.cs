@@ -26,6 +26,24 @@ public static partial class ServiceTaskTemplating
     [GeneratedRegex(@"\$\{\s*([^}\s]+)\s*\}")]
     private static partial Regex PlaceholderRegex();
 
+    public static IReadOnlySet<string> GetPlaceholderNames(params string?[] templates)
+    {
+        var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var template in templates)
+        {
+            if (string.IsNullOrEmpty(template))
+            {
+                continue;
+            }
+
+            foreach (Match match in PlaceholderRegex().Matches(template))
+            {
+                result.Add(match.Groups[1].Value);
+            }
+        }
+        return result;
+    }
+
     public static string SubstituteScalar(
         string? template,
         IReadOnlyDictionary<string, JsonElement> variables)

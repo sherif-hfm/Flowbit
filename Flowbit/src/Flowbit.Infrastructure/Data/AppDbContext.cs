@@ -32,6 +32,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     public DbSet<SharedVariableWakeEntity> SharedVariableWakes => Set<SharedVariableWakeEntity>();
     public DbSet<SharedVariableWakeDeliveryEntity> SharedVariableWakeDeliveries =>
         Set<SharedVariableWakeDeliveryEntity>();
+    public DbSet<SharedVariableWakeIncidentEntity> SharedVariableWakeIncidents =>
+        Set<SharedVariableWakeIncidentEntity>();
 
     public DbSet<WorkflowInstanceEntity> WorkflowInstances => Set<WorkflowInstanceEntity>();
 
@@ -192,6 +194,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                     "CK_shared_variables_revision",
                     "\"CurrentRevision\" >= 0");
                 table.HasCheckConstraint(
+                    "CK_shared_variables_value_revision",
+                    "\"ValueRevision\" >= 0 AND \"ValueRevision\" <= \"CurrentRevision\"");
+                table.HasCheckConstraint(
                     "CK_shared_variables_archive_shape",
                     "(\"Status\" = 'archived' AND \"ArchivedAt\" IS NOT NULL) OR "
                     + "(\"Status\" = 'active' AND \"ArchivedAt\" IS NULL)");
@@ -218,14 +223,19 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             {
                 table.HasCheckConstraint("CK_shared_variable_revision_state_singleton", "\"Id\" = 1");
                 table.HasCheckConstraint("CK_shared_variable_revision_state_revision", "\"LastRevision\" >= 0");
+                table.HasCheckConstraint(
+                    "CK_shared_variable_revision_state_allocator_mode",
+                    "\"AllocatorMode\" IN ('legacy', 'sequence')");
             });
             entity.HasKey(e => e.Id);
             entity.Property(e => e.Id).ValueGeneratedNever();
+            entity.Property(e => e.AllocatorMode).HasMaxLength(16).HasDefaultValue("legacy").IsRequired();
             entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
             entity.HasData(new SharedVariableRevisionStateEntity
             {
                 Id = 1,
                 LastRevision = 0,
+                AllocatorMode = "legacy",
                 UpdatedAt = new DateTimeOffset(2026, 8, 24, 0, 0, 0, TimeSpan.Zero)
             });
         });
@@ -254,6 +264,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
             entity.HasIndex(e => e.Revision).IsUnique();
             entity.HasIndex(e => new { e.SharedVariableId, e.Revision }).IsUnique();
+            entity.HasAlternateKey(e => new { e.Id, e.SharedVariableId, e.Revision });
             entity.HasIndex(e => e.WorkflowDefinitionId);
             entity.HasIndex(e => e.InstanceId);
             entity.HasIndex(e => e.NodeExecutionId);
@@ -300,7 +311,18 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 .OnDelete(DeleteBehavior.Restrict);
             entity.HasOne(e => e.SourceRevision)
                 .WithOne(e => e.CurrentValue)
-                .HasForeignKey<SharedVariableCurrentValueEntity>(e => e.SourceRevisionId)
+                .HasForeignKey<SharedVariableCurrentValueEntity>(e => new
+                {
+                    e.SourceRevisionId,
+                    e.SharedVariableId,
+                    e.Revision
+                })
+                .HasPrincipalKey<SharedVariableRevisionEntity>(e => new
+                {
+                    e.Id,
+                    e.SharedVariableId,
+                    e.Revision
+                })
                 .OnDelete(DeleteBehavior.Restrict);
         });
 
@@ -327,6 +349,11 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.HasOne(e => e.SharedVariable)
                 .WithMany()
                 .HasForeignKey(e => e.SharedVariableId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<SharedVariableRevisionEntity>()
+                .WithMany()
+                .HasForeignKey(e => new { e.SharedVariableId, e.ResultRevision })
+                .HasPrincipalKey(e => new { e.SharedVariableId, e.Revision })
                 .OnDelete(DeleteBehavior.Restrict);
         });
 
@@ -446,31 +473,60 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             {
                 table.HasCheckConstraint(
                     "CK_shared_variable_wakes_status",
-                    "\"Status\" IN ('pending', 'leased', 'completed', 'failed', 'cancelled')");
+                    "\"Status\" IN ('pending', 'leased', 'completed', 'failed', 'cancelled', 'incident')");
                 table.HasCheckConstraint(
                     "CK_shared_variable_wakes_lease_shape",
                     "(\"Status\" = 'leased' AND \"LeaseToken\" IS NOT NULL "
-                    + "AND \"LeasedBy\" IS NOT NULL AND \"LeaseExpiresAt\" IS NOT NULL) OR "
+                    + "AND \"LeasedBy\" IS NOT NULL AND \"LeaseExpiresAt\" IS NOT NULL "
+                    + "AND \"HeartbeatAt\" IS NOT NULL) OR "
                     + "(\"Status\" <> 'leased' AND \"LeaseToken\" IS NULL "
-                    + "AND \"LeasedBy\" IS NULL AND \"LeaseExpiresAt\" IS NULL)");
+                    + "AND \"LeasedBy\" IS NULL AND \"LeaseExpiresAt\" IS NULL "
+                    + "AND \"HeartbeatAt\" IS NULL)");
                 table.HasCheckConstraint("CK_shared_variable_wakes_attempts", "\"AttemptCount\" >= 0");
+                table.HasCheckConstraint("CK_shared_variable_wakes_max_attempts", "\"MaxAttempts\" > 0 AND \"AttemptCount\" <= \"MaxAttempts\"");
+                table.HasCheckConstraint("CK_shared_variable_wakes_cursor", "\"ExpansionCursorTokenId\" >= 0");
+                table.HasCheckConstraint(
+                    "CK_shared_variable_wakes_completion_shape",
+                    "(\"Status\" IN ('completed', 'cancelled') AND \"CompletedAt\" IS NOT NULL) OR "
+                    + "(\"Status\" NOT IN ('completed', 'cancelled') AND \"CompletedAt\" IS NULL)");
             });
             entity.HasKey(e => e.Id);
             entity.Property(e => e.Status).HasMaxLength(16).IsRequired();
             entity.Property(e => e.LeasedBy).HasMaxLength(300);
             entity.Property(e => e.LastError).HasMaxLength(1000);
+            entity.Property(e => e.MaxAttempts).HasDefaultValue(25);
             entity.Property(e => e.AvailableAt).HasDefaultValueSql("now()");
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
             entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
             entity.HasIndex(e => e.RevisionId).IsUnique();
             entity.HasIndex(e => new { e.Status, e.AvailableAt, e.Id });
+            entity.HasIndex(e => new { e.LeaseExpiresAt, e.Revision, e.Id })
+                .HasDatabaseName("IX_shared_variable_wakes_expired_lease")
+                .HasFilter("\"Status\" = 'leased' AND \"LeaseExpiresAt\" IS NOT NULL");
+            entity.HasIndex(e => new { e.AvailableAt, e.Revision, e.Id })
+                .HasDatabaseName("IX_shared_variable_wakes_pending_available")
+                .HasFilter("\"Status\" = 'pending'");
+            entity.HasIndex(e => new { e.CompletedAt, e.Id })
+                .HasDatabaseName("IX_shared_variable_wakes_terminal_cleanup")
+                .HasFilter("\"Status\" IN ('completed', 'cancelled')");
             entity.HasOne(e => e.SharedVariable)
                 .WithMany(e => e.Wakes)
                 .HasForeignKey(e => e.SharedVariableId)
                 .OnDelete(DeleteBehavior.Restrict);
             entity.HasOne(e => e.RevisionRecord)
                 .WithOne(e => e.Wake)
-                .HasForeignKey<SharedVariableWakeEntity>(e => e.RevisionId)
+                .HasForeignKey<SharedVariableWakeEntity>(e => new
+                {
+                    e.RevisionId,
+                    e.SharedVariableId,
+                    e.Revision
+                })
+                .HasPrincipalKey<SharedVariableRevisionEntity>(e => new
+                {
+                    e.Id,
+                    e.SharedVariableId,
+                    e.Revision
+                })
                 .OnDelete(DeleteBehavior.Restrict);
         });
 
@@ -480,25 +536,45 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             {
                 table.HasCheckConstraint(
                     "CK_shared_variable_wake_deliveries_status",
-                    "\"Status\" IN ('pending', 'leased', 'completed', 'failed', 'cancelled')");
+                    "\"Status\" IN ('pending', 'leased', 'completed', 'failed', 'cancelled', 'incident')");
                 table.HasCheckConstraint(
                     "CK_shared_variable_wake_deliveries_lease_shape",
                     "(\"Status\" = 'leased' AND \"LeaseToken\" IS NOT NULL "
-                    + "AND \"LeasedBy\" IS NOT NULL AND \"LeaseExpiresAt\" IS NOT NULL) OR "
+                    + "AND \"LeasedBy\" IS NOT NULL AND \"LeaseExpiresAt\" IS NOT NULL "
+                    + "AND \"HeartbeatAt\" IS NOT NULL) OR "
                     + "(\"Status\" <> 'leased' AND \"LeaseToken\" IS NULL "
-                    + "AND \"LeasedBy\" IS NULL AND \"LeaseExpiresAt\" IS NULL)");
+                    + "AND \"LeasedBy\" IS NULL AND \"LeaseExpiresAt\" IS NULL "
+                    + "AND \"HeartbeatAt\" IS NULL)");
                 table.HasCheckConstraint("CK_shared_variable_wake_deliveries_attempts", "\"AttemptCount\" >= 0");
+                table.HasCheckConstraint("CK_shared_variable_wake_deliveries_max_attempts", "\"MaxAttempts\" > 0 AND \"AttemptCount\" <= \"MaxAttempts\"");
+                table.HasCheckConstraint(
+                    "CK_shared_variable_wake_deliveries_completion_shape",
+                    "(\"Status\" IN ('completed', 'cancelled') AND \"CompletedAt\" IS NOT NULL) OR "
+                    + "(\"Status\" NOT IN ('completed', 'cancelled') AND \"CompletedAt\" IS NULL)");
             });
             entity.HasKey(e => e.Id);
             entity.Property(e => e.Status).HasMaxLength(16).IsRequired();
             entity.Property(e => e.LeasedBy).HasMaxLength(300);
             entity.Property(e => e.LastError).HasMaxLength(1000);
+            entity.Property(e => e.MaxAttempts).HasDefaultValue(25);
             entity.Property(e => e.AvailableAt).HasDefaultValueSql("now()");
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
             entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
             entity.HasIndex(e => new { e.WakeId, e.TokenId, e.ActivationId }).IsUnique();
             entity.HasIndex(e => new { e.Status, e.AvailableAt, e.Id });
             entity.HasIndex(e => new { e.InstanceId, e.Status, e.Id });
+            entity.HasIndex(e => new { e.LeaseExpiresAt, e.Id })
+                .HasDatabaseName("IX_shared_variable_wake_deliveries_expired_lease")
+                .HasFilter("\"Status\" = 'leased' AND \"LeaseExpiresAt\" IS NOT NULL");
+            entity.HasIndex(e => new { e.AvailableAt, e.Id })
+                .HasDatabaseName("IX_shared_variable_wake_deliveries_pending_available")
+                .HasFilter("\"Status\" = 'pending'");
+            entity.HasIndex(e => new { e.CompletedAt, e.Id })
+                .HasDatabaseName("IX_shared_variable_wake_deliveries_terminal_cleanup")
+                .HasFilter("\"Status\" IN ('completed', 'cancelled')");
+            entity.HasIndex(e => new { e.TokenId, e.ActivationId, e.WakeId, e.Id })
+                .HasDatabaseName("IX_shared_variable_wake_deliveries_open_predecessor")
+                .HasFilter("\"Status\" IN ('pending', 'leased')");
             entity.HasOne(e => e.Wake)
                 .WithMany(e => e.Deliveries)
                 .HasForeignKey(e => e.WakeId)
@@ -514,6 +590,61 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.HasOne(e => e.Token)
                 .WithMany()
                 .HasForeignKey(e => e.TokenId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<SharedVariableWakeIncidentEntity>(entity =>
+        {
+            entity.ToTable("shared_variable_wake_incidents", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_shared_variable_wake_incidents_work_kind",
+                    "\"WorkKind\" IN ('expansion', 'delivery')");
+                table.HasCheckConstraint(
+                    "CK_shared_variable_wake_incidents_status",
+                    "\"Status\" IN ('open', 'resolved')");
+                table.HasCheckConstraint(
+                    "CK_shared_variable_wake_incidents_resolution_shape",
+                    "(\"Status\" = 'open' AND \"ResolvedAt\" IS NULL AND \"ResolvedBy\" IS NULL "
+                    + "AND \"ResolutionReason\" IS NULL) OR "
+                    + "(\"Status\" = 'resolved' AND \"ResolvedAt\" IS NOT NULL AND \"ResolvedBy\" IS NOT NULL)");
+                table.HasCheckConstraint(
+                    "CK_shared_variable_wake_incidents_target_shape",
+                    "(\"WorkKind\" = 'expansion' AND \"OriginalDeliveryId\" IS NULL AND \"DeliveryId\" IS NULL "
+                    + "AND (\"Status\" <> 'open' OR \"WakeId\" IS NOT NULL)) OR "
+                    + "(\"WorkKind\" = 'delivery' AND \"OriginalDeliveryId\" IS NOT NULL "
+                    + "AND (\"Status\" <> 'open' OR \"DeliveryId\" IS NOT NULL))");
+            });
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.WorkKind).HasMaxLength(16).IsRequired();
+            entity.Property(e => e.SharedKey).HasColumnType("citext").HasMaxLength(300).IsRequired();
+            entity.Property(e => e.Type).HasMaxLength(100).IsRequired();
+            entity.Property(e => e.Status).HasMaxLength(16).IsRequired();
+            entity.Property(e => e.Summary).HasMaxLength(500).IsRequired();
+            entity.Property(e => e.Details).HasMaxLength(4000);
+            entity.Property(e => e.ResolutionReason).HasMaxLength(1000);
+            entity.Property(e => e.ResolvedBy).HasMaxLength(300);
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+            entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
+            entity.HasIndex(e => new { e.Status, e.UpdatedAt, e.Id });
+            entity.HasIndex(e => new { e.OriginalWakeId, e.OriginalDeliveryId, e.Id });
+            entity.HasIndex(e => e.WakeId)
+                .IsUnique()
+                .HasFilter("\"Status\" = 'open' AND \"WorkKind\" = 'expansion'");
+            entity.HasIndex(e => e.DeliveryId)
+                .IsUnique()
+                .HasFilter("\"Status\" = 'open' AND \"WorkKind\" = 'delivery'");
+            entity.HasOne(e => e.Wake)
+                .WithMany(e => e.Incidents)
+                .HasForeignKey(e => e.WakeId)
+                .OnDelete(DeleteBehavior.SetNull);
+            entity.HasOne(e => e.Delivery)
+                .WithMany(e => e.Incidents)
+                .HasForeignKey(e => e.DeliveryId)
+                .OnDelete(DeleteBehavior.SetNull);
+            entity.HasOne(e => e.SharedVariable)
+                .WithMany(e => e.WakeIncidents)
+                .HasForeignKey(e => e.SharedVariableId)
                 .OnDelete(DeleteBehavior.Restrict);
         });
 
@@ -1934,6 +2065,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(e => e.VariablesJson).HasColumnType("jsonb").IsRequired();
             entity.Property(e => e.OutputVariableVersionsJson).HasColumnType("jsonb").IsRequired();
             entity.Property(e => e.SharedVariableRevisionsJson).HasColumnType("jsonb");
+            entity.Property(e => e.SharedOutputValueVersionsJson).HasColumnType("jsonb");
             entity.Property(e => e.FlowInfoJson).HasColumnType("jsonb");
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
             entity.HasIndex(e => e.CreatedAt);

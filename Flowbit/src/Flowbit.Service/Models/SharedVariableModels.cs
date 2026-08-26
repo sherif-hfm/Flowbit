@@ -32,6 +32,33 @@ public static class SharedVariableWakeStatuses
     public const string Completed = "completed";
     public const string Failed = "failed";
     public const string Cancelled = "cancelled";
+    public const string Incident = "incident";
+}
+
+public static class SharedVariableWakeWorkKinds
+{
+    public const string Expansion = "expansion";
+    public const string Delivery = "delivery";
+}
+
+public static class SharedVariableWakeFinalizationDispositions
+{
+    public const string Completed = "completed";
+    public const string RetryScheduled = "retryScheduled";
+    public const string IncidentOpened = "incidentOpened";
+    public const string LeaseLost = "leaseLost";
+}
+
+public static class SharedVariableWakeExpansionPageDispositions
+{
+    public const string Page = "page";
+    public const string LeaseLost = "leaseLost";
+}
+
+public static class SharedVariableWakeIncidentStatuses
+{
+    public const string Open = "open";
+    public const string Resolved = "resolved";
 }
 
 public sealed record SharedVariableRecord(
@@ -48,7 +75,14 @@ public sealed record SharedVariableRecord(
     long Revision,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
-    DateTimeOffset? ArchivedAt);
+    DateTimeOffset? ArchivedAt,
+    long ValueRevision = 0);
+
+public sealed record SharedVariableValueStamp(
+    string Key,
+    bool HasValue,
+    long ValueRevision,
+    string Status);
 
 public sealed record SharedVariableCurrentValueRecord(
     long SharedVariableId,
@@ -123,7 +157,8 @@ public sealed record SharedVariableWriteCommand(
     long? InstanceId = null,
     long? NodeExecutionId = null,
     int? SourceActionId = null,
-    bool DescriptionOnly = false);
+    bool DescriptionOnly = false,
+    long? ExpectedValueRevision = null);
 
 public sealed record SharedVariableLifecycleCommand(
     string Key,
@@ -161,7 +196,9 @@ public sealed record SharedVariableWakeRecord(
     Guid LeaseToken,
     long LeaseGeneration,
     DateTimeOffset LeaseExpiresAt,
-    int AttemptCount);
+    int AttemptCount,
+    int MaxAttempts,
+    long ExpansionCursorTokenId);
 
 public sealed record SharedVariableWakeDeliveryRecord(
     long Id,
@@ -178,18 +215,72 @@ public sealed record SharedVariableWakeDeliveryRecord(
     Guid LeaseToken,
     long LeaseGeneration,
     DateTimeOffset LeaseExpiresAt,
-    int AttemptCount);
+    int AttemptCount,
+    int MaxAttempts);
 
 public sealed record SharedVariableWakeLeaseRequest(
     string WorkerId,
     int MaxCount,
-    TimeSpan LeaseDuration,
-    DateTimeOffset Now);
+    TimeSpan LeaseDuration);
 
 public sealed record SharedVariableWakeFence(
+    string WorkKind,
     long Id,
+    string WorkerId,
     Guid LeaseToken,
     long LeaseGeneration);
+
+public sealed record SharedVariableWakeFailure(
+    string Code,
+    string Description);
+
+public sealed record SharedVariableWakeExpansionPageResult(
+    bool IsComplete,
+    int CreatedCount,
+    long CursorTokenId,
+    string Disposition = SharedVariableWakeExpansionPageDispositions.Page);
+
+public sealed record SharedVariableWakeFinalizationResult(
+    string Disposition,
+    long? IncidentId = null,
+    DateTimeOffset? AvailableAt = null);
+
+public sealed record SharedVariableWakeIncidentRecord(
+    long Id,
+    string WorkKind,
+    long? WakeId,
+    long? DeliveryId,
+    long OriginalWakeId,
+    long? OriginalDeliveryId,
+    long SharedVariableId,
+    string SharedKey,
+    long Revision,
+    long? InstanceId,
+    long? WorkflowDefinitionId,
+    long? TokenId,
+    Guid? ActivationId,
+    int? NodeId,
+    string Type,
+    string Status,
+    string Summary,
+    string? Details,
+    string? ResolutionReason,
+    string? ResolvedBy,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset UpdatedAt,
+    DateTimeOffset? ResolvedAt);
+
+public sealed record SharedVariableWakeIncidentQuery(
+    string? Status = null,
+    string? WorkKind = null,
+    string? SharedKey = null,
+    int Offset = 0,
+    int Limit = 50);
+
+public sealed record SharedVariableWakeCleanupResult(
+    int WakesDeleted,
+    int DeliveriesDeleted,
+    int IncidentsDeleted);
 
 public sealed record SharedVariableClientRecord(
     long Id,

@@ -27,3 +27,20 @@ public interface IConditionalEventDependencyPlanCache
 
     void Remove(long workflowDefinitionId);
 }
+
+/// <summary>
+/// Bounded process-local cache for exact shared-variable access plans keyed by
+/// immutable workflow-definition id.
+/// </summary>
+public interface ISharedVariableAccessPlanCache
+{
+    SharedVariableAccessPlan GetOrAdd(
+        long workflowDefinitionId,
+        WorkflowModel definition);
+
+    bool TryGet(
+        long workflowDefinitionId,
+        out SharedVariableAccessPlan plan);
+
+    void Remove(long workflowDefinitionId);
+}

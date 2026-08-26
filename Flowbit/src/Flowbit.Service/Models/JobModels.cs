@@ -182,7 +182,8 @@ public sealed record WorkflowJobStageRecord(
     IReadOnlyDictionary<string, long> OutputVariableVersions,
     JsonElement? FlowInfo,
     DateTimeOffset EvaluationTime,
-    IReadOnlyDictionary<string, long>? SharedVariableRevisions = null);
+    IReadOnlyDictionary<string, long>? SharedVariableRevisions = null,
+    IReadOnlyDictionary<string, long>? SharedOutputValueVersions = null);
 
 public sealed record WorkflowJobResultRecord(
     JsonElement? Result,
@@ -200,7 +201,8 @@ public sealed record WorkflowJobSnapshotRecord(
     DateTimeOffset EvaluationTime,
     int SizeBytes,
     DateTimeOffset CreatedAt,
-    IReadOnlyDictionary<string, long>? SharedVariableRevisions = null);
+    IReadOnlyDictionary<string, long>? SharedVariableRevisions = null,
+    IReadOnlyDictionary<string, long>? SharedOutputValueVersions = null);
 
 public sealed record WorkflowJobAttemptRecord(
     long Id,

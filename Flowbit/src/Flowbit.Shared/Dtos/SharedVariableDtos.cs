@@ -51,7 +51,8 @@ public sealed record SharedVariableDto(
     long Revision,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
-    DateTimeOffset? ArchivedAt);
+    DateTimeOffset? ArchivedAt,
+    long ValueRevision = 0);
 
 public sealed record SharedVariableListRequest(
     string? Search = null,
@@ -144,7 +145,8 @@ public sealed record SharedVariableBindingMetadataDto(
     bool HasValue,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
-    DateTimeOffset? ArchivedAt);
+    DateTimeOffset? ArchivedAt,
+    long ValueRevision = 0);
 
 public sealed record SharedVariableClientDto(
     long Id,

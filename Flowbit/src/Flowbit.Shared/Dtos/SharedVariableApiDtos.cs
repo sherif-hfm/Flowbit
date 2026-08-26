@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace Flowbit.Shared.Dtos;
 
@@ -19,7 +20,8 @@ public sealed record SharedVariableMetadataDto(
     long Revision,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
-    DateTimeOffset? ArchivedAt);
+    DateTimeOffset? ArchivedAt,
+    long ValueRevision = 0);
 
 /// <summary>
 /// Current-value projection. HasValue distinguishes an explicitly stored JSON
@@ -28,9 +30,50 @@ public sealed record SharedVariableMetadataDto(
 public sealed record SharedVariableValueDto(
     string Key,
     bool HasValue,
+    [property: JsonConverter(typeof(NullableJsonElementPreservingNullConverter))]
     JsonElement? Value,
     long Revision,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    long ValueRevision = 0);
+
+/// <summary>
+/// Preserves an explicit JSON null as a present <see cref="JsonElement"/> with
+/// <see cref="JsonValueKind.Null"/> instead of collapsing it to a null nullable
+/// wrapper. <c>HasValue</c> remains the authoritative unset/value discriminator.
+/// </summary>
+public sealed class NullableJsonElementPreservingNullConverter
+    : JsonConverter<JsonElement?>
+{
+    public override bool HandleNull => true;
+
+    public override JsonElement? Read(
+        ref Utf8JsonReader reader,
+        Type typeToConvert,
+        JsonSerializerOptions options)
+    {
+        if (reader.TokenType == JsonTokenType.Null)
+        {
+            return JsonSerializer.SerializeToElement<object?>(null);
+        }
+
+        using var document = JsonDocument.ParseValue(ref reader);
+        return document.RootElement.Clone();
+    }
+
+    public override void Write(
+        Utf8JsonWriter writer,
+        JsonElement? value,
+        JsonSerializerOptions options)
+    {
+        if (value is null)
+        {
+            writer.WriteNullValue();
+            return;
+        }
+
+        value.Value.WriteTo(writer);
+    }
+}
 
 public sealed record UpdateSharedVariableValueRequest(
     JsonElement Value,

@@ -71,7 +71,7 @@ public sealed class EditorConditionalEventTests
     }
 
     [Fact]
-    public void Validator_RequiresDurableAsyncForSharedVariableDependency()
+    public void Validator_AcceptsAtomicAndDurableSharedVariableDependencies()
     {
         var candidate = ValidCandidate();
         ((JsonArray)candidate["variables"]!).Add(new JsonObject
@@ -91,17 +91,14 @@ public sealed class EditorConditionalEventTests
         var conditional = (JsonObject)((JsonArray)candidate["flowNodes"]!)[1]!["conditional"]!;
         conditional["condition"] = "[approvalSignal] == true";
 
-        Assert.Contains(
-            "Conditional catch event #2 observes shared variable 'approvalSignal' and must explicitly use deliveryMode='durableAsync'.",
-            Validate(candidate));
+        Assert.Empty(Validate(candidate));
 
         conditional["deliveryMode"] = "durableAsync";
         Assert.Empty(Validate(candidate));
 
         conditional.Remove("deliveryMode");
         conditional["condition"] = "'approvalSignal' == 'approvalSignal'";
-        Assert.DoesNotContain(Validate(candidate), error =>
-            error.Contains("must explicitly use deliveryMode='durableAsync'", StringComparison.Ordinal));
+        Assert.Empty(Validate(candidate));
     }
 
     [Fact]

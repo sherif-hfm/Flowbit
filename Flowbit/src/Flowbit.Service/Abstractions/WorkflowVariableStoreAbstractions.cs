@@ -15,7 +15,7 @@ public interface IWorkflowVariableStore
     Task<Dictionary<string, JsonElement>> MergeEffectiveValuesAsync(
         WorkflowModel definition,
         IReadOnlyDictionary<string, JsonElement> instanceValues,
-        bool lockSharedValues,
+        SharedVariableAccessScope? sharedAccess,
         CancellationToken cancellationToken);
 
     Task<IReadOnlyList<WorkflowVariableWriteResult>> WriteAsync(
@@ -32,6 +32,13 @@ public interface IWorkflowVariableStore
 
     Task<IReadOnlyDictionary<string, long>> LoadSharedRevisionsAsync(
         WorkflowModel definition,
+        IReadOnlyCollection<string>? aliases,
+        bool lockForUpdate,
+        CancellationToken cancellationToken);
+
+    Task<IReadOnlyDictionary<string, long>> LoadSharedValueVersionsAsync(
+        WorkflowModel definition,
+        IReadOnlyCollection<string> aliases,
         bool lockForUpdate,
         CancellationToken cancellationToken);
 }

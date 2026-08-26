@@ -17,16 +17,27 @@ public sealed class WorkflowVariableStore(
 {
     public async Task<IReadOnlyDictionary<string, long>> LoadSharedRevisionsAsync(
         WorkflowModel definition,
+        IReadOnlyCollection<string>? aliases,
         bool lockForUpdate,
         CancellationToken cancellationToken)
     {
-        var bindings = SharedBindings(definition).Values.ToArray();
+        var allBindings = SharedBindings(definition);
+        var bindings = aliases is null
+            ? allBindings.Values.ToArray()
+            : aliases
+                .Where(allBindings.ContainsKey)
+                .Select(alias => allBindings[alias])
+                .DistinctBy(binding => binding.Name, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
         var keys = bindings.Select(binding => binding.SharedKey!)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Order(StringComparer.OrdinalIgnoreCase)
+            .Distinct(StringComparer.Ordinal)
+            .Order(StringComparer.Ordinal)
             .ToArray();
         if (lockForUpdate)
         {
+            await sharedVariables.PrelockDefinitionKeysForLegacyAllocatorAsync(
+                SharedCatalogKeys(allBindings.Values),
+                cancellationToken);
             _ = await sharedVariables.LockCurrentAsync(
                 keys,
                 includeArchived: true,
@@ -46,6 +57,50 @@ public sealed class WorkflowVariableStore(
             }
         }
         return revisions;
+    }
+
+    public async Task<IReadOnlyDictionary<string, long>> LoadSharedValueVersionsAsync(
+        WorkflowModel definition,
+        IReadOnlyCollection<string> aliases,
+        bool lockForUpdate,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(aliases);
+        var bindings = SharedBindings(definition);
+        var requested = aliases
+            .Where(bindings.ContainsKey)
+            .Select(alias => bindings[alias])
+            .DistinctBy(binding => binding.Name, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var keys = requested
+            .Select(binding => binding.SharedKey!)
+            .Distinct(StringComparer.Ordinal)
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+        if (lockForUpdate && keys.Length > 0)
+        {
+            await sharedVariables.PrelockDefinitionKeysForLegacyAllocatorAsync(
+                SharedCatalogKeys(bindings.Values),
+                cancellationToken);
+        }
+        var stamps = lockForUpdate
+            ? await sharedVariables.LockValueStampsAsync(
+                keys,
+                includeArchived: true,
+                cancellationToken)
+            : await sharedVariables.LoadValueStampsAsync(
+                keys,
+                includeArchived: true,
+                cancellationToken);
+        var versions = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+        foreach (var binding in requested)
+        {
+            if (stamps.TryGetValue(binding.SharedKey!, out var stamp))
+            {
+                versions[binding.Name] = stamp.ValueRevision;
+            }
+        }
+        return versions;
     }
 
     public async Task<IReadOnlyList<SharedVariableBindingMetadataDto>> DescribeBindingsAsync(
@@ -79,7 +134,8 @@ public sealed class WorkflowVariableStore(
                 variable.HasValue,
                 variable.CreatedAt,
                 variable.UpdatedAt,
-                variable.ArchivedAt));
+                variable.ArchivedAt,
+                variable.ValueRevision));
         }
         return result;
     }
@@ -87,7 +143,7 @@ public sealed class WorkflowVariableStore(
     public async Task<Dictionary<string, JsonElement>> MergeEffectiveValuesAsync(
         WorkflowModel definition,
         IReadOnlyDictionary<string, JsonElement> instanceValues,
-        bool lockSharedValues,
+        SharedVariableAccessScope? sharedAccess,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(definition);
@@ -111,39 +167,34 @@ public sealed class WorkflowVariableStore(
 
         var allKeys = bindings.Values
             .Select(binding => binding.SharedKey!)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Order(StringComparer.OrdinalIgnoreCase)
+            .Distinct(StringComparer.Ordinal)
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+        IEnumerable<string> lockedAliases = (IEnumerable<string>?)sharedAccess?.LockAliases
+            ?? Array.Empty<string>();
+        var lockedKeys = lockedAliases
+            .Where(bindings.ContainsKey)
+            .Select(alias => bindings[alias].SharedKey!)
+            .Distinct(StringComparer.Ordinal)
+            .Order(StringComparer.Ordinal)
             .ToArray();
         IReadOnlyDictionary<string, SharedVariableCurrentValueRecord> current;
-        if (!lockSharedValues)
+        if (lockedKeys.Length > 0)
         {
-            current = await sharedVariables.LoadCurrentAsync(
+            // During the legacy singleton-revision-allocator rollout, every
+            // workflow transaction that will lock a shared row first takes the
+            // immutable definition's complete key set in ordinal order. The
+            // repository makes this a no-op after sequence cutover, restoring
+            // the permanent exact node/flow locking plan automatically.
+            await sharedVariables.PrelockDefinitionKeysForLegacyAllocatorAsync(
                 allKeys,
-                includeArchived: false,
                 cancellationToken);
-        }
-        else
-        {
-            // Only producer targets and shared conditional dependencies need a
-            // write lock through the transition. Ordinary read-only bindings
-            // remain fresh without serializing unrelated long-running service
-            // calls against catalog writers.
-            var conditionalText = string.Join('\n', (definition.FlowNodes ?? [])
-                .Where(node => BpmnFlowNodeTypes.IsConditionalCatch(node.Type))
-                .Select(node => node.Conditional?.Condition ?? string.Empty));
-            var lockedKeys = bindings.Values
-                .Where(binding => binding.Access == SharedVariableAccessModes.ReadWrite
-                    || conditionalText.Contains(binding.Name, StringComparison.OrdinalIgnoreCase))
-                .Select(binding => binding.SharedKey!)
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .Order(StringComparer.OrdinalIgnoreCase)
-                .ToArray();
             var locked = await sharedVariables.LockCurrentAsync(
                 lockedKeys,
                 includeArchived: false,
                 cancellationToken);
             var unlockedKeys = allKeys
-                .Except(lockedKeys, StringComparer.OrdinalIgnoreCase)
+                .Except(lockedKeys, StringComparer.Ordinal)
                 .ToArray();
             var unlocked = await sharedVariables.LoadCurrentAsync(
                 unlockedKeys,
@@ -158,6 +209,13 @@ public sealed class WorkflowVariableStore(
                 combined[pair.Key] = pair.Value;
             }
             current = combined;
+        }
+        else
+        {
+            current = await sharedVariables.LoadCurrentAsync(
+                allKeys,
+                includeArchived: false,
+                cancellationToken);
         }
 
         foreach (var binding in bindings.Values)
@@ -242,17 +300,20 @@ public sealed class WorkflowVariableStore(
         // comparison and suppresses its durable wake expansion as well.
         if (sharedWrites.Count > 0)
         {
+            await sharedVariables.PrelockDefinitionKeysForLegacyAllocatorAsync(
+                SharedCatalogKeys(bindings.Values),
+                cancellationToken);
             _ = await sharedVariables.LockCurrentAsync(
                 sharedWrites.Select(item => item.Binding.SharedKey!)
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .Order(StringComparer.OrdinalIgnoreCase)
+                    .Distinct(StringComparer.Ordinal)
+                    .Order(StringComparer.Ordinal)
                     .ToArray(),
                 includeArchived: false,
                 cancellationToken);
         }
 
         foreach (var (writeIndex, write, binding) in sharedWrites
-                     .OrderBy(item => item.Binding.SharedKey, StringComparer.OrdinalIgnoreCase)
+                     .OrderBy(item => item.Binding.SharedKey, StringComparer.Ordinal)
                      .ThenBy(item => item.Index))
         {
             var mutation = await sharedVariables.WriteAsync(
@@ -273,7 +334,7 @@ public sealed class WorkflowVariableStore(
                     NodeExecutionId: write.NodeExecutionId,
                     SourceActionId: write.SourceActionId),
                 cancellationToken)
-                ?? throw new WorkflowDomainException(
+                ?? throw new WorkflowConflictException(
                     $"Shared variable key '{binding.SharedKey}' does not exist or is archived.");
 
             // Shared changes are fanned out only through the durable expansion
@@ -300,32 +361,21 @@ public sealed class WorkflowVariableStore(
                 && !string.IsNullOrWhiteSpace(variable.SharedKey))
             .ToDictionary(variable => variable.Name, StringComparer.OrdinalIgnoreCase);
 
+    private static string[] SharedCatalogKeys(IEnumerable<VariableModel> bindings) =>
+        bindings
+            .Select(binding => binding.SharedKey!)
+            .Distinct(StringComparer.Ordinal)
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+
     private static void EnsureValueAllowed(VariableModel binding, JsonElement value)
     {
-        var isNull = value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined;
-        if ((isNull && !binding.Nullable)
-            || (!isNull && !TypedOutputValueValidator.IsValid(
-                value,
-                binding.DataType,
-                binding.IsArray)))
-        {
-            throw new WorkflowDomainException(
-                $"Value written to shared variable alias '{binding.Name}' must be "
-                + TypedOutputValueValidator.DescribeExpected(binding.DataType, binding.IsArray)
-                + (binding.Nullable ? " or null." : "."));
-        }
-
-        if (!isNull && !string.IsNullOrWhiteSpace(binding.Validation))
-        {
-            var context = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase)
-            {
-                ["value"] = value.Clone()
-            };
-            if (!SequenceFlowConditionEvaluator.Evaluate(binding.Validation, context))
-            {
-                throw new WorkflowDomainException(
-                    $"Value written to shared variable alias '{binding.Name}' failed validation '{binding.Validation}'.");
-            }
-        }
+        SharedVariableValueValidator.Validate(
+            binding.SharedKey ?? binding.Name ?? "shared variable",
+            binding.DataType,
+            binding.IsArray,
+            binding.Nullable,
+            binding.Validation,
+            value);
     }
 }

@@ -20,7 +20,8 @@ public sealed class WorkflowDefinitionService(
     DurableProcessingOptions? durableProcessingOptions = null,
     IConditionalEventDefinitionAnalyzer? conditionalEventAnalyzer = null,
     IConditionalEventDependencyPlanCache? conditionalEventPlanCache = null,
-    ISharedVariableRepository? sharedVariables = null)
+    ISharedVariableRepository? sharedVariables = null,
+    ISharedVariableAccessPlanCache? sharedVariableAccessPlanCache = null)
     : IWorkflowDefinitionService
 {
     private readonly DurableProcessingOptions durableProcessing =
@@ -90,10 +91,13 @@ public sealed class WorkflowDefinitionService(
         WorkflowModelMigrator.Normalize(definition);
         ValidateDefinition(definition);
         await ValidateSharedCatalogBindingsAsync(definition, cancellationToken);
+        ValidateSharedServiceTaskDurability(definition);
+        ValidateSharedTransactionLockOrder(definition);
         EnsureDurablePublicationAllowed(definition, publish);
         var name = definition.Name.Trim();
         var created = await definitions.AddAsync(name, definition, publish, cancellationToken);
         _ = conditionalEventPlanCache?.GetOrAdd(created.Id, created.Definition);
+        _ = sharedVariableAccessPlanCache?.GetOrAdd(created.Id, created.Definition);
         logger.LogInformation("Created workflow definition {WorkflowId} '{Name}' v{Version} (published={Published}, default={Default}).", created.Id, name, created.Version, publish, created.IsDefault);
         return ToDetail(created);
     }
@@ -124,10 +128,13 @@ public sealed class WorkflowDefinitionService(
         WorkflowModelMigrator.Normalize(definition);
         ValidateDefinition(definition);
         await ValidateSharedCatalogBindingsAsync(definition, cancellationToken);
+        ValidateSharedServiceTaskDurability(definition);
+        ValidateSharedTransactionLockOrder(definition);
         EnsureDurablePublicationAllowed(definition, publish);
         var name = string.IsNullOrWhiteSpace(definition.Name) ? source.Name : definition.Name.Trim();
         var created = await definitions.AddAsync(name, definition, publish, cancellationToken);
         _ = conditionalEventPlanCache?.GetOrAdd(created.Id, created.Definition);
+        _ = sharedVariableAccessPlanCache?.GetOrAdd(created.Id, created.Definition);
         logger.LogInformation("Created new workflow version {WorkflowId} '{Name}' v{Version} from source {SourceWorkflowId} (published={Published}, default={Default}).", created.Id, name, created.Version, sourceWorkflowId, publish, created.IsDefault);
         return ToDetail(created);
     }
@@ -143,6 +150,8 @@ public sealed class WorkflowDefinitionService(
         await ValidateSharedCatalogBindingsAsync(
             definition.Definition,
             cancellationToken);
+        ValidateSharedServiceTaskDurability(definition.Definition);
+        ValidateSharedTransactionLockOrder(definition.Definition);
         EnsureDurablePublicationAllowed(definition.Definition, publish: true);
         var published = await definitions.SetPublishedAsync(id, true, cancellationToken);
         if (published)
@@ -181,6 +190,8 @@ public sealed class WorkflowDefinitionService(
         await ValidateSharedCatalogBindingsAsync(
             definition.Definition,
             cancellationToken);
+        ValidateSharedServiceTaskDurability(definition.Definition);
+        ValidateSharedTransactionLockOrder(definition.Definition);
         EnsureDurablePublicationAllowed(definition.Definition, publish: true);
         var set = await definitions.SetDefaultAsync(id, true, cancellationToken);
         if (set)
@@ -276,6 +287,49 @@ public sealed class WorkflowDefinitionService(
         }
     }
 
+    private void ValidateSharedServiceTaskDurability(WorkflowModel definition)
+    {
+        if (!(definition.Variables ?? []).Any(variable => variable is not null
+                && string.Equals(variable.Scope, VariableScopes.Shared, StringComparison.Ordinal)))
+        {
+            return;
+        }
+
+        var accessPlan = SharedVariableAccessPlanner.Build(
+            definition,
+            conditionalAnalyzer);
+        foreach (var node in (definition.FlowNodes ?? []).Where(node =>
+                     BpmnFlowNodeTypes.IsServiceTask(node.Type)
+                     && string.Equals(
+                         node.Service?.Type,
+                         ServiceConnectorTypes.Rest,
+                         StringComparison.Ordinal)
+                     && !node.AsyncBefore))
+        {
+            if (accessPlan.ForNode(node.Id).TouchesSharedVariables)
+            {
+                throw new WorkflowDomainException(
+                    $"REST service task #{node.Id} must set asyncBefore=true when its transition reads, writes, or locks shared variables.");
+            }
+        }
+    }
+
+    private void ValidateSharedTransactionLockOrder(WorkflowModel definition)
+    {
+        if (!(definition.Variables ?? []).Any(variable => variable is not null
+                && string.Equals(variable.Scope, VariableScopes.Shared, StringComparison.Ordinal)))
+        {
+            return;
+        }
+
+        var conditionalPlan = conditionalAnalyzer.Analyze(definition);
+        var accessPlan = SharedVariableAccessPlanner.Build(definition, conditionalPlan);
+        SharedVariableTransactionLockOrderValidator.Validate(
+            definition,
+            accessPlan,
+            conditionalPlan);
+    }
+
     private static string? NormalizeContractRule(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
@@ -285,6 +339,7 @@ public sealed class WorkflowDefinitionService(
         if (deleted)
         {
             conditionalEventPlanCache?.Remove(id);
+            sharedVariableAccessPlanCache?.Remove(id);
             logger.LogInformation("Workflow definition {WorkflowId} deleted.", id);
         }
         else

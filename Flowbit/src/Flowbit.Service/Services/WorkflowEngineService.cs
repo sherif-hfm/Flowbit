@@ -31,7 +31,8 @@ public sealed partial class WorkflowEngineService(
     IInstanceVariableUpdateRepository? variableUpdates = null,
     IInstanceVariableMutationTracker? variableMutationTracker = null,
     IConditionalEventDependencyPlanCache? conditionalEventPlans = null,
-    IWorkflowVariableStore? workflowVariables = null)
+    IWorkflowVariableStore? workflowVariables = null,
+    ISharedVariableAccessPlanCache? sharedVariableAccessPlans = null)
     : IWorkflowEngineService, IWorkflowJobProcessor,
       IInstanceVersionChangeBatchExecutor, IConditionalEventRuntimeCoordinator
 {
@@ -40,6 +41,9 @@ public sealed partial class WorkflowEngineService(
     private const string DefaultInstanceListRequiredRole = "admin";
     private static readonly JsonSerializerOptions InstanceVariableUpdateJsonOptions =
         new(JsonSerializerDefaults.Web);
+    private readonly ISharedVariableAccessPlanCache sharedAccessPlanCache =
+        sharedVariableAccessPlans
+        ?? new SharedVariableAccessPlanCache(new ConditionalEventDefinitionAnalyzer());
     private Dictionary<string, JsonElement>? _settingsCache;
 
     private async Task LoadSettingsAsync(CancellationToken cancellationToken)
@@ -97,7 +101,11 @@ public sealed partial class WorkflowEngineService(
             instance.Id,
             workflow.Definition,
             cancellationToken,
-            lockSharedValues: true);
+            SharedConditionalAccessScope(
+                workflow.Id,
+                workflow.Definition,
+                plan,
+                changedNames));
         var flowInfo = await LoadSequenceFlowInfoAsync(
             instance.Id,
             workflow.Definition,
@@ -115,6 +123,7 @@ public sealed partial class WorkflowEngineService(
             triggered,
             conditionallyTriggeredTokenIds,
             maxTriggers: 10_000,
+            onlyTokenId: null,
             cancellationToken);
 
         while (triggered.Count > 0
@@ -146,6 +155,7 @@ public sealed partial class WorkflowEngineService(
         Queue<long> routingQueue,
         ISet<long> forceDurableTokenIds,
         long maxTriggers,
+        long? onlyTokenId,
         CancellationToken cancellationToken)
     {
         var started = Stopwatch.GetTimestamp();
@@ -176,6 +186,7 @@ public sealed partial class WorkflowEngineService(
             cancellationToken);
         var tokensByNode = activeTokens
             .Where(token => candidateNodeIds.Contains(token.NodeId)
+                            && (onlyTokenId is null || token.Id == onlyTokenId.Value)
                             && BpmnFlowNodeTypes.IsConditionalCatch(token.NodeType)
                             && token.WaitState is null
                             && token.WaitingJobId is null)
@@ -330,6 +341,18 @@ public sealed partial class WorkflowEngineService(
         }
 
         var changedNames = variableMutationTracker.Consume(instance.Id);
+        if (workflowVariables is not null)
+        {
+            storedOverlay = await workflowVariables.MergeEffectiveValuesAsync(
+                definition,
+                storedOverlay,
+                SharedConditionalAccessScope(
+                    instance.WorkflowDefinitionId,
+                    definition,
+                    plan,
+                    changedNames),
+                cancellationToken);
+        }
         return await TriggerConditionalWaitsAsync(
             instance,
             definition,
@@ -341,6 +364,7 @@ public sealed partial class WorkflowEngineService(
             routingQueue,
             forceDurableTokenIds,
             maxTriggers,
+            onlyTokenId: null,
             cancellationToken);
     }
 
@@ -587,7 +611,7 @@ public sealed partial class WorkflowEngineService(
                 : await workflowVariables.MergeEffectiveValuesAsync(
                     workflow.Definition,
                     new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase),
-                    lockSharedValues: true,
+                    SharedAccessScope(workflow.Id, workflow.Definition, startEvent.Id),
                     cancellationToken);
             var startContext = WithContext(
                 sharedStartValues,
@@ -814,7 +838,7 @@ public sealed partial class WorkflowEngineService(
             : await workflowVariables.MergeEffectiveValuesAsync(
                 definition,
                 new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase),
-                lockSharedValues: true,
+                SharedAccessScope(workflow.Id, definition, startEvent.Id),
                 cancellationToken);
         var startContext = WithContext(
             sharedStartValues,
@@ -1207,7 +1231,7 @@ public sealed partial class WorkflowEngineService(
                 sharedValuesByWorkflowId[pair.Key] = await workflowVariables.MergeEffectiveValuesAsync(
                     pair.Value.Definition,
                     new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase),
-                    lockSharedValues: false,
+                    sharedAccess: null,
                     cancellationToken);
             }
         }
@@ -2188,7 +2212,7 @@ public sealed partial class WorkflowEngineService(
             instance.Id,
             workflow.Definition,
             cancellationToken,
-            lockSharedValues: false);
+            sharedAccess: null);
         var progressRecords = await runtime.GetMultiInstanceProgressAsync(executionIds, cancellationToken);
         var progressCache = progressRecords.ToDictionary(pair => pair.Key, pair => ToProgress(pair.Value));
         var executionsById = progressRecords.ToDictionary(pair => pair.Key, pair => pair.Value.Execution);
@@ -2337,7 +2361,11 @@ public sealed partial class WorkflowEngineService(
         if (!RoleAllowed(flow.Roles, roles))
             throw new WorkflowDomainException("The actor does not have a role permitted for this interrupt action.");
 
-        var stored = await LoadVariablesAsync(instance.Id, cancellationToken);
+        var stored = await LoadVariablesAsync(
+            instance.Id,
+            cancellationToken,
+            sharedAccessNodeId: node.Id,
+            sharedAccessFlowId: flow.Id);
         var storedContext = WithContext(
             stored, actor, instance, workflow.Definition, node,
             visibilityContext.AsOf);
@@ -2479,7 +2507,11 @@ public sealed partial class WorkflowEngineService(
             throw new WorkflowDomainException("The actor does not have a role permitted for this action.");
         EnsureActionAllowedByClaim(task, flow, executionActor);
 
-        var stored = await LoadVariablesAsync(instance.Id, cancellationToken);
+        var stored = await LoadVariablesAsync(
+            instance.Id,
+            cancellationToken,
+            sharedAccessNodeId: node.Id,
+            sharedAccessFlowId: flow.Id);
         var storedContext = WithContext(
             stored, executionActor, instance, workflow.Definition, node,
             visibilityContext.AsOf);
@@ -3045,7 +3077,11 @@ public sealed partial class WorkflowEngineService(
             EnsureActionAllowedByClaim(task, flow, executionActor);
         }
 
-        var storedForValidation = await LoadVariablesAsync(instance.Id, cancellationToken);
+        var storedForValidation = await LoadVariablesAsync(
+            instance.Id,
+            cancellationToken,
+            sharedAccessNodeId: node.Id,
+            sharedAccessFlowId: flow.Id);
         var taskInstance = instance with
         {
             ActiveTokenId = token.Id,
@@ -3370,7 +3406,13 @@ public sealed partial class WorkflowEngineService(
             ?? throw new WorkflowDomainException(
                 $"Message catch event #{previewNode.Id} has no recorded wait activation.");
         await AuthenticateMessageCatchAsync(
-            previewAtCatch, workflow.Definition, previewNode, previewConfig, message, cancellationToken);
+            previewAtCatch,
+            workflow.Definition,
+            previewNode,
+            previewConfig,
+            message,
+            lockSharedValues: false,
+            cancellationToken);
 
         await using var transaction = await unitOfWork.BeginTransactionAsync(cancellationToken);
         var instance = await runtime.GetInstanceForUpdateAsync(id, false, cancellationToken);
@@ -3443,6 +3485,7 @@ public sealed partial class WorkflowEngineService(
             node,
             messageConfig,
             message,
+            lockSharedValues: true,
             cancellationToken);
         var actor = authentication.Actor;
         var performedBy = actor.User;
@@ -3718,7 +3761,7 @@ public sealed partial class WorkflowEngineService(
             : await workflowVariables.MergeEffectiveValuesAsync(
                 definition,
                 new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase),
-                lockSharedValues: false,
+                sharedAccess: null,
                 cancellationToken);
         var authContext = BuildAuthContext(
             sharedValues,
@@ -3798,11 +3841,16 @@ public sealed partial class WorkflowEngineService(
         FlowNodeModel node,
         MessageCatchModel messageConfig,
         IncomingMessage message,
+        bool lockSharedValues,
         CancellationToken cancellationToken)
     {
         await RefreshSettingsAsync(cancellationToken);
 
-        var stored = await LoadVariablesAsync(instance.Id, cancellationToken);
+        var stored = await LoadVariablesAsync(
+            instance.Id,
+            cancellationToken,
+            lockSharedValues,
+            sharedAccessNodeId: node.Id);
         var authContext = BuildAuthContext(stored, instance, definition, node);
         if (!TryResolveRequiredScalar(messageConfig.ClientId, authContext, out var expectedClientId)
             || !TryResolveRequiredScalar(messageConfig.ClientSecret, authContext, out var expectedClientSecret))
@@ -4626,7 +4674,13 @@ public sealed partial class WorkflowEngineService(
             // the current-value projection and conditional snapshot include it.
             await unitOfWork.SaveChangesAsync(cancellationToken);
         }
-        var storedOverlay = await LoadVariablesAsync(instance.Id, cancellationToken);
+        var storedOverlay = await LoadVariablesAsync(
+            instance.Id,
+            cancellationToken,
+            lockSharedValues: false);
+        var sharedAccessPlan = sharedAccessPlanCache.GetOrAdd(
+            instance.WorkflowDefinitionId,
+            definition);
         var conditionalPlan = conditionalEventPlans?.GetOrAdd(
                 instance.WorkflowDefinitionId,
                 definition)
@@ -4696,7 +4750,15 @@ public sealed partial class WorkflowEngineService(
                 var isExternalOrCpuActivity =
                     BpmnFlowNodeTypes.IsServiceTask(currentNode.Type)
                     || BpmnFlowNodeTypes.IsScriptTask(currentNode.Type);
+                var requiresSharedServiceIsolation =
+                    BpmnFlowNodeTypes.IsServiceTask(currentNode.Type)
+                    && string.Equals(
+                        currentNode.Service?.Type,
+                        ServiceConnectorTypes.Rest,
+                        StringComparison.Ordinal)
+                    && sharedAccessPlan.ForNode(currentNode.Id).TouchesSharedVariables;
                 var requiresDurableEntry = currentNode.AsyncBefore
+                    || requiresSharedServiceIsolation
                     || isExternalOrCpuActivity
                        && (currentNode.AsyncAfter
                            || forceDurableActivities
@@ -4718,6 +4780,20 @@ public sealed partial class WorkflowEngineService(
                     // Service/script staging creates them in that activation
                     // transaction immediately before the external body runs.
                     continue;
+                }
+
+                // asyncBefore is a true transaction boundary. Do not acquire
+                // this node's shared rows until its durable continuation owns
+                // the next instance transaction; otherwise an older shared-row
+                // lock remains live across what definition analysis treats as
+                // a lock-order reset.
+                if (workflowVariables is not null)
+                {
+                    storedOverlay = await workflowVariables.MergeEffectiveValuesAsync(
+                        definition,
+                        storedOverlay,
+                        sharedAccessPlan.SelectNode(currentNode.Id),
+                        cancellationToken);
                 }
 
                 if (BpmnFlowNodeTypes.IsTimerCatch(currentNode.Type))
@@ -7535,7 +7611,10 @@ public sealed partial class WorkflowEngineService(
         var maxInstances = configured is not null && int.TryParse(configured.Value, out var parsed) && parsed > 0
             ? parsed
             : 1000;
-        var stored = await LoadVariablesAsync(instance.Id, cancellationToken);
+        var stored = await LoadVariablesAsync(
+            instance.Id,
+            cancellationToken,
+            sharedAccessNodeId: node.Id);
         var tokenInstance = instance with
         {
             ActiveTokenId = token.Id,
@@ -8161,7 +8240,7 @@ public sealed partial class WorkflowEngineService(
                 // so the pass-through loop routes out an attached errorBoundaryEvent
                 // (or, with no boundary, rolls back and returns 400).
                 logger.LogWarning("Service task #{NodeId} on instance {InstanceId}: output mapping failed: {Reason}", node.Id, instance.Id, mappingFailure);
-                await WriteStatusVariableAsync(
+                var mappingStatusFailure = await TryWriteStatusVariableAsTaskOutputAsync(
                     instance.Id,
                     node.Id,
                     performedBy,
@@ -8172,20 +8251,10 @@ public sealed partial class WorkflowEngineService(
                     actor,
                     cancellationToken);
                 await unitOfWork.SaveChangesAsync(cancellationToken);
-                return TaskExecutionOutcome.Fail(mappingFailure);
+                return TaskExecutionOutcome.Fail(mappingStatusFailure ?? mappingFailure);
             }
 
             logger.LogInformation("Service task #{NodeId} on instance {InstanceId} succeeded with HTTP {StatusCode}.", node.Id, instance.Id, result.StatusCode);
-            await WriteStatusVariableAsync(
-                instance.Id,
-                node.Id,
-                performedBy,
-                service,
-                result.StatusCode,
-                storedOverlay,
-                instance.CurrentNodeExecutionId,
-                actor,
-                cancellationToken);
             await unitOfWork.SaveChangesAsync(cancellationToken);
             return TaskExecutionOutcome.Ok();
         }
@@ -8195,7 +8264,7 @@ public sealed partial class WorkflowEngineService(
         // errorBoundaryEvent is attached the loop throws (rollback + 400) and this
         // write rolls back with the transaction; if a boundary catches, it persists.
         logger.LogWarning("Service task #{NodeId} on instance {InstanceId} failed with HTTP {StatusCode}: {Reason}", node.Id, instance.Id, result.StatusCode, result.Error);
-        await WriteStatusVariableAsync(
+        var failedStatusWrite = await TryWriteStatusVariableAsTaskOutputAsync(
             instance.Id,
             node.Id,
             performedBy,
@@ -8208,7 +8277,8 @@ public sealed partial class WorkflowEngineService(
         await unitOfWork.SaveChangesAsync(cancellationToken);
 
         var reason = result.Error ?? $"HTTP status {result.StatusCode}";
-        return TaskExecutionOutcome.Fail($"Service task #{node.Id} REST call failed ({reason}).");
+        return TaskExecutionOutcome.Fail(
+            failedStatusWrite ?? $"Service task #{node.Id} REST call failed ({reason}).");
     }
 
     private static bool IsJsonRequest(IReadOnlyList<ServiceTaskHeader> headers)
@@ -8238,7 +8308,7 @@ public sealed partial class WorkflowEngineService(
     {
         // Preflight configuration/template failures have no HTTP response, so
         // expose status 0 consistently when an attached boundary catches them.
-        await WriteStatusVariableAsync(
+        var statusFailure = await TryWriteStatusVariableAsTaskOutputAsync(
             instanceId,
             nodeId,
             setBy,
@@ -8249,7 +8319,7 @@ public sealed partial class WorkflowEngineService(
             actor,
             cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
-        return TaskExecutionOutcome.Fail(reason);
+        return TaskExecutionOutcome.Fail(statusFailure ?? reason);
     }
 
     // Stages and validates every service response mapping before writing any of
@@ -8269,15 +8339,11 @@ public sealed partial class WorkflowEngineService(
         ActorContext actor,
         CancellationToken cancellationToken)
     {
-        if (service.OutputMappings.Count == 0)
-        {
-            return null;
-        }
-
         JsonDocument? document = null;
         try
         {
-            if (!string.IsNullOrWhiteSpace(result.Body))
+            if (service.OutputMappings.Count > 0
+                && !string.IsNullOrWhiteSpace(result.Body))
             {
                 document = JsonDocument.Parse(result.Body);
             }
@@ -8307,6 +8373,17 @@ public sealed partial class WorkflowEngineService(
                     payload,
                     contextBase);
 
+                // Successful response outputs and status are one logical
+                // producer batch. Shared contract validation runs over the
+                // complete batch before WorkflowVariableStore persists any
+                // instance or shared write, so an invalid status cannot leave
+                // otherwise valid output mappings behind a caught boundary.
+                if (!string.IsNullOrWhiteSpace(service.StatusVariable))
+                {
+                    values[service.StatusVariable] =
+                        JsonSerializer.SerializeToElement(result.StatusCode);
+                }
+
                 await WriteVariablesForInstanceAsync(
                     instanceId,
                     values,
@@ -8326,6 +8403,40 @@ public sealed partial class WorkflowEngineService(
         }
 
         return null;
+    }
+
+    private async Task<string?> TryWriteStatusVariableAsTaskOutputAsync(
+        long instanceId,
+        int nodeId,
+        string? setBy,
+        ServiceTaskModel service,
+        int statusCode,
+        Dictionary<string, JsonElement> storedOverlay,
+        long? nodeExecutionId,
+        ActorContext actor,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await WriteStatusVariableAsync(
+                instanceId,
+                nodeId,
+                setBy,
+                service,
+                statusCode,
+                storedOverlay,
+                nodeExecutionId,
+                actor,
+                cancellationToken);
+            return null;
+        }
+        catch (WorkflowDomainException ex)
+        {
+            // Authored value-contract failures are BPMN task failures. Catalog
+            // lifecycle, concurrency, lease, and invariant exceptions use
+            // different exception types and deliberately continue to bubble.
+            return ex.Message;
+        }
     }
 
     private async Task WriteStatusVariableAsync(
@@ -8460,11 +8571,29 @@ public sealed partial class WorkflowEngineService(
         // overlay already carries the coerced writes on top of the stored values.
         foreach (var target in writes.Select(w => w.Target).Distinct())
         {
-            if (string.Equals(target.Scope, VariableScopes.Shared, StringComparison.Ordinal)
-                && target.Access != Flowbit.Shared.Models.SharedVariableAccessModes.ReadWrite)
+            if (string.Equals(target.Scope, VariableScopes.Shared, StringComparison.Ordinal))
             {
-                return TaskExecutionOutcome.Fail(
-                    $"Script task #{node.Id} cannot write read-only shared variable '{target.Name}'.");
+                if (target.Access != Flowbit.Shared.Models.SharedVariableAccessModes.ReadWrite)
+                {
+                    return TaskExecutionOutcome.Fail(
+                        $"Script task #{node.Id} cannot write read-only shared variable '{target.Name}'.");
+                }
+                try
+                {
+                    SharedVariableValueValidator.Validate(
+                        target.SharedKey ?? target.Name ?? "shared variable",
+                        target.DataType,
+                        target.IsArray,
+                        target.Nullable,
+                        target.Validation,
+                        overlay[target.Name!]);
+                }
+                catch (WorkflowDomainException ex)
+                {
+                    return TaskExecutionOutcome.Fail(
+                        $"Script task #{node.Id} failed: {ex.Message}");
+                }
+                continue;
             }
             if (string.IsNullOrWhiteSpace(target.Validation))
             {
@@ -8472,22 +8601,13 @@ public sealed partial class WorkflowEngineService(
             }
 
             if (target.Nullable
-                && overlay.TryGetValue(target.Name, out var currentValue)
+                && overlay.TryGetValue(target.Name!, out var currentValue)
                 && (currentValue.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined))
             {
                 continue;
             }
 
-            IReadOnlyDictionary<string, JsonElement> validationContext = overlay;
-            if (string.Equals(target.Scope, VariableScopes.Shared, StringComparison.Ordinal)
-                && overlay.TryGetValue(target.Name, out var sharedCandidate))
-            {
-                validationContext = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase)
-                {
-                    ["value"] = sharedCandidate
-                };
-            }
-            if (!SequenceFlowConditionEvaluator.Evaluate(target.Validation, validationContext))
+            if (!SequenceFlowConditionEvaluator.Evaluate(target.Validation, overlay))
             {
                 logger.LogWarning("Script task #{NodeId} on instance {InstanceId}: variable '{Variable}' failed validation '{Validation}'.",
                     node.Id, instance.Id, target.Name, target.Validation);
@@ -8515,20 +8635,28 @@ public sealed partial class WorkflowEngineService(
         }
         else
         {
-            _ = await workflowVariables.WriteAsync(
-                definition,
-                instance.WorkflowDefinitionId,
-                instance.Id,
-                writes.Select(write => new WorkflowVariableWrite(
-                    write.Target.Name,
-                    write.Value,
-                    node.Id,
-                    instance.CurrentNodeExecutionId,
-                    performedBy,
-                    actor.ActingFor,
-                    actor.DelegationId)).ToArray(),
-                actor,
-                cancellationToken);
+            try
+            {
+                _ = await workflowVariables.WriteAsync(
+                    definition,
+                    instance.WorkflowDefinitionId,
+                    instance.Id,
+                    writes.Select(write => new WorkflowVariableWrite(
+                        write.Target.Name,
+                        write.Value,
+                        node.Id,
+                        instance.CurrentNodeExecutionId,
+                        performedBy,
+                        actor.ActingFor,
+                        actor.DelegationId)).ToArray(),
+                    actor,
+                    cancellationToken);
+            }
+            catch (WorkflowDomainException ex)
+            {
+                return TaskExecutionOutcome.Fail(
+                    $"Script task #{node.Id} failed: {ex.Message}");
+            }
         }
         foreach (var (target, value) in writes)
         {
@@ -8730,7 +8858,9 @@ public sealed partial class WorkflowEngineService(
     private async Task<Dictionary<string, JsonElement>> LoadVariablesAsync(
         long instanceId,
         CancellationToken cancellationToken,
-        bool lockSharedValues = true)
+        bool lockSharedValues = true,
+        int? sharedAccessNodeId = null,
+        int? sharedAccessFlowId = null)
     {
         if (workflowVariables is null)
         {
@@ -8755,14 +8885,20 @@ public sealed partial class WorkflowEngineService(
             instanceId,
             workflow.Definition,
             cancellationToken,
-            lockSharedValues);
+            lockSharedValues
+                ? SharedAccessScope(
+                    workflow.Id,
+                    workflow.Definition,
+                    sharedAccessNodeId ?? instance.CurrentStepId,
+                    sharedAccessFlowId)
+                : null);
     }
 
     private async Task<Dictionary<string, JsonElement>> LoadVariablesAsync(
         long instanceId,
         WorkflowModel definition,
         CancellationToken cancellationToken,
-        bool lockSharedValues = true)
+        SharedVariableAccessScope? sharedAccess)
     {
         var stored = await runtime.LoadLatestVariableVersionsAsync(
             instanceId,
@@ -8781,8 +8917,40 @@ public sealed partial class WorkflowEngineService(
         return await workflowVariables.MergeEffectiveValuesAsync(
             definition,
             result,
-            lockSharedValues,
+            sharedAccess,
             cancellationToken);
+    }
+
+    private SharedVariableAccessScope SharedAccessScope(
+        long workflowDefinitionId,
+        WorkflowModel definition,
+        int nodeId,
+        int? flowId = null)
+    {
+        var plan = sharedAccessPlanCache.GetOrAdd(workflowDefinitionId, definition);
+        if (flowId is null)
+        {
+            return plan.SelectNode(nodeId);
+        }
+
+        return plan.SelectNodeAndFlow(nodeId, flowId.Value);
+    }
+
+    private SharedVariableAccessScope SharedConditionalAccessScope(
+        long workflowDefinitionId,
+        WorkflowModel definition,
+        ConditionalEventDependencyPlan conditionalPlan,
+        IReadOnlyCollection<string> changedNames)
+    {
+        var accessPlan = sharedAccessPlanCache.GetOrAdd(
+            workflowDefinitionId,
+            definition);
+        var nodeIds = changedNames
+            .Where(conditionalPlan.NodeIdsByVariable.ContainsKey)
+            .SelectMany(name => conditionalPlan.NodeIdsByVariable[name])
+            .Distinct()
+            .ToArray();
+        return accessPlan.SelectConditionalNodes(nodeIds);
     }
 
     private async Task WriteVariablesAsync(
