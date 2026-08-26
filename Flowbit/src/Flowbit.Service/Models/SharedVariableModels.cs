@@ -20,47 +20,6 @@ public static class SharedVariableSources
     public const string System = "system";
 }
 
-public static class SharedVariableDependencyKinds
-{
-    public const string ConditionalCatch = "conditionalCatch";
-}
-
-public static class SharedVariableWakeStatuses
-{
-    public const string Pending = "pending";
-    public const string Leased = "leased";
-    public const string Completed = "completed";
-    public const string Failed = "failed";
-    public const string Cancelled = "cancelled";
-    public const string Incident = "incident";
-}
-
-public static class SharedVariableWakeWorkKinds
-{
-    public const string Expansion = "expansion";
-    public const string Delivery = "delivery";
-}
-
-public static class SharedVariableWakeFinalizationDispositions
-{
-    public const string Completed = "completed";
-    public const string RetryScheduled = "retryScheduled";
-    public const string IncidentOpened = "incidentOpened";
-    public const string LeaseLost = "leaseLost";
-}
-
-public static class SharedVariableWakeExpansionPageDispositions
-{
-    public const string Page = "page";
-    public const string LeaseLost = "leaseLost";
-}
-
-public static class SharedVariableWakeIncidentStatuses
-{
-    public const string Open = "open";
-    public const string Resolved = "resolved";
-}
-
 public sealed record SharedVariableRecord(
     long Id,
     string Key,
@@ -117,8 +76,6 @@ public sealed record SharedVariableLifecycleBlockersRecord(
     long PublishedDefinitionCount,
     long RunningInstanceCount,
     long OpenJobCount,
-    long ActiveConditionalWaitCount,
-    long PendingWakeCount,
     IReadOnlyList<string> Reasons);
 
 public sealed record SharedVariableCallerRecord(
@@ -179,108 +136,6 @@ public sealed record SharedVariableDefinitionBindingProjection(
     string SharedKey,
     string Access,
     string? Alias = null);
-
-public sealed record SharedVariableConditionalDependencyProjection(
-    string SharedKey,
-    int NodeId,
-    string? NodeExternalId,
-    string Kind = SharedVariableDependencyKinds.ConditionalCatch);
-
-public sealed record SharedVariableWakeRecord(
-    long Id,
-    long SharedVariableId,
-    string SharedKey,
-    long RevisionId,
-    long Revision,
-    string Status,
-    Guid LeaseToken,
-    long LeaseGeneration,
-    DateTimeOffset LeaseExpiresAt,
-    int AttemptCount,
-    int MaxAttempts,
-    long ExpansionCursorTokenId);
-
-public sealed record SharedVariableWakeDeliveryRecord(
-    long Id,
-    long WakeId,
-    long SharedVariableId,
-    string SharedKey,
-    long Revision,
-    long InstanceId,
-    long WorkflowDefinitionId,
-    long TokenId,
-    Guid ActivationId,
-    int NodeId,
-    string Status,
-    Guid LeaseToken,
-    long LeaseGeneration,
-    DateTimeOffset LeaseExpiresAt,
-    int AttemptCount,
-    int MaxAttempts);
-
-public sealed record SharedVariableWakeLeaseRequest(
-    string WorkerId,
-    int MaxCount,
-    TimeSpan LeaseDuration);
-
-public sealed record SharedVariableWakeFence(
-    string WorkKind,
-    long Id,
-    string WorkerId,
-    Guid LeaseToken,
-    long LeaseGeneration);
-
-public sealed record SharedVariableWakeFailure(
-    string Code,
-    string Description);
-
-public sealed record SharedVariableWakeExpansionPageResult(
-    bool IsComplete,
-    int CreatedCount,
-    long CursorTokenId,
-    string Disposition = SharedVariableWakeExpansionPageDispositions.Page);
-
-public sealed record SharedVariableWakeFinalizationResult(
-    string Disposition,
-    long? IncidentId = null,
-    DateTimeOffset? AvailableAt = null);
-
-public sealed record SharedVariableWakeIncidentRecord(
-    long Id,
-    string WorkKind,
-    long? WakeId,
-    long? DeliveryId,
-    long OriginalWakeId,
-    long? OriginalDeliveryId,
-    long SharedVariableId,
-    string SharedKey,
-    long Revision,
-    long? InstanceId,
-    long? WorkflowDefinitionId,
-    long? TokenId,
-    Guid? ActivationId,
-    int? NodeId,
-    string Type,
-    string Status,
-    string Summary,
-    string? Details,
-    string? ResolutionReason,
-    string? ResolvedBy,
-    DateTimeOffset CreatedAt,
-    DateTimeOffset UpdatedAt,
-    DateTimeOffset? ResolvedAt);
-
-public sealed record SharedVariableWakeIncidentQuery(
-    string? Status = null,
-    string? WorkKind = null,
-    string? SharedKey = null,
-    int Offset = 0,
-    int Limit = 50);
-
-public sealed record SharedVariableWakeCleanupResult(
-    int WakesDeleted,
-    int DeliveriesDeleted,
-    int IncidentsDeleted);
 
 public sealed record SharedVariableClientRecord(
     long Id,

@@ -48,5 +48,4 @@ public sealed class WorkflowDefinitionEntity
 
     public List<WorkflowDefinitionSharedVariableBindingEntity> SharedVariableBindings { get; set; } = [];
 
-    public List<WorkflowDefinitionSharedVariableDependencyEntity> SharedVariableDependencies { get; set; } = [];
 }

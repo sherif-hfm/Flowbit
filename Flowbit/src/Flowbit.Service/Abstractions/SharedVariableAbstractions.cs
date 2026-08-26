@@ -69,68 +69,9 @@ public interface ISharedVariableRepository
         string key,
         CancellationToken cancellationToken);
 
-    Task ReplaceDefinitionProjectionAsync(
+    Task ReplaceDefinitionBindingsAsync(
         long workflowDefinitionId,
         IReadOnlyCollection<SharedVariableDefinitionBindingProjection> bindings,
-        IReadOnlyCollection<SharedVariableConditionalDependencyProjection> dependencies,
-        CancellationToken cancellationToken);
-
-    Task<IReadOnlyList<SharedVariableWakeRecord>> LeaseWakeExpansionsAsync(
-        SharedVariableWakeLeaseRequest request,
-        CancellationToken cancellationToken);
-
-    Task<bool> HeartbeatWakeAsync(
-        SharedVariableWakeFence fence,
-        TimeSpan leaseDuration,
-        CancellationToken cancellationToken);
-
-    Task<bool> IsWakeLeaseAliveAsync(
-        SharedVariableWakeFence fence,
-        CancellationToken cancellationToken);
-
-    Task<SharedVariableWakeExpansionPageResult> ExpandWakePageAsync(
-        SharedVariableWakeFence fence,
-        int pageSize,
-        CancellationToken cancellationToken);
-
-    Task<SharedVariableWakeFinalizationResult> CompleteWakeExpansionAsync(
-        SharedVariableWakeFence fence,
-        SharedVariableWakeFailure? failure,
-        CancellationToken cancellationToken);
-
-    Task<IReadOnlyList<SharedVariableWakeDeliveryRecord>> LeaseWakeDeliveriesAsync(
-        SharedVariableWakeLeaseRequest request,
-        CancellationToken cancellationToken);
-
-    Task<SharedVariableWakeFinalizationResult> CompleteWakeDeliveryAsync(
-        SharedVariableWakeFence fence,
-        SharedVariableWakeFailure? failure,
-        CancellationToken cancellationToken);
-
-    Task<(IReadOnlyList<SharedVariableWakeIncidentRecord> Items, long TotalCount)>
-        SearchWakeIncidentsAsync(
-            SharedVariableWakeIncidentQuery query,
-            CancellationToken cancellationToken);
-
-    Task<SharedVariableWakeIncidentRecord?> GetWakeIncidentAsync(
-        long incidentId,
-        CancellationToken cancellationToken);
-
-    Task<SharedVariableWakeIncidentRecord?> RetryWakeIncidentAsync(
-        long incidentId,
-        string resolvedBy,
-        CancellationToken cancellationToken);
-
-    Task<SharedVariableWakeIncidentRecord?> ResolveWakeIncidentAsync(
-        long incidentId,
-        string resolvedBy,
-        string reason,
-        CancellationToken cancellationToken);
-
-    Task<SharedVariableWakeCleanupResult> CleanupWakeOutboxAsync(
-        DateTimeOffset completedBefore,
-        DateTimeOffset resolvedIncidentsBefore,
-        int batchSize,
         CancellationToken cancellationToken);
 }
 

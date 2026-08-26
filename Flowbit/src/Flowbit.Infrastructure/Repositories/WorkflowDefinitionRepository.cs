@@ -162,6 +162,8 @@ public sealed class WorkflowDefinitionRepository(
         bool isPublished,
         CancellationToken cancellationToken)
     {
+        conditionalAnalyzer.Analyze(definition);
+
         await using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken);
         await LockWorkflowFamilyAsync(definition.Id, cancellationToken);
 
@@ -227,7 +229,7 @@ public sealed class WorkflowDefinitionRepository(
             });
         }
         await dbContext.SaveChangesAsync(cancellationToken);
-        await PersistSharedVariableProjectionAsync(entity.Id, definition, cancellationToken);
+        await PersistSharedVariableBindingsAsync(entity.Id, definition, cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         var record = ToRecord(entity);
 
@@ -238,7 +240,7 @@ public sealed class WorkflowDefinitionRepository(
         return record;
     }
 
-    private Task PersistSharedVariableProjectionAsync(
+    private Task PersistSharedVariableBindingsAsync(
         long workflowDefinitionId,
         WorkflowModel definition,
         CancellationToken cancellationToken)
@@ -257,37 +259,15 @@ public sealed class WorkflowDefinitionRepository(
             .ToArray();
         if (bindings.Length == 0)
         {
-            return sharedVariableRepository.ReplaceDefinitionProjectionAsync(
+            return sharedVariableRepository.ReplaceDefinitionBindingsAsync(
                 workflowDefinitionId,
-                [],
                 [],
                 cancellationToken);
         }
 
-        var plan = conditionalAnalyzer.Analyze(definition);
-        var dependencies = plan.EventsByNodeId.Values
-            .SelectMany(entry => entry.Dependencies
-                .Where(sharedByAlias.ContainsKey)
-                .Select(alias =>
-                {
-                    var variable = sharedByAlias[alias];
-                    var node = definition.FlowNodes.Single(item => item.Id == entry.NodeId);
-                    return new SharedVariableConditionalDependencyProjection(
-                        variable.SharedKey!.Trim(),
-                        entry.NodeId,
-                        node.ExternalId);
-                }))
-            .DistinctBy(dependency => new
-            {
-                Key = dependency.SharedKey.ToUpperInvariant(),
-                dependency.NodeId,
-                dependency.Kind
-            })
-            .ToArray();
-        return sharedVariableRepository.ReplaceDefinitionProjectionAsync(
+        return sharedVariableRepository.ReplaceDefinitionBindingsAsync(
             workflowDefinitionId,
             bindings,
-            dependencies,
             cancellationToken);
     }
 
@@ -311,6 +291,7 @@ public sealed class WorkflowDefinitionRepository(
                 await publishTransaction.CommitAsync(cancellationToken);
                 return false;
             }
+            conditionalAnalyzer.Analyze(target.Definition);
             if (target.IsPublished)
             {
                 await publishTransaction.CommitAsync(cancellationToken);
@@ -470,6 +451,11 @@ public sealed class WorkflowDefinitionRepository(
         {
             await transaction.CommitAsync(cancellationToken);
             return false;
+        }
+
+        if (isDefault)
+        {
+            conditionalAnalyzer.Analyze(entity.Definition);
         }
 
         if (isDefault && !entity.IsPublished)

@@ -147,6 +147,7 @@ public sealed class WorkflowDefinitionService(
             logger.LogInformation("Publish workflow {WorkflowId}: definition not found.", id);
             return false;
         }
+        _ = conditionalAnalyzer.Analyze(definition.Definition);
         await ValidateSharedCatalogBindingsAsync(
             definition.Definition,
             cancellationToken);
@@ -187,6 +188,7 @@ public sealed class WorkflowDefinitionService(
             logger.LogInformation("Set default workflow {WorkflowId}: definition not found.", id);
             return false;
         }
+        _ = conditionalAnalyzer.Analyze(definition.Definition);
         await ValidateSharedCatalogBindingsAsync(
             definition.Definition,
             cancellationToken);

@@ -22,7 +22,7 @@ public sealed class DatabaseSchemaTests(PostgresApiFixture fixture)
             .Distinct()
             .ToArray();
 
-        Assert.Equal(50, mappedTables.Length);
+        Assert.Equal(46, mappedTables.Length);
         Assert.All(mappedTables, table => Assert.Equal(FlowbitDatabase.Schema, table.Schema));
         Assert.Contains(mappedTables, table => table.Name == "instance_variable_current_values");
         Assert.Contains(mappedTables, table => table.Name == "gateway_executions");
@@ -56,10 +56,10 @@ public sealed class DatabaseSchemaTests(PostgresApiFixture fixture)
         Assert.Contains(mappedTables, table => table.Name == "shared_variable_clients");
         Assert.Contains(mappedTables, table => table.Name == "shared_variable_client_secrets");
         Assert.Contains(mappedTables, table => table.Name == "workflow_definition_shared_variable_bindings");
-        Assert.Contains(mappedTables, table => table.Name == "workflow_definition_shared_variable_dependencies");
-        Assert.Contains(mappedTables, table => table.Name == "shared_variable_wakes");
-        Assert.Contains(mappedTables, table => table.Name == "shared_variable_wake_deliveries");
-        Assert.Contains(mappedTables, table => table.Name == "shared_variable_wake_incidents");
+        Assert.DoesNotContain(mappedTables, table => table.Name == "workflow_definition_shared_variable_dependencies");
+        Assert.DoesNotContain(mappedTables, table => table.Name == "shared_variable_wakes");
+        Assert.DoesNotContain(mappedTables, table => table.Name == "shared_variable_wake_deliveries");
+        Assert.DoesNotContain(mappedTables, table => table.Name == "shared_variable_wake_incidents");
 
         var expectedNames = mappedTables
             .Select(table => table.Name!)

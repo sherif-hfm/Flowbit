@@ -23,7 +23,4 @@ public sealed class SharedVariableEntity
     public SharedVariableCurrentValueEntity? CurrentValue { get; set; }
     public List<SharedVariableRevisionEntity> Revisions { get; set; } = [];
     public List<WorkflowDefinitionSharedVariableBindingEntity> DefinitionBindings { get; set; } = [];
-    public List<WorkflowDefinitionSharedVariableDependencyEntity> DefinitionDependencies { get; set; } = [];
-    public List<SharedVariableWakeEntity> Wakes { get; set; } = [];
-    public List<SharedVariableWakeIncidentEntity> WakeIncidents { get; set; } = [];
 }

@@ -20,6 +20,64 @@ public sealed class ConditionalCatchRuntimeTests(PostgresApiFixture fixture)
         new(JsonSerializerDefaults.Web);
 
     [Fact]
+    public async Task Start_rejects_persisted_shared_conditional_before_instance_creation()
+    {
+        var workflowKey = $"conditional-shared-start-rejected-{Guid.NewGuid():N}";
+        try
+        {
+            var definition = CreateWorkflow(
+                workflowKey,
+                ConditionalEventDeliveryModes.Atomic,
+                approvedDefault: false);
+            var approved = definition.Variables.Single(variable =>
+                variable.Name == "approved");
+            approved.Scope = VariableScopes.Shared;
+            approved.SharedKey = $"tests.{workflowKey}";
+            approved.Access = SharedVariableAccessModes.Read;
+
+            long workflowId;
+            await using (var seed = fixture.CreateDbContext())
+            {
+                var entity = new WorkflowDefinitionEntity
+                {
+                    Name = definition.Name,
+                    WorkflowKey = workflowKey,
+                    Version = 1,
+                    Definition = definition,
+                    IsPublished = true,
+                    IsDefault = false,
+                    CreatedAt = DateTimeOffset.UtcNow
+                };
+                seed.WorkflowDefinitions.Add(entity);
+                await seed.SaveChangesAsync();
+                workflowId = entity.Id;
+            }
+
+            using var response = await SendAsync(
+                HttpMethod.Post,
+                "/api/instances?detail=full",
+                new StartInstanceRequest(
+                    workflowId,
+                    null,
+                    null,
+                    new Dictionary<string, JsonElement>()));
+
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+            Assert.Contains(
+                "cannot reference shared variable 'approved'",
+                await response.Content.ReadAsStringAsync(),
+                StringComparison.Ordinal);
+            await using var verify = fixture.CreateDbContext();
+            Assert.False(await verify.WorkflowInstances.AnyAsync(instance =>
+                instance.WorkflowDefinitionId == workflowId));
+        }
+        finally
+        {
+            await DeleteWorkflowAsync(workflowKey);
+        }
+    }
+
+    [Fact]
     public async Task Immediate_true_atomic_condition_completes_in_start_transaction()
     {
         var workflowKey = $"conditional-atomic-start-{Guid.NewGuid():N}";

@@ -107,14 +107,13 @@ array, nullability, and validation contract exactly. Shared values are not copie
 into instance variable history or returned by ordinary instance APIs.
 
 Runtime locking is driven by an immutable access plan cached by workflow
-definition ID. It combines parsed conditional dependencies with the targets a
-node can actually produce (mappings, assignments, submitted values, status and
-error variables). JavaScript with dynamic `setVariable` conservatively includes
-that node's `readWrite` bindings. The engine locks only those exact shared keys,
-in ordinal key order, after the instance/runtime locks. Conditional-event entry
-locks and reloads the exact shared dependencies before evaluating and
-registering the wait, preventing an update/registration race from losing a
-wake. REST service tasks that read or write a shared binding must use
+definition ID. It derives exact shared reads and targets a node can produce
+(mappings, assignments, submitted values, status and error variables).
+JavaScript with dynamic `setVariable` conservatively includes that node's
+`readWrite` bindings. The engine locks only those exact shared keys, in ordinal
+key order, after the instance/runtime locks. Conditional-event conditions are
+instance-only and cannot reference a shared alias. REST service tasks that read
+or write a shared binding must use
 `asyncBefore: true`; the stage/commit/invoke/finalize protocol keeps shared and
 instance locks out of the external HTTP interval.
 
@@ -137,42 +136,25 @@ follow an attached error boundary without persisting a partial batch. Lease
 loss, archived keys, database errors, broken invariants, and concurrent value
 changes remain operational conflicts or incidents.
 
-Shared-value updates enqueue a coalescing wake. PostgreSQL
-`clock_timestamp()` is authoritative for availability, leasing, heartbeat,
-expiry, retries, and completion, so application clock skew is irrelevant. Each
-leased expansion/delivery has a heartbeat guard; lost ownership cancels local
-work and stale finalization returns `LeaseLost`. Expansion advances a durable
-token cursor in pages of at most 500 deliveries, revalidating the fence on every
-page; the unique wake/token/activation constraint makes retries idempotent.
-Work exhausts after 25 attempts, atomically enters `incident`, and creates one
-`shared_variable_wake_incident`. Administrator retry grants one additional
-attempt and queues at database time. Resolve requires a reason, cancels the
-work, and records the administrator. Open incidents block catalog lifecycle
-changes. Completed/cancelled wake work is retained 30 days and resolved
-incidents 90 days.
-
-Shared-dependent conditional catches support both default `atomic` and
-`durableAsync` delivery. The durable shared wake fences the exact token and
-activation in either case; atomic evaluation advances inside that instance
-transaction, while durable async persists its normal latch and job.
+Shared aliases are rejected in conditional catches for both default `atomic`
+and `durableAsync` delivery. Copy a required catalog value into an instance
+variable when a workflow needs a state snapshot, or use a message event when an
+occurrence must be delivered. Effective shared-value updates persist the catalog
+revision and audit history but do not create conditional wake work.
 
 The shared-variable HTTP API supports JWT administrators and scoped API clients
-(`shared-variables.read` / `shared-variables.write`). Incident recovery is
-administrator-only:
+(`shared-variables.read` / `shared-variables.write`). Shared-variable revision
+history is immutable operational/audit data and is not a secret store; never put
+credentials or other secrets in shared values.
 
-- `GET /api/shared-variable-incidents`
-- `GET /api/shared-variable-incidents/{id}`
-- `POST /api/shared-variable-incidents/{id}/retry`
-- `POST /api/shared-variable-incidents/{id}/resolve`
-
-The Operations UI exposes the same queue/incident state and recovery actions.
-Metrics cover lease acquisition/loss, heartbeat success/failure by work kind,
-expansion/delivery work, retries, incidents, and cleanup. The cumulative incident
-counter covers incidents opened during fenced finalization; the database-sampled
-open-incident gauge also includes incidents opened by expired-work acquisition
-sweeps. Shared-variable revision history is immutable
-operational/audit data and is not a secret store; never put credentials or other
-secrets in shared values.
+The hard-cut removal migration is guarded: it aborts before dropping the legacy
+shared-conditional dependency, wake, delivery, and incident tables when any
+legacy rows remain. Do not delete those rows manually or bypass the guard. Move
+the deployment to a separate safe-drain release/runbook, replace the affected
+definitions and finish or migrate their instances, then retry the guarded
+migration. Stop every API and Worker replica before running it, deploy the API,
+UI, and Worker as one coordinated version, and restart only after deployment is
+complete. Mixed old/new replicas are unsupported for this cutover.
 
 Production rollout is migration-first. Inventory published definitions for REST
 tasks that use shared bindings without `asyncBefore`; republish them safely or
@@ -188,7 +170,7 @@ rather than suppressing the check.
 Steady-state locking is exact per node/selected flow. Every newly acquired
 shared key across one synchronous transaction segment must be nondecreasing in
 ordinal order. Validation models the full FIFO routing queue, forks, node/flow
-producers, output fences, error paths, and combined atomic conditional wakes.
+producers, output fences, and error paths.
 `asyncBefore` resets before a node; service/script `asyncAfter` has the same
 implicit pre-node stage, while async-after and true resting/durable waits reset
 downstream continuation. Unsafe new definitions are rejected. An immutable-ID
@@ -207,15 +189,9 @@ becomes a no-op, restoring permanent exact node/flow locking. A database trigger
 rejects every legacy `LastRevision` update, so an old binary fails closed; the
 rejection is the intentional compatibility fail-safe equivalent of renaming or
 removing the old allocator table, while the row remains an EF-compatible
-cutover/audit marker. Stop every legacy shared-wake worker before
-applying the migration so an old re-lease cannot violate the new maximum-attempt
-constraint; the transactional outbox may accumulate safely while processing is
-paused. The shared dispatcher is hosted by the same Worker executable as jobs,
-timers, and messages, so stopping the legacy process temporarily pauses those
-durable queues too; start the replacement only after migration and API/service
-deployment. Then deploy the UI, verify incidents and metrics, perform the sequence
-cutover, and enable retention cleanup. Mixed legacy replicas are prohibited
-after sequence cutover.
+cutover/audit marker. Then deploy the remaining components, verify shared-value
+reads and writes, and perform the sequence cutover. Mixed legacy replicas are
+prohibited after sequence cutover.
 
 Perform the fenced allocator cutover exactly once after all writer replicas are
 upgraded (repeated calls are harmless):
@@ -241,17 +217,19 @@ observe declared instance variables. Its node JSON uses this shape:
 
 `conditional.condition` is required and is limited to 4,000 Unicode scalar
 values. It uses NCalc built-ins and Flowbit's pure string helpers, must reference
-1-64 declared stored variables, and cannot use undeclared variables, unknown
-functions, `FlowInfo`, gateway/multi-instance helpers, or non-observable
-`sys.*`, `config.*`, `setting.*`, `mi.*`, and `gateway.*` context. The node must
+1-64 declared persisted instance variables, and cannot use a top-level
+`scope: "shared"` alias, undeclared variables, unknown functions, `FlowInfo`,
+gateway/multi-instance helpers, or non-observable `sys.*`, `config.*`,
+`setting.*`, `mi.*`, and `gateway.*` context. Shared aliases are rejected for
+both delivery modes. The node must
 have at least one incoming flow and exactly one unconditional outgoing flow; it
 cannot carry task, role, variable, async-job, or another event type's metadata.
 `deliveryMode` accepts `atomic` or `durableAsync`; omission means `atomic`, and
 the editor omits the field for that default.
 
 The engine evaluates the condition when a token enters the event. If it is
-false, the active token rests there. Thereafter every runtime variable producer
-records its writes, and a complete transactional write batch considers only
+false, the active token rests there. Thereafter every runtime instance-variable
+producer records its writes, and a complete transactional write batch considers only
 waiting events whose extracted dependency set intersects the changed names.
 Each authored condition is evaluated once against the same post-batch
 PostgreSQL current-variable snapshot, then a true result is applied to all of
@@ -275,10 +253,10 @@ may switch versions at an active conditional wait only when its normalized
 condition, effective delivery mode, and outgoing-flow contract remain
 compatible; compatible open jobs are rebound under the instance lock.
 
-Deploy this feature by applying the additive migration first, upgrading every
-API and Worker replica, and only then publishing or starting definitions that
-contain conditional events. Mixed conditional-aware and legacy replicas are not
-supported.
+Definition validation enforces the instance-only dependency rule for every
+delivery mode. This release has no legacy shared-conditional execution path; the
+guarded removal migration must succeed before the matching application binaries
+are deployed.
 
 ## Gateways and scoped interruption
 
@@ -573,10 +551,6 @@ and in-flight gateway executions are not migrated.
 - `GET /api/incidents` (admin by default; opaque cursor paging)
 - `GET /api/incidents/{id}`
 - `POST /api/incidents/{id}/retry`
-- `GET /api/shared-variable-incidents` (admin; filterable paging)
-- `GET /api/shared-variable-incidents/{id}`
-- `POST /api/shared-variable-incidents/{id}/retry`
-- `POST /api/shared-variable-incidents/{id}/resolve`
 - `GET /api/instances/{id}`
 - `GET /api/instances/{id}/flows`
 - `POST /api/instances/{id}/claim`

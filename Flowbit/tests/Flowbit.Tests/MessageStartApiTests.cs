@@ -155,6 +155,104 @@ public sealed class MessageStartApiTests(PostgresApiFixture fixture)
     }
 
     [Fact]
+    public async Task StoredLegacySharedConditionalIsRejectedBeforeMessageStartSideEffects()
+    {
+        var model = CreateModel("legacy-shared-conditional");
+        model.Variables.Add(new VariableModel
+        {
+            Id = 1,
+            Name = "releaseFlag",
+            Scope = VariableScopes.Shared,
+            SharedKey = $"tests.{model.Id}",
+            Access = SharedVariableAccessModes.Read,
+            DataType = WorkflowVariableTypes.Boolean,
+            Nullable = false
+        });
+        var start = model.FlowNodes.Single(node => BpmnFlowNodeTypes.IsMessageStart(node.Type));
+        start.Message!.OutputMappings =
+        [
+            new MessageOutputMappingModel
+            {
+                Variable = "caseId",
+                Path = "caseId",
+                DataType = WorkflowVariableTypes.String,
+                Required = true
+            }
+        ];
+        start.Idempotency = new IdempotencyModel
+        {
+            HeaderName = IdempotencyHeaders.Standard,
+            Variable = "requestId"
+        };
+        start.BusinessKey = new BusinessKeyModel
+        {
+            Variable = "caseId",
+            Uniqueness = BusinessKeyUniqueness.All
+        };
+        var wait = model.FlowNodes.Single(node => node.Id == 2);
+        wait.Type = BpmnFlowNodeTypes.IntermediateConditionalCatchEvent;
+        wait.Conditional = new ConditionalDefinitionModel
+        {
+            Condition = "releaseFlag == true",
+            DeliveryMode = ConditionalEventDeliveryModes.Atomic
+        };
+
+        try
+        {
+            await using (var seed = fixture.CreateDbContext())
+            {
+                seed.WorkflowDefinitions.Add(new WorkflowDefinitionEntity
+                {
+                    Name = model.Name,
+                    WorkflowKey = model.Id,
+                    Version = 1,
+                    Definition = model,
+                    IsPublished = true,
+                    IsDefault = true,
+                    DefaultActivationId = Guid.NewGuid(),
+                    DefaultActivatedAt = DateTimeOffset.UtcNow,
+                    CreatedAt = DateTimeOffset.UtcNow
+                });
+                await seed.SaveChangesAsync();
+            }
+
+            using var response = await SendMessageStartAsync(
+                model.Id,
+                JsonContent.Create(new { caseId = "CASE-1" }, options: JsonOptions),
+                idempotencyKey: "legacy-shared-conditional-request");
+
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+            Assert.Contains(
+                "cannot reference shared variable 'releaseFlag'",
+                await response.Content.ReadAsStringAsync(),
+                StringComparison.Ordinal);
+            await using var verify = fixture.CreateDbContext();
+            Assert.False(await verify.WorkflowInstances.AnyAsync(instance =>
+                instance.WorkflowKey == model.Id));
+            Assert.False(await verify.WorkflowIdempotencyClaims.AnyAsync(claim =>
+                claim.WorkflowKey == model.Id));
+            Assert.False(await verify.WorkflowBusinessKeyClaims.AnyAsync(claim =>
+                claim.WorkflowKey == model.Id));
+        }
+        finally
+        {
+            await using var cleanup = fixture.CreateDbContext();
+            await cleanup.WorkflowIdempotencyClaims
+                .Where(claim => claim.WorkflowKey == model.Id)
+                .ExecuteDeleteAsync();
+            await cleanup.WorkflowBusinessKeyClaims
+                .Where(claim => claim.WorkflowKey == model.Id)
+                .ExecuteDeleteAsync();
+            await cleanup.WorkflowInstances
+                .Where(instance => instance.WorkflowKey == model.Id)
+                .ExecuteDeleteAsync();
+            await cleanup.WorkflowDefinitions
+                .Where(definition => definition.WorkflowKey == model.Id)
+                .ExecuteDeleteAsync();
+        }
+    }
+
+    [Fact]
     public async Task RequestBodyContractRejectsMalformedUnsupportedAndOversizedPayloadsAtomically()
     {
         var model = CreateModel("payload-contract");

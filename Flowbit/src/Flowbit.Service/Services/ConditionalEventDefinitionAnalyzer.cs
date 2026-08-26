@@ -11,7 +11,8 @@ namespace Flowbit.Service.Services;
 
 /// <summary>
 /// Extracts conditional-event dependencies from NCalc's parsed AST. Only
-/// statically named, persisted instance-variable producers are observable.
+/// statically named, persisted instance-variable producers are observable;
+/// deployment-wide shared-variable bindings are deliberately not wake sources.
 /// </summary>
 public sealed class ConditionalEventDefinitionAnalyzer
     : IConditionalEventDefinitionAnalyzer
@@ -43,6 +44,19 @@ public sealed class ConditionalEventDefinitionAnalyzer
         if (conditionalNodes.Count == 0)
         {
             return ConditionalEventDependencyPlan.Empty;
+        }
+
+        var sharedDependency = FindSharedVariableDependencies(
+                definition,
+                conditionalNodes)
+            .FirstOrDefault();
+        if (sharedDependency is not null)
+        {
+            throw new WorkflowDomainException(
+                $"Conditional catch event #{sharedDependency.NodeId} cannot reference "
+                + $"shared variable '{sharedDependency.VariableName}'. Conditional events "
+                + "may reference only persisted instance variables. Use a message event or "
+                + "copy the value into an instance variable.");
         }
 
         var canonicalVariables = BuildCanonicalVariableMap(definition);
@@ -159,6 +173,86 @@ public sealed class ConditionalEventDefinitionAnalyzer
             immutableInverse);
     }
 
+    internal static ImmutableArray<ConditionalSharedVariableDependency>
+        FindSharedVariableDependencies(WorkflowModel definition)
+    {
+        ArgumentNullException.ThrowIfNull(definition);
+        var conditionalNodes = (definition.FlowNodes ?? [])
+            .Where(node => node is not null
+                && BpmnFlowNodeTypes.IsConditionalCatch(node.Type))
+            .OrderBy(node => node.Id)
+            .ToArray();
+        return FindSharedVariableDependencies(definition, conditionalNodes);
+    }
+
+    private static ImmutableArray<ConditionalSharedVariableDependency>
+        FindSharedVariableDependencies(
+            WorkflowModel definition,
+            IReadOnlyCollection<FlowNodeModel> conditionalNodes)
+    {
+        var sharedAliases = (definition.Variables ?? [])
+            .Where(variable => variable is not null
+                && !string.IsNullOrWhiteSpace(variable.Name)
+                && string.Equals(
+                    variable.Scope,
+                    VariableScopes.Shared,
+                    StringComparison.OrdinalIgnoreCase))
+            .GroupBy(variable => variable.Name.Trim(), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                group => group.Key,
+                group => group.OrderBy(variable => variable.Name, StringComparer.Ordinal).First().Name.Trim(),
+                StringComparer.OrdinalIgnoreCase);
+        if (sharedAliases.Count == 0 || conditionalNodes.Count == 0)
+        {
+            return [];
+        }
+
+        var dependencies = ImmutableArray.CreateBuilder<ConditionalSharedVariableDependency>();
+        foreach (var node in conditionalNodes)
+        {
+            var condition = ConditionalDefinitionRules.NormalizeCondition(
+                node.Conditional?.Condition);
+            if (condition is null)
+            {
+                continue;
+            }
+
+            try
+            {
+                var parsed = new Expression(condition, Options);
+                if (parsed.HasErrors())
+                {
+                    continue;
+                }
+
+                foreach (var parameter in parsed.GetParameterNames()
+                             .Select(name => name.Trim())
+                             .Distinct(StringComparer.OrdinalIgnoreCase)
+                             .Order(StringComparer.OrdinalIgnoreCase))
+                {
+                    if (sharedAliases.TryGetValue(parameter, out var canonical))
+                    {
+                        dependencies.Add(new ConditionalSharedVariableDependency(
+                            node.Id,
+                            canonical));
+                    }
+                }
+            }
+            catch (NCalcException)
+            {
+                // The main analysis path reports malformed expressions with its
+                // normal definition error. This preflight is scoped only to the
+                // shared-variable policy.
+            }
+        }
+
+        return dependencies
+            .Distinct()
+            .OrderBy(dependency => dependency.NodeId)
+            .ThenBy(dependency => dependency.VariableName, StringComparer.OrdinalIgnoreCase)
+            .ToImmutableArray();
+    }
+
     private static ImmutableArray<string> ResolveDependencies(
         int nodeId,
         IEnumerable<string> parameters,
@@ -269,3 +363,7 @@ public sealed class ConditionalEventDefinitionAnalyzer
         }
     }
 }
+
+internal sealed record ConditionalSharedVariableDependency(
+    int NodeId,
+    string VariableName);

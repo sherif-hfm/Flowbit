@@ -2487,14 +2487,18 @@ function sharedVariablesReferencedByExpression(expression, variables = model.var
       typeof variable.name === "string" && variable.name.trim())
     .filter(variable => {
       const escaped = variable.name.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      const bracketed = new RegExp(`\\[\\s*${escaped}\\s*\\]`, "i");
-      const bare = new RegExp(`(^|[^A-Za-z0-9_])${escaped}([^A-Za-z0-9_]|$)`, "i");
-      const bracketedMatch = bracketed.exec(expression);
-      if (bracketedMatch && !expressionIndexIsQuoted(expression, bracketedMatch.index)) return true;
-      const bareMatch = bare.exec(expression);
-      return !!bareMatch && !expressionIndexIsQuoted(
-        expression,
-        bareMatch.index + (bareMatch[1] ? bareMatch[1].length : 0));
+      const bracketed = new RegExp(`\\[\\s*${escaped}\\s*\\]`, "gi");
+      let match;
+      while ((match = bracketed.exec(expression)) !== null) {
+        if (!expressionIndexIsQuoted(expression, match.index)) return true;
+      }
+      const bare = new RegExp(
+        `(^|[^A-Za-z0-9_])${escaped}([^A-Za-z0-9_]|$)`, "gi");
+      while ((match = bare.exec(expression)) !== null) {
+        const parameterIndex = match.index + (match[1] ? match[1].length : 0);
+        if (!expressionIndexIsQuoted(expression, parameterIndex)) return true;
+      }
+      return false;
     });
 }
 function normalizeVariableBinding(variable, allowShared) {
@@ -5064,7 +5068,7 @@ function addProcessVariablesSection() {
 
   const hint = document.createElement("p");
   hint.className = "empty-note";
-  hint.textContent = "Declare instance variables or bind a local alias to a deployment-wide shared variable. Shared declarations snapshot the catalog contract; conditional waits may use atomic or durable async delivery.";
+  hint.textContent = "Declare instance variables or bind a local alias to a deployment-wide shared variable. Shared declarations snapshot the catalog contract. Conditional waits may use atomic or durable async delivery, but their conditions may reference instance variables only.";
   inspector.appendChild(hint);
 
   if (model.variables.length === 0) {
@@ -5979,36 +5983,31 @@ function renderConditionalSection(node) {
     typeof conditional.condition === "string" ? conditional.condition : "",
     value => { conditional.condition = value; },
     4);
+  const dependencyStatus = document.createElement("p");
+  dependencyStatus.className = "expression-validation";
+  dependencyStatus.setAttribute("role", "status");
+  dependencyStatus.setAttribute("aria-live", "polite");
+  dependencyStatus.id = "conditional-dependency-status-" + String(node.id);
+  conditionInput.setAttribute("aria-describedby", dependencyStatus.id);
+  conditionInput.parentElement?.appendChild(dependencyStatus);
 
-  const sharedBindings = (model.variables || []).filter(variable =>
-    isSharedProcessVariable(variable) && variable.name && variable.name.trim());
-  if (sharedBindings.length > 0) {
-    const palette = document.createElement("div");
-    palette.className = "field inspector-card";
-    const paletteLabel = document.createElement("label");
-    paletteLabel.textContent = "Insert shared dependency";
-    palette.appendChild(paletteLabel);
-    const buttons = document.createElement("div");
-    buttons.style.cssText = "display:flex;flex-wrap:wrap;gap:6px";
-    sharedBindings.forEach(variable => {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.textContent = variable.name;
-      button.title = `Shared key ${variable.sharedKey || "(missing)"}`;
-      button.onclick = () => {
-        const separator = conditional.condition && !/\s$/.test(conditional.condition) ? " " : "";
-        conditional.condition = `${conditional.condition || ""}${separator}[${variable.name}]`;
-        renderInspector();
-      };
-      buttons.appendChild(button);
-    });
-    palette.appendChild(buttons);
-    const paletteHint = document.createElement("p");
-    paletteHint.className = "empty-note";
-    paletteHint.textContent = "Shared values are deployment-wide. Any conditional wait that observes one must use durable async delivery.";
-    palette.appendChild(paletteHint);
-    inspector.appendChild(palette);
-  }
+  const updateDependencyStatus = () => {
+    const referencedShared = sharedVariablesReferencedByExpression(
+      typeof conditional.condition === "string" ? conditional.condition : "");
+    if (referencedShared.length === 0) {
+      conditionInput.setAttribute("aria-invalid", "false");
+      dependencyStatus.textContent = "";
+      return;
+    }
+
+    conditionInput.setAttribute("aria-invalid", "true");
+    const aliases = referencedShared.map(variable => `'${variable.name.trim()}'`);
+    dependencyStatus.textContent = aliases.length === 1
+      ? `Conditional events cannot reference shared process variable ${aliases[0]}. Copy the value into an instance variable or use a message event.`
+      : `Conditional events cannot reference shared process variables ${aliases.join(", ")}. Copy the values into instance variables or use message events.`;
+  };
+  conditionInput.addEventListener("input", updateDependencyStatus);
+  updateDependencyStatus();
 
   const currentMode = conditional.deliveryMode == null
     ? CONDITIONAL_DELIVERY_MODE.ATOMIC
@@ -6029,28 +6028,11 @@ function renderConditionalSection(node) {
     renderInspector();
   });
 
-  const referencedShared = sharedVariablesReferencedByExpression(
-    typeof conditional.condition === "string" ? conditional.condition : "");
-  if (referencedShared.length > 0) {
-    const dependency = document.createElement("p");
-    dependency.className = "empty-note";
-    dependency.textContent = "Shared dependencies: " + referencedShared.map(variable =>
-      `${variable.name} → ${variable.sharedKey || "missing key"}`).join(", ");
-    inspector.appendChild(dependency);
-    if (currentMode !== CONDITIONAL_DELIVERY_MODE.DURABLE_ASYNC) {
-      const warning = document.createElement("p");
-      warning.className = "empty-note";
-      warning.style.color = "var(--warning-text)";
-      warning.textContent = "Save validation requires Durable async because this condition observes a shared variable.";
-      inspector.appendChild(warning);
-      conditionInput.setAttribute("aria-invalid", "true");
-    }
-  }
-
   const hint = document.createElement("p");
   hint.className = "empty-note";
   hint.innerHTML =
-    "The event waits until this NCalc expression becomes true. <b>Atomic</b> evaluates " +
+    "The event waits until this NCalc expression over persisted instance variables becomes true. " +
+    "Shared process variables are not supported. <b>Atomic</b> evaluates " +
     "and moves the token in the variable writer transaction. <b>Durable async</b> " +
     "persists a latch in that transaction, then a worker moves the token. Atomic is " +
     "the default and is omitted from saved JSON.";
@@ -10236,12 +10218,26 @@ function validateModelForSave(candidate) {
         typeof variable.name === "string" && variable.name.trim())
       .filter(variable => {
         const escaped = variable.name.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        const bracketed = new RegExp(`\\[\\s*${escaped}\\s*\\]`, "i").exec(expression);
-        if (bracketed && !isInsideQuotedExpressionText(expression, bracketed.index)) return true;
-        const bare = new RegExp(`(^|[^A-Za-z0-9_])${escaped}([^A-Za-z0-9_]|$)`, "i").exec(expression);
-        return !!bare && !isInsideQuotedExpressionText(
-          expression,
-          bare.index + (bare[1] ? bare[1].length : 0));
+        const hasUnquotedMatch = (pattern, parameterOffset) => {
+          let searchStart = 0;
+          while (searchStart <= expression.length) {
+            const match = pattern.exec(expression.slice(searchStart));
+            if (!match) return false;
+            const matchIndex = searchStart + match.index;
+            const parameterIndex = matchIndex + parameterOffset(match);
+            if (!isInsideQuotedExpressionText(expression, parameterIndex)) return true;
+            searchStart = matchIndex + Math.max(match[0].length, 1);
+          }
+          return false;
+        };
+        const bracketed = new RegExp(`\\[\\s*${escaped}\\s*\\]`, "i");
+        if (hasUnquotedMatch(bracketed, () => 0)) return true;
+        const bare = new RegExp(
+          `(^|[^A-Za-z0-9_])${escaped}([^A-Za-z0-9_]|$)`, "i");
+        if (hasUnquotedMatch(bare, match => match[1] ? match[1].length : 0)) {
+          return true;
+        }
+        return false;
       });
   };
   const hasText = value => typeof value === "string" && value.trim().length > 0;
@@ -11439,6 +11435,12 @@ function validateModelForSave(candidate) {
     }
     if (!hasText(conditional.condition)) {
       errors.push(label + " condition must not be blank.");
+    }
+    for (const variable of sharedVariablesReferencedByExpression(
+        conditional.condition,
+        processVariables)) {
+      errors.push(label + " condition cannot reference shared process variable '" +
+        variable.name.trim() + "'; copy the value into an instance variable or use a message event.");
     }
     if (conditional.deliveryMode !== undefined && conditional.deliveryMode !== null &&
         conditional.deliveryMode !== "atomic" &&

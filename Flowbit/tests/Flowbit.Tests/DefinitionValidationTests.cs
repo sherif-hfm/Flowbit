@@ -3898,6 +3898,54 @@ public sealed class DefinitionValidationTests
         Assert.Contains("asyncBefore=true", error.Message, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task PublishAndSetDefaultRejectStoredSharedConditionalDefinition(
+        bool setDefault)
+    {
+        var model = CreateTerminalModel(BpmnFlowNodeTypes.EndEvent);
+        model.Variables.Add(new VariableModel
+        {
+            Id = 20,
+            Name = "releaseFlag",
+            Scope = VariableScopes.Shared,
+            SharedKey = "tests.release-flag",
+            Access = SharedVariableAccessModes.Read,
+            DataType = WorkflowVariableTypes.Boolean,
+            Nullable = false
+        });
+        var wait = model.FlowNodes.Single(node => node.Id == 2);
+        wait.Type = BpmnFlowNodeTypes.IntermediateConditionalCatchEvent;
+        wait.Conditional = new ConditionalDefinitionModel
+        {
+            Condition = "releaseFlag == true",
+            DeliveryMode = ConditionalEventDeliveryModes.Atomic
+        };
+        var service = CreateService(out var repository);
+        repository.Source = new WorkflowDefinitionRecord(
+            78,
+            model.Name,
+            model.Id,
+            1,
+            model,
+            IsPublished: setDefault,
+            IsDefault: false,
+            DateTimeOffset.UtcNow);
+
+        var error = setDefault
+            ? await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+                service.SetDefaultAsync(78, CancellationToken.None))
+            : await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+                service.PublishAsync(78, CancellationToken.None));
+
+        Assert.Equal(
+            "Conditional catch event #2 cannot reference shared variable 'releaseFlag'. "
+            + "Conditional events may reference only persisted instance variables. "
+            + "Use a message event or copy the value into an instance variable.",
+            error.Message);
+    }
+
     private static WorkflowModel CreateTerminalModel(string terminalType) => new()
     {
         Id = "terminal-validation",

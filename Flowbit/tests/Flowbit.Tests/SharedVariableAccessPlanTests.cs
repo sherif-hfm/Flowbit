@@ -13,7 +13,7 @@ namespace Flowbit.Tests;
 public sealed class SharedVariableAccessPlanTests
 {
     [Fact]
-    public void Build_IndexesExactConditionalReadsAndProducersByCurrentNodeAndFlow()
+    public void Build_IndexesExactSharedProducersAndReadsByCurrentNodeAndFlow()
     {
         var definition = CreateDefinition();
 
@@ -22,9 +22,7 @@ public sealed class SharedVariableAccessPlanTests
             new ConditionalEventDefinitionAnalyzer());
 
         var conditional = plan.ForNode(2);
-        Assert.Equal(["exchangeRate"], conditional.ConditionalDependencyAliases);
-        Assert.Equal(["exchangeRate"], conditional.LockAliases);
-        Assert.DoesNotContain("rate", conditional.LockAliases);
+        Assert.Empty(conditional.LockAliases);
 
         var service = plan.ForNode(3);
         Assert.Equal(["exchangeRate"], service.ProducerAliases);
@@ -40,9 +38,6 @@ public sealed class SharedVariableAccessPlanTests
         Assert.Equal(["rate"], plan.ForFlow(401).ProducerAliases);
         Assert.Empty(plan.ForFlow(101).ProducerAliases);
 
-        var conditionalScope = plan.SelectConditionalNodes([2]);
-        Assert.Equal(["exchangeRate"], conditionalScope.LockAliases);
-        Assert.DoesNotContain("rate", conditionalScope.LockAliases);
     }
 
     [Fact]
@@ -74,7 +69,6 @@ public sealed class SharedVariableAccessPlanTests
         Assert.IsAssignableFrom<FrozenDictionary<int, SharedVariableFlowAccessPlan>>(cached.Flows);
         AssertMutationRejected(cached.Nodes, 999, node);
         AssertMutationRejected(cached.Flows, 999, flow);
-        AssertMutationRejected(node.ConditionalDependencyAliases, "mutated");
         AssertMutationRejected(node.ProducerAliases, "mutated");
         AssertMutationRejected(node.ReadAliases, "mutated");
         AssertMutationRejected(node.LockAliases, "mutated");
@@ -201,7 +195,7 @@ public sealed class SharedVariableAccessPlanTests
     }
 
     [Fact]
-    public void LockOrder_ModelsUserTaskNodeValuesBeforeConditionalReload()
+    public void LockOrder_ModelsLocalAtomicContinuationAfterUserTaskValues()
     {
         var definition = CreateUserActionConditionalDefinition();
         var analyzer = new ConditionalEventDefinitionAnalyzer();
@@ -214,13 +208,13 @@ public sealed class SharedVariableAccessPlanTests
                 accessPlan,
                 conditionalPlan));
 
-        Assert.Contains("conditional dependency reload", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("node #5", error.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("tests.lock.a", error.Message, StringComparison.Ordinal);
         Assert.Contains("tests.lock.z", error.Message, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void LockOrder_RejectsOutputThenErrorBoundaryConditionalReloadInReverseOrder()
+    public void LockOrder_RejectsLocalAtomicContinuationsInReverseOrder()
     {
         var definition = CreateErrorBoundaryConditionalDefinition();
         var analyzer = new ConditionalEventDefinitionAnalyzer();
@@ -229,8 +223,8 @@ public sealed class SharedVariableAccessPlanTests
 
         Assert.Contains(4, conditionalPlan.NodeIdsByVariable["statusChanged"]);
         Assert.Contains(5, conditionalPlan.NodeIdsByVariable["errorChanged"]);
-        Assert.Equal(["higherDependency"], accessPlan.ForNode(4).ConditionalDependencyAliases);
-        Assert.Equal(["lowerDependency"], accessPlan.ForNode(5).ConditionalDependencyAliases);
+        Assert.Empty(accessPlan.ForNode(4).LockAliases);
+        Assert.Empty(accessPlan.ForNode(5).LockAliases);
 
         var error = Assert.Throws<WorkflowDomainException>(() =>
             SharedVariableTransactionLockOrderValidator.Validate(
@@ -238,7 +232,7 @@ public sealed class SharedVariableAccessPlanTests
                 accessPlan,
                 conditionalPlan));
 
-        Assert.Contains("error boundary #3", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("node #8", error.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("tests.lock.a", error.Message, StringComparison.Ordinal);
         Assert.Contains("tests.lock.z", error.Message, StringComparison.Ordinal);
     }
@@ -344,6 +338,13 @@ public sealed class SharedVariableAccessPlanTests
                 Access = SharedVariableAccessModes.ReadWrite,
                 DataType = WorkflowVariableTypes.Number,
                 Nullable = false
+            },
+            new VariableModel
+            {
+                Id = 3,
+                Name = "threshold",
+                DataType = WorkflowVariableTypes.Number,
+                Nullable = false
             }
         ],
         FlowNodes =
@@ -358,7 +359,7 @@ public sealed class SharedVariableAccessPlanTests
                 {
                     // The string literal deliberately contains the shorter
                     // alias; only the AST parameter is a dependency.
-                    Condition = "Contains('rate', 'rate') and [exchangeRate] > 0",
+                    Condition = "Contains('rate', 'rate') and threshold > 0",
                     DeliveryMode = ConditionalEventDeliveryModes.DurableAsync
                 }
             },
@@ -486,7 +487,7 @@ public sealed class SharedVariableAccessPlanTests
                 Name = "lowerDependency",
                 Scope = VariableScopes.Shared,
                 SharedKey = "tests.lock.a",
-                Access = SharedVariableAccessModes.Read,
+                Access = SharedVariableAccessModes.ReadWrite,
                 DataType = WorkflowVariableTypes.Number,
                 Nullable = false
             },
@@ -523,12 +524,13 @@ public sealed class SharedVariableAccessPlanTests
                 Type = BpmnFlowNodeTypes.IntermediateConditionalCatchEvent,
                 Conditional = new ConditionalDefinitionModel
                 {
-                    Condition = "changed and lowerDependency > 0",
+                    Condition = "changed",
                     DeliveryMode = ConditionalEventDeliveryModes.Atomic
                 }
             },
             new FlowNodeModel { Id = 4, Name = "End", Type = BpmnFlowNodeTypes.EndEvent },
-            new FlowNodeModel { Id = 5, Name = "Conditional end", Type = BpmnFlowNodeTypes.EndEvent }
+            ScriptNode(5, "Conditional shared write", "lowerDependency"),
+            new FlowNodeModel { Id = 6, Name = "Conditional end", Type = BpmnFlowNodeTypes.EndEvent }
         ],
         SequenceFlows =
         [
@@ -548,7 +550,8 @@ public sealed class SharedVariableAccessPlanTests
                     }
                 ]
             },
-            new SequenceFlowModel { Id = 301, SourceRef = 3, TargetRef = 5 }
+            new SequenceFlowModel { Id = 301, SourceRef = 3, TargetRef = 5 },
+            new SequenceFlowModel { Id = 501, SourceRef = 5, TargetRef = 6 }
         ]
     };
 
@@ -565,7 +568,7 @@ public sealed class SharedVariableAccessPlanTests
                 Name = "higherDependency",
                 Scope = VariableScopes.Shared,
                 SharedKey = "tests.lock.z",
-                Access = SharedVariableAccessModes.Read,
+                Access = SharedVariableAccessModes.ReadWrite,
                 DataType = WorkflowVariableTypes.Number,
                 Nullable = false
             },
@@ -575,7 +578,7 @@ public sealed class SharedVariableAccessPlanTests
                 Name = "lowerDependency",
                 Scope = VariableScopes.Shared,
                 SharedKey = "tests.lock.a",
-                Access = SharedVariableAccessModes.Read,
+                Access = SharedVariableAccessModes.ReadWrite,
                 DataType = WorkflowVariableTypes.Number,
                 Nullable = false
             },
@@ -625,7 +628,7 @@ public sealed class SharedVariableAccessPlanTests
                 Type = BpmnFlowNodeTypes.IntermediateConditionalCatchEvent,
                 Conditional = new ConditionalDefinitionModel
                 {
-                    Condition = "statusChanged == 500 and higherDependency > 0",
+                    Condition = "statusChanged == 500",
                     DeliveryMode = ConditionalEventDeliveryModes.Atomic
                 }
             },
@@ -636,13 +639,15 @@ public sealed class SharedVariableAccessPlanTests
                 Type = BpmnFlowNodeTypes.IntermediateConditionalCatchEvent,
                 Conditional = new ConditionalDefinitionModel
                 {
-                    Condition = "errorChanged != '' and lowerDependency > 0",
+                    Condition = "errorChanged != ''",
                     DeliveryMode = ConditionalEventDeliveryModes.Atomic
                 }
             },
             new FlowNodeModel { Id = 6, Name = "Main end", Type = BpmnFlowNodeTypes.EndEvent },
-            new FlowNodeModel { Id = 7, Name = "Higher end", Type = BpmnFlowNodeTypes.EndEvent },
-            new FlowNodeModel { Id = 8, Name = "Lower end", Type = BpmnFlowNodeTypes.EndEvent }
+            ScriptNode(7, "Higher conditional write", "higherDependency"),
+            ScriptNode(8, "Lower conditional write", "lowerDependency"),
+            new FlowNodeModel { Id = 9, Name = "Higher end", Type = BpmnFlowNodeTypes.EndEvent },
+            new FlowNodeModel { Id = 10, Name = "Lower end", Type = BpmnFlowNodeTypes.EndEvent }
         ],
         SequenceFlows =
         [
@@ -650,7 +655,9 @@ public sealed class SharedVariableAccessPlanTests
             new SequenceFlowModel { Id = 201, SourceRef = 2, TargetRef = 6 },
             new SequenceFlowModel { Id = 301, SourceRef = 3, TargetRef = 6 },
             new SequenceFlowModel { Id = 401, SourceRef = 4, TargetRef = 7 },
-            new SequenceFlowModel { Id = 501, SourceRef = 5, TargetRef = 8 }
+            new SequenceFlowModel { Id = 501, SourceRef = 5, TargetRef = 8 },
+            new SequenceFlowModel { Id = 701, SourceRef = 7, TargetRef = 9 },
+            new SequenceFlowModel { Id = 801, SourceRef = 8, TargetRef = 10 }
         ]
     };
 

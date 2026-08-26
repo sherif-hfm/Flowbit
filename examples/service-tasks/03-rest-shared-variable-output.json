@@ -1,0 +1,146 @@
+{
+  "id": "example-rest-shared-variable-output",
+  "name": "Service Task Example 03 - REST Shared Variable Output",
+  "initialEventId": 1,
+  "variables": [
+    {
+      "id": 1,
+      "name": "status",
+      "scope": "shared",
+      "sharedKey": "examples.service.status",
+      "access": "readWrite",
+      "dataType": "string",
+      "isArray": false,
+      "nullable": false,
+      "required": false,
+      "defaultValue": null,
+      "validation": null
+    },
+    {
+      "id": 2,
+      "name": "serviceError",
+      "dataType": "string",
+      "isArray": false,
+      "nullable": false,
+      "required": false,
+      "defaultValue": "",
+      "validation": null
+    }
+  ],
+  "lanes": [],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Start Shared Status Refresh",
+      "externalId": "START_SHARED_STATUS_REFRESH",
+      "type": "startEvent",
+      "laneId": null,
+      "x": 100,
+      "y": 120,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 2,
+      "name": "Load Shared Status",
+      "externalId": "SERVICE_LOAD_SHARED_STATUS",
+      "type": "serviceTask",
+      "laneId": null,
+      "x": 390,
+      "y": 110,
+      "roles": [],
+      "variables": [],
+      "asyncBefore": true,
+      "asyncAfter": false,
+      "service": {
+        "type": "rest",
+        "method": "GET",
+        "url": "${config.exampleApiBaseUrl}/shared-state",
+        "headers": [],
+        "body": null,
+        "timeoutSeconds": 5,
+        "statusVariable": null,
+        "outputMappings": [
+          {
+            "variable": "status",
+            "path": "status",
+            "required": true,
+            "dataType": "string",
+            "isArray": false,
+            "validation": "Length(status) > 0"
+          }
+        ]
+      }
+    },
+    {
+      "id": 3,
+      "name": "Catch Shared Status Failure",
+      "externalId": "BOUNDARY_CATCH_SHARED_STATUS_FAILURE",
+      "type": "errorBoundaryEvent",
+      "laneId": null,
+      "x": 500,
+      "y": 205,
+      "roles": [],
+      "variables": [],
+      "attachedToRef": 2,
+      "errorVariable": "serviceError"
+    },
+    {
+      "id": 4,
+      "name": "Shared Status Updated",
+      "externalId": "END_SHARED_STATUS_UPDATED",
+      "type": "endEvent",
+      "laneId": null,
+      "x": 800,
+      "y": 120,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 5,
+      "name": "Shared Status Refresh Failed",
+      "externalId": "END_SHARED_STATUS_FAILURE",
+      "type": "errorEndEvent",
+      "laneId": null,
+      "x": 800,
+      "y": 285,
+      "roles": [],
+      "variables": [],
+      "errorCode": "EXAMPLE.SHARED_STATUS_FAILURE",
+      "errorDescription": "The configured shared-status endpoint could not provide a valid status."
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "Queue shared status load",
+      "externalId": "FLOW_START_TO_SHARED_STATUS_SERVICE",
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 201,
+      "name": "Finish shared status update",
+      "externalId": "FLOW_SHARED_STATUS_SERVICE_TO_END",
+      "sourceRef": 2,
+      "targetRef": 4,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 301,
+      "name": "Fault shared status refresh",
+      "externalId": "FLOW_SHARED_STATUS_BOUNDARY_TO_ERROR_END",
+      "sourceRef": 3,
+      "targetRef": 5,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "cancelRoles": [],
+  "unclaimRoles": [],
+  "taskAssignmentRoles": [],
+  "taskDistribution": null
+}

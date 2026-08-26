@@ -70,34 +70,35 @@ public sealed class EditorConditionalEventTests
         Assert.Equal("{\"condition\":\"ready\",\"deliveryMode\":\"durableAsync\"}", durable);
     }
 
+    [Theory]
+    [InlineData(null)]
+    [InlineData("atomic")]
+    [InlineData("durableAsync")]
+    public void Validator_RejectsSharedVariableDependenciesForEveryDeliveryMode(
+        string? deliveryMode)
+    {
+        var candidate = ValidCandidate(deliveryMode);
+        AddSharedVariable(candidate, "approvalSignal", "approvals.signal", "read");
+        var conditional = (JsonObject)((JsonArray)candidate["flowNodes"]!)[1]!["conditional"]!;
+        conditional["condition"] =
+            "'[approvalSignal]' == '[approvalSignal]' and approved == true " +
+            "and [APPROVALSIGNAL] == true";
+
+        Assert.Contains(
+            "Conditional catch event #2 condition cannot reference shared process variable " +
+            "'approvalSignal'; copy the value into an instance variable or use a message event.",
+            Validate(candidate));
+    }
+
     [Fact]
-    public void Validator_AcceptsAtomicAndDurableSharedVariableDependencies()
+    public void Validator_DoesNotTreatQuotedSharedAliasTextAsDependency()
     {
         var candidate = ValidCandidate();
-        ((JsonArray)candidate["variables"]!).Add(new JsonObject
-        {
-            ["id"] = 1,
-            ["name"] = "approvalSignal",
-            ["dataType"] = "boolean",
-            ["isArray"] = false,
-            ["nullable"] = false,
-            ["required"] = false,
-            ["defaultValue"] = null,
-            ["validation"] = null,
-            ["scope"] = "shared",
-            ["sharedKey"] = "approvals.signal",
-            ["access"] = "read"
-        });
+        AddSharedVariable(candidate, "approvalSignal", "approvals.signal", "readWrite");
         var conditional = (JsonObject)((JsonArray)candidate["flowNodes"]!)[1]!["conditional"]!;
-        conditional["condition"] = "[approvalSignal] == true";
+        conditional["condition"] =
+            "approved == true and 'approvalSignal' == 'approvalSignal'";
 
-        Assert.Empty(Validate(candidate));
-
-        conditional["deliveryMode"] = "durableAsync";
-        Assert.Empty(Validate(candidate));
-
-        conditional.Remove("deliveryMode");
-        conditional["condition"] = "'approvalSignal' == 'approvalSignal'";
         Assert.Empty(Validate(candidate));
     }
 
@@ -182,7 +183,7 @@ public sealed class EditorConditionalEventTests
     }
 
     [Fact]
-    public void EditorSource_ContainsConditionalPaletteAndBpmnMarker()
+    public void EditorSource_ContainsInstanceOnlyConditionalGuidanceAndBpmnMarker()
     {
         var html = ReadEditorSource();
 
@@ -199,6 +200,15 @@ public sealed class EditorConditionalEventTests
             "if (node.type !== \"intermediateConditionalCatchEvent\") delete node.conditional;",
             html,
             StringComparison.Ordinal);
+        Assert.Contains(
+            "Conditional events cannot reference shared process variable",
+            html,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "their conditions may reference instance variables only",
+            html,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain("Insert shared dependency", html, StringComparison.Ordinal);
     }
 
     private static JsonObject ValidCandidate(string? deliveryMode = null)
@@ -274,6 +284,28 @@ public sealed class EditorConditionalEventTests
         ["completionPriority"] = null,
         ["cancelRemainingInstances"] = false
     };
+
+    private static void AddSharedVariable(
+        JsonObject candidate,
+        string name,
+        string sharedKey,
+        string access)
+    {
+        ((JsonArray)candidate["variables"]!).Add(new JsonObject
+        {
+            ["id"] = 1,
+            ["name"] = name,
+            ["dataType"] = "boolean",
+            ["isArray"] = false,
+            ["nullable"] = false,
+            ["required"] = false,
+            ["defaultValue"] = null,
+            ["validation"] = null,
+            ["scope"] = "shared",
+            ["sharedKey"] = sharedKey,
+            ["access"] = access
+        });
+    }
 
     private static IReadOnlyList<string> Validate(JsonObject candidate)
     {

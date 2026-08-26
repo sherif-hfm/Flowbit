@@ -120,8 +120,6 @@ public sealed record SharedVariableLifecycleBlockersDto(
     long PublishedDefinitionCount,
     long RunningInstanceCount,
     long OpenJobCount,
-    long ActiveConditionalWaitCount,
-    long PendingWakeCount,
     IReadOnlyList<string> Reasons)
 {
     public bool CanArchive => Reasons.Count == 0;

@@ -2,8 +2,6 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Flowbit.Api.Auth;
-using Flowbit.Infrastructure.Entities;
-using Flowbit.Service.Models;
 using Flowbit.Shared.Dtos;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -15,72 +13,6 @@ namespace Flowbit.Tests;
 [Collection(PostgresApiCollection.Name)]
 public sealed class SharedVariableApiTests(PostgresApiFixture fixture)
 {
-    [Fact]
-    public async Task SharedIncidentResponsesAreNoStoreAndOnlyDetailGetDisclosesDiagnostics()
-    {
-        var suffix = Guid.NewGuid().ToString("N");
-        var retryKey = $"tests.api-incident-retry.{suffix}";
-        var resolveKey = $"tests.api-incident-resolve.{suffix}";
-        const string retryDetails =
-            "Legacy diagnostic containing database.internal and a sensitive-looking token.";
-        const string resolveDetails = "Second bounded diagnostic.";
-
-        try
-        {
-            var retryIncidentId = await SeedExpansionIncidentAsync(retryKey, retryDetails);
-            var resolveIncidentId = await SeedExpansionIncidentAsync(resolveKey, resolveDetails);
-
-            using (var listRequest = JwtRequest(
-                       HttpMethod.Get,
-                       $"/api/shared-variable-incidents?status=open&sharedKey={Uri.EscapeDataString(retryKey)}"))
-            using (var listResponse = await fixture.Client.SendAsync(listRequest))
-            {
-                Assert.Equal(HttpStatusCode.OK, listResponse.StatusCode);
-                AssertNoStore(listResponse);
-                var page = await ReadAsync<PagedResult<SharedVariableIncidentDto>>(listResponse);
-                var incident = Assert.Single(page.Items);
-                Assert.Equal(retryIncidentId, incident.Id);
-                Assert.Null(incident.Details);
-            }
-
-            using (var detailRequest = JwtRequest(
-                       HttpMethod.Get,
-                       $"/api/shared-variable-incidents/{retryIncidentId}"))
-            using (var detailResponse = await fixture.Client.SendAsync(detailRequest))
-            {
-                Assert.Equal(HttpStatusCode.OK, detailResponse.StatusCode);
-                AssertNoStore(detailResponse);
-                var incident = await ReadAsync<SharedVariableIncidentDto>(detailResponse);
-                Assert.Equal(retryDetails, incident.Details);
-            }
-
-            using (var retryRequest = JwtRequest(
-                       HttpMethod.Post,
-                       $"/api/shared-variable-incidents/{retryIncidentId}/retry"))
-            using (var retryResponse = await fixture.Client.SendAsync(retryRequest))
-            {
-                Assert.Equal(HttpStatusCode.OK, retryResponse.StatusCode);
-                AssertNoStore(retryResponse);
-                Assert.Null((await ReadAsync<SharedVariableIncidentDto>(retryResponse)).Details);
-            }
-
-            using (var resolveRequest = JwtRequest(
-                       HttpMethod.Post,
-                       $"/api/shared-variable-incidents/{resolveIncidentId}/resolve",
-                       new ResolveSharedVariableIncidentRequest("Operator accepted cancellation.")))
-            using (var resolveResponse = await fixture.Client.SendAsync(resolveRequest))
-            {
-                Assert.Equal(HttpStatusCode.OK, resolveResponse.StatusCode);
-                AssertNoStore(resolveResponse);
-                Assert.Null((await ReadAsync<SharedVariableIncidentDto>(resolveResponse)).Details);
-            }
-        }
-        finally
-        {
-            await DeleteSharedVariableTestDataAsync(retryKey, resolveKey);
-        }
-    }
-
     [Fact]
     public async Task NullableNullSkipsCustomValidationThroughHttpValueRoute()
     {
@@ -133,19 +65,6 @@ public sealed class SharedVariableApiTests(PostgresApiFixture fixture)
                 .Where(variable => variable.Key == key)
                 .Select(variable => variable.Id)
                 .ToArrayAsync();
-            var wakeIds = await db.SharedVariableWakes
-                .Where(wake => variableIds.Contains(wake.SharedVariableId))
-                .Select(wake => wake.Id)
-                .ToArrayAsync();
-            await db.SharedVariableWakeIncidents
-                .Where(incident => variableIds.Contains(incident.SharedVariableId))
-                .ExecuteDeleteAsync();
-            await db.SharedVariableWakeDeliveries
-                .Where(delivery => wakeIds.Contains(delivery.WakeId))
-                .ExecuteDeleteAsync();
-            await db.SharedVariableWakes
-                .Where(wake => variableIds.Contains(wake.SharedVariableId))
-                .ExecuteDeleteAsync();
             await db.SharedVariableCurrentValues
                 .Where(value => variableIds.Contains(value.SharedVariableId))
                 .ExecuteDeleteAsync();
@@ -200,15 +119,13 @@ public sealed class SharedVariableApiTests(PostgresApiFixture fixture)
         AssertBearerOnly(paths
             .GetProperty("/api/shared-variable-clients/{id}")
             .GetProperty("put"));
-        AssertBearerOnly(paths
-            .GetProperty("/api/shared-variable-incidents")
-            .GetProperty("get"));
-        AssertBearerOnly(paths
-            .GetProperty("/api/shared-variable-incidents/{incidentId}/retry")
-            .GetProperty("post"));
-        AssertBearerOnly(paths
-            .GetProperty("/api/shared-variable-incidents/{incidentId}/resolve")
-            .GetProperty("post"));
+        Assert.False(paths.TryGetProperty("/api/shared-variable-incidents", out _));
+        Assert.False(paths.TryGetProperty(
+            "/api/shared-variable-incidents/{incidentId}/retry",
+            out _));
+        Assert.False(paths.TryGetProperty(
+            "/api/shared-variable-incidents/{incidentId}/resolve",
+            out _));
     }
 
     [Fact]
@@ -455,16 +372,6 @@ public sealed class SharedVariableApiTests(PostgresApiFixture fixture)
                 .Where(variable => variable.Key == key)
                 .Select(variable => variable.Id)
                 .ToArrayAsync();
-            var wakeIds = await db.SharedVariableWakes
-                .Where(wake => variableIds.Contains(wake.SharedVariableId))
-                .Select(wake => wake.Id)
-                .ToArrayAsync();
-            await db.SharedVariableWakeDeliveries
-                .Where(delivery => wakeIds.Contains(delivery.WakeId))
-                .ExecuteDeleteAsync();
-            await db.SharedVariableWakes
-                .Where(wake => variableIds.Contains(wake.SharedVariableId))
-                .ExecuteDeleteAsync();
             await db.SharedVariableCurrentValues
                 .Where(value => variableIds.Contains(value.SharedVariableId))
                 .ExecuteDeleteAsync();
@@ -501,106 +408,6 @@ public sealed class SharedVariableApiTests(PostgresApiFixture fixture)
             request.Content = JsonContent.Create(body);
         }
         return ApiTestAuth.Authorize(request, "shared-variable-admin", "admin");
-    }
-
-    private async Task<long> SeedExpansionIncidentAsync(string key, string details)
-    {
-        using (var createRequest = JwtRequest(
-                   HttpMethod.Post,
-                   "/api/shared-variables",
-                   new CreateSharedVariableRequest(
-                       key,
-                       "string",
-                       IsArray: false,
-                       Nullable: false,
-                       HasValue: true,
-                       Value: JsonSerializer.SerializeToElement("seed"),
-                       Validation: null)))
-        using (var createResponse = await fixture.Client.SendAsync(createRequest))
-        {
-            Assert.Equal(HttpStatusCode.Created, createResponse.StatusCode);
-        }
-
-        await using var db = fixture.CreateDbContext();
-        var variable = await db.SharedVariables.SingleAsync(item => item.Key == key);
-        var revision = await db.SharedVariableRevisions.SingleAsync(item =>
-            item.SharedVariableId == variable.Id
-            && item.Revision == variable.CurrentRevision);
-        var now = DateTimeOffset.UtcNow;
-        var wake = new SharedVariableWakeEntity
-        {
-            SharedVariableId = variable.Id,
-            RevisionId = revision.Id,
-            Revision = revision.Revision,
-            Status = SharedVariableWakeStatuses.Incident,
-            AttemptCount = 25,
-            MaxAttempts = 25,
-            AvailableAt = now,
-            LastError = details,
-            CreatedAt = now,
-            UpdatedAt = now
-        };
-        db.SharedVariableWakes.Add(wake);
-        await db.SaveChangesAsync();
-
-        var incident = new SharedVariableWakeIncidentEntity
-        {
-            WorkKind = SharedVariableWakeWorkKinds.Expansion,
-            WakeId = wake.Id,
-            OriginalWakeId = wake.Id,
-            SharedVariableId = variable.Id,
-            SharedKey = variable.Key,
-            Revision = wake.Revision,
-            Type = "syntheticFailure",
-            Status = SharedVariableWakeIncidentStatuses.Open,
-            Summary = "Synthetic wake expansion failure.",
-            Details = details,
-            CreatedAt = now,
-            UpdatedAt = now
-        };
-        db.SharedVariableWakeIncidents.Add(incident);
-        await db.SaveChangesAsync();
-        return incident.Id;
-    }
-
-    private async Task DeleteSharedVariableTestDataAsync(params string[] keys)
-    {
-        await using var db = fixture.CreateDbContext();
-        var variableIds = await db.SharedVariables
-            .Where(variable => keys.Contains(variable.Key))
-            .Select(variable => variable.Id)
-            .ToArrayAsync();
-        var wakeIds = await db.SharedVariableWakes
-            .Where(wake => variableIds.Contains(wake.SharedVariableId))
-            .Select(wake => wake.Id)
-            .ToArrayAsync();
-        await db.SharedVariableWakeIncidents
-            .Where(incident => variableIds.Contains(incident.SharedVariableId))
-            .ExecuteDeleteAsync();
-        await db.SharedVariableWakeDeliveries
-            .Where(delivery => wakeIds.Contains(delivery.WakeId))
-            .ExecuteDeleteAsync();
-        await db.SharedVariableWakes
-            .Where(wake => wakeIds.Contains(wake.Id))
-            .ExecuteDeleteAsync();
-        await db.SharedVariableCurrentValues
-            .Where(value => variableIds.Contains(value.SharedVariableId))
-            .ExecuteDeleteAsync();
-        await db.SharedVariableRequests
-            .Where(request => variableIds.Contains(request.SharedVariableId))
-            .ExecuteDeleteAsync();
-        await db.SharedVariableRevisions
-            .Where(revision => variableIds.Contains(revision.SharedVariableId))
-            .ExecuteDeleteAsync();
-        await db.SharedVariables
-            .Where(variable => variableIds.Contains(variable.Id))
-            .ExecuteDeleteAsync();
-    }
-
-    private static void AssertNoStore(HttpResponseMessage response)
-    {
-        Assert.Contains("no-store", response.Headers.CacheControl?.ToString());
-        Assert.Contains("no-cache", response.Headers.Pragma.ToString());
     }
 
     private static HttpRequestMessage ClientRequest(

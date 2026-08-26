@@ -97,15 +97,9 @@ public sealed partial class WorkflowEngineService(
             return;
         }
 
-        var stored = await LoadVariablesAsync(
+        var stored = await LoadInstanceVariablesAsync(
             instance.Id,
-            workflow.Definition,
-            cancellationToken,
-            SharedConditionalAccessScope(
-                workflow.Id,
-                workflow.Definition,
-                plan,
-                changedNames));
+            cancellationToken);
         var flowInfo = await LoadSequenceFlowInfoAsync(
             instance.Id,
             workflow.Definition,
@@ -341,17 +335,12 @@ public sealed partial class WorkflowEngineService(
         }
 
         var changedNames = variableMutationTracker.Consume(instance.Id);
-        if (workflowVariables is not null)
+        var currentInstanceValues = await LoadInstanceVariablesAsync(
+            instance.Id,
+            cancellationToken);
+        foreach (var pair in currentInstanceValues)
         {
-            storedOverlay = await workflowVariables.MergeEffectiveValuesAsync(
-                definition,
-                storedOverlay,
-                SharedConditionalAccessScope(
-                    instance.WorkflowDefinitionId,
-                    definition,
-                    plan,
-                    changedNames),
-                cancellationToken);
+            storedOverlay[pair.Key] = pair.Value;
         }
         return await TriggerConditionalWaitsAsync(
             instance,
@@ -541,6 +530,7 @@ public sealed partial class WorkflowEngineService(
             EnsureEntryRuntimeContract(workflow.Definition, startEvent);
 
             EnsureRoleAllowed(startEvent, actor);
+            EnsureConditionalDefinitionSupported(workflow);
 
             var idempotency = ResolveIdempotencyInput(startEvent, requestHeaders);
 
@@ -734,6 +724,7 @@ public sealed partial class WorkflowEngineService(
             startEvent,
             message,
             cancellationToken);
+        EnsureConditionalDefinitionSupported(workflow);
         await EnsureBusinessKeyFamilyStartableAsync(workflow, cancellationToken);
         await EnsureRequiredAssignmentFamilyStartableAsync(workflow, cancellationToken);
 
@@ -8894,6 +8885,17 @@ public sealed partial class WorkflowEngineService(
                 : null);
     }
 
+    private async Task<Dictionary<string, JsonElement>> LoadInstanceVariablesAsync(
+        long instanceId,
+        CancellationToken cancellationToken) =>
+        (await runtime.LoadLatestVariableVersionsAsync(
+                instanceId,
+                cancellationToken))
+            .ToDictionary(
+                variable => variable.Name,
+                variable => variable.Value,
+                StringComparer.OrdinalIgnoreCase);
+
     private async Task<Dictionary<string, JsonElement>> LoadVariablesAsync(
         long instanceId,
         WorkflowModel definition,
@@ -8934,23 +8936,6 @@ public sealed partial class WorkflowEngineService(
         }
 
         return plan.SelectNodeAndFlow(nodeId, flowId.Value);
-    }
-
-    private SharedVariableAccessScope SharedConditionalAccessScope(
-        long workflowDefinitionId,
-        WorkflowModel definition,
-        ConditionalEventDependencyPlan conditionalPlan,
-        IReadOnlyCollection<string> changedNames)
-    {
-        var accessPlan = sharedAccessPlanCache.GetOrAdd(
-            workflowDefinitionId,
-            definition);
-        var nodeIds = changedNames
-            .Where(conditionalPlan.NodeIdsByVariable.ContainsKey)
-            .SelectMany(name => conditionalPlan.NodeIdsByVariable[name])
-            .Distinct()
-            .ToArray();
-        return accessPlan.SelectConditionalNodes(nodeIds);
     }
 
     private async Task WriteVariablesAsync(
@@ -9786,6 +9771,16 @@ public sealed partial class WorkflowEngineService(
     }
 
     private const string RedactedSecret = "[redacted]";
+
+    private void EnsureConditionalDefinitionSupported(
+        WorkflowDefinitionRecord workflow)
+    {
+        _ = conditionalEventPlans?.GetOrAdd(
+                workflow.Id,
+                workflow.Definition)
+            ?? new ConditionalEventDefinitionAnalyzer().Analyze(
+                workflow.Definition);
+    }
 
     private async Task<WorkflowDefinitionRecord> GetPublishedWorkflowAsync(
         long id,

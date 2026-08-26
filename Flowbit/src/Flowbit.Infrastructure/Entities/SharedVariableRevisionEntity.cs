@@ -27,5 +27,4 @@ public sealed class SharedVariableRevisionEntity
     public WorkflowInstanceEntity? Instance { get; set; }
     public NodeExecutionEntity? NodeExecution { get; set; }
     public SharedVariableCurrentValueEntity? CurrentValue { get; set; }
-    public SharedVariableWakeEntity? Wake { get; set; }
 }

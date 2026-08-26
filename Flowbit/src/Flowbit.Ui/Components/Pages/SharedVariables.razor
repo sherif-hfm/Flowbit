@@ -128,7 +128,7 @@ else
             {
                 <div class="d-flex flex-wrap gap-2 mb-3">
                     <StatusBadge Status="@(blockers.CanArchive ? "success" : "warning")" Text="@(blockers.CanArchive ? "Can archive" : "Archive blocked")" />
-                    <span class="data-subtitle mt-1">@blockers.PublishedDefinitionCount published definitions · @blockers.RunningInstanceCount running instances · @blockers.PendingWakeCount pending wakes</span>
+                    <span class="data-subtitle mt-1">@blockers.PublishedDefinitionCount published definitions · @blockers.RunningInstanceCount running instances · @blockers.OpenJobCount open jobs</span>
                 </div>
                 @if (blockers.Reasons.Count > 0) { <ul>@foreach (var reason in blockers.Reasons) { <li>@reason</li> }</ul> }
             }

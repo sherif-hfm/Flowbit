@@ -1,5 +1,4 @@
 using Flowbit.Service.Abstractions;
-using Flowbit.Service.Models;
 
 namespace Flowbit.Worker;
 
@@ -20,8 +19,6 @@ public sealed class QueueTelemetryService(
             while (!stoppingToken.IsCancellationRequested)
             {
                 await SampleJobQueueAsync(stoppingToken);
-                await SampleSharedWakeIncidentsAsync(stoppingToken);
-
                 if (!await timer.WaitForNextTickAsync(stoppingToken))
                 {
                     break;
@@ -53,34 +50,6 @@ public sealed class QueueTelemetryService(
             logger.LogDebug(
                 exception,
                 "Could not sample durable queue telemetry.");
-        }
-    }
-
-    private async Task SampleSharedWakeIncidentsAsync(
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            await using var scope = scopeFactory.CreateAsyncScope();
-            var repository = scope.ServiceProvider
-                .GetRequiredService<ISharedVariableRepository>();
-            var (_, totalCount) = await repository.SearchWakeIncidentsAsync(
-                new SharedVariableWakeIncidentQuery(
-                    Status: SharedVariableWakeIncidentStatuses.Open,
-                    Offset: 0,
-                    Limit: 1),
-                cancellationToken);
-            telemetry.RecordSharedWakeIncidentSnapshot(totalCount);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (Exception exception)
-        {
-            logger.LogDebug(
-                exception,
-                "Could not sample shared-variable wake incident telemetry.");
         }
     }
 }

@@ -30,6 +30,7 @@ public static class WorkflowVersionCompatibilityEvaluator
         var targetNodes = IndexNodes(target);
 
         ValidateEnvelope(context, blockers);
+        ValidateTargetConditionalDependencies(target, blockers);
         ValidateSharedVariableBindings(source, target, blockers);
         var activeNodeIds = ValidateActiveNodes(
             context,
@@ -77,6 +78,24 @@ public static class WorkflowVersionCompatibilityEvaluator
         return new WorkflowVersionCompatibilityResult(
             SortIssues(blockers),
             SortIssues(warnings));
+    }
+
+    private static void ValidateTargetConditionalDependencies(
+        WorkflowModel target,
+        ICollection<WorkflowVersionCompatibilityIssue> blockers)
+    {
+        foreach (var dependency in ConditionalEventDefinitionAnalyzer
+                     .FindSharedVariableDependencies(target))
+        {
+            blockers.Add(Issue(
+                WorkflowVersionCompatibilityCodes
+                    .ConditionalCatchSharedDependencyUnsupported,
+                $"Target conditional catch node #{dependency.NodeId} references "
+                + $"shared variable '{dependency.VariableName}'; conditional events may "
+                + "reference only persisted instance variables.",
+                nodeId: dependency.NodeId,
+                variableName: dependency.VariableName));
+        }
     }
 
     private static void ValidateEnvelope(

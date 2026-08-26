@@ -90,13 +90,6 @@ public static class SharedVariableTransactionLockOrderValidator
                 }
             }
 
-            var keys = affectedNodeIds
-                .SelectMany(nodeId => accessPlan.ForNode(nodeId).ConditionalDependencyAliases)
-                .Where(sharedByAlias.ContainsKey)
-                .Select(alias => sharedByAlias[alias].SharedKey!)
-                .Distinct(StringComparer.Ordinal)
-                .Order(StringComparer.Ordinal)
-                .ToArray();
             var atomicTargets = affectedNodeIds
                 .Where(nodeId => conditionalPlan.EventsByNodeId.TryGetValue(nodeId, out var entry)
                     && entry.DeliveryMode == ConditionalEventDeliveryModes.Atomic)
@@ -105,7 +98,7 @@ public static class SharedVariableTransactionLockOrderValidator
                 .Distinct()
                 .Order()
                 .ToArray();
-            return new PostWritePlan(keys, atomicTargets);
+            return new PostWritePlan(atomicTargets);
         }
 
         IEnumerable<string?> NodeWriteTargets(FlowNodeModel node)
@@ -211,10 +204,6 @@ public static class SharedVariableTransactionLockOrderValidator
                     nodeKeys[node.Id].Concat(flowKeys[flow.Id]),
                     $"node #{node.Id} / sequence flow #{flow.Id} continuation");
                 var post = actionPostWrites[flow.Id];
-                Acquire(
-                    baseState,
-                    post.LockKeys,
-                    $"conditional dependency reload after sequence flow #{flow.Id} writes");
 
                 var mainTargetInActionTransaction = !node.AsyncAfter;
                 foreach (var triggered in Subsets(post.AtomicTargets, includeEmpty: true))
@@ -247,11 +236,10 @@ public static class SharedVariableTransactionLockOrderValidator
         }
 
         // Administrative instance-variable updates may change any subset of
-        // local dependencies in one request. The coordinator reloads the union
-        // of affected shared dependencies first, then advances true atomic
-        // catches in node-id order, retaining those locks across every resumed
-        // continuation. Singles plus every pair prove both dependency-to-route
-        // and route-to-later-route ordering without exponential subset growth.
+        // local dependencies in one request. True atomic catches advance in
+        // node-id order in that same transaction. Singles plus every pair prove
+        // continuation-to-later-continuation ordering without exponential
+        // subset growth.
         var conditionalEvents = conditionalPlan.EventsByNodeId.Values
             .OrderBy(item => item.NodeId)
             .ToArray();
@@ -271,14 +259,6 @@ public static class SharedVariableTransactionLockOrderValidator
             var description = "administrative conditional wave for node(s) "
                 + string.Join(", ", affected.Select(item => $"#{item.NodeId}"));
             var state = SimulationState.Empty(description);
-            Acquire(
-                state,
-                affected
-                    .SelectMany(item => accessPlan.ForNode(item.NodeId)
-                        .ConditionalDependencyAliases)
-                    .Where(sharedByAlias.ContainsKey)
-                    .Select(alias => sharedByAlias[alias].SharedKey!),
-                "shared conditional dependency reload");
             foreach (var item in affected.Where(item =>
                          item.DeliveryMode == ConditionalEventDeliveryModes.Atomic))
             {
@@ -353,10 +333,6 @@ public static class SharedVariableTransactionLockOrderValidator
             var post = cursor.SkipPostWrites
                 ? PostWritePlan.Empty
                 : nodePostWrites[node.Id];
-            Acquire(
-                state,
-                post.LockKeys,
-                $"conditional dependency reload after node #{node.Id} writes");
 
             if (BpmnFlowNodeTypes.IsTerminateEnd(node.Type))
             {
@@ -391,10 +367,6 @@ public static class SharedVariableTransactionLockOrderValidator
                 {
                     var failure = state.Clone();
                     var boundaryPost = boundaryPostWrites[boundary.Id];
-                    Acquire(
-                        failure,
-                        boundaryPost.LockKeys,
-                        $"conditional dependency reload after error boundary #{boundary.Id} writes");
                     foreach (var primaryTriggered in Subsets(
                                  post.AtomicTargets,
                                  includeEmpty: true))
@@ -539,11 +511,9 @@ public static class SharedVariableTransactionLockOrderValidator
         bool BypassAsyncAfter = false,
         bool SkipPostWrites = false);
 
-    private sealed record PostWritePlan(
-        IReadOnlyList<string> LockKeys,
-        IReadOnlyList<int> AtomicTargets)
+    private sealed record PostWritePlan(IReadOnlyList<int> AtomicTargets)
     {
-        public static PostWritePlan Empty { get; } = new([], []);
+        public static PostWritePlan Empty { get; } = new([]);
     }
 
     private sealed class SimulationState

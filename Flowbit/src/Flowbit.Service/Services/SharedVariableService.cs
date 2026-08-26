@@ -314,8 +314,6 @@ public sealed class SharedVariableService(
                 blockers.PublishedDefinitionCount,
                 blockers.RunningInstanceCount,
                 blockers.OpenJobCount,
-                blockers.ActiveConditionalWaitCount,
-                blockers.PendingWakeCount,
                 blockers.Reasons);
     }
 

@@ -104,7 +104,7 @@ public sealed class ConditionalEventDefinitionTests
     }
 
     [Fact]
-    public void Analyze_AcceptsAtomicSharedDependenciesForOutboxDelivery()
+    public void Analyze_RejectsAtomicSharedDependencies()
     {
         var definition = CreateDefinition("Amount >= 10", ConditionalEventDeliveryModes.Atomic);
         var amount = definition.Variables.Single(variable => variable.Name == "Amount");
@@ -113,16 +113,39 @@ public sealed class ConditionalEventDefinitionTests
         amount.Access = SharedVariableAccessModes.Read;
         amount.DefaultValue = null;
 
-        var plan = analyzer.Analyze(definition);
+        var error = Assert.Throws<WorkflowDomainException>(() =>
+            analyzer.Analyze(definition));
+
+        Assert.Contains("shared variable 'Amount'", error.Message, StringComparison.Ordinal);
+        Assert.Contains("persisted instance variables", error.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("Approved == true and Amount >= 10")]
+    [InlineData("[Amount] >= 10")]
+    [InlineData("aMoUnT >= 10")]
+    public void Analyze_RejectsMixedBracketedAndCaseVariedSharedDependencies(
+        string condition)
+    {
+        var definition = CreateDefinition(condition);
+        var amount = definition.Variables.Single(variable => variable.Name == "Amount");
+        amount.Scope = VariableScopes.Shared;
+        amount.SharedKey = "finance.threshold";
+        amount.Access = SharedVariableAccessModes.Read;
+        amount.DefaultValue = null;
+
+        var error = Assert.Throws<WorkflowDomainException>(() =>
+            analyzer.Analyze(definition));
 
         Assert.Equal(
-            ConditionalEventDeliveryModes.Atomic,
-            plan.EventsByNodeId[2].DeliveryMode);
-        Assert.Equal(["Amount"], plan.EventsByNodeId[2].Dependencies.ToArray());
+            "Conditional catch event #2 cannot reference shared variable 'Amount'. "
+            + "Conditional events may reference only persisted instance variables. "
+            + "Use a message event or copy the value into an instance variable.",
+            error.Message);
     }
 
     [Fact]
-    public void Analyze_AcceptsDurableAsyncSharedDependencies()
+    public async Task CreateAsync_RejectsDurableAsyncSharedDependencies()
     {
         var definition = CreateDefinition("Amount >= 10", ConditionalEventDeliveryModes.DurableAsync);
         var amount = definition.Variables.Single(variable => variable.Name == "Amount");
@@ -131,9 +154,44 @@ public sealed class ConditionalEventDefinitionTests
         amount.Access = SharedVariableAccessModes.Read;
         amount.DefaultValue = null;
 
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateDefinitionService().CreateAsync(
+                definition,
+                publish: false,
+                CancellationToken.None));
+
+        Assert.Contains("shared variable 'Amount'", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Analyze_AllowsUnreferencedSharedBindingsAlongsideLocalDependencies()
+    {
+        var definition = CreateDefinition("Approved == true");
+        var amount = definition.Variables.Single(variable => variable.Name == "Amount");
+        amount.Scope = VariableScopes.Shared;
+        amount.SharedKey = "finance.threshold";
+        amount.Access = SharedVariableAccessModes.Read;
+        amount.DefaultValue = null;
+
         var plan = analyzer.Analyze(definition);
 
-        Assert.Equal(["Amount"], plan.EventsByNodeId[2].Dependencies.ToArray());
+        Assert.Equal(["Approved"], plan.EventsByNodeId[2].Dependencies.ToArray());
+    }
+
+    [Fact]
+    public void Analyze_DoesNotTreatSharedAliasTextInAStringLiteralAsADependency()
+    {
+        var definition = CreateDefinition(
+            "Approved == true and 'Amount' == 'Amount'");
+        var amount = definition.Variables.Single(variable => variable.Name == "Amount");
+        amount.Scope = VariableScopes.Shared;
+        amount.SharedKey = "finance.threshold";
+        amount.Access = SharedVariableAccessModes.Read;
+        amount.DefaultValue = null;
+
+        var plan = analyzer.Analyze(definition);
+
+        Assert.Equal(["Approved"], plan.EventsByNodeId[2].Dependencies.ToArray());
     }
 
     [Fact]

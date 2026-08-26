@@ -407,8 +407,9 @@ Storage follows the hybrid design:
   ```
   `condition` is an NCalc expression (maximum 4,000 Unicode scalar values) over
   declared, persisted instance variables. It must reference at least one and at
-  most 64 stored variables. Definition analysis extracts those dependencies from
-  NCalc's parsed AST and rejects undeclared variables, unknown functions, and
+  most 64 instance variables. A top-level `scope: "shared"` alias is rejected for
+  both delivery modes. Definition analysis extracts dependencies from NCalc's
+  parsed AST and rejects undeclared variables, unknown functions, and
   non-observable `sys.*`, `config.*`, `setting.*`, `mi.*`, and `gateway.*`
   context. Built-in NCalc functions and Flowbit's pure string helpers are
   available; `FlowInfo` and gateway/multi-instance helpers are not.
@@ -1424,7 +1425,7 @@ Node kinds and their outgoing-flow rules:
   matching). No timeout escape hatch yet.
 - **`intermediateConditionalCatchEvent`**: a resting conditional event; a thin
   double-ring circle with the BPMN conditional/document glyph. Carries a required
-  `conditional.condition` over declared stored variables and optional
+  `conditional.condition` over declared persisted instance variables and optional
   `conditional.deliveryMode`. It evaluates on entry and after dependency-changing
   variable batches, then follows exactly one unconditional outgoing flow.
   `atomic` (the omitted default) advances in the writer transaction;
@@ -1633,6 +1634,10 @@ The authoring and publication contract is:
   (mapping, assignment, submitted value, service status, or error variable) must
   bind to `readWrite`. JavaScript has a dynamic target name, so any shared alias
   it may mutate must be declared `readWrite`.
+- Intermediate conditional catch conditions cannot reference shared aliases,
+  regardless of `read`/`readWrite` access or `atomic`/`durableAsync` delivery.
+  Copy catalog state into an instance variable for a state snapshot, or use a
+  message event for an occurrence that must be delivered.
 - Shared values are not copied into `instance_variables`, instance responses,
   ordinary instance history, durable job list rows, or other value-free
   projections. Workflow write correlations carry only alias, key, revision, and
@@ -1645,7 +1650,7 @@ is projected separately in `shared_variable_current_values`, while
 `shared_variable_revisions` is the immutable audit history. `HasValue`
 distinguishes an explicitly stored JSON null from a key which has never been
 set. Archiving keeps catalog, current, and history state but prevents new
-runtime use; open definition/instance/job/wait/wake/incident references remain
+runtime use; open definition, instance, and durable-job references remain
 lifecycle blockers.
 
 Two revisions have deliberately different meanings:
@@ -1655,12 +1660,11 @@ Two revisions have deliberately different meanings:
   public API compare-and-swap value.
 - `ValueRevision` starts at `0` and advances only when effective value state
   changes: a real set/change or unset. Description/lifecycle mutations and an
-  identical-value write leave it unchanged and do not enqueue a wake.
+  identical-value write leave it unchanged.
 
 Revision allocation is PostgreSQL-owned and globally unique. Rollbacks may
 leave gaps, and revisions belonging to different shared keys are not a
-commit-order timestamp. Delivery predecessor ordering applies only within the
-same shared key; same-key writes already serialize on the catalog/current row.
+commit-order timestamp. Same-key writes serialize on the catalog/current row.
 Migrations backfill `ValueRevision` from each key's latest
 `ValueChanged = true` revision and repair the current projection to that same
 revision. During the rolling writer replacement, an `AFTER INSERT OR UPDATE OF
@@ -1679,9 +1683,9 @@ workers have been replaced.
 #### Access plans and lock ordering
 
 `SharedVariableAccessPlan` is immutable and cached by immutable workflow-
-definition ID. It derives conditional dependencies from the parsed
-conditional-event plan and producer targets from actual mappings, assignments,
-submitted variables, status variables, and error variables. A JavaScript node
+definition ID. It derives reads and producer targets from actual mappings,
+assignments, submitted variables, status variables, and error variables.
+Shared conditional dependencies are rejected before a plan is cached. A JavaScript node
 with dynamic `setVariable` conservatively includes that node's `readWrite`
 bindings. Never infer dependencies with substring matching and never lock every
 definition-level `readWrite` declaration merely because it exists.
@@ -1691,16 +1695,14 @@ Acquire normal runtime locks first in the established order (instance; active
 gateway execution/state/branch; token; multi-instance execution; active/pending
 user task, with IDs ascending inside each group), then lock the selected shared
 catalog/current rows by exact key in ordinal key order. Do not hold a shared row
-lock while calling an external service. At conditional-event entry, lock and
-reload that node's exact shared dependencies before the first evaluation and
-wait registration; an updater can then either observe the registered wait or be
-observed by the entry evaluation, so no wake is lost.
+lock while calling an external service. Conditional events have no shared lock
+set because their conditions are instance-only.
 
 Across one synchronous transaction segment, every newly acquired shared key
 must be nondecreasing under `StringComparer.Ordinal`. The definition-time proof
 models the engine's whole FIFO queue (including parallel/inclusive branches),
 node and selected-flow producers, error paths, script/service output validation,
-and single or combined atomic conditional wakes. `asyncBefore` is a pre-node
+and output fences. `asyncBefore` is a pre-node
 reset; service/script `asyncAfter` also has the engine's implicit pre-node
 durable stage. An `asyncAfter` wait, a user/message/timer/conditional resting
 position, or a durable conditional latch resets downstream acquisition. Resume
@@ -1731,58 +1733,6 @@ stage/commit, unlocked HTTP invoke, and fenced finalize protocol. Before enablin
 this validation in an existing deployment, inventory already-published unsafe
 definitions; republish them with `asyncBefore` or drain all affected instances.
 
-#### Wake delivery, incidents, and recovery
-
-Each effective shared value change writes a durable, coalescing wake. PostgreSQL
-`clock_timestamp()` is authoritative for availability, leasing, heartbeat,
-expiry, retry scheduling, and completion; lease requests never contain
-application time. The worker defaults are:
-
-- `SharedWakeMaxConcurrency = 8`
-- `SharedWakeExpansionConcurrency = 2`
-- `SharedWakeBatchSize = 32`
-- maximum expansion page size `500`
-- `MaxAttempts = 25` persisted on each wake and delivery
-
-The dispatcher leases only work it can start under its bounded concurrency. An
-expansion or delivery gets an independent heartbeat/lease guard and cancels its
-local operation as soon as ownership is lost. Acquisition, heartbeat,
-processing, and finalization failures are isolated; a non-cancellation failure
-must not terminate the background dispatcher. Lease duration reuses the durable
-worker setting and validates to 15-1800 seconds. Shutdown stops acquisition,
-allows the configured drain interval, and relies on database expiry for any
-remaining leases. Repository command-timeout settings apply to all wake work.
-
-Expansion stores `ExpansionCursorTokenId`, creates at most 500 deliveries in one
-short transaction, and revalidates work kind, worker ID, lease token,
-generation, and lease expiry on every page. The existing unique
-wake/token/activation constraint is the retry-idempotency fence. Stale heartbeat
-or finalization is a normal explicit `LeaseLost` result, not an exception that
-can kill the dispatcher. Deliveries for one key respect their predecessor;
-cross-key revisions never block one another. Wake processing is latest-state and
-coalescing: a delivery causes the waiting condition to load current catalog
-values, not reconstruct a historical revision snapshot. A shared-dependent
-conditional catch may use the default `atomic` mode or `durableAsync`: the wake
-delivery evaluates and advances an atomic wait in its locked instance
-transaction, while durable async preserves the existing durable latch/job
-protocol. Both modes fence the exact token and activation.
-
-After `MaxAttempts`, finalization atomically changes the work to `incident` and
-creates exactly one `shared_variable_wake_incident`. Open incidents remain
-shared-variable lifecycle blockers. JWT administrators operate them through:
-
-- `GET /api/shared-variable-incidents`
-- `GET /api/shared-variable-incidents/{id}`
-- `POST /api/shared-variable-incidents/{id}/retry`
-- `POST /api/shared-variable-incidents/{id}/resolve`
-
-Retry is fenced, grants exactly one additional attempt, and queues using
-database time. Resolve requires a nonblank reason, marks the work cancelled,
-and records the administrator identity and resolution timestamp. The Operations
-UI exposes list/detail/retry/resolve, statistics, and telemetry. Retain completed
-or cancelled wake/delivery work for 30 days and resolved incidents for 90 days;
-never clean open incidents.
-
 #### Validation, authorization, security, and deployment
 
 There is one nullability rule across API, synchronous script, asynchronous
@@ -1791,14 +1741,13 @@ script, worker, and repository paths: when the catalog contract has
 Concrete values run the same type/array and validation pipeline everywhere.
 Script contract failures are task failures, and validation plus persistence must
 sit inside task-failure conversion so an attached error boundary is followed and
-no partial batch commits. Database failures, lost leases, archived keys,
-invariants, and optimistic/value-revision conflicts remain operational
+no partial batch commits. Database failures, lost durable-job leases, archived
+keys, invariants, and optimistic/value-revision conflicts remain operational
 conflicts/incidents and must not be converted into authored business errors.
 
 JWT users follow the existing shared-variable administrator policy. API clients
 authenticate separately and require exact `shared-variables.read` and/or
-`shared-variables.write` scopes; incident recovery is never granted by those
-client scopes. Production assumes ingress rate limiting for client
+`shared-variables.write` scopes. Production assumes ingress rate limiting for client
 authentication and one trusted deployment domain. Per-key ACLs are not part of
 this contract.
 
@@ -1808,28 +1757,24 @@ private keys, or other credentials in shared variables.
 
 Production deployment is migration-first:
 
-1. Stop every legacy shared-wake worker before applying the migration. The
-   transactional outbox may accumulate safely while wake processing is paused;
-   this prevents a legacy re-lease from incrementing an exhausted row beyond
-   the new `MaxAttempts` constraint. Because the shared dispatcher runs in the
-   same Worker executable as other durable processors, a whole-process stop also
-   pauses jobs, timers, and messages; their database queues remain durable until
-   the replacement Worker starts after the API/service rollout.
-2. Apply the additive schema (value revisions, cursor/heartbeat/attempt fields,
-   incident table, runnable/expired/cleanup indexes) and the compatibility
-   allocator function backed by the existing singleton row.
-3. Deploy every API/service writer to call that function and dual-write both job
-   snapshot revision maps. Run
-   `Flowbit/tools/shared-variable-rest-inventory.sql`. Its first result must be
-   empty after unsafe REST definitions are republished or their instances are
+1. Replace and unpublish every shared-dependent conditional definition and
+   finish, migrate, or cancel every affected instance using a separate safe-
+   drain release/runbook. The new application has no legacy execution path.
+2. Stop every API and Worker replica. Apply the guarded removal migration only
+   while they remain stopped. It aborts before dropping the legacy
+   dependency, wake, delivery, and incident tables if any legacy rows remain.
+   Never delete those rows manually or bypass the guard; return to the safe-
+   drain strategy and retry only after it completes.
+3. Run `Flowbit/tools/shared-variable-rest-inventory.sql`. Its first result must
+   be empty after unsafe REST definitions are republished or their instances are
    drained. Its second result conservatively lists every published multi-key
    shared definition; verify each was saved/republished through the monotonic
-   validator, or drain it before deployment. Validation-expression matching in
-   this SQL inventory is intentionally conservative and may require review of
-   false positives. During this legacy-allocator stage, new workflow writers
-   temporarily prelock each immutable definition's complete shared-key set.
-4. Deploy the new Worker, then the UI, and verify leases, incidents, telemetry,
-   and Operations recovery before resuming wake processing at normal capacity.
+   validator. Validation-expression matching is intentionally conservative and
+   may require review of false positives.
+4. Deploy the API/service, Worker, and UI binaries as one coordinated version,
+   then restart the API and Worker replicas. Do not run mixed old/new replicas.
+   Every authoring path rejects a shared alias in a conditional condition, and
+   shared-value writes no longer create conditional wake work.
 5. After every writer is upgraded, seed a PostgreSQL sequence, switch the
    allocator function to pure `nextval`, and set the allocator row to sequence
    mode. The database trigger rejects any later legacy `LastRevision` update,
@@ -1839,10 +1784,9 @@ Production deployment is migration-first:
    `SELECT flowbit.cutover_shared_variable_revision_sequence();`; the operation
    is fenced and idempotent. The workflow compatibility prelock becomes a no-op
    immediately, leaving only exact monotonic node/flow locks.
-6. Enable cleanup only after retention metrics are visible.
 
-The deployed component order is migration -> API/service -> Worker -> UI.
-Mixed legacy replicas are prohibited after the sequence cutover. Per-key ACLs,
+The hard-cut order is stop replicas -> guarded migration -> coordinated binary
+deployment -> restart. Mixed legacy replicas are unsupported. Per-key ACLs,
 key-grammar changes, an explicit public unset API, metadata-query optimization,
 and broader editor-validation parity remain follow-up work.
 
@@ -2066,7 +2010,7 @@ when extending the model so new features stay close to BPMN terminology.
 | `type: "errorEndEvent"` | Error End Event | Terminal throwing marker; thick-ring circle with a filled error glyph. Requires an incoming flow, has no outgoing flow, and ends the instance with `Faulted`. Its required static `errorCode` and optional description are operational fault metadata; there is no subprocess propagation, so it is normally reached through an explicitly modeled error path. |
 | `type: "errorBoundaryEvent"` | Error Boundary Event (interrupting) | Attached to a `serviceTask`/`scriptTask`; catches the host's runtime failures and routes out the boundary's single error flow. Simplified: interrupting only; catch-all (no error code match); at most one per host; no other boundary trigger types (timer/message/signal) yet. |
 | `type: "intermediateMessageCatchEvent"` | Intermediate Message Catch Event | A resting node that waits for a message delivered via `POST /api/instances/{id}/message`; thin double-ring circle with an envelope glyph. Auth is the node-config client id/secret + a required custom header (with optional NCalc validation), not the user JWT. Parallel waits are selected by exact `catchEvent` external ID when instance-only addressing is ambiguous. Simplified: no cross-instance message-name/signal matching and no timeout escape hatch (a future timer boundary could address). |
-| `type: "intermediateConditionalCatchEvent"` | Intermediate Conditional Catch Event | A resting double-ring event with a conditional/document glyph. It observes declared persisted variables only, evaluates on entry and dependency-changing write batches, and follows one fixed unconditional flow. Flowbit adds `atomic` and PostgreSQL-backed `durableAsync` delivery policies for transactionally safe wakeup. |
+| `type: "intermediateConditionalCatchEvent"` | Intermediate Conditional Catch Event | A resting double-ring event with a conditional/document glyph. It observes declared persisted instance variables only; shared aliases are rejected. It evaluates on entry and dependency-changing write batches and follows one fixed unconditional flow. Flowbit adds `atomic` and PostgreSQL-backed `durableAsync` delivery policies for transactionally safe wakeup. |
 | `type: "messageStartEvent"` | Message Start Event | An entry point started by an external system via `POST /api/workflows/{workflowKey}/message-start`; thin single-ring circle with an envelope glyph. Typed `message.outputMappings` declare its start variables. System-only (`IsStart` is false). The engine creates the instance and auto-advances off it (pass-through, history note `messageStart`). Simplified: instance-less credential resolution (no `sys.user`/`sys.roles`/`sys.instanceId` for credentials since there is no caller/instance yet). It shares the same optional node-level, database-claimed transport idempotency as `startEvent`. |
 | `sequenceFlow` | Sequence Flow | First-class directed edge with its own id, `sourceRef`, `targetRef`. |
 | `sequenceFlow.condition` | Condition Expression | NCalc expression on user-task and gateway flows (comparisons, boolean/arithmetic operators, functions, bare-variable truthiness). |
@@ -2092,7 +2036,7 @@ when extending the model so new features stay close to BPMN terminology.
   (connectors, expressions, message/send-receive) are out of scope.
 - **A bounded event subset.** Flowbit supports none/message/timer starts,
   message/timer/conditional intermediate catches, timer and error boundaries,
-  and none/error/terminate ends. Conditional catches observe persisted variables
+  and none/error/terminate ends. Conditional catches observe persisted instance variables
   rather than arbitrary engine context. Message correlation remains instance
   scoped, and signal, escalation, compensation, and event-based gateways remain
   out of scope.

@@ -9,8 +9,9 @@ namespace Flowbit.Service.Services;
 
 /// <summary>
 /// Builds exact-name, current-node/current-flow shared-variable access plans.
-/// Conditional dependencies come from the parsed NCalc AST; producer aliases
-/// come from authored write targets rather than access declarations.
+/// Producer aliases come from authored write targets rather than access
+/// declarations. Conditional events are instance-variable-only and therefore
+/// never widen a shared-variable lock scope.
 /// </summary>
 public static class SharedVariableAccessPlanner
 {
@@ -123,14 +124,6 @@ public static class SharedVariableAccessPlanner
             }
         }
 
-        foreach (var entry in conditionalPlan.EventsByNodeId.Values)
-        {
-            foreach (var dependency in entry.Dependencies.Where(bindings.ContainsKey))
-            {
-                Node(entry.NodeId).Conditional.Add(bindings[dependency].Name);
-            }
-        }
-
         foreach (var node in definition.FlowNodes ?? [])
         {
             var nodePlan = Node(node.Id);
@@ -234,7 +227,6 @@ public static class SharedVariableAccessPlanner
                 pair => pair.Key,
                 pair => new SharedVariableNodeAccessPlan(
                     pair.Key,
-                    pair.Value.Conditional,
                     pair.Value.Producers,
                     pair.Value.Reads)),
             flows);
@@ -242,7 +234,6 @@ public static class SharedVariableAccessPlanner
 
     private sealed class MutableNodePlan
     {
-        public HashSet<string> Conditional { get; } = new(StringComparer.OrdinalIgnoreCase);
         public HashSet<string> Producers { get; } = new(StringComparer.OrdinalIgnoreCase);
         public HashSet<string> Reads { get; } = new(StringComparer.OrdinalIgnoreCase);
     }

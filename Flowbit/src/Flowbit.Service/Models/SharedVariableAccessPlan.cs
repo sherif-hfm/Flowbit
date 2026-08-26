@@ -4,13 +4,9 @@ namespace Flowbit.Service.Models;
 
 public sealed record SharedVariableNodeAccessPlan(
     int NodeId,
-    IReadOnlySet<string> ConditionalDependencyAliases,
     IReadOnlySet<string> ProducerAliases,
     IReadOnlySet<string> ReadAliases)
 {
-    public IReadOnlySet<string> ConditionalDependencyAliases { get; } =
-        ConditionalDependencyAliases.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
-
     public IReadOnlySet<string> ProducerAliases { get; } =
         ProducerAliases.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
 
@@ -18,9 +14,7 @@ public sealed record SharedVariableNodeAccessPlan(
         ReadAliases.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
 
     public IReadOnlySet<string> LockAliases { get; } =
-        ConditionalDependencyAliases
-            .Concat(ProducerAliases)
-            .ToFrozenSet(StringComparer.OrdinalIgnoreCase);
+        ProducerAliases.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
 
     public bool TouchesSharedVariables =>
         LockAliases.Count > 0 || ReadAliases.Count > 0;
@@ -93,7 +87,6 @@ public sealed class SharedVariableAccessPlan(
             : new SharedVariableNodeAccessPlan(
                 nodeId,
                 EmptyAliasSet,
-                EmptyAliasSet,
                 EmptyAliasSet);
 
     public SharedVariableFlowAccessPlan ForFlow(int flowId) =>
@@ -111,22 +104,11 @@ public sealed class SharedVariableAccessPlan(
             [flowId],
             ForNode(nodeId).LockAliases.Concat(ForFlow(flowId).ProducerAliases));
 
-    public SharedVariableAccessScope SelectNodes(IEnumerable<int> nodeIds) =>
-        SelectNodesCore(nodeIds, conditionalDependenciesOnly: false);
-
-    public SharedVariableAccessScope SelectConditionalNodes(IEnumerable<int> nodeIds) =>
-        SelectNodesCore(nodeIds, conditionalDependenciesOnly: true);
-
-    private SharedVariableAccessScope SelectNodesCore(
-        IEnumerable<int> nodeIds,
-        bool conditionalDependenciesOnly)
+    public SharedVariableAccessScope SelectNodes(IEnumerable<int> nodeIds)
     {
         ArgumentNullException.ThrowIfNull(nodeIds);
         var selected = nodeIds.ToFrozenSet();
-        var aliases = selected.SelectMany(nodeId =>
-            conditionalDependenciesOnly
-                ? ForNode(nodeId).ConditionalDependencyAliases
-                : ForNode(nodeId).LockAliases);
+        var aliases = selected.SelectMany(nodeId => ForNode(nodeId).LockAliases);
         return new SharedVariableAccessScope(this, selected, [], aliases);
     }
 }

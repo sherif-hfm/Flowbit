@@ -1,0 +1,101 @@
+{
+  "id": "example-shared-variable-user-action",
+  "name": "Shared Variable User Action",
+  "initialEventId": 1,
+  "variables": [
+    {
+      "id": 1,
+      "name": "approvalAmount",
+      "dataType": "number",
+      "isArray": false,
+      "nullable": false,
+      "required": false,
+      "defaultValue": null,
+      "validation": null,
+      "scope": "shared",
+      "sharedKey": "examples.approval.amount",
+      "access": "readWrite"
+    }
+  ],
+  "lanes": [],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Start Shared Update",
+      "externalId": "START_SHARED_APPROVAL_UPDATE",
+      "type": "startEvent",
+      "laneId": null,
+      "x": 100,
+      "y": 120,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 2,
+      "name": "Update Shared Approval Amount",
+      "externalId": "TASK_UPDATE_SHARED_APPROVAL_AMOUNT",
+      "type": "userTask",
+      "laneId": null,
+      "x": 390,
+      "y": 110,
+      "roles": [
+        "SharedStateOperator"
+      ],
+      "variables": [],
+      "requiresClaim": false,
+      "claimMode": "fresh"
+    },
+    {
+      "id": 3,
+      "name": "Shared Approval Updated",
+      "externalId": "END_SHARED_APPROVAL_UPDATED",
+      "type": "endEvent",
+      "laneId": null,
+      "x": 760,
+      "y": 120,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "Request shared update",
+      "externalId": "FLOW_START_TO_SHARED_UPDATE",
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 201,
+      "name": "Store approval amount",
+      "externalId": "FLOW_STORE_SHARED_APPROVAL_AMOUNT",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [
+        "SharedStateOperator"
+      ],
+      "variables": [
+        {
+          "id": 1,
+          "name": "approvalAmount",
+          "dataType": "number",
+          "isArray": false,
+          "nullable": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": "approvalAmount >= 0"
+        }
+      ]
+    }
+  ],
+  "cancelRoles": [
+    "SharedStateOperator"
+  ],
+  "unclaimRoles": [],
+  "taskAssignmentRoles": [
+    "SharedStateOperator"
+  ],
+  "taskDistribution": null
+}

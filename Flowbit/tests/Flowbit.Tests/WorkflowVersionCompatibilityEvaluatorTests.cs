@@ -447,6 +447,14 @@ public sealed class WorkflowVersionCompatibilityEvaluatorTests
                 Condition = "approved == true",
                 DeliveryMode = ConditionalEventDeliveryModes.Atomic
             };
+        sourceModel.Variables.Add(new VariableModel
+        {
+            Id = 1,
+            Name = "approved",
+            DataType = WorkflowVariableTypes.Boolean,
+            Nullable = false,
+            DefaultValue = JsonSerializer.SerializeToElement(false)
+        });
         var targetModel = Clone(sourceModel);
         targetModel.FlowNodes.Single(node => node.Id == 2).Conditional =
             new ConditionalDefinitionModel
@@ -463,6 +471,44 @@ public sealed class WorkflowVersionCompatibilityEvaluatorTests
         AssertCodes(
             result,
             WorkflowVersionCompatibilityCodes.ConditionalCatchContractChanged);
+    }
+
+    [Fact]
+    public void Target_conditional_catch_rejects_shared_variable_dependencies()
+    {
+        var sourceModel = BasicModel(BpmnFlowNodeTypes.IntermediateConditionalCatchEvent);
+        sourceModel.Variables =
+        [
+            new VariableModel
+            {
+                Id = 1,
+                Name = "approved",
+                DataType = "boolean"
+            }
+        ];
+        sourceModel.FlowNodes.Single(node => node.Id == 2).Conditional =
+            new ConditionalDefinitionModel
+            {
+                Condition = "approved == true",
+                DeliveryMode = ConditionalEventDeliveryModes.Atomic
+            };
+        var targetModel = Clone(sourceModel);
+        var approved = targetModel.Variables.Single(variable => variable.Name == "approved");
+        approved.Scope = VariableScopes.Shared;
+        approved.SharedKey = "tests.approved";
+        approved.Access = SharedVariableAccessModes.Read;
+
+        var result = WorkflowVersionCompatibilityEvaluator.Evaluate(
+            Context(
+                Definition(11, 1, sourceModel),
+                Definition(12, 2, targetModel)));
+
+        var blocker = Assert.Single(
+            result.Blockers,
+            issue => issue.Code == WorkflowVersionCompatibilityCodes
+                .ConditionalCatchSharedDependencyUnsupported);
+        Assert.Equal(2, blocker.NodeId);
+        Assert.Equal("approved", blocker.VariableName);
     }
 
     [Fact]
