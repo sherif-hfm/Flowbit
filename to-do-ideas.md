@@ -3,7 +3,7 @@
 - history and audit tables retention policy
 - re-run completed instances
 
-- loop user task
+- loop user task (can done with gateway - no need now)
 - receive task
 - add Event-Based Gateway
 - add Workflow runner simulator
