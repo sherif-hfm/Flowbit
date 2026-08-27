@@ -4,6 +4,7 @@
 - re-run completed instances
 - add Conditional events (Interrupting conditional boundary)  
 - add Conditional events (Non-interrupting boundaries)  
+- loop user task
 - receive task
 - add Event-Based Gateway
 - add Workflow runner simulator
