@@ -549,6 +549,49 @@ public sealed class WorkflowVersionCompatibilityEvaluatorTests
                      == WorkflowVersionCompatibilityCodes.ConditionalCatchContractChanged);
     }
 
+    [Fact]
+    public void Open_conditional_boundary_requires_exact_active_contract_and_job_correlation()
+    {
+        var sourceModel = BasicModel();
+        sourceModel.Variables.Add(new VariableModel
+        {
+            Id = 1,
+            Name = "riskScore",
+            DataType = WorkflowVariableTypes.Number,
+            DefaultValue = JsonSerializer.SerializeToElement(0)
+        });
+        sourceModel.FlowNodes.Add(ConditionalBoundary());
+        sourceModel.SequenceFlows.Add(Flow(40, 4, 3));
+        var source = Definition(11, 1, sourceModel);
+        var target = Definition(12, 2, Clone(sourceModel));
+        var compatibleContext = Context(source, target, includeOpenTask: true) with
+        {
+            OpenConditionalBoundaries = [ConditionalBoundarySubscription(source)],
+            OpenJobs = [ConditionalBoundaryWakeJob(source)]
+        };
+
+        var compatible = WorkflowVersionCompatibilityEvaluator.Evaluate(compatibleContext);
+        Assert.True(compatible.IsCompatible);
+
+        var changedModel = Clone(sourceModel);
+        var changedBoundary = changedModel.FlowNodes.Single(node => node.Id == 4);
+        changedBoundary.Conditional!.Condition = "riskScore >= 90";
+        changedBoundary.CancelActivity = true;
+        var blocked = WorkflowVersionCompatibilityEvaluator.Evaluate(
+            Context(source, Definition(13, 3, changedModel), includeOpenTask: true) with
+            {
+                OpenConditionalBoundaries = [ConditionalBoundarySubscription(source)],
+                OpenJobs = [ConditionalBoundaryWakeJob(source)]
+            });
+
+        Assert.Contains(blocked.Blockers, issue => issue.Code ==
+            WorkflowVersionCompatibilityCodes.AttachedConditionalBoundaryContractChanged);
+        Assert.Contains(blocked.Blockers, issue => issue.Code ==
+            WorkflowVersionCompatibilityCodes.OpenConditionalBoundaryContractChanged);
+        Assert.Contains(blocked.Blockers, issue => issue.Code ==
+            WorkflowVersionCompatibilityCodes.OpenJobContractChanged);
+    }
+
     private static WorkflowVersionCompatibilityContext Context(
         WorkflowDefinitionRecord source,
         WorkflowDefinitionRecord target,
@@ -682,6 +725,21 @@ public sealed class WorkflowVersionCompatibilityEvaluatorTests
             Timer = new TimerDefinitionModel { TimeDuration = duration }
         };
 
+    private static FlowNodeModel ConditionalBoundary() => new()
+    {
+        Id = 4,
+        Name = "High risk",
+        ExternalId = "high-risk",
+        Type = BpmnFlowNodeTypes.ConditionalBoundaryEvent,
+        AttachedToRef = 2,
+        CancelActivity = false,
+        Conditional = new ConditionalDefinitionModel
+        {
+            Condition = "riskScore >= 80",
+            DeliveryMode = ConditionalEventDeliveryModes.DurableAsync
+        }
+    };
+
     private static MessageCatchModel Message(string secret) =>
         new()
         {
@@ -814,6 +872,44 @@ public sealed class WorkflowVersionCompatibilityEvaluatorTests
             Phase = WorkflowJobKinds.ConditionalWake,
             Payload = JsonSerializer.SerializeToElement(new { selectedFlowId = 20 })
         };
+
+    private static WorkflowJobRecord ConditionalBoundaryWakeJob(
+        WorkflowDefinitionRecord source) =>
+        Job(source) with
+        {
+            NodeId = 4,
+            NodeName = "High risk",
+            NodeType = BpmnFlowNodeTypes.ConditionalBoundaryEvent,
+            Kind = WorkflowJobKinds.ConditionalWake,
+            QueueClass = WorkflowJobClasses.Control,
+            Phase = WorkflowJobKinds.ConditionalWake,
+            Payload = JsonSerializer.SerializeToElement(new { selectedFlowId = 40 }),
+            ConditionalBoundarySubscriptionId = 601,
+            ConditionalBoundaryOccurrence = 1
+        };
+
+    private static ConditionalBoundarySubscriptionRecord
+        ConditionalBoundarySubscription(WorkflowDefinitionRecord source) =>
+        new(
+            Id: 601,
+            InstanceId: 7,
+            WorkflowDefinitionId: source.Id,
+            WorkflowKey: source.WorkflowKey,
+            HostTokenId: 101,
+            HostActivationId: Guid.Parse("11111111-1111-1111-1111-111111111111"),
+            BoundaryNodeId: 4,
+            BoundaryNodeName: "High risk",
+            AttachedToNodeId: 2,
+            OutgoingFlowId: 40,
+            Condition: "riskScore >= 80",
+            DeliveryMode: ConditionalEventDeliveryModes.DurableAsync,
+            CancelActivity: false,
+            IsConditionTrue: true,
+            Occurrence: 1,
+            Status: ConditionalBoundarySubscriptionStatuses.Active,
+            CreatedAt: Now,
+            UpdatedAt: Now,
+            CompletedAt: null);
 
     private static TimerSubscriptionRecord Timer(WorkflowDefinitionRecord source) =>
         new(

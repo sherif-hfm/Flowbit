@@ -58,6 +58,8 @@ public sealed class WorkflowInstanceEntity
 
     public List<TimerSubscriptionEntity> TimerSubscriptions { get; set; } = [];
 
+    public List<ConditionalBoundarySubscriptionEntity> ConditionalBoundarySubscriptions { get; set; } = [];
+
     public List<WorkflowInstanceVersionChangeEntity> VersionChanges { get; set; } = [];
 
     public List<WorkflowInstanceVersionChangeBatchItemEntity> VersionChangeBatchItems { get; set; } = [];

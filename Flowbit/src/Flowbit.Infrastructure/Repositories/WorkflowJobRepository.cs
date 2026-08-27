@@ -34,19 +34,26 @@ public sealed class WorkflowJobRepository(
             await dbContext.SaveChangesAsync(cancellationToken);
         }
         catch (DbUpdateException exception)
-            when (create.TimerSubscriptionId is not null
-                  && create.ScheduledOccurrenceAt is not null
+            when ((create.TimerSubscriptionId is not null
+                      && create.ScheduledOccurrenceAt is not null
+                   || create.ConditionalBoundarySubscriptionId is not null
+                      && create.ConditionalBoundaryOccurrence is not null)
                   && exception.InnerException is PostgresException
                   {
                       SqlState: PostgresErrorCodes.UniqueViolation
                   })
         {
             dbContext.Entry(entity).State = EntityState.Detached;
-            var existing = await dbContext.WorkflowJobs
-                .AsNoTracking()
-                .SingleAsync(job =>
-                    job.TimerSubscriptionId == create.TimerSubscriptionId
-                    && job.ScheduledOccurrenceAt == create.ScheduledOccurrenceAt,
+            var existing = create.TimerSubscriptionId is not null
+                ? await dbContext.WorkflowJobs.AsNoTracking().SingleAsync(job =>
+                        job.TimerSubscriptionId == create.TimerSubscriptionId
+                        && job.ScheduledOccurrenceAt == create.ScheduledOccurrenceAt,
+                    cancellationToken)
+                : await dbContext.WorkflowJobs.AsNoTracking().SingleAsync(job =>
+                        job.ConditionalBoundarySubscriptionId
+                            == create.ConditionalBoundarySubscriptionId
+                        && job.ConditionalBoundaryOccurrence
+                            == create.ConditionalBoundaryOccurrence,
                     cancellationToken);
             return MapJob(existing);
         }
@@ -106,6 +113,8 @@ public sealed class WorkflowJobRepository(
             MultiInstanceExecutionId = create.MultiInstanceExecutionId,
             UserTaskId = create.UserTaskId,
             TimerSubscriptionId = create.TimerSubscriptionId,
+            ConditionalBoundarySubscriptionId = create.ConditionalBoundarySubscriptionId,
+            ConditionalBoundaryOccurrence = create.ConditionalBoundaryOccurrence,
             ActivationId = create.ActivationId,
             AutomaticActivationCount = create.AutomaticActivationCount,
             NodeId = create.NodeId,
@@ -1560,6 +1569,8 @@ public sealed class WorkflowJobRepository(
                 job.MultiInstanceExecutionId,
                 job.UserTaskId,
                 job.TimerSubscriptionId,
+                job.ConditionalBoundarySubscriptionId,
+                job.ConditionalBoundaryOccurrence,
                 job.ActivationId,
                 job.AutomaticActivationCount,
                 job.NodeId,
@@ -1645,7 +1656,9 @@ public sealed class WorkflowJobRepository(
                 row.UpdatedAt,
                 row.StartedAt,
                 row.CompletedAt,
-                row.AutomaticActivationCount)).ToArray(),
+                row.AutomaticActivationCount,
+                row.ConditionalBoundarySubscriptionId,
+                row.ConditionalBoundaryOccurrence)).ToArray(),
             page,
             pageSize,
             total)
@@ -2648,6 +2661,8 @@ public sealed class WorkflowJobRepository(
             MultiInstanceExecutionId = create.MultiInstanceExecutionId,
             UserTaskId = create.UserTaskId,
             TimerSubscriptionId = create.TimerSubscriptionId,
+            ConditionalBoundarySubscriptionId = create.ConditionalBoundarySubscriptionId,
+            ConditionalBoundaryOccurrence = create.ConditionalBoundaryOccurrence,
             ActivationId = create.ActivationId,
             AutomaticActivationCount = create.AutomaticActivationCount,
             NodeId = create.NodeId,
@@ -2712,7 +2727,9 @@ public sealed class WorkflowJobRepository(
             entity.UpdatedAt,
             entity.StartedAt,
             entity.CompletedAt,
-            entity.AutomaticActivationCount);
+            entity.AutomaticActivationCount,
+            entity.ConditionalBoundarySubscriptionId,
+            entity.ConditionalBoundaryOccurrence);
 
     private static WorkflowJobSnapshotRecord MapSnapshot(WorkflowJobSnapshotEntity entity) =>
         new(

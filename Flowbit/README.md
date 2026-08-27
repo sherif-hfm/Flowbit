@@ -258,6 +258,70 @@ delivery mode. This release has no legacy shared-conditional execution path; the
 guarded removal migration must succeed before the matching application binaries
 are deployed.
 
+## Conditional boundary events
+
+A `conditionalBoundaryEvent` attaches the same conditional expression contract
+to a durable activity:
+
+```json
+{
+  "type": "conditionalBoundaryEvent",
+  "attachedToRef": 12,
+  "cancelActivity": false,
+  "conditional": {
+    "condition": "riskScore >= 80",
+    "deliveryMode": "durableAsync"
+  }
+}
+```
+
+Omitting `cancelActivity` makes the boundary interrupting; omitting
+`deliveryMode` selects `atomic`. A boundary has no incoming flow and exactly one
+unconditional outgoing flow. It may attach to a normal or multi-instance user
+task, an intermediate message/timer wait, or a `task`, `serviceTask`, or
+`scriptTask` with `asyncBefore: true`. A host may own at most eight timer and
+conditional boundaries combined; its optional error boundary is counted
+separately. No HTTP endpoint manually triggers a conditional boundary.
+
+Every host activation owns persisted subscription rows fenced by instance,
+host token, activation, and boundary node. Initial truth starts at false, so a
+condition already true on entry is captured immediately. A non-interrupting
+subscription creates a sibling boundary token and remains attached; it rearms
+only after evaluating false, and each later false-to-true edge creates another
+handler. A true-to-true write is a no-op. An interrupting capture cancels the
+host's open task or multi-instance work, waits, timers, jobs, and sibling
+subscriptions, then reuses the host token for the boundary path. If several
+conditions match in one batch, every non-interrupting boundary is captured in
+node-id order, followed by the lowest-id interrupting boundary; other
+interrupting matches are suppressed.
+
+Variable writers evaluate only authored nodes whose dependency sets intersect
+the complete committed write batch. They load one current-variable snapshot,
+evaluate each affected authored expression once, and fan the Boolean result out
+to targeted active catch tokens and boundary subscriptions. All durable
+occurrences are persisted before any atomic continuation runs. Durable boundary
+jobs carry both subscription and occurrence fences, so multiple rearmed edges
+can remain queued concurrently and stale/duplicate workers cannot repeat an
+effect. Successful user actions, message outputs, service mappings, and script
+writes are evaluated while the host is still active; an interrupting match wins
+over normal completion. Service/script failure handling still gives an attached
+error boundary precedence.
+
+The instance row remains the transaction-serialization lock. Completion versus
+capture, timer versus conditional interruption, and competing variable writers
+therefore have a deterministic first-lock-wins outcome. An external call that is
+already executing cannot be physically stopped mid-call; cancellation fences
+its job and rejects a late result, matching timer-boundary behavior. Version
+switching requires an exact active boundary contract (attachment, normalized
+condition, delivery mode, interruption flag, and outgoing flow) and rebinds the
+subscription and open jobs under the lock.
+
+Deployment is additive and ordered: apply
+`AddConditionalBoundaryEvents`, upgrade every API and Worker replica and the
+editor, then allow definitions containing `conditionalBoundaryEvent` to be
+published. Mixed conditional-boundary-aware and legacy replicas are unsupported,
+and no historical subscription backfill is required.
+
 ## Gateways and scoped interruption
 
 Gateway direction is inferred from topology. A split has exactly one incoming

@@ -6,7 +6,7 @@ format, an `example-*` workflow id, integer node and sequence-flow ids, and no
 legacy properties. The examples are intentionally focused: combine their
 patterns when building a production workflow.
 
-The catalog contains 38 workflows. Automated tests recursively discover every
+The catalog contains 40 workflows. Automated tests recursively discover every
 JSON file, deserialize it, validate it with the runtime's strict JavaScript
 parser, load and render it in the editor, and verify that this page links it.
 Tests never call the REST or message endpoints described below.
@@ -34,6 +34,8 @@ values. Adjust them before production use.
 | [Intermediate conditional event](basics/05-conditional-event.json) | `amount` defaults to zero. | Update the amount while the sibling branch is active, then confirm the user task. | An atomic conditional catch continues when its stored-variable predicate becomes true. | API and database; no Worker or configuration. |
 | [Durable asynchronous conditional event](basics/06-conditional-event-durable-async.json) | `amount` defaults to zero. | Update the amount while the sibling branch is active, then confirm the user task. | A durable conditional catch latches a wake job and resumes through worker processing. | API, database, and `Flowbit.Worker`; no external configuration. |
 | [Shared-variable user action](basics/07-shared-variable-user-action.json) | Create active catalog key `examples.approval.amount` as a non-nullable scalar number. | A `SharedStateOperator` completes **Update Shared Approval Amount** with the new amount. | An explicit user action updates a `readWrite` shared binding without using shared state as a conditional-event wake signal. | Authenticated API, database, and the documented catalog prerequisite; no Worker. |
+| [Interrupting conditional boundary](basics/08-interrupting-conditional-boundary.json) | `riskScore` defaults to zero. | Update `riskScore` to at least 80 while **Review Risk** is active, or complete the review normally. | The default interrupting boundary cancels the original task and opens **Escalated Review**. | API and database; no Worker or configuration. |
+| [Recurring non-interrupting conditional boundary](basics/09-recurring-non-interrupting-conditional-boundary.json) | `alertRaised` defaults to false and `alertsHandled` to zero. | Alternate `alertRaised` from false to true while **Monitor Case** remains active; run the Worker after each true edge. | Every false-to-true edge creates an independent durable alert branch, while true-to-true writes are suppressed and the host stays active. | API, database, and `Flowbit.Worker`; no configuration. |
 
 ## User tasks
 

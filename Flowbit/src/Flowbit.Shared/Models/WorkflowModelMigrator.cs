@@ -456,7 +456,7 @@ public static class WorkflowModelMigrator
             node.Timer = null;
         }
 
-        if (BpmnFlowNodeTypes.IsConditionalCatch(node.Type))
+        if (BpmnFlowNodeTypes.IsConditionalEvent(node.Type))
         {
             node.Conditional ??= new ConditionalDefinitionModel();
             node.Conditional.Condition =
@@ -476,7 +476,8 @@ public static class WorkflowModelMigrator
             node.Conditional = null;
         }
 
-        if (BpmnFlowNodeTypes.IsTimerBoundary(node.Type))
+        if (BpmnFlowNodeTypes.IsTimerBoundary(node.Type)
+            || BpmnFlowNodeTypes.IsConditionalBoundary(node.Type))
         {
             node.CancelActivity ??= true;
         }
@@ -709,7 +710,8 @@ public static class WorkflowModelMigrator
             node.Script = null;
             node.Message = null;
         }
-        else if (BpmnFlowNodeTypes.IsTimerBoundary(node.Type))
+        else if (BpmnFlowNodeTypes.IsTimerBoundary(node.Type)
+                 || BpmnFlowNodeTypes.IsConditionalBoundary(node.Type))
         {
             node.RequiresClaim = false;
             node.ClaimMode = ClaimModes.Fresh;

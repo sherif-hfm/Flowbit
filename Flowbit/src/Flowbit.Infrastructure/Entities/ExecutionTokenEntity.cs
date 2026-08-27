@@ -36,6 +36,7 @@ public sealed class ExecutionTokenEntity
     public List<GatewayExecutionEntity> InterruptedGatewayExecutions { get; set; } = [];
     public List<WorkflowJobEntity> Jobs { get; set; } = [];
     public List<TimerSubscriptionEntity> TimerSubscriptions { get; set; } = [];
+    public List<ConditionalBoundarySubscriptionEntity> ConditionalBoundarySubscriptions { get; set; } = [];
 }
 
 public static class ExecutionTokenStatuses

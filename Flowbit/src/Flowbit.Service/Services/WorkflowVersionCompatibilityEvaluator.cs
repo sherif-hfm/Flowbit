@@ -74,6 +74,13 @@ public static class WorkflowVersionCompatibilityEvaluator
         ValidateFlowInfoHistory(context, source, target, blockers);
         ValidateOpenJobs(context, source, target, sourceNodes, targetNodes, blockers);
         ValidateOpenTimers(context, source, target, sourceNodes, targetNodes, blockers);
+        ValidateOpenConditionalBoundaries(
+            context,
+            source,
+            target,
+            sourceNodes,
+            targetNodes,
+            blockers);
 
         return new WorkflowVersionCompatibilityResult(
             SortIssues(blockers),
@@ -165,6 +172,8 @@ public static class WorkflowVersionCompatibilityEvaluator
             .Concat(context.ActiveMultiInstanceExecutions.Select(execution => execution.NodeId))
             .Concat(context.ActiveGatewayExecutions.Select(execution => execution.GatewayNodeId))
             .Concat(context.ActiveComplexGatewayStates.Select(state => state.GatewayNodeId))
+            .Concat(context.OpenConditionalBoundaries.Select(subscription => subscription.AttachedToNodeId))
+            .Concat(context.OpenConditionalBoundaries.Select(subscription => subscription.BoundaryNodeId))
             .Distinct()
             .OrderBy(id => id)
             .ToArray();
@@ -250,6 +259,18 @@ public static class WorkflowVersionCompatibilityEvaluator
                 blockers.Add(Issue(
                     WorkflowVersionCompatibilityCodes.AttachedTimerContractChanged,
                     $"Open ordinary user task node #{nodeId} changes its attached timer contract.",
+                    nodeId));
+            }
+
+            if (!string.Equals(
+                    AttachedConditionalBoundaryContract(source, nodeId),
+                    AttachedConditionalBoundaryContract(target, nodeId),
+                    StringComparison.Ordinal))
+            {
+                blockers.Add(Issue(
+                    WorkflowVersionCompatibilityCodes
+                        .AttachedConditionalBoundaryContractChanged,
+                    $"Open user task node #{nodeId} changes its attached conditional-boundary contract.",
                     nodeId));
             }
         }
@@ -344,6 +365,10 @@ public static class WorkflowVersionCompatibilityEvaluator
                 || !string.Equals(
                     AttachedTimerContract(source, nodeId),
                     AttachedTimerContract(target, nodeId),
+                    StringComparison.Ordinal)
+                || !string.Equals(
+                    AttachedConditionalBoundaryContract(source, nodeId),
+                    AttachedConditionalBoundaryContract(target, nodeId),
                     StringComparison.Ordinal))
             {
                 blockers.Add(Issue(
@@ -778,6 +803,49 @@ public static class WorkflowVersionCompatibilityEvaluator
         }
     }
 
+    private static void ValidateOpenConditionalBoundaries(
+        WorkflowVersionCompatibilityContext context,
+        WorkflowModel source,
+        WorkflowModel target,
+        IReadOnlyDictionary<int, FlowNodeModel> sourceNodes,
+        IReadOnlyDictionary<int, FlowNodeModel> targetNodes,
+        ICollection<WorkflowVersionCompatibilityIssue> blockers)
+    {
+        foreach (var subscription in context.OpenConditionalBoundaries
+                     .OrderBy(subscription => subscription.Id))
+        {
+            if (!sourceNodes.TryGetValue(subscription.BoundaryNodeId, out var sourceNode)
+                || !targetNodes.TryGetValue(subscription.BoundaryNodeId, out var targetNode))
+            {
+                blockers.Add(Issue(
+                    WorkflowVersionCompatibilityCodes.OpenConditionalBoundaryNodeMissing,
+                    $"Open conditional boundary subscription #{subscription.Id} references node #{subscription.BoundaryNodeId}, which is absent from a source or target definition.",
+                    subscription.BoundaryNodeId,
+                    runtimeId: subscription.Id));
+                continue;
+            }
+
+            if (!string.Equals(
+                    ConditionalBoundaryNodeContract(source, sourceNode),
+                    ConditionalBoundaryNodeContract(target, targetNode),
+                    StringComparison.Ordinal)
+                || !ConditionalBoundaryDescriptorMatches(subscription, target, targetNode)
+                || subscription.WorkflowDefinitionId != context.SourceDefinition.Id
+                || !string.Equals(
+                    subscription.WorkflowKey,
+                    context.Instance.WorkflowKey,
+                    StringComparison.Ordinal))
+            {
+                blockers.Add(Issue(
+                    WorkflowVersionCompatibilityCodes
+                        .OpenConditionalBoundaryContractChanged,
+                    $"Open conditional boundary subscription #{subscription.Id} is not exactly compatible with target boundary node #{subscription.BoundaryNodeId}.",
+                    subscription.BoundaryNodeId,
+                    runtimeId: subscription.Id));
+            }
+        }
+    }
+
     private static bool JobDescriptorMatches(WorkflowJobRecord job, FlowNodeModel targetNode)
     {
         if (!string.Equals(job.NodeType, targetNode.Type, StringComparison.Ordinal))
@@ -801,7 +869,11 @@ public static class WorkflowVersionCompatibilityEvaluator
             WorkflowJobKinds.Timer => BpmnFlowNodeTypes.IsTimerCatch(targetNode.Type),
             WorkflowJobKinds.TimerBoundary => BpmnFlowNodeTypes.IsTimerBoundary(targetNode.Type),
             WorkflowJobKinds.TimerStart => BpmnFlowNodeTypes.IsTimerStart(targetNode.Type),
-            WorkflowJobKinds.ConditionalWake => IsDurableConditionalCatch(targetNode),
+            WorkflowJobKinds.ConditionalWake => IsDurableConditionalEvent(targetNode)
+                && (job.ConditionalBoundarySubscriptionId is null
+                    ? BpmnFlowNodeTypes.IsConditionalCatch(targetNode.Type)
+                    : BpmnFlowNodeTypes.IsConditionalBoundary(targetNode.Type)
+                      && job.ConditionalBoundaryOccurrence is > 0),
             _ => false
         };
         if (!kindMatches)
@@ -1047,6 +1119,16 @@ public static class WorkflowVersionCompatibilityEvaluator
             .Select(node => TimerNodeContract(definition, node))
             .ToArray());
 
+    private static string AttachedConditionalBoundaryContract(
+        WorkflowModel definition,
+        int hostNodeId) =>
+        JsonSerializer.Serialize(definition.FlowNodes
+            .Where(node => BpmnFlowNodeTypes.IsConditionalBoundary(node.Type)
+                && node.AttachedToRef == hostNodeId)
+            .OrderBy(node => node.Id)
+            .Select(node => ConditionalBoundaryNodeContract(definition, node))
+            .ToArray());
+
     private static string GatewayContract(WorkflowModel definition, FlowNodeModel node) =>
         JsonSerializer.Serialize(new
         {
@@ -1060,7 +1142,11 @@ public static class WorkflowVersionCompatibilityEvaluator
             Node = CanonicalNode(node),
             Outgoing = OutgoingFlowContracts(definition, node.Id),
             ErrorBoundaries = BoundaryContracts(definition, node.Id, BpmnFlowNodeTypes.IsErrorBoundary),
-            TimerBoundaries = BoundaryContracts(definition, node.Id, BpmnFlowNodeTypes.IsTimerBoundary)
+            TimerBoundaries = BoundaryContracts(definition, node.Id, BpmnFlowNodeTypes.IsTimerBoundary),
+            ConditionalBoundaries = BoundaryContracts(
+                definition,
+                node.Id,
+                BpmnFlowNodeTypes.IsConditionalBoundary)
         });
 
     private static string TimerNodeContract(WorkflowModel definition, FlowNodeModel node) =>
@@ -1081,17 +1167,62 @@ public static class WorkflowVersionCompatibilityEvaluator
             Outgoing = OutgoingFlowContracts(definition, node.Id)
         });
 
+    private static string ConditionalBoundaryNodeContract(
+        WorkflowModel definition,
+        FlowNodeModel node) =>
+        JsonSerializer.Serialize(new
+        {
+            NodeId = node.Id,
+            AttachedToRef = node.AttachedToRef,
+            CancelActivity = node.CancelActivity ?? true,
+            Condition = ConditionalDefinitionRules.NormalizeCondition(
+                node.Conditional?.Condition),
+            DeliveryMode = node.Conditional?.EffectiveDeliveryMode,
+            Outgoing = OutgoingFlowContracts(definition, node.Id)
+        });
+
     private static bool IsConditionalCatch(FlowNodeModel node) =>
         BpmnFlowNodeTypes.IsConditionalCatch(node.Type);
 
-    private static bool IsDurableConditionalCatch(FlowNodeModel node)
+    private static bool IsDurableConditionalEvent(FlowNodeModel node)
     {
-        if (!IsConditionalCatch(node))
+        if (!BpmnFlowNodeTypes.IsConditionalEvent(node.Type))
         {
             return false;
         }
         return node.Conditional?.EffectiveDeliveryMode
                == ConditionalEventDeliveryModes.DurableAsync;
+    }
+
+    private static bool ConditionalBoundaryDescriptorMatches(
+        ConditionalBoundarySubscriptionRecord subscription,
+        WorkflowModel target,
+        FlowNodeModel targetNode)
+    {
+        if (!BpmnFlowNodeTypes.IsConditionalBoundary(targetNode.Type)
+            || targetNode.AttachedToRef is not int attachedToNodeId)
+        {
+            return false;
+        }
+
+        var outgoing = target.SequenceFlows
+            .Where(flow => flow.SourceRef == targetNode.Id)
+            .Take(2)
+            .ToArray();
+        return outgoing.Length == 1
+            && subscription.BoundaryNodeId == targetNode.Id
+            && subscription.AttachedToNodeId == attachedToNodeId
+            && subscription.OutgoingFlowId == outgoing[0].Id
+            && subscription.CancelActivity == (targetNode.CancelActivity ?? true)
+            && string.Equals(
+                subscription.Condition,
+                ConditionalDefinitionRules.NormalizeCondition(
+                    targetNode.Conditional?.Condition),
+                StringComparison.Ordinal)
+            && string.Equals(
+                subscription.DeliveryMode,
+                targetNode.Conditional?.EffectiveDeliveryMode,
+                StringComparison.Ordinal);
     }
 
     private static IReadOnlyList<string> BoundaryContracts(

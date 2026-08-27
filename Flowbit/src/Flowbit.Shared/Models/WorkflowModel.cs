@@ -263,17 +263,17 @@ public sealed class FlowNodeModel
     public TimerDefinitionModel? Timer { get; set; }
 
     /// <summary>
-    /// Intermediate conditional catch event only: the observable stored-variable
-    /// predicate and the delivery contract used when the predicate becomes true.
+    /// Intermediate conditional catch and conditional boundary events: the
+    /// observable stored-variable predicate and its delivery contract.
     /// </summary>
     [JsonPropertyName("conditional")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public ConditionalDefinitionModel? Conditional { get; set; }
 
     /// <summary>
-    /// Timer boundary event only: true interrupts the attached activity; false
-    /// creates a sibling reminder/escalation branch while the activity keeps waiting.
-    /// Missing legacy values normalize to true.
+    /// Timer and conditional boundary events: true interrupts the attached
+    /// activity; false creates a sibling branch while the activity remains active.
+    /// Missing values normalize to true.
     /// </summary>
     [JsonPropertyName("cancelActivity")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -579,9 +579,9 @@ public sealed class TimerDefinitionModel
 }
 
 /// <summary>
-/// Defines an intermediate conditional catch event. The condition is an NCalc
-/// expression over statically declared, persisted instance variables. A missing
-/// delivery mode has the same meaning as <c>atomic</c> and remains omitted in JSON.
+/// Defines an intermediate conditional catch or conditional boundary event. The
+/// condition is an NCalc expression over statically declared, persisted instance
+/// variables. A missing delivery mode has the same meaning as <c>atomic</c>.
 /// </summary>
 public sealed class ConditionalDefinitionModel
 {
@@ -651,7 +651,7 @@ public static class TimerDefinitionRules
 {
     public const int MaxExpressionLength = 128;
     public const int MaxRetryDelays = 10;
-    public const int MaxBoundaryTimersPerHost = 8;
+    public const int MaxBoundaryTimersPerHost = BoundaryEventRules.MaxObservableBoundariesPerHost;
     public static readonly TimeSpan MinimumRecurringInterval = TimeSpan.FromSeconds(1);
 
     private static readonly Regex FixedDurationPattern = new(
@@ -779,6 +779,16 @@ public static class TimerDefinitionRules
                 CultureInfo.InvariantCulture)
             : 0m;
     }
+}
+
+/// <summary>
+/// Bounded authoring rules shared by timer and conditional boundary events.
+/// Error boundaries remain separately constrained because they are not recurring
+/// observable subscriptions.
+/// </summary>
+public static class BoundaryEventRules
+{
+    public const int MaxObservableBoundariesPerHost = 8;
 }
 
 public static class ErrorEndConstraints
@@ -1626,6 +1636,10 @@ public static class BpmnFlowNodeTypes
     // Boundary timer attached to a durable wait or an async-before automatic
     // activity. cancelActivity=false creates a non-interrupting sibling branch.
     public const string TimerBoundaryEvent = "timerBoundaryEvent";
+    // Boundary conditional event attached to the same durable hosts supported by
+    // timer boundaries. It observes persisted instance variables and can either
+    // interrupt its host or spawn repeatable sibling branches.
+    public const string ConditionalBoundaryEvent = "conditionalBoundaryEvent";
     // Intermediate catch event that rests (like a userTask) until a matching
     // message is delivered via POST /api/instances/{id}/message, then advances
     // down its single outgoing flow. Async integration / webhook / callback step.
@@ -1668,6 +1682,12 @@ public static class BpmnFlowNodeTypes
 
     public static bool IsTimerBoundary(string type) =>
         string.Equals(type, TimerBoundaryEvent, StringComparison.Ordinal);
+
+    public static bool IsConditionalBoundary(string type) =>
+        string.Equals(type, ConditionalBoundaryEvent, StringComparison.Ordinal);
+
+    public static bool IsBoundary(string type) =>
+        IsErrorBoundary(type) || IsTimerBoundary(type) || IsConditionalBoundary(type);
 
     public static bool IsUserTask(string type) =>
         string.Equals(type, UserTask, StringComparison.Ordinal);
@@ -1714,6 +1734,9 @@ public static class BpmnFlowNodeTypes
     public static bool IsConditionalCatch(string type) =>
         string.Equals(type, IntermediateConditionalCatchEvent, StringComparison.Ordinal);
 
+    public static bool IsConditionalEvent(string type) =>
+        IsConditionalCatch(type) || IsConditionalBoundary(type);
+
     public static bool IsMessageStart(string type) =>
         string.Equals(type, MessageStartEvent, StringComparison.Ordinal);
 
@@ -1738,7 +1761,7 @@ public static class BpmnFlowNodeTypes
         IsStart(type) || IsMessageStart(type) || IsTimerStart(type)
         || IsAutomatic(type) || IsServiceTask(type)
         || IsScriptTask(type) || IsGateway(type) || IsErrorBoundary(type)
-        || IsTimerBoundary(type)
+        || IsTimerBoundary(type) || IsConditionalBoundary(type)
         || IsScopedInterrupt(type);
 
     public static bool IsSupported(string type) =>
@@ -1746,6 +1769,7 @@ public static class BpmnFlowNodeTypes
             or ExclusiveGateway or ParallelGateway or InclusiveGateway or ComplexGateway
             or ScopedInterruptEvent
             or ErrorEndEvent or TerminateEndEvent or ErrorBoundaryEvent or TimerBoundaryEvent
+            or ConditionalBoundaryEvent
             or IntermediateMessageCatchEvent or IntermediateTimerCatchEvent
             or IntermediateConditionalCatchEvent or MessageStartEvent;
 }

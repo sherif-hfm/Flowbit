@@ -58,6 +58,9 @@ public sealed record WorkflowVersionCompatibilityContext
 
     public IReadOnlyList<TimerSubscriptionRecord> OpenTimers { get; init; } = [];
 
+    public IReadOnlyList<ConditionalBoundarySubscriptionRecord>
+        OpenConditionalBoundaries { get; init; } = [];
+
     /// <summary>
     /// True when any traversal committed before this snapshot, even when the
     /// source definition did not opt into flow-evidence persistence.
@@ -113,6 +116,8 @@ public static class WorkflowVersionCompatibilityCodes
     public const string ActiveNodeExternalIdChanged = "active_node_external_id_changed";
     public const string UserTaskContractChanged = "user_task_contract_changed";
     public const string AttachedTimerContractChanged = "attached_timer_contract_changed";
+    public const string AttachedConditionalBoundaryContractChanged =
+        "attached_conditional_boundary_contract_changed";
     public const string MessageCatchContractChanged = "message_catch_contract_changed";
     public const string ConditionalCatchContractChanged = "conditional_catch_contract_changed";
     public const string ConditionalCatchSharedDependencyUnsupported =
@@ -142,4 +147,8 @@ public static class WorkflowVersionCompatibilityCodes
     public const string OpenJobContractChanged = "open_job_contract_changed";
     public const string OpenTimerNodeMissing = "open_timer_node_missing";
     public const string OpenTimerContractChanged = "open_timer_contract_changed";
+    public const string OpenConditionalBoundaryNodeMissing =
+        "open_conditional_boundary_node_missing";
+    public const string OpenConditionalBoundaryContractChanged =
+        "open_conditional_boundary_contract_changed";
 }

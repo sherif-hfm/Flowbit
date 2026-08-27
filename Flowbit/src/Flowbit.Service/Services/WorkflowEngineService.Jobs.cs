@@ -34,13 +34,21 @@ public sealed partial class WorkflowEngineService
         long? DelegationId,
         int? SelectedFlowId = null,
         AdministrativeActionRequest? AdministrativeAction = null,
-        IReadOnlyList<string>? TriggeringVariableNames = null);
+        IReadOnlyList<string>? TriggeringVariableNames = null,
+        long? ConditionalBoundarySubscriptionId = null,
+        long? ConditionalBoundaryOccurrence = null,
+        long? ConditionalBoundaryHostTokenId = null,
+        bool? ConditionalBoundaryCancelActivity = null);
 
     private sealed record ConditionalWakeLatchRequest(
         ExecutionTokenRecord Token,
         FlowNodeModel Node,
         SequenceFlowModel SelectedFlow,
-        IReadOnlyList<string> TriggeringVariableNames);
+        IReadOnlyList<string> TriggeringVariableNames,
+        long? ConditionalBoundarySubscriptionId = null,
+        long? ConditionalBoundaryOccurrence = null,
+        long? HostTokenId = null,
+        bool? CancelActivity = null);
 
     private sealed record StagedServiceInvocation(
         string Method,
@@ -182,13 +190,23 @@ public sealed partial class WorkflowEngineService
                     StringComparison.Ordinal)
                 || request.Token.NodeId != request.Node.Id
                 || !string.Equals(request.Token.NodeType, request.Node.Type, StringComparison.Ordinal)
-                || !BpmnFlowNodeTypes.IsConditionalCatch(request.Node.Type)
+                || !BpmnFlowNodeTypes.IsConditionalEvent(request.Node.Type)
                 || request.Node.Conditional?.EffectiveDeliveryMode
                    != ConditionalEventDeliveryModes.DurableAsync
                 || request.SelectedFlow.SourceRef != request.Node.Id)
             {
                 throw new WorkflowJobInvariantException(
                     "A conditional-wake latch does not match its active token and selected flow.");
+            }
+            var boundary = BpmnFlowNodeTypes.IsConditionalBoundary(request.Node.Type);
+            if (boundary != (request.ConditionalBoundarySubscriptionId is not null)
+                || boundary != (request.ConditionalBoundaryOccurrence is not null)
+                || boundary && request.ConditionalBoundaryOccurrence <= 0
+                || boundary && request.HostTokenId is null
+                || boundary && request.CancelActivity is null)
+            {
+                throw new WorkflowJobInvariantException(
+                    "A conditional-boundary wake has an invalid subscription occurrence fence.");
             }
             if (!tokenIds.Add(request.Token.Id))
             {
@@ -208,9 +226,15 @@ public sealed partial class WorkflowEngineService
                 actor,
                 dueAt,
                 selectedFlowId: request.SelectedFlow.Id,
-                triggeringVariableNames: request.TriggeringVariableNames) with
+                triggeringVariableNames: request.TriggeringVariableNames,
+                conditionalBoundarySubscriptionId: request.ConditionalBoundarySubscriptionId,
+                conditionalBoundaryOccurrence: request.ConditionalBoundaryOccurrence,
+                conditionalBoundaryHostTokenId: request.HostTokenId,
+                conditionalBoundaryCancelActivity: request.CancelActivity) with
             {
-                QueueClass = WorkflowJobClasses.Control
+                QueueClass = WorkflowJobClasses.Control,
+                ConditionalBoundarySubscriptionId = request.ConditionalBoundarySubscriptionId,
+                ConditionalBoundaryOccurrence = request.ConditionalBoundaryOccurrence
             })
             .ToArray();
         var created = await EnqueueInstanceJobsAsync(creates, cancellationToken);
@@ -254,7 +278,12 @@ public sealed partial class WorkflowEngineService
                     ConditionalEventDeliveryModes.DurableAsync,
                     request.SelectedFlow.Id,
                     request.TriggeringVariableNames,
-                    job.Id),
+                    job.Id,
+                    request.Node,
+                    request.HostTokenId,
+                    request.ConditionalBoundarySubscriptionId,
+                    request.ConditionalBoundaryOccurrence,
+                    request.CancelActivity),
                 InstanceHistoryNotes.ConditionalLatched,
                 cancellationToken,
                 actor.ActingFor,
@@ -375,7 +404,7 @@ public sealed partial class WorkflowEngineService
         }
     }
 
-    private async Task CancelAttachedTimerBoundaryWaitsAsync(
+    private async Task CancelAttachedBoundaryWaitsAsync(
         long instanceId,
         IReadOnlyCollection<long> tokenIds,
         CancellationToken cancellationToken)
@@ -384,6 +413,13 @@ public sealed partial class WorkflowEngineService
             instanceId,
             tokenIds,
             cancellationToken);
+        if (conditionalBoundarySubscriptions is not null)
+        {
+            await conditionalBoundarySubscriptions.CancelByTokenIdsAsync(
+                instanceId,
+                tokenIds,
+                cancellationToken);
+        }
         await jobs.CancelTimerJobsByTokenIdsAsync(
             instanceId,
             tokenIds,
@@ -406,6 +442,13 @@ public sealed partial class WorkflowEngineService
             instanceId,
             tokenIds,
             cancellationToken);
+        if (conditionalBoundarySubscriptions is not null)
+        {
+            await conditionalBoundarySubscriptions.CancelByTokenIdsAsync(
+                instanceId,
+                tokenIds,
+                cancellationToken);
+        }
         // A timer/scoped continuation may cancel its own host token while the
         // current durable job is still finalizing. Fence every other job in the
         // affected set so in-flight work receives a heartbeat abort without
@@ -430,7 +473,11 @@ public sealed partial class WorkflowEngineService
         long? multiInstanceExecutionId = null,
         long? userTaskId = null,
         AdministrativeBatchFlowContext? administrativeBatch = null,
-        IReadOnlyList<string>? triggeringVariableNames = null)
+        IReadOnlyList<string>? triggeringVariableNames = null,
+        long? conditionalBoundarySubscriptionId = null,
+        long? conditionalBoundaryOccurrence = null,
+        long? conditionalBoundaryHostTokenId = null,
+        bool? conditionalBoundaryCancelActivity = null)
     {
         var retryDelays = ResolveRetryDelays(node);
         return new WorkflowJobCreateRecord
@@ -469,7 +516,11 @@ public sealed partial class WorkflowEngineService
                     actor.DelegationId,
                     selectedFlowId,
                     administrativeBatch?.Request,
-                    triggeringVariableNames))
+                    triggeringVariableNames,
+                    conditionalBoundarySubscriptionId,
+                    conditionalBoundaryOccurrence,
+                    conditionalBoundaryHostTokenId,
+                    conditionalBoundaryCancelActivity))
         };
     }
 
@@ -841,6 +892,10 @@ public sealed partial class WorkflowEngineService
             catch (WorkflowConflictException stale)
             {
                 unitOfWork.DiscardChanges();
+                if (lease.Job.Kind == WorkflowJobKinds.ConditionalWake)
+                {
+                    ConditionalEventRuntimeTelemetry.RecordStale("capacity");
+                }
                 logger.LogInformation(
                     "Workflow job {JobId} became stale while handling capacity overflow: {Reason}",
                     lease.Job.Id,
@@ -877,6 +932,10 @@ public sealed partial class WorkflowEngineService
         catch (WorkflowConflictException ex)
         {
             unitOfWork.DiscardChanges();
+            if (lease.Job.Kind == WorkflowJobKinds.ConditionalWake)
+            {
+                ConditionalEventRuntimeTelemetry.RecordStale("worker");
+            }
             logger.LogInformation(
                 "Workflow job {JobId} became stale and will not mutate runtime state: {Reason}",
                 lease.Job.Id,
@@ -2570,10 +2629,13 @@ public sealed partial class WorkflowEngineService
         ActorContext actor,
         CancellationToken cancellationToken)
     {
-        if (!BpmnFlowNodeTypes.IsConditionalCatch(node.Type)
+        if (!BpmnFlowNodeTypes.IsConditionalEvent(node.Type)
             || node.Conditional?.EffectiveDeliveryMode
                != ConditionalEventDeliveryModes.DurableAsync
-            || job.TimerSubscriptionId is not null)
+            || job.TimerSubscriptionId is not null
+            || BpmnFlowNodeTypes.IsConditionalBoundary(node.Type)
+               != (job.ConditionalBoundarySubscriptionId is not null
+                   && job.ConditionalBoundaryOccurrence is not null))
         {
             throw new WorkflowJobInvariantException(
                 "The conditional-wake job shape is invalid.");
@@ -2640,7 +2702,12 @@ public sealed partial class WorkflowEngineService
                 ConditionalEventDeliveryModes.DurableAsync,
                 outgoing[0].Id,
                 payload.TriggeringVariableNames ?? [],
-                job.Id));
+                job.Id,
+                node,
+                payload.ConditionalBoundaryHostTokenId,
+                job.ConditionalBoundarySubscriptionId,
+                job.ConditionalBoundaryOccurrence,
+                payload.ConditionalBoundaryCancelActivity));
         logger.LogInformation(
             "Durable conditional event triggered for instance {InstanceId}, token {TokenId}, node {NodeId}, job {JobId}.",
             instance.Id,
@@ -2742,6 +2809,13 @@ public sealed partial class WorkflowEngineService
             token.Id,
             subscription.Id,
             cancellationToken);
+        if (conditionalBoundarySubscriptions is not null)
+        {
+            await conditionalBoundarySubscriptions.CancelByTokenIdsAsync(
+                instance.Id,
+                [token.Id],
+                cancellationToken);
+        }
         await jobs.CancelOtherJobsByTokenIdsAsync(
             instance.Id,
             [token.Id],
@@ -2950,6 +3024,13 @@ public sealed partial class WorkflowEngineService
                 hostToken.Id,
                 subscription.Id,
                 cancellationToken);
+            if (conditionalBoundarySubscriptions is not null)
+            {
+                await conditionalBoundarySubscriptions.CancelByTokenIdsAsync(
+                    instance.Id,
+                    ids,
+                    cancellationToken);
+            }
             await jobs.CancelOtherJobsByTokenIdsAsync(
                 instance.Id,
                 ids,

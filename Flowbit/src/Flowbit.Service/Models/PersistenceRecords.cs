@@ -61,6 +61,14 @@ public sealed record CurrentNodeSnapshot(
     string? FaultDescription = null,
     bool AsyncBefore = false);
 
+public sealed record ExecutionTokenCreateRecord(
+    CurrentNodeSnapshot Node,
+    long? GatewayBranchId,
+    int? ArrivedViaFlowId,
+    NodeExecutionActorRecord TriggeredBy,
+    int AutomaticActivationCount = 0,
+    IReadOnlyCollection<long>? AutomaticActivationStateIds = null);
+
 public sealed record ExecutionTokenRecord(
     long Id,
     long InstanceId,

@@ -18,6 +18,9 @@ public sealed class WorkflowJobEntity
     public UserTaskEntity? UserTask { get; set; }
     public long? TimerSubscriptionId { get; set; }
     public TimerSubscriptionEntity? TimerSubscription { get; set; }
+    public long? ConditionalBoundarySubscriptionId { get; set; }
+    public ConditionalBoundarySubscriptionEntity? ConditionalBoundarySubscription { get; set; }
+    public long? ConditionalBoundaryOccurrence { get; set; }
     public Guid ActivationId { get; set; }
     public int AutomaticActivationCount { get; set; }
     public int NodeId { get; set; }

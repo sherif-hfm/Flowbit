@@ -19,6 +19,8 @@ public sealed class InstanceVariableUpdateMigrationTests(PostgresApiFixture fixt
         "20260808133917_AddInstanceVersionChangeBatchClassificationCounts";
     private const string TargetMigration =
         "20260810174726_AddInstanceVariableUpdates";
+    private const string CurrentMigration =
+        "20260826183520_AddConditionalBoundaryEvents";
 
     [Fact]
     public async Task FreshMigrationCreatesAuditBatchJobLinksConstraintsIndexesAndSetting()
@@ -274,7 +276,9 @@ public sealed class InstanceVariableUpdateMigrationTests(PostgresApiFixture fixt
     {
         await WithIsolatedDatabaseAsync(async connectionString =>
         {
-            await MigrateAsync(connectionString, TargetMigration);
+            // This integrity test inserts through the current EF model, so its
+            // isolated database must include later additive model columns.
+            await MigrateAsync(connectionString, CurrentMigration);
             var dataSourceBuilder = new NpgsqlDataSourceBuilder(connectionString);
             dataSourceBuilder.EnableDynamicJson();
             await using var dataSource = dataSourceBuilder.Build();

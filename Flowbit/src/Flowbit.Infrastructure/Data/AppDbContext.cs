@@ -106,6 +106,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
     public DbSet<TimerSubscriptionEntity> TimerSubscriptions => Set<TimerSubscriptionEntity>();
 
+    public DbSet<ConditionalBoundarySubscriptionEntity> ConditionalBoundarySubscriptions =>
+        Set<ConditionalBoundarySubscriptionEntity>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.HasDefaultSchema(FlowbitDatabase.Schema);
@@ -1913,6 +1916,70 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 .OnDelete(DeleteBehavior.Restrict);
         });
 
+        modelBuilder.Entity<ConditionalBoundarySubscriptionEntity>(entity =>
+        {
+            entity.ToTable("conditional_boundary_subscriptions", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_conditional_boundary_subscriptions_status",
+                    "\"Status\" IN ('active', 'completed', 'cancelled')");
+                table.HasCheckConstraint(
+                    "CK_conditional_boundary_subscriptions_delivery_mode",
+                    "\"DeliveryMode\" IN ('atomic', 'durableAsync')");
+                table.HasCheckConstraint(
+                    "CK_conditional_boundary_subscriptions_occurrence",
+                    "\"Occurrence\" >= 0");
+                table.HasCheckConstraint(
+                    "CK_conditional_boundary_subscriptions_terminal_time",
+                    "(\"Status\" = 'active' AND \"CompletedAt\" IS NULL) OR "
+                    + "(\"Status\" IN ('completed', 'cancelled') AND \"CompletedAt\" IS NOT NULL)");
+            });
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.WorkflowKey).HasMaxLength(300).IsRequired();
+            entity.Property(e => e.BoundaryNodeName).HasMaxLength(300).IsRequired();
+            entity.Property(e => e.Condition).HasMaxLength(ConditionalDefinitionRules.MaxConditionLength).IsRequired();
+            entity.Property(e => e.DeliveryMode).HasMaxLength(32).IsRequired();
+            entity.Property(e => e.Status).HasMaxLength(32).IsRequired();
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+            entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
+            entity.HasIndex(e => new
+                {
+                    e.InstanceId,
+                    e.HostTokenId,
+                    e.HostActivationId,
+                    e.BoundaryNodeId
+                })
+                .IsUnique();
+            entity.HasIndex(e => new
+                {
+                    e.InstanceId,
+                    e.BoundaryNodeId,
+                    e.HostTokenId,
+                    e.Id
+                })
+                .HasFilter("\"Status\" = 'active'");
+            entity.HasIndex(e => new
+                {
+                    e.InstanceId,
+                    e.HostTokenId,
+                    e.HostActivationId,
+                    e.Status
+                });
+            entity.HasOne(e => e.Instance)
+                .WithMany(e => e.ConditionalBoundarySubscriptions)
+                .HasForeignKey(e => e.InstanceId)
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(e => e.WorkflowDefinition)
+                .WithMany()
+                .HasForeignKey(e => new { e.WorkflowDefinitionId, e.WorkflowKey })
+                .HasPrincipalKey(e => new { e.Id, e.WorkflowKey })
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.HostToken)
+                .WithMany(e => e.ConditionalBoundarySubscriptions)
+                .HasForeignKey(e => e.HostTokenId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
         modelBuilder.Entity<WorkflowJobEntity>(entity =>
         {
             entity.ToTable("workflow_jobs", table =>
@@ -1940,6 +2007,10 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 table.HasCheckConstraint(
                     "CK_workflow_jobs_automatic_activation_count",
                     "\"AutomaticActivationCount\" >= 0");
+                table.HasCheckConstraint(
+                    "CK_workflow_jobs_conditional_boundary_occurrence",
+                    "(\"ConditionalBoundarySubscriptionId\" IS NULL AND \"ConditionalBoundaryOccurrence\" IS NULL) OR "
+                    + "(\"ConditionalBoundarySubscriptionId\" IS NOT NULL AND \"ConditionalBoundaryOccurrence\" > 0)");
             });
             entity.HasKey(e => e.Id);
             entity.Property(e => e.WorkflowKey).HasMaxLength(300).IsRequired();
@@ -1981,6 +2052,15 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.HasIndex(e => new { e.TimerSubscriptionId, e.ScheduledOccurrenceAt })
                 .IsUnique()
                 .HasFilter("\"TimerSubscriptionId\" IS NOT NULL AND \"ScheduledOccurrenceAt\" IS NOT NULL");
+            entity.HasIndex(e => new
+                {
+                    e.ConditionalBoundarySubscriptionId,
+                    e.ConditionalBoundaryOccurrence
+                })
+                .IsUnique()
+                .HasFilter(
+                    "\"ConditionalBoundarySubscriptionId\" IS NOT NULL "
+                    + "AND \"ConditionalBoundaryOccurrence\" IS NOT NULL");
             entity.HasOne(e => e.Instance)
                 .WithMany(e => e.Jobs)
                 .HasForeignKey(e => e.InstanceId)
@@ -2005,6 +2085,10 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.HasOne(e => e.TimerSubscription)
                 .WithMany(e => e.Jobs)
                 .HasForeignKey(e => e.TimerSubscriptionId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.ConditionalBoundarySubscription)
+                .WithMany(e => e.Jobs)
+                .HasForeignKey(e => e.ConditionalBoundarySubscriptionId)
                 .OnDelete(DeleteBehavior.Restrict);
             entity.HasOne(e => e.Snapshot)
                 .WithMany(e => e.Jobs)

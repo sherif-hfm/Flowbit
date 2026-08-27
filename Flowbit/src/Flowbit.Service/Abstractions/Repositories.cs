@@ -132,10 +132,47 @@ public interface IWorkflowRuntimeRepository
         IReadOnlyCollection<long> tokenIds,
         CancellationToken cancellationToken);
 
+    async Task<IReadOnlyList<ExecutionTokenRecord>> GetExecutionTokensForUpdateAsync(
+        IReadOnlyCollection<long> tokenIds,
+        CancellationToken cancellationToken)
+    {
+        var result = new List<ExecutionTokenRecord>(tokenIds.Count);
+        foreach (var tokenId in tokenIds.Distinct().Order())
+        {
+            var token = await GetExecutionTokenAsync(
+                tokenId,
+                forUpdate: true,
+                cancellationToken);
+            if (token is not null)
+            {
+                result.Add(token);
+            }
+        }
+        return result;
+    }
+
     Task<IReadOnlyList<ExecutionTokenRecord>> ListExecutionTokensAsync(
         long instanceId,
         string? status,
         CancellationToken cancellationToken);
+
+    async Task<IReadOnlyList<ExecutionTokenRecord>> ListActiveConditionalWaitTokensAsync(
+        long instanceId,
+        IReadOnlyCollection<int> nodeIds,
+        long? onlyTokenId,
+        CancellationToken cancellationToken) =>
+        (await ListExecutionTokensAsync(
+                instanceId,
+                ExecutionTokenRecordStatuses.Active,
+                cancellationToken))
+            .Where(token =>
+                nodeIds.Contains(token.NodeId)
+                && (onlyTokenId is null || token.Id == onlyTokenId.Value)
+                && BpmnFlowNodeTypes.IsConditionalCatch(token.NodeType)
+                && token.WaitState is null
+                && token.WaitingJobId is null)
+            .OrderBy(token => token.Id)
+            .ToArray();
 
     Task<IReadOnlyList<ExecutionTokenRecord>> ListCurrentExecutionTokensAsync(
         long instanceId,
@@ -151,6 +188,27 @@ public interface IWorkflowRuntimeRepository
         CancellationToken cancellationToken,
         int automaticActivationCount = 0,
         IReadOnlyCollection<long>? automaticActivationStateIds = null);
+
+    async Task<IReadOnlyList<ExecutionTokenRecord>> AddExecutionTokensAsync(
+        long instanceId,
+        IReadOnlyList<ExecutionTokenCreateRecord> creates,
+        CancellationToken cancellationToken)
+    {
+        var tokens = new List<ExecutionTokenRecord>(creates.Count);
+        foreach (var create in creates)
+        {
+            tokens.Add(await AddExecutionTokenAsync(
+                instanceId,
+                create.Node,
+                create.GatewayBranchId,
+                create.ArrivedViaFlowId,
+                create.TriggeredBy,
+                cancellationToken,
+                create.AutomaticActivationCount,
+                create.AutomaticActivationStateIds));
+        }
+        return tokens;
+    }
 
     Task<IReadOnlyList<ExecutionTokenRecord>> AddGatewayBranchTokensAsync(
         long instanceId,

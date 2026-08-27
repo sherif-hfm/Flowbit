@@ -290,8 +290,9 @@ public sealed partial class WorkflowEngineService
             .ToList();
 
         // Lock order after the instance-owned runtime rows is jobs, incidents,
-        // then timers. Incidents are locked for serialization even though their
-        // executable contract is represented by their owning open job.
+        // timers, then conditional-boundary subscriptions. Incidents are locked
+        // for serialization even though their executable contract is represented
+        // by their owning open job.
         var openJobs = await jobs.ListOpenByInstanceAsync(
             instance.Id,
             lockDurableState,
@@ -307,6 +308,13 @@ public sealed partial class WorkflowEngineService
             instance.Id,
             lockDurableState,
             cancellationToken);
+        IReadOnlyList<ConditionalBoundarySubscriptionRecord> openConditionalBoundaries =
+            conditionalBoundarySubscriptions is null
+                ? []
+                : await conditionalBoundarySubscriptions.ListActiveByInstanceAsync(
+                    instance.Id,
+                    lockDurableState,
+                    cancellationToken);
 
         var contextNodeId = activeTokens.FirstOrDefault()?.NodeId
             ?? instance.CurrentStepId;
@@ -343,6 +351,7 @@ public sealed partial class WorkflowEngineService
             FlowSummaries = flowSummaries,
             OpenJobs = openJobs,
             OpenTimers = openTimers,
+            OpenConditionalBoundaries = openConditionalBoundaries,
             HasCommittedTraversals = observedFlows.Count > 0
                 || flowSummaries.Any(summary => summary.TraversalCount > 0)
         };

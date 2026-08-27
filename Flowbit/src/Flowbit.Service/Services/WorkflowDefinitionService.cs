@@ -219,7 +219,7 @@ public sealed class WorkflowDefinitionService(
                 || BpmnFlowNodeTypes.IsTimerStart(node.Type)
                 || BpmnFlowNodeTypes.IsTimerCatch(node.Type)
                 || BpmnFlowNodeTypes.IsTimerBoundary(node.Type)
-                || (BpmnFlowNodeTypes.IsConditionalCatch(node.Type)
+                || (BpmnFlowNodeTypes.IsConditionalEvent(node.Type)
                     && node.Conditional?.EffectiveDeliveryMode
                         == ConditionalEventDeliveryModes.DurableAsync)))
         {
@@ -552,6 +552,7 @@ public sealed class WorkflowDefinitionService(
                     || BpmnFlowNodeTypes.IsScriptTask(node.Type)
                     || BpmnFlowNodeTypes.IsErrorBoundary(node.Type)
                     || BpmnFlowNodeTypes.IsTimerBoundary(node.Type)
+                    || BpmnFlowNodeTypes.IsConditionalBoundary(node.Type)
                     || BpmnFlowNodeTypes.IsMessageCatch(node.Type)
                     || BpmnFlowNodeTypes.IsTimerCatch(node.Type)
                     || BpmnFlowNodeTypes.IsConditionalCatch(node.Type)
@@ -569,6 +570,8 @@ public sealed class WorkflowDefinitionService(
                                 ? "Error boundary event"
                                 : BpmnFlowNodeTypes.IsTimerBoundary(node.Type)
                                     ? "Timer boundary event"
+                                : BpmnFlowNodeTypes.IsConditionalBoundary(node.Type)
+                                    ? "Conditional boundary event"
                                 : BpmnFlowNodeTypes.IsMessageCatch(node.Type)
                                     ? "Message catch event"
                                     : BpmnFlowNodeTypes.IsTimerCatch(node.Type)
@@ -591,6 +594,11 @@ public sealed class WorkflowDefinitionService(
             if (BpmnFlowNodeTypes.IsTimerBoundary(node.Type))
             {
                 ValidateTimerBoundary(node, definition, incoming, outgoing);
+            }
+
+            if (BpmnFlowNodeTypes.IsConditionalBoundary(node.Type))
+            {
+                ValidateConditionalBoundary(node, definition, incoming, outgoing);
             }
 
             if (BpmnFlowNodeTypes.IsServiceTask(node.Type))
@@ -726,22 +734,26 @@ public sealed class WorkflowDefinitionService(
 
     /// <summary>
     /// Rejects conditional-event data on other node types and metadata that the
-    /// tolerant migrator would otherwise discard from a conditional catch event.
+    /// tolerant migrator would otherwise discard from a conditional event.
     /// </summary>
     private static void ValidateAuthoredConditionalEventMetadata(WorkflowModel definition)
     {
         foreach (var node in definition.FlowNodes ?? [])
         {
-            if (!BpmnFlowNodeTypes.IsConditionalCatch(node.Type))
+            if (!BpmnFlowNodeTypes.IsConditionalEvent(node.Type))
             {
                 if (node.Conditional is not null)
                 {
                     throw new WorkflowDomainException(
-                        $"Flow node #{node.Id} defines conditional metadata but is not an intermediate conditional catch event.");
+                        $"Flow node #{node.Id} defines conditional metadata but is not a conditional event.");
                 }
                 continue;
             }
 
+            var isBoundary = BpmnFlowNodeTypes.IsConditionalBoundary(node.Type);
+            var description = isBoundary
+                ? $"Conditional boundary event #{node.Id}"
+                : $"Conditional catch event #{node.Id}";
             if (node.Conditional is not null
                 && !string.IsNullOrWhiteSpace(node.Conditional.DeliveryMode)
                 && ConditionalEventDeliveryModes.GetEffective(node.Conditional.DeliveryMode)
@@ -749,11 +761,11 @@ public sealed class WorkflowDefinitionService(
                         or ConditionalEventDeliveryModes.DurableAsync))
             {
                 throw new WorkflowDomainException(
-                    $"Conditional catch event #{node.Id} has unsupported deliveryMode '{node.Conditional.DeliveryMode}'.");
+                    $"{description} has unsupported deliveryMode '{node.Conditional.DeliveryMode}'.");
             }
 
             if (node.AsyncBefore || node.AsyncAfter || node.Job is not null
-                || node.Timer is not null || node.CancelActivity is not null
+                || node.Timer is not null
                 || node.Roles is { Count: > 0 } || node.RequiresClaim
                 || !string.Equals(node.ClaimMode, ClaimModes.Fresh, StringComparison.OrdinalIgnoreCase)
                 || node.InheritClaimFromNodeId is not null
@@ -768,7 +780,8 @@ public sealed class WorkflowDefinitionService(
                 || !string.Equals(node.AssignmentMode, AssignmentModes.Fresh, StringComparison.OrdinalIgnoreCase)
                 || node.InheritAssignmentFromNodeId is not null
                 || !string.IsNullOrWhiteSpace(node.InboxVisibilityCondition)
-                || node.MultiInstance is not null || node.AttachedToRef is not null
+                || node.MultiInstance is not null
+                || (!isBoundary && (node.AttachedToRef is not null || node.CancelActivity is not null))
                 || !string.IsNullOrWhiteSpace(node.ErrorVariable)
                 || !string.IsNullOrWhiteSpace(node.ErrorCode)
                 || !string.IsNullOrWhiteSpace(node.ErrorDescription)
@@ -776,7 +789,7 @@ public sealed class WorkflowDefinitionService(
                 || node.GatewayRef is not null || node.JoinCancellation is not null)
             {
                 throw new WorkflowDomainException(
-                    $"Conditional catch event #{node.Id} cannot define task, role, variable, async, or other event metadata.");
+                    $"{description} cannot define task, role, variable, async, or other event metadata.");
             }
         }
     }
@@ -1027,10 +1040,11 @@ public sealed class WorkflowDefinitionService(
             }
 
             if (!BpmnFlowNodeTypes.IsTimerBoundary(node.Type)
+                && !BpmnFlowNodeTypes.IsConditionalBoundary(node.Type)
                 && node.CancelActivity is not null)
             {
                 throw new WorkflowDomainException(
-                    $"Flow node #{node.Id} defines cancelActivity but is not a timer boundary event.");
+                    $"Flow node #{node.Id} defines cancelActivity but is not a timer or conditional boundary event.");
             }
         }
     }
@@ -1789,7 +1803,8 @@ public sealed class WorkflowDefinitionService(
             .Concat(definition.FlowNodes
                 .Where(node =>
                     (BpmnFlowNodeTypes.IsErrorBoundary(node.Type)
-                        || BpmnFlowNodeTypes.IsTimerBoundary(node.Type))
+                        || BpmnFlowNodeTypes.IsTimerBoundary(node.Type)
+                        || BpmnFlowNodeTypes.IsConditionalBoundary(node.Type))
                     && node.AttachedToRef is not null)
                 .Select(node => (Source: node.AttachedToRef!.Value, Target: node.Id)))
             .GroupBy(edge => edge.Source)
@@ -2374,17 +2389,46 @@ public sealed class WorkflowDefinitionService(
         IReadOnlyCollection<SequenceFlowModel> incoming,
         IReadOnlyList<SequenceFlowModel> outgoing)
     {
+        ValidateObservableBoundary(
+            node,
+            definition,
+            incoming,
+            outgoing,
+            "Timer boundary event");
+    }
+
+    private static void ValidateConditionalBoundary(
+        FlowNodeModel node,
+        WorkflowModel definition,
+        IReadOnlyCollection<SequenceFlowModel> incoming,
+        IReadOnlyList<SequenceFlowModel> outgoing)
+    {
+        ValidateObservableBoundary(
+            node,
+            definition,
+            incoming,
+            outgoing,
+            "Conditional boundary event");
+    }
+
+    private static void ValidateObservableBoundary(
+        FlowNodeModel node,
+        WorkflowModel definition,
+        IReadOnlyCollection<SequenceFlowModel> incoming,
+        IReadOnlyList<SequenceFlowModel> outgoing,
+        string eventName)
+    {
         if (node.AttachedToRef is null)
         {
             throw new WorkflowDomainException(
-                $"Timer boundary event #{node.Id} must reference a host via attachedToRef.");
+                $"{eventName} #{node.Id} must reference a host via attachedToRef.");
         }
 
         var host = definition.FlowNodes.SingleOrDefault(candidate => candidate.Id == node.AttachedToRef);
         if (host is null)
         {
             throw new WorkflowDomainException(
-                $"Timer boundary event #{node.Id} attachedToRef #{node.AttachedToRef} does not reference an existing flow node.");
+                $"{eventName} #{node.Id} attachedToRef #{node.AttachedToRef} does not reference an existing flow node.");
         }
 
         var durableWait = BpmnFlowNodeTypes.IsUserTask(host.Type)
@@ -2397,28 +2441,30 @@ public sealed class WorkflowDefinitionService(
         if (!durableWait && !asyncAutomatic)
         {
             throw new WorkflowDomainException(
-                $"Timer boundary event #{node.Id} host #{host.Id} must be a durable wait or an automatic task with asyncBefore enabled.");
+                $"{eventName} #{node.Id} host #{host.Id} must be a durable wait or an automatic task with asyncBefore enabled.");
         }
 
         if (incoming.Count != 0)
         {
             throw new WorkflowDomainException(
-                $"Timer boundary event #{node.Id} cannot have incoming sequence flows.");
+                $"{eventName} #{node.Id} cannot have incoming sequence flows.");
         }
 
         if (outgoing.Count == 1 && HasUnsupportedPassThroughMetadata(outgoing[0]))
         {
             throw new WorkflowDomainException(
-                $"Timer boundary event #{node.Id} must have one unconditional outgoing sequence flow without user-action or multi-instance metadata.");
+                $"{eventName} #{node.Id} must have one unconditional outgoing sequence flow without user-action or multi-instance metadata.");
         }
 
         var siblingCount = definition.FlowNodes.Count(candidate =>
-            BpmnFlowNodeTypes.IsTimerBoundary(candidate.Type)
+            (BpmnFlowNodeTypes.IsTimerBoundary(candidate.Type)
+                || BpmnFlowNodeTypes.IsConditionalBoundary(candidate.Type))
             && candidate.AttachedToRef == node.AttachedToRef);
-        if (siblingCount > TimerDefinitionRules.MaxBoundaryTimersPerHost)
+        if (siblingCount > BoundaryEventRules.MaxObservableBoundariesPerHost)
         {
             throw new WorkflowDomainException(
-                $"Host node #{host.Id} has {siblingCount} timer boundary events; at most {TimerDefinitionRules.MaxBoundaryTimersPerHost} are allowed.");
+                $"Host node #{host.Id} has {siblingCount} timer and conditional boundary events; "
+                + $"at most {BoundaryEventRules.MaxObservableBoundariesPerHost} are allowed.");
         }
     }
 

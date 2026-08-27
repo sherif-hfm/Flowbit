@@ -79,6 +79,13 @@ public static class TimerSubscriptionStatuses
     public const string Cancelled = "cancelled";
 }
 
+public static class ConditionalBoundarySubscriptionStatuses
+{
+    public const string Active = "active";
+    public const string Completed = "completed";
+    public const string Cancelled = "cancelled";
+}
+
 public static class TimerScheduleKinds
 {
     public const string Date = "timeDate";
@@ -95,6 +102,8 @@ public sealed record WorkflowJobCreateRecord
     public long? MultiInstanceExecutionId { get; init; }
     public long? UserTaskId { get; init; }
     public long? TimerSubscriptionId { get; init; }
+    public long? ConditionalBoundarySubscriptionId { get; init; }
+    public long? ConditionalBoundaryOccurrence { get; init; }
     public required Guid ActivationId { get; init; }
     public int AutomaticActivationCount { get; init; }
     public required int NodeId { get; init; }
@@ -155,7 +164,9 @@ public sealed record WorkflowJobRecord(
     DateTimeOffset UpdatedAt,
     DateTimeOffset? StartedAt,
     DateTimeOffset? CompletedAt,
-    int AutomaticActivationCount = 0);
+    int AutomaticActivationCount = 0,
+    long? ConditionalBoundarySubscriptionId = null,
+    long? ConditionalBoundaryOccurrence = null);
 
 public sealed record WorkflowJobLeaseRequest(
     string WorkerId,
@@ -309,6 +320,51 @@ public sealed record TimerSubscriptionRecord(
     string Status,
     DateTimeOffset NextDueAt,
     long Occurrence,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset UpdatedAt,
+    DateTimeOffset? CompletedAt);
+
+public sealed record ConditionalBoundarySubscriptionCreateRecord
+{
+    public required long InstanceId { get; init; }
+    public required long WorkflowDefinitionId { get; init; }
+    public required string WorkflowKey { get; init; }
+    public required long HostTokenId { get; init; }
+    public required Guid HostActivationId { get; init; }
+    public required int BoundaryNodeId { get; init; }
+    public required string BoundaryNodeName { get; init; }
+    public required int AttachedToNodeId { get; init; }
+    public required int OutgoingFlowId { get; init; }
+    public required string Condition { get; init; }
+    public required string DeliveryMode { get; init; }
+    public required bool CancelActivity { get; init; }
+}
+
+public sealed record ConditionalBoundarySubscriptionStateUpdateRecord(
+    long SubscriptionId,
+    bool ExpectedConditionTrue,
+    long ExpectedOccurrence,
+    bool ConditionTrue,
+    long NextOccurrence,
+    bool Complete);
+
+public sealed record ConditionalBoundarySubscriptionRecord(
+    long Id,
+    long InstanceId,
+    long WorkflowDefinitionId,
+    string WorkflowKey,
+    long HostTokenId,
+    Guid HostActivationId,
+    int BoundaryNodeId,
+    string BoundaryNodeName,
+    int AttachedToNodeId,
+    int OutgoingFlowId,
+    string Condition,
+    string DeliveryMode,
+    bool CancelActivity,
+    bool IsConditionTrue,
+    long Occurrence,
+    string Status,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
     DateTimeOffset? CompletedAt);

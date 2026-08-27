@@ -54,6 +54,65 @@ public sealed class EditorConditionalEventTests
             Validate(unknownMode));
     }
 
+    [Theory]
+    [InlineData(null, null)]
+    [InlineData("atomic", true)]
+    [InlineData("durableAsync", false)]
+    public void Validator_AcceptsConditionalBoundaryDefaultsAndModes(
+        string? deliveryMode,
+        bool? cancelActivity)
+    {
+        var candidate = ValidConditionalBoundaryCandidate(
+            deliveryMode,
+            cancelActivity);
+
+        Assert.Empty(Validate(candidate));
+    }
+
+    [Fact]
+    public void Validator_EnforcesConditionalBoundaryTopologyHostAndCombinedCap()
+    {
+        var candidate = ValidConditionalBoundaryCandidate();
+        var nodes = (JsonArray)candidate["flowNodes"]!;
+        var flows = (JsonArray)candidate["sequenceFlows"]!;
+        flows.Add(Flow(103, 1, 2));
+        Assert.Contains(
+            "Conditional boundary event #2 cannot have incoming sequence flows.",
+            Validate(candidate));
+
+        candidate = ValidConditionalBoundaryCandidate();
+        var host = (JsonObject)((JsonArray)candidate["flowNodes"]!)[0]!;
+        host["type"] = "task";
+        host["asyncBefore"] = false;
+        Assert.Contains(Validate(candidate), error => error.Contains(
+            "attachedToRef must reference a durable wait or an automatic task with asyncBefore enabled",
+            StringComparison.Ordinal));
+
+        candidate = ValidConditionalBoundaryCandidate();
+        nodes = (JsonArray)candidate["flowNodes"]!;
+        flows = (JsonArray)candidate["sequenceFlows"]!;
+        for (var index = 0; index < 8; index++)
+        {
+            var id = 10 + index;
+            var boundary = Node(
+                id,
+                $"Timer {index}",
+                "timerBoundaryEvent");
+            boundary["attachedToRef"] = 1;
+            boundary["timer"] = new JsonObject
+            {
+                ["timeDuration"] = "PT1M",
+                ["timeDate"] = null,
+                ["timeCycle"] = null
+            };
+            nodes.Add(boundary);
+            flows.Add(Flow(200 + index, id, 3));
+        }
+        Assert.Contains(
+            "Host node #1 has more than eight combined timer and conditional boundary events.",
+            Validate(candidate));
+    }
+
     [Fact]
     public void Normalizer_OmitsAtomicAndCanonicalizesDurableAsync()
     {
@@ -197,7 +256,19 @@ public sealed class EditorConditionalEventTests
             html,
             StringComparison.Ordinal);
         Assert.Contains(
-            "if (node.type !== \"intermediateConditionalCatchEvent\") delete node.conditional;",
+            "CONDITIONAL_BOUNDARY_EVENT: \"conditionalBoundaryEvent\"",
+            html,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "if (!isConditionalEventType(node.type)) delete node.conditional;",
+            html,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            ".node.conditionalBoundaryEvent.non-interrupting circle.ring",
+            html,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "+ Add conditional boundary event",
             html,
             StringComparison.Ordinal);
         Assert.Contains(
@@ -224,7 +295,7 @@ public sealed class EditorConditionalEventTests
             ["id"] = "conditional-editor-test",
             ["name"] = "Conditional editor test",
             ["initialEventId"] = 1,
-            ["variables"] = new JsonArray(),
+            ["variables"] = new JsonArray(ProcessVariable("approved", "boolean")),
             ["lanes"] = new JsonArray(),
             ["flowNodes"] = new JsonArray(
                 Node(1, "Start", "startEvent"),
@@ -238,6 +309,55 @@ public sealed class EditorConditionalEventTests
             ["taskAssignmentRoles"] = new JsonArray()
         };
     }
+
+    private static JsonObject ValidConditionalBoundaryCandidate(
+        string? deliveryMode = null,
+        bool? cancelActivity = null)
+    {
+        var conditional = new JsonObject { ["condition"] = "approved == true" };
+        if (deliveryMode is not null)
+        {
+            conditional["deliveryMode"] = deliveryMode;
+        }
+        var host = Node(1, "Approve", "userTask");
+        var boundary = Node(2, "Escalate", "conditionalBoundaryEvent", conditional);
+        boundary["attachedToRef"] = 1;
+        if (cancelActivity is not null)
+        {
+            boundary["cancelActivity"] = cancelActivity.Value;
+        }
+        return new JsonObject
+        {
+            ["id"] = "conditional-boundary-editor-test",
+            ["name"] = "Conditional boundary editor test",
+            ["initialEventId"] = 4,
+            ["variables"] = new JsonArray(ProcessVariable("approved", "boolean")),
+            ["lanes"] = new JsonArray(),
+            ["flowNodes"] = new JsonArray(
+                host,
+                boundary,
+                Node(3, "Done", "endEvent"),
+                Node(4, "Start", "startEvent")),
+            ["sequenceFlows"] = new JsonArray(
+                Flow(101, 4, 1),
+                Flow(102, 2, 3)),
+            ["cancelRoles"] = new JsonArray(),
+            ["unclaimRoles"] = new JsonArray(),
+            ["taskAssignmentRoles"] = new JsonArray()
+        };
+    }
+
+    private static JsonObject ProcessVariable(string name, string dataType) => new()
+    {
+        ["id"] = 1,
+        ["name"] = name,
+        ["dataType"] = dataType,
+        ["isArray"] = false,
+        ["nullable"] = true,
+        ["required"] = false,
+        ["defaultValue"] = null,
+        ["validation"] = null
+    };
 
     private static JsonObject Node(
         int id,

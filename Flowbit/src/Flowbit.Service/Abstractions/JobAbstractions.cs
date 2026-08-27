@@ -257,6 +257,83 @@ public interface ITimerSubscriptionRepository
         CancellationToken cancellationToken);
 }
 
+public interface IConditionalBoundarySubscriptionRepository
+{
+    Task<IReadOnlyList<ConditionalBoundarySubscriptionRecord>> CreateManyAsync(
+        IReadOnlyList<ConditionalBoundarySubscriptionCreateRecord> creates,
+        CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<ConditionalBoundarySubscriptionRecord>> ListForActivationAsync(
+        long hostTokenId,
+        Guid hostActivationId,
+        CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<ConditionalBoundarySubscriptionRecord>>
+        ListActiveForUpdateByInstanceAndBoundaryNodeIdsAsync(
+            long instanceId,
+            IReadOnlyCollection<int> boundaryNodeIds,
+            CancellationToken cancellationToken);
+
+    // Includes active subscriptions and completed interrupting subscriptions
+    // that still fence an open durable occurrence.
+    Task<IReadOnlyList<ConditionalBoundarySubscriptionRecord>> ListActiveByInstanceAsync(
+        long instanceId,
+        bool forUpdate,
+        CancellationToken cancellationToken);
+
+    Task<bool> UpdateStateAsync(
+        long subscriptionId,
+        bool expectedConditionTrue,
+        long expectedOccurrence,
+        bool conditionTrue,
+        long nextOccurrence,
+        bool complete,
+        CancellationToken cancellationToken);
+
+    async Task<bool> StageStateUpdatesAsync(
+        IReadOnlyList<ConditionalBoundarySubscriptionStateUpdateRecord> updates,
+        CancellationToken cancellationToken)
+    {
+        foreach (var update in updates)
+        {
+            if (!await UpdateStateAsync(
+                    update.SubscriptionId,
+                    update.ExpectedConditionTrue,
+                    update.ExpectedOccurrence,
+                    update.ConditionTrue,
+                    update.NextOccurrence,
+                    update.Complete,
+                    cancellationToken))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    Task<int> CancelByInstanceAsync(
+        long instanceId,
+        CancellationToken cancellationToken);
+
+    Task<int> CancelByTokenIdsAsync(
+        long instanceId,
+        IReadOnlyCollection<long> hostTokenIds,
+        CancellationToken cancellationToken);
+
+    Task<int> CancelOtherForTokenAsync(
+        long instanceId,
+        long hostTokenId,
+        long exceptSubscriptionId,
+        CancellationToken cancellationToken);
+
+    Task<int> RebindDefinitionAsync(
+        long instanceId,
+        long sourceWorkflowDefinitionId,
+        long targetWorkflowDefinitionId,
+        IReadOnlyDictionary<int, string> boundaryNodeNames,
+        CancellationToken cancellationToken);
+}
+
 /// <summary>
 /// Runtime-owned processor invoked by the standalone worker. It performs the
 /// stage/invoke/result/finalize protocol for one fenced lease.

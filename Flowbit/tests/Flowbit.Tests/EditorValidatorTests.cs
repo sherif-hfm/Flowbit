@@ -820,8 +820,10 @@ public sealed class EditorValidatorTests
               COMPLEX_GATEWAY: 'complexGateway', SCOPED_INTERRUPT_EVENT: 'scopedInterruptEvent',
               ERROR_BOUNDARY_EVENT: 'errorBoundaryEvent',
               TIMER_BOUNDARY_EVENT: 'timerBoundaryEvent',
+              CONDITIONAL_BOUNDARY_EVENT: 'conditionalBoundaryEvent',
               MESSAGE_CATCH_EVENT: 'intermediateMessageCatchEvent',
-              TIMER_CATCH_EVENT: 'intermediateTimerCatchEvent'
+              TIMER_CATCH_EVENT: 'intermediateTimerCatchEvent',
+              CONDITIONAL_CATCH_EVENT: 'intermediateConditionalCatchEvent'
             };
             const CLAIM_MODE = { FRESH: 'fresh' };
             const ASSIGNMENT_MODE = { FRESH: 'fresh', PREVIOUS: 'previous', FROM_NODE: 'fromNode' };
@@ -842,6 +844,9 @@ public sealed class EditorValidatorTests
             }
             function isTimerStartEventType(type) { return type === NODE_TYPE.TIMER_START_EVENT; }
             function isTimerBoundaryEventType(type) { return type === NODE_TYPE.TIMER_BOUNDARY_EVENT; }
+            function isConditionalBoundaryEventType(type) {
+              return type === NODE_TYPE.CONDITIONAL_BOUNDARY_EVENT;
+            }
             function isTimerCatchEventType(type) { return type === NODE_TYPE.TIMER_CATCH_EVENT; }
             function isTimerEventType(type) {
               return isTimerStartEventType(type) || isTimerBoundaryEventType(type) ||
@@ -849,7 +854,14 @@ public sealed class EditorValidatorTests
             }
             function isErrorBoundaryEventType(type) { return type === NODE_TYPE.ERROR_BOUNDARY_EVENT; }
             function isBoundaryEventType(type) {
-              return isErrorBoundaryEventType(type) || isTimerBoundaryEventType(type);
+              return isErrorBoundaryEventType(type) || isTimerBoundaryEventType(type) ||
+                isConditionalBoundaryEventType(type);
+            }
+            function isConditionalCatchEventType(type) {
+              return type === NODE_TYPE.CONDITIONAL_CATCH_EVENT;
+            }
+            function isConditionalEventType(type) {
+              return isConditionalCatchEventType(type) || isConditionalBoundaryEventType(type);
             }
             function isMessageCatchEventType(type) { return type === NODE_TYPE.MESSAGE_CATCH_EVENT; }
             function isSingleOutgoingType() { return false; }
@@ -1604,8 +1616,10 @@ public sealed class EditorValidatorTests
               SCOPED_INTERRUPT_EVENT: 'scopedInterruptEvent',
               ERROR_BOUNDARY_EVENT: 'errorBoundaryEvent',
               TIMER_BOUNDARY_EVENT: 'timerBoundaryEvent',
+              CONDITIONAL_BOUNDARY_EVENT: 'conditionalBoundaryEvent',
               MESSAGE_CATCH_EVENT: 'intermediateMessageCatchEvent',
-              TIMER_CATCH_EVENT: 'intermediateTimerCatchEvent'
+              TIMER_CATCH_EVENT: 'intermediateTimerCatchEvent',
+              CONDITIONAL_CATCH_EVENT: 'intermediateConditionalCatchEvent'
             };
             const CLAIM_MODE = { FRESH: 'fresh' };
             const ASSIGNMENT_MODE = { FRESH: 'fresh' };
@@ -1634,6 +1648,9 @@ public sealed class EditorValidatorTests
             }
             function isTimerStartEventType(type) { return type === NODE_TYPE.TIMER_START_EVENT; }
             function isTimerBoundaryEventType(type) { return type === NODE_TYPE.TIMER_BOUNDARY_EVENT; }
+            function isConditionalBoundaryEventType(type) {
+              return type === NODE_TYPE.CONDITIONAL_BOUNDARY_EVENT;
+            }
             function isTimerCatchEventType(type) { return type === NODE_TYPE.TIMER_CATCH_EVENT; }
             function isTimerEventType(type) {
               return isTimerStartEventType(type) || isTimerBoundaryEventType(type) ||
@@ -1641,7 +1658,14 @@ public sealed class EditorValidatorTests
             }
             function isErrorBoundaryEventType(type) { return type === NODE_TYPE.ERROR_BOUNDARY_EVENT; }
             function isBoundaryEventType(type) {
-              return isErrorBoundaryEventType(type) || isTimerBoundaryEventType(type);
+              return isErrorBoundaryEventType(type) || isTimerBoundaryEventType(type) ||
+                isConditionalBoundaryEventType(type);
+            }
+            function isConditionalCatchEventType(type) {
+              return type === NODE_TYPE.CONDITIONAL_CATCH_EVENT;
+            }
+            function isConditionalEventType(type) {
+              return isConditionalCatchEventType(type) || isConditionalBoundaryEventType(type);
             }
             function isMessageCatchEventType(type) { return type === NODE_TYPE.MESSAGE_CATCH_EVENT; }
             function isSingleOutgoingType() { return false; }
@@ -2150,7 +2174,7 @@ public sealed class EditorValidatorTests
         var errors = Validate(model);
 
         Assert.Single(errors, error =>
-            error.Contains("more than eight timer boundary events",
+            error.Contains("more than eight combined timer and conditional boundary events",
                 StringComparison.OrdinalIgnoreCase));
     }
 

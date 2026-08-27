@@ -51,6 +51,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IInstanceVariableUpdateBatchRepository, InstanceVariableUpdateBatchRepository>();
         services.AddScoped<IWorkflowJobRepository, WorkflowJobRepository>();
         services.AddScoped<ITimerSubscriptionRepository, TimerSubscriptionRepository>();
+        services.AddScoped<IConditionalBoundarySubscriptionRepository, ConditionalBoundarySubscriptionRepository>();
         services.AddScoped<IUnitOfWork, UnitOfWork>();
         services.AddScoped<DatabaseInitializer>();
         services.AddHttpClient<IServiceTaskInvoker, HttpServiceTaskInvoker>(client =>

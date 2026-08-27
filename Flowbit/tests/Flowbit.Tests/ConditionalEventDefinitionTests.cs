@@ -104,6 +104,47 @@ public sealed class ConditionalEventDefinitionTests
     }
 
     [Fact]
+    public void Analyze_IndexesConditionalBoundaryAttachmentAndDefaults()
+    {
+        var definition = CreateBoundaryDefinition(
+            "[amount] >= 80",
+            deliveryMode: null,
+            cancelActivity: null);
+        WorkflowModelMigrator.Normalize(definition);
+
+        var plan = analyzer.Analyze(definition);
+
+        var conditional = Assert.Single(plan.EventsByNodeId).Value;
+        Assert.True(conditional.IsBoundary);
+        Assert.Equal(2, conditional.AttachedToNodeId);
+        Assert.True(conditional.CancelActivity);
+        Assert.Equal(ConditionalEventDeliveryModes.Atomic, conditional.DeliveryMode);
+        Assert.Equal(["Amount"], conditional.Dependencies.ToArray());
+        Assert.Equal([4], plan.NodeIdsByVariable["amount"].ToArray());
+    }
+
+    [Fact]
+    public void NormalizeAndJsonRoundTrip_PreserveNonInterruptingConditionalBoundary()
+    {
+        var definition = CreateBoundaryDefinition(
+            "Amount >= 80",
+            " DURABLEASYNC ",
+            cancelActivity: false);
+
+        WorkflowModelMigrator.Normalize(definition);
+        var json = JsonSerializer.Serialize(definition);
+        var roundTripped = JsonSerializer.Deserialize<WorkflowModel>(json)!;
+        var boundary = roundTripped.FlowNodes.Single(node => node.Id == 4);
+
+        Assert.Equal(BpmnFlowNodeTypes.ConditionalBoundaryEvent, boundary.Type);
+        Assert.Equal(2, boundary.AttachedToRef);
+        Assert.False(boundary.CancelActivity);
+        Assert.Equal(
+            ConditionalEventDeliveryModes.DurableAsync,
+            boundary.Conditional!.DeliveryMode);
+    }
+
+    [Fact]
     public void Analyze_RejectsAtomicSharedDependencies()
     {
         var definition = CreateDefinition("Amount >= 10", ConditionalEventDeliveryModes.Atomic);
@@ -412,6 +453,60 @@ public sealed class ConditionalEventDefinitionTests
                 SourceRef = 2,
                 TargetRef = 3
             }
+        ]
+    };
+
+    private static WorkflowModel CreateBoundaryDefinition(
+        string condition,
+        string? deliveryMode,
+        bool? cancelActivity) => new()
+    {
+        Id = "conditional-boundary-definition-tests",
+        Name = "Conditional boundary definition tests",
+        InitialEventId = 1,
+        Variables =
+        [
+            Variable("Amount", 0)
+        ],
+        FlowNodes =
+        [
+            new FlowNodeModel
+            {
+                Id = 1,
+                Name = "Start",
+                Type = BpmnFlowNodeTypes.StartEvent
+            },
+            new FlowNodeModel
+            {
+                Id = 2,
+                Name = "Review",
+                Type = BpmnFlowNodeTypes.UserTask
+            },
+            new FlowNodeModel
+            {
+                Id = 3,
+                Name = "End",
+                Type = BpmnFlowNodeTypes.EndEvent
+            },
+            new FlowNodeModel
+            {
+                Id = 4,
+                Name = "Escalate",
+                Type = BpmnFlowNodeTypes.ConditionalBoundaryEvent,
+                AttachedToRef = 2,
+                CancelActivity = cancelActivity,
+                Conditional = new ConditionalDefinitionModel
+                {
+                    Condition = condition,
+                    DeliveryMode = deliveryMode
+                }
+            }
+        ],
+        SequenceFlows =
+        [
+            new SequenceFlowModel { Id = 101, SourceRef = 1, TargetRef = 2 },
+            new SequenceFlowModel { Id = 201, SourceRef = 2, TargetRef = 3 },
+            new SequenceFlowModel { Id = 401, SourceRef = 4, TargetRef = 3 }
         ]
     };
 

@@ -1,0 +1,132 @@
+{
+  "id": "example-interrupting-conditional-boundary",
+  "name": "Example 08 - Interrupting Conditional Boundary",
+  "initialEventId": 1,
+  "variables": [
+    {
+      "id": 1,
+      "name": "riskScore",
+      "dataType": "number",
+      "isArray": false,
+      "nullable": false,
+      "required": false,
+      "defaultValue": 0,
+      "validation": "riskScore >= 0 && riskScore <= 100"
+    }
+  ],
+  "lanes": [],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Start",
+      "externalId": "START_CONDITIONAL_ESCALATION",
+      "type": "startEvent",
+      "laneId": null,
+      "x": 70,
+      "y": 180,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 2,
+      "name": "Review Risk",
+      "externalId": "TASK_REVIEW_RISK",
+      "type": "userTask",
+      "laneId": null,
+      "x": 300,
+      "y": 165,
+      "roles": [],
+      "variables": [],
+      "requiresClaim": false,
+      "claimMode": "fresh"
+    },
+    {
+      "id": 3,
+      "name": "Normal Completion",
+      "externalId": "END_NORMAL_RISK_REVIEW",
+      "type": "endEvent",
+      "laneId": null,
+      "x": 920,
+      "y": 175,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 4,
+      "name": "High Risk Detected",
+      "externalId": "BOUNDARY_HIGH_RISK",
+      "type": "conditionalBoundaryEvent",
+      "laneId": null,
+      "x": 385,
+      "y": 225,
+      "roles": [],
+      "variables": [],
+      "attachedToRef": 2,
+      "conditional": {
+        "condition": "riskScore >= 80"
+      }
+    },
+    {
+      "id": 5,
+      "name": "Escalated Review",
+      "externalId": "TASK_ESCALATED_RISK_REVIEW",
+      "type": "userTask",
+      "laneId": null,
+      "x": 610,
+      "y": 300,
+      "roles": [],
+      "variables": [],
+      "requiresClaim": false,
+      "claimMode": "fresh"
+    },
+    {
+      "id": 6,
+      "name": "Escalation Completed",
+      "externalId": "END_ESCALATED_RISK_REVIEW",
+      "type": "endEvent",
+      "laneId": null,
+      "x": 930,
+      "y": 315,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "Begin review",
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 201,
+      "name": "Complete normally",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 401,
+      "name": "Interrupt and escalate",
+      "sourceRef": 4,
+      "targetRef": 5,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 501,
+      "name": "Complete escalation",
+      "sourceRef": 5,
+      "targetRef": 6,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "cancelRoles": [],
+  "unclaimRoles": [],
+  "taskAssignmentRoles": [],
+  "taskDistribution": null
+}

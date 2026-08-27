@@ -3,13 +3,16 @@ using System.Collections.Immutable;
 namespace Flowbit.Service.Models;
 
 /// <summary>
-/// Immutable definition-time metadata for one intermediate conditional catch event.
+/// Immutable definition-time metadata for one conditional catch or boundary event.
 /// </summary>
 public sealed record ConditionalEventPlanEntry(
     int NodeId,
     string Condition,
     string DeliveryMode,
-    ImmutableArray<string> Dependencies);
+    ImmutableArray<string> Dependencies,
+    bool IsBoundary,
+    int? AttachedToNodeId,
+    bool CancelActivity);
 
 /// <summary>
 /// Immutable conditional-event plan for one workflow definition. The inverse

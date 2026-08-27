@@ -38,7 +38,7 @@ public sealed class ConditionalEventDefinitionAnalyzer
         ArgumentNullException.ThrowIfNull(definition);
         var conditionalNodes = (definition.FlowNodes ?? [])
             .Where(node => node is not null
-                && BpmnFlowNodeTypes.IsConditionalCatch(node.Type))
+                && BpmnFlowNodeTypes.IsConditionalEvent(node.Type))
             .OrderBy(node => node.Id)
             .ToList();
         if (conditionalNodes.Count == 0)
@@ -52,8 +52,9 @@ public sealed class ConditionalEventDefinitionAnalyzer
             .FirstOrDefault();
         if (sharedDependency is not null)
         {
+            var sharedNode = conditionalNodes.Single(node => node.Id == sharedDependency.NodeId);
             throw new WorkflowDomainException(
-                $"Conditional catch event #{sharedDependency.NodeId} cannot reference "
+                $"{Describe(sharedNode)} cannot reference "
                 + $"shared variable '{sharedDependency.VariableName}'. Conditional events "
                 + "may reference only persisted instance variables. Use a message event or "
                 + "copy the value into an instance variable.");
@@ -66,22 +67,23 @@ public sealed class ConditionalEventDefinitionAnalyzer
 
         foreach (var node in conditionalNodes)
         {
+            var description = Describe(node);
             var conditional = node.Conditional
                 ?? throw new WorkflowDomainException(
-                    $"Conditional catch event #{node.Id} must have a conditional configuration.");
+                    $"{description} must have a conditional configuration.");
             var condition = ConditionalDefinitionRules.NormalizeCondition(
                 conditional.Condition);
             if (condition is null)
             {
                 throw new WorkflowDomainException(
-                    $"Conditional catch event #{node.Id} must define a condition.");
+                    $"{description} must define a condition.");
             }
             if (condition.EnumerateRunes()
                     .Take(ConditionalDefinitionRules.MaxConditionLength + 1)
                     .Count() > ConditionalDefinitionRules.MaxConditionLength)
             {
                 throw new WorkflowDomainException(
-                    $"Conditional catch event #{node.Id} condition must contain at most "
+                    $"{description} condition must contain at most "
                     + $"{ConditionalDefinitionRules.MaxConditionLength} Unicode scalar values.");
             }
 
@@ -91,7 +93,7 @@ public sealed class ConditionalEventDefinitionAnalyzer
                 or ConditionalEventDeliveryModes.DurableAsync))
             {
                 throw new WorkflowDomainException(
-                    $"Conditional catch event #{node.Id} has unsupported deliveryMode "
+                    $"{description} has unsupported deliveryMode "
                     + $"'{conditional.DeliveryMode}'.");
             }
 
@@ -101,7 +103,7 @@ public sealed class ConditionalEventDefinitionAnalyzer
                 if (parsed.HasErrors())
                 {
                     throw new WorkflowDomainException(
-                        $"Conditional catch event #{node.Id} has an invalid condition: "
+                        $"{description} has an invalid condition: "
                         + $"'{conditional.Condition}'.");
                 }
 
@@ -111,31 +113,34 @@ public sealed class ConditionalEventDefinitionAnalyzer
                 if (unknownFunction is not null)
                 {
                     throw new WorkflowDomainException(
-                        $"Conditional catch event #{node.Id} condition uses unsupported "
+                        $"{description} condition uses unsupported "
                         + $"or non-observable function '{unknownFunction}'.");
                 }
 
                 var dependencies = ResolveDependencies(
-                    node.Id,
+                    description,
                     parsed.GetParameterNames(),
                     canonicalVariables);
                 if (dependencies.Length == 0)
                 {
                     throw new WorkflowDomainException(
-                        $"Conditional catch event #{node.Id} condition must reference at "
+                        $"{description} condition must reference at "
                         + "least one declared stored instance variable.");
                 }
                 if (dependencies.Length > ConditionalDefinitionRules.MaxDependencies)
                 {
                     throw new WorkflowDomainException(
-                        $"Conditional catch event #{node.Id} condition may reference at most "
+                        $"{description} condition may reference at most "
                         + $"{ConditionalDefinitionRules.MaxDependencies} stored variables.");
                 }
                 var entry = new ConditionalEventPlanEntry(
                     node.Id,
                     condition,
                     deliveryMode,
-                    dependencies);
+                    dependencies,
+                    BpmnFlowNodeTypes.IsConditionalBoundary(node.Type),
+                    node.AttachedToRef,
+                    node.CancelActivity ?? true);
                 if (!entries.TryAdd(node.Id, entry))
                 {
                     throw new WorkflowDomainException(
@@ -159,7 +164,7 @@ public sealed class ConditionalEventDefinitionAnalyzer
             catch (NCalcException)
             {
                 throw new WorkflowDomainException(
-                    $"Conditional catch event #{node.Id} has an invalid condition: "
+                    $"{description} has an invalid condition: "
                     + $"'{conditional.Condition}'.");
             }
         }
@@ -179,7 +184,7 @@ public sealed class ConditionalEventDefinitionAnalyzer
         ArgumentNullException.ThrowIfNull(definition);
         var conditionalNodes = (definition.FlowNodes ?? [])
             .Where(node => node is not null
-                && BpmnFlowNodeTypes.IsConditionalCatch(node.Type))
+                && BpmnFlowNodeTypes.IsConditionalEvent(node.Type))
             .OrderBy(node => node.Id)
             .ToArray();
         return FindSharedVariableDependencies(definition, conditionalNodes);
@@ -254,7 +259,7 @@ public sealed class ConditionalEventDefinitionAnalyzer
     }
 
     private static ImmutableArray<string> ResolveDependencies(
-        int nodeId,
+        string eventDescription,
         IEnumerable<string> parameters,
         IReadOnlyDictionary<string, string> canonicalVariables)
     {
@@ -272,14 +277,14 @@ public sealed class ConditionalEventDefinitionAnalyzer
             if (prefix is not null)
             {
                 throw new WorkflowDomainException(
-                    $"Conditional catch event #{nodeId} condition references "
+                    $"{eventDescription} condition references "
                     + $"non-observable context parameter '{parameter}'.");
             }
 
             if (!canonicalVariables.TryGetValue(parameter, out var canonical))
             {
                 throw new WorkflowDomainException(
-                    $"Conditional catch event #{nodeId} condition references undeclared "
+                    $"{eventDescription} condition references undeclared "
                     + $"stored variable '{parameter}'.");
             }
             dependencies.Add(canonical);
@@ -287,6 +292,11 @@ public sealed class ConditionalEventDefinitionAnalyzer
 
         return dependencies.ToImmutableArray();
     }
+
+    private static string Describe(FlowNodeModel node) =>
+        BpmnFlowNodeTypes.IsConditionalBoundary(node.Type)
+            ? $"Conditional boundary event #{node.Id}"
+            : $"Conditional catch event #{node.Id}";
 
     private static IReadOnlyDictionary<string, string> BuildCanonicalVariableMap(
         WorkflowModel definition)

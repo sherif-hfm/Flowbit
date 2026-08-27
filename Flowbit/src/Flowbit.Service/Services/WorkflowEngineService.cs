@@ -32,7 +32,8 @@ public sealed partial class WorkflowEngineService(
     IInstanceVariableMutationTracker? variableMutationTracker = null,
     IConditionalEventDependencyPlanCache? conditionalEventPlans = null,
     IWorkflowVariableStore? workflowVariables = null,
-    ISharedVariableAccessPlanCache? sharedVariableAccessPlans = null)
+    ISharedVariableAccessPlanCache? sharedVariableAccessPlans = null,
+    IConditionalBoundarySubscriptionRepository? conditionalBoundarySubscriptions = null)
     : IWorkflowEngineService, IWorkflowJobProcessor,
       IInstanceVersionChangeBatchExecutor, IConditionalEventRuntimeCoordinator
 {
@@ -45,6 +46,23 @@ public sealed partial class WorkflowEngineService(
         sharedVariableAccessPlans
         ?? new SharedVariableAccessPlanCache(new ConditionalEventDefinitionAnalyzer());
     private Dictionary<string, JsonElement>? _settingsCache;
+
+    private sealed record ConditionalAtomicContinuation(
+        ExecutionTokenRecord Token,
+        FlowNodeModel Node,
+        SequenceFlowModel Flow,
+        IReadOnlyList<string> TriggerNames,
+        long? HostTokenId = null,
+        long? SubscriptionId = null,
+        long? Occurrence = null,
+        bool? CancelActivity = null);
+
+    private sealed record ConditionalBoundaryRise(
+        ConditionalBoundarySubscriptionRecord Subscription,
+        ExecutionTokenRecord HostToken,
+        FlowNodeModel Node,
+        SequenceFlowModel Flow,
+        IReadOnlyList<string> TriggerNames);
 
     private async Task LoadSettingsAsync(CancellationToken cancellationToken)
     {
@@ -174,32 +192,122 @@ public sealed partial class WorkflowEngineService(
             return 0;
         }
 
-        var activeTokens = await runtime.ListExecutionTokensAsync(
-            instance.Id,
-            ExecutionTokenRecordStatuses.Active,
+        var triggered = await TriggerConditionalEventsAsync(
+            instance,
+            definition,
+            plan,
+            actor,
+            storedOverlay,
+            flowInfo,
+            candidateNodeIds,
+            changedNames,
+            routingQueue,
+            forceDurableTokenIds,
+            maxTriggers,
+            includeCatchEvents: true,
+            onlyCatchTokenId: onlyTokenId,
+            onlyBoundaryHostTokenId: onlyTokenId,
+            source: "variableWrite",
             cancellationToken);
+
+        ConditionalEventRuntimeTelemetry.RecordWave(
+            candidateNodeIds.Count,
+            Stopwatch.GetElapsedTime(started));
+        return triggered;
+    }
+
+    private async Task<int> TriggerConditionalEventsAsync(
+        WorkflowInstanceRecord instance,
+        WorkflowModel definition,
+        ConditionalEventDependencyPlan plan,
+        ActorContext actor,
+        Dictionary<string, JsonElement> storedOverlay,
+        SequenceFlowInfoSnapshot? flowInfo,
+        IReadOnlyCollection<int> candidateNodeIds,
+        IReadOnlyCollection<string> changedNames,
+        Queue<long> routingQueue,
+        ISet<long> forceDurableTokenIds,
+        long maxTriggers,
+        bool includeCatchEvents,
+        long? onlyCatchTokenId,
+        long? onlyBoundaryHostTokenId,
+        string source,
+        CancellationToken cancellationToken)
+    {
+        var candidateSet = candidateNodeIds.ToHashSet();
+        var catchNodeIds = includeCatchEvents
+            ? candidateSet.Where(nodeId =>
+                    plan.EventsByNodeId.TryGetValue(nodeId, out var entry)
+                    && !entry.IsBoundary)
+                .ToArray()
+            : [];
+        var activeTokens = catchNodeIds.Length == 0
+            ? []
+            : await runtime.ListActiveConditionalWaitTokensAsync(
+                instance.Id,
+                catchNodeIds,
+                onlyCatchTokenId,
+                cancellationToken);
         var tokensByNode = activeTokens
-            .Where(token => candidateNodeIds.Contains(token.NodeId)
-                            && (onlyTokenId is null || token.Id == onlyTokenId.Value)
-                            && BpmnFlowNodeTypes.IsConditionalCatch(token.NodeType)
-                            && token.WaitState is null
-                            && token.WaitingJobId is null)
             .GroupBy(token => token.NodeId)
             .ToDictionary(
                 group => group.Key,
                 group => group.OrderBy(token => token.Id).ToArray());
 
-        var durable = new List<ConditionalWakeLatchRequest>();
-        var atomic = new List<(ExecutionTokenRecord Token,
-            FlowNodeModel Node,
-            SequenceFlowModel Flow,
-            IReadOnlyList<string> TriggerNames)>();
-
-        // Evaluate once per authored node against one stable post-batch snapshot,
-        // then fan the result out to all activations waiting on that node.
-        foreach (var nodeId in candidateNodeIds)
+        var boundaryNodeIds = candidateSet.Where(nodeId =>
+                plan.EventsByNodeId.TryGetValue(nodeId, out var entry)
+                && entry.IsBoundary)
+            .ToArray();
+        IReadOnlyList<ConditionalBoundarySubscriptionRecord> boundarySubscriptions = [];
+        if (boundaryNodeIds.Length > 0)
         {
-            if (!tokensByNode.TryGetValue(nodeId, out var tokens)
+            if (conditionalBoundarySubscriptions is null)
+            {
+                throw new WorkflowDomainException(
+                    "Conditional boundary persistence is unavailable.");
+            }
+            boundarySubscriptions = await conditionalBoundarySubscriptions
+                .ListActiveForUpdateByInstanceAndBoundaryNodeIdsAsync(
+                    instance.Id,
+                    boundaryNodeIds,
+                    cancellationToken);
+            if (onlyBoundaryHostTokenId is not null)
+            {
+                boundarySubscriptions = boundarySubscriptions
+                    .Where(subscription =>
+                        subscription.HostTokenId == onlyBoundaryHostTokenId.Value)
+                    .ToArray();
+            }
+        }
+        var subscriptionsByNode = boundarySubscriptions
+            .GroupBy(subscription => subscription.BoundaryNodeId)
+            .ToDictionary(
+                group => group.Key,
+                group => group.OrderBy(subscription => subscription.Id).ToArray());
+
+        var hostTokenIds = boundarySubscriptions
+            .Select(subscription => subscription.HostTokenId)
+            .Distinct()
+            .ToArray();
+        var hostTokens = hostTokenIds.Length == 0
+            ? []
+            : await runtime.GetExecutionTokensForUpdateAsync(
+                hostTokenIds,
+                cancellationToken);
+        var hostsById = hostTokens.ToDictionary(token => token.Id);
+
+        var durable = new List<ConditionalWakeLatchRequest>();
+        var atomic = new List<ConditionalAtomicContinuation>();
+        var rises = new List<ConditionalBoundaryRise>();
+        var rearms = new List<ConditionalBoundarySubscriptionRecord>();
+
+        foreach (var nodeId in candidateSet.Order())
+        {
+            var hasCatchTokens = tokensByNode.TryGetValue(nodeId, out var tokens);
+            var hasBoundarySubscriptions = subscriptionsByNode.TryGetValue(
+                nodeId,
+                out var subscriptions);
+            if ((!hasCatchTokens && !hasBoundarySubscriptions)
                 || !plan.EventsByNodeId.TryGetValue(nodeId, out var eventPlan))
             {
                 continue;
@@ -210,11 +318,8 @@ public sealed partial class WorkflowEngineService(
                 ConditionalParameters(eventPlan, storedOverlay));
             ConditionalEventRuntimeTelemetry.RecordEvaluation(
                 matched,
-                "variableWrite");
-            if (!matched)
-            {
-                continue;
-            }
+                source,
+                eventPlan.IsBoundary ? "boundary" : "catch");
 
             var node = GetFlowNode(definition, nodeId);
             var flow = OutgoingFlows(instance.WorkflowDefinitionId, definition, nodeId)
@@ -225,42 +330,214 @@ public sealed partial class WorkflowEngineService(
                     StringComparer.OrdinalIgnoreCase))
                 .Order(StringComparer.OrdinalIgnoreCase)
                 .ToArray();
-            foreach (var token in tokens)
+
+            if (hasCatchTokens && matched)
             {
-                if (eventPlan.DeliveryMode == ConditionalEventDeliveryModes.DurableAsync)
+                foreach (var token in tokens!)
                 {
-                    durable.Add(new ConditionalWakeLatchRequest(
-                        token,
+                    if (eventPlan.DeliveryMode == ConditionalEventDeliveryModes.DurableAsync)
+                    {
+                        durable.Add(new ConditionalWakeLatchRequest(
+                            token,
+                            node,
+                            flow,
+                            triggerNames));
+                    }
+                    else
+                    {
+                        atomic.Add(new ConditionalAtomicContinuation(
+                            token,
+                            node,
+                            flow,
+                            triggerNames));
+                    }
+                }
+            }
+
+            if (!hasBoundarySubscriptions)
+            {
+                continue;
+            }
+
+            foreach (var subscription in subscriptions!)
+            {
+                if (!hostsById.TryGetValue(subscription.HostTokenId, out var host)
+                    || host.Status != ExecutionTokenRecordStatuses.Active
+                    || host.ActivationId != subscription.HostActivationId
+                    || host.NodeId != subscription.AttachedToNodeId
+                    || node.AttachedToRef != host.NodeId)
+                {
+                    continue;
+                }
+
+                if (!matched)
+                {
+                    if (subscription.IsConditionTrue)
+                    {
+                        rearms.Add(subscription);
+                    }
+                    continue;
+                }
+
+                if (!subscription.IsConditionTrue)
+                {
+                    rises.Add(new ConditionalBoundaryRise(
+                        subscription,
+                        host,
                         node,
                         flow,
                         triggerNames));
                 }
-                else
+            }
+        }
+
+        var selectedRises = new List<ConditionalBoundaryRise>();
+        foreach (var hostGroup in rises
+                     .GroupBy(rise => rise.HostToken.Id)
+                     .OrderBy(group => group.Key))
+        {
+            selectedRises.AddRange(hostGroup
+                .Where(rise => !rise.Subscription.CancelActivity)
+                .OrderBy(rise => rise.Node.Id));
+            var interrupting = hostGroup
+                .Where(rise => rise.Subscription.CancelActivity)
+                .OrderBy(rise => rise.Node.Id)
+                .ToArray();
+            if (interrupting.Length > 0)
+            {
+                selectedRises.Add(interrupting[0]);
+                if (interrupting.Length > 1)
                 {
-                    atomic.Add((token, node, flow, triggerNames));
+                    ConditionalEventRuntimeTelemetry.RecordSuppressed(
+                        interrupting.Length - 1);
                 }
             }
         }
 
-        var triggerCount = durable.Count + atomic.Count;
-        if (triggerCount > maxTriggers)
+        var plannedTriggers = durable.Count + atomic.Count + selectedRises.Count;
+        if (plannedTriggers > maxTriggers)
         {
             throw new WorkflowDomainException(
                 "Conditional-event routing work limit reached.");
         }
 
-        // Latch every durable activation before an inline continuation can
-        // mutate data or structurally cancel sibling work.
+        // Materialize every non-interrupting occurrence before the deterministic
+        // interrupting winner for the same host. All durable waits are still
+        // latched as one batch below, before any inline continuation runs.
+        var captures = selectedRises
+            .OrderBy(rise => rise.HostToken.Id)
+            .ThenBy(rise => rise.Subscription.CancelActivity)
+            .ThenBy(rise => rise.Node.Id)
+            .Select(rise => (
+                Rise: rise,
+                Occurrence: checked(rise.Subscription.Occurrence + 1)))
+            .ToArray();
+        var stateUpdates = rearms.Select(subscription =>
+                new ConditionalBoundarySubscriptionStateUpdateRecord(
+                    SubscriptionId: subscription.Id,
+                    ExpectedConditionTrue: true,
+                    ExpectedOccurrence: subscription.Occurrence,
+                    ConditionTrue: false,
+                    NextOccurrence: subscription.Occurrence,
+                    Complete: false))
+            .Concat(captures.Select(capture =>
+                new ConditionalBoundarySubscriptionStateUpdateRecord(
+                    SubscriptionId: capture.Rise.Subscription.Id,
+                    ExpectedConditionTrue: false,
+                    ExpectedOccurrence: capture.Rise.Subscription.Occurrence,
+                    ConditionTrue: true,
+                    NextOccurrence: capture.Occurrence,
+                    Complete: capture.Rise.Subscription.CancelActivity)))
+            .OrderBy(update => update.SubscriptionId)
+            .ToArray();
+        if (stateUpdates.Length > 0
+            && !await conditionalBoundarySubscriptions!.StageStateUpdatesAsync(
+                stateUpdates,
+                cancellationToken))
+        {
+            throw new WorkflowConflictException(
+                "A conditional boundary changed while its state batch was being captured.");
+        }
+        foreach (var _ in rearms)
+        {
+            ConditionalEventRuntimeTelemetry.RecordRearm();
+        }
+
+        var nonInterrupting = captures
+            .Where(capture => !capture.Rise.Subscription.CancelActivity)
+            .ToArray();
+        var completionActor = ToNodeExecutionActor(actor);
+        var siblingTokens = await runtime.AddExecutionTokensAsync(
+            instance.Id,
+            nonInterrupting.Select(capture => new ExecutionTokenCreateRecord(
+                    Node: ToSnapshot(capture.Rise.Node),
+                    GatewayBranchId: capture.Rise.HostToken.GatewayBranchId,
+                    ArrivedViaFlowId: null,
+                    TriggeredBy: completionActor,
+                    AutomaticActivationCount:
+                        WorkflowAutomaticActivationGuard.ResetAfterExternalWaitOrTrigger(),
+                    AutomaticActivationStateIds:
+                        capture.Rise.HostToken.AutomaticActivationStateIds))
+                .ToArray(),
+            cancellationToken);
+        if (siblingTokens.Count != nonInterrupting.Length)
+        {
+            throw new WorkflowJobInvariantException(
+                "The conditional-boundary token batch did not create every sibling token.");
+        }
+
+        var siblingIndex = 0;
+        foreach (var capture in captures)
+        {
+            var rise = capture.Rise;
+            var continuation = rise.Subscription.CancelActivity
+                ? await CaptureConditionalBoundaryAsync(
+                    instance,
+                    actor,
+                    rise,
+                    cancellationToken)
+                : siblingTokens[siblingIndex++];
+            if (rise.Subscription.DeliveryMode
+                == ConditionalEventDeliveryModes.DurableAsync)
+            {
+                durable.Add(new ConditionalWakeLatchRequest(
+                    continuation,
+                    rise.Node,
+                    rise.Flow,
+                    rise.TriggerNames,
+                    rise.Subscription.Id,
+                    capture.Occurrence,
+                    rise.HostToken.Id,
+                    rise.Subscription.CancelActivity));
+            }
+            else
+            {
+                atomic.Add(new ConditionalAtomicContinuation(
+                    continuation,
+                    rise.Node,
+                    rise.Flow,
+                    rise.TriggerNames,
+                    rise.HostToken.Id,
+                    rise.Subscription.Id,
+                    capture.Occurrence,
+                    rise.Subscription.CancelActivity));
+            }
+        }
+
         await LatchConditionalWakesAsync(
             instance,
             durable.OrderBy(item => item.Token.Id).ToArray(),
             actor,
             cancellationToken);
-        foreach (var _ in durable)
+        foreach (var item in durable)
         {
             ConditionalEventRuntimeTelemetry.RecordTrigger(
                 ConditionalEventDeliveryModes.DurableAsync,
-                "variableWrite");
+                source,
+                BpmnFlowNodeTypes.IsConditionalBoundary(item.Node.Type)
+                    ? "boundary"
+                    : "catch",
+                item.CancelActivity);
         }
 
         var actualAtomicTriggers = 0;
@@ -276,13 +553,15 @@ public sealed partial class WorkflowEngineService(
                 || currentToken.NodeId != item.Node.Id
                 || currentToken.WaitState is not null)
             {
-                // An earlier continuation in the same wave structurally
-                // cancelled or moved this activation; cancellation wins.
                 continue;
             }
             ConditionalEventRuntimeTelemetry.RecordTrigger(
                 ConditionalEventDeliveryModes.Atomic,
-                "variableWrite");
+                source,
+                BpmnFlowNodeTypes.IsConditionalBoundary(item.Node.Type)
+                    ? "boundary"
+                    : "catch",
+                item.CancelActivity);
             forceDurableTokenIds.Add(currentToken.Id);
             await AdvanceAutomaticTokenAsync(
                 instance,
@@ -300,20 +579,189 @@ public sealed partial class WorkflowEngineService(
                 historyPayload: ConditionalHistoryPayload(
                     ConditionalEventDeliveryModes.Atomic,
                     item.Flow.Id,
-                    item.TriggerNames));
-            logger.LogInformation(
-                "Atomic conditional event triggered for instance {InstanceId}, token {TokenId}, node {NodeId}.",
-                instance.Id,
-                currentToken.Id,
-                item.Node.Id);
+                    item.TriggerNames,
+                    eventNode: item.Node,
+                    hostTokenId: item.HostTokenId,
+                    subscriptionId: item.SubscriptionId,
+                    occurrence: item.Occurrence,
+                    cancelActivity: item.CancelActivity));
             actualAtomicTriggers++;
         }
 
-        ConditionalEventRuntimeTelemetry.RecordWave(
-            candidateNodeIds.Count,
-            Stopwatch.GetElapsedTime(started));
-
         return durable.Count + actualAtomicTriggers;
+    }
+
+    private async Task<ExecutionTokenRecord> CaptureConditionalBoundaryAsync(
+        WorkflowInstanceRecord instance,
+        ActorContext actor,
+        ConditionalBoundaryRise rise,
+        CancellationToken cancellationToken)
+    {
+        var subscription = rise.Subscription;
+        var host = rise.HostToken;
+        var completionActor = ToNodeExecutionActor(actor);
+
+        if (!subscription.CancelActivity)
+        {
+            var sibling = await runtime.AddExecutionTokenAsync(
+                instance.Id,
+                ToSnapshot(rise.Node),
+                host.GatewayBranchId,
+                null,
+                completionActor,
+                cancellationToken,
+                automaticActivationCount:
+                    WorkflowAutomaticActivationGuard.ResetAfterExternalWaitOrTrigger(),
+                automaticActivationStateIds: host.AutomaticActivationStateIds);
+            return sibling;
+        }
+
+        var ids = new[] { host.Id };
+        await runtime.CancelOpenUserTasksForTokensAsync(
+            ids,
+            NodeExecutionCompletionReasons.ConditionalTriggered,
+            completionActor,
+            cancellationToken);
+        await runtime.CancelActiveMultiInstancesForTokensAsync(
+            ids,
+            NodeExecutionCompletionReasons.ConditionalTriggered,
+            completionActor,
+            cancellationToken);
+        await timerSubscriptions.CancelByTokenIdsAsync(
+            instance.Id,
+            ids,
+            cancellationToken);
+        await conditionalBoundarySubscriptions!.CancelOtherForTokenAsync(
+            instance.Id,
+            host.Id,
+            subscription.Id,
+            cancellationToken);
+        await jobs.CancelOtherJobsByTokenIdsAsync(
+            instance.Id,
+            ids,
+            _processingJobId,
+            "interruptingConditionalBoundary",
+            cancellationToken);
+        await runtime.UpdateExecutionTokenAsync(
+            host.Id,
+            ToSnapshot(rise.Node),
+            ExecutionTokenRecordStatuses.Active,
+            host.GatewayBranchId,
+            null,
+            null,
+            null,
+            completionActor,
+            new NodeExecutionCompletionRecord(
+                NodeExecutionRecordStatuses.Cancelled,
+                NodeExecutionCompletionReasons.ConditionalTriggered,
+                null,
+                null,
+                host.GatewayBranchId,
+                completionActor),
+            cancellationToken,
+            automaticActivationCount:
+                WorkflowAutomaticActivationGuard.ResetAfterExternalWaitOrTrigger(),
+            automaticActivationStateIds: host.AutomaticActivationStateIds);
+        return await runtime.GetExecutionTokenAsync(
+                host.Id,
+                false,
+                cancellationToken)
+            ?? throw new WorkflowConflictException(
+                "The interrupting conditional boundary token disappeared while it was captured.");
+    }
+
+    private async Task<int> EnsureAttachedConditionalBoundarySubscriptionsAsync(
+        WorkflowInstanceRecord instance,
+        ExecutionTokenRecord hostToken,
+        FlowNodeModel host,
+        WorkflowModel definition,
+        ConditionalEventDependencyPlan plan,
+        ActorContext actor,
+        Dictionary<string, JsonElement> storedOverlay,
+        SequenceFlowInfoSnapshot? flowInfo,
+        Queue<long> routingQueue,
+        ISet<long> forceDurableTokenIds,
+        long maxTriggers,
+        CancellationToken cancellationToken)
+    {
+        var boundaries = definition.FlowNodes
+            .Where(candidate =>
+                BpmnFlowNodeTypes.IsConditionalBoundary(candidate.Type)
+                && candidate.AttachedToRef == host.Id)
+            .OrderBy(candidate => candidate.Id)
+            .ToArray();
+        if (boundaries.Length == 0)
+        {
+            return 0;
+        }
+        if (conditionalBoundarySubscriptions is null)
+        {
+            throw new WorkflowDomainException(
+                "Conditional boundary persistence is unavailable.");
+        }
+
+        var existing = await conditionalBoundarySubscriptions.ListForActivationAsync(
+            hostToken.Id,
+            hostToken.ActivationId,
+            cancellationToken);
+        var existingNodeIds = existing
+            .Select(subscription => subscription.BoundaryNodeId)
+            .ToHashSet();
+        var creates = new List<ConditionalBoundarySubscriptionCreateRecord>();
+        foreach (var boundary in boundaries.Where(boundary =>
+                     !existingNodeIds.Contains(boundary.Id)))
+        {
+            if (!plan.EventsByNodeId.TryGetValue(boundary.Id, out var eventPlan)
+                || !eventPlan.IsBoundary)
+            {
+                throw new WorkflowDomainException(
+                    $"Conditional boundary event #{boundary.Id} has no dependency plan.");
+            }
+            var flow = OutgoingFlows(
+                    instance.WorkflowDefinitionId,
+                    definition,
+                    boundary.Id)
+                .Single();
+            creates.Add(new ConditionalBoundarySubscriptionCreateRecord
+            {
+                InstanceId = instance.Id,
+                WorkflowDefinitionId = instance.WorkflowDefinitionId,
+                WorkflowKey = instance.WorkflowKey,
+                HostTokenId = hostToken.Id,
+                HostActivationId = hostToken.ActivationId,
+                BoundaryNodeId = boundary.Id,
+                BoundaryNodeName = boundary.Name,
+                AttachedToNodeId = host.Id,
+                OutgoingFlowId = flow.Id,
+                Condition = eventPlan.Condition,
+                DeliveryMode = eventPlan.DeliveryMode,
+                CancelActivity = eventPlan.CancelActivity
+            });
+        }
+        if (creates.Count > 0)
+        {
+            _ = await conditionalBoundarySubscriptions.CreateManyAsync(
+                creates,
+                cancellationToken);
+        }
+
+        return await TriggerConditionalEventsAsync(
+            instance,
+            definition,
+            plan,
+            actor,
+            storedOverlay,
+            flowInfo,
+            boundaries.Select(boundary => boundary.Id).ToArray(),
+            changedNames: [],
+            routingQueue,
+            forceDurableTokenIds,
+            maxTriggers,
+            includeCatchEvents: false,
+            onlyCatchTokenId: null,
+            onlyBoundaryHostTokenId: hostToken.Id,
+            source: "entry",
+            cancellationToken);
     }
 
     private async Task<int> DrainConditionalVariableChangesAsync(
@@ -335,6 +783,10 @@ public sealed partial class WorkflowEngineService(
         }
 
         var changedNames = variableMutationTracker.Consume(instance.Id);
+        // Persist the complete producer batch before reading the trigger-backed
+        // current-value projection. This keeps service/script outputs atomic and
+        // prevents intermediate in-memory assignment states from becoming edges.
+        await unitOfWork.SaveChangesAsync(cancellationToken);
         var currentInstanceValues = await LoadInstanceVariablesAsync(
             instance.Id,
             cancellationToken);
@@ -361,7 +813,12 @@ public sealed partial class WorkflowEngineService(
         string deliveryMode,
         int selectedFlowId,
         IReadOnlyCollection<string> triggerNames,
-        long? jobId = null)
+        long? jobId = null,
+        FlowNodeModel? eventNode = null,
+        long? hostTokenId = null,
+        long? subscriptionId = null,
+        long? occurrence = null,
+        bool? cancelActivity = null)
     {
         var payload = new Dictionary<string, JsonElement>
         {
@@ -372,6 +829,30 @@ public sealed partial class WorkflowEngineService(
         if (jobId is long id)
         {
             payload["jobId"] = JsonSerializer.SerializeToElement(id);
+        }
+        if (eventNode is not null)
+        {
+            payload["eventKind"] = JsonSerializer.SerializeToElement(
+                BpmnFlowNodeTypes.IsConditionalBoundary(eventNode.Type)
+                    ? "boundary"
+                    : "catch");
+            payload["eventNodeId"] = JsonSerializer.SerializeToElement(eventNode.Id);
+        }
+        if (hostTokenId is long tokenId)
+        {
+            payload["hostTokenId"] = JsonSerializer.SerializeToElement(tokenId);
+        }
+        if (subscriptionId is long boundarySubscriptionId)
+        {
+            payload["subscriptionId"] = JsonSerializer.SerializeToElement(boundarySubscriptionId);
+        }
+        if (occurrence is long boundaryOccurrence)
+        {
+            payload["occurrence"] = JsonSerializer.SerializeToElement(boundaryOccurrence);
+        }
+        if (cancelActivity is bool interrupting)
+        {
+            payload["cancelActivity"] = JsonSerializer.SerializeToElement(interrupting);
         }
         return payload;
     }
@@ -2653,26 +3134,22 @@ public sealed partial class WorkflowEngineService(
         IReadOnlyList<SharedVariableWriteCorrelationDto>? sharedVariableWrites = null)
     {
         var user = NormalizeUser(actor.User);
-        await RecordSequenceFlowOccurrenceAsync(
-            flowInfo,
-            instance.Id,
-            execution.TokenId,
-            userTaskId,
-            execution.Id,
-            itemIndex,
-            winning,
-            administrativeBatch is null
-                ? directParentInterrupt ? "multiInstanceInterrupt" : "multiInstanceOutcome"
-                : NodeExecutionCompletionReasons.AdministrativeAction,
-            isAction: directParentInterrupt || administrativeBatch is not null
-                && administrativeBatch.Request.MultiInstanceMode
-                == AdministrativeActionMultiInstanceModes.ForceParent,
-            isTraversal: !node.AsyncAfter,
-            actor: actor,
-            values: directParentInterrupt ? variableValues : null,
-            cancellationToken: cancellationToken,
-            administrativeBatch: administrativeBatch,
-            sharedVariableWrites: directParentInterrupt ? sharedVariableWrites : null);
+        var expectedHostToken = await runtime.GetExecutionTokenAsync(
+                execution.TokenId,
+                true,
+                cancellationToken)
+            ?? throw new WorkflowConflictException(
+                "The multi-instance parent token no longer exists.");
+        if (expectedHostToken.Status != ExecutionTokenRecordStatuses.Active
+            || expectedHostToken.NodeId != node.Id)
+        {
+            throw new WorkflowConflictException(
+                "The multi-instance parent token is no longer active.");
+        }
+        var isParentAction = directParentInterrupt
+            || administrativeBatch is not null
+               && administrativeBatch.Request.MultiInstanceMode
+               == AdministrativeActionMultiInstanceModes.ForceParent;
         await runtime.CloseMultiInstanceAsync(
             execution.Id,
             winning.Id,
@@ -2733,10 +3210,43 @@ public sealed partial class WorkflowEngineService(
             administrativeBatch?.BatchId,
             directParentInterrupt ? sharedVariableWrites : null);
 
-        var token = await runtime.GetExecutionTokenAsync(execution.TokenId, true, cancellationToken)
-            ?? throw new WorkflowConflictException("The multi-instance parent token no longer exists.");
-        if (token.Status != ExecutionTokenRecordStatuses.Active)
-            throw new WorkflowConflictException("The multi-instance parent token is no longer active.");
+        // The aggregate result and any direct-parent action values are one
+        // observable host-output batch. Capture attached boundaries before the
+        // parent token can take its normal outcome.
+        await ResumeForVariableChangesAsync(instance, actor, cancellationToken);
+        var tokenAfterConditionalCapture = await runtime.GetExecutionTokenAsync(
+            execution.TokenId,
+            false,
+            cancellationToken);
+        var hostStillCurrent = IsSameRunnableActivation(
+            expectedHostToken,
+            tokenAfterConditionalCapture);
+        await RecordSequenceFlowOccurrenceAsync(
+            flowInfo,
+            instance.Id,
+            execution.TokenId,
+            userTaskId,
+            execution.Id,
+            itemIndex,
+            winning,
+            administrativeBatch is null
+                ? directParentInterrupt ? "multiInstanceInterrupt" : "multiInstanceOutcome"
+                : NodeExecutionCompletionReasons.AdministrativeAction,
+            isAction: isParentAction,
+            isTraversal: hostStillCurrent && !node.AsyncAfter,
+            actor: actor,
+            values: directParentInterrupt ? variableValues : null,
+            cancellationToken: cancellationToken,
+            administrativeBatch: administrativeBatch,
+            sharedVariableWrites: directParentInterrupt ? sharedVariableWrites : null);
+        if (!hostStillCurrent)
+        {
+            await unitOfWork.SaveChangesAsync(cancellationToken);
+            return await runtime.GetInstanceAsync(instance.Id, cancellationToken)
+                ?? instance;
+        }
+
+        var token = tokenAfterConditionalCapture!;
         var resetAutomaticActivationCount =
             WorkflowAutomaticActivationGuard.ResetAfterExternalWaitOrTrigger();
         if (!await runtime.SetExecutionTokenAutomaticActivationCountAsync(
@@ -2770,25 +3280,16 @@ public sealed partial class WorkflowEngineService(
                 multiInstanceExecutionId: execution.Id,
                 userTaskId: userTaskId,
                 administrativeBatch: administrativeBatch);
-            await CancelAttachedTimerBoundaryWaitsAsync(
+            await CancelAttachedBoundaryWaitsAsync(
                 instance.Id,
                 [token.Id],
-                cancellationToken);
-            // The result variable (and, for direct/admin interrupts, flow
-            // variables) was written before this async-after wait was staged.
-            // Drain those tracked writes now, while this transaction still owns
-            // the instance lock, so an already-waiting sibling conditional event
-            // cannot miss the committed change.
-            await ResumeForVariableChangesAsync(
-                waitingInstance,
-                actor,
                 cancellationToken);
             await unitOfWork.SaveChangesAsync(cancellationToken);
             return await runtime.GetInstanceAsync(instance.Id, cancellationToken)
                 ?? waitingInstance;
         }
 
-        await CancelAttachedTimerBoundaryWaitsAsync(
+        await CancelAttachedBoundaryWaitsAsync(
             instance.Id,
             [token.Id],
             cancellationToken);
@@ -3122,6 +3623,69 @@ public sealed partial class WorkflowEngineService(
         var persistedFlowValues = InstanceSubmittedValues(flowValues, writeResults);
         var sharedVariableWrites = SharedWriteCorrelations(writeResults);
 
+        // A successful action's complete variable batch is observable while the
+        // attached activity is still active. An interrupting conditional boundary
+        // therefore wins over completion and the selected normal continuation.
+        await ResumeForVariableChangesAsync(
+            taskInstance,
+            executionActor,
+            cancellationToken);
+        var tokenAfterConditionalCapture = await runtime.GetExecutionTokenAsync(
+            token.Id,
+            false,
+            cancellationToken);
+        if (!IsSameRunnableActivation(token, tokenAfterConditionalCapture))
+        {
+            await RecordSequenceFlowOccurrenceAsync(
+                flowInfo,
+                instance.Id,
+                task.TokenId,
+                task.Id,
+                null,
+                null,
+                flow,
+                administrativeBatch is null
+                    ? "userTaskAction"
+                    : NodeExecutionCompletionReasons.AdministrativeAction,
+                isAction: true,
+                isTraversal: false,
+                actor: executionActor,
+                values: persistedFlowValues,
+                cancellationToken: cancellationToken,
+                administrativeBatch: administrativeBatch,
+                sharedVariableWrites: sharedVariableWrites);
+            await runtime.AddUserTaskActionHistoryAsync(
+                instance.Id,
+                task.TokenId,
+                task.Id,
+                flow.Id,
+                node.Id,
+                flow.TargetRef,
+                performedBy ?? "anonymous",
+                CloneDictionary(persistedFlowValues) ?? [],
+                cancellationToken,
+                executionActor.ActingFor,
+                executionActor.DelegationId,
+                note: administrativeBatch is null
+                    ? InstanceHistoryNotes.ConditionalTriggered
+                    : NodeExecutionCompletionReasons.AdministrativeAction,
+                reason: administrativeBatch?.Reason,
+                administrativeActionBatchId: administrativeBatch?.BatchId,
+                sharedVariableWrites: sharedVariableWrites);
+            if (administrativeBatch is not null)
+            {
+                await CompleteAdministrativeBatchItemAsync(
+                    administrativeBatch.Request,
+                    instance.Id,
+                    affectedTaskCount: 1,
+                    cancellationToken);
+            }
+            await unitOfWork.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return await BuildDetailAsync(id, cancellationToken);
+        }
+        token = tokenAfterConditionalCapture!;
+
         await runtime.CompleteUserTaskAsync(
             task.Id,
             flow.Id,
@@ -3203,16 +3767,9 @@ public sealed partial class WorkflowEngineService(
                 selectedFlowId: flow.Id,
                 userTaskId: task.Id,
                 administrativeBatch: administrativeBatch);
-            await CancelAttachedTimerBoundaryWaitsAsync(
+            await CancelAttachedBoundaryWaitsAsync(
                 instance.Id,
                 [token.Id],
-                cancellationToken);
-            // Flow variables are already staged, but async-after deliberately
-            // skips the normal pass-through loop that otherwise drains the
-            // conditional mutation tracker.
-            await ResumeForVariableChangesAsync(
-                taskInstance,
-                executionActor,
                 cancellationToken);
             if (administrativeBatch is not null)
             {
@@ -3254,7 +3811,7 @@ public sealed partial class WorkflowEngineService(
 
         var nextContext = WithContext(
             flowContext, executionActor, taskInstance, workflow.Definition, nextNode);
-        await CancelAttachedTimerBoundaryWaitsAsync(
+        await CancelAttachedBoundaryWaitsAsync(
             instance.Id,
             [token.Id],
             cancellationToken);
@@ -3502,34 +4059,46 @@ public sealed partial class WorkflowEngineService(
             stored[pair.Key] = pair.Value;
         }
 
-        // Advance down the single unconditional outgoing flow (ValidateDefinition
-        // enforced exactly one for a message catch event). SingleOrDefault + a
-        // domain exception keeps a malformed legacy definition from surfacing as a
-        // bare 500 (matching SelectPassThroughFlow's style).
-        var outgoing = OutgoingFlows(workflow.Id, workflow.Definition, node.Id).Take(2).ToList();
-        if (outgoing.Count != 1)
+        // Message output variables are committed as one observable batch while
+        // the catch activity is still active. An interrupting conditional
+        // boundary suppresses the message catch's normal outgoing flow.
+        await ResumeForVariableChangesAsync(instance, actor, cancellationToken);
+        var tokenAfterConditionalCapture = await runtime.GetExecutionTokenAsync(
+            token.Id,
+            false,
+            cancellationToken);
+        if (IsSameRunnableActivation(token, tokenAfterConditionalCapture))
         {
-            throw new WorkflowDomainException(
-                $"Message catch event #{node.Id} must have exactly one outgoing sequence flow.");
-        }
-        var flow = outgoing[0];
-        var nextNode = GetFlowNode(workflow.Definition, flow.TargetRef);
-        var targetTokenStatus = BpmnFlowNodeTypes.IsErrorEnd(nextNode.Type)
-            ? ExecutionTokenRecordStatuses.Faulted
-            : BpmnFlowNodeTypes.IsEnd(nextNode.Type)
-                ? ExecutionTokenRecordStatuses.Completed
-                : ExecutionTokenRecordStatuses.Active;
-        var terminationReason = BpmnFlowNodeTypes.IsTerminateEnd(nextNode.Type)
-            ? ExecutionTokenTerminationReasons.TerminateEnd
-            : BpmnFlowNodeTypes.IsErrorEnd(nextNode.Type)
-                ? ExecutionTokenTerminationReasons.ErrorEnd
-                : BpmnFlowNodeTypes.IsEnd(nextNode.Type)
-                    ? ExecutionTokenTerminationReasons.NormalEnd
-                    : null;
+            token = tokenAfterConditionalCapture!;
 
-        var flowInfo = await LoadSequenceFlowInfoAsync(
-            instance.Id, workflow.Definition, cancellationToken);
-        await RecordSequenceFlowOccurrenceAsync(
+            // Advance down the single unconditional outgoing flow (ValidateDefinition
+            // enforced exactly one for a message catch event). SingleOrDefault + a
+            // domain exception keeps a malformed legacy definition from surfacing as a
+            // bare 500 (matching SelectPassThroughFlow's style).
+            var outgoing = OutgoingFlows(workflow.Id, workflow.Definition, node.Id).Take(2).ToList();
+            if (outgoing.Count != 1)
+            {
+                throw new WorkflowDomainException(
+                    $"Message catch event #{node.Id} must have exactly one outgoing sequence flow.");
+            }
+            var flow = outgoing[0];
+            var nextNode = GetFlowNode(workflow.Definition, flow.TargetRef);
+            var targetTokenStatus = BpmnFlowNodeTypes.IsErrorEnd(nextNode.Type)
+                ? ExecutionTokenRecordStatuses.Faulted
+                : BpmnFlowNodeTypes.IsEnd(nextNode.Type)
+                    ? ExecutionTokenRecordStatuses.Completed
+                    : ExecutionTokenRecordStatuses.Active;
+            var terminationReason = BpmnFlowNodeTypes.IsTerminateEnd(nextNode.Type)
+                ? ExecutionTokenTerminationReasons.TerminateEnd
+                : BpmnFlowNodeTypes.IsErrorEnd(nextNode.Type)
+                    ? ExecutionTokenTerminationReasons.ErrorEnd
+                    : BpmnFlowNodeTypes.IsEnd(nextNode.Type)
+                        ? ExecutionTokenTerminationReasons.NormalEnd
+                        : null;
+
+            var flowInfo = await LoadSequenceFlowInfoAsync(
+                instance.Id, workflow.Definition, cancellationToken);
+            await RecordSequenceFlowOccurrenceAsync(
             flowInfo,
             instance.Id,
             token.Id,
@@ -3544,7 +4113,7 @@ public sealed partial class WorkflowEngineService(
             values: null,
             cancellationToken: cancellationToken);
 
-        await runtime.AddTokenHistoryAsync(
+            await runtime.AddTokenHistoryAsync(
             instance.Id,
             token.Id,
             null,
@@ -3555,24 +4124,24 @@ public sealed partial class WorkflowEngineService(
             "message",
             cancellationToken);
 
-        var tokenInstance = instance with
-        {
-            ActiveTokenId = token.Id,
-            CurrentStepId = nextNode.Id,
-            ClaimedBy = null,
-            FaultCode = BpmnFlowNodeTypes.IsErrorEnd(nextNode.Type) ? nextNode.ErrorCode : null,
-            FaultDescription = BpmnFlowNodeTypes.IsErrorEnd(nextNode.Type)
-                ? nextNode.ErrorDescription ?? nextNode.Name
-                : null,
-            UpdatedAt = DateTimeOffset.UtcNow
-        };
+            var tokenInstance = instance with
+            {
+                ActiveTokenId = token.Id,
+                CurrentStepId = nextNode.Id,
+                ClaimedBy = null,
+                FaultCode = BpmnFlowNodeTypes.IsErrorEnd(nextNode.Type) ? nextNode.ErrorCode : null,
+                FaultDescription = BpmnFlowNodeTypes.IsErrorEnd(nextNode.Type)
+                    ? nextNode.ErrorDescription ?? nextNode.Name
+                    : null,
+                UpdatedAt = DateTimeOffset.UtcNow
+            };
 
-        var nextContext = WithContext(stored, actor, tokenInstance, workflow.Definition, nextNode);
-        await CancelAttachedTimerBoundaryWaitsAsync(
+            var nextContext = WithContext(stored, actor, tokenInstance, workflow.Definition, nextNode);
+            await CancelAttachedBoundaryWaitsAsync(
             instance.Id,
             [token.Id],
             cancellationToken);
-        await runtime.UpdateExecutionTokenAsync(
+            await runtime.UpdateExecutionTokenAsync(
             token.Id,
             ToSnapshot(nextNode, nextContext, instance.Id),
             targetTokenStatus,
@@ -3591,40 +4160,34 @@ public sealed partial class WorkflowEngineService(
             cancellationToken,
             automaticActivationCount:
                 WorkflowAutomaticActivationGuard.ResetAfterExternalWaitOrTrigger());
-        await unitOfWork.SaveChangesAsync(cancellationToken);
-        if (BpmnFlowNodeTypes.IsTerminateEnd(nextNode.Type))
-        {
-            await TerminateInstanceAsync(instance.Id, token.Id, actor, cancellationToken);
-        }
-        else if (BpmnFlowNodeTypes.IsErrorEnd(nextNode.Type))
-        {
-            await FaultInstanceAsync(instance.Id, token.Id, actor, cancellationToken);
-        }
-        else if (BpmnFlowNodeTypes.IsEnd(nextNode.Type))
-        {
-            var remaining = await runtime.ListExecutionTokensAsync(
-                instance.Id, ExecutionTokenRecordStatuses.Active, cancellationToken);
-            if (remaining.Count == 0)
+            await unitOfWork.SaveChangesAsync(cancellationToken);
+            if (BpmnFlowNodeTypes.IsTerminateEnd(nextNode.Type))
             {
-                await runtime.SetInstanceStatusAsync(
-                    instance.Id, WorkflowInstanceStatuses.Completed, cancellationToken);
+                await TerminateInstanceAsync(instance.Id, token.Id, actor, cancellationToken);
             }
-            await CloseInactiveGatewayScopesAsync(instance.Id, "allEnded", cancellationToken);
-            if (remaining.Count > 0)
+            else if (BpmnFlowNodeTypes.IsErrorEnd(nextNode.Type))
             {
-                await ResumeForVariableChangesAsync(
-                    tokenInstance,
-                    actor,
-                    cancellationToken);
+                await FaultInstanceAsync(instance.Id, token.Id, actor, cancellationToken);
             }
-        }
-        else
-        {
-            instance = await ResolvePassThroughAsync(
-                tokenInstance, workflow.Definition, actor, flowInfo, token.Id, cancellationToken);
-            await EnsureMultiInstanceInitializedAsync(instance, workflow.Definition, actor, cancellationToken);
-            instance = await ApplyUserTaskOwnershipInheritanceAsync(
-                instance, workflow.Definition, cancellationToken);
+            else if (BpmnFlowNodeTypes.IsEnd(nextNode.Type))
+            {
+                var remaining = await runtime.ListExecutionTokensAsync(
+                    instance.Id, ExecutionTokenRecordStatuses.Active, cancellationToken);
+                if (remaining.Count == 0)
+                {
+                    await runtime.SetInstanceStatusAsync(
+                        instance.Id, WorkflowInstanceStatuses.Completed, cancellationToken);
+                }
+                await CloseInactiveGatewayScopesAsync(instance.Id, "allEnded", cancellationToken);
+            }
+            else
+            {
+                instance = await ResolvePassThroughAsync(
+                    tokenInstance, workflow.Definition, actor, flowInfo, token.Id, cancellationToken);
+                await EnsureMultiInstanceInitializedAsync(instance, workflow.Definition, actor, cancellationToken);
+                instance = await ApplyUserTaskOwnershipInheritanceAsync(
+                    instance, workflow.Definition, cancellationToken);
+            }
         }
 
         await unitOfWork.SaveChangesAsync(cancellationToken);
@@ -4736,6 +5299,31 @@ public sealed partial class WorkflowEngineService(
                     FaultDescription = token.FaultDescription
                 };
 
+                routingSteps += await EnsureAttachedConditionalBoundarySubscriptionsAsync(
+                    tokenInstance,
+                    token,
+                    currentNode,
+                    definition,
+                    conditionalPlan,
+                    actor,
+                    storedOverlay,
+                    flowInfo,
+                    queue,
+                    conditionalDurableTokenIds,
+                    maxRoutingSteps - routingSteps,
+                    cancellationToken);
+                var tokenAfterBoundaryEntry = await runtime.GetExecutionTokenAsync(
+                    token.Id,
+                    false,
+                    cancellationToken);
+                if (!IsSameRunnableActivation(token, tokenAfterBoundaryEntry))
+                {
+                    // An initially true interrupting boundary captured this host
+                    // before its durable wait or automatic activity was started.
+                    continue;
+                }
+                token = tokenAfterBoundaryEntry!;
+
                 var resumesCurrentActivation = resume is not null
                     && resume.ActivationId == token.ActivationId;
                 var isExternalOrCpuActivity =
@@ -4933,6 +5521,27 @@ public sealed partial class WorkflowEngineService(
                     variables = WithContext(storedOverlay, actor, tokenInstance, definition, currentNode);
                 }
 
+                FlowNodeModel? taskFailureBoundary = null;
+                if (outcome is { Success: false })
+                {
+                    taskFailureBoundary = FindErrorBoundary(definition, currentNode.Id);
+                    if (taskFailureBoundary is null)
+                    {
+                        throw new WorkflowDomainException(
+                            outcome.Reason ?? $"Task #{currentNode.Id} failed.");
+                    }
+                    // Error capture has precedence over conditions attached to
+                    // the same failed host. Standalone conditional catches still
+                    // observe the committed status/error-variable batch below.
+                    if (conditionalBoundarySubscriptions is not null)
+                    {
+                        await conditionalBoundarySubscriptions.CancelByTokenIdsAsync(
+                            instance.Id,
+                            [token.Id],
+                            cancellationToken);
+                    }
+                }
+
                 routingSteps += await DrainConditionalVariableChangesAsync(
                     instance,
                     definition,
@@ -4968,11 +5577,7 @@ public sealed partial class WorkflowEngineService(
 
             if (outcome is { Success: false })
             {
-                var boundary = FindErrorBoundary(definition, currentNode.Id);
-                if (boundary is null)
-                {
-                    throw new WorkflowDomainException(outcome.Reason ?? $"Task #{currentNode.Id} failed.");
-                }
+                var boundary = taskFailureBoundary!;
 
                 if (!string.IsNullOrWhiteSpace(boundary.ErrorVariable))
                 {
@@ -5034,7 +5639,7 @@ public sealed partial class WorkflowEngineService(
                     cancellationToken,
                     actor.ActingFor,
                     actor.DelegationId);
-                await CancelAttachedTimerBoundaryWaitsAsync(
+                await CancelAttachedBoundaryWaitsAsync(
                     instance.Id,
                     [token.Id],
                     cancellationToken);
@@ -5072,7 +5677,7 @@ public sealed partial class WorkflowEngineService(
                     definition,
                     actor,
                     cancellationToken);
-                await CancelAttachedTimerBoundaryWaitsAsync(
+                await CancelAttachedBoundaryWaitsAsync(
                     instance.Id,
                     [token.Id],
                     cancellationToken);
@@ -7214,7 +7819,7 @@ public sealed partial class WorkflowEngineService(
         };
         if (!BpmnFlowNodeTypes.IsTimer(currentNode.Type))
         {
-            await CancelAttachedTimerBoundaryWaitsAsync(
+            await CancelAttachedBoundaryWaitsAsync(
                 instance.Id,
                 [token.Id],
                 cancellationToken);

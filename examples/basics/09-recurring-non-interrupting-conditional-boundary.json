@@ -1,0 +1,151 @@
+{
+  "id": "example-recurring-non-interrupting-conditional-boundary",
+  "name": "Example 09 - Recurring Non-Interrupting Conditional Boundary",
+  "initialEventId": 1,
+  "variables": [
+    {
+      "id": 1,
+      "name": "alertRaised",
+      "dataType": "boolean",
+      "isArray": false,
+      "nullable": false,
+      "required": false,
+      "defaultValue": false,
+      "validation": null
+    },
+    {
+      "id": 2,
+      "name": "alertsHandled",
+      "dataType": "number",
+      "isArray": false,
+      "nullable": false,
+      "required": false,
+      "defaultValue": 0,
+      "validation": "alertsHandled >= 0"
+    }
+  ],
+  "lanes": [],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Start",
+      "externalId": "START_RECURRING_CONDITION",
+      "type": "startEvent",
+      "laneId": null,
+      "x": 70,
+      "y": 180,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 2,
+      "name": "Monitor Case",
+      "externalId": "TASK_MONITOR_CASE",
+      "type": "userTask",
+      "laneId": null,
+      "x": 300,
+      "y": 165,
+      "roles": [],
+      "variables": [],
+      "requiresClaim": false,
+      "claimMode": "fresh"
+    },
+    {
+      "id": 3,
+      "name": "Monitoring Completed",
+      "externalId": "END_MONITORING_COMPLETED",
+      "type": "endEvent",
+      "laneId": null,
+      "x": 950,
+      "y": 175,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 4,
+      "name": "Alert Raised",
+      "externalId": "BOUNDARY_ALERT_RAISED",
+      "type": "conditionalBoundaryEvent",
+      "laneId": null,
+      "x": 385,
+      "y": 225,
+      "roles": [],
+      "variables": [],
+      "attachedToRef": 2,
+      "cancelActivity": false,
+      "conditional": {
+        "condition": "alertRaised == true",
+        "deliveryMode": "durableAsync"
+      }
+    },
+    {
+      "id": 5,
+      "name": "Record Alert",
+      "externalId": "SCRIPT_RECORD_CONDITIONAL_ALERT",
+      "type": "scriptTask",
+      "laneId": null,
+      "x": 610,
+      "y": 300,
+      "roles": [],
+      "variables": [],
+      "asyncBefore": false,
+      "asyncAfter": false,
+      "scriptFormat": "ncalc",
+      "assignments": [
+        {
+          "variable": "alertsHandled",
+          "expression": "alertsHandled + 1"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "name": "Alert Branch End",
+      "externalId": "END_CONDITIONAL_ALERT_BRANCH",
+      "type": "endEvent",
+      "laneId": null,
+      "x": 950,
+      "y": 315,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "Begin monitoring",
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 201,
+      "name": "Finish monitoring",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 401,
+      "name": "Handle alert without cancelling monitoring",
+      "sourceRef": 4,
+      "targetRef": 5,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 501,
+      "name": "Alert recorded",
+      "sourceRef": 5,
+      "targetRef": 6,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "cancelRoles": [],
+  "unclaimRoles": [],
+  "taskAssignmentRoles": [],
+  "taskDistribution": null
+}

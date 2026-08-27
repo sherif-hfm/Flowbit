@@ -3385,6 +3385,226 @@ public sealed class DefinitionValidationTests
         Assert.Equal("P2D", boundary.Timer!.TimeDuration);
     }
 
+    [Theory]
+    [InlineData(null, null, true)]
+    [InlineData(false, "durableAsync", false)]
+    [InlineData(true, "atomic", true)]
+    public async Task CreateAsync_AcceptsConditionalBoundaryDefaultsAndModes(
+        bool? cancelActivity,
+        string? deliveryMode,
+        bool expectedCancelActivity)
+    {
+        var model = CreateTerminalModel(BpmnFlowNodeTypes.EndEvent);
+        model.Variables.Add(new VariableModel
+        {
+            Id = 1,
+            Name = "RiskScore",
+            DataType = WorkflowVariableTypes.Number,
+            DefaultValue = JsonSerializer.SerializeToElement(0)
+        });
+        model.FlowNodes.Add(new FlowNodeModel
+        {
+            Id = 4,
+            Name = "High risk",
+            Type = BpmnFlowNodeTypes.ConditionalBoundaryEvent,
+            AttachedToRef = 2,
+            CancelActivity = cancelActivity,
+            Conditional = new ConditionalDefinitionModel
+            {
+                Condition = "RiskScore >= 80",
+                DeliveryMode = deliveryMode
+            }
+        });
+        model.SequenceFlows.Add(new SequenceFlowModel
+        {
+            Id = 401,
+            Name = "Escalate",
+            SourceRef = 4,
+            TargetRef = 3
+        });
+
+        await CreateService(out var repository).CreateAsync(
+            model,
+            false,
+            CancellationToken.None);
+
+        var boundary = repository.Added!.Definition.FlowNodes.Single(node => node.Id == 4);
+        Assert.Equal(expectedCancelActivity, boundary.CancelActivity);
+        Assert.Equal(
+            deliveryMode is not null && deliveryMode.Equals(
+                ConditionalEventDeliveryModes.DurableAsync,
+                StringComparison.OrdinalIgnoreCase)
+                ? ConditionalEventDeliveryModes.DurableAsync
+                : ConditionalEventDeliveryModes.Atomic,
+            boundary.Conditional!.EffectiveDeliveryMode);
+    }
+
+    [Theory]
+    [InlineData(BpmnFlowNodeTypes.UserTask, false)]
+    [InlineData(BpmnFlowNodeTypes.IntermediateMessageCatchEvent, false)]
+    [InlineData(BpmnFlowNodeTypes.IntermediateTimerCatchEvent, false)]
+    [InlineData(BpmnFlowNodeTypes.Task, true)]
+    [InlineData(BpmnFlowNodeTypes.ServiceTask, true)]
+    [InlineData(BpmnFlowNodeTypes.ScriptTask, true)]
+    public async Task CreateAsync_AcceptsConditionalBoundaryOnSupportedHost(
+        string hostType,
+        bool asyncBefore)
+    {
+        var model = CreateTerminalModel(BpmnFlowNodeTypes.EndEvent);
+        model.Variables.Add(new VariableModel
+        {
+            Id = 1,
+            Name = "Ready",
+            DataType = WorkflowVariableTypes.Boolean,
+            DefaultValue = JsonSerializer.SerializeToElement(false)
+        });
+        var host = model.FlowNodes.Single(node => node.Id == 2);
+        host.Type = hostType;
+        host.AsyncBefore = asyncBefore;
+        if (hostType == BpmnFlowNodeTypes.IntermediateMessageCatchEvent)
+        {
+            host.Message = new MessageCatchModel
+            {
+                ClientId = "client",
+                ClientSecret = "secret",
+                HeaderName = "X-Correlation",
+                HeaderValue = "accepted"
+            };
+        }
+        else if (hostType == BpmnFlowNodeTypes.IntermediateTimerCatchEvent)
+        {
+            host.Timer = new TimerDefinitionModel { TimeDuration = "PT1M" };
+        }
+        else if (hostType == BpmnFlowNodeTypes.ServiceTask)
+        {
+            host.Service = new ServiceTaskModel
+            {
+                Url = "https://tests.local/conditional-boundary-host",
+                Method = "GET"
+            };
+        }
+        else if (hostType == BpmnFlowNodeTypes.ScriptTask)
+        {
+            host.ScriptFormat = ScriptFormats.NCalc;
+        }
+        model.FlowNodes.Add(new FlowNodeModel
+        {
+            Id = 4,
+            Name = "Ready boundary",
+            Type = BpmnFlowNodeTypes.ConditionalBoundaryEvent,
+            AttachedToRef = host.Id,
+            Conditional = new ConditionalDefinitionModel
+            {
+                Condition = "Ready == true"
+            }
+        });
+        model.SequenceFlows.Add(new SequenceFlowModel
+        {
+            Id = 401,
+            SourceRef = 4,
+            TargetRef = 3
+        });
+
+        await CreateService(out _).CreateAsync(model, false, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task CreateAsync_RejectsConditionalBoundaryOnNondurableHostAndWithIncomingFlow()
+    {
+        var model = CreateTerminalModel(BpmnFlowNodeTypes.EndEvent);
+        model.Variables.Add(new VariableModel
+        {
+            Id = 1,
+            Name = "Ready",
+            DataType = WorkflowVariableTypes.Boolean,
+            DefaultValue = JsonSerializer.SerializeToElement(false)
+        });
+        var host = model.FlowNodes.Single(node => node.Id == 2);
+        host.Type = BpmnFlowNodeTypes.Task;
+        model.FlowNodes.Add(new FlowNodeModel
+        {
+            Id = 4,
+            Name = "Ready boundary",
+            Type = BpmnFlowNodeTypes.ConditionalBoundaryEvent,
+            AttachedToRef = host.Id,
+            Conditional = new ConditionalDefinitionModel
+            {
+                Condition = "Ready == true"
+            }
+        });
+        model.SequenceFlows.Add(new SequenceFlowModel
+        {
+            Id = 401,
+            SourceRef = 4,
+            TargetRef = 3
+        });
+
+        var hostError = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+        Assert.Contains("asyncBefore", hostError.Message, StringComparison.Ordinal);
+
+        host.Type = BpmnFlowNodeTypes.UserTask;
+        host.AsyncBefore = false;
+        model.SequenceFlows.Add(new SequenceFlowModel
+        {
+            Id = 202,
+            SourceRef = host.Id,
+            TargetRef = 4
+        });
+        var topologyError = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+        Assert.Contains("cannot have incoming", topologyError.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task CreateAsync_EnforcesCombinedTimerAndConditionalBoundaryLimit()
+    {
+        var model = CreateTerminalModel(BpmnFlowNodeTypes.EndEvent);
+        model.Variables.Add(new VariableModel
+        {
+            Id = 1,
+            Name = "Ready",
+            DataType = WorkflowVariableTypes.Boolean,
+            DefaultValue = JsonSerializer.SerializeToElement(false)
+        });
+        for (var index = 0; index < 9; index++)
+        {
+            var nodeId = 10 + index;
+            model.FlowNodes.Add(index % 2 == 0
+                ? new FlowNodeModel
+                {
+                    Id = nodeId,
+                    Name = $"Timer {index}",
+                    Type = BpmnFlowNodeTypes.TimerBoundaryEvent,
+                    AttachedToRef = 2,
+                    Timer = new TimerDefinitionModel { TimeDuration = "PT1M" }
+                }
+                : new FlowNodeModel
+                {
+                    Id = nodeId,
+                    Name = $"Condition {index}",
+                    Type = BpmnFlowNodeTypes.ConditionalBoundaryEvent,
+                    AttachedToRef = 2,
+                    Conditional = new ConditionalDefinitionModel
+                    {
+                        Condition = "Ready == true"
+                    }
+                });
+            model.SequenceFlows.Add(new SequenceFlowModel
+            {
+                Id = 500 + index,
+                SourceRef = nodeId,
+                TargetRef = 3
+            });
+        }
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+
+        Assert.Contains("9 timer and conditional", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("at most 8 are allowed", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
     [Fact]
     public async Task CreateAsync_PublicationGateAllowsDraftButRejectsDurablePublish()
     {

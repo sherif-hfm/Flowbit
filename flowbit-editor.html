@@ -1225,6 +1225,10 @@
   .node.errorBoundaryEvent circle.ring { fill: none; stroke: var(--red); stroke-width: 1.5; }
   .node.timerBoundaryEvent circle.body { fill: var(--node-boundary-fill); stroke: var(--node-message-stroke); stroke-width: 3; }
   .node.timerBoundaryEvent circle.ring { fill: none; stroke: var(--node-message-stroke); stroke-width: 1.5; }
+  .node.conditionalBoundaryEvent circle.body { fill: var(--node-boundary-fill); stroke: var(--node-message-stroke); stroke-width: 3; }
+  .node.conditionalBoundaryEvent circle.ring { fill: none; stroke: var(--node-message-stroke); stroke-width: 1.5; }
+  .node.conditionalBoundaryEvent.non-interrupting circle.body,
+  .node.conditionalBoundaryEvent.non-interrupting circle.ring { stroke-dasharray: 3 2; }
   .node.intermediateMessageCatchEvent circle.body { fill: var(--node-message-fill); stroke: var(--node-message-stroke); stroke-width: 2; }
   .node.intermediateMessageCatchEvent circle.ring { fill: none; stroke: var(--node-message-stroke); stroke-width: 1.5; }
   .node.intermediateTimerCatchEvent circle.body { fill: var(--node-message-fill); stroke: var(--node-message-stroke); stroke-width: 2; }
@@ -1244,6 +1248,7 @@
   .node.selected.scopedInterruptEvent circle.body { stroke: var(--node-selection-stroke); stroke-width: 3; }
   .node.selected.errorBoundaryEvent circle.body { stroke: var(--node-selection-stroke); stroke-width: 3; }
   .node.selected.timerBoundaryEvent circle.body { stroke: var(--node-selection-stroke); stroke-width: 3; }
+  .node.selected.conditionalBoundaryEvent circle.body { stroke: var(--node-selection-stroke); stroke-width: 3; }
   .node text { fill: var(--node-text); font-size: 13px; pointer-events: none; user-select: none; }
   .node .nid { fill: var(--node-id-text); font-size: 10.5px; }
   .node .roles { fill: var(--node-role-text); font-size: 10px; }
@@ -1255,7 +1260,8 @@
   .node.messageStartEvent .node-icon, .node.intermediateMessageCatchEvent .node-icon,
   .node.timerStartEvent .node-icon, .node.intermediateTimerCatchEvent .node-icon,
   .node.intermediateConditionalCatchEvent .node-icon,
-  .node.timerBoundaryEvent .node-icon { color: var(--node-message-icon); }
+  .node.timerBoundaryEvent .node-icon,
+  .node.conditionalBoundaryEvent .node-icon { color: var(--node-message-icon); }
   .node.endEvent .node-icon, .node.errorEndEvent .node-icon, .node.terminateEndEvent .node-icon,
   .node.scopedInterruptEvent .node-icon, .node.errorBoundaryEvent .node-icon { color: var(--node-error-icon); }
   .node.exclusiveGateway .node-icon, .node.parallelGateway .node-icon,
@@ -1983,6 +1989,7 @@ const NODE_TYPE = {
   ERROR_END_EVENT: "errorEndEvent",
   ERROR_BOUNDARY_EVENT: "errorBoundaryEvent",
   TIMER_BOUNDARY_EVENT: "timerBoundaryEvent",
+  CONDITIONAL_BOUNDARY_EVENT: "conditionalBoundaryEvent",
   MESSAGE_CATCH_EVENT: "intermediateMessageCatchEvent",
   TIMER_CATCH_EVENT: "intermediateTimerCatchEvent",
   CONDITIONAL_CATCH_EVENT: "intermediateConditionalCatchEvent",
@@ -2013,6 +2020,9 @@ const NODE_TYPE_OPTIONS = [
 function buildDiagramTraceContext(candidate, selection, mode) {
   const nodes = Array.isArray(candidate && candidate.flowNodes) ? candidate.flowNodes : [];
   const flows = Array.isArray(candidate && candidate.sequenceFlows) ? candidate.sequenceFlows : [];
+  const isTraceBoundaryType = type => [
+    "errorBoundaryEvent", "timerBoundaryEvent", "conditionalBoundaryEvent"
+  ].includes(type);
   const nodeById = new Map(nodes.filter(Boolean).map(node => [node.id, node]));
   const flowById = new Map(flows.filter(Boolean).map(flow => [flow.id, flow]));
   const incoming = new Map();
@@ -2085,7 +2095,7 @@ function buildDiagramTraceContext(candidate, selection, mode) {
   for (const nodeId of [...nodeIds]) {
     const node = nodeById.get(nodeId);
     if (!node) continue;
-    if ((node.type === "errorBoundaryEvent" || node.type === "timerBoundaryEvent") &&
+    if (isTraceBoundaryType(node.type) &&
         nodeById.has(node.attachedToRef)) {
       contextNodeIds.add(node.attachedToRef);
     }
@@ -2102,8 +2112,7 @@ function buildDiagramTraceContext(candidate, selection, mode) {
     }
     for (const candidateNode of nodes) {
       if (!candidateNode) continue;
-      if ((candidateNode.type === "errorBoundaryEvent" ||
-          candidateNode.type === "timerBoundaryEvent") &&
+      if (isTraceBoundaryType(candidateNode.type) &&
           candidateNode.attachedToRef === nodeId) {
         contextNodeIds.add(candidateNode.id);
       }
@@ -2160,6 +2169,7 @@ function searchDiagram(candidate, query, limit = 20) {
     errorEndEvent: "Error End Event",
     errorBoundaryEvent: "Error Boundary Event",
     timerBoundaryEvent: "Timer Boundary Event",
+    conditionalBoundaryEvent: "Conditional Boundary Event",
     intermediateMessageCatchEvent: "Message Catch Event",
     intermediateTimerCatchEvent: "Timer Catch Event",
     intermediateConditionalCatchEvent: "Conditional Catch Event"
@@ -3068,6 +3078,16 @@ function findTimerBoundaries(hostNodeId) {
     .filter(n => n.type === NODE_TYPE.TIMER_BOUNDARY_EVENT && n.attachedToRef === hostNodeId)
     .sort((a, b) => a.id - b.id);
 }
+function findConditionalBoundaries(hostNodeId) {
+  return model.flowNodes
+    .filter(n => n.type === NODE_TYPE.CONDITIONAL_BOUNDARY_EVENT &&
+      n.attachedToRef === hostNodeId)
+    .sort((a, b) => a.id - b.id);
+}
+function findObservableBoundaries(hostNodeId) {
+  return [...findTimerBoundaries(hostNodeId), ...findConditionalBoundaries(hostNodeId)]
+    .sort((a, b) => a.id - b.id);
+}
 function normalizeRoles(roles) {
   if (Array.isArray(roles)) return roles.map(role => String(role).trim()).filter(Boolean);
   if (typeof roles === "string" && roles.trim()) return [roles.trim()];
@@ -3132,13 +3152,18 @@ function isScopedInterruptEventType(type) {
   return type === NODE_TYPE.SCOPED_INTERRUPT_EVENT;
 }
 function isBoundaryEventType(type) {
-  return type === NODE_TYPE.ERROR_BOUNDARY_EVENT || type === NODE_TYPE.TIMER_BOUNDARY_EVENT;
+  return type === NODE_TYPE.ERROR_BOUNDARY_EVENT ||
+    type === NODE_TYPE.TIMER_BOUNDARY_EVENT ||
+    type === NODE_TYPE.CONDITIONAL_BOUNDARY_EVENT;
 }
 function isErrorBoundaryEventType(type) {
   return type === NODE_TYPE.ERROR_BOUNDARY_EVENT;
 }
 function isTimerBoundaryEventType(type) {
   return type === NODE_TYPE.TIMER_BOUNDARY_EVENT;
+}
+function isConditionalBoundaryEventType(type) {
+  return type === NODE_TYPE.CONDITIONAL_BOUNDARY_EVENT;
 }
 function isMessageCatchEventType(type) {
   return type === NODE_TYPE.MESSAGE_CATCH_EVENT;
@@ -3151,6 +3176,9 @@ function isTimerCatchEventType(type) {
 }
 function isConditionalCatchEventType(type) {
   return type === NODE_TYPE.CONDITIONAL_CATCH_EVENT;
+}
+function isConditionalEventType(type) {
+  return isConditionalCatchEventType(type) || isConditionalBoundaryEventType(type);
 }
 function isTimerEventType(type) {
   return isTimerStartEventType(type) || isTimerCatchEventType(type) ||
@@ -3358,6 +3386,7 @@ function isSingleOutgoingType(type) {
     || type === NODE_TYPE.SCOPED_INTERRUPT_EVENT
     || type === NODE_TYPE.ERROR_BOUNDARY_EVENT
     || type === NODE_TYPE.TIMER_BOUNDARY_EVENT
+    || type === NODE_TYPE.CONDITIONAL_BOUNDARY_EVENT
     || type === NODE_TYPE.MESSAGE_CATCH_EVENT
     || type === NODE_TYPE.TIMER_CATCH_EVENT
     || type === NODE_TYPE.CONDITIONAL_CATCH_EVENT
@@ -3368,6 +3397,7 @@ function typeLabel(type) {
   if (match) return match.label;
   if (type === NODE_TYPE.ERROR_BOUNDARY_EVENT) return "Error Boundary Event";
   if (type === NODE_TYPE.TIMER_BOUNDARY_EVENT) return "Timer Boundary Event";
+  if (type === NODE_TYPE.CONDITIONAL_BOUNDARY_EVENT) return "Conditional Boundary Event";
   return type;
 }
 function nodeSize(node) {
@@ -3442,7 +3472,7 @@ function applyTypeInvariants(node) {
   } else {
     delete node.timer;
   }
-  if (isTimerBoundaryEventType(node.type)) {
+  if (isTimerBoundaryEventType(node.type) || isConditionalBoundaryEventType(node.type)) {
     if (node.cancelActivity === undefined || node.cancelActivity === null) {
       node.cancelActivity = true;
     }
@@ -3452,7 +3482,7 @@ function applyTypeInvariants(node) {
   if (!isScriptTaskType(node.type)) delete node.usesFlowInfo;
   if (!isComplexGatewayType(node.type)) delete node.activationCondition;
   if (!isScopedInterruptEventType(node.type)) delete node.gatewayRef;
-  if (node.type !== "intermediateConditionalCatchEvent") delete node.conditional;
+  if (!isConditionalEventType(node.type)) delete node.conditional;
   if (!isUserTaskType(node.type)) {
     node.requiresAssignment = false;
     node.assignmentMode = ASSIGNMENT_MODE.FRESH;
@@ -3592,6 +3622,23 @@ function applyTypeInvariants(node) {
     delete node.message;
     delete node.errorVariable;
     if (typeof node.attachedToRef !== "number") node.attachedToRef = null;
+  } else if (isConditionalBoundaryEventType(node.type)) {
+    node.requiresClaim = false;
+    node.claimMode = CLAIM_MODE.FRESH;
+    node.inheritClaimFromNodeId = null;
+    node.roles = [];
+    node.variables = [];
+    node.assignee = null;
+    delete node.service;
+    node.assignments = [];
+    delete node.scriptFormat;
+    delete node.script;
+    delete node.message;
+    delete node.errorVariable;
+    if (typeof node.attachedToRef !== "number") node.attachedToRef = null;
+    if (node.conditional !== undefined && node.conditional !== null) {
+      node.conditional = normalizeConditionalDefinition(node.conditional);
+    }
   } else if (isScopedInterruptEventType(node.type)) {
     node.requiresClaim = false;
     node.claimMode = CLAIM_MODE.FRESH;
@@ -3624,7 +3671,7 @@ function applyTypeInvariants(node) {
     delete node.attachedToRef;
     delete node.errorVariable;
     node.message = normalizeMessage(node.message, false, model.variables);
-  } else if (node.type === "intermediateConditionalCatchEvent") {
+  } else if (isConditionalCatchEventType(node.type)) {
     // A conditional catch rests until its NCalc predicate becomes true. It has
     // no user-action metadata; delivery policy lives only in node.conditional.
     node.requiresClaim = false;
@@ -3887,6 +3934,7 @@ const NODE_ICON_SYMBOL = {
   [NODE_TYPE.ERROR_END_EVENT]: "icon-error-throw",
   [NODE_TYPE.ERROR_BOUNDARY_EVENT]: "icon-error-catch",
   [NODE_TYPE.TIMER_BOUNDARY_EVENT]: "icon-timer",
+  [NODE_TYPE.CONDITIONAL_BOUNDARY_EVENT]: "icon-conditional",
   [NODE_TYPE.MESSAGE_CATCH_EVENT]: "icon-message",
   [NODE_TYPE.TIMER_CATCH_EVENT]: "icon-timer",
   [NODE_TYPE.CONDITIONAL_CATCH_EVENT]: "icon-conditional",
@@ -4082,7 +4130,7 @@ function nodePosition(node) {
       let centerX;
       let centerY;
       // Distribute all attached boundaries around the complete host border.
-      // This keeps the supported eight timer boundaries (plus an error
+      // This keeps the supported eight timer/conditional boundaries (plus an error
       // boundary on service/script tasks) usable even on compact catch events.
       if (distance <= hs.w) {
         centerX = host.x + hs.w - distance;
@@ -4227,7 +4275,7 @@ function renderNodes() {
     const nodeSelected = isSel('node', node.id);
     const primarySelected = selected?.kind === 'node' && selected.nodeId === node.id;
     const g = el("g", {
-      class: `node ${node.type} ${nodeSelected ? 'selected' : ''} ${primarySelected ? 'primary-selected' : ''} ${traceClass('node', node.id)}`,
+      class: `node ${node.type} ${isConditionalBoundaryEventType(node.type) && node.cancelActivity === false ? 'non-interrupting' : ''} ${nodeSelected ? 'selected' : ''} ${primarySelected ? 'primary-selected' : ''} ${traceClass('node', node.id)}`,
       transform: `translate(${pos.x},${pos.y})`, "data-id": node.id
     });
     const marker = model.initialEventId === node.id ? " · START" : "";
@@ -4928,6 +4976,7 @@ function flowLabel(flow, source) {
   if (!source) return "";
   if (isErrorBoundaryEventType(source.type)) return "error";
   if (isTimerBoundaryEventType(source.type)) return "timer";
+  if (isConditionalBoundaryEventType(source.type)) return "condition";
   if (isStartEventType(source.type)) return "start";
   if (isAutomaticType(source.type)) return "auto";
   if (isScriptTaskType(source.type)) return "script";
@@ -5194,19 +5243,20 @@ function renderNodeInspector() {
             !boundaryIds.has(f.sourceRef) && !boundaryIds.has(f.targetRef));
         }
       }
-      const timerHostIsDurable = isUserTaskType(v) ||
+      const boundaryHostIsDurable = isUserTaskType(v) ||
         isMessageCatchEventType(v) || isTimerCatchEventType(v);
-      const timerHostIsAsyncAutomatic = (isAutomaticType(v) ||
+      const boundaryHostIsAsyncAutomatic = (isAutomaticType(v) ||
         isServiceTaskType(v) || isScriptTaskType(v)) && node.asyncBefore === true;
-      if (!timerHostIsDurable && !timerHostIsAsyncAutomatic) {
-        const attachedTimers = model.flowNodes.filter(candidate =>
-          isTimerBoundaryEventType(candidate.type) &&
+      if (!boundaryHostIsDurable && !boundaryHostIsAsyncAutomatic) {
+        const attachedObservableBoundaries = model.flowNodes.filter(candidate =>
+          (isTimerBoundaryEventType(candidate.type) ||
+            isConditionalBoundaryEventType(candidate.type)) &&
           candidate.attachedToRef === node.id);
-        const timerIds = new Set(attachedTimers.map(candidate => candidate.id));
-        if (timerIds.size > 0) {
-          model.flowNodes = model.flowNodes.filter(candidate => !timerIds.has(candidate.id));
+        const boundaryIds = new Set(attachedObservableBoundaries.map(candidate => candidate.id));
+        if (boundaryIds.size > 0) {
+          model.flowNodes = model.flowNodes.filter(candidate => !boundaryIds.has(candidate.id));
           model.sequenceFlows = model.sequenceFlows.filter(flow =>
-            !timerIds.has(flow.sourceRef) && !timerIds.has(flow.targetRef));
+            !boundaryIds.has(flow.sourceRef) && !boundaryIds.has(flow.targetRef));
         }
       }
       // If the node was the default start event but is no longer a valid
@@ -5265,7 +5315,7 @@ function renderNodeInspector() {
     inspector.appendChild(activationHint);
   }
 
-  if (isConditionalCatchEventType(node.type)) {
+  if (isConditionalEventType(node.type)) {
     renderConditionalSection(node);
   }
 
@@ -5509,7 +5559,7 @@ function renderNodeInspector() {
       variable => variable.dataType === "string" && !variable.isArray);
   }
 
-  if (isTimerBoundaryEventType(node.type)) {
+  if (isTimerBoundaryEventType(node.type) || isConditionalBoundaryEventType(node.type)) {
     const host = getNode(node.attachedToRef);
     const hostField = document.createElement("div");
     hostField.className = "field";
@@ -5526,9 +5576,10 @@ function renderNodeInspector() {
       checked => { node.cancelActivity = checked; renderInspector(); }));
     const hint = document.createElement("p");
     hint.className = "empty-note";
+    const eventName = isConditionalBoundaryEventType(node.type) ? "condition" : "timer";
     hint.textContent = node.cancelActivity === false
-      ? "When due, a sibling execution follows the timer path while the attached task or multi-instance execution keeps waiting."
-      : "When due, the attached activity and its open work are cancelled before the timer path continues.";
+      ? `When the ${eventName} triggers, a sibling execution follows the boundary path while the attached activity keeps waiting.`
+      : `When the ${eventName} triggers, the attached activity and its open work are cancelled before the boundary path continues.`;
     inspector.appendChild(hint);
   }
 
@@ -5564,7 +5615,7 @@ function renderNodeInspector() {
   if (isUserTaskType(node.type) || isMessageCatchEventType(node.type) ||
       isTimerCatchEventType(node.type) || isAutomaticType(node.type) ||
       isServiceTaskType(node.type) || isScriptTaskType(node.type)) {
-    renderTimerBoundaryHostSection(node);
+    renderBoundaryHostSection(node);
   }
 
   if (!isEndEventType(node.type)) {
@@ -5954,7 +6005,9 @@ function renderServiceSection(node) {
 
 function renderConditionalSection(node) {
   const title = document.createElement("h2");
-  title.textContent = "Conditional wait";
+  title.textContent = isConditionalBoundaryEventType(node.type)
+    ? "Conditional boundary"
+    : "Conditional wait";
   title.style.marginTop = "16px";
   inspector.appendChild(title);
 
@@ -6030,11 +6083,12 @@ function renderConditionalSection(node) {
 
   const hint = document.createElement("p");
   hint.className = "empty-note";
-  hint.innerHTML =
-    "The event waits until this NCalc expression over persisted instance variables becomes true. " +
+  hint.innerHTML = (isConditionalBoundaryEventType(node.type)
+    ? "The boundary captures each false-to-true transition while its host is active; a non-interrupting boundary rearms after the expression becomes false. "
+    : "The event waits until this NCalc expression over persisted instance variables becomes true. ") +
     "Shared process variables are not supported. <b>Atomic</b> evaluates " +
-    "and moves the token in the variable writer transaction. <b>Durable async</b> " +
-    "persists a latch in that transaction, then a worker moves the token. Atomic is " +
+    "and captures the event in the variable writer transaction. <b>Durable async</b> " +
+    "persists the capture in that transaction, then a worker continues its path. Atomic is " +
     "the default and is omitted from saved JSON.";
   inspector.appendChild(hint);
 }
@@ -6682,16 +6736,16 @@ function renderAsyncJobSection(node) {
   inspector.appendChild(title);
 
   inspector.appendChild(variableCheckbox("Async before", node.asyncBefore === true, checked => {
-    if (!checked && findTimerBoundaries(node.id).length > 0 &&
+    if (!checked && findObservableBoundaries(node.id).length > 0 &&
         (isAutomaticType(node.type) || isServiceTaskType(node.type) || isScriptTaskType(node.type))) {
-      if (!confirm("Disabling async before removes attached timer boundary events and their outgoing flows. Continue?")) {
+      if (!confirm("Disabling async before removes attached timer and conditional boundary events and their outgoing flows. Continue?")) {
         renderInspector();
         return;
       }
-      const timerIds = new Set(findTimerBoundaries(node.id).map(boundary => boundary.id));
-      model.flowNodes = model.flowNodes.filter(candidate => !timerIds.has(candidate.id));
+      const boundaryIds = new Set(findObservableBoundaries(node.id).map(boundary => boundary.id));
+      model.flowNodes = model.flowNodes.filter(candidate => !boundaryIds.has(candidate.id));
       model.sequenceFlows = model.sequenceFlows.filter(flow =>
-        !timerIds.has(flow.sourceRef) && !timerIds.has(flow.targetRef));
+        !boundaryIds.has(flow.sourceRef) && !boundaryIds.has(flow.targetRef));
     }
     node.asyncBefore = checked;
     if (node.asyncBefore !== true && node.asyncAfter !== true) node.job = null;
@@ -6893,23 +6947,24 @@ function renderTimerSection(node) {
   inspector.appendChild(hint);
 }
 
-function renderTimerBoundaryHostSection(hostNode) {
+function renderBoundaryHostSection(hostNode) {
   const title = document.createElement("h2");
-  title.textContent = "Timer boundaries";
+  title.textContent = "Boundary events";
   title.style.marginTop = "16px";
   inspector.appendChild(title);
 
   const automatic = isAutomaticType(hostNode.type) ||
     isServiceTaskType(hostNode.type) || isScriptTaskType(hostNode.type);
   const eligible = !automatic || hostNode.asyncBefore === true;
-  const boundaries = findTimerBoundaries(hostNode.id);
+  const boundaries = findObservableBoundaries(hostNode.id);
   for (const boundary of boundaries) {
     const box = document.createElement("div");
     box.className = "field inspector-card clickable";
     const out = outgoingFlows(boundary.id);
     const target = out.length ? getNode(out[0].targetRef) : null;
     const behavior = boundary.cancelActivity === false ? "non-interrupting" : "interrupting";
-    box.innerHTML = `<div class="badge">timer #${boundary.id} · ${behavior} → ${target ? '#' + target.id + ' ' + target.name : 'no flow yet'}</div>`;
+    const kind = isConditionalBoundaryEventType(boundary.type) ? "conditional" : "timer";
+    box.innerHTML = `<div class="badge">${kind} #${boundary.id} · ${behavior} → ${target ? '#' + target.id + ' ' + target.name : 'no flow yet'}</div>`;
     box.onclick = () => select("node", boundary.id);
     inspector.appendChild(box);
   }
@@ -6917,14 +6972,14 @@ function renderTimerBoundaryHostSection(hostNode) {
   if (!eligible) {
     const hint = document.createElement("p");
     hint.className = "empty-note";
-    hint.textContent = "Enable async before to attach a timer safely; the durable wait must exist before external or scripted work begins.";
+    hint.textContent = "Enable async before to attach timer or conditional boundaries; the durable wait must exist before external or scripted work begins.";
     inspector.appendChild(hint);
     return;
   }
   if (boundaries.length >= 8) {
     const limit = document.createElement("p");
     limit.className = "empty-note";
-    limit.textContent = "The limit of eight timer boundaries on this host has been reached.";
+    limit.textContent = "The combined limit of eight timer and conditional boundaries on this host has been reached.";
     inspector.appendChild(limit);
     return;
   }
@@ -6934,6 +6989,13 @@ function renderTimerBoundaryHostSection(hostNode) {
   add.style.marginTop = "8px";
   add.onclick = () => addTimerBoundary(hostNode);
   inspector.appendChild(add);
+
+  const addConditional = document.createElement("button");
+  addConditional.textContent = "+ Add conditional boundary event";
+  addConditional.style.width = "100%";
+  addConditional.style.marginTop = "8px";
+  addConditional.onclick = () => addConditionalBoundary(hostNode);
+  inspector.appendChild(addConditional);
 }
 
 function addTimerBoundary(hostNode) {
@@ -6958,6 +7020,38 @@ function addTimerBoundary(hostNode) {
     attachedToRef: hostNode.id,
     cancelActivity: true,
     timer: { timeDate: null, timeDuration: "P2D", timeCycle: null }
+  };
+  model.flowNodes.push(boundary);
+  applyTypeInvariants(boundary);
+  select("node", boundary.id);
+  setConnectMode(true);
+  connectSource = boundary.id;
+  renderHint();
+  render();
+}
+
+function addConditionalBoundary(hostNode) {
+  const boundary = {
+    id: nextNodeId(),
+    name: hostNode.name ? `${hostNode.name} condition` : "Condition",
+    externalId: null,
+    type: NODE_TYPE.CONDITIONAL_BOUNDARY_EVENT,
+    laneId: hostNode.laneId ?? null,
+    x: hostNode.x,
+    y: hostNode.y,
+    attributes: [],
+    roles: [],
+    requiresClaim: false,
+    claimMode: CLAIM_MODE.FRESH,
+    inheritClaimFromNodeId: null,
+    requiresAssignment: false,
+    assignmentMode: ASSIGNMENT_MODE.FRESH,
+    inheritAssignmentFromNodeId: null,
+    variables: [],
+    assignee: null,
+    attachedToRef: hostNode.id,
+    cancelActivity: true,
+    conditional: { condition: "" }
   };
   model.flowNodes.push(boundary);
   applyTypeInvariants(boundary);
@@ -10211,10 +10305,10 @@ function validateModelForSave(candidate) {
   const isSharedProcessVariable = variable => variable && variable.scope === "shared";
   const isWritableProcessVariable = variable => !isSharedProcessVariable(variable) ||
     variable.access === "readWrite";
-  const sharedVariablesReferencedByExpression = (expression, variables) => {
+  const declaredVariablesReferencedByExpression = (expression, variables, predicate) => {
     if (typeof expression !== "string" || !expression) return [];
     return (Array.isArray(variables) ? variables : [])
-      .filter(variable => isSharedProcessVariable(variable) &&
+      .filter(variable => predicate(variable) &&
         typeof variable.name === "string" && variable.name.trim())
       .filter(variable => {
         const escaped = variable.name.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -10240,6 +10334,16 @@ function validateModelForSave(candidate) {
         return false;
       });
   };
+  const sharedVariablesReferencedByExpression = (expression, variables) =>
+    declaredVariablesReferencedByExpression(
+      expression,
+      variables,
+      isSharedProcessVariable);
+  const instanceVariablesReferencedByExpression = (expression, variables) =>
+    declaredVariablesReferencedByExpression(
+      expression,
+      variables,
+      variable => !isSharedProcessVariable(variable));
   const hasText = value => typeof value === "string" && value.trim().length > 0;
   const hasMappingDefault = value => value !== null && value !== undefined;
   const countItems = value => Array.isArray(value) ? value.length : 0;
@@ -10339,7 +10443,8 @@ function validateModelForSave(candidate) {
   }
   for (const boundary of nodes) {
     if (boundary && (boundary.type === "errorBoundaryEvent" ||
-        boundary.type === "timerBoundaryEvent") &&
+        boundary.type === "timerBoundaryEvent" ||
+        boundary.type === "conditionalBoundaryEvent") &&
         Number.isInteger(boundary.attachedToRef)) {
       addStructuralTarget(boundary.attachedToRef, boundary.id);
     }
@@ -11198,13 +11303,15 @@ function validateModelForSave(candidate) {
       errors.push("Timer start event #" + node.id +
         " cannot define businessKey or idempotency; scheduler occurrences use an internal key.");
     }
-    if (node.type !== "timerBoundaryEvent" && node.cancelActivity != null) {
+    if (!["timerBoundaryEvent", "conditionalBoundaryEvent"].includes(node.type) &&
+        node.cancelActivity != null) {
       errors.push("Flow node #" + node.id +
-        " defines cancelActivity but is not a timer boundary event.");
+        " defines cancelActivity but is not a timer or conditional boundary event.");
     }
-    if (node.type === "timerBoundaryEvent" && node.cancelActivity != null &&
+    if (["timerBoundaryEvent", "conditionalBoundaryEvent"].includes(node.type) &&
+        node.cancelActivity != null &&
         typeof node.cancelActivity !== "boolean") {
-      errors.push("Timer boundary event #" + node.id +
+      errors.push("Boundary event #" + node.id +
         " cancelActivity must be a boolean.");
     }
     if (!timerTypes.has(node.type)) continue;
@@ -11342,8 +11449,11 @@ function validateModelForSave(candidate) {
     }
   }
 
-  for (const node of nodes.filter(candidate => candidate && candidate.type === "timerBoundaryEvent")) {
-    const label = "Timer boundary event #" + String(node.id);
+  for (const node of nodes.filter(candidate => candidate &&
+      ["timerBoundaryEvent", "conditionalBoundaryEvent"].includes(candidate.type))) {
+    const label = (node.type === "conditionalBoundaryEvent"
+      ? "Conditional boundary event #"
+      : "Timer boundary event #") + String(node.id);
     const host = nodes.find(candidate => candidate && candidate.id === node.attachedToRef);
     const durableWait = host && ["userTask", "intermediateMessageCatchEvent",
       "intermediateTimerCatchEvent"].includes(host.type);
@@ -11363,17 +11473,18 @@ function validateModelForSave(candidate) {
         "user-action or multi-instance metadata.");
     }
   }
-  const timerBoundaryHostIds = new Set(nodes
-    .filter(candidate => candidate && candidate.type === "timerBoundaryEvent" &&
+  const observableBoundaryHostIds = new Set(nodes
+    .filter(candidate => candidate &&
+      ["timerBoundaryEvent", "conditionalBoundaryEvent"].includes(candidate.type) &&
       Number.isInteger(candidate.attachedToRef))
     .map(candidate => candidate.attachedToRef));
-  for (const hostId of timerBoundaryHostIds) {
+  for (const hostId of observableBoundaryHostIds) {
     const siblingCount = nodes.filter(candidate => candidate &&
-      candidate.type === "timerBoundaryEvent" &&
+      ["timerBoundaryEvent", "conditionalBoundaryEvent"].includes(candidate.type) &&
       candidate.attachedToRef === hostId).length;
     if (siblingCount > 8) {
       errors.push("Host node #" + String(hostId) +
-        " has more than eight timer boundary events.");
+        " has more than eight combined timer and conditional boundary events.");
     }
   }
 
@@ -11412,11 +11523,13 @@ function validateModelForSave(candidate) {
   }
 
   for (const node of nodes.filter(candidate => candidate &&
-      candidate.type === "intermediateConditionalCatchEvent")) {
-    const label = "Conditional catch event #" + String(node.id);
+      ["intermediateConditionalCatchEvent", "conditionalBoundaryEvent"].includes(candidate.type))) {
+    const boundary = node.type === "conditionalBoundaryEvent";
+    const label = (boundary ? "Conditional boundary event #" : "Conditional catch event #") +
+      String(node.id);
     const incoming = flows.filter(flow => flow && flow.targetRef === node.id);
     const outgoing = flows.filter(flow => flow && flow.sourceRef === node.id);
-    if (incoming.length === 0) {
+    if (!boundary && incoming.length === 0) {
       errors.push(label + " must have at least one incoming sequence flow.");
     }
     if (outgoing.length !== 1) {
@@ -11435,6 +11548,18 @@ function validateModelForSave(candidate) {
     }
     if (!hasText(conditional.condition)) {
       errors.push(label + " condition must not be blank.");
+    } else {
+      if (unicodeLength(conditional.condition) > 4000) {
+        errors.push(label + " condition cannot exceed 4000 Unicode characters.");
+      }
+      const dependencies = instanceVariablesReferencedByExpression(
+        conditional.condition,
+        processVariables);
+      if (dependencies.length === 0) {
+        errors.push(label + " condition must reference at least one declared instance variable.");
+      } else if (dependencies.length > 64) {
+        errors.push(label + " condition may reference at most 64 instance variables.");
+      }
     }
     for (const variable of sharedVariablesReferencedByExpression(
         conditional.condition,
@@ -11578,7 +11703,7 @@ function validateModelForSave(candidate) {
     "startEvent", "messageStartEvent", "timerStartEvent", "userTask", "task", "serviceTask",
     "scriptTask", "exclusiveGateway", "parallelGateway", "inclusiveGateway",
     "complexGateway", "scopedInterruptEvent", "endEvent", "terminateEndEvent",
-    "errorEndEvent", "errorBoundaryEvent", "timerBoundaryEvent",
+    "errorEndEvent", "errorBoundaryEvent", "timerBoundaryEvent", "conditionalBoundaryEvent",
     "intermediateMessageCatchEvent", "intermediateTimerCatchEvent",
     "intermediateConditionalCatchEvent"
   ]);
@@ -11599,9 +11724,10 @@ function validateModelForSave(candidate) {
       errors.push("Flow node #" + String(node.id) +
         " can define activationCondition only when its type is complexGateway.");
     }
-    if (node.type !== "intermediateConditionalCatchEvent" && node.conditional != null) {
+    if (!["intermediateConditionalCatchEvent", "conditionalBoundaryEvent"].includes(node.type) &&
+        node.conditional != null) {
       errors.push("Flow node #" + String(node.id) +
-        " can define conditional only when its type is intermediateConditionalCatchEvent.");
+        " can define conditional only when its type is a conditional catch or boundary event.");
     }
   }
   const gatewayTypes = new Set([
@@ -12124,7 +12250,7 @@ async function save() {
     if (isMessageCatchEventType(node.type)) {
       node.message = normalizeMessage(node.message, false, model.variables);
     }
-    if (isConditionalCatchEventType(node.type) && node.conditional != null) {
+    if (isConditionalEventType(node.type) && node.conditional != null) {
       node.conditional = normalizeConditionalDefinition(node.conditional);
     }
     if (isScriptTaskType(node.type)) {
@@ -12181,7 +12307,7 @@ async function save() {
           !node.inboxVisibilityCondition.trim())) {
       delete node.inboxVisibilityCondition;
     }
-    if (isConditionalCatchEventType(node.type) && node.conditional &&
+    if (isConditionalEventType(node.type) && node.conditional &&
         node.conditional.deliveryMode === CONDITIONAL_DELIVERY_MODE.ATOMIC) {
       delete node.conditional.deliveryMode;
     }
@@ -12389,7 +12515,7 @@ function loadFromObject(obj) {
         timer: ["timerStartEvent", "intermediateTimerCatchEvent", "timerBoundaryEvent"].includes(s.type)
           ? normalizeTimerDefinition(s.timer)
           : undefined,
-        cancelActivity: s.type === "timerBoundaryEvent"
+        cancelActivity: ["timerBoundaryEvent", "conditionalBoundaryEvent"].includes(s.type)
           ? (s.cancelActivity === undefined || s.cancelActivity === null
               ? true : s.cancelActivity)
           : undefined,
@@ -12442,7 +12568,7 @@ function loadFromObject(obj) {
           : JSON.parse(JSON.stringify(s.joinCancellation)),
         message: (isMessageCatchEventType(s.type) || isMessageStartEventType(s.type))
           ? normalizeMessage(s.message, isMessageStartEventType(s.type), loadedProcessVariables) : undefined,
-        conditional: s.type === "intermediateConditionalCatchEvent"
+        conditional: ["intermediateConditionalCatchEvent", "conditionalBoundaryEvent"].includes(s.type)
           ? normalizeConditionalDefinition(s.conditional) : undefined,
         businessKey: (isStartEventType(s.type) || isMessageStartEventType(s.type)) && s.businessKey !== undefined
           ? normalizeBusinessKeyForLoad(s.businessKey) : undefined,

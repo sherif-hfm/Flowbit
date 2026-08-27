@@ -1504,6 +1504,29 @@ public sealed class WorkflowRuntimeRepository(
             .ToList();
     }
 
+    public async Task<IReadOnlyList<ExecutionTokenRecord>> GetExecutionTokensForUpdateAsync(
+        IReadOnlyCollection<long> tokenIds,
+        CancellationToken cancellationToken)
+    {
+        if (tokenIds.Count == 0)
+        {
+            return [];
+        }
+
+        var distinctIds = tokenIds.Distinct().Order().ToArray();
+        var entities = await dbContext.ExecutionTokens
+            .FromSqlInterpolated(
+                $"""
+                SELECT *
+                FROM flowbit.execution_tokens
+                WHERE "Id" = ANY ({distinctIds})
+                ORDER BY "Id"
+                FOR UPDATE
+                """)
+            .ToListAsync(cancellationToken);
+        return entities.Select(ToRecord).ToList();
+    }
+
     public async Task<IReadOnlyList<ExecutionTokenRecord>> ListExecutionTokensAsync(
         long instanceId,
         string? status,
@@ -1533,6 +1556,50 @@ public sealed class WorkflowRuntimeRepository(
             .OrderBy(token => token.Id)
             .Select(ToRecord)
             .ToList();
+    }
+
+    public async Task<IReadOnlyList<ExecutionTokenRecord>> ListActiveConditionalWaitTokensAsync(
+        long instanceId,
+        IReadOnlyCollection<int> nodeIds,
+        long? onlyTokenId,
+        CancellationToken cancellationToken)
+    {
+        if (nodeIds.Count == 0)
+        {
+            return [];
+        }
+
+        var distinctNodeIds = nodeIds.Distinct().ToArray();
+        var query = dbContext.ExecutionTokens.Where(token =>
+            token.InstanceId == instanceId
+            && token.Status == ExecutionTokenStatuses.Active
+            && distinctNodeIds.Contains(token.NodeId)
+            && token.NodeType == BpmnFlowNodeTypes.IntermediateConditionalCatchEvent
+            && token.WaitState == null
+            && token.WaitingJobId == null);
+        if (onlyTokenId is not null)
+        {
+            query = query.Where(token => token.Id == onlyTokenId.Value);
+        }
+
+        var entities = await query.OrderBy(token => token.Id).ToListAsync(cancellationToken);
+        var byId = entities.ToDictionary(token => token.Id);
+        foreach (var tracked in dbContext.ExecutionTokens.Local.Where(token =>
+                     token.InstanceId == instanceId
+                     && token.Status == ExecutionTokenStatuses.Active
+                     && distinctNodeIds.Contains(token.NodeId)
+                     && token.NodeType == BpmnFlowNodeTypes.IntermediateConditionalCatchEvent
+                     && token.WaitState is null
+                     && token.WaitingJobId is null
+                     && (onlyTokenId is null || token.Id == onlyTokenId.Value)))
+        {
+            byId[tracked.Id] = tracked;
+        }
+
+        return byId.Values
+            .OrderBy(token => token.Id)
+            .Select(ToRecord)
+            .ToArray();
     }
 
     public async Task<IReadOnlyList<ExecutionTokenRecord>> ListCurrentExecutionTokensAsync(
@@ -1612,6 +1679,77 @@ public sealed class WorkflowRuntimeRepository(
         token.CurrentNodeExecution = nodeExecution;
         await dbContext.SaveChangesAsync(cancellationToken);
         return ToRecord(token);
+    }
+
+    public async Task<IReadOnlyList<ExecutionTokenRecord>> AddExecutionTokensAsync(
+        long instanceId,
+        IReadOnlyList<ExecutionTokenCreateRecord> creates,
+        CancellationToken cancellationToken)
+    {
+        if (creates.Count == 0)
+        {
+            return [];
+        }
+
+        var instance = dbContext.WorkflowInstances.Local.SingleOrDefault(entity =>
+                entity.Id == instanceId)
+            ?? await dbContext.WorkflowInstances.SingleAsync(entity =>
+                entity.Id == instanceId, cancellationToken);
+        var now = DateTimeOffset.UtcNow;
+        var tokens = creates.Select(create =>
+        {
+            ArgumentOutOfRangeException.ThrowIfNegative(create.AutomaticActivationCount);
+            var token = NewToken(
+                instance,
+                create.Node,
+                now,
+                create.AutomaticActivationCount,
+                create.AutomaticActivationStateIds);
+            token.GatewayBranchId = create.GatewayBranchId;
+            token.ArrivedViaFlowId = create.ArrivedViaFlowId;
+            return token;
+        }).ToArray();
+
+        dbContext.ExecutionTokens.AddRange(tokens);
+        await dbContext.SaveChangesAsync(cancellationToken);
+
+        for (var index = 0; index < creates.Count; index++)
+        {
+            var create = creates[index];
+            var token = tokens[index];
+            UserTaskEntity? task = null;
+            if (create.Node.Type == BpmnFlowNodeTypes.UserTask
+                && !create.Node.IsMultiInstance)
+            {
+                task = NewUserTask(
+                    instance,
+                    token,
+                    create.Node,
+                    now,
+                    status: create.Node.AsyncBefore
+                        ? UserTaskStatuses.Pending
+                        : UserTaskStatuses.Active);
+                dbContext.UserTasks.Add(task);
+            }
+            var nodeExecution = NewNodeExecution(
+                instance,
+                token,
+                create.Node,
+                NodeExecutionKinds.Node,
+                create.Node.AsyncBefore
+                    ? NodeExecutionStatuses.Pending
+                    : NodeExecutionStatuses.Active,
+                create.GatewayBranchId,
+                create.ArrivedViaFlowId,
+                create.TriggeredBy,
+                now,
+                task);
+            dbContext.NodeExecutions.Add(nodeExecution);
+            token.CurrentNodeExecution = nodeExecution;
+        }
+
+        await dbContext.SaveChangesAsync(cancellationToken);
+        return tokens.Select(ToRecord).ToArray();
     }
 
     public async Task<IReadOnlyList<ExecutionTokenRecord>> AddGatewayBranchTokensAsync(
@@ -5343,6 +5481,25 @@ public sealed class WorkflowRuntimeRepository(
             var node = RequireTargetNode(timer.TimerNodeId);
             timer.WorkflowDefinitionId = targetWorkflowDefinitionId;
             timer.TimerNodeName = node.Name;
+        }
+
+        var openConditionalBoundaries = await dbContext.ConditionalBoundarySubscriptions
+            .Where(subscription =>
+                subscription.InstanceId == instanceId
+                && (subscription.Status == ConditionalBoundarySubscriptionStatuses.Active
+                    || subscription.Jobs.Any(job =>
+                        job.Status == WorkflowJobStatuses.Queued
+                        || job.Status == WorkflowJobStatuses.Running
+                        || job.Status == WorkflowJobStatuses.ResultReady
+                        || job.Status == WorkflowJobStatuses.Retry
+                        || job.Status == WorkflowJobStatuses.Incident)))
+            .OrderBy(subscription => subscription.Id)
+            .ToListAsync(cancellationToken);
+        foreach (var subscription in openConditionalBoundaries)
+        {
+            var node = RequireTargetNode(subscription.BoundaryNodeId);
+            subscription.WorkflowDefinitionId = targetWorkflowDefinitionId;
+            subscription.BoundaryNodeName = node.Name;
         }
 
         var clockValue = DateTimeOffset.UtcNow;
