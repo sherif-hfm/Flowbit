@@ -118,6 +118,16 @@ public interface IWorkflowRuntimeRepository
 
     Task<string?> GetInstanceStatusAsync(long id, CancellationToken cancellationToken);
 
+    Task<IReadOnlyList<WorkflowReactivationTargetVisitRecord>>
+        ListReactivationTargetVisitsAsync(
+        long instanceId,
+        long workflowDefinitionId,
+        CancellationToken cancellationToken);
+
+    Task<WorkflowReactivationRuntimeStateRecord> GetReactivationRuntimeStateAsync(
+        long instanceId,
+        CancellationToken cancellationToken);
+
     Task<WorkflowInstanceRecord?> GetInstanceForUpdateAsync(
         long id,
         bool lockActiveUserTask,
@@ -814,6 +824,14 @@ public interface IWorkflowRuntimeRepository
     Task BindBusinessKeyAsync(
         string workflowKey,
         string businessKey,
+        long instanceId,
+        CancellationToken cancellationToken);
+
+    Task<BusinessKeyReacquisitionRecord> ReacquireBusinessKeyAsync(
+        long instanceId,
+        CancellationToken cancellationToken);
+
+    Task<BusinessKeyReacquisitionRecord> AssessBusinessKeyReacquisitionAsync(
         long instanceId,
         CancellationToken cancellationToken);
 }

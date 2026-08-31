@@ -77,6 +77,25 @@ public static class WorkflowInstanceEndpoints
             .Produces(StatusCodes.Status401Unauthorized)
             .Produces(StatusCodes.Status404NotFound);
 
+        group.MapGet("/{id:long}/reactivation", PreviewInstanceReactivation)
+            .Produces<InstanceReactivationPreviewDto>(StatusCodes.Status200OK)
+            .Produces(StatusCodes.Status400BadRequest)
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status403Forbidden)
+            .Produces(StatusCodes.Status404NotFound)
+            .Produces(StatusCodes.Status409Conflict)
+            .RequireWorkflowAdministrator();
+
+        group.MapPost("/{id:long}/reactivation", ReactivateInstance)
+            .Accepts<ReactivateInstanceRequest>("application/json")
+            .Produces<InstanceDetailDto>(StatusCodes.Status200OK)
+            .Produces(StatusCodes.Status400BadRequest)
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status403Forbidden)
+            .Produces(StatusCodes.Status404NotFound)
+            .Produces(StatusCodes.Status409Conflict)
+            .RequireWorkflowAdministrator();
+
         group.MapPost("/{id:long}/version-change/preview", PreviewInstanceVersionChange)
                 .Produces<InstanceVersionChangePreviewDto>(StatusCodes.Status200OK)
                 .Produces(StatusCodes.Status400BadRequest)
@@ -384,6 +403,44 @@ public static class WorkflowInstanceEndpoints
     {
         _ = actorResolver.Resolve(principal);
         var instance = await service.GetInstanceAsync(id, cancellationToken);
+        return instance is null ? Results.NotFound() : Results.Ok(instance);
+    }
+
+    /// <summary>
+    /// Checks whether a completed or cancelled instance can be reactivated and
+    /// returns its eligible previously visited user-task targets.
+    /// </summary>
+    public static async Task<IResult> PreviewInstanceReactivation(
+        long id,
+        ClaimsPrincipal principal,
+        IActorContextResolver actorResolver,
+        IWorkflowEngineService service,
+        CancellationToken cancellationToken)
+    {
+        var preview = await service.PreviewInstanceReactivationAsync(
+            id,
+            actorResolver.Resolve(principal),
+            cancellationToken);
+        return preview is null ? Results.NotFound() : Results.Ok(preview);
+    }
+
+    /// <summary>
+    /// Atomically creates a fresh user-task activation for an eligible completed
+    /// or cancelled instance while preserving its prior runtime history.
+    /// </summary>
+    public static async Task<IResult> ReactivateInstance(
+        long id,
+        ReactivateInstanceRequest request,
+        ClaimsPrincipal principal,
+        IActorContextResolver actorResolver,
+        IWorkflowEngineService service,
+        CancellationToken cancellationToken)
+    {
+        var instance = await service.ReactivateInstanceAsync(
+            id,
+            request,
+            actorResolver.Resolve(principal),
+            cancellationToken);
         return instance is null ? Results.NotFound() : Results.Ok(instance);
     }
 

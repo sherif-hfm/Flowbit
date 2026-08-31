@@ -1264,6 +1264,30 @@ public sealed class WorkflowApiClient(HttpClient httpClient)
     public Task<InstanceDetailDto?> GetInstanceAsync(long id, CancellationToken cancellationToken = default) =>
         httpClient.GetFromJsonAsync<InstanceDetailDto>($"/api/instances/{id}", cancellationToken);
 
+    public async Task<InstanceReactivationPreviewDto?> PreviewInstanceReactivationAsync(
+        long id,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await httpClient.GetAsync(
+            $"/api/instances/{id}/reactivation",
+            cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<InstanceReactivationPreviewDto>(cancellationToken);
+    }
+
+    public async Task<InstanceDetailDto?> ReactivateInstanceAsync(
+        long id,
+        ReactivateInstanceRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await httpClient.PostAsJsonAsync(
+            $"/api/instances/{id}/reactivation",
+            request,
+            cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<InstanceDetailDto>(cancellationToken);
+    }
+
     public async Task<InstanceVersionChangePreviewDto?> PreviewInstanceVersionChangeAsync(
         long id,
         PreviewInstanceVersionChangeRequest request,

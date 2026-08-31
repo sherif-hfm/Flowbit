@@ -1233,10 +1233,10 @@ public sealed class WorkflowRuntimeRepository(
                         && candidate.TerminationReason is
                             ExecutionTokenTerminationReasons.NormalEnd
                             or ExecutionTokenTerminationReasons.TerminateEnd)
-                    .OrderByDescending(candidate =>
+                    .OrderByDescending(candidate => candidate.UpdatedAt)
+                    .ThenByDescending(candidate =>
                         candidate.TerminationReason
                         == ExecutionTokenTerminationReasons.TerminateEnd)
-                    .ThenByDescending(candidate => candidate.UpdatedAt)
                     .ThenByDescending(candidate => candidate.Id)
                     .FirstOrDefault();
                 if (terminal is not null)
@@ -1328,37 +1328,10 @@ public sealed class WorkflowRuntimeRepository(
             return null;
         }
 
-        var tokenQuery = dbContext.ExecutionTokens.AsNoTracking()
-            .Where(token => token.InstanceId == id
-                            && token.Status != ExecutionTokenStatuses.Merged);
-        tokenQuery = entity.Status switch
-        {
-            WorkflowInstanceStatuses.Running => tokenQuery
-                .Where(token => token.Status == ExecutionTokenStatuses.Active)
-                .OrderBy(token => token.Id),
-            WorkflowInstanceStatuses.Faulted => tokenQuery
-                .Where(token => token.Status == ExecutionTokenStatuses.Faulted)
-                .OrderByDescending(token => token.UpdatedAt)
-                .ThenByDescending(token => token.Id),
-            WorkflowInstanceStatuses.Completed => tokenQuery
-                .Where(token => token.Status == ExecutionTokenStatuses.Completed)
-                .OrderByDescending(token =>
-                    token.TerminationReason == ExecutionTokenTerminationReasons.TerminateEnd)
-                .ThenByDescending(token => token.UpdatedAt)
-                .ThenByDescending(token => token.Id),
-            WorkflowInstanceStatuses.Cancelled => tokenQuery
-                .Where(token => token.Status == ExecutionTokenStatuses.Cancelled)
-                .OrderByDescending(token => token.UpdatedAt)
-                .ThenByDescending(token => token.Id),
-            _ => tokenQuery
-                .OrderByDescending(token => token.UpdatedAt)
-                .ThenByDescending(token => token.Id)
-        };
-        var token = await tokenQuery.FirstOrDefaultAsync(cancellationToken);
-        token ??= await dbContext.ExecutionTokens.AsNoTracking()
-            .Where(candidate => candidate.InstanceId == id)
-            .OrderByDescending(candidate => candidate.Id)
-            .FirstOrDefaultAsync(cancellationToken);
+        var token = await GetRepresentativeTokenEntityAsync(
+            id,
+            entity.Status,
+            cancellationToken);
         var activeTasks = await dbContext.UserTasks.AsNoTracking()
             .Where(t => t.InstanceId == id && t.Status == UserTaskStatuses.Active)
             .OrderByDescending(t => t.Id)
@@ -1382,6 +1355,263 @@ public sealed class WorkflowRuntimeRepository(
             .Where(instance => instance.Id == id)
             .Select(instance => instance.Status)
             .SingleOrDefaultAsync(cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<WorkflowReactivationTargetVisitRecord>>
+        ListReactivationTargetVisitsAsync(
+        long instanceId,
+        long workflowDefinitionId,
+        CancellationToken cancellationToken)
+    {
+        var rows = await dbContext.Database
+            .SqlQueryRaw<ReactivationTargetVisitRow>(
+                """
+                SELECT DISTINCT ON (execution."NodeId")
+                       execution."Id" AS "NodeExecutionId",
+                       execution."WorkflowDefinitionId",
+                       execution."ExecutionTokenId",
+                       execution."UserTaskId",
+                       execution."MultiInstanceExecutionId",
+                       execution."NodeId",
+                       execution."NodeName",
+                       execution."NodeExternalId",
+                       execution."NodeType",
+                       execution."ExecutionKind",
+                       execution."Status",
+                       execution."EntryGatewayBranchId",
+                       execution."StartedAt",
+                       execution."UpdatedAt",
+                       execution."CompletedAt"
+                FROM flowbit.node_executions AS execution
+                WHERE execution."InstanceId" = @instance_id
+                  AND execution."WorkflowDefinitionId" = @workflow_definition_id
+                  AND execution."NodeType" = @user_task_type
+                  AND execution."ExecutionKind" = @node_execution_kind
+                  AND execution."UserTaskId" IS NOT NULL
+                  AND execution."MultiInstanceExecutionId" IS NULL
+                  AND execution."EntryGatewayBranchId" IS NULL
+                  AND execution."Status" IN (@completed_status, @cancelled_status)
+                ORDER BY execution."NodeId",
+                         COALESCE(execution."CompletedAt", execution."UpdatedAt") DESC,
+                         execution."Id" DESC
+                """,
+                new NpgsqlParameter("instance_id", instanceId),
+                new NpgsqlParameter("workflow_definition_id", workflowDefinitionId),
+                new NpgsqlParameter("user_task_type", BpmnFlowNodeTypes.UserTask),
+                new NpgsqlParameter("node_execution_kind", NodeExecutionKinds.Node),
+                new NpgsqlParameter("completed_status", NodeExecutionStatuses.Completed),
+                new NpgsqlParameter("cancelled_status", NodeExecutionStatuses.Cancelled))
+            .ToListAsync(cancellationToken);
+
+        return rows
+            .OrderByDescending(row => row.CompletedAt ?? row.UpdatedAt)
+            .ThenByDescending(row => row.NodeExecutionId)
+            .Select(row => new WorkflowReactivationTargetVisitRecord(
+                row.NodeExecutionId,
+                row.WorkflowDefinitionId,
+                row.ExecutionTokenId,
+                row.UserTaskId,
+                row.MultiInstanceExecutionId,
+                row.NodeId,
+                row.NodeName,
+                row.NodeExternalId,
+                row.NodeType,
+                row.ExecutionKind,
+                row.Status,
+                row.EntryGatewayBranchId,
+                row.StartedAt,
+                row.UpdatedAt,
+                row.CompletedAt))
+            .ToArray();
+    }
+
+    public async Task<WorkflowReactivationRuntimeStateRecord>
+        GetReactivationRuntimeStateAsync(
+        long instanceId,
+        CancellationToken cancellationToken)
+    {
+        var row = await dbContext.Database
+            .SqlQueryRaw<ReactivationRuntimeStateRow>(
+                """
+                SELECT
+                    (SELECT COUNT(*)
+                     FROM flowbit.execution_tokens token
+                     WHERE token."InstanceId" = @instance_id
+                       AND token."Status" = @active_token_status)
+                        AS "ActiveExecutionTokenCount",
+                    (SELECT COUNT(*)
+                     FROM flowbit.user_tasks task
+                     WHERE task."InstanceId" = @instance_id
+                       AND task."Status" IN (@active_task_status, @pending_task_status))
+                        AS "OpenUserTaskCount",
+                    (SELECT COUNT(*)
+                     FROM flowbit.node_executions execution
+                     WHERE execution."InstanceId" = @instance_id
+                       AND execution."Status" IN (
+                           @active_node_execution_status,
+                           @pending_node_execution_status))
+                        AS "OpenNodeExecutionCount",
+                    (SELECT COUNT(*)
+                     FROM flowbit.multi_instance_executions execution
+                     WHERE execution."InstanceId" = @instance_id
+                       AND execution."Status" = @active_multi_instance_status)
+                        AS "ActiveMultiInstanceExecutionCount",
+                    (SELECT COUNT(*)
+                     FROM flowbit.gateway_executions execution
+                     WHERE execution."InstanceId" = @instance_id
+                       AND execution."Status" = @active_gateway_execution_status)
+                        AS "ActiveGatewayExecutionCount",
+                    (SELECT COUNT(*)
+                     FROM flowbit.gateway_branches branch
+                     INNER JOIN flowbit.gateway_executions execution
+                        ON execution."Id" = branch."ExecutionId"
+                     WHERE execution."InstanceId" = @instance_id
+                       AND branch."Status" = @active_gateway_branch_status)
+                        AS "ActiveGatewayBranchCount",
+                    ((SELECT COUNT(*)
+                      FROM flowbit.workflow_jobs job
+                      WHERE job."InstanceId" = @instance_id
+                        AND job."Status" NOT IN (
+                            @completed_job_status,
+                            @cancelled_job_status,
+                            @skipped_job_status))
+                     + (SELECT COUNT(*)
+                        FROM flowbit.administrative_action_batch_items item
+                        WHERE item."InstanceId" = @instance_id
+                          AND item."Status" IN (
+                              @administrative_item_preparing_status,
+                              @administrative_item_eligible_status,
+                              @administrative_item_queued_status))
+                     + (SELECT COUNT(*)
+                        FROM flowbit.instance_variable_update_batch_items item
+                        WHERE item."InstanceId" = @instance_id
+                          AND item."Status" IN (
+                              @variable_item_preparing_status,
+                              @variable_item_eligible_status,
+                              @variable_item_queued_status))
+                     + (SELECT COUNT(*)
+                        FROM flowbit.workflow_instance_version_change_batch_items item
+                        WHERE item."InstanceId" = @instance_id
+                          AND item."Status" IN (
+                              @version_item_preparing_status,
+                              @version_item_eligible_status,
+                              @version_item_queued_status)))
+                        AS "NonTerminalWorkflowJobCount",
+                    (SELECT COUNT(*)
+                     FROM flowbit.workflow_incidents incident
+                     WHERE incident."InstanceId" = @instance_id
+                       AND incident."Status" = @open_incident_status)
+                        AS "OpenIncidentCount",
+                    (SELECT COUNT(*)
+                     FROM flowbit.timer_subscriptions subscription
+                     WHERE subscription."InstanceId" = @instance_id
+                       AND subscription."Status" IN (
+                           @active_timer_status,
+                           @paused_timer_status))
+                        AS "ActiveOrPausedTimerSubscriptionCount",
+                    (SELECT COUNT(*)
+                     FROM flowbit.conditional_boundary_subscriptions subscription
+                     WHERE subscription."InstanceId" = @instance_id
+                       AND subscription."Status" = @active_conditional_subscription_status)
+                        AS "ActiveConditionalBoundarySubscriptionCount",
+                    COALESCE(
+                        (SELECT array_agg(state."Id" ORDER BY state."Id")
+                         FROM flowbit.complex_gateway_states state
+                         WHERE state."InstanceId" = @instance_id
+                           AND (
+                               state."Phase" <> @complex_waiting_for_start_phase
+                               OR state."AutomaticActivationCount" <> 0
+                               OR cardinality(state."ContributingFlowIds") > 0
+                               OR cardinality(state."ActivationDrainStateIds") > 0
+                               OR cardinality(state."DrainingTokenIds") > 0
+                               OR state."ActiveExecutionId" IS NOT NULL)),
+                        ARRAY[]::bigint[])
+                        AS "NonResetComplexGatewayStateIds",
+                    COALESCE(
+                        (SELECT array_agg(token."Id" ORDER BY token."Id")
+                         FROM flowbit.execution_tokens token
+                         WHERE token."InstanceId" = @instance_id
+                           AND (
+                               token."ComplexGatewayStateId" IS NOT NULL
+                               OR token."ComplexGatewayCycle" IS NOT NULL
+                               OR cardinality(token."ComplexDrainStateIds") > 0
+                               OR cardinality(token."AutomaticActivationStateIds") > 0)),
+                        ARRAY[]::bigint[])
+                        AS "RetainedComplexLineageTokenIds"
+                """,
+                new NpgsqlParameter("instance_id", instanceId),
+                new NpgsqlParameter("active_token_status", ExecutionTokenStatuses.Active),
+                new NpgsqlParameter("active_task_status", UserTaskStatuses.Active),
+                new NpgsqlParameter("pending_task_status", UserTaskStatuses.Pending),
+                new NpgsqlParameter(
+                    "active_node_execution_status",
+                    NodeExecutionStatuses.Active),
+                new NpgsqlParameter(
+                    "pending_node_execution_status",
+                    NodeExecutionStatuses.Pending),
+                new NpgsqlParameter(
+                    "active_multi_instance_status",
+                    MultiInstanceExecutionStatuses.Active),
+                new NpgsqlParameter(
+                    "active_gateway_execution_status",
+                    GatewayExecutionStatuses.Active),
+                new NpgsqlParameter(
+                    "active_gateway_branch_status",
+                    GatewayBranchStatuses.Active),
+                new NpgsqlParameter("completed_job_status", WorkflowJobStatuses.Completed),
+                new NpgsqlParameter("cancelled_job_status", WorkflowJobStatuses.Cancelled),
+                new NpgsqlParameter("skipped_job_status", WorkflowJobStatuses.Skipped),
+                new NpgsqlParameter(
+                    "administrative_item_preparing_status",
+                    AdministrativeActionBatchItemStatuses.Preparing),
+                new NpgsqlParameter(
+                    "administrative_item_eligible_status",
+                    AdministrativeActionBatchItemStatuses.Eligible),
+                new NpgsqlParameter(
+                    "administrative_item_queued_status",
+                    AdministrativeActionBatchItemStatuses.Queued),
+                new NpgsqlParameter(
+                    "variable_item_preparing_status",
+                    InstanceVariableUpdateBatchItemStatuses.Preparing),
+                new NpgsqlParameter(
+                    "variable_item_eligible_status",
+                    InstanceVariableUpdateBatchItemStatuses.Eligible),
+                new NpgsqlParameter(
+                    "variable_item_queued_status",
+                    InstanceVariableUpdateBatchItemStatuses.Queued),
+                new NpgsqlParameter(
+                    "version_item_preparing_status",
+                    InstanceVersionChangeBatchItemStatuses.Preparing),
+                new NpgsqlParameter(
+                    "version_item_eligible_status",
+                    InstanceVersionChangeBatchItemStatuses.Eligible),
+                new NpgsqlParameter(
+                    "version_item_queued_status",
+                    InstanceVersionChangeBatchItemStatuses.Queued),
+                new NpgsqlParameter("open_incident_status", WorkflowIncidentStatuses.Open),
+                new NpgsqlParameter("active_timer_status", TimerSubscriptionStatuses.Active),
+                new NpgsqlParameter("paused_timer_status", TimerSubscriptionStatuses.Paused),
+                new NpgsqlParameter(
+                    "active_conditional_subscription_status",
+                    ConditionalBoundarySubscriptionStatuses.Active),
+                new NpgsqlParameter(
+                    "complex_waiting_for_start_phase",
+                    ComplexGatewayStatePhases.WaitingForStart))
+            .SingleAsync(cancellationToken);
+
+        return new WorkflowReactivationRuntimeStateRecord(
+            row.ActiveExecutionTokenCount,
+            row.OpenUserTaskCount,
+            row.OpenNodeExecutionCount,
+            row.ActiveMultiInstanceExecutionCount,
+            row.ActiveGatewayExecutionCount,
+            row.ActiveGatewayBranchCount,
+            row.NonTerminalWorkflowJobCount,
+            row.OpenIncidentCount,
+            row.ActiveOrPausedTimerSubscriptionCount,
+            row.ActiveConditionalBoundarySubscriptionCount,
+            row.NonResetComplexGatewayStateIds,
+            row.RetainedComplexLineageTokenIds);
     }
 
     public async Task<WorkflowInstanceRecord?> GetInstanceForUpdateAsync(
@@ -1433,12 +1663,12 @@ public sealed class WorkflowRuntimeRepository(
             .FromSqlInterpolated($"SELECT * FROM flowbit.multi_instance_executions WHERE \"InstanceId\" = {id} AND \"Status\" = {MultiInstanceExecutionStatuses.Active} ORDER BY \"Id\" FOR UPDATE")
             .ToListAsync(cancellationToken);
         var token = SelectRepresentativeToken(entity.Status, tokens);
-        if (token is null)
+        if (entity.Status != WorkflowInstanceStatuses.Running || token is null)
         {
-            token = await dbContext.ExecutionTokens.AsNoTracking()
-                .Where(candidate => candidate.InstanceId == id)
-                .OrderByDescending(candidate => candidate.Id)
-                .FirstOrDefaultAsync(cancellationToken);
+            token = await GetRepresentativeTokenEntityAsync(
+                id,
+                entity.Status,
+                cancellationToken);
         }
         UserTaskEntity? task = null;
         if (lockActiveUserTask)
@@ -3419,6 +3649,41 @@ public sealed class WorkflowRuntimeRepository(
     // Unmapped EF Core raw-SQL result. JSONB aggregates are projected as text so
     // the persistence boundary owns cloning JsonElement values and no JsonDocument
     // lifetime escapes this repository.
+    private sealed class ReactivationTargetVisitRow
+    {
+        public long NodeExecutionId { get; set; }
+        public long WorkflowDefinitionId { get; set; }
+        public long ExecutionTokenId { get; set; }
+        public long? UserTaskId { get; set; }
+        public long? MultiInstanceExecutionId { get; set; }
+        public int NodeId { get; set; }
+        public string NodeName { get; set; } = string.Empty;
+        public string? NodeExternalId { get; set; }
+        public string NodeType { get; set; } = string.Empty;
+        public string ExecutionKind { get; set; } = string.Empty;
+        public string Status { get; set; } = string.Empty;
+        public long? EntryGatewayBranchId { get; set; }
+        public DateTimeOffset? StartedAt { get; set; }
+        public DateTimeOffset UpdatedAt { get; set; }
+        public DateTimeOffset? CompletedAt { get; set; }
+    }
+
+    private sealed class ReactivationRuntimeStateRow
+    {
+        public long ActiveExecutionTokenCount { get; set; }
+        public long OpenUserTaskCount { get; set; }
+        public long OpenNodeExecutionCount { get; set; }
+        public long ActiveMultiInstanceExecutionCount { get; set; }
+        public long ActiveGatewayExecutionCount { get; set; }
+        public long ActiveGatewayBranchCount { get; set; }
+        public long NonTerminalWorkflowJobCount { get; set; }
+        public long OpenIncidentCount { get; set; }
+        public long ActiveOrPausedTimerSubscriptionCount { get; set; }
+        public long ActiveConditionalBoundarySubscriptionCount { get; set; }
+        public long[] NonResetComplexGatewayStateIds { get; set; } = [];
+        public long[] RetainedComplexLineageTokenIds { get; set; } = [];
+    }
+
     private sealed class InboxPageRow
     {
         public long InstanceId { get; set; }
@@ -6146,6 +6411,94 @@ public sealed class WorkflowRuntimeRepository(
         claim.LastInstanceId = instanceId;
     }
 
+    public async Task<BusinessKeyReacquisitionRecord>
+        AssessBusinessKeyReacquisitionAsync(
+        long instanceId,
+        CancellationToken cancellationToken)
+    {
+        var instance = await dbContext.WorkflowInstances.AsNoTracking()
+            .SingleAsync(candidate => candidate.Id == instanceId, cancellationToken);
+        if (instance.BusinessKey is null)
+        {
+            return new BusinessKeyReacquisitionRecord(true, null);
+        }
+
+        var claim = await dbContext.WorkflowBusinessKeyClaims.AsNoTracking()
+            .SingleOrDefaultAsync(candidate =>
+                    candidate.WorkflowKey == instance.WorkflowKey
+                    && candidate.BusinessKey == instance.BusinessKey,
+                cancellationToken);
+        return AssessBusinessKeyReacquisition(instanceId, claim);
+    }
+
+    public async Task<BusinessKeyReacquisitionRecord> ReacquireBusinessKeyAsync(
+        long instanceId,
+        CancellationToken cancellationToken)
+    {
+        if (dbContext.Database.CurrentTransaction is null)
+        {
+            throw new InvalidOperationException(
+                "Business-key reacquisition requires an instance transaction.");
+        }
+
+        // Always issue the locking read, even when the entity is already tracked,
+        // so this method independently preserves the instance -> claim lock order.
+        var instance = await dbContext.WorkflowInstances
+            .FromSqlInterpolated($"SELECT * FROM flowbit.workflow_instances WHERE \"Id\" = {instanceId} FOR UPDATE")
+            .SingleAsync(cancellationToken);
+        if (instance.BusinessKey is null)
+        {
+            return new BusinessKeyReacquisitionRecord(true, null);
+        }
+
+        var claim = await dbContext.WorkflowBusinessKeyClaims
+            .FromSqlInterpolated($"SELECT * FROM flowbit.workflow_business_key_claims WHERE \"WorkflowKey\" = {instance.WorkflowKey} AND \"BusinessKey\" = {instance.BusinessKey} FOR UPDATE")
+            .SingleOrDefaultAsync(cancellationToken);
+        if (claim is null)
+        {
+            return new BusinessKeyReacquisitionRecord(
+                false,
+                null,
+                ClaimMissing: true);
+        }
+        var assessment = AssessBusinessKeyReacquisition(instanceId, claim);
+        if (!assessment.Acquired)
+        {
+            return assessment;
+        }
+
+        claim.ActiveInstanceId = instanceId;
+        claim.LastInstanceId = instanceId;
+        return new BusinessKeyReacquisitionRecord(true, null);
+    }
+
+    private static BusinessKeyReacquisitionRecord AssessBusinessKeyReacquisition(
+        long instanceId,
+        WorkflowBusinessKeyClaimEntity? claim)
+    {
+        if (claim is null)
+        {
+            return new BusinessKeyReacquisitionRecord(false, null, ClaimMissing: true);
+        }
+        if (claim.ActiveInstanceId is long activeInstanceId
+            && activeInstanceId != instanceId)
+        {
+            return new BusinessKeyReacquisitionRecord(false, activeInstanceId);
+        }
+
+        // A permanent claim belongs to its original instance for the lifetime of
+        // the workflow family. Reactivation may restore that owner, but it must
+        // never transfer permanent ownership to a different historical row.
+        if (claim.IsPermanent
+            && claim.LastInstanceId is long lastInstanceId
+            && lastInstanceId != instanceId)
+        {
+            return new BusinessKeyReacquisitionRecord(false, lastInstanceId);
+        }
+
+        return new BusinessKeyReacquisitionRecord(true, null);
+    }
+
     private async Task<long> GetCurrentWorkflowDefinitionIdAsync(
         long instanceId,
         CancellationToken cancellationToken)
@@ -6220,6 +6573,49 @@ public sealed class WorkflowRuntimeRepository(
             entity.BatchId,
             entity.BatchItemId);
 
+    private async Task<ExecutionTokenEntity?> GetRepresentativeTokenEntityAsync(
+        long instanceId,
+        string instanceStatus,
+        CancellationToken cancellationToken)
+    {
+        IQueryable<ExecutionTokenEntity> tokenQuery = dbContext.ExecutionTokens
+            .AsNoTracking()
+            .Where(token =>
+                token.InstanceId == instanceId
+                && token.Status != ExecutionTokenStatuses.Merged);
+        tokenQuery = instanceStatus switch
+        {
+            WorkflowInstanceStatuses.Running => tokenQuery
+                .Where(token => token.Status == ExecutionTokenStatuses.Active)
+                .OrderBy(token => token.Id),
+            WorkflowInstanceStatuses.Faulted => tokenQuery
+                .Where(token => token.Status == ExecutionTokenStatuses.Faulted)
+                .OrderByDescending(token => token.UpdatedAt)
+                .ThenByDescending(token => token.Id),
+            WorkflowInstanceStatuses.Completed => tokenQuery
+                .Where(token => token.Status == ExecutionTokenStatuses.Completed)
+                .OrderByDescending(token => token.UpdatedAt)
+                .ThenByDescending(token =>
+                    token.TerminationReason
+                    == ExecutionTokenTerminationReasons.TerminateEnd)
+                .ThenByDescending(token => token.Id),
+            WorkflowInstanceStatuses.Cancelled => tokenQuery
+                .Where(token => token.Status == ExecutionTokenStatuses.Cancelled)
+                .OrderByDescending(token => token.UpdatedAt)
+                .ThenByDescending(token => token.Id),
+            _ => tokenQuery
+                .OrderByDescending(token => token.UpdatedAt)
+                .ThenByDescending(token => token.Id)
+        };
+
+        return await tokenQuery.FirstOrDefaultAsync(cancellationToken)
+               ?? await dbContext.ExecutionTokens.AsNoTracking()
+                   .Where(token => token.InstanceId == instanceId)
+                   .OrderByDescending(token => token.UpdatedAt)
+                   .ThenByDescending(token => token.Id)
+                   .FirstOrDefaultAsync(cancellationToken);
+    }
+
     private static ExecutionTokenEntity? SelectRepresentativeToken(
         string instanceStatus,
         IReadOnlyList<ExecutionTokenEntity> tokens)
@@ -6248,9 +6644,9 @@ public sealed class WorkflowRuntimeRepository(
                 ?? fallback,
             WorkflowInstanceStatuses.Completed =>
                 visible.Where(token => token.Status == ExecutionTokenStatuses.Completed)
-                    .OrderByDescending(token =>
+                    .OrderByDescending(token => token.UpdatedAt)
+                    .ThenByDescending(token =>
                         token.TerminationReason == ExecutionTokenTerminationReasons.TerminateEnd)
-                    .ThenByDescending(token => token.UpdatedAt)
                     .ThenByDescending(token => token.Id)
                     .FirstOrDefault()
                 ?? fallback,

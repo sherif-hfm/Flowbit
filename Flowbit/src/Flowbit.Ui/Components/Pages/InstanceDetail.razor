@@ -15,6 +15,11 @@
     <div class="alert alert-danger" role="alert">@error</div>
 }
 
+@if (!string.IsNullOrWhiteSpace(reactivationSuccess))
+{
+    <div class="alert alert-success" role="status">@reactivationSuccess</div>
+}
+
 @if (instance is null)
 {
     <PageHeader Eyebrow="Instance" Title="@($"Loading instance #{InstanceId}")" Description="Retrieving process state, actions, variables, and history…" />
@@ -103,6 +108,124 @@ else
                 <button class="btn btn-outline-danger mt-3" @onclick="CancelAsync">Cancel instance</button>
             }
     </section>
+
+    @if (IsTerminal && reactivationAuthorized)
+    {
+        <section id="reactivation" class="panel mb-3" aria-labelledby="reactivation-heading">
+            <div class="section-heading">
+                <div>
+                    <h2 id="reactivation-heading">Reactivate instance</h2>
+                    <p>Resume this terminal instance at an eligible user task it visited before.</p>
+                </div>
+                <span class="mono-id">@instance.Status</span>
+            </div>
+
+            <div id="reactivation-retained-state-warning" class="alert alert-warning" role="note">
+                <strong>Review retained state before continuing.</strong>
+                Variables, flow evidence, and history are preserved. Previously completed work and external side effects are not reversed, so continuing from an earlier task can repeat actions or side effects.
+            </div>
+
+            @if (!string.IsNullOrWhiteSpace(reactivationError))
+            {
+                <div class="alert alert-danger" role="alert">@reactivationError</div>
+            }
+
+            @if (reactivationPreview is null)
+            {
+                <div class="alert alert-info">The reactivation preview is unavailable. Refresh it before continuing.</div>
+            }
+            else
+            {
+                @if (reactivationPreview.Blockers.Count > 0)
+                {
+                    <div id="reactivation-blockers" class="alert alert-danger" role="alert">
+                        <strong>Reactivation is blocked.</strong>
+                        <ul class="mb-0 mt-2">
+                            @foreach (var issue in reactivationPreview.Blockers)
+                            {
+                                <li><strong>@issue.Code:</strong> @issue.Message@ReactivationIssueLocation(issue)</li>
+                            }
+                        </ul>
+                    </div>
+                }
+
+                @if (reactivationPreview.Warnings.Count > 0)
+                {
+                    <div class="alert alert-warning">
+                        <strong>Preview warnings</strong>
+                        <ul class="mb-0 mt-2">
+                            @foreach (var issue in reactivationPreview.Warnings)
+                            {
+                                <li><strong>@issue.Code:</strong> @issue.Message@ReactivationIssueLocation(issue)</li>
+                            }
+                        </ul>
+                    </div>
+                }
+
+                <p id="reactivation-preview-fence" class="small text-muted">
+                    Previewed @reactivationPreview.Status state last updated @reactivationPreview.ExpectedUpdatedAt.ToLocalTime().ToString("g"). Refresh the preview if instance state changes.
+                </p>
+
+                @if (reactivationPreview.Targets.Count == 0)
+                {
+                    <div class="alert alert-info">No previously visited user task is eligible for reactivation.</div>
+                }
+                else
+                {
+                    <div class="row g-3">
+                        <div class="col-md-5">
+                            <label class="form-label" for="reactivation-target">Resume at user task</label>
+                            <select id="reactivation-target"
+                                    class="form-select"
+                                    value="@(selectedReactivationNodeId?.ToString() ?? string.Empty)"
+                                    @onchange="OnReactivationTargetChanged"
+                                    aria-describedby="reactivation-retained-state-warning reactivation-preview-fence"
+                                    disabled="@(reactivationPreviewLoading || reactivationSubmitting)">
+                                <option value="">Choose an eligible user task</option>
+                                @foreach (var target in reactivationPreview.Targets)
+                                {
+                                    <option value="@target.NodeId">
+                                        @(string.IsNullOrWhiteSpace(target.NodeName) ? "Unnamed user task" : target.NodeName) · node #@target.NodeId
+                                        @if (!string.IsNullOrWhiteSpace(target.NodeExternalId))
+                                        {
+                                            <text> · @target.NodeExternalId</text>
+                                        }
+                                        · last visited @target.LastVisitedAt.ToLocalTime().ToString("g")
+                                    </option>
+                                }
+                            </select>
+                        </div>
+                        <div class="col-md-7">
+                            <label class="form-label" for="reactivation-reason">Reason</label>
+                            <textarea id="reactivation-reason"
+                                      class="form-control"
+                                      rows="3"
+                                      placeholder="Explain why this terminal instance must return to active work."
+                                      @bind="reactivationReason"
+                                      @bind:event="oninput"
+                                      aria-describedby="reactivation-reason-help reactivation-retained-state-warning"
+                                      disabled="@(reactivationPreviewLoading || reactivationSubmitting)"></textarea>
+                            <div id="reactivation-reason-help" class="form-text">Required, 1-1,000 Unicode characters after trimming. @ReactivationReasonLength / 1,000</div>
+                        </div>
+                    </div>
+                }
+            }
+
+            <div class="d-flex flex-wrap gap-2 mt-3">
+                <button class="btn btn-outline-primary"
+                        disabled="@(reactivationPreviewLoading || reactivationSubmitting)"
+                        @onclick="RefreshReactivationPreviewAsync">
+                    @(reactivationPreviewLoading ? "Refreshing preview..." : "Refresh preview")
+                </button>
+                <button class="btn btn-warning"
+                        disabled="@(!CanConfirmReactivation)"
+                        aria-describedby="reactivation-retained-state-warning"
+                        @onclick="ReactivateAsync">
+                    @(reactivationSubmitting ? "Reactivating..." : "Confirm reactivation")
+                </button>
+            </div>
+        </section>
+    }
 
     @if (IsRunning && canChangeVersion && showVersionChange)
     {
@@ -735,6 +858,14 @@ else
     private bool showVersionChange;
     private bool versionPreviewLoading;
     private bool versionChangeSubmitting;
+    private InstanceReactivationPreviewDto? reactivationPreview;
+    private int? selectedReactivationNodeId;
+    private string reactivationReason = string.Empty;
+    private string? reactivationError;
+    private string? reactivationSuccess;
+    private bool reactivationAuthorized;
+    private bool reactivationPreviewLoading;
+    private bool reactivationSubmitting;
 
     private string ActingUser => NormalizeUser(Token.CurrentUser);
 
@@ -742,6 +873,34 @@ else
         instance?.Status,
         "running",
         StringComparison.OrdinalIgnoreCase);
+
+    private bool IsTerminal => instance?.Status is { } status
+        && (string.Equals(status, "completed", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(status, "cancelled", StringComparison.OrdinalIgnoreCase));
+
+    private int ReactivationReasonLength =>
+        reactivationReason.Trim().EnumerateRunes().Count();
+
+    private bool HasValidReactivationReason =>
+        ReactivationReasonLength is >= 1 and <= 1000;
+
+    private bool CanConfirmReactivation =>
+        instance is not null
+        && IsTerminal
+        && reactivationAuthorized
+        && reactivationPreview is { CanReactivate: true }
+        && reactivationPreview.InstanceId == instance.Id
+        && reactivationPreview.WorkflowId == instance.Workflow.Id
+        && string.Equals(
+            reactivationPreview.Status,
+            instance.Status,
+            StringComparison.OrdinalIgnoreCase)
+        && reactivationPreview.ExpectedUpdatedAt == instance.UpdatedAt
+        && selectedReactivationNodeId is int nodeId
+        && reactivationPreview.Targets.Any(target => target.NodeId == nodeId)
+        && HasValidReactivationReason
+        && !reactivationPreviewLoading
+        && !reactivationSubmitting;
 
     private bool HasValidVersionChangeReason
         => VersionChangeReasonLength is >= 1 and <= 1000;
@@ -1097,6 +1256,21 @@ else
                 ? $"Terminate end completed the instance from token #{tokenId}"
                 : "Terminate end completed the instance";
         }
+        if (item.Note is "instanceReactivated")
+        {
+            var sourceStatus = HistoryPayloadString(item, "sourceStatus") ?? "terminal";
+            var targetNodeId = HistoryPayloadString(item, "targetNodeId") ?? item.ToNodeId.ToString();
+            var newTaskId = HistoryPayloadString(item, "newUserTaskId");
+            var reactivationHistoryReason = HistoryPayloadString(item, "reason") ?? item.Reason;
+            var reactivationHistorySummary = $"Instance reactivated from {sourceStatus} at user task #{targetNodeId}";
+            if (!string.IsNullOrWhiteSpace(newTaskId))
+            {
+                reactivationHistorySummary += $" (new work item #{newTaskId})";
+            }
+            return string.IsNullOrWhiteSpace(reactivationHistoryReason)
+                ? reactivationHistorySummary
+                : $"{reactivationHistorySummary} — {reactivationHistoryReason}";
+        }
         if (!string.Equals(item.Note, "taskAssignment", StringComparison.Ordinal))
         {
             return item.Note ?? "-";
@@ -1132,7 +1306,9 @@ else
         try
         {
             error = null;
-            await RefreshInstanceStateAsync(forceVersionTargets: true);
+            await RefreshInstanceStateAsync(
+                forceVersionTargets: true,
+                forceReactivationPreview: true);
         }
         catch (Exception ex)
         {
@@ -1154,7 +1330,7 @@ else
     {
         var confirmed = await JS.InvokeAsync<bool>(
             "confirm",
-            $"Cancel instance #{InstanceId}? Open tasks will be cancelled and this cannot be resumed.");
+            $"Cancel instance #{InstanceId}? Open tasks and waits will be cancelled. An administrator may be able to reactivate it later at an eligible prior user task.");
         if (!confirmed)
         {
             return;
@@ -1273,7 +1449,8 @@ else
 
     private async Task RefreshInstanceStateAsync(
         CancellationToken cancellationToken = default,
-        bool forceVersionTargets = false)
+        bool forceVersionTargets = false,
+        bool forceReactivationPreview = false)
     {
         var refreshed = await Api.GetInstanceAsync(InstanceId, cancellationToken);
         if (refreshed is not null)
@@ -1282,6 +1459,206 @@ else
         }
         await LoadAvailableActionsAsync(cancellationToken);
         await LoadVersionTargetsAsync(cancellationToken, forceVersionTargets);
+        await LoadReactivationPreviewAsync(cancellationToken, forceReactivationPreview);
+    }
+
+    private async Task LoadReactivationPreviewAsync(
+        CancellationToken cancellationToken = default,
+        bool force = false)
+    {
+        if (instance is null || !IsTerminal)
+        {
+            reactivationAuthorized = false;
+            reactivationPreview = null;
+            selectedReactivationNodeId = null;
+            reactivationReason = string.Empty;
+            reactivationError = null;
+            return;
+        }
+
+        if (!force
+            && reactivationPreview is { } current
+            && current.InstanceId == instance.Id
+            && current.WorkflowId == instance.Workflow.Id
+            && current.ExpectedUpdatedAt == instance.UpdatedAt
+            && string.Equals(current.Status, instance.Status, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        try
+        {
+            reactivationPreviewLoading = true;
+            reactivationError = null;
+            var preview = await Api.PreviewInstanceReactivationAsync(InstanceId, cancellationToken);
+            reactivationAuthorized = true;
+            reactivationPreview = preview;
+            if (preview is null)
+            {
+                selectedReactivationNodeId = null;
+                reactivationError = "The workflow instance no longer exists.";
+                return;
+            }
+
+            if (selectedReactivationNodeId is int selected
+                && preview.Targets.All(target => target.NodeId != selected))
+            {
+                selectedReactivationNodeId = null;
+            }
+        }
+        catch (WorkflowApiException ex) when (
+            ex.StatusCode is System.Net.HttpStatusCode.Unauthorized
+                or System.Net.HttpStatusCode.Forbidden)
+        {
+            reactivationAuthorized = false;
+            reactivationPreview = null;
+            selectedReactivationNodeId = null;
+            reactivationError = null;
+        }
+        catch (Exception ex)
+        {
+            reactivationAuthorized = true;
+            reactivationPreview = null;
+            selectedReactivationNodeId = null;
+            reactivationError = ex.Message;
+        }
+        finally
+        {
+            reactivationPreviewLoading = false;
+        }
+    }
+
+    private void OnReactivationTargetChanged(ChangeEventArgs args)
+    {
+        selectedReactivationNodeId = int.TryParse(args.Value?.ToString(), out var nodeId)
+            ? nodeId
+            : null;
+        reactivationError = null;
+    }
+
+    private async Task RefreshReactivationPreviewAsync()
+    {
+        await refreshGate.WaitAsync();
+        try
+        {
+            reactivationError = null;
+            error = null;
+            await RefreshInstanceStateAsync(
+                forceVersionTargets: true,
+                forceReactivationPreview: true);
+        }
+        catch (Exception ex)
+        {
+            reactivationError = ex.Message;
+        }
+        finally
+        {
+            refreshGate.Release();
+        }
+    }
+
+    private async Task ReactivateAsync()
+    {
+        if (!CanConfirmReactivation
+            || instance is null
+            || reactivationPreview is null
+            || selectedReactivationNodeId is not int targetNodeId)
+        {
+            return;
+        }
+
+        var target = reactivationPreview.Targets.Single(item => item.NodeId == targetNodeId);
+        var targetLabel = string.IsNullOrWhiteSpace(target.NodeName)
+            ? $"user task #{target.NodeId}"
+            : $"'{target.NodeName}' (node #{target.NodeId})";
+        var confirmed = await JS.InvokeAsync<bool>(
+            "confirm",
+            $"Reactivate instance #{InstanceId} at {targetLabel}? Variables and history will be retained. Completed work and external side effects will not be reversed, so work after this task may repeat.");
+        if (!confirmed)
+        {
+            return;
+        }
+
+        await refreshGate.WaitAsync();
+        try
+        {
+            reactivationSubmitting = true;
+            reactivationError = null;
+            reactivationSuccess = null;
+            error = null;
+            var refreshed = await Api.ReactivateInstanceAsync(
+                InstanceId,
+                new ReactivateInstanceRequest(
+                    targetNodeId,
+                    reactivationPreview.WorkflowId,
+                    reactivationPreview.ExpectedUpdatedAt,
+                    reactivationReason.Trim()));
+            if (refreshed is null)
+            {
+                reactivationError = "The workflow instance no longer exists.";
+                return;
+            }
+
+            instance = refreshed;
+            reactivationSuccess = $"Instance #{InstanceId} was reactivated at {targetLabel}. The new user task is ready for work.";
+            reactivationPreview = null;
+            selectedReactivationNodeId = null;
+            reactivationReason = string.Empty;
+            reactivationAuthorized = false;
+            try
+            {
+                await LoadAvailableActionsAsync();
+                await LoadVersionTargetsAsync(force: true);
+                await LoadReactivationPreviewAsync(force: true);
+            }
+            catch (Exception ex)
+            {
+                error = $"The instance was reactivated, but its available actions could not be refreshed: {ex.Message}";
+            }
+        }
+        catch (WorkflowApiException ex) when (
+            ex.StatusCode is System.Net.HttpStatusCode.Unauthorized
+                or System.Net.HttpStatusCode.Forbidden)
+        {
+            reactivationAuthorized = false;
+            reactivationPreview = null;
+            selectedReactivationNodeId = null;
+            reactivationError = null;
+            error = "You are no longer authorized to reactivate this workflow instance.";
+        }
+        catch (WorkflowApiException ex) when (
+            ex.StatusCode == System.Net.HttpStatusCode.Conflict)
+        {
+            try
+            {
+                await RefreshInstanceStateAsync(
+                    forceVersionTargets: true,
+                    forceReactivationPreview: true);
+            }
+            catch
+            {
+                // Preserve the authoritative conflict. The normal refresh action
+                // remains available if this follow-up read also failed.
+            }
+            var conflictMessage = $"{ex.Message} Refresh completed; review the reactivation preview before trying again.";
+            if (IsTerminal && reactivationAuthorized)
+            {
+                reactivationError = conflictMessage;
+            }
+            else
+            {
+                error = conflictMessage;
+            }
+        }
+        catch (Exception ex)
+        {
+            reactivationError = ex.Message;
+        }
+        finally
+        {
+            reactivationSubmitting = false;
+            refreshGate.Release();
+        }
     }
 
     private async Task LoadVersionTargetsAsync(
@@ -1537,6 +1914,14 @@ else
         {
             parts.Add($"variable '{issue.VariableName}'");
         }
+        return parts.Count == 0 ? string.Empty : $" ({string.Join(", ", parts)})";
+    }
+
+    private static string ReactivationIssueLocation(InstanceReactivationIssueDto issue)
+    {
+        var parts = new List<string>();
+        if (issue.NodeId is int nodeId) parts.Add($"node #{nodeId}");
+        if (issue.StateId is long stateId) parts.Add($"runtime state #{stateId}");
         return parts.Count == 0 ? string.Empty : $" ({string.Join(", ", parts)})";
     }
 

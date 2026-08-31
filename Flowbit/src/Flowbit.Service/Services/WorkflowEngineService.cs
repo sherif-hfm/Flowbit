@@ -10310,9 +10310,9 @@ public sealed partial class WorkflowEngineService(
                                 && token.TerminationReason is
                                     ExecutionTokenTerminationReasons.NormalEnd
                                     or ExecutionTokenTerminationReasons.TerminateEnd)
-                .OrderByDescending(token =>
+                .OrderByDescending(token => token.UpdatedAt)
+                .ThenByDescending(token =>
                     token.TerminationReason == ExecutionTokenTerminationReasons.TerminateEnd)
-                .ThenByDescending(token => token.UpdatedAt)
                 .ThenByDescending(token => token.Id)
                 .FirstOrDefault();
             if (terminal is not null)

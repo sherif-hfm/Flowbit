@@ -187,6 +187,17 @@ public interface IWorkflowEngineService
 
     Task<InstanceDetailDto?> GetInstanceAsync(long id, CancellationToken cancellationToken);
 
+    Task<InstanceReactivationPreviewDto?> PreviewInstanceReactivationAsync(
+        long id,
+        ActorContext actor,
+        CancellationToken cancellationToken);
+
+    Task<InstanceDetailDto?> ReactivateInstanceAsync(
+        long id,
+        ReactivateInstanceRequest request,
+        ActorContext actor,
+        CancellationToken cancellationToken);
+
     Task<InstanceVersionChangePreviewDto?> PreviewInstanceVersionChangeAsync(
         long id,
         long targetWorkflowId,

@@ -621,6 +621,8 @@ and in-flight gateway executions are not migrated.
 - `POST /api/instances/{id}/unclaim`
 - `POST /api/instances/{id}/flows/{flowId}`
 - `POST /api/instances/{id}/cancel`
+- `GET /api/instances/{id}/reactivation` (workflow-admin eligibility preview)
+- `POST /api/instances/{id}/reactivation` (workflow-admin terminal reactivation)
 - `PATCH /api/instances/{id}/variables` (workflow-admin raw JSON upsert)
 - `POST /api/instance-variable-update-batches/candidates/search`
 - `POST /api/instance-variable-update-batches` (`202`, durable preparation)
@@ -638,6 +640,36 @@ and in-flight gateway executions are not migrated.
 - `GET /api/auth/context` (server-resolved workflow actor and roles)
 - `GET /api/multi-instance-executions/{executionId}/flows`
 - `POST /api/multi-instance-executions/{executionId}/flows/{flowId}`
+
+## Terminal instance reactivation
+
+A caller holding the dynamic `Workflow.RequiredRole` administrator role can
+preview and reactivate a `completed` or `cancelled` instance. The preview returns
+the instance's current workflow-version and `UpdatedAt` fences, global runtime
+blockers, warnings, and distinct eligible user tasks previously visited in that
+same immutable version. Faulted or running instances are not supported.
+
+`POST /api/instances/{id}/reactivation` requires `targetNodeId`,
+`expectedWorkflowId`, `expectedUpdatedAt`, and a trimmed reason containing 1 to
+1,000 Unicode characters. Eligible targets are completed or cancelled normal
+node executions for top-level, non-multi-instance `userTask` nodes. Async-before
+tasks, branch-scoped visits, unsafe gateway re-entry, currently true conditional
+boundaries, dirty runtime artifacts, unresolved durable work, and retained
+Complex Gateway state or lineage are rejected. The commit repeats every check
+under the instance lock and returns `409 Conflict` for drift or a business-key
+ownership conflict.
+
+Reactivation continues the current process state; it does not roll variables or
+external systems back. In one transaction the engine reacquires any released
+business-key claim, changes the instance to `running`, creates a fresh root
+token, user task, node execution and activation fence, initializes normal task
+boundaries and ownership inheritance, and requires exactly one stable active
+task at the requested node. All prior tokens, work items, executions, jobs,
+subscriptions, variables, receipts, FlowInfo summaries, and history remain
+unchanged. The engine appends an `instanceReactivated` history row but records no
+sequence-flow occurrence because no authored flow was traversed. If task entry
+cannot reach the stable-wait postcondition, the status, claim, new runtime rows,
+and audit all roll back together.
 
 ## Administrative instance-variable updates
 

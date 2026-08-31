@@ -675,6 +675,22 @@ Storage follows the hybrid design:
 - Instances move through `Running`, `Completed` (when the last active token
   reaches a normal `endEvent`, or immediately on `terminateEndEvent`), `Faulted`
   (on entering an `errorEndEvent`), and `Cancelled` (`POST /cancel`) statuses.
+- **Terminal reactivation.** Workflow administrators (the dynamic
+  `Workflow.RequiredRole`) can preview `GET /api/instances/{id}/reactivation`
+  and commit `POST /api/instances/{id}/reactivation` for completed or cancelled
+  instances. Reactivation targets a previously completed/cancelled, current-
+  version, top-level ordinary user task and creates a fresh root token, active
+  work item, node execution, and activation fence. Async-before,
+  multi-instance/branch-scoped, unsafe gateway, currently-triggered conditional
+  boundary, dirty durable/runtime, and retained Complex Gateway state are
+  rejected. Commit is fenced by workflow definition and `UpdatedAt`, reacquires
+  released business-key ownership under lock, applies normal boundary and task-
+  ownership initialization, and must leave exactly one stable active task at
+  the requested node. Variables, FlowInfo summaries, history, receipts, and all
+  old terminal runtime rows are retained; no authored sequence flow is recorded.
+  The required 1-1,000-character reason and operator/role/new-activation details
+  are appended in `instanceReactivated` history. Faulted instances remain
+  terminal and unsupported.
 - **Error events.** An `errorBoundaryEvent` is attached to a `serviceTask` or
   `scriptTask` (`attachedToRef`) and catches that task's runtime failures
   (HTTP non-2xx/timeout/network, or a script/assignment/validation error): the
@@ -1214,7 +1230,9 @@ what the cross-version `workflowKey` instance search matches.
   policy management.
 - `/instances/{id}` (`InstanceDetail.razor`) - claim/unclaim, take available
   sequence flows, take authorized parent-level multi-instance interrupt actions,
-  and view variables and history, including task-assignment audit details.
+  view variables and history (including task-assignment/reactivation audit
+  details), and, for authorized administrators, preview and confirm safe
+  completed/cancelled instance reactivation.
 
 The UI talks to the API through `WorkflowApiClient` (a typed `HttpClient`). Its
 legacy GET methods remain for dashboard/compatibility reads; all five interactive

@@ -160,6 +160,57 @@ public sealed record NodeExecutionRecord(
     public long? CompletedDelegationId { get; init; }
 }
 
+public sealed record WorkflowReactivationTargetVisitRecord(
+    long NodeExecutionId,
+    long WorkflowDefinitionId,
+    long ExecutionTokenId,
+    long? UserTaskId,
+    long? MultiInstanceExecutionId,
+    int NodeId,
+    string NodeName,
+    string? NodeExternalId,
+    string NodeType,
+    string ExecutionKind,
+    string Status,
+    long? EntryGatewayBranchId,
+    DateTimeOffset? StartedAt,
+    DateTimeOffset UpdatedAt,
+    DateTimeOffset? CompletedAt);
+
+public sealed record WorkflowReactivationRuntimeStateRecord(
+    long ActiveExecutionTokenCount,
+    long OpenUserTaskCount,
+    long OpenNodeExecutionCount,
+    long ActiveMultiInstanceExecutionCount,
+    long ActiveGatewayExecutionCount,
+    long ActiveGatewayBranchCount,
+    long NonTerminalWorkflowJobCount,
+    long OpenIncidentCount,
+    long ActiveOrPausedTimerSubscriptionCount,
+    long ActiveConditionalBoundarySubscriptionCount,
+    IReadOnlyList<long> NonResetComplexGatewayStateIds,
+    IReadOnlyList<long> RetainedComplexLineageTokenIds)
+{
+    public bool IsClean =>
+        ActiveExecutionTokenCount == 0
+        && OpenUserTaskCount == 0
+        && OpenNodeExecutionCount == 0
+        && ActiveMultiInstanceExecutionCount == 0
+        && ActiveGatewayExecutionCount == 0
+        && ActiveGatewayBranchCount == 0
+        && NonTerminalWorkflowJobCount == 0
+        && OpenIncidentCount == 0
+        && ActiveOrPausedTimerSubscriptionCount == 0
+        && ActiveConditionalBoundarySubscriptionCount == 0
+        && NonResetComplexGatewayStateIds.Count == 0
+        && RetainedComplexLineageTokenIds.Count == 0;
+}
+
+public sealed record BusinessKeyReacquisitionRecord(
+    bool Acquired,
+    long? ConflictingInstanceId,
+    bool ClaimMissing = false);
+
 public sealed record GatewayExecutionRecord(
     long Id,
     long InstanceId,
@@ -694,6 +745,7 @@ public static class InstanceHistoryNotes
 {
     public const string ConditionalLatched = "conditionalLatched";
     public const string ConditionalTriggered = "conditionalTriggered";
+    public const string InstanceReactivated = "instanceReactivated";
 }
 
 public static class ExecutionTokenTerminationReasons
