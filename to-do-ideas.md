@@ -2,7 +2,7 @@
 - add login option UI project like user/pass or integration with identity providers, also add  role management  
 - history and audit tables retention policy
 
-
+- in user tasks and outflow make roles as variables 
 - loop user task (can done with gateway - no need now)
 - receive task
 - add Event-Based Gateway
