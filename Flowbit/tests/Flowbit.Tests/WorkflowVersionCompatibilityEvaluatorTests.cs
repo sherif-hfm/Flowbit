@@ -12,7 +12,7 @@ public sealed class WorkflowVersionCompatibilityEvaluatorTests
         new(2026, 8, 2, 12, 0, 0, TimeSpan.Zero);
 
     [Fact]
-    public void Compatible_change_ignores_cosmetics_and_allows_new_user_task_actions()
+    public void Compatible_change_ignores_cosmetics_and_allows_role_management_permission()
     {
         var source = Definition(11, 1, BasicModel());
         var targetModel = Clone(source.Definition);
@@ -20,7 +20,7 @@ public sealed class WorkflowVersionCompatibilityEvaluatorTests
         targetModel.FlowNodes.Single(node => node.Id == 2).Name = "Renamed task";
         targetModel.FlowNodes.Single(node => node.Id == 2).X += 500;
         targetModel.SequenceFlows.Single(flow => flow.Id == 20).Name = "Renamed action";
-        targetModel.SequenceFlows.Single(flow => flow.Id == 20).Roles = ["approver"];
+        targetModel.TaskRoleManagementRoles = ["role-manager"];
         var target = Definition(13, 3, targetModel);
 
         var result = WorkflowVersionCompatibilityEvaluator.Evaluate(
@@ -29,6 +29,31 @@ public sealed class WorkflowVersionCompatibilityEvaluatorTests
         Assert.True(result.IsCompatible);
         Assert.Empty(result.Blockers);
         Assert.Empty(result.Warnings);
+    }
+
+    [Theory]
+    [InlineData("node-source")]
+    [InlineData("flow-source")]
+    [InlineData("flow-roles")]
+    [InlineData("new-action")]
+    [InlineData("removed-action")]
+    [InlineData("changed-target")]
+    public void Open_task_blocks_changes_to_its_snapshotted_role_contract(string change)
+    {
+        var source = Definition(11, 1, BasicModel());
+        var targetModel = Clone(source.Definition);
+        switch (change)
+        {
+            case "node-source": targetModel.FlowNodes[1].RolesVariable = "roleNames"; break;
+            case "flow-source": targetModel.SequenceFlows.Single(flow => flow.Id == 20).RolesVariable = "roleNames"; break;
+            case "flow-roles": targetModel.SequenceFlows.Single(flow => flow.Id == 20).Roles = ["manager"]; break;
+            case "new-action": targetModel.SequenceFlows.Add(Flow(21, 2, 3)); break;
+            case "removed-action": targetModel.SequenceFlows.RemoveAll(flow => flow.Id == 20); break;
+            case "changed-target": targetModel.SequenceFlows.Single(flow => flow.Id == 20).TargetRef = 1; break;
+        }
+        var result = WorkflowVersionCompatibilityEvaluator.Evaluate(
+            Context(source, Definition(12, 2, targetModel), includeOpenTask: true));
+        Assert.Contains(result.Blockers, blocker => blocker.Code == WorkflowVersionCompatibilityCodes.UserTaskContractChanged);
     }
 
     [Fact]

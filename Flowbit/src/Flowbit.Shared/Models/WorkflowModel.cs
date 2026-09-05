@@ -77,6 +77,10 @@ public sealed class WorkflowModel
     [JsonPropertyName("taskAssignmentRoles")]
     public List<string> TaskAssignmentRoles { get; set; } = [];
 
+    /// <summary>Roles allowed to inspect and replace waiting-task role policies. Empty disables this authority.</summary>
+    [JsonPropertyName("taskRoleManagementRoles")]
+    public List<string> TaskRoleManagementRoles { get; set; } = [];
+
     /// <summary>
     /// Optional client credentials that authorize the external task distributor
     /// for every active task in this workflow family. Values may be literals or
@@ -302,6 +306,11 @@ public sealed class FlowNodeModel
     /// </summary>
     [JsonPropertyName("roles")]
     public List<string> Roles { get; set; } = [];
+
+    /// <summary>Declared string-array variable resolved once when this user task is created.</summary>
+    [JsonPropertyName("rolesVariable")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? RolesVariable { get; set; }
 
     /// <summary>
     /// Whether the task requires claiming before actions can be taken.
@@ -1270,6 +1279,11 @@ public sealed class SequenceFlowModel
     [JsonPropertyName("roles")]
     public List<string> Roles { get; set; } = [];
 
+    /// <summary>Declared string-array variable resolved with the source user task's role policy.</summary>
+    [JsonPropertyName("rolesVariable")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? RolesVariable { get; set; }
+
     /// <summary>
     /// Required input variable declarations for this transition flow.
     /// </summary>
@@ -1336,6 +1350,15 @@ public sealed class SequenceFlowModel
     /// </summary>
     [JsonPropertyName("cancelRemainingInstances")]
     public bool CancelRemainingInstances { get; set; }
+
+    /// <summary>Project effective runtime roles without changing the immutable authored definition.</summary>
+    public SequenceFlowModel WithResolvedRoles(IReadOnlyList<string> roles)
+    {
+        var copy = (SequenceFlowModel)MemberwiseClone();
+        copy.Roles = roles.ToList();
+        copy.RolesVariable = null;
+        return copy;
+    }
 }
 
 /// <summary>

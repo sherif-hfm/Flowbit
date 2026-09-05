@@ -45,6 +45,8 @@ public sealed record InboxSearchRequest
 /// <summary>Advanced manager-scoped user-task search request.</summary>
 public sealed record ManageableUserTaskSearchRequest
 {
+    /// <summary>active (default), pending, or open (active and pending).</summary>
+    public string? Status { get; init; }
     public long? TaskId { get; init; }
     public long? InstanceId { get; init; }
     public long? WorkflowId { get; init; }

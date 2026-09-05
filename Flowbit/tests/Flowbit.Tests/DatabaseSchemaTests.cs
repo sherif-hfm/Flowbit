@@ -22,7 +22,7 @@ public sealed class DatabaseSchemaTests(PostgresApiFixture fixture)
             .Distinct()
             .ToArray();
 
-        Assert.Equal(47, mappedTables.Length);
+        Assert.Equal(48, mappedTables.Length);
         Assert.All(mappedTables, table => Assert.Equal(FlowbitDatabase.Schema, table.Schema));
         Assert.Contains(mappedTables, table => table.Name == "instance_variable_current_values");
         Assert.Contains(mappedTables, table => table.Name == "gateway_executions");
@@ -31,6 +31,7 @@ public sealed class DatabaseSchemaTests(PostgresApiFixture fixture)
         Assert.DoesNotContain(mappedTables, table => table.Name == "parallel_gateway_executions");
         Assert.DoesNotContain(mappedTables, table => table.Name == "parallel_gateway_branches");
         Assert.Contains(mappedTables, table => table.Name == "node_executions");
+        Assert.Contains(mappedTables, table => table.Name == "user_task_role_policies");
         Assert.Contains(mappedTables, table => table.Name == "user_delegations");
         Assert.Contains(mappedTables, table => table.Name == "workflow_delegation_policies");
         Assert.Contains(mappedTables, table => table.Name == "workflow_jobs");

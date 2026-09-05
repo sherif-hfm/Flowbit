@@ -26,6 +26,54 @@ expected result, and any API, Worker, or trusted configuration prerequisites.
 
 ## Storage
 
+### Waiting-task roles
+
+User tasks and selectable, non-default outgoing flows can use `rolesVariable`
+instead of nonempty literal `roles`. It names a declared process `string[]`
+variable, including a shared binding. Values are captured together when the
+task or multi-instance approval is created and stored in an immutable role
+policy. Later variable changes, reassignment, and sequential reviewer activation
+do not reevaluate them. A new task visit captures new values. Missing, null,
+wrongly typed, or blank-only values reject task creation. Variable-derived and
+manually supplied lists accept at most 100 entries with 300 Unicode characters
+per trimmed role, deduplicated case-insensitively. Literal `roles: []` and an
+explicit empty management list mean unrestricted role access; ownership and
+other action conditions still apply.
+
+Set workflow `taskRoleManagementRoles` to enable a separate management
+authority. Missing or empty disables it; assignment managers and distribution
+clients do not inherit it. In Flowbit.Ui, **Task management** lists active and
+pending persisted work and offers **Edit roles** to authorized managers. Roles
+can change while assignees and claimants remain in place. Multi-instance edits
+affect its parent interrupt actions and every active/pending reviewer together;
+finished reviewer policies remain historical.
+
+Use GET/POST `/api/user-tasks/{taskId}/roles` for normal tasks or GET/POST
+`/api/multi-instance-executions/{executionId}/roles` for an approval. Read the
+current policy before posting `expectedRolePolicyId`, replacement `roles`, the
+complete selectable `flows: [{ flowId, roles }]` list, and optional `reason`.
+Identical retries succeed unchanged; a different edit with a stale policy ID
+returns 409. One `taskRolesChanged` history entry records each committed edit.
+These management reads bypass personal inbox conditions without granting user
+actions. Management search accepts `status=active|pending|open`, defaulting to
+active for existing API callers.
+
+Inbox membership continues to use `user_tasks.Roles` in PostgreSQL before
+counting/paging; returned-page action checks batch-load captured policies.
+There are no inbox role-variable evaluations or per-task policy queries.
+Compatible version switches preserve saved policies and manual edits. Changes
+to role sources or the captured outgoing action contract block a switch with
+affected open work; adding only `taskRoleManagementRoles` remains compatible.
+
+Deploy by applying the additive role-policy migration, then upgrading every
+API and Worker replica before publishing variable-role definitions or exposing
+role management. The migration captures existing open work from its stored
+task roles and immutable definitions without inventing historical changes.
+Mixed legacy and policy-aware replicas are unsupported. See the
+[example](../examples/user-tasks/05-variable-roles-and-role-management.json).
+
+### Tables
+
 - All Flowbit tables, owned sequences, indexes, constraints, and EF migration
   history live in the fixed PostgreSQL `flowbit` schema.
 - Workflow definitions are versioned JSONB snapshots in

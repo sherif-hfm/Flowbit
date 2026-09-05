@@ -1676,6 +1676,11 @@ public sealed partial class WorkflowEngineService(
             return new PagedResult<InboxItemDto>([], paged.Page, paged.PageSize, paged.TotalCount);
         }
 
+        var policyIds = paged.Items.Where(row => row.RolePolicyId.HasValue)
+            .Select(row => row.RolePolicyId!.Value).Distinct().ToArray();
+        var rolePolicies = policyIds.Length == 0
+            ? new Dictionary<long, UserTaskRolePolicyRecord>()
+            : await runtime.GetRolePoliciesAsync(policyIds, cancellationToken);
         var definitionIds = paged.Items.Select(c => c.WorkflowDefinitionId).Distinct().ToList();
         var definitionsById = await definitions.GetManyAsync(definitionIds, cancellationToken);
         foreach (var id in definitionIds)
@@ -1718,7 +1723,13 @@ public sealed partial class WorkflowEngineService(
             var workflow = definitionsById[row.WorkflowDefinitionId];
             var node = GetFlowNode(workflow.Definition, row.CurrentNodeId);
             attributesByTask[taskKey] = NodeAttributes(workflow, row.CurrentNodeId);
-            var task = ToInboxUserTaskRecord(row);
+            var task = ToInboxUserTaskRecord(row) with
+            {
+                RolePolicyId = row.RolePolicyId,
+                RolePolicy = row.RolePolicyId is long policyId
+                    ? rolePolicies.GetValueOrDefault(policyId)
+                    : null
+            };
             var access = ResolveProjectedUserTaskAccess(
                 task, actor, row.ActingFor, row.DelegationId);
             accessByTask[taskKey] = access;
@@ -2076,12 +2087,13 @@ public sealed partial class WorkflowEngineService(
         var roles = NormalizeRoles(executionActor.Roles);
         return OutgoingFlows(workflow.Id, workflow.Definition, node.Id)
             .Where(f => f.IsSelectable && !f.IsDefault
-                        && RoleAllowed(f.Roles, roles)
+                        && RoleAllowed(EffectiveFlowRoles(task, f), roles)
                         && (!task.RequiresClaim
                             || string.Equals(task.ClaimedBy, EffectiveUser(executionActor), StringComparison.OrdinalIgnoreCase)
                             || CanBypassClaim(f, roles))
                         && (string.IsNullOrWhiteSpace(f.Condition)
                             || SequenceFlowConditionEvaluator.Evaluate(f.Condition, context)))
+            .Select(flow => flow.WithResolvedRoles(EffectiveFlowRoles(task, flow)))
             .ToList();
     }
 
@@ -2139,7 +2151,7 @@ public sealed partial class WorkflowEngineService(
             throw new WorkflowDomainException("Directly assigned tasks do not use claim/unclaim.");
         if (!task.RequiresClaim)
             throw new WorkflowDomainException("The user task cannot be claimed.");
-        EnsureRoleAllowed(node, actor);
+        EnsureTaskRoleAllowed(task, actor);
         var user = NormalizeUser(actor.User);
         if (execution is { OnePerActor: true })
         {
@@ -2283,7 +2295,8 @@ public sealed partial class WorkflowEngineService(
         IReadOnlyList<string>? variables,
         int page,
         int pageSize,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? status = null)
     {
         page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 1, 200);
@@ -2303,8 +2316,9 @@ public sealed partial class WorkflowEngineService(
             VariableFilterParser.FromLegacy(ParseVariableFilters(variables)),
             page,
             pageSize,
-            cancellationToken);
-        return await BuildManagedUserTaskPageAsync(paged, cancellationToken);
+            cancellationToken,
+            NormalizeManagedTaskStatus(status));
+        return await BuildManagedUserTaskPageAsync(paged, cancellationToken, actor);
     }
 
     public async Task<PagedResult<ManagedUserTaskDto>> SearchManageableUserTasksAsync(
@@ -2329,8 +2343,9 @@ public sealed partial class WorkflowEngineService(
             VariableFilterParser.Parse(request.VariableFilter),
             page,
             pageSize,
-            cancellationToken);
-        return await BuildManagedUserTaskPageAsync(paged, cancellationToken);
+            cancellationToken,
+            NormalizeManagedTaskStatus(request.Status));
+        return await BuildManagedUserTaskPageAsync(paged, cancellationToken, actor);
     }
 
     public async Task<PagedResult<ManagedUserTaskDto>?> ListDistributableUserTasksAsync(
@@ -2374,7 +2389,7 @@ public sealed partial class WorkflowEngineService(
             page,
             pageSize,
             cancellationToken);
-        return await BuildManagedUserTaskPageAsync(paged, cancellationToken);
+        return await BuildManagedUserTaskPageAsync(paged, cancellationToken, distribution: true);
     }
 
     public async Task<PagedResult<ManagedUserTaskDto>?> SearchDistributableUserTasksAsync(
@@ -2406,7 +2421,7 @@ public sealed partial class WorkflowEngineService(
             Math.Max(1, request.Page ?? 1),
             Math.Clamp(request.PageSize ?? 50, 1, 200),
             cancellationToken);
-        return await BuildManagedUserTaskPageAsync(paged, cancellationToken);
+        return await BuildManagedUserTaskPageAsync(paged, cancellationToken, distribution: true);
     }
 
     public Task<UserTaskAssignmentAckDto?> AssignUserTaskAsync(
@@ -2765,7 +2780,7 @@ public sealed partial class WorkflowEngineService(
             return null;
         }
         var roles = NormalizeRoles(actor.Roles);
-        if (!RoleAllowed(node, roles))
+        if (!RoleAllowed(EffectiveExecutionRoles(execution, node), roles))
             return [];
 
         var stored = await LoadVariablesAsync(
@@ -2779,9 +2794,10 @@ public sealed partial class WorkflowEngineService(
         return OutgoingFlows(workflow.Id, workflow.Definition, node.Id)
             .Where(f => f.IsSelectable && !f.IsDefault
                         && f.CancelRemainingInstances
-                        && RoleAllowed(f.Roles, roles)
+                        && RoleAllowed(EffectiveFlowRoles(execution, f), roles)
                         && (string.IsNullOrWhiteSpace(f.Condition)
                             || SequenceFlowConditionEvaluator.Evaluate(f.Condition, context)))
+            .Select(flow => flow.WithResolvedRoles(EffectiveFlowRoles(execution, flow)))
             .ToList();
     }
 
@@ -2828,9 +2844,10 @@ public sealed partial class WorkflowEngineService(
         if (!flow.IsSelectable || flow.IsDefault || !flow.CancelRemainingInstances)
             throw new WorkflowDomainException("Only selectable interrupting flows can be taken at the multi-instance execution level.");
 
-        EnsureRoleAllowed(node, actor);
         var roles = NormalizeRoles(actor.Roles);
-        if (!RoleAllowed(flow.Roles, roles))
+        if (!RoleAllowed(EffectiveExecutionRoles(execution, node), roles))
+            throw new WorkflowDomainException("The actor does not have a role permitted for this multi-instance task.");
+        if (!RoleAllowed(EffectiveFlowRoles(execution, flow), roles))
             throw new WorkflowDomainException("The actor does not have a role permitted for this interrupt action.");
 
         var stored = await LoadVariablesAsync(
@@ -2975,7 +2992,7 @@ public sealed partial class WorkflowEngineService(
             throw new WorkflowDomainException("The requested flow is an engine-only/default route and cannot be selected by a user.");
         EnsureUserTaskActor(task, node, executionActor, requireActive: true);
         var actorRoles = NormalizeRoles(executionActor.Roles);
-        if (!RoleAllowed(flow.Roles, actorRoles))
+        if (!RoleAllowed(EffectiveFlowRoles(task, flow), actorRoles))
             throw new WorkflowDomainException("The actor does not have a role permitted for this action.");
         EnsureActionAllowedByClaim(task, flow, executionActor);
 
@@ -3320,7 +3337,7 @@ public sealed partial class WorkflowEngineService(
         var nextContext = WithContext(context, actor, lockedInstance, workflow.Definition, nextNode);
         await runtime.UpdateExecutionTokenAsync(
             token.Id,
-            ToSnapshot(nextNode, nextContext, lockedInstance.Id),
+            ToSnapshot(nextNode, nextContext, lockedInstance.Id, workflow.Definition),
             targetTokenStatus,
             token.GatewayBranchId,
             winning.Id,
@@ -3554,13 +3571,13 @@ public sealed partial class WorkflowEngineService(
         var actorRoles = NormalizeRoles(executionActor.Roles);
         if (administrativeBatch is null)
         {
-            EnsureRoleAllowed(node, actorRoles, executionActor.User);
+            EnsureTaskRoleAllowed(task, executionActor);
         }
         if (administrativeBatch is null
-            && !RoleAllowed(flow.Roles, actorRoles))
+            && !RoleAllowed(EffectiveFlowRoles(task, flow), actorRoles))
         {
             logger.LogWarning("Take flow {FlowId} rejected on instance {InstanceId}: user '{User}' lacks a flow role ({FlowRoles}).",
-                flowId, id, performedBy, string.Join(",", flow.Roles ?? []));
+                flowId, id, performedBy, string.Join(",", EffectiveFlowRoles(task, flow)));
             throw new WorkflowDomainException(
                 $"'{NormalizeUser(actor.User)}' does not have a role permitted to take this sequence flow.");
         }
@@ -3817,7 +3834,7 @@ public sealed partial class WorkflowEngineService(
             cancellationToken);
         await runtime.UpdateExecutionTokenAsync(
             token.Id,
-            ToSnapshot(nextNode, nextContext, instance.Id),
+            ToSnapshot(nextNode, nextContext, instance.Id, workflow.Definition),
             targetTokenStatus,
             token.GatewayBranchId,
             flow.Id,
@@ -4143,7 +4160,7 @@ public sealed partial class WorkflowEngineService(
             cancellationToken);
             await runtime.UpdateExecutionTokenAsync(
             token.Id,
-            ToSnapshot(nextNode, nextContext, instance.Id),
+            ToSnapshot(nextNode, nextContext, instance.Id, workflow.Definition),
             targetTokenStatus,
             token.GatewayBranchId,
             flow.Id,
@@ -7826,7 +7843,7 @@ public sealed partial class WorkflowEngineService(
         }
         await runtime.UpdateExecutionTokenAsync(
             token.Id,
-            ToSnapshot(nextNode, nextContext, instance.Id),
+            ToSnapshot(nextNode, nextContext, instance.Id, definition),
             targetTokenStatus,
             gatewayBranchId,
             flow.Id,
@@ -8291,7 +8308,7 @@ public sealed partial class WorkflowEngineService(
         await runtime.AddMultiInstanceAsync(
             instance.Id,
             token.Id,
-            ToSnapshot(node),
+            ToSnapshot(node, context, instance.Id, definition, captureMultiInstanceRoles: true),
             multi,
             items,
             outcomeIds,
@@ -10878,7 +10895,7 @@ public sealed partial class WorkflowEngineService(
         var roles = NormalizeRoles(actor.Roles);
         return OutgoingFlows(workflow.Id, workflow.Definition, node.Id)
             .Where(flow => flow.IsSelectable && !flow.IsDefault
-                           && RoleAllowed(flow.Roles, roles)
+                           && RoleAllowed(EffectiveFlowRoles(task, flow), roles)
                            && (string.IsNullOrWhiteSpace(flow.Condition)
                                || SequenceFlowConditionEvaluator.Evaluate(flow.Condition, context)))
             .ToList();
@@ -10919,13 +10936,16 @@ public sealed partial class WorkflowEngineService(
             task.UpdatedAt,
             task.Variables)
         {
-            Attributes = attributes
+            Attributes = attributes,
+            Status = task.Status
         };
     }
 
     private async Task<PagedResult<ManagedUserTaskDto>> BuildManagedUserTaskPageAsync(
         PagedResult<ManagedUserTaskRecord> paged,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ActorContext? manager = null,
+        bool distribution = false)
     {
         var executionIds = paged.Items
             .Where(item => item.MultiInstanceExecutionId is not null)
@@ -10946,12 +10966,23 @@ public sealed partial class WorkflowEngineService(
                     $"Workflow definition #{definitionId} was not found.");
             }
         }
-        var items = paged.Items.Select(item => ToManagedUserTaskDto(
-            item,
-            item.MultiInstanceExecutionId is long executionId
-                ? progress.GetValueOrDefault(executionId)
-                : null,
-            NodeAttributes(workflows[item.WorkflowDefinitionId], item.NodeId))).ToList();
+        var managerRoles = manager is null ? new HashSet<string>() : NormalizeRoles(manager.Roles);
+        var items = paged.Items.Select(item =>
+        {
+            var workflow = workflows[item.WorkflowDefinitionId];
+            var dto = ToManagedUserTaskDto(item,
+                item.MultiInstanceExecutionId is long executionId
+                    ? progress.GetValueOrDefault(executionId)
+                    : null,
+                NodeAttributes(workflow, item.NodeId));
+            return dto with
+            {
+                CanManageAssignment = item.Status == UserTaskRecordStatuses.Active
+                    && (distribution || workflow.Definition.TaskAssignmentRoles.Any(managerRoles.Contains)),
+                CanManageRoles = !distribution && manager is not null
+                    && workflow.Definition.TaskRoleManagementRoles.Any(managerRoles.Contains)
+            };
+        }).ToList();
         return new PagedResult<ManagedUserTaskDto>(items, paged.Page, paged.PageSize, paged.TotalCount);
     }
 
@@ -11111,7 +11142,7 @@ public sealed partial class WorkflowEngineService(
     {
         var actualActor = NormalizeUser(actor.User);
         if (!BpmnFlowNodeTypes.IsUserTask(node.Type)
-            || !RoleAllowed(node, NormalizeRoles(actor.Roles)))
+            || !RoleAllowed(task.Roles, NormalizeRoles(actor.Roles)))
         {
             return null;
         }
@@ -11199,7 +11230,7 @@ public sealed partial class WorkflowEngineService(
                && (!task.RequiresAssignment || task.Assignee is not null)
                && (task.Assignee is null
                    || string.Equals(task.Assignee, user, StringComparison.OrdinalIgnoreCase))
-               && RoleAllowed(node, NormalizeRoles(actor.Roles));
+               && RoleAllowed(task.Roles, NormalizeRoles(actor.Roles));
     }
 
     private static void EnsureUserTaskActor(
@@ -11217,7 +11248,9 @@ public sealed partial class WorkflowEngineService(
     private CurrentNodeSnapshot ToSnapshot(
         FlowNodeModel node,
         IReadOnlyDictionary<string, JsonElement>? assigneeContext = null,
-        long? instanceId = null)
+        long? instanceId = null,
+        WorkflowModel? definition = null,
+        bool captureMultiInstanceRoles = false)
     {
         string? assignee = null;
         if (BpmnFlowNodeTypes.IsUserTask(node.Type)
@@ -11263,19 +11296,27 @@ public sealed partial class WorkflowEngineService(
             }
         }
 
+        var rolePolicy = BpmnFlowNodeTypes.IsUserTask(node.Type) && definition is not null
+            && (node.MultiInstance is null || captureMultiInstanceRoles)
+            ? ResolveTaskRolePolicy(definition, node,
+                assigneeContext ?? new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase))
+            : null;
         return new CurrentNodeSnapshot(
             node.Id,
             node.Name,
             node.ExternalId,
             node.Type,
-            node.Roles,
+            rolePolicy?.Roles ?? node.Roles,
             node.RequiresClaim,
             node.RequiresAssignment,
             assignee,
             node.MultiInstance is not null,
             BpmnFlowNodeTypes.IsErrorEnd(node.Type) ? node.ErrorCode : null,
             BpmnFlowNodeTypes.IsErrorEnd(node.Type) ? node.ErrorDescription ?? node.Name : null,
-            node.AsyncBefore);
+            node.AsyncBefore)
+        {
+            RolePolicy = rolePolicy
+        };
     }
 
     private static FaultInfoDto? ToFault(

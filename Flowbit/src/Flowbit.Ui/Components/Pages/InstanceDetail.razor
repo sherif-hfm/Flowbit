@@ -1271,6 +1271,35 @@ else
                 ? reactivationHistorySummary
                 : $"{reactivationHistorySummary} — {reactivationHistoryReason}";
         }
+        if (string.Equals(item.Note, "taskRolesChanged", StringComparison.Ordinal))
+        {
+            var roleReason = HistoryPayloadString(item, "reason");
+            var previousRoles = item.Payload?.GetValueOrDefault("previousRoles") ?? default;
+            var newRoles = item.Payload?.GetValueOrDefault("newRoles") ?? default;
+            var changes = new List<string>();
+            if (!SameHistoryRoles(previousRoles, newRoles))
+                changes.Add($"task roles {HistoryRolesLabel(previousRoles)} → {HistoryRolesLabel(newRoles)}");
+            var previousFlows = HistoryFlowRoles(item, "previousFlowRoles");
+            var newFlows = HistoryFlowRoles(item, "newFlowRoles");
+            foreach (var flowId in previousFlows.Keys.Union(newFlows.Keys)
+                         .OrderBy(id => int.TryParse(id, out var number) ? number : int.MaxValue)
+                         .ThenBy(id => id, StringComparer.Ordinal))
+            {
+                var previousFlowRoles = previousFlows.GetValueOrDefault(flowId);
+                var currentFlowRoles = newFlows.GetValueOrDefault(flowId);
+                if (!SameHistoryRoles(previousFlowRoles, currentFlowRoles))
+                    changes.Add($"flow #{flowId} roles {HistoryRolesLabel(previousFlowRoles)} → {HistoryRolesLabel(currentFlowRoles)}");
+            }
+            var executionId = HistoryPayloadString(item, "multiInstanceExecutionId")
+                              ?? item.MultiInstanceExecutionId?.ToString();
+            var affected = HistoryPayloadString(item, "affectedTaskCount") ?? "1";
+            var roleScope = executionId is not null
+                ? $"the whole multi-instance execution #{executionId} ({affected} waiting items)"
+                : item.UserTaskId is long userTaskId ? $"task #{userTaskId}" : "the waiting task";
+            var roleSummary = $"Updated roles for {roleScope}";
+            if (changes.Count > 0) roleSummary += $": {string.Join("; ", changes)}";
+            return string.IsNullOrWhiteSpace(roleReason) ? roleSummary : $"{roleSummary} — {roleReason}";
+        }
         if (!string.Equals(item.Note, "taskAssignment", StringComparison.Ordinal))
         {
             return item.Note ?? "-";
@@ -1298,6 +1327,31 @@ else
             return null;
         }
         return value.ValueKind == JsonValueKind.String ? value.GetString() : value.GetRawText();
+    }
+
+    private static Dictionary<string, JsonElement> HistoryFlowRoles(InstanceHistoryDto item, string name)
+    {
+        var value = item.Payload?.GetValueOrDefault(name) ?? default;
+        return value.ValueKind == JsonValueKind.Object
+            ? value.EnumerateObject().ToDictionary(property => property.Name, property => property.Value)
+            : [];
+    }
+
+    private static string[] HistoryRoleValues(JsonElement value) => value.ValueKind == JsonValueKind.Array
+        ? value.EnumerateArray().Select(role => role.ValueKind == JsonValueKind.String
+            ? role.GetString() ?? "" : role.GetRawText()).ToArray()
+        : [];
+
+    private static bool SameHistoryRoles(JsonElement previous, JsonElement current) =>
+        previous.ValueKind == current.ValueKind
+        && new HashSet<string>(HistoryRoleValues(previous), StringComparer.OrdinalIgnoreCase)
+            .SetEquals(HistoryRoleValues(current));
+
+    private static string HistoryRolesLabel(JsonElement value)
+    {
+        if (value.ValueKind != JsonValueKind.Array) return "not recorded";
+        var roles = HistoryRoleValues(value);
+        return roles.Length == 0 ? "Any role" : $"[{string.Join(", ", roles)}]";
     }
 
     private async Task LoadAsync()

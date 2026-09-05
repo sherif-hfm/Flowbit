@@ -170,7 +170,7 @@ public sealed partial class WorkflowEngineService
                 targetNode);
             var token = await runtime.AddExecutionTokenAsync(
                 instance.Id,
-                ToSnapshot(targetNode, targetContext, instance.Id),
+                ToSnapshot(targetNode, targetContext, instance.Id, workflow.Definition),
                 gatewayBranchId: null,
                 arrivedViaFlowId: null,
                 ToNodeExecutionActor(actor),

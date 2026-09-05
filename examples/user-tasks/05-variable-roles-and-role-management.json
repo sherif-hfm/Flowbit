@@ -1,0 +1,25 @@
+{
+  "id": "example-user-task-variable-roles-and-management",
+  "name": "User Task Example 05 - Variable Roles and Role Management",
+  "initialEventId": 1,
+  "variables": [
+    { "id": 1, "name": "reviewRoles", "dataType": "string", "isArray": true, "nullable": false, "defaultValue": ["Finance", "Manager"] },
+    { "id": 2, "name": "approvalRoles", "dataType": "string", "isArray": true, "nullable": false, "defaultValue": ["Finance"] }
+  ],
+  "lanes": [
+    { "id": 1, "name": "Approval", "x": 30, "y": 30, "w": 1020, "h": 280 }
+  ],
+  "flowNodes": [
+    { "id": 1, "name": "Start review", "type": "startEvent", "laneId": 1, "x": 70, "y": 100, "roles": [], "variables": [] },
+    { "id": 2, "name": "Review with saved roles", "type": "userTask", "laneId": 1, "x": 330, "y": 80, "roles": [], "rolesVariable": "reviewRoles", "requiresClaim": false, "claimMode": "fresh", "variables": [] },
+    { "id": 3, "name": "Approved", "type": "endEvent", "laneId": 1, "x": 730, "y": 100, "roles": [], "variables": [] }
+  ],
+  "sequenceFlows": [
+    { "id": 101, "name": "Begin", "sourceRef": 1, "targetRef": 2, "roles": [], "variables": [] },
+    { "id": 201, "name": "Approve", "sourceRef": 2, "targetRef": 3, "roles": [], "rolesVariable": "approvalRoles", "isSelectable": true, "isDefault": false, "variables": [] }
+  ],
+  "cancelRoles": [],
+  "unclaimRoles": [],
+  "taskAssignmentRoles": [],
+  "taskRoleManagementRoles": ["RoleManager"]
+}

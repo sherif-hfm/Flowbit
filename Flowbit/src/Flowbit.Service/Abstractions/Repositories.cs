@@ -40,6 +40,19 @@ public interface IWorkflowDefinitionRepository
 
 public interface IWorkflowRuntimeRepository
 {
+    Task<UserTaskRolePolicyRecord?> GetRolePolicyAsync(long id, CancellationToken cancellationToken) =>
+        Task.FromResult<UserTaskRolePolicyRecord?>(null);
+
+    Task<IReadOnlyDictionary<long, UserTaskRolePolicyRecord>> GetRolePoliciesAsync(
+        IReadOnlyCollection<long> ids, CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyDictionary<long, UserTaskRolePolicyRecord>>(
+            new Dictionary<long, UserTaskRolePolicyRecord>());
+
+    Task<UserTaskRolePolicyRecord> ReplaceUserTaskRolePolicyAsync(
+        long instanceId, long? taskId, long? executionId,
+        ResolvedUserTaskRolePolicy policy, CancellationToken cancellationToken) =>
+        throw new NotSupportedException("User-task role policy updates are not supported by this repository.");
+
     Task<WorkflowInstanceRecord> AddInstanceAsync(
         long workflowDefinitionId,
         string workflowKey,
@@ -97,6 +110,25 @@ public interface IWorkflowRuntimeRepository
         int page,
         int pageSize,
         CancellationToken cancellationToken);
+
+    Task<PagedResult<ManagedUserTaskRecord>> ListManageableUserTasksAsync(
+        IReadOnlyCollection<string> managerRoles,
+        long? taskId,
+        long? instanceId,
+        long? workflowId,
+        string? workflowKey,
+        string? businessKey,
+        int? nodeId,
+        string? nodeExternalId,
+        string? owner,
+        string? ownership,
+        VariableFilterExpression? variableFilter,
+        int page,
+        int pageSize,
+        CancellationToken cancellationToken,
+        string? status) =>
+        ListManageableUserTasksAsync(managerRoles, taskId, instanceId, workflowId, workflowKey,
+            businessKey, nodeId, nodeExternalId, owner, ownership, variableFilter, page, pageSize, cancellationToken);
 
     Task<PagedResult<ManagedUserTaskRecord>> ListDistributableUserTasksAsync(
         string workflowKey,

@@ -65,6 +65,20 @@ public static class UserTaskEndpoints
             .Produces(StatusCodes.Status403Forbidden)
             .Produces(StatusCodes.Status404NotFound)
             .Produces(StatusCodes.Status409Conflict);
+        group.MapGet("/{taskId:long}/roles", GetRoles)
+            .Produces<UserTaskRolePolicyDto>()
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status403Forbidden)
+            .Produces(StatusCodes.Status404NotFound)
+            .Produces(StatusCodes.Status409Conflict);
+        group.MapPost("/{taskId:long}/roles", ChangeRoles)
+            .WithSummary("Replace the role snapshot of a waiting normal user task")
+            .Produces<UserTaskRolesChangeAckDto>()
+            .Produces(StatusCodes.Status400BadRequest)
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status403Forbidden)
+            .Produces(StatusCodes.Status404NotFound)
+            .Produces(StatusCodes.Status409Conflict);
         group.MapPost("/{taskId:long}/flows/{flowId:int}", TakeFlow)
             .Produces<UserTaskActionAckDto>()
             .Produces(StatusCodes.Status400BadRequest)
@@ -84,6 +98,7 @@ public static class UserTaskEndpoints
         string? nodeExternalId,
         string? owner,
         string? ownership,
+        string? status,
         [FromQuery(Name = "var")] string[]? variables,
         int? page,
         int? pageSize,
@@ -108,7 +123,8 @@ public static class UserTaskEndpoints
             variables,
             normalizedPage,
             normalizedPageSize,
-            cancellationToken));
+            cancellationToken,
+            status));
     }
 
     private static async Task<IResult> SearchManageableTasks(
@@ -186,6 +202,21 @@ public static class UserTaskEndpoints
             actorResolver.Resolve(principal),
             cancellationToken);
         return dto is null ? Results.NotFound() : Results.Ok(dto);
+    }
+
+    private static async Task<IResult> GetRoles(long taskId, ClaimsPrincipal principal,
+        IActorContextResolver actorResolver, IWorkflowEngineService service, CancellationToken cancellationToken)
+    {
+        var policy = await service.GetUserTaskRolesAsync(taskId, actorResolver.Resolve(principal), cancellationToken);
+        return policy is null ? Results.NotFound() : Results.Ok(policy);
+    }
+
+    private static async Task<IResult> ChangeRoles(long taskId, ChangeUserTaskRolesRequest request,
+        ClaimsPrincipal principal, IActorContextResolver actorResolver,
+        IWorkflowEngineService service, CancellationToken cancellationToken)
+    {
+        var result = await service.ChangeUserTaskRolesAsync(taskId, request, actorResolver.Resolve(principal), cancellationToken);
+        return result is null ? Results.NotFound() : Results.Ok(result);
     }
 
     private static async Task<IResult> TakeFlow(long taskId, int flowId, TakeFlowRequest request,

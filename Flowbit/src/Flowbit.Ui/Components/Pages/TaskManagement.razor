@@ -1,17 +1,18 @@
 @page "/task-management"
-@implements IDisposable
+@implements IAsyncDisposable
 @using System.Net
 @using System.Text.Json
 @using Flowbit.Ui.Auth
 @inject WorkflowApiClient Api
 @inject TokenState Token
+@inject IJSRuntime JS
 
-<PageTitle>Task Assignments · Flowbit</PageTitle>
+<PageTitle>Task Management · Flowbit</PageTitle>
 
-<PageHeader Eyebrow="Manage" Title="Task assignments"
-            Description="Assign, transfer, or release active work items for workflows you manage.">
+<PageHeader Eyebrow="Manage" Title="Task management"
+            Description="Manage assignments and access roles for waiting work items.">
     <Actions>
-        <button class="btn btn-primary" @onclick="LoadAsync" disabled="@(!Token.HasToken || loading)"><AppIcon Name="refresh" /> Refresh</button>
+        <button id="task-management-refresh" class="btn btn-primary" @onclick="LoadAsync" disabled="@(!Token.HasToken || loading)"><AppIcon Name="refresh" /> Refresh</button>
     </Actions>
 </PageHeader>
 
@@ -27,14 +28,14 @@
 @if (!Token.HasToken)
 {
     <section class="panel">
-        <EmptyState Icon="token" Title="A test identity is required" Description="Set an identity with a configured task-assignment role to manage work items.">
+        <EmptyState Icon="token" Title="A test identity is required" Description="Set an identity with a configured assignment or role-management permission.">
             <a class="btn btn-primary" href="token">Set test identity</a>
         </EmptyState>
     </section>
 }
 else
 {
-    <section class="panel mb-3" aria-label="Current assignment manager">
+    <section class="panel mb-3" aria-label="Current task manager">
         <div class="d-flex flex-wrap align-items-center justify-content-between gap-3">
             <div><span class="data-subtitle mt-0">Managing as</span><strong class="d-block text-dark">@(Token.CurrentUser ?? "anonymous")</strong></div>
             <div class="d-flex flex-wrap gap-2">
@@ -46,7 +47,7 @@ else
 
     <section class="filter-panel" aria-labelledby="task-management-filter-heading">
         <div class="section-heading mb-0">
-            <div><h2 id="task-management-filter-heading">Task filters</h2><p>Only active tasks from workflows granting one of your roles are returned.</p></div>
+            <div><h2 id="task-management-filter-heading">Task filters</h2><p>Only waiting tasks you can manage are returned.</p></div>
             <button class="btn btn-sm btn-outline-secondary" @onclick="() => filtersOpen = !filtersOpen" aria-expanded="@filtersOpen">
                 @(filtersOpen ? "Hide filters" : ActiveFilterCount > 0 ? $"Show filters ({ActiveFilterCount})" : "Show filters")
             </button>
@@ -62,6 +63,14 @@ else
                 <div><label class="form-label" for="managed-node-id">Node ID</label><input id="managed-node-id" type="number" class="form-control" @bind="nodeId" /></div>
                 <div><label class="form-label" for="managed-node-external">Node external ID</label><input id="managed-node-external" class="form-control" @bind="nodeExternalId" /></div>
                 <div><label class="form-label" for="managed-owner">Owner actor ID</label><input id="managed-owner" class="form-control" @bind="owner" /></div>
+                <div>
+                    <label class="form-label" for="managed-status">Status</label>
+                    <select id="managed-status" class="form-select" @bind="taskStatus">
+                        <option value="open">Active and pending</option>
+                        <option value="active">Active</option>
+                        <option value="pending">Pending</option>
+                    </select>
+                </div>
                 <div>
                     <label class="form-label" for="managed-ownership">Ownership</label>
                     <select id="managed-ownership" class="form-select" @bind="ownership">
@@ -99,11 +108,11 @@ else
         }
         else if (loadFailed || result is null)
         {
-            <EmptyState Icon="alert" Title="Task assignments unavailable" Description="Use Refresh to retry. Authorization and validation errors are shown above." />
+            <EmptyState Icon="alert" Title="Task management unavailable" Description="Use Refresh to retry. Authorization and validation errors are shown above." />
         }
         else if (result.Items.Count == 0)
         {
-            <EmptyState Icon="assignments" Title="No manageable tasks" Description="No active work items match your roles and filters." />
+            <EmptyState Icon="assignments" Title="No manageable tasks" Description="No waiting work items match your permissions and filters." />
         }
         else
         {
@@ -114,17 +123,24 @@ else
                         @foreach (var item in result.Items)
                         {
                             <tr>
-                                <td><span class="data-title">@item.NodeName</span><span class="data-subtitle">Task #@item.UserTaskId · Instance #@item.InstanceId@if (item.ItemIndex is not null) { <text> · Item #@item.ItemIndex</text> }</span></td>
+                                <td><span class="data-title">@item.NodeName</span><span class="data-subtitle">Task #@item.UserTaskId · Instance #@item.InstanceId@if (item.ItemIndex is not null) { <text> · Item #@item.ItemIndex</text> }</span><StatusBadge Status="@(item.Status == "pending" ? "warning" : "primary")" Text="@item.Status" /></td>
                                 <td>@item.WorkflowName<span class="data-subtitle">@(item.BusinessKey ?? item.WorkflowKey) · v@(item.WorkflowVersion)</span></td>
                                 <td><StatusBadge Status="@OwnershipTone(item.Ownership)" Text="@OwnershipLabel(item)" /><span class="data-subtitle">@(item.RequiresClaim ? "Claim required when pooled" : "Open when pooled")</span></td>
                                 <td>@if (item.NodeRoles.Count == 0) { <span>Any role</span> } else { @foreach (var role in item.NodeRoles) { <StatusBadge Status="neutral" Text="@role" /> } }</td>
                                 <td>@item.UpdatedAt.ToLocalTime().ToString("g")</td>
                                 <td class="text-end">
-                                    <div class="d-flex justify-content-end gap-2">
-                                        <button class="btn btn-sm btn-outline-primary" @onclick="() => OpenAssign(item)">@(item.Ownership == UserTaskOwnershipKinds.Unassigned ? "Assign" : "Reassign")</button>
-                                        @if (item.Ownership != UserTaskOwnershipKinds.Unassigned)
+                                    <div class="d-flex flex-wrap justify-content-end gap-2">
+                                        @if (item.CanManageAssignment)
                                         {
-                                            <button class="btn btn-sm btn-outline-secondary" @onclick="() => OpenUnassign(item)">Unassign</button>
+                                            <button class="btn btn-sm btn-outline-primary" @onclick="() => OpenAssign(item)">@(item.Ownership == UserTaskOwnershipKinds.Unassigned ? "Assign" : "Reassign")</button>
+                                            @if (item.Ownership != UserTaskOwnershipKinds.Unassigned)
+                                            {
+                                                <button class="btn btn-sm btn-outline-secondary" @onclick="() => OpenUnassign(item)">Unassign</button>
+                                            }
+                                        }
+                                        @if (item.CanManageRoles)
+                                        {
+                                            <button id="@($"task-roles-{item.UserTaskId}")" class="btn btn-sm btn-outline-primary" @onclick="() => OpenRolesAsync(item)">Edit roles</button>
                                         }
                                     </div>
                                 </td>
@@ -172,6 +188,51 @@ else
     </div>
 }
 
+@if (roleTask is not null)
+{
+    <div class="assignment-backdrop" aria-hidden="true"></div>
+    <div class="assignment-dialog-shell" role="dialog" aria-modal="true" aria-labelledby="roles-dialog-title" tabindex="-1" @ref="roleDialog" @onkeydown="HandleRoleDialogKeyDown">
+        <section class="assignment-dialog panel">
+            <div class="section-heading">
+                <div><span class="page-eyebrow">Instance #@roleTask.InstanceId</span><h2 id="roles-dialog-title">Edit @(roleTask.MultiInstanceExecutionId is null ? "task" : "multi-instance") roles</h2><p>@roleTask.NodeName</p></div>
+                <button class="btn-close" aria-label="Close roles" @onclick="CloseRolesDialog" disabled="@savingRoles"></button>
+            </div>
+            @if (loadingRoles)
+            {
+                <p role="status">Loading current roles…</p>
+            }
+            else if (rolePolicy is not null)
+            {
+                @if (rolePolicy.MultiInstanceExecutionId is not null)
+                {
+                    <div class="alert alert-info">This changes the whole multi-instance execution: @rolePolicy.ActiveTaskCount active and @rolePolicy.PendingTaskCount pending items, including its interrupt actions.</div>
+                }
+                <p>Assignments and claims are preserved. Role changes take effect for these waiting tasks when you save.</p>
+                <div class="mb-3">
+                    <label class="form-label" for="task-role-values">Task roles</label>
+                    <div class="form-check mb-2"><input id="task-role-any" class="form-check-input" type="checkbox" @bind="taskRoleEdit.AllowAny" disabled="@savingRoles" /><label class="form-check-label" for="task-role-any">Allow any role</label></div>
+                    <textarea id="task-role-values" class="form-control" rows="3" @bind="taskRoleEdit.Text" @bind:event="oninput" disabled="@(taskRoleEdit.AllowAny || savingRoles)" @ref="roleInput"></textarea>
+                    <div class="form-text">One role per line. A person needs a task role and the selected action's role.</div>
+                </div>
+                @foreach (var flow in flowRoleEdits)
+                {
+                    <div class="mb-3" @key="flow.FlowId">
+                        <label class="form-label" for="@($"flow-role-{flow.FlowId}")">@flow.Name <span class="text-muted">(Flow #@flow.FlowId)</span></label>
+                        <div class="form-check mb-2"><input id="@($"flow-role-any-{flow.FlowId}")" class="form-check-input" type="checkbox" @bind="flow.AllowAny" disabled="@savingRoles" /><label class="form-check-label" for="@($"flow-role-any-{flow.FlowId}")">Allow any role</label></div>
+                        <textarea id="@($"flow-role-{flow.FlowId}")" class="form-control" rows="2" @bind="flow.Text" @bind:event="oninput" disabled="@(flow.AllowAny || savingRoles)"></textarea>
+                    </div>
+                }
+                <div class="mb-3"><label class="form-label" for="roles-reason">Reason (optional)</label><textarea id="roles-reason" class="form-control" rows="2" maxlength="1000" @bind="roleReason" @bind:event="oninput" disabled="@savingRoles"></textarea></div>
+            }
+            @if (!string.IsNullOrWhiteSpace(roleError)) { <div class="alert alert-danger" role="alert">@roleError</div> }
+            <div class="d-flex justify-content-end gap-2">
+                <button class="btn btn-outline-secondary" @onclick="CloseRolesDialog" disabled="@savingRoles">Cancel</button>
+                <button class="btn btn-primary" @onclick="SaveRolesAsync" disabled="@(savingRoles || loadingRoles || rolePolicy is null)">@(savingRoles ? "Saving…" : "Save roles")</button>
+            </div>
+        </section>
+    </div>
+}
+
 @code {
     private const int PageSize = 50;
     private PagedResult<ManagedUserTaskDto>? result;
@@ -185,6 +246,7 @@ else
     private string? nodeExternalId;
     private string? owner;
     private string? ownership;
+    private string taskStatus = "open";
     private string? variableFilterJson;
     private string? variableFilterError;
     private string? targetActor;
@@ -200,18 +262,150 @@ else
     private bool unassignMode;
     private long requestVersion;
     private int page = 1;
+    private ManagedUserTaskDto? roleTask;
+    private UserTaskRolePolicyDto? rolePolicy;
+    private RoleEdit taskRoleEdit = new();
+    private List<RoleEdit> flowRoleEdits = [];
+    private string? roleReason;
+    private string? roleError;
+    private bool loadingRoles;
+    private bool savingRoles;
+    private bool focusRoleInput;
+    private long roleDialogVersion;
+    private ElementReference roleInput;
+    private ElementReference roleDialog;
+    private IJSObjectReference? dialogModule;
+    private bool roleDialogActive;
+
+    private sealed class RoleEdit
+    {
+        public int FlowId { get; init; }
+        public string Name { get; init; } = "";
+        public string Text { get; set; } = "";
+        public bool AllowAny { get; set; }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (roleTask is { } renderedRoleTask)
+        {
+            var renderedVersion = roleDialogVersion;
+            dialogModule ??= await JS.InvokeAsync<IJSObjectReference>("import", "./task-management.js");
+            if (roleTask is null || renderedVersion != roleDialogVersion) return;
+            await dialogModule.InvokeVoidAsync("activateDialog", roleDialog, $"task-roles-{renderedRoleTask.UserTaskId}");
+            roleDialogActive = true;
+        }
+        else if (roleDialogActive && dialogModule is not null)
+        {
+            roleDialogActive = false;
+            await dialogModule.InvokeVoidAsync("deactivateDialog");
+        }
+        if (focusRoleInput && roleTask is not null && rolePolicy is not null && !taskRoleEdit.AllowAny)
+        {
+            focusRoleInput = false;
+            await roleInput.FocusAsync();
+        }
+    }
+
+    private async Task OpenRolesAsync(ManagedUserTaskDto task)
+    {
+        selectedTask = null;
+        roleTask = task;
+        roleReason = roleError = null;
+        await LoadRolesAsync();
+    }
+
+    private async Task LoadRolesAsync()
+    {
+        if (roleTask is null) return;
+        var selected = roleTask;
+        var version = ++roleDialogVersion;
+        loadingRoles = true;
+        rolePolicy = null;
+        try
+        {
+            var policy = selected.MultiInstanceExecutionId is long executionId
+                ? await Api.GetMultiInstanceRolesAsync(executionId)
+                : await Api.GetUserTaskRolesAsync(selected.UserTaskId);
+            if (version != roleDialogVersion) return;
+            rolePolicy = policy ?? throw new InvalidOperationException("The role policy could not be loaded.");
+            taskRoleEdit = new RoleEdit { Text = string.Join('\n', policy.Roles), AllowAny = policy.Roles.Count == 0 };
+            flowRoleEdits = policy.Flows.Select(flow => new RoleEdit
+            {
+                FlowId = flow.FlowId, Name = flow.Name,
+                Text = string.Join('\n', flow.Roles), AllowAny = flow.Roles.Count == 0
+            }).ToList();
+            focusRoleInput = true;
+        }
+        catch (Exception ex) { if (version == roleDialogVersion) roleError = ex.Message; }
+        finally { if (version == roleDialogVersion) loadingRoles = false; }
+    }
+
+    private void CloseRolesDialog()
+    {
+        if (savingRoles) return;
+        roleDialogVersion++;
+        roleTask = null;
+        rolePolicy = null;
+        roleError = roleReason = null;
+    }
+
+    private void HandleRoleDialogKeyDown(KeyboardEventArgs args)
+    {
+        if (args.Key == "Escape") CloseRolesDialog();
+    }
+
+    private static IReadOnlyList<string> ReadRoleInput(RoleEdit edit)
+    {
+        if (edit.AllowAny) return [];
+        var roles = edit.Text.Split(['\r', '\n'], StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        if (roles.Length == 0)
+            throw new InvalidOperationException("Enter at least one role, or explicitly select Allow any role.");
+        return roles;
+    }
+
+    private async Task SaveRolesAsync()
+    {
+        if (roleTask is null || rolePolicy is null || savingRoles) return;
+        var task = roleTask;
+        var version = roleDialogVersion;
+        try
+        {
+            roleError = null;
+            var request = new ChangeUserTaskRolesRequest(rolePolicy.RolePolicyId, ReadRoleInput(taskRoleEdit),
+                flowRoleEdits.Select(flow => new ChangeUserTaskFlowRolesRequest(flow.FlowId, ReadRoleInput(flow))).ToArray(), roleReason);
+            savingRoles = true;
+            var result = task.MultiInstanceExecutionId is long executionId
+                ? await Api.ChangeMultiInstanceRolesAsync(executionId, request)
+                : await Api.ChangeUserTaskRolesAsync(task.UserTaskId, request);
+            if (version != roleDialogVersion) return;
+            success = result?.Changed == true ? "Waiting task roles updated." : "The waiting tasks already have these roles.";
+            roleTask = null;
+            rolePolicy = null;
+            await LoadAsync();
+        }
+        catch (WorkflowApiException ex) when (ex.StatusCode == HttpStatusCode.Conflict)
+        {
+            if (version != roleDialogVersion) return;
+            roleError = "The waiting task changed. Review the refreshed roles before saving again.";
+            await LoadRolesAsync();
+            await LoadAsync();
+        }
+        catch (Exception ex) { if (version == roleDialogVersion) roleError = ex.Message; }
+        finally { savingRoles = false; }
+    }
 
     private int ActiveFilterCount => new object?[] { taskId, instanceId, workflowId, nodeId, workflowKey, businessKey, nodeExternalId, owner, ownership, variableFilterJson }
-        .Count(value => value switch { string text => !string.IsNullOrWhiteSpace(text), null => false, _ => true });
+        .Count(value => value switch { string text => !string.IsNullOrWhiteSpace(text), null => false, _ => true }) + (taskStatus == "open" ? 0 : 1);
     private int TotalPages => result is null || result.TotalCount == 0 ? 1 : (int)Math.Ceiling(result.TotalCount / (double)result.PageSize);
     private bool HasNextPage => !loading && !filtersDirty && result is not null && page < TotalPages;
     private string ResultSummary => filtersDirty
         ? "Filters changed. Apply them to run a new search."
         : loading
-            ? "Loading active tasks…"
+            ? "Loading waiting tasks…"
             : loadFailed || result is null
-                ? "Task assignments could not be loaded."
-                : $"{result.TotalCount:N0} active tasks";
+                ? "Task management could not be loaded."
+                : $"{result.TotalCount:N0} manageable tasks";
 
     protected override async Task OnInitializedAsync()
     {
@@ -259,6 +453,7 @@ else
                 NodeExternalId = nodeExternalId,
                 Owner = owner,
                 Ownership = ownership,
+                Status = taskStatus,
                 VariableFilter = variableFilter
             });
             if (currentRequest != requestVersion) return;
@@ -285,6 +480,7 @@ else
     {
         taskId = instanceId = workflowId = null;
         nodeId = null;
+        taskStatus = "open";
         workflowKey = businessKey = nodeExternalId = owner = ownership = variableFilterJson = variableFilterError = null;
         MarkFiltersDirty();
         await LoadAsync();
@@ -373,7 +569,7 @@ else
         finally { submitting = false; }
     }
 
-    private void OnTokenChanged() => _ = InvokeAsync(async () => { CloseDialog(); MarkFiltersDirty(); await LoadAsync(); });
+    private void OnTokenChanged() => _ = InvokeAsync(async () => { CloseDialog(); roleDialogVersion++; roleTask = null; rolePolicy = null; MarkFiltersDirty(); await LoadAsync(); });
     private static string OwnershipLabel(ManagedUserTaskDto task) => task.Ownership switch
     {
         UserTaskOwnershipKinds.Assigned => $"Assigned to {task.Owner}",
@@ -386,5 +582,18 @@ else
         UserTaskOwnershipKinds.Claimed => "warning",
         _ => "neutral"
     };
-    public void Dispose() => Token.Changed -= OnTokenChanged;
+    public async ValueTask DisposeAsync()
+    {
+        Token.Changed -= OnTokenChanged;
+        roleDialogVersion++;
+        if (dialogModule is not null)
+        {
+            try
+            {
+                await dialogModule.InvokeVoidAsync("deactivateDialog");
+                await dialogModule.DisposeAsync();
+            }
+            catch (JSDisconnectedException) { }
+        }
+    }
 }

@@ -46,6 +46,19 @@ public sealed record WorkflowInstanceVersionChangeRecord(
     long? BatchId = null,
     long? BatchItemId = null);
 
+public sealed record ResolvedUserTaskRolePolicy(
+    IReadOnlyList<string> Roles,
+    IReadOnlyDictionary<int, IReadOnlyList<string>> OutgoingFlowRoles);
+
+public sealed record UserTaskRolePolicyRecord(
+    long Id,
+    long InstanceId,
+    long WorkflowDefinitionId,
+    int NodeId,
+    IReadOnlyList<string> Roles,
+    IReadOnlyDictionary<int, IReadOnlyList<string>> OutgoingFlowRoles,
+    DateTimeOffset CreatedAt);
+
 // Snapshot copied onto an execution token and, for userTask nodes, its work item.
 public sealed record CurrentNodeSnapshot(
     int Id,
@@ -59,7 +72,10 @@ public sealed record CurrentNodeSnapshot(
     bool IsMultiInstance = false,
     string? FaultCode = null,
     string? FaultDescription = null,
-    bool AsyncBefore = false);
+    bool AsyncBefore = false)
+{
+    public ResolvedUserTaskRolePolicy? RolePolicy { get; init; }
+}
 
 public sealed record ExecutionTokenCreateRecord(
     CurrentNodeSnapshot Node,
@@ -275,7 +291,11 @@ public sealed record MultiInstanceExecutionRecord(
     string? CompletionReason,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
-    DateTimeOffset? CompletedAt);
+    DateTimeOffset? CompletedAt)
+{
+    public long? RolePolicyId { get; init; }
+    public UserTaskRolePolicyRecord? RolePolicy { get; init; }
+}
 
 public sealed record UserTaskRecord(
     long Id,
@@ -302,6 +322,8 @@ public sealed record UserTaskRecord(
     DateTimeOffset? CompletedAt,
     long? NodeExecutionId = null)
 {
+    public long? RolePolicyId { get; init; }
+    public UserTaskRolePolicyRecord? RolePolicy { get; init; }
     public string? CompletedActingFor { get; init; }
     public long? CompletionDelegationId { get; init; }
     public string? CompletionKind { get; init; }
@@ -338,7 +360,11 @@ public sealed record ManagedUserTaskRecord(
     JsonElement? ItemValue,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
-    IReadOnlyDictionary<string, JsonElement>? Variables);
+    IReadOnlyDictionary<string, JsonElement>? Variables)
+{
+    public string Status { get; init; } = UserTaskRecordStatuses.Active;
+    public long? RolePolicyId { get; init; }
+}
 
 public sealed record UserTaskWorkSummaryRecord(
     long InstanceId,
@@ -530,6 +556,7 @@ public sealed record InboxListItem(
     IReadOnlyDictionary<string, JsonElement>? Variables,
     MultiInstanceProgressRecord? MultiInstanceProgress = null)
 {
+    public long? RolePolicyId { get; init; }
     public string? ActingFor { get; init; }
     public long? DelegationId { get; init; }
 }

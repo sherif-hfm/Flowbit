@@ -353,9 +353,11 @@ public sealed class InboxVisibilityPostgresApiTests(PostgresApiFixture fixture)
             }
         }
 
-        fixture.CommandCounter.Reset();
+        fixture.CommandCounter.Reset(captureReaderCommandTexts: true);
         var first = await GetInboxAsync(workflowId, 1, 2, "worker");
-        Assert.Equal(3, fixture.CommandCounter.ReaderCommands);
+        Assert.Equal(4, fixture.CommandCounter.ReaderCommands);
+        Assert.Single(fixture.CommandCounter.ReaderCommandTexts,
+            sql => sql.Contains("user_task_role_policies", StringComparison.Ordinal));
         var second = await GetInboxAsync(workflowId, 2, 2, "worker");
         var third = await GetInboxAsync(workflowId, 3, 2, "worker");
         var pastEnd = await GetInboxAsync(workflowId, 4, 2, "worker");
@@ -372,6 +374,12 @@ public sealed class InboxVisibilityPostgresApiTests(PostgresApiFixture fixture)
         Assert.Equal(
             visibleInstanceIds.OrderBy(id => id),
             returnedInstances.OrderBy(id => id));
+
+        // Expanding the page still uses one policy batch, never one read per task.
+        fixture.CommandCounter.Reset();
+        var fullPage = await GetInboxAsync(workflowId, 1, 5, "worker");
+        Assert.Equal(4, fixture.CommandCounter.ReaderCommands);
+        Assert.Equal(5, fullPage.Items.Count);
     }
 
     [Fact]

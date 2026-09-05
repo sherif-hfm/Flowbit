@@ -92,6 +92,34 @@ interactions:
 
 ## Runtime engine (`Flowbit/`)
 
+### Waiting-task role policies
+
+`userTask.rolesVariable` and selectable non-default outgoing-flow
+`rolesVariable` reference declared process `string[]` variables (instance or
+shared). A task/MI execution captures task and action roles together on entry
+in immutable `user_task_role_policies`; `user_tasks.Roles` remains the SQL inbox
+membership projection. Pending activation, variable changes, and reassignment
+preserve that policy. Inbox action checks batch-load exact policy IDs from the
+SQL page; do not evaluate role variables or query policies per task.
+
+`taskRoleManagementRoles` is independent of assignment, cancellation, and
+action authority, and empty disables it. GET/POST role endpoints on normal
+user tasks and multi-instance executions manage persisted active/pending work.
+Use the established lock order, replace the immutable policy with optimistic
+`expectedRolePolicyId`, preserve ownership and completed-item history, and emit
+one `taskRolesChanged` history event. A multi-instance edit updates its parent
+and every unfinished child atomically. A stale identical retry is unchanged
+success; a stale different edit is 409. Runtime definition objects are cached:
+project effective roles with `WithResolvedRoles`, never mutate authored flows.
+
+Dynamic and manual lists are bounded to 100 entries and 300 Unicode scalars
+per trimmed role; normalize and deduplicate case-insensitively. Invalid dynamic
+values fail closed; explicit literal/manual empty lists remain unrestricted.
+Role sources and captured action contracts are version-switch blockers for open
+work; adding only manager permission is compatible. The additive migration must
+precede all API/Worker upgrades before enabling the feature; mixed legacy
+replicas are unsupported.
+
 `Flowbit/` is a separate .NET 10 solution for running workflow instances
 from the JSON definitions produced by the editor. It preserves the editor's JSON
 format rather than normalizing the definition into node/flow tables.

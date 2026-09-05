@@ -15,7 +15,7 @@ using Flowbit.Shared.Models;
 
 namespace Flowbit.Infrastructure.Repositories;
 
-public sealed class WorkflowRuntimeRepository(
+public sealed partial class WorkflowRuntimeRepository(
     AppDbContext dbContext,
     IInstanceVariableMutationTracker? variableMutationTracker = null)
     : IWorkflowRuntimeRepository
@@ -486,6 +486,7 @@ public sealed class WorkflowRuntimeRepository(
                        ut."NodeExternalId" AS "CurrentNodeExternalId",
                        token."NodeType" AS "CurrentNodeType",
                        ut."Roles" AS "CurrentNodeRoles",
+                       ut."RolePolicyId" AS "RolePolicyId",
                        ut."RequiresClaim" AS "CurrentRequiresClaim",
                        ut."RequiresAssignment" AS "CurrentRequiresAssignment",
                        w."Status" AS "Status",
@@ -544,6 +545,16 @@ public sealed class WorkflowRuntimeRepository(
         return new PagedResult<InboxListItem>(items, page, pageSize, totalCount);
     }
 
+    public Task<PagedResult<ManagedUserTaskRecord>> ListManageableUserTasksAsync(
+        IReadOnlyCollection<string> managerRoles, long? taskId, long? instanceId,
+        long? workflowId, string? workflowKey, string? businessKey, int? nodeId,
+        string? nodeExternalId, string? owner, string? ownership,
+        VariableFilterExpression? variableFilter, int page, int pageSize,
+        CancellationToken cancellationToken) =>
+        ListManageableUserTasksAsync(managerRoles, taskId, instanceId, workflowId, workflowKey,
+            businessKey, nodeId, nodeExternalId, owner, ownership, variableFilter, page, pageSize,
+            cancellationToken, status: null);
+
     public async Task<PagedResult<ManagedUserTaskRecord>> ListManageableUserTasksAsync(
         IReadOnlyCollection<string> managerRoles,
         long? taskId,
@@ -558,7 +569,8 @@ public sealed class WorkflowRuntimeRepository(
         VariableFilterExpression? variableFilter,
         int page,
         int pageSize,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? status)
     {
         var lowerRoles = managerRoles
             .Where(role => !string.IsNullOrWhiteSpace(role))
@@ -567,10 +579,10 @@ public sealed class WorkflowRuntimeRepository(
             .ToArray();
         var where = new StringBuilder("""
             WHERE w."Status" = @runningInstance
-              AND ut."Status" = @activeTask
+              AND ut."Status" = ANY(@taskStatuses)
               AND token."Status" = @activeToken
               AND (mie."Id" IS NULL OR mie."Status" = @activeExecution)
-              AND EXISTS (
+              AND ((ut."Status" = 'active' AND EXISTS (
                     SELECT 1
                     FROM jsonb_array_elements_text(
                         CASE
@@ -579,12 +591,26 @@ public sealed class WorkflowRuntimeRepository(
                             ELSE '[]'::jsonb
                         END) AS manager_role
                     WHERE lower(manager_role) = ANY(@lowerManagerRoles)
-                  )
+                  )) OR EXISTS (
+                    SELECT 1
+                    FROM jsonb_array_elements_text(CASE
+                            WHEN jsonb_typeof(d."Definition" -> 'taskRoleManagementRoles') = 'array'
+                            THEN d."Definition" -> 'taskRoleManagementRoles'
+                            ELSE '[]'::jsonb
+                        END) AS manager_role
+                    WHERE lower(manager_role) = ANY(@lowerManagerRoles)
+                  ))
             """);
         var args = new List<(string Name, object Value)>
         {
             ("runningInstance", WorkflowInstanceStatuses.Running),
-            ("activeTask", UserTaskStatuses.Active),
+            ("taskStatuses", status switch
+            {
+                null or "active" => new[] { UserTaskStatuses.Active },
+                "pending" => new[] { UserTaskStatuses.Pending },
+                "open" => new[] { UserTaskStatuses.Active, UserTaskStatuses.Pending },
+                _ => throw new WorkflowDomainException("Task status must be active, pending, or open.")
+            }),
             ("activeToken", ExecutionTokenStatuses.Active),
             ("activeExecution", MultiInstanceExecutionStatuses.Active),
             ("lowerManagerRoles", lowerRoles)
@@ -1889,6 +1915,7 @@ public sealed class WorkflowRuntimeRepository(
                 node,
                 now,
                 status: node.AsyncBefore ? UserTaskStatuses.Pending : UserTaskStatuses.Active);
+            task.RolePolicy = await CreateRolePolicyAsync(instance, node, now, cancellationToken);
             dbContext.UserTasks.Add(task);
         }
         var nodeExecutionStatus = node.AsyncBefore
@@ -1959,6 +1986,7 @@ public sealed class WorkflowRuntimeRepository(
                     status: create.Node.AsyncBefore
                         ? UserTaskStatuses.Pending
                         : UserTaskStatuses.Active);
+                task.RolePolicy = await CreateRolePolicyAsync(instance, create.Node, now, cancellationToken);
                 dbContext.UserTasks.Add(task);
             }
             var nodeExecution = NewNodeExecution(
@@ -2124,6 +2152,7 @@ public sealed class WorkflowRuntimeRepository(
                 now,
                 claimedBy,
                 node.AsyncBefore ? UserTaskStatuses.Pending : UserTaskStatuses.Active);
+            task.RolePolicy = await CreateRolePolicyAsync(instance, node, now, cancellationToken);
             dbContext.UserTasks.Add(task);
         }
 
@@ -3603,6 +3632,7 @@ public sealed class WorkflowRuntimeRepository(
             ParseVariables(row.VariablesJson),
             progress)
         {
+            RolePolicyId = row.RolePolicyId,
             ActingFor = row.ActingFor,
             DelegationId = row.DelegationId
         };
@@ -3686,6 +3716,7 @@ public sealed class WorkflowRuntimeRepository(
 
     private sealed class InboxPageRow
     {
+        public long? RolePolicyId { get; set; }
         public long InstanceId { get; set; }
         public long WorkflowId { get; set; }
         public long WorkflowDefinitionId { get; set; }
@@ -3747,6 +3778,7 @@ public sealed class WorkflowRuntimeRepository(
             ParseOptionalDictionary(row.ResultJson), row.CompletedBy, row.CompletedByRoles,
             row.CreatedAt, row.UpdatedAt, row.CompletedAt, row.NodeExecutionId)
         {
+            RolePolicyId = row.RolePolicyId,
             CompletedActingFor = row.CompletedActingFor,
             CompletionDelegationId = row.CompletionDelegationId,
             ActingFor = row.ActingFor,
@@ -3760,6 +3792,7 @@ public sealed class WorkflowRuntimeRepository(
 
     private sealed class UserTaskPageRow
     {
+        public long? RolePolicyId { get; set; }
         public long Id { get; set; }
         public long InstanceId { get; set; }
         public long TokenId { get; set; }
@@ -3846,7 +3879,11 @@ public sealed class WorkflowRuntimeRepository(
                 variablesByInstance is null
                     ? null
                     : variablesByInstance.GetValueOrDefault(task.InstanceId)
-                      ?? new Dictionary<string, System.Text.Json.JsonElement>(StringComparer.OrdinalIgnoreCase));
+                      ?? new Dictionary<string, System.Text.Json.JsonElement>(StringComparer.OrdinalIgnoreCase))
+            {
+                Status = task.Status,
+                RolePolicyId = task.RolePolicyId
+            };
         }).ToList();
     }
 
@@ -3899,16 +3936,23 @@ public sealed class WorkflowRuntimeRepository(
                 ?? throw new InvalidOperationException(
                     "The multi-instance transaction has no PostgreSQL connection.");
 
+            var ownerInstance = dbContext.WorkflowInstances.Local.SingleOrDefault(row => row.Id == instanceId)
+                ?? await dbContext.WorkflowInstances.SingleAsync(row => row.Id == instanceId, cancellationToken);
+            execution.RolePolicy = await CreateRolePolicyAsync(ownerInstance, node, now, cancellationToken);
+            await dbContext.SaveChangesAsync(cancellationToken);
+            execution.RolePolicyId = execution.RolePolicy.Id;
+            node = node with { Roles = execution.RolePolicy.Roles };
+
             await using (var insertExecution = new NpgsqlCommand(
                 """
                 INSERT INTO flowbit.multi_instance_executions
                     ("InstanceId", "TokenId", "NodeId", "Mode", "Source",
                      "OnePerActor", "ResultVariable", "Status", "TotalCount",
-                     "CompletedCount", "CancelledCount", "CreatedAt", "UpdatedAt")
+                     "CompletedCount", "CancelledCount", "CreatedAt", "UpdatedAt", "RolePolicyId")
                 VALUES
                     (@instance_id, @token_id, @node_id, @mode, @source,
                      @one_per_actor, @result_variable, 'active', @total_count,
-                     0, 0, @now, @now)
+                     0, 0, @now, @now, @role_policy_id)
                 RETURNING "Id"
                 """,
                 connection,
@@ -3917,6 +3961,7 @@ public sealed class WorkflowRuntimeRepository(
                 insertExecution.Parameters.AddWithValue("instance_id", instanceId);
                 insertExecution.Parameters.AddWithValue("token_id", tokenId);
                 insertExecution.Parameters.AddWithValue("node_id", node.Id);
+                insertExecution.Parameters.AddWithValue("role_policy_id", execution.RolePolicyId.Value);
                 insertExecution.Parameters.AddWithValue("mode", configuration.Mode);
                 insertExecution.Parameters.AddWithValue("source", configuration.Source);
                 insertExecution.Parameters.AddWithValue("one_per_actor", execution.OnePerActor);
@@ -3973,7 +4018,7 @@ public sealed class WorkflowRuntimeRepository(
                          "NodeExternalId", "Roles", "RequiresClaim",
                          "RequiresAssignment", "Status", "CreatedAt", "UpdatedAt",
                          "MultiInstanceExecutionId", "ItemIndex", "ItemValueJson",
-                         "Assignee")
+                         "Assignee", "RolePolicyId")
                     SELECT
                         @instance_id, @token_id, @node_id, @node_name,
                         @node_external_id, @roles, @requires_claim,
@@ -3983,7 +4028,7 @@ public sealed class WorkflowRuntimeRepository(
                             WHEN item_value IS NULL THEN NULL
                             ELSE item_value::jsonb
                         END,
-                        assignee
+                        assignee, @role_policy_id
                     FROM item_source
                     ORDER BY item_index
                     RETURNING "Id", "ItemIndex", "Status"
@@ -4024,6 +4069,7 @@ public sealed class WorkflowRuntimeRepository(
                 insertItems.Parameters.AddWithValue("token_id", tokenId);
                 insertItems.Parameters.AddWithValue("execution_id", execution.Id);
                 insertItems.Parameters.AddWithValue("node_id", node.Id);
+                insertItems.Parameters.AddWithValue("role_policy_id", execution.RolePolicyId.Value);
                 insertItems.Parameters.AddWithValue("node_name", node.Name);
                 insertItems.Parameters.Add(new NpgsqlParameter(
                     "node_external_id",
@@ -4138,11 +4184,12 @@ public sealed class WorkflowRuntimeRepository(
         {
             entity = await dbContext.MultiInstanceExecutions
                 .FromSqlInterpolated($"SELECT * FROM flowbit.multi_instance_executions WHERE \"TokenId\" = {tokenId} AND \"Status\" = {MultiInstanceExecutionStatuses.Active} ORDER BY \"Id\" DESC LIMIT 1 FOR UPDATE")
+                .Include(execution => execution.RolePolicy)
                 .SingleOrDefaultAsync(cancellationToken);
         }
         else
         {
-            entity = await dbContext.MultiInstanceExecutions.AsNoTracking()
+            entity = await dbContext.MultiInstanceExecutions.Include(execution => execution.RolePolicy).AsNoTracking()
                 .Where(e => e.TokenId == tokenId
                             && e.Status == MultiInstanceExecutionStatuses.Active)
                 .OrderByDescending(e => e.Id)
@@ -4156,7 +4203,7 @@ public sealed class WorkflowRuntimeRepository(
         string? status,
         CancellationToken cancellationToken)
     {
-        var query = dbContext.MultiInstanceExecutions.AsNoTracking()
+        var query = dbContext.MultiInstanceExecutions.Include(execution => execution.RolePolicy).AsNoTracking()
             .Where(execution => execution.InstanceId == instanceId);
         if (!string.IsNullOrWhiteSpace(status))
         {
@@ -4171,7 +4218,7 @@ public sealed class WorkflowRuntimeRepository(
         long instanceId,
         CancellationToken cancellationToken)
     {
-        var entities = await dbContext.MultiInstanceExecutions.AsNoTracking()
+        var entities = await dbContext.MultiInstanceExecutions.Include(execution => execution.RolePolicy).AsNoTracking()
             .Where(execution =>
                 execution.InstanceId == instanceId
                 && execution.Status == MultiInstanceExecutionStatuses.Active)
@@ -4196,11 +4243,12 @@ public sealed class WorkflowRuntimeRepository(
         {
             entity = await dbContext.UserTasks
                 .FromSqlInterpolated($"SELECT * FROM flowbit.user_tasks WHERE \"Id\" = {taskId} FOR UPDATE")
+                .Include(task => task.RolePolicy)
                 .SingleOrDefaultAsync(cancellationToken);
         }
         else
         {
-            entity = await dbContext.UserTasks.AsNoTracking()
+            entity = await dbContext.UserTasks.Include(task => task.RolePolicy).AsNoTracking()
                 .SingleOrDefaultAsync(t => t.Id == taskId, cancellationToken);
         }
         if (entity is null)
@@ -4365,11 +4413,12 @@ public sealed class WorkflowRuntimeRepository(
         {
             entities = await dbContext.UserTasks
                 .FromSqlInterpolated($"SELECT * FROM flowbit.user_tasks WHERE \"InstanceId\" = {instanceId} AND \"Status\" = {UserTaskStatuses.Active} ORDER BY \"Id\" FOR UPDATE")
+                .Include(task => task.RolePolicy)
                 .ToListAsync(cancellationToken);
         }
         else
         {
-            entities = await dbContext.UserTasks.AsNoTracking()
+            entities = await dbContext.UserTasks.Include(task => task.RolePolicy).AsNoTracking()
                 .Where(t => t.InstanceId == instanceId && t.Status == UserTaskStatuses.Active)
                 .OrderBy(t => t.Id)
                 .ToListAsync(cancellationToken);
@@ -4412,11 +4461,12 @@ public sealed class WorkflowRuntimeRepository(
         {
             entity = await dbContext.MultiInstanceExecutions
                 .FromSqlInterpolated($"SELECT * FROM flowbit.multi_instance_executions WHERE \"Id\" = {executionId} FOR UPDATE")
+                .Include(execution => execution.RolePolicy)
                 .SingleOrDefaultAsync(cancellationToken);
         }
         else
         {
-            entity = await dbContext.MultiInstanceExecutions.AsNoTracking()
+            entity = await dbContext.MultiInstanceExecutions.Include(execution => execution.RolePolicy).AsNoTracking()
                 .SingleOrDefaultAsync(e => e.Id == executionId, cancellationToken);
         }
         return entity is null ? null : ToRecord(entity);
@@ -4427,7 +4477,7 @@ public sealed class WorkflowRuntimeRepository(
         string? status,
         CancellationToken cancellationToken)
     {
-        var query = dbContext.UserTasks.AsNoTracking().Where(t => t.InstanceId == instanceId);
+        var query = dbContext.UserTasks.Include(task => task.RolePolicy).AsNoTracking().Where(t => t.InstanceId == instanceId);
         if (!string.IsNullOrWhiteSpace(status)) query = query.Where(t => t.Status == status);
         return (await query.OrderByDescending(t => t.UpdatedAt).ThenByDescending(t => t.Id)
                 .ToListAsync(cancellationToken))
@@ -4438,7 +4488,7 @@ public sealed class WorkflowRuntimeRepository(
         long instanceId,
         CancellationToken cancellationToken)
     {
-        var entities = await dbContext.UserTasks.AsNoTracking()
+        var entities = await dbContext.UserTasks.Include(task => task.RolePolicy).AsNoTracking()
             .Where(task =>
                 task.InstanceId == instanceId
                 && (task.Status == UserTaskStatuses.Active
@@ -4669,6 +4719,7 @@ public sealed class WorkflowRuntimeRepository(
                        ut."NodeName" AS "NodeName",
                        ut."NodeExternalId" AS "NodeExternalId",
                        ut."Roles" AS "Roles",
+                       ut."RolePolicyId" AS "RolePolicyId",
                        ut."RequiresClaim" AS "RequiresClaim",
                        ut."RequiresAssignment" AS "RequiresAssignment",
                        ut."Status" AS "Status",
@@ -4705,12 +4756,18 @@ public sealed class WorkflowRuntimeRepository(
             await ownedTransaction.CommitAsync(cancellationToken);
         }
 
+        var rolePolicies = await GetRolePoliciesAsync(
+            taskRows.Where(row => row.RolePolicyId.HasValue).Select(row => row.RolePolicyId!.Value)
+                .Distinct().ToArray(), cancellationToken);
         return new PagedResult<UserTaskRecord>(
-            taskRows.Select(ToUserTaskRecord).ToList(), page, pageSize, totalCount);
+            taskRows.Select(row => ToUserTaskRecord(row) with
+            {
+                RolePolicy = row.RolePolicyId is long policyId ? rolePolicies.GetValueOrDefault(policyId) : null
+            }).ToList(), page, pageSize, totalCount);
     }
 
     public async Task<IReadOnlyList<UserTaskRecord>> ListExecutionTasksAsync(long executionId, CancellationToken cancellationToken) =>
-        (await dbContext.UserTasks.AsNoTracking()
+        (await dbContext.UserTasks.Include(task => task.RolePolicy).AsNoTracking()
             .Where(t => t.MultiInstanceExecutionId == executionId)
             .OrderBy(t => t.ItemIndex)
             .ToListAsync(cancellationToken)).Select(entity => ToRecord(entity)).ToList();
@@ -4753,7 +4810,7 @@ public sealed class WorkflowRuntimeRepository(
         }
 
         var ids = instanceIds.Distinct().ToList();
-        var aggregates = await dbContext.UserTasks.AsNoTracking()
+        var aggregates = await dbContext.UserTasks.Include(task => task.RolePolicy).AsNoTracking()
             .Where(task => ids.Contains(task.InstanceId)
                            && (task.Status == UserTaskStatuses.Active
                                || task.Status == UserTaskStatuses.Pending))
@@ -4777,7 +4834,7 @@ public sealed class WorkflowRuntimeRepository(
             .ToList();
         var soleTasks = soleInstanceIds.Count == 0
             ? new Dictionary<long, (long Id, string? ClaimedBy, string? Assignee)>()
-            : await dbContext.UserTasks.AsNoTracking()
+            : await dbContext.UserTasks.Include(task => task.RolePolicy).AsNoTracking()
                 .Where(task => soleInstanceIds.Contains(task.InstanceId)
                                && task.Status == UserTaskStatuses.Active)
                 .Select(task => new { task.Id, task.InstanceId, task.ClaimedBy, task.Assignee })
@@ -4819,7 +4876,7 @@ public sealed class WorkflowRuntimeRepository(
         }
 
         var ids = executionIds.Distinct().ToList();
-        var executions = await dbContext.MultiInstanceExecutions.AsNoTracking()
+        var executions = await dbContext.MultiInstanceExecutions.Include(execution => execution.RolePolicy).AsNoTracking()
             .Where(execution => ids.Contains(execution.Id))
             .Select(execution => new
             {
@@ -5700,7 +5757,8 @@ public sealed class WorkflowRuntimeRepository(
             execution.NodeName = node.Name;
             execution.NodeExternalId = node.ExternalId;
             execution.NodeType = node.Type;
-            execution.NodeRolesJson = JsonMapping.ToJsonDocument(node.Roles);
+            if (!BpmnFlowNodeTypes.IsUserTask(node.Type))
+                execution.NodeRolesJson = JsonMapping.ToJsonDocument(node.Roles);
         }
 
         var openJobs = await dbContext.WorkflowJobs
@@ -6739,7 +6797,11 @@ public sealed class WorkflowRuntimeRepository(
         new(entity.Id, entity.InstanceId, entity.TokenId, entity.NodeId, entity.Mode, entity.Source,
             entity.OnePerActor, entity.ResultVariable, entity.Status, entity.TotalCount, entity.CompletedCount,
             entity.CancelledCount, entity.WinningFlowId, entity.CompletionReason, entity.CreatedAt,
-            entity.UpdatedAt, entity.CompletedAt);
+            entity.UpdatedAt, entity.CompletedAt)
+        {
+            RolePolicyId = entity.RolePolicyId,
+            RolePolicy = entity.RolePolicy is null ? null : ToRecord(entity.RolePolicy)
+        };
 
     private static UserTaskRecord ToRecord(UserTaskEntity entity, long? nodeExecutionId = null) =>
         new UserTaskRecord(entity.Id, entity.InstanceId, entity.TokenId, entity.NodeId, entity.NodeName,
@@ -6750,6 +6812,8 @@ public sealed class WorkflowRuntimeRepository(
             entity.CreatedAt,
             entity.UpdatedAt, entity.CompletedAt, nodeExecutionId ?? entity.NodeExecution?.Id)
         {
+            RolePolicyId = entity.RolePolicyId,
+            RolePolicy = entity.RolePolicy is null ? null : ToRecord(entity.RolePolicy),
             CompletedActingFor = entity.CompletedActingFor,
             CompletionDelegationId = entity.CompletionDelegationId,
             CompletionKind = entity.CompletionKind,
@@ -6826,7 +6890,7 @@ public sealed class WorkflowRuntimeRepository(
             Status = status,
             EntryGatewayBranchId = entryGatewayBranchId,
             EnteredViaFlowId = enteredViaFlowId,
-            NodeRolesJson = JsonMapping.ToJsonDocument(node.Roles.ToList()),
+            NodeRolesJson = JsonMapping.ToJsonDocument((node.RolePolicy?.Roles ?? node.Roles).ToList()),
             TriggeredBy = triggeredBy.User,
             TriggeredByRolesJson = JsonMapping.ToJsonDocument(triggeredBy.Roles),
             TriggeredActingFor = triggeredBy.ActingFor,
@@ -7014,7 +7078,7 @@ public sealed class WorkflowRuntimeRepository(
             NodeId = node.Id,
             NodeName = node.Name,
             NodeExternalId = node.ExternalId,
-            Roles = node.Roles.ToList(),
+            Roles = (node.RolePolicy?.Roles ?? node.Roles).ToList(),
             RequiresClaim = node.Assignee is null && node.RequiresClaim,
             RequiresAssignment = node.RequiresAssignment,
             Status = status,

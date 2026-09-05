@@ -394,6 +394,9 @@ public sealed record ManagedUserTaskDto(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     IReadOnlyDictionary<string, JsonElement>? Variables)
 {
+    public string Status { get; init; } = "active";
+    public bool CanManageAssignment { get; init; }
+    public bool CanManageRoles { get; init; }
     public IReadOnlyList<WorkflowAttributeModel> Attributes { get; init; } = [];
 }
 

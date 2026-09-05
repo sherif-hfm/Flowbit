@@ -6,7 +6,7 @@ format, an `example-*` workflow id, integer node and sequence-flow ids, and no
 legacy properties. The examples are intentionally focused: combine their
 patterns when building a production workflow.
 
-The catalog contains 40 workflows. Automated tests recursively discover every
+The catalog contains 41 workflows. Automated tests recursively discover every
 JSON file, deserialize it, validate it with the runtime's strict JavaScript
 parser, load and render it in the editor, and verify that this page links it.
 Tests never call the REST or message endpoints described below.
@@ -48,6 +48,17 @@ walkthroughs.
 | [Claim inheritance](user-tasks/02-claim-inheritance.json) | `Coordinator` starts with no values. | Actor A claims the fresh task and inherits `previous`; actor B claims the specialist task; the final `fromNode` task returns to actor A. | Demonstrates distinct actors and `fresh`, `previous`, and `fromNode` claim modes. | Authenticated user-task API and database; no Worker or configuration. |
 | [Direct assignee expression](user-tasks/03-direct-assignee-expression.json) | `Requester` supplies `requestSummary`; `requestedAssignee` has a padded default and may be blank. | The resolved `Reviewer` acts. `Lower`, `Trim`, `IsNullOrWhiteSpace`, variables, and `[sys.user]` normalize the direct assignee. | Only the snapshotted assignee can complete the review. | Authenticated API and database; no Worker or configuration. |
 | [Required assignment and distribution](user-tasks/04-required-assignment-and-distribution.json) | `Requester` supplies required `workReference`. | A distributor assigns the fresh task; `Worker` completes inherited work; `OperationsManager` handles the independent task; manager roles can assign/release. | Shows required assignment plus `fresh`, `previous`, and `fromNode` assignment ownership. | API and database; configure `${config.exampleDistributorClientId}` and `${config.exampleDistributorSecret}` for the external distribution endpoints; no Worker. |
+
+The [variable roles and role management example](user-tasks/05-variable-roles-and-role-management.json)
+starts without input or a start role. Task roles capture `reviewRoles` as
+`Finance, Manager`, while the **Approve** action captures `approvalRoles` as
+`Finance`. Updating either process variable later leaves the waiting task
+unchanged. A `RoleManager` can use **Task management → Edit roles** or the roles
+API to replace that task's saved permissions, including its action roles. The
+manager permission does not grant permission to complete the task. The example
+requires the role-policy migration, upgraded API, and database; no Worker or
+external configuration is needed. Shared `string[]` bindings can be used in the
+same selectors after creating their matching shared-variable catalog entries.
 
 ## Script tasks
 

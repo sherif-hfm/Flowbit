@@ -77,6 +77,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     public DbSet<NodeExecutionEntity> NodeExecutions => Set<NodeExecutionEntity>();
 
     public DbSet<UserTaskEntity> UserTasks => Set<UserTaskEntity>();
+    public DbSet<UserTaskRolePolicyEntity> UserTaskRolePolicies => Set<UserTaskRolePolicyEntity>();
     public DbSet<MultiInstanceExecutionEntity> MultiInstanceExecutions => Set<MultiInstanceExecutionEntity>();
     public DbSet<MultiInstanceFlowCountEntity> MultiInstanceFlowCounts => Set<MultiInstanceFlowCountEntity>();
     public DbSet<GatewayExecutionEntity> GatewayExecutions => Set<GatewayExecutionEntity>();
@@ -666,6 +667,20 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 .OnDelete(DeleteBehavior.NoAction);
         });
 
+        modelBuilder.Entity<UserTaskRolePolicyEntity>(entity =>
+        {
+            entity.ToTable("user_task_role_policies");
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Roles).HasColumnType("text[]").IsRequired();
+            entity.Property(e => e.OutgoingFlowRolesJson).HasColumnType("jsonb").IsRequired();
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+            entity.HasIndex(e => e.InstanceId);
+            entity.HasOne<WorkflowInstanceEntity>().WithMany()
+                .HasForeignKey(e => e.InstanceId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne<WorkflowDefinitionEntity>().WithMany()
+                .HasForeignKey(e => e.WorkflowDefinitionId).OnDelete(DeleteBehavior.Restrict);
+        });
+
         modelBuilder.Entity<UserTaskEntity>(entity =>
         {
             entity.ToTable("user_tasks");
@@ -673,6 +688,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(e => e.NodeName).HasMaxLength(300).IsRequired();
             entity.Property(e => e.NodeExternalId).HasMaxLength(300);
             entity.Property(e => e.Roles).HasColumnType("text[]").IsRequired().HasDefaultValueSql("'{}'::text[]");
+            entity.HasOne(e => e.RolePolicy).WithMany()
+                .HasForeignKey(e => e.RolePolicyId).OnDelete(DeleteBehavior.Restrict);
             entity.Property(e => e.RequiresAssignment).HasDefaultValue(false);
             entity.Property(e => e.Status).HasMaxLength(32).IsRequired();
             entity.Property(e => e.ClaimedBy).HasMaxLength(UserTaskConstraints.MaxActorNameLength);
@@ -782,6 +799,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
         modelBuilder.Entity<MultiInstanceExecutionEntity>(entity =>
         {
+            entity.HasOne(e => e.RolePolicy).WithMany()
+                .HasForeignKey(e => e.RolePolicyId).OnDelete(DeleteBehavior.Restrict);
             entity.ToTable("multi_instance_executions");
             entity.HasKey(e => e.Id);
             entity.Property(e => e.Mode).HasMaxLength(32).IsRequired();

@@ -8,6 +8,40 @@ namespace Flowbit.Tests;
 public sealed class EditorRuntimeSmokeTests
 {
     [Fact]
+    public void VariableRoleReferencesRoundTripAndRenderAsReferences()
+    {
+        var engine = CreateEditorEngine();
+        engine.SetValue("roleExampleJson", ExampleWorkflowData.Read(
+            "examples/user-tasks/05-variable-roles-and-role-management.json"));
+        using var result = JsonDocument.Parse(engine.Evaluate(
+            """
+            (() => {
+              loadFromObject(JSON.parse(roleExampleJson));
+              render();
+              const first = JSON.stringify(model);
+              const task = model.flowNodes.find(node => node.id === 2);
+              const flow = model.sequenceFlows.find(item => item.id === 201);
+              const label = flowLabelInfo(flow, task);
+              roleSourceField(task, () => {});
+              loadFromObject(JSON.parse(first));
+              return JSON.stringify({
+                taskVariable: model.flowNodes.find(node => node.id === 2).rolesVariable,
+                flowVariable: model.sequenceFlows.find(flow => flow.id === 201).rolesVariable,
+                managerRoles: model.taskRoleManagementRoles,
+                flowLabel: label.name,
+                errors: validateModelForSave(model)
+              });
+            })()
+            """).AsString());
+        var value = result.RootElement;
+        Assert.Equal("reviewRoles", value.GetProperty("taskVariable").GetString());
+        Assert.Equal("approvalRoles", value.GetProperty("flowVariable").GetString());
+        Assert.Equal("RoleManager", value.GetProperty("managerRoles")[0].GetString());
+        Assert.Contains("$approvalRoles", value.GetProperty("flowLabel").GetString());
+        Assert.Empty(value.GetProperty("errors").EnumerateArray());
+    }
+
+    [Fact]
     public void ToolTransitionsFollowFileAndCreationActions()
     {
         var engine = CreateEditorEngine();

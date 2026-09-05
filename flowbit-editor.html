@@ -3004,6 +3004,7 @@ function newModel() {
     cancelRoles: [],
     unclaimRoles: [],
     taskAssignmentRoles: [],
+    taskRoleManagementRoles: [],
     taskDistribution: null
   };
 }
@@ -4279,8 +4280,8 @@ function renderNodes() {
       transform: `translate(${pos.x},${pos.y})`, "data-id": node.id
     });
     const marker = model.initialEventId === node.id ? " · START" : "";
-    const roles = roleSummary(node.roles, 20);
-    appendSvgTitle(g, `#${node.id} · ${typeLabel(node.type)} · ${node.name || "Unnamed"}${roles ? ` · Roles: ${normalizeRoles(node.roles).join(", ")}` : ""}`);
+    const roles = node.rolesVariable != null ? truncateText(`$${node.rolesVariable}`, 20) : roleSummary(node.roles, 20);
+    appendSvgTitle(g, `#${node.id} · ${typeLabel(node.type)} · ${node.name || "Unnamed"}${node.rolesVariable != null ? ` · Role variable: ${node.rolesVariable} (captured on entry)` : roles ? ` · Roles: ${normalizeRoles(node.roles).join(", ")}` : ""}`);
 
     if (isBoundaryEventType(node.type)) {
       const r = BOUNDARY_D / 2;
@@ -4372,12 +4373,14 @@ function renderNodes() {
 
 function flowLabelInfo(flow, source) {
   const target = getNode(flow.targetRef);
-  const name = typeof flow.name === "string" ? flow.name.trim() : "";
+  const authoredName = typeof flow.name === "string" ? flow.name.trim() : "";
+  const name = flow.rolesVariable != null ? `${authoredName}${authoredName ? " · " : ""}$${flow.rolesVariable}` : authoredName;
   const metadata = [];
   const roles = normalizeRoles(flow.roles);
   if (isUserTaskType(source.type) && flow.isSelectable === false) metadata.push("engine-only");
   if (flow.cancelRemainingInstances) metadata.push("interrupt");
   if (roles.length) metadata.push(`roles: ${roles.join(", ")}`);
+  if (flow.rolesVariable != null) metadata.push(`role variable: ${flow.rolesVariable} (captured on entry)`);
   if (flow.isDefault) metadata.push("default");
   else if (isExclusiveGatewayType(source.type) && Number.isInteger(flow.conditionPriority)) {
     metadata.push(`priority ${flow.conditionPriority}`);
@@ -5075,6 +5078,14 @@ function addWorkflowRolesSection() {
   rolesFieldGeneric(model, "cancelRoles", "Roles allowed to cancel instance", () => {});
   rolesFieldGeneric(model, "unclaimRoles", "Roles allowed to unclaim a task", () => {});
   rolesFieldGeneric(model, "taskAssignmentRoles", "Roles allowed to manage task assignments", () => {});
+  const roleManagementOwner = { taskRoleManagementRoles: normalizeRoles(model.taskRoleManagementRoles) };
+  rolesFieldGeneric(roleManagementOwner, "taskRoleManagementRoles", "Roles allowed to manage waiting-task roles", () => {
+    model.taskRoleManagementRoles = roleManagementOwner.taskRoleManagementRoles;
+  });
+  const roleManagementHint = document.createElement("p");
+  roleManagementHint.className = "empty-note";
+  roleManagementHint.textContent = "Empty disables role management. These managers may inspect and replace roles on waiting tasks without receiving assignment or user-action permissions.";
+  inspector.appendChild(roleManagementHint);
 
   const distributionToggle = variableCheckbox(
     "Enable external task distributor",
@@ -5202,6 +5213,10 @@ function renderNodeInspector() {
         node.variables = materializeMessageStartVariables(node);
       }
       node.type = v;
+      if (!isUserTaskType(v)) {
+        delete node.rolesVariable;
+        outgoingFlows(node.id).forEach(flow => { delete flow.rolesVariable; });
+      }
       if (!isGatewayType(v)) {
         delete node.joinCancellation;
         model.flowNodes.forEach(candidate => {
@@ -5370,7 +5385,7 @@ function renderNodeInspector() {
   }
 
   if (isUserTaskType(node.type)) {
-    rolesField(node, () => { renderNodes(); renderEdges(); });
+    roleSourceField(node, () => { renderNodes(); renderEdges(); });
     renderInboxVisibilityConditionField(node);
     if (!node.multiInstance) {
       inspector.appendChild(
@@ -7658,6 +7673,7 @@ function renderFlowInspector() {
           if (checked) {
             flow.isSelectable = false;
             flow.roles = [];
+            delete flow.rolesVariable;
             flow.variables = [];
             flow.condition = null;
             flow.canActWithoutClaim = false;
@@ -7678,6 +7694,7 @@ function renderFlowInspector() {
           flow.isSelectable = checked;
           if (!checked) {
             flow.roles = [];
+            delete flow.rolesVariable;
             flow.variables = [];
             flow.condition = null;
             flow.canActWithoutClaim = false;
@@ -7689,10 +7706,10 @@ function renderFlowInspector() {
         }));
       }
       if (flow.isSelectable !== false && !flow.isDefault) {
-        rolesField(flow, () => renderEdges());
+        roleSourceField(flow, () => renderEdges());
         const rolesHint = document.createElement("p");
         rolesHint.className = "empty-note";
-        rolesHint.textContent = 'Roles restrict who can take this specific action (enforced at runtime on top of the task\'s own roles). Empty = anyone who can act on the task.';
+        rolesHint.textContent = 'Roles restrict who can take this specific action in addition to the task\'s own roles. An empty literal role list allows anyone who can act on the task. A role variable must resolve to a nonempty role list when the task is created.';
         inspector.appendChild(rolesHint);
         field("Condition", "text", flow.condition ?? "", v => {
           flow.condition = v.trim() ? v : null;
@@ -8235,6 +8252,58 @@ function variableCheckbox(label, checked, onChange) {
   f.appendChild(lbl);
 
   return f;
+}
+function roleSourceField(owner, onChange) {
+  const usesVariable = owner.rolesVariable != null;
+  selectField("Role source", [
+    { value: "literal", label: "Literal roles" },
+    { value: "variable", label: "Variable (captured on entry)" }
+  ], usesVariable ? "variable" : "literal", value => {
+    if (value === "variable") {
+      owner.roles = [];
+      owner.rolesVariable = "";
+    } else {
+      delete owner.rolesVariable;
+    }
+    onChange();
+    renderInspector();
+  });
+  if (!usesVariable) {
+    rolesField(owner, onChange);
+    return;
+  }
+  const variables = (model.variables || []).filter(variable =>
+    variable && variable.dataType === "string" && variable.isArray &&
+    typeof variable.name === "string" && variable.name.trim());
+  const fieldElement = document.createElement("div");
+  fieldElement.className = "field";
+  const label = document.createElement("label");
+  label.textContent = "Role variable (string[])";
+  const input = document.createElement("select");
+  input.setAttribute("aria-label", label.textContent);
+  const appendOption = (value, text) => {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = text;
+    input.appendChild(option);
+  };
+  appendOption("", "Select a declared string[] variable");
+  variables.forEach(variable => appendOption(variable.name,
+    `${variable.name}${variable.scope === "shared" ? " (shared)" : " (instance)"}`));
+  const selectedVariable = variables.find(variable => typeof owner.rolesVariable === "string" &&
+    variable.name.toLowerCase() === owner.rolesVariable.toLowerCase());
+  if (owner.rolesVariable && !selectedVariable) {
+    appendOption(owner.rolesVariable, `${owner.rolesVariable} (unavailable)`);
+  }
+  input.value = selectedVariable ? selectedVariable.name : owner.rolesVariable;
+  input.onchange = () => { owner.rolesVariable = input.value; onChange(); };
+  label.appendChild(input);
+  fieldElement.appendChild(label);
+  inspector.appendChild(fieldElement);
+  const hint = document.createElement("p");
+  hint.className = "empty-note";
+  hint.textContent = "Read once when work is created, including pending reviewers. Later variable changes do not change waiting-task permissions. The value must contain 1–100 roles of at most 300 characters each; missing or invalid values prevent task creation.";
+  inspector.appendChild(hint);
 }
 function rolesField(owner, onChange) {
   rolesFieldGeneric(owner, "roles", "Roles", onChange);
@@ -10833,6 +10902,31 @@ function validateModelForSave(candidate) {
 
   validateUniqueIds(nodes, "Flow node");
   validateUniqueIds(flows, "Sequence flow");
+  const validateRoleSource = (owner, label, allowed) => {
+    if (owner.rolesVariable == null) return;
+    if (!allowed) {
+      errors.push(label + " rolesVariable is supported only on user tasks and selectable, non-default user-task flows.");
+      return;
+    }
+    if (!hasText(owner.rolesVariable)) {
+      errors.push(label + " rolesVariable must name a declared string[] variable.");
+      return;
+    }
+    if (normalizeRoles(owner.roles).length > 0) {
+      errors.push(label + " cannot combine rolesVariable with nonempty literal roles.");
+    }
+    const matches = processVariables.filter(variable => variable &&
+      typeof variable.name === "string" &&
+      variable.name.trim().toLowerCase() === owner.rolesVariable.trim().toLowerCase());
+    if (matches.length !== 1 || matches[0].dataType !== "string" || !matches[0].isArray) {
+      errors.push(label + " rolesVariable '" + owner.rolesVariable + "' must reference a declared string[] variable.");
+    }
+  };
+  nodes.filter(Boolean).forEach(node => validateRoleSource(node,
+    "Flow node #" + node.id, node.type === "userTask"));
+  flows.filter(Boolean).forEach(flow => validateRoleSource(flow,
+    flowLabel(flow), !flow.isDefault && flow.isSelectable !== false &&
+      nodes.some(node => node && node.id === flow.sourceRef && node.type === "userTask")));
   if (candidate && candidate.taskDistribution != null) {
     if (!hasText(candidate.taskDistribution.clientId)) {
       errors.push("Workflow taskDistribution must have a clientId when enabled.");
@@ -12477,6 +12571,7 @@ function migrateLegacyToNew(obj) {
     cancelRoles: [],
     unclaimRoles: [],
     taskAssignmentRoles: [],
+    taskRoleManagementRoles: [],
     taskDistribution: null
   };
 }
@@ -12523,6 +12618,8 @@ function loadFromObject(obj) {
         x: typeof s.x === "number" ? s.x : 100 + (i % 4) * 220,
         y: typeof s.y === "number" ? s.y : 80 + Math.floor(i / 4) * 160,
         roles: normalizeRoles(s.roles),
+        rolesVariable: s.rolesVariable == null ? undefined :
+          typeof s.rolesVariable === "string" ? s.rolesVariable.trim() : s.rolesVariable,
         requiresClaim: !!s.requiresClaim,
         claimMode: CLAIM_MODE_OPTIONS.some(o => o.value === s.claimMode) ? s.claimMode : CLAIM_MODE.FRESH,
         inheritClaimFromNodeId: s.inheritClaimFromNodeId ?? null,
@@ -12583,6 +12680,8 @@ function loadFromObject(obj) {
         sourceRef: f.sourceRef,
         targetRef: f.targetRef,
         roles: normalizeRoles(f.roles),
+        rolesVariable: f.rolesVariable == null ? undefined :
+          typeof f.rolesVariable === "string" ? f.rolesVariable.trim() : f.rolesVariable,
         variables: (f.variables || []).map(normalizeVariable),
         condition: f.condition ?? null,
         conditionPriority: f.conditionPriority ?? null,
@@ -12597,6 +12696,7 @@ function loadFromObject(obj) {
       cancelRoles: normalizeRoles(obj.cancelRoles),
       unclaimRoles: normalizeRoles(obj.unclaimRoles),
       taskAssignmentRoles: normalizeRoles(obj.taskAssignmentRoles),
+      taskRoleManagementRoles: normalizeRoles(obj.taskRoleManagementRoles),
       taskDistribution: obj.taskDistribution && typeof obj.taskDistribution === "object"
         ? {
             clientId: typeof obj.taskDistribution.clientId === "string" ? obj.taskDistribution.clientId : "",

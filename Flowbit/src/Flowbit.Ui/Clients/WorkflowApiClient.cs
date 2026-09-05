@@ -887,9 +887,11 @@ public sealed class WorkflowApiClient(HttpClient httpClient)
         string? owner = null,
         string? ownership = null,
         IEnumerable<string>? variables = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string? status = null)
     {
         var url = $"/api/user-tasks/manage?page={page}&pageSize={pageSize}";
+        if (!string.IsNullOrWhiteSpace(status)) url += $"&status={Uri.EscapeDataString(status.Trim())}";
         if (taskId is not null) url += $"&taskId={taskId.Value}";
         if (instanceId is not null) url += $"&instanceId={instanceId.Value}";
         if (workflowId is not null) url += $"&workflowId={workflowId.Value}";
@@ -1423,6 +1425,35 @@ public sealed class WorkflowApiClient(HttpClient httpClient)
             $"/api/user-tasks/{taskId}/assign", request, cancellationToken);
         await EnsureSuccessAsync(response, cancellationToken);
         return await response.Content.ReadFromJsonAsync<UserTaskAssignmentAckDto>(cancellationToken);
+    }
+
+    public Task<UserTaskRolePolicyDto?> GetUserTaskRolesAsync(long taskId, CancellationToken cancellationToken = default) =>
+        GetWaitingRolesAsync($"/api/user-tasks/{taskId}/roles", cancellationToken);
+
+    public Task<UserTaskRolePolicyDto?> GetMultiInstanceRolesAsync(long executionId, CancellationToken cancellationToken = default) =>
+        GetWaitingRolesAsync($"/api/multi-instance-executions/{executionId}/roles", cancellationToken);
+
+    private async Task<UserTaskRolePolicyDto?> GetWaitingRolesAsync(string url, CancellationToken cancellationToken)
+    {
+        using var response = await httpClient.GetAsync(url, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<UserTaskRolePolicyDto>(cancellationToken);
+    }
+
+    public Task<UserTaskRolesChangeAckDto?> ChangeUserTaskRolesAsync(
+        long taskId, ChangeUserTaskRolesRequest request, CancellationToken cancellationToken = default) =>
+        ChangeWaitingRolesAsync($"/api/user-tasks/{taskId}/roles", request, cancellationToken);
+
+    public Task<UserTaskRolesChangeAckDto?> ChangeMultiInstanceRolesAsync(
+        long executionId, ChangeUserTaskRolesRequest request, CancellationToken cancellationToken = default) =>
+        ChangeWaitingRolesAsync($"/api/multi-instance-executions/{executionId}/roles", request, cancellationToken);
+
+    private async Task<UserTaskRolesChangeAckDto?> ChangeWaitingRolesAsync(
+        string url, ChangeUserTaskRolesRequest request, CancellationToken cancellationToken)
+    {
+        using var response = await httpClient.PostAsJsonAsync(url, request, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<UserTaskRolesChangeAckDto>(cancellationToken);
     }
 
     public async Task<UserTaskAssignmentAckDto?> UnassignUserTaskAsync(

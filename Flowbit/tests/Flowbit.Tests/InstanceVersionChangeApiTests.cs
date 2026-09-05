@@ -272,7 +272,7 @@ public sealed class InstanceVersionChangeApiTests(PostgresApiFixture fixture)
     }
 
     [Fact]
-    public async Task CompatibleChange_UsesTargetTaskActionImmediatelyAndCompletesOnce()
+    public async Task CompatibleChange_UsesTargetActionLabelWhileKeepingSavedRolesAndCompletesOnce()
     {
         await SetWorkflowRequiredRoleAsync("admin");
         var sourceModel = CreateModel("version-change-continuation");
@@ -299,7 +299,6 @@ public sealed class InstanceVersionChangeApiTests(PostgresApiFixture fixture)
         targetModel.Name += " migrated";
         var targetAction = targetModel.SequenceFlows.Single(flow => flow.Id == 20);
         targetAction.Name = "Finalize migrated request";
-        targetAction.Roles = ["MigratedApprover"];
         var target = await CreateWorkflowAsync(targetModel, publish: true);
 
         var preview = await PreviewAsync(started.Id, target.Id);
@@ -311,28 +310,28 @@ public sealed class InstanceVersionChangeApiTests(PostgresApiFixture fixture)
                 target.Id,
                 preview.ExpectedSourceWorkflowId,
                 preview.ExpectedUpdatedAt,
-                "continue under migrated approval rules"));
+                "continue after approval label update"));
         Assert.Equal(HttpStatusCode.OK, changeResponse.StatusCode);
 
         Assert.Empty(await GetTaskFlowsAsync(
             task.Id,
-            "source-approver",
-            ["SourceApprover"]));
+            "migrated-approver",
+            ["MigratedApprover"]));
         var migratedActions = await GetTaskFlowsAsync(
             task.Id,
-            "migrated-approver",
-            ["MigratedApprover"]);
+            "source-approver",
+            ["SourceApprover"]);
         var migratedAction = Assert.Single(migratedActions);
         Assert.Equal(20, migratedAction.Id);
         Assert.Equal("Finalize migrated request", migratedAction.Name);
-        Assert.Equal(["MigratedApprover"], migratedAction.Roles);
+        Assert.Equal(["SourceApprover"], migratedAction.Roles);
 
         using var takeResponse = await SendAsync(
             HttpMethod.Post,
             $"/api/user-tasks/{task.Id}/flows/{migratedAction.Id}",
             new TakeFlowRequest(null),
-            user: "migrated-approver",
-            roles: ["MigratedApprover"],
+            user: "source-approver",
+            roles: ["SourceApprover"],
             suppressDefaultAdmin: true);
         Assert.Equal(HttpStatusCode.OK, takeResponse.StatusCode);
         var acknowledgement = await ReadAsync<UserTaskActionAckDto>(takeResponse);
@@ -342,8 +341,8 @@ public sealed class InstanceVersionChangeApiTests(PostgresApiFixture fixture)
             HttpMethod.Post,
             $"/api/user-tasks/{task.Id}/flows/{migratedAction.Id}",
             new TakeFlowRequest(null),
-            user: "migrated-approver",
-            roles: ["MigratedApprover"],
+            user: "source-approver",
+            roles: ["SourceApprover"],
             suppressDefaultAdmin: true);
         Assert.Equal(HttpStatusCode.Conflict, duplicateTake.StatusCode);
 
@@ -358,7 +357,7 @@ public sealed class InstanceVersionChangeApiTests(PostgresApiFixture fixture)
         var audit = Assert.Single(completed.VersionChanges);
         Assert.Equal(source.Id, audit.SourceWorkflow.Id);
         Assert.Equal(target.Id, audit.TargetWorkflow.Id);
-        Assert.Equal("continue under migrated approval rules", audit.Reason);
+        Assert.Equal("continue after approval label update", audit.Reason);
         Assert.Single(completed.History, entry => entry.SequenceFlowId == 20);
 
         await using var db = fixture.CreateDbContext();

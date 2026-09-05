@@ -587,6 +587,8 @@ public sealed class WorkflowDefinitionRepository(
                 .AnyAsync(instance => instance.WorkflowDefinitionId == id, cancellationToken)
             || await dbContext.NodeExecutions.AsNoTracking()
                 .AnyAsync(execution => execution.WorkflowDefinitionId == id, cancellationToken)
+            || await dbContext.UserTaskRolePolicies.AsNoTracking()
+                .AnyAsync(policy => policy.WorkflowDefinitionId == id, cancellationToken)
             || await dbContext.InstanceHistory.AsNoTracking()
                 .AnyAsync(history => history.WorkflowDefinitionId == id, cancellationToken)
             || await dbContext.SequenceFlowOccurrences.AsNoTracking()

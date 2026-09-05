@@ -8,6 +8,8 @@ public sealed class MultiInstanceExecutionEntity
     public long TokenId { get; set; }
     public ExecutionTokenEntity? Token { get; set; }
     public int NodeId { get; set; }
+    public long? RolePolicyId { get; set; }
+    public UserTaskRolePolicyEntity? RolePolicy { get; set; }
     public string Mode { get; set; } = "parallel";
     public string Source { get; set; } = "collection";
     public bool OnePerActor { get; set; }

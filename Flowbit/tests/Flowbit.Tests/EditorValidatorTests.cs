@@ -9,6 +9,32 @@ namespace Flowbit.Tests;
 
 public sealed class EditorValidatorTests
 {
+    [Fact]
+    public void Validator_AcceptsInstanceAndSharedRoleSourcesAndRejectsUnsupportedReferences()
+    {
+        var model = DefinitionValidationTests.LoadModel("votes-users-list.json");
+        model.Variables.Add(new VariableModel { Id = 999, Name = "roleNames", DataType = "string", IsArray = true, DefaultValue = JsonSerializer.SerializeToElement(new[] { "Reviewer" }) });
+        var task = model.FlowNodes.First(node => node.Type == "userTask");
+        var action = model.SequenceFlows.First(flow => flow.SourceRef == task.Id && flow.IsSelectable && !flow.IsDefault);
+        task.Roles = [];
+        action.Roles = [];
+        task.RolesVariable = "roleNames";
+        action.RolesVariable = "roleNames";
+        Assert.Empty(Validate(model));
+
+        task.Roles = ["Reviewer"];
+        Assert.Contains(Validate(model), error => error.Contains("combine rolesVariable", StringComparison.Ordinal));
+        task.Roles = [];
+        model.Variables.Last().IsArray = false;
+        Assert.Contains(Validate(model), error => error.Contains("declared string[]", StringComparison.Ordinal));
+        model.Variables.Last().IsArray = true;
+        task.RolesVariable = "";
+        Assert.Contains(Validate(model), error => error.Contains("rolesVariable must name", StringComparison.Ordinal));
+        task.RolesVariable = null;
+        model.SequenceFlows.First(flow => flow.IsDefault).RolesVariable = "roleNames";
+        Assert.Contains(Validate(model), error => error.Contains("selectable, non-default", StringComparison.Ordinal));
+    }
+
     [Theory]
     [InlineData("parallel-gateway-simple.json")]
     [InlineData("parallel-gateway-complex.json")]

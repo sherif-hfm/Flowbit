@@ -11,6 +11,71 @@ namespace Flowbit.Tests;
 
 public sealed class DefinitionValidationTests
 {
+    [Fact]
+    public async Task CreateAsync_PreservesVariableRoleSourcesAndSeparateRoleManagers()
+    {
+        var model = CreateTerminalModel(BpmnFlowNodeTypes.EndEvent);
+        model.TaskRoleManagementRoles = [" RoleManager ", "rolemanager"];
+        model.Variables = [new VariableModel
+        {
+            Id = 1, Name = "reviewRoles", DataType = "string", IsArray = true,
+            DefaultValue = JsonSerializer.SerializeToElement(new[] { "Reviewer" })
+        }];
+        model.FlowNodes[1].RolesVariable = " reviewRoles ";
+        model.SequenceFlows[1].RolesVariable = "reviewRoles";
+
+        await CreateService(out _).CreateAsync(model, false, CancellationToken.None);
+
+        Assert.Equal("reviewRoles", model.FlowNodes[1].RolesVariable);
+        Assert.Equal("reviewRoles", model.SequenceFlows[1].RolesVariable);
+        Assert.Equal(["RoleManager"], model.TaskRoleManagementRoles);
+        var roundTrip = Clone(model);
+        Assert.Equal("reviewRoles", roundTrip.FlowNodes[1].RolesVariable);
+        Assert.Equal(["RoleManager"], roundTrip.TaskRoleManagementRoles);
+    }
+
+    [Theory]
+    [InlineData("literal-conflict")]
+    [InlineData("missing")]
+    [InlineData("scalar")]
+    [InlineData("wrong-type")]
+    [InlineData("blank")]
+    [InlineData("non-user-task")]
+    [InlineData("non-user-flow")]
+    [InlineData("engine-only")]
+    [InlineData("default")]
+    public async Task CreateAsync_RejectsInvalidRoleSourcesBeforeNormalization(string scenario)
+    {
+        var model = CreateTerminalModel(BpmnFlowNodeTypes.EndEvent);
+        model.Variables = [new VariableModel
+        {
+            Id = 1, Name = "reviewRoles", DataType = "string", IsArray = true,
+            DefaultValue = JsonSerializer.SerializeToElement(new[] { "Reviewer" })
+        }];
+        model.FlowNodes[1].RolesVariable = "reviewRoles";
+        switch (scenario)
+        {
+            case "literal-conflict": model.FlowNodes[1].Roles = ["Reviewer"]; break;
+            case "missing": model.FlowNodes[1].RolesVariable = "missing"; break;
+            case "scalar": model.Variables[0].IsArray = false; break;
+            case "wrong-type": model.Variables[0].DataType = "number"; break;
+            case "blank": model.FlowNodes[1].RolesVariable = "  "; break;
+            case "non-user-task": model.FlowNodes[0].RolesVariable = "reviewRoles"; break;
+            case "non-user-flow": model.SequenceFlows[0].RolesVariable = "reviewRoles"; break;
+            case "engine-only":
+                model.SequenceFlows[1].RolesVariable = "reviewRoles";
+                model.SequenceFlows[1].IsSelectable = false;
+                break;
+            case "default":
+                model.SequenceFlows[1].RolesVariable = "reviewRoles";
+                model.SequenceFlows[1].IsDefault = true;
+                break;
+        }
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+        Assert.Contains("rolesVariable", error.Message, StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData("parallel-gateway-simple.json")]
     [InlineData("parallel-gateway-complex.json")]

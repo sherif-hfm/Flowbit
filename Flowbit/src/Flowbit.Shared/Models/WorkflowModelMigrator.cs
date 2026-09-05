@@ -21,6 +21,7 @@ public static class WorkflowModelMigrator
         model.CancelRoles = NormalizeRoles(model.CancelRoles);
         model.UnclaimRoles = NormalizeRoles(model.UnclaimRoles);
         model.TaskAssignmentRoles = NormalizeRoles(model.TaskAssignmentRoles);
+        model.TaskRoleManagementRoles = NormalizeRoles(model.TaskRoleManagementRoles);
         NormalizeVariableBindings(model.Variables, allowShared: true);
 
         foreach (var node in model.FlowNodes)
@@ -34,6 +35,7 @@ public static class WorkflowModelMigrator
         {
             flow.Attributes = NormalizeAttributes(flow.Attributes);
             flow.Roles = NormalizeRoles(flow.Roles);
+            flow.RolesVariable = NormalizeRoleVariable(flow.RolesVariable);
             flow.CanActWithoutClaimRoles = NormalizeRoles(flow.CanActWithoutClaimRoles);
             flow.Variables ??= [];
             NormalizeVariableBindings(flow.Variables, allowShared: false);
@@ -217,6 +219,9 @@ public static class WorkflowModelMigrator
             }
         }
     }
+
+    private static string? NormalizeRoleVariable(string? value) =>
+        value is null ? null : value.Trim();
 
     private static List<string> NormalizeRoles(IEnumerable<string>? roles) =>
         (roles ?? [])
@@ -413,6 +418,7 @@ public static class WorkflowModelMigrator
     {
         node.Attributes = NormalizeAttributes(node.Attributes);
         node.Roles = NormalizeRoles(node.Roles);
+        node.RolesVariable = NormalizeRoleVariable(node.RolesVariable);
         node.Variables ??= [];
         NormalizeVariableBindings(node.Variables, allowShared: false);
         node.Assignments ??= [];

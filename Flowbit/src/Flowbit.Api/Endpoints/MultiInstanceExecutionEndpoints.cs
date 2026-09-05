@@ -26,7 +26,37 @@ public static class MultiInstanceExecutionEndpoints
             .Produces(StatusCodes.Status404NotFound)
             .Produces(StatusCodes.Status409Conflict);
 
+        group.MapGet("/{executionId:long}/roles", GetRoles)
+            .Produces<UserTaskRolePolicyDto>()
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status403Forbidden)
+            .Produces(StatusCodes.Status404NotFound)
+            .Produces(StatusCodes.Status409Conflict);
+        group.MapPost("/{executionId:long}/roles", ChangeRoles)
+            .WithSummary("Replace roles for a waiting multi-instance execution and all unfinished work items")
+            .Produces<UserTaskRolesChangeAckDto>()
+            .Produces(StatusCodes.Status400BadRequest)
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status403Forbidden)
+            .Produces(StatusCodes.Status404NotFound)
+            .Produces(StatusCodes.Status409Conflict);
+
         return app;
+    }
+
+    private static async Task<IResult> GetRoles(long executionId, ClaimsPrincipal principal,
+        IActorContextResolver actorResolver, IWorkflowEngineService service, CancellationToken cancellationToken)
+    {
+        var policy = await service.GetMultiInstanceRolesAsync(executionId, actorResolver.Resolve(principal), cancellationToken);
+        return policy is null ? Results.NotFound() : Results.Ok(policy);
+    }
+
+    private static async Task<IResult> ChangeRoles(long executionId, ChangeUserTaskRolesRequest request,
+        ClaimsPrincipal principal, IActorContextResolver actorResolver,
+        IWorkflowEngineService service, CancellationToken cancellationToken)
+    {
+        var result = await service.ChangeMultiInstanceRolesAsync(executionId, request, actorResolver.Resolve(principal), cancellationToken);
+        return result is null ? Results.NotFound() : Results.Ok(result);
     }
 
     private static async Task<IResult> GetInterruptFlows(

@@ -769,7 +769,7 @@ public sealed class UserTaskApiTests(PostgresApiFixture fixture)
     }
 
     [Fact]
-    public async Task MultiInstanceInboxProjectionUsesOneFreshSettingsReadPlusTwoQueriesAndReturnsCorrectProgress()
+    public async Task MultiInstanceInboxProjectionUsesOneFreshSettingsReadAndBoundedPageAndRolePolicyQueries()
     {
         const int totalCount = 101;
         const int activeCount = totalCount - 1;
@@ -815,13 +815,14 @@ public sealed class UserTaskApiTests(PostgresApiFixture fixture)
             ["User"]);
         Assert.Equal(HttpStatusCode.OK, complete.StatusCode);
 
-        // The per-request settings read keeps changes fresh without growing with the multi-instance page size.
+        // Settings, count, page, and the captured role-policy batch remain fixed
+        // in number as the multi-instance page grows.
         foreach (var pageSize in new[] { 1, 50, activeCount })
         {
             fixture.CommandCounter.Reset();
             var page = await GetInboxByWorkflowAsync(workflowId, pageSize, "worker", "User");
 
-            Assert.Equal(3, fixture.CommandCounter.ReaderCommands);
+            Assert.Equal(4, fixture.CommandCounter.ReaderCommands);
             Assert.Equal(activeCount, page.TotalCount);
             Assert.Equal(pageSize, page.Items.Count);
             Assert.Equal(pageSize, page.Items.Select(item => item.UserTaskId).Distinct().Count());
@@ -848,7 +849,7 @@ public sealed class UserTaskApiTests(PostgresApiFixture fixture)
             roles: ["User"]);
         Assert.Equal(HttpStatusCode.OK, variablesResponse.StatusCode);
         var variablesPage = await ReadAsync<PagedResult<InboxItemDto>>(variablesResponse);
-        Assert.Equal(3, fixture.CommandCounter.ReaderCommands);
+        Assert.Equal(4, fixture.CommandCounter.ReaderCommands);
         Assert.Equal(50, variablesPage.Items.Count);
         Assert.All(variablesPage.Items, item =>
             Assert.Equal(totalCount, item.Variables!["voters"].GetInt32()));

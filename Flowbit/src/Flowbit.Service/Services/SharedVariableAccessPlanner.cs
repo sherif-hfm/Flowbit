@@ -127,6 +127,20 @@ public static class SharedVariableAccessPlanner
         foreach (var node in definition.FlowNodes ?? [])
         {
             var nodePlan = Node(node.Id);
+            // User-task roles and all selectable action roles are captured together
+            // on entry. Reading a policy later never accesses these variables.
+            if (BpmnFlowNodeTypes.IsUserTask(node.Type))
+            {
+                var roleAliases = (definition.SequenceFlows ?? [])
+                    .Where(flow => flow.SourceRef == node.Id && flow.IsSelectable && !flow.IsDefault)
+                    .Select(flow => flow.RolesVariable)
+                    .Prepend(node.RolesVariable);
+                foreach (var roleAlias in roleAliases)
+                {
+                    if (roleAlias is not null && bindings.TryGetValue(roleAlias.Trim(), out var binding))
+                        nodePlan.Reads.Add(binding.Name);
+                }
+            }
             foreach (var variable in node.Variables ?? [])
             {
                 if (IsWritableShared(variable?.Name, out var alias)) nodePlan.Producers.Add(alias);

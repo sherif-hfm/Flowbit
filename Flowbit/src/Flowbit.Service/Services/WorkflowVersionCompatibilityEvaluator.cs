@@ -1089,6 +1089,18 @@ public static class WorkflowVersionCompatibilityEvaluator
         return JsonSerializer.Serialize(new
         {
             Roles = CanonicalRoles(node.Roles),
+            RolesVariable = node.RolesVariable?.Trim().ToUpperInvariant(),
+            SelectableFlowRoles = definitionRecord.Definition.SequenceFlows
+                .Where(flow => flow.SourceRef == node.Id && flow.IsSelectable && !flow.IsDefault)
+                .OrderBy(flow => flow.Id)
+                .Select(flow => new
+                {
+                    flow.Id,
+                    flow.TargetRef,
+                    flow.ExternalId,
+                    Roles = CanonicalRoles(flow.Roles),
+                    RolesVariable = flow.RolesVariable?.Trim().ToUpperInvariant()
+                }).ToArray(),
             node.RequiresClaim,
             node.ClaimMode,
             node.InheritClaimFromNodeId,

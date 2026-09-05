@@ -231,6 +231,10 @@ public interface IWorkflowEngineService
         CancellationToken cancellationToken);
     Task<UserTaskDto?> ClaimUserTaskAsync(long taskId, ActorContext actor, CancellationToken cancellationToken);
     Task<UserTaskDto?> UnclaimUserTaskAsync(long taskId, ActorContext actor, CancellationToken cancellationToken);
+    Task<UserTaskRolePolicyDto?> GetUserTaskRolesAsync(long taskId, ActorContext actor, CancellationToken cancellationToken);
+    Task<UserTaskRolePolicyDto?> GetMultiInstanceRolesAsync(long executionId, ActorContext actor, CancellationToken cancellationToken);
+    Task<UserTaskRolesChangeAckDto?> ChangeUserTaskRolesAsync(long taskId, ChangeUserTaskRolesRequest request, ActorContext actor, CancellationToken cancellationToken);
+    Task<UserTaskRolesChangeAckDto?> ChangeMultiInstanceRolesAsync(long executionId, ChangeUserTaskRolesRequest request, ActorContext actor, CancellationToken cancellationToken);
     Task<PagedResult<ManagedUserTaskDto>> ListManageableUserTasksAsync(
         ActorContext actor,
         long? taskId,
@@ -245,7 +249,8 @@ public interface IWorkflowEngineService
         IReadOnlyList<string>? variables,
         int page,
         int pageSize,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken,
+        string? status = null);
     Task<PagedResult<ManagedUserTaskDto>> SearchManageableUserTasksAsync(
         ActorContext actor,
         ManageableUserTaskSearchRequest request,

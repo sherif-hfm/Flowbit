@@ -88,6 +88,7 @@ public sealed class WorkflowDefinitionService(
         ValidateAuthoredInboxVisibilityMetadata(definition);
         ValidateAuthoredConditionalEventMetadata(definition);
         ValidateAuthoredSharedVariableMetadata(definition);
+        ValidateRoleSources(definition);
         WorkflowModelMigrator.Normalize(definition);
         ValidateDefinition(definition);
         await ValidateSharedCatalogBindingsAsync(definition, cancellationToken);
@@ -125,6 +126,7 @@ public sealed class WorkflowDefinitionService(
         ValidateAuthoredInboxVisibilityMetadata(definition);
         ValidateAuthoredConditionalEventMetadata(definition);
         ValidateAuthoredSharedVariableMetadata(definition);
+        ValidateRoleSources(definition);
         WorkflowModelMigrator.Normalize(definition);
         ValidateDefinition(definition);
         await ValidateSharedCatalogBindingsAsync(definition, cancellationToken);
@@ -332,6 +334,26 @@ public sealed class WorkflowDefinitionService(
             conditionalPlan);
     }
 
+    private static void ValidateRoleSources(WorkflowModel definition)
+    {
+        foreach (var node in definition.FlowNodes ?? [])
+        {
+            if (node.RolesVariable is null) continue;
+            if (!BpmnFlowNodeTypes.IsUserTask(node.Type))
+                throw new WorkflowDomainException($"Flow node #{node.Id} can define rolesVariable only when type='userTask'.");
+            UserTaskRolePolicyResolver.ValidateRoleSource(definition, node.RolesVariable, node.Roles, $"User task #{node.Id}");
+        }
+        foreach (var flow in definition.SequenceFlows ?? [])
+        {
+            if (flow.RolesVariable is null) continue;
+            var source = (definition.FlowNodes ?? []).FirstOrDefault(node => node.Id == flow.SourceRef);
+            if (source is null || !BpmnFlowNodeTypes.IsUserTask(source.Type)
+                || !flow.IsSelectable || flow.IsDefault)
+                throw new WorkflowDomainException($"Sequence flow #{flow.Id} rolesVariable is supported only on selectable, non-default user-task flows.");
+            UserTaskRolePolicyResolver.ValidateRoleSource(definition, flow.RolesVariable, flow.Roles, $"Sequence flow #{flow.Id}");
+        }
+    }
+
     private static string? NormalizeContractRule(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
@@ -374,6 +396,7 @@ public sealed class WorkflowDefinitionService(
         }
 
         ValidateUniqueIdentifiers(definition);
+        ValidateRoleSources(definition);
         ValidateMessageStartExternalIds(definition);
         ValidateFlowInfoUsage(definition);
         ValidateGatewayExpressionUsage(definition);
