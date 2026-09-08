@@ -57,8 +57,9 @@ public sealed record JobAttemptDto(
 /// <summary>
 /// Bounded operations projection for an unresolved or historical workflow
 /// incident. JobId is the immutable originating job identity; after the
-/// 30-day job retention window a resolved incident can remain without a live
-/// job detail until its own 90-day retention window expires. Detailed
+/// configured job retention window a resolved incident can remain without a live
+/// job detail until its own retention window expires (initial defaults: 30 and
+/// 90 days respectively). Detailed
 /// diagnostics are available only from the detail endpoint.
 /// </summary>
 public sealed record IncidentSummaryDto(

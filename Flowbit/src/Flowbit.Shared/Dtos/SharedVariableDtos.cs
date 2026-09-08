@@ -52,7 +52,8 @@ public sealed record SharedVariableDto(
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
     DateTimeOffset? ArchivedAt,
-    long ValueRevision = 0);
+    long ValueRevision = 0,
+    DateTimeOffset? HistoryPrunedAt = null);
 
 public sealed record SharedVariableListRequest(
     string? Search = null,

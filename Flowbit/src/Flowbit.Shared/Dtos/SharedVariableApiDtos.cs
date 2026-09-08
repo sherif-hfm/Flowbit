@@ -21,7 +21,8 @@ public sealed record SharedVariableMetadataDto(
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
     DateTimeOffset? ArchivedAt,
-    long ValueRevision = 0);
+    long ValueRevision = 0,
+    DateTimeOffset? HistoryPrunedAt = null);
 
 /// <summary>
 /// Current-value projection. HasValue distinguishes an explicitly stored JSON

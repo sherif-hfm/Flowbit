@@ -324,7 +324,8 @@ public static class SharedVariableEndpoints
         variable.CreatedAt,
         variable.UpdatedAt,
         variable.ArchivedAt,
-        variable.ValueRevision);
+        variable.ValueRevision,
+        variable.HistoryPrunedAt);
 
     private static SharedVariableValueDto MapValue(SharedVariableDto variable) => new(
         variable.Key,

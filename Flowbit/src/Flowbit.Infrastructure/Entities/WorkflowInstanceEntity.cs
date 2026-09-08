@@ -24,6 +24,10 @@ public sealed class WorkflowInstanceEntity
 
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
 
+    public DateTimeOffset? FinishedAt { get; set; }
+
+    public DateTimeOffset? HistoryPrunedAt { get; set; }
+
     public List<InstanceVariableEntity> Variables { get; set; } = [];
 
     public List<InstanceVariableCurrentValueEntity> CurrentVariableValues { get; set; } = [];

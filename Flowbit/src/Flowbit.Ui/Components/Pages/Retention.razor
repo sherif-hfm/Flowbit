@@ -1,0 +1,466 @@
+@page "/retention"
+@implements IDisposable
+@using System.Globalization
+@using System.Net
+@using Flowbit.Ui.Auth
+@inject WorkflowApiClient Api
+@inject TokenState Token
+
+<PageTitle>Retention policies · Flowbit</PageTitle>
+
+<PageHeader Eyebrow="Manage" Title="Retention policies"
+            Description="Set deployment-wide policies for workflow history, audits, and completed operational records.">
+    <Actions>
+        <button class="btn btn-outline-primary" @onclick="LoadAsync" disabled="@(!Token.HasToken || Busy)">
+            <AppIcon Name="refresh" /> Refresh
+        </button>
+        <button class="btn btn-primary" @onclick="RunNowAsync" disabled="@(!Token.HasToken || Busy || status is null || status.CurrentRun is not null)">
+            @(status?.CurrentRun is not null ? "Cleanup requested" : "Run cleanup now")
+        </button>
+    </Actions>
+</PageHeader>
+
+@if (!string.IsNullOrWhiteSpace(error)) { <div class="alert alert-danger" role="alert">@error</div> }
+@if (!string.IsNullOrWhiteSpace(success)) { <div class="alert alert-success" role="status">@success</div> }
+
+@if (!Token.HasToken)
+{
+    <section class="panel">
+        <EmptyState Icon="token" Title="An administrative identity is required"
+                    Description="Set an identity carrying a configured settings administrator role.">
+            <a class="btn btn-primary" href="token">Set test identity</a>
+        </EmptyState>
+    </section>
+}
+else
+{
+    <div class="alert alert-warning" id="retention-warning">
+        <strong>Deletion is permanent.</strong> Saved policies run automatically. Workflow history becomes eligible only after its instance finishes.
+        Once any of an instance's history is deleted, that instance cannot be reactivated.
+        Current values, required references, and idempotency records remain protected.
+    </div>
+
+    @if (status is not null)
+    {
+        <section class="panel mb-3" aria-labelledby="retention-status-heading">
+            <div class="section-heading">
+                <div><h2 id="retention-status-heading">Cleanup status</h2><p>Run cleanup now uses saved policies and the same workload limits as automatic cleanup.</p></div>
+                <StatusBadge Status="@StatusTone(status.CurrentRun?.Status ?? status.LastRun?.Status)" Text="@StatusLabel(status.CurrentRun?.Status ?? status.LastRun?.Status)" />
+            </div>
+            <div class="summary-grid">
+                <div class="summary-item"><span>Next scheduled run</span><strong>@FormatTime(status.NextScheduledAt)</strong></div>
+                <div class="summary-item"><span>Worker last seen</span><strong>@FormatTime(status.WorkerLastSeenAt)</strong></div>
+                <div class="summary-item"><span>Last completed run</span><strong>@FormatTime(status.LastRun?.CompletedAt)</strong></div>
+                <div class="summary-item"><span>Managing as</span><strong>@(Token.CurrentUser ?? "anonymous")</strong></div>
+            </div>
+            @if (status.WorkerLastSeenAt is null)
+            {
+                <p class="text-secondary mt-3 mb-0">Waiting for a retention worker. Operational policies are initialized from the Worker's existing retention settings.</p>
+            }
+            else if (WorkerWasStaleAtRefresh)
+            {
+                <div class="alert alert-warning mt-3 mb-0" role="status">At the last refresh, the retention Worker's latest check-in was over a minute old. Cleanup may be delayed. Use Refresh to check for a new heartbeat.</div>
+            }
+            @if (status.CurrentRun is { } currentRun)
+            {
+                <div class="alert alert-info mt-3 mb-0" role="status">
+                    <strong>@StatusLabel(currentRun.Status).</strong> @(currentRun.Message ?? "The Worker will process this request within its workload limits.")
+                    <span class="d-block mt-1">Requested @FormatTime(currentRun.RequestedAt). Use Refresh to see progress.</span>
+                </div>
+            }
+            else if (!string.IsNullOrWhiteSpace(status.LastRun?.Message))
+            {
+                <p class="text-secondary mt-3 mb-0 retention-message">@status.LastRun.Message</p>
+            }
+        </section>
+    }
+
+    @if (editingCategory is not null)
+    {
+        <section class="panel mb-3" aria-labelledby="retention-edit-heading">
+            <div class="section-heading">
+                <div><h2 id="retention-edit-heading">@CategoryLabel(editingCategory)</h2><p>@CategoryDescription(editingCategory)</p></div>
+                <button type="button" class="btn-close" aria-label="Close policy editor" @onclick="CloseEditor" disabled="@Busy"></button>
+            </div>
+            @if (!string.IsNullOrWhiteSpace(formError))
+            {
+                <div class="alert alert-danger" role="alert">
+                    @formError
+                    @if (editConflict)
+                    {
+                        <button class="btn btn-sm btn-outline-danger ms-2" @onclick="ReloadEditAsync" disabled="@Busy">Reload latest</button>
+                    }
+                </div>
+            }
+            <div class="retention-form">
+                <div>
+                    <label class="form-label" for="retention-mode">Retention policy</label>
+                    <select id="retention-mode" class="form-select" @ref="policyModeInput" @bind="retentionMode" @bind:after="InvalidatePreview" disabled="@Busy">
+                        <option value="forever">Keep forever</option>
+                        <option value="days">Delete after a period</option>
+                    </select>
+                </div>
+                @if (retentionMode == "days")
+                {
+                    <div>
+                        <label class="form-label" for="retention-days">Whole days</label>
+                        <input id="retention-days" type="number" min="1" max="36500" step="1" inputmode="numeric"
+                               class="form-control" @bind="formDays" @bind:event="oninput" @bind:after="InvalidatePreview"
+                               aria-describedby="retention-days-help retention-warning" disabled="@Busy" />
+                        <div class="form-text" id="retention-days-help">Enter 1 to 36,500 days. @AgeDescription(editingCategory)</div>
+                    </div>
+                }
+            </div>
+            <div class="d-flex flex-wrap justify-content-end gap-2 mt-3">
+                <button class="btn btn-outline-secondary" @onclick="CloseEditor" disabled="@Busy">Cancel</button>
+                <button class="btn btn-outline-primary" @onclick="PreviewAsync" disabled="@Busy">@(previewing ? "Counting…" : "Preview proposed policy")</button>
+                <button class="btn btn-primary" @onclick="SaveAsync" disabled="@(Busy || editConflict)">@(submitting ? "Saving…" : "Save policy")</button>
+            </div>
+            @if (preview is not null)
+            {
+                <div class="retention-preview mt-3" role="status">
+                    <h3 class="h6">Proposed policy preview</h3>
+                    <p class="text-secondary">Preview does not delete records or save this policy. Counts observed @FormatTime(preview.ObservedAt); eligibility may change before cleanup.</p>
+                    @if (preview.IsLowerBound)
+                    {
+                        <p class="text-secondary">This bounded preview shows at least the displayed counts; more records may qualify.</p>
+                    }
+                    @if (preview.Cutoff is { } cutoff)
+                    {
+                        <p class="text-secondary">Retention cutoff: @FormatTime(cutoff).</p>
+                    }
+                    else
+                    {
+                        <p class="text-secondary">Keep forever: no records are eligible under this proposed policy.</p>
+                    }
+                    <div class="table-responsive">
+                        <table class="table align-middle mb-0">
+                            <thead><tr><th>Data</th><th class="text-end">Eligible</th><th class="text-end">Protected</th></tr></thead>
+                            <tbody>
+                                @foreach (var table in preview.Tables.Take(12))
+                                {
+                                    <tr><td>@TableLabel(table.Table)</td><td class="text-end">@table.EligibleCount.ToString("N0")</td><td class="text-end">@table.ProtectedCount.ToString("N0")</td></tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                    <p class="form-text mb-0 mt-2">Protected records remain because they support current state, required references, or retained audit and idempotency contracts.</p>
+                </div>
+            }
+        </section>
+    }
+
+    @if (loading && status is null)
+    {
+        <section class="panel"><div class="skeleton" role="status"></div></section>
+    }
+    else if (status is null)
+    {
+        <section class="panel"><EmptyState Icon="alert" Title="Retention policies unavailable" Description="Use Refresh to retry. Authorization and API errors are shown above." /></section>
+    }
+    else
+    {
+        <div class="retention-policy-grid" aria-label="Retention policies">
+            @foreach (var policy in OrderedPolicies)
+            {
+                <section class="panel retention-policy" aria-labelledby="@($"policy-{policy.Category}")">
+                    <div><h2 id="@($"policy-{policy.Category}")">@CategoryLabel(policy.Category)</h2><p class="text-secondary">@CategoryDescription(policy.Category)</p></div>
+                    <div class="d-flex flex-wrap align-items-center justify-content-between gap-2">
+                        <strong>@(policy.IsInitialized ? PolicyLabel(policy.RetentionDays) : "Awaiting Worker initialization")</strong>
+                        <button class="btn btn-sm btn-outline-primary" @onclick="() => OpenEdit(policy)" disabled="@(Busy || !policy.IsInitialized)">Edit policy</button>
+                    </div>
+                    @if (policy.IsInitialized)
+                    {
+                        <span class="data-subtitle">Updated @FormatTime(policy.UpdatedAt)@(string.IsNullOrWhiteSpace(policy.UpdatedBy) ? "" : $" by {policy.UpdatedBy}")</span>
+                    }
+                </section>
+            }
+        </div>
+        @foreach (var result in VisibleRuns)
+        {
+            <section class="panel panel-flush mt-3" aria-labelledby="@($"retention-results-{result.Id}")">
+                <div class="section-heading"><div><h2 id="@($"retention-results-{result.Id}")">@(result.Id == status.CurrentRun?.Id ? "Current cleanup progress" : "Last cleanup results")</h2><p>Each category uses its saved policy. Protected records are retained.</p></div></div>
+                <div class="table-responsive">
+                    <table class="table align-middle">
+                        <thead><tr><th>Category</th><th>Status</th><th class="text-end">Deleted</th><th class="text-end">Protected</th></tr></thead>
+                        <tbody>
+                        @foreach (var category in result.Categories.Take(7))
+                        {
+                            <tr>
+                                <td>@CategoryLabel(category.Category)<span class="data-subtitle">@(category.Cutoff is null ? "Keep forever" : $"Cutoff {FormatTime(category.Cutoff)}")</span></td>
+                                <td><StatusBadge Status="@StatusTone(category.Status)" Text="@StatusLabel(category.Status)" />@if (!string.IsNullOrWhiteSpace(category.Message)) { <span class="data-subtitle retention-message">@category.Message</span> }</td>
+                                <td class="text-end">@category.DeletedRows.ToString("N0")</td><td class="text-end">@category.ProtectedRows.ToString("N0")</td>
+                            </tr>
+                        }
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+        }
+    }
+}
+
+@code {
+    private RetentionStatusDto? status;
+    private DateTimeOffset? statusObservedAt;
+    private RetentionPreviewDto? preview;
+    private string? editingCategory;
+    private long expectedRevision;
+    private string retentionMode = "forever";
+    private string formDays = "30";
+    private string? error;
+    private string? success;
+    private string? formError;
+    private bool loading;
+    private bool submitting;
+    private bool previewing;
+    private bool requestingRun;
+    private bool editConflict;
+    private long identityVersion;
+    private long requestVersion;
+    private long formVersion;
+    private ElementReference policyModeInput;
+    private bool focusEditor;
+    private bool disposed;
+    private bool Busy => loading || submitting || previewing || requestingRun;
+    private bool WorkerWasStaleAtRefresh => status?.WorkerLastSeenAt is { } lastSeen
+        && statusObservedAt is { } observedAt && lastSeen < observedAt.AddSeconds(-60);
+    private IEnumerable<RetentionPolicyDto> OrderedPolicies => RetentionCategories.All
+        .Select(category => status?.Policies.FirstOrDefault(policy => policy.Category == category))
+        .OfType<RetentionPolicyDto>();
+    private IEnumerable<RetentionRunDto> VisibleRuns => new[] { status?.CurrentRun, status?.LastRun }
+        .OfType<RetentionRunDto>().Where(run => run.Categories.Count > 0).DistinctBy(run => run.Id);
+
+    protected override async Task OnInitializedAsync()
+    {
+        Token.Changed += OnTokenChanged;
+        if (Token.HasToken) await LoadAsync();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (focusEditor && editingCategory is not null)
+        {
+            focusEditor = false;
+            await policyModeInput.FocusAsync();
+        }
+    }
+
+    private async Task LoadAsync()
+    {
+        var request = ++requestVersion;
+        var identity = identityVersion;
+        if (!Token.HasToken) { status = null; statusObservedAt = null; loading = false; error = null; return; }
+        try
+        {
+            loading = true;
+            error = null;
+            var loaded = await Api.GetRetentionAsync();
+            if (request == requestVersion && identity == identityVersion)
+            {
+                status = loaded;
+                statusObservedAt = DateTimeOffset.UtcNow;
+            }
+        }
+        catch (Exception ex)
+        {
+            if (request != requestVersion || identity != identityVersion) return;
+            status = null;
+            statusObservedAt = null;
+            CloseEditor();
+            error = ErrorMessage(ex);
+        }
+        finally { if (request == requestVersion && identity == identityVersion) loading = false; }
+    }
+
+    private void OpenEdit(RetentionPolicyDto policy)
+    {
+        editingCategory = policy.Category;
+        expectedRevision = policy.Revision;
+        retentionMode = policy.RetentionDays is null ? "forever" : "days";
+        formDays = (policy.RetentionDays ?? 30).ToString(CultureInfo.InvariantCulture);
+        formError = null;
+        success = null;
+        editConflict = false;
+        focusEditor = true;
+        InvalidatePreview();
+    }
+
+    private void CloseEditor()
+    {
+        editingCategory = null;
+        expectedRevision = 0;
+        retentionMode = "forever";
+        formDays = "30";
+        formError = null;
+        editConflict = false;
+        focusEditor = false;
+        InvalidatePreview();
+    }
+
+    private void InvalidatePreview() { formVersion++; preview = null; }
+
+    private bool TryGetDays(out int? days)
+    {
+        days = null;
+        if (retentionMode == "forever") return true;
+        if (!int.TryParse(formDays, NumberStyles.None, CultureInfo.InvariantCulture, out var parsed) || parsed is < 1 or > 36500)
+        {
+            formError = "Enter a positive whole number from 1 to 36,500 days, or choose Keep forever.";
+            return false;
+        }
+        days = parsed;
+        return true;
+    }
+
+    private async Task PreviewAsync()
+    {
+        formError = null;
+        if (editingCategory is null || !TryGetDays(out var days)) return;
+        var identity = identityVersion;
+        var form = formVersion;
+        try
+        {
+            previewing = true;
+            preview = null;
+            var loaded = await Api.PreviewRetentionAsync(new PreviewRetentionRequest(editingCategory, days));
+            if (identity == identityVersion && form == formVersion) preview = loaded;
+        }
+        catch (Exception ex) { if (identity == identityVersion && form == formVersion) formError = ErrorMessage(ex); }
+        finally { if (identity == identityVersion) previewing = false; }
+    }
+
+    private async Task SaveAsync()
+    {
+        if (editingCategory is null || editConflict) return;
+        formError = null;
+        if (!TryGetDays(out var days)) return;
+        var identity = identityVersion;
+        var category = editingCategory;
+        try
+        {
+            submitting = true;
+            error = success = null;
+            await Api.UpdateRetentionPolicyAsync(category, new UpdateRetentionPolicyRequest(days, expectedRevision));
+            if (identity != identityVersion) return;
+            CloseEditor();
+            success = $"{CategoryLabel(category)} policy saved: {PolicyLabel(days)}. Automatic cleanup uses this policy.";
+            await LoadAsync();
+        }
+        catch (WorkflowApiException ex) when (ex.StatusCode == HttpStatusCode.Conflict)
+        {
+            if (identity != identityVersion) return;
+            editConflict = true;
+            formError = "This policy changed after you opened it. Your edits are preserved; reload the latest policy before saving again.";
+        }
+        catch (Exception ex) { if (identity == identityVersion) formError = ErrorMessage(ex); }
+        finally { if (identity == identityVersion) submitting = false; }
+    }
+
+    private async Task ReloadEditAsync()
+    {
+        var category = editingCategory;
+        var identity = identityVersion;
+        await LoadAsync();
+        if (identity != identityVersion || category is null) return;
+        var latest = status?.Policies.FirstOrDefault(policy => policy.Category == category);
+        if (latest is not null) OpenEdit(latest);
+    }
+
+    private async Task RunNowAsync()
+    {
+        var identity = identityVersion;
+        try
+        {
+            requestingRun = true;
+            error = success = null;
+            var run = await Api.RequestRetentionRunAsync();
+            if (identity != identityVersion) return;
+            if (status is not null) status = status with { CurrentRun = run };
+            success = "Cleanup requested using saved policies. The Worker may pause it while workflow load is high. Unsaved edits are not included.";
+        }
+        catch (Exception ex) { if (identity == identityVersion) error = ErrorMessage(ex); }
+        finally { if (identity == identityVersion) requestingRun = false; }
+    }
+
+    private void ResetIdentityState()
+    {
+        identityVersion++;
+        requestVersion++;
+        status = null;
+        statusObservedAt = null;
+        error = success = null;
+        loading = submitting = previewing = requestingRun = false;
+        CloseEditor();
+    }
+
+    private void OnTokenChanged() => _ = InvokeAsync(async () =>
+    {
+        if (disposed) return;
+        ResetIdentityState();
+        var reload = LoadAsync();
+        // Token changes originate outside Blazor's component event pipeline.
+        // Render both transitions explicitly, including a reload that outlives
+        // an overlapping OnInitializedAsync request.
+        StateHasChanged();
+        await reload;
+        if (!disposed) StateHasChanged();
+    });
+
+    private static string ErrorMessage(Exception ex) => ex is WorkflowApiException { StatusCode: HttpStatusCode.Forbidden }
+        ? "This identity does not have the configured settings administrator role."
+        : ex.Message;
+    private static string FormatTime(DateTimeOffset? value) => value?.ToLocalTime().ToString("g") ?? "Not available yet";
+    private static string PolicyLabel(int? days) => days is null ? "Keep forever" : $"Delete after {days:N0} {(days == 1 ? "day" : "days")}";
+    private static string StatusLabel(string? value) => value switch
+    {
+        null => "No cleanup run yet",
+        "queued" => "Queued", "running" => "Running", "paused" or "pausedForLoad" => "Paused due to workflow load",
+        "completed" or "succeeded" => "Completed", "failed" => "Failed", "skipped" => "Skipped", "pending" => "Pending",
+        "keepForever" => "Keep forever", "budgetReached" => "Run limit reached",
+        "policyChanged" => "Policy changed", "completedWithIssues" => "Completed with issues", _ => value
+    };
+    private static string StatusTone(string? value) => value switch
+    {
+        "completed" or "succeeded" => "active", "failed" => "danger",
+        "paused" or "pausedForLoad" or "budgetReached" or "policyChanged" or "completedWithIssues" => "warning",
+        "queued" or "running" => "primary", _ => "neutral"
+    };
+    private static string CategoryLabel(string value) => value switch
+    {
+        RetentionCategories.WorkflowHistory => "Workflow events and flow history",
+        RetentionCategories.VariableHistory => "Instance variable history",
+        RetentionCategories.NodeActivity => "Node activity",
+        RetentionCategories.AdministrativeAudits => "Administrative audits",
+        RetentionCategories.SharedVariableHistory => "Shared variable history",
+        RetentionCategories.CompletedJobs => "Completed jobs",
+        RetentionCategories.ResolvedIncidents => "Resolved incidents", _ => value
+    };
+    private static string CategoryDescription(string value) => value switch
+    {
+        RetentionCategories.WorkflowHistory => "Past workflow events and individual sequence-flow occurrences. Flow summaries and receipt references remain protected.",
+        RetentionCategories.VariableHistory => "Previous instance-variable values. The source of each current value remains protected.",
+        RetentionCategories.NodeActivity => "Completed node visits and work-item activity. Visits required by retained values remain protected.",
+        RetentionCategories.AdministrativeAudits => "Standalone version changes and eligible variable-update audits. Batch audits and keyed update receipts remain protected.",
+        RetentionCategories.SharedVariableHistory => "Past shared-variable revisions. Current revisions and request receipts remain protected.",
+        RetentionCategories.CompletedJobs => "Completed, cancelled, and skipped jobs, their attempts, and unused snapshots. Active work and open incidents remain protected.",
+        RetentionCategories.ResolvedIncidents => "Resolved operational incidents. Open incidents remain protected.", _ => ""
+    };
+    private static string AgeDescription(string category) => category switch
+    {
+        RetentionCategories.SharedVariableHistory => "Workflow revisions age from instance finish; standalone revisions age from creation.",
+        RetentionCategories.CompletedJobs => "The period starts when the job finishes.",
+        RetentionCategories.ResolvedIncidents => "The period starts when the incident is resolved.",
+        _ => "The period starts when the workflow instance finishes."
+    };
+    private static string TableLabel(string value) => value switch
+    {
+        "instance_history" => "Workflow events", "sequence_flow_occurrences" => "Sequence-flow occurrences",
+        "instance_variables" => "Instance-variable revisions", "node_executions" => "Node visits",
+        "instance_variable_updates" => "Variable-update audits", "workflow_instance_version_changes" => "Version-change audits",
+        "shared_variable_revisions" => "Shared-variable revisions", "workflow_jobs" => "Jobs",
+        "workflow_job_attempts" => "Job attempts", "workflow_job_snapshots" => "Job snapshots",
+        "workflow_incidents" => "Incidents", _ => value
+    };
+    public void Dispose() { disposed = true; identityVersion++; requestVersion++; Token.Changed -= OnTokenChanged; }
+}

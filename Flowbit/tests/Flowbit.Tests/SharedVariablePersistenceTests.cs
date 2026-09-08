@@ -48,6 +48,7 @@ public sealed class SharedVariablePersistenceTests(PostgresApiFixture fixture)
         await WithIsolatedDatabaseAsync(async connectionString =>
         {
             await MigrateAsync(connectionString, HardenedSharedVariableMigration);
+            await AddCurrentCatalogReadColumnsAsync(connectionString);
             var dataSourceBuilder = new NpgsqlDataSourceBuilder(connectionString);
             dataSourceBuilder.EnableDynamicJson();
             await using var dataSource = dataSourceBuilder.Build();
@@ -435,6 +436,7 @@ public sealed class SharedVariablePersistenceTests(PostgresApiFixture fixture)
         await WithIsolatedDatabaseAsync(async connectionString =>
         {
             await MigrateAsync(connectionString, HardenedSharedVariableMigration);
+            await AddCurrentCatalogReadColumnsAsync(connectionString);
             var dataSourceBuilder = new NpgsqlDataSourceBuilder(connectionString);
             dataSourceBuilder.EnableDynamicJson();
             await using var dataSource = dataSourceBuilder.Build();
@@ -514,6 +516,21 @@ public sealed class SharedVariablePersistenceTests(PostgresApiFixture fixture)
         RequestId: null,
         RequestFingerprint: null,
         Reason: null);
+
+    private static async Task AddCurrentCatalogReadColumnsAsync(string connectionString)
+    {
+        // These two tests intentionally keep the old allocator/conditional-wake
+        // schema while exercising today's repository. Add only its nullable
+        // catalog projection column; do not apply newer migrations or alter the
+        // legacy artifacts and allocator behavior that the tests are asserting.
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+        await using var command = new NpgsqlCommand("""
+            ALTER TABLE flowbit.shared_variables
+            ADD COLUMN "HistoryPrunedAt" timestamp with time zone NULL
+            """, connection);
+        await command.ExecuteNonQueryAsync();
+    }
 
     private static SharedVariableWriteCommand WriteCommand(
         string key,

@@ -55,7 +55,7 @@ builder.Services.AddHostedService(provider =>
     provider.GetRequiredService<PostgresJobWakeupSignal>());
 builder.Services.AddHostedService<JobDispatcher>();
 builder.Services.AddHostedService<QueueTelemetryService>();
-builder.Services.AddHostedService<JobCleanupService>();
+builder.Services.AddHostedService<RetentionCleanupService>();
 builder.Services.AddHostedService<TimerStartReconciliationService>();
 builder.Services.AddSingleton<WorkerTelemetry>();
 builder.Services.AddHealthChecks()

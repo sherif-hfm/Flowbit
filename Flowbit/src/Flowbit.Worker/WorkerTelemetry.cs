@@ -1,7 +1,9 @@
 using System.Diagnostics.Metrics;
 using System.Globalization;
 using System.Text;
+using Flowbit.Service.Abstractions;
 using Flowbit.Service.Models;
+using Flowbit.Shared.Dtos;
 
 namespace Flowbit.Worker;
 
@@ -20,6 +22,10 @@ public sealed class WorkerTelemetry : IDisposable
     private readonly Counter<long> _cleanupAttempts;
     private readonly Counter<long> _cleanupSnapshots;
     private readonly Counter<long> _cleanupIncidents;
+    private readonly Counter<long> _retentionRows;
+    private readonly Counter<long> _retentionBatches;
+    private readonly Counter<long> _retentionFailures;
+    private readonly Counter<long> _retentionPausedTicks;
     private readonly Counter<long> _timerStarts;
     private readonly Histogram<double> _acquisitionLatency;
     private readonly Histogram<double> _processingDuration;
@@ -40,6 +46,11 @@ public sealed class WorkerTelemetry : IDisposable
     private long _cleanupAttemptsTotal;
     private long _cleanupSnapshotsTotal;
     private long _cleanupIncidentsTotal;
+    private long _retentionRowsTotal;
+    private long _retentionBatchesTotal;
+    private long _retentionFailuresTotal;
+    private long _retentionPausedTicksTotal;
+    private int _retentionPaused;
     private long _timerStartsTotal;
     private long _acquisitionSamples;
     private long _acquisitionMicroseconds;
@@ -96,6 +107,18 @@ public sealed class WorkerTelemetry : IDisposable
         _cleanupIncidents = _meter.CreateCounter<long>(
             "flowbit.worker.cleanup.incidents",
             description: "Resolved incidents removed by retention cleanup.");
+        _retentionRows = _meter.CreateCounter<long>(
+            "flowbit.worker.retention.rows",
+            description: "History and audit rows removed by bounded retention batches.");
+        _retentionBatches = _meter.CreateCounter<long>(
+            "flowbit.worker.retention.batches",
+            description: "Retention batches that performed work.");
+        _retentionFailures = _meter.CreateCounter<long>(
+            "flowbit.worker.retention.failures",
+            description: "Retention batch calls that failed and will be retried.");
+        _retentionPausedTicks = _meter.CreateCounter<long>(
+            "flowbit.worker.retention.paused_ticks",
+            description: "Retention polls paused to protect workflow execution.");
         _timerStarts = _meter.CreateCounter<long>(
             "flowbit.worker.timer_start.subscriptions",
             description: "Timer-start subscriptions created or repaired.");
@@ -223,10 +246,10 @@ public sealed class WorkerTelemetry : IDisposable
     }
 
     public void RecordCleanup(
-        int jobs,
-        int incidents,
-        int attempts = 0,
-        int snapshots = 0)
+        long jobs,
+        long incidents,
+        long attempts = 0,
+        long snapshots = 0)
     {
         if (jobs > 0)
         {
@@ -248,6 +271,40 @@ public sealed class WorkerTelemetry : IDisposable
             _cleanupSnapshots.Add(snapshots);
             Interlocked.Add(ref _cleanupSnapshotsTotal, snapshots);
         }
+    }
+
+    public void RecordRetention(RetentionTickResult result)
+    {
+        Volatile.Write(ref _retentionPaused, result.IsPaused ? 1 : 0);
+        if (result.DeletedRows > 0)
+        {
+            if (result.Category is { } category && RetentionCategories.All.Contains(category, StringComparer.Ordinal))
+                _retentionRows.Add(result.DeletedRows, new KeyValuePair<string, object?>("category", category));
+            else
+                _retentionRows.Add(result.DeletedRows);
+            Interlocked.Add(ref _retentionRowsTotal, result.DeletedRows);
+        }
+        RecordCleanup(
+            result.DeletedByTable.GetValueOrDefault("workflow_jobs"),
+            result.DeletedByTable.GetValueOrDefault("workflow_incidents"),
+            result.DeletedByTable.GetValueOrDefault("workflow_job_attempts"),
+            result.DeletedByTable.GetValueOrDefault("workflow_job_snapshots"));
+        if (result.DidWork)
+        {
+            _retentionBatches.Add(1);
+            Interlocked.Increment(ref _retentionBatchesTotal);
+        }
+        if (result.IsPaused)
+        {
+            _retentionPausedTicks.Add(1);
+            Interlocked.Increment(ref _retentionPausedTicksTotal);
+        }
+    }
+
+    public void RecordRetentionFailure()
+    {
+        _retentionFailures.Add(1);
+        Interlocked.Increment(ref _retentionFailuresTotal);
     }
 
     public void RecordQueueSnapshot(WorkflowJobQueueStatisticsRecord statistics)
@@ -300,6 +357,11 @@ public sealed class WorkerTelemetry : IDisposable
         WriteCounter(output, "flowbit_worker_cleanup_attempts_total", _cleanupAttemptsTotal);
         WriteCounter(output, "flowbit_worker_cleanup_snapshots_total", _cleanupSnapshotsTotal);
         WriteCounter(output, "flowbit_worker_cleanup_incidents_total", _cleanupIncidentsTotal);
+        WriteCounter(output, "flowbit_worker_retention_rows_total", _retentionRowsTotal);
+        WriteCounter(output, "flowbit_worker_retention_batches_total", _retentionBatchesTotal);
+        WriteCounter(output, "flowbit_worker_retention_failures_total", _retentionFailuresTotal);
+        WriteCounter(output, "flowbit_worker_retention_paused_ticks_total", _retentionPausedTicksTotal);
+        WriteGauge(output, "flowbit_worker_retention_paused", Volatile.Read(ref _retentionPaused));
         WriteCounter(output, "flowbit_worker_timer_start_subscriptions_total", _timerStartsTotal);
         WriteCounter(output, "flowbit_jobs_retries_total", _runtimeRetriesTotal);
         WriteCounter(output, "flowbit_jobs_output_conflicts_total", _runtimeConflictsTotal);

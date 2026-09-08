@@ -28,6 +28,8 @@ public static class ServiceCollectionExtensions
         var dataSource = dataSourceBuilder.Build();
 
         services.AddSingleton(dataSource);
+        services.AddSingleton(new RetentionDataSource(connectionString));
+        services.AddScoped<IRetentionRepository, RetentionRepository>();
         services.TryAddSingleton(new ServiceTaskOptions());
         services.TryAddSingleton(new MessageDeliveryOptions());
         services.TryAddSingleton(new ScriptOptions());

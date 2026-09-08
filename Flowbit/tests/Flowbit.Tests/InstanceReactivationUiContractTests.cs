@@ -92,6 +92,29 @@ public sealed class InstanceReactivationUiContractTests
         Assert.Contains("No previously visited user task is eligible", html, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task PrunedInstance_ShowsDeletionNoticeAndFinishTimeWithoutReactivationControls()
+    {
+        var now = DateTimeOffset.Parse("2026-09-07T12:00:00Z");
+        var instance = CreateTerminalInstance(now) with
+        {
+            FinishedAt = now.AddDays(-10),
+            HistoryPrunedAt = now.AddHours(-1)
+        };
+        var preview = new InstanceReactivationPreviewDto(instance.Id, instance.Workflow.Id, instance.Status,
+            false, [], [new InstanceReactivationIssueDto("HistoryPruned", "History was deleted.")], [], instance.UpdatedAt);
+        using var handler = new InstanceHandler(instance, preview, HttpStatusCode.OK);
+
+        var html = await RenderAsync(handler);
+
+        Assert.Contains("id=\"instance-history-retention-notice\"", html);
+        Assert.Contains("Some history was permanently deleted", html);
+        Assert.Contains("This instance cannot be reactivated", html);
+        Assert.Contains("<span>Finished</span>", html);
+        Assert.DoesNotContain("id=\"reactivation\"", html);
+        Assert.DoesNotContain("Variables, flow evidence, and history are preserved", html);
+    }
+
     [Theory]
     [InlineData(HttpStatusCode.Unauthorized)]
     [InlineData(HttpStatusCode.Forbidden)]

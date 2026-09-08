@@ -511,6 +511,7 @@ public sealed class AdministrativeActionBatchMigrationTests(PostgresApiFixture f
         await using var context = new AppDbContext(options);
         var now = DateTimeOffset.UtcNow;
         var capturedInstanceAt = now.AddMinutes(-5);
+        await AddCurrentInstanceReadColumnsAsync(context);
         var capturedTaskAt = now.AddMinutes(-4);
         var activationId = Guid.NewGuid();
         var workflowKey = $"legacy-administrative-{Guid.NewGuid():N}";
@@ -800,6 +801,7 @@ public sealed class AdministrativeActionBatchMigrationTests(PostgresApiFixture f
             .UseNpgsql(dataSource, FlowbitDatabase.ConfigureProvider)
             .Options;
         await using var context = new AppDbContext(options);
+        await AddCurrentInstanceReadColumnsAsync(context);
         var now = DateTimeOffset.UtcNow;
         var workflowKey = $"migration-downgrade-{Guid.NewGuid():N}";
         var definition = new WorkflowDefinitionEntity
@@ -863,6 +865,16 @@ public sealed class AdministrativeActionBatchMigrationTests(PostgresApiFixture f
         });
         await context.SaveChangesAsync();
     }
+
+    private static Task AddCurrentInstanceReadColumnsAsync(AppDbContext context) =>
+        // These fixtures use the current EF model against the historical audit
+        // schema. Add only its nullable read columns; keep migration history and
+        // the administrative audit constraints under test unchanged.
+        context.Database.ExecuteSqlRawAsync("""
+            ALTER TABLE flowbit.workflow_instances
+                ADD COLUMN "FinishedAt" timestamp with time zone NULL,
+                ADD COLUMN "HistoryPrunedAt" timestamp with time zone NULL;
+            """);
 
     private async Task WithIsolatedDatabaseAsync(Func<string, Task> test)
     {

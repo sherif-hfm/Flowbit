@@ -2615,6 +2615,22 @@ public sealed partial class WorkflowRuntimeRepository(
         var instance = dbContext.WorkflowInstances.Local.SingleOrDefault(entity => entity.Id == instanceId)
             ?? await dbContext.WorkflowInstances.SingleAsync(entity => entity.Id == instanceId, cancellationToken);
         var now = DateTimeOffset.UtcNow;
+        if (status == WorkflowInstanceStatuses.Running)
+        {
+            if (instance.HistoryPrunedAt is not null)
+            {
+                throw new WorkflowConflictException(
+                    "History has been removed by retention; this instance cannot be reactivated.");
+            }
+            instance.FinishedAt = null;
+        }
+        else if (status is WorkflowInstanceStatuses.Completed or WorkflowInstanceStatuses.Cancelled or WorkflowInstanceStatuses.Faulted)
+        {
+            if (instance.Status == WorkflowInstanceStatuses.Running || instance.FinishedAt is null)
+            {
+                instance.FinishedAt = now;
+            }
+        }
         instance.Status = status;
         instance.UpdatedAt = now;
         if (status is WorkflowInstanceStatuses.Faulted or WorkflowInstanceStatuses.Cancelled)
@@ -6615,7 +6631,9 @@ public sealed partial class WorkflowRuntimeRepository(
             entity.UpdatedAt,
             token.FaultCode,
             token.FaultDescription,
-            token.CurrentNodeExecutionId);
+            token.CurrentNodeExecutionId,
+            entity.FinishedAt,
+            entity.HistoryPrunedAt);
 
     private static WorkflowInstanceVersionChangeRecord ToRecord(
         WorkflowInstanceVersionChangeEntity entity) =>

@@ -2,6 +2,7 @@ using System.Text.Json;
 using Flowbit.Infrastructure.Entities;
 using Flowbit.Infrastructure.Repositories;
 using Flowbit.Service.Models;
+using Flowbit.Service.Services;
 using Flowbit.Shared.Dtos;
 using Flowbit.Shared.Models;
 using Microsoft.EntityFrameworkCore;
@@ -12,6 +13,35 @@ namespace Flowbit.Tests;
 [Collection(PostgresApiCollection.Name)]
 public sealed class WorkflowReactivationRepositoryTests(PostgresApiFixture fixture)
 {
+    [Theory]
+    [InlineData("completed")]
+    [InlineData("cancelled")]
+    [InlineData("faulted")]
+    public async Task FinishClockSurvivesTerminalTouchesAndRestartsAfterReactivation(string status)
+    {
+        var terminal = await CreateTerminalVisitedInstanceAsync();
+        await using var db = fixture.CreateDbContext();
+        var repository = new WorkflowRuntimeRepository(db);
+        var instance = await db.WorkflowInstances.SingleAsync(row => row.Id == terminal.InstanceId);
+        var oldFinish = DateTimeOffset.UtcNow.AddDays(-30);
+        instance.Status = status;
+        instance.FinishedAt = oldFinish;
+        await db.SaveChangesAsync();
+        await repository.SetInstanceStatusAsync(instance.Id, status, CancellationToken.None);
+        Assert.Equal(oldFinish, instance.FinishedAt);
+        await repository.SetInstanceStatusAsync(instance.Id, "running", CancellationToken.None);
+        Assert.Null(instance.FinishedAt);
+        await repository.SetInstanceStatusAsync(instance.Id, status, CancellationToken.None);
+        Assert.True(instance.FinishedAt > oldFinish);
+        await db.SaveChangesAsync();
+        instance.HistoryPrunedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync();
+        await Assert.ThrowsAsync<WorkflowConflictException>(() =>
+            repository.SetInstanceStatusAsync(instance.Id, "running", CancellationToken.None));
+        Assert.Equal(status, instance.Status);
+        Assert.NotNull(instance.FinishedAt);
+    }
+
     [Fact]
     public async Task TargetVisitsReturnLatestEligibleTopLevelVisitPerUserTaskNode()
     {

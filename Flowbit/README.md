@@ -559,6 +559,86 @@ transaction-scoped advisory leader and processes at most
 `FlowbitWorker:TimerStartReconcileBatchSize` workflow families per pass, so
 additional replicas provide failover without duplicating the full scan.
 
+## History and audit retention
+
+Open **Manage → Retention policies** (`/retention`) to configure deployment-wide
+retention. The API uses the dynamic `Settings.RequiredRole` permission (default
+`admin`). Each category accepts **Keep forever** or a positive whole number of
+days. Previewing a draft policy neither saves it nor deletes data. Previews are
+bounded and identify lower-bound counts when the sample limit is reached.
+
+| Category | Retained data and age reference |
+| --- | --- |
+| Workflow history | Instance events and flow occurrences, aged from instance finish. |
+| Variable history | Superseded instance-variable values, aged from instance finish. |
+| Node activity | Terminal node executions, aged from instance finish. |
+| Administrative audits | Eligible standalone variable-update/version-change audits, aged from instance finish. |
+| Shared-variable history | Revisions aged from instance finish when workflow-linked, otherwise creation. |
+| Completed jobs | Terminal unleased jobs without open incidents, attempts, and orphan snapshots. |
+| Resolved incidents | Incidents aged from resolution. |
+
+The five history/audit policies initially keep data forever. The first upgraded
+Worker initializes the operational policies from
+`FlowbitWorker:CompletedJobRetentionDays` and `ResolvedIncidentRetentionDays`
+(defaults 30/90; bootstrap values must be 1–36,500 days). Subsequent configuration changes use the saved policies;
+restarting a Worker does not overwrite them. Use consistent bootstrap settings
+on all replicas. Before initialization the UI shows the operational policies as
+awaiting the Worker.
+
+`Flowbit.Worker` owns scheduled and manually requested cleanup. **Run now** queues
+or joins a durable run using saved policies and respects the same throttling as
+hourly runs. The UI server never performs cleanup. A dedicated retention pool
+allows at most two connections per process, separate from the runtime pool.
+Default Worker limits are:
+
+| `FlowbitWorker` option | Default |
+| --- | ---: |
+| `RetentionBatchSize` | 250 |
+| `RetentionBatchDelayMilliseconds` | 1000 |
+| `RetentionIdleDelayMilliseconds` | 5000 |
+| `RetentionMaxRunnableJobs` | 100 |
+| `RetentionMaxQueueLagSeconds` | 30 |
+
+`RetentionBatchSize` replaces the legacy `CleanupBatchSize` setting.
+
+Cleanup yields to a busy workflow queue, uses short transactions, skips
+contended instances, and resumes persisted progress after interruptions. Each
+category has a per-run budget of 20 batches or 30 seconds of database work,
+with a five-second statement timeout and a 500 ms lock timeout. Budget-limited
+scans retain their cutoff and finite scan boundaries with bookmarks for the next
+run while the policy is unchanged; completed scans wrap around so newly expired
+records are eventually considered. Manual
+runs do not bypass limits. Monitor workflow latency and database I/O when tuning
+these settings: a separate connection pool does not isolate PostgreSQL disk work.
+
+Some expired rows remain protected. Cleanup preserves instance/token/task state,
+current-variable source history, lifetime FlowInfo summaries, keyed retry
+results, message receipts and their history references, and all batch audit
+structures. Shared revisions preserve catalog current/value references and
+request receipts; retained variable and shared history can also pin node
+executions. Retention never nulls a reference to force deletion.
+
+`FinishedAt` records the latest terminal transition independently of ordinary
+instance updates. Any actual instance-owned history deletion atomically sets
+`HistoryPrunedAt`, after which reactivation is permanently unavailable—even if
+the policy is later disabled. Instance and shared-variable details disclose
+pruned history. No-op cleanup and job/incident cleanup do not disable reactivation.
+
+Management routes are `GET /api/retention`,
+`PUT /api/retention/policies/{category}` with `retentionDays` and
+`expectedRevision`, read-only `POST /api/retention/preview`, and
+`POST /api/retention/runs`. Policy edits use optimistic revision checks;
+coordinator/status records retain bounded current and last-run results.
+
+Apply the additive migration first, then upgrade every API and Worker replica
+before enabling the new policies. Existing terminal rows use `UpdatedAt` as a
+conservative finish-time backfill. Mixed old/new cleanup Workers are unsupported.
+The migration rejects downgrade after any history has been pruned; restoring
+the previous schema and its deleted history requires a full database backup.
+This feature permanently deletes eligible live-table records; it does not export
+archives, configure per-workflow periods, prune running-instance history, or
+remove protected batch/retry records.
+
 ## Run Locally
 
 Start PostgreSQL:
@@ -855,7 +935,9 @@ active non-multi-instance token visits, marks those rows with
 `instance_history`. A failed transition that rolls back has no committed
 execution record; a caught service/script failure is committed as a faulted host
 execution followed by its boundary execution. Execution rows are retained
-indefinitely with their owning workflow instance.
+with their owning workflow instance by default; an administrator may enable
+node-activity retention for finished instances. Pruning history permanently
+blocks reactivation of the affected instance.
 
 `instance_history` remains a heterogeneous transition and audit log used by
 legacy instance detail and claim/assignment inheritance. It is not a complete

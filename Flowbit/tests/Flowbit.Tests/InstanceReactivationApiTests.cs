@@ -18,6 +18,50 @@ public sealed class InstanceReactivationApiTests(PostgresApiFixture fixture)
         new(JsonSerializerDefaults.Web);
 
     [Fact]
+    public async Task PrunedHistoryBlocksFreshAndPreviouslyPreviewedReactivation()
+    {
+        var workflow = await CreateWorkflowAsync(CreateSimpleWorkflow());
+        var started = await StartAsync(workflow.Id);
+        using (var cancellation = await SendAsync(HttpMethod.Post, $"/api/instances/{started.Id}/cancel"))
+            Assert.Equal(HttpStatusCode.NoContent, cancellation.StatusCode);
+
+        var before = await PreviewAsync(started.Id);
+        Assert.True(before.CanReactivate);
+        DateTimeOffset prunedAt;
+        await using (var db = fixture.CreateDbContext())
+        {
+            await using var transaction = await db.Database.BeginTransactionAsync();
+            var instance = await db.WorkflowInstances.SingleAsync(row => row.Id == started.Id);
+            Assert.NotNull(instance.FinishedAt);
+            await db.InstanceHistory.Where(row => row.InstanceId == started.Id).ExecuteDeleteAsync();
+            instance.HistoryPrunedAt = instance.UpdatedAt = DateTimeOffset.UtcNow;
+            await db.SaveChangesAsync();
+            await transaction.CommitAsync();
+            prunedAt = (await db.WorkflowInstances.AsNoTracking().SingleAsync(row => row.Id == started.Id))
+                .HistoryPrunedAt!.Value;
+        }
+
+        var after = await PreviewAsync(started.Id);
+        Assert.False(after.CanReactivate);
+        Assert.Empty(after.Targets);
+        Assert.Contains(after.Blockers, issue => issue.Code == "history_pruned");
+        foreach (var preview in new[] { before, after })
+        {
+            using var response = await SendAsync(HttpMethod.Post, $"/api/instances/{started.Id}/reactivation",
+                new ReactivateInstanceRequest(2, preview.WorkflowId, preview.ExpectedUpdatedAt, "Try to reopen"));
+            Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+            Assert.Contains("retention", await response.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
+        }
+        using var detailResponse = await SendAsync(HttpMethod.Get, $"/api/instances/{started.Id}");
+        var detail = await ReadAsync<InstanceDetailDto>(detailResponse);
+        Assert.Equal(prunedAt, detail.HistoryPrunedAt);
+        Assert.NotNull(detail.FinishedAt);
+        Assert.Equal("cancelled", detail.Status);
+        await using var verify = fixture.CreateDbContext();
+        Assert.False(await verify.UserTasks.AnyAsync(row => row.InstanceId == started.Id && row.Status == "active"));
+    }
+
+    [Fact]
     public async Task CompletedInstance_ReactivationPreservesHistoryVariablesAndFlowEvidenceAndCreatesFreshWork()
     {
         var workflow = await CreateWorkflowAsync(CreateEvidenceWorkflow());
@@ -89,6 +133,8 @@ public sealed class InstanceReactivationApiTests(PostgresApiFixture fixture)
         }
 
         Assert.Equal("running", reactivated.Status, ignoreCase: true);
+        Assert.Null(reactivated.FinishedAt);
+        Assert.Null(reactivated.HistoryPrunedAt);
         Assert.Equal(2, reactivated.CurrentNodeId);
         Assert.Equal("Review retained case", reactivated.CurrentNodeName);
         Assert.Null(reactivated.Completion);

@@ -268,7 +268,8 @@ Storage follows the hybrid design:
   inheritance, not a complete node-lifecycle ledger. Rolled-back transitions
   create no committed execution; a caught service/script failure commits a
   faulted host visit followed by its boundary visit. Executions are retained
-  indefinitely with their owning instance.
+  with their owning instance unless an administrator enables node-activity
+  retention. Pruning any instance-owned history permanently blocks reactivation.
 - **Multi-instance user tasks.** A `userTask.multiInstance` configuration creates
   parallel or sequential work items while retaining one parent execution token.
   `collection` mode snapshots a declared `string[]` and directly assigns each
@@ -1032,6 +1033,25 @@ Storage follows the hybrid design:
   to `admin`). Workflow setting rows are read from PostgreSQL for each new request or
   worker scope, then snapshotted within that scope, so committed edits are visible
   across processes without a process-local expiration delay.
+
+- **History and audit retention.** `/retention` manages seven deployment-wide
+  categories through `/api/retention`, authorized by `Settings.RequiredRole`.
+  New history categories default to keep forever; the Worker initializes job
+  and incident periods from its existing configuration once. `Flowbit.Worker`
+  performs hourly and durable manually requested cleanup using the same
+  coordinator, limits, and database load protections. The UI never executes a
+  cleanup worker. Retention uses a separate two-connection pool, small batches,
+  short transactions, and skips locked instances. Workflow-owned rows age from
+  `workflow_instances.FinishedAt`, not `UpdatedAt`; global shared revisions age
+  from creation. Existing job/incident clocks and protections remain in effect.
+  Preserve current-value source history, lifetime FlowInfo summaries, permanent
+  idempotency/message receipts and their referenced rows, and all batch audit
+  structures. Shared revisions additionally preserve catalog current/value
+  revisions and request references. History deletion and `HistoryPrunedAt`
+  commit together under the instance lock; both reactivation preview and commit
+  reject pruned instances. A policy change cannot restore deleted data or
+  reactivation. Apply the migration and upgrade all API/Worker replicas before
+  enabling retention; mixed legacy cleanup workers are unsupported.
 
 Definitions are versioned: `POST /api/workflows` creates v1, `PUT
 /api/workflows/{id}` creates a new immutable version, and only a *published*

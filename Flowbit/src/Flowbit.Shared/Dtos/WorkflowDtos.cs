@@ -509,6 +509,10 @@ public sealed record InstanceDetailDto(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     FaultInfoDto? Fault = null)
 {
+    public DateTimeOffset? FinishedAt { get; init; }
+
+    public DateTimeOffset? HistoryPrunedAt { get; init; }
+
     public IReadOnlyList<ExecutionPositionDto> ExecutionPositions { get; init; } = [];
 
     public IReadOnlyList<MultiInstanceProgressDto> MultiInstances { get; init; } = [];

@@ -19,6 +19,7 @@ public sealed class SharedVariableEntity
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset? ArchivedAt { get; set; }
+    public DateTimeOffset? HistoryPrunedAt { get; set; }
 
     public SharedVariableCurrentValueEntity? CurrentValue { get; set; }
     public List<SharedVariableRevisionEntity> Revisions { get; set; } = [];

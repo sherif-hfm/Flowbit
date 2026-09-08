@@ -62,6 +62,10 @@ else
             }
             <div class="summary-item"><span>Started by</span><strong>@(instance.StartedBy ?? "—")</strong></div>
             <div class="summary-item"><span>Created</span><strong>@instance.CreatedAt.ToLocalTime().ToString("g")</strong></div>
+            @if (instance.FinishedAt is { } finishedAt)
+            {
+                <div class="summary-item"><span>Finished</span><strong>@finishedAt.ToLocalTime().ToString("g")</strong></div>
+            }
             @if (HasMultiInstances)
             {
                 <div class="summary-item"><span>Multi-instance</span><strong>@FormatMultiInstanceSummary()</strong></div>
@@ -109,7 +113,15 @@ else
             }
     </section>
 
-    @if (IsTerminal && reactivationAuthorized)
+    @if (instance.HistoryPrunedAt is { } historyPrunedAt)
+    {
+        <div class="alert alert-warning" role="status" id="instance-history-retention-notice">
+            Some history was permanently deleted by retention beginning @historyPrunedAt.ToLocalTime().ToString("g").
+            History and activity views may be incomplete. This instance cannot be reactivated.
+        </div>
+    }
+
+    @if (IsTerminal && reactivationAuthorized && instance.HistoryPrunedAt is null)
     {
         <section id="reactivation" class="panel mb-3" aria-labelledby="reactivation-heading">
             <div class="section-heading">

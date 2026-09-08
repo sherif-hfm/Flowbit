@@ -10154,7 +10154,9 @@ public sealed partial class WorkflowEngineService(
             Completion = projection.Completion,
             VersionChanges = versionChanges,
             VariableUpdates = variableUpdateAudits,
-            SharedVariables = sharedVariableMetadata
+            SharedVariables = sharedVariableMetadata,
+            FinishedAt = instance.FinishedAt,
+            HistoryPrunedAt = instance.HistoryPrunedAt
         };
     }
 

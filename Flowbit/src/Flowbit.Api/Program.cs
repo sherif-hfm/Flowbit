@@ -442,6 +442,7 @@ try
     app.MapWorkflowJobEndpoints();
     app.MapUserDelegationEndpoints();
     app.MapSettingsEndpoints();
+    app.MapRetentionEndpoints();
     app.MapSharedVariableEndpoints();
     app.MapSharedVariableClientEndpoints();
 

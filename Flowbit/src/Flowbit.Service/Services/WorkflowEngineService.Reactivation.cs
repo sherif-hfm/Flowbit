@@ -89,6 +89,11 @@ public sealed partial class WorkflowEngineService
                     "The workflow instance no longer exists.");
 
             EnsureTerminalReactivationStatus(instance.Status);
+            if (instance.HistoryPrunedAt is not null)
+            {
+                throw new WorkflowConflictException(
+                    "History has been removed by retention; this instance cannot be reactivated.");
+            }
             if (instance.WorkflowDefinitionId != request.ExpectedWorkflowId)
             {
                 throw new WorkflowConflictException(
@@ -160,7 +165,8 @@ public sealed partial class WorkflowEngineService
                 CurrentStepId = targetNode.Id,
                 FaultCode = null,
                 FaultDescription = null,
-                CurrentNodeExecutionId = null
+                CurrentNodeExecutionId = null,
+                FinishedAt = null
             };
             var targetContext = WithContext(
                 effectiveVariables,
@@ -286,6 +292,16 @@ public sealed partial class WorkflowEngineService
     {
         var globalBlockers = new List<InstanceReactivationIssueDto>();
         var targetBlockers = new List<InstanceReactivationIssueDto>();
+        if (instance.HistoryPrunedAt is not null)
+        {
+            return new ReactivationAssessment(
+                [],
+                [new InstanceReactivationIssueDto(
+                    "history_pruned",
+                    "History has been removed by retention; this instance cannot be reactivated.")],
+                [],
+                false);
+        }
         if (!IsReactivatableTerminalStatus(instance.Status))
         {
             globalBlockers.Add(new InstanceReactivationIssueDto(

@@ -332,7 +332,8 @@ public sealed class SharedVariableService(
         record.CreatedAt,
         record.UpdatedAt,
         record.ArchivedAt,
-        record.ValueRevision);
+        record.ValueRevision,
+        record.HistoryPrunedAt);
 
     private static SharedVariableRevisionDto Map(SharedVariableRevisionRecord record) => new(
         record.Revision,

@@ -124,6 +124,13 @@ else
                 <div><h2 id="shared-variable-detail-heading">@selected.Key history</h2><p>Immutable revisions, newest first.</p></div>
                 <button type="button" class="btn-close" aria-label="Close history" @onclick="CloseDetail"></button>
             </div>
+            @if (selected.HistoryPrunedAt is { } historyPrunedAt)
+            {
+                <div class="alert alert-warning" role="status">
+                    Older revisions were permanently deleted by retention beginning @historyPrunedAt.ToLocalTime().ToString("g").
+                    This history is incomplete. Current values and required request references remain protected.
+                </div>
+            }
             @if (blockers is not null)
             {
                 <div class="d-flex flex-wrap gap-2 mb-3">

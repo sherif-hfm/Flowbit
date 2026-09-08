@@ -279,6 +279,21 @@ public sealed class InstanceVariableUpdateMigrationTests(PostgresApiFixture fixt
             // This integrity test inserts through the current EF model, so its
             // isolated database must include later additive model columns.
             await MigrateAsync(connectionString, CurrentMigration);
+            await using (var compatibility = new NpgsqlConnection(connectionString))
+            {
+                await compatibility.OpenAsync();
+                // Keep the migration boundary under test fixed. These nullable
+                // lifecycle columns only let today's EF model insert fixture
+                // instances; retention behavior is tested separately.
+                await using var columns = new NpgsqlCommand(
+                    """
+                    ALTER TABLE flowbit.workflow_instances
+                        ADD COLUMN IF NOT EXISTS "FinishedAt" timestamp with time zone,
+                        ADD COLUMN IF NOT EXISTS "HistoryPrunedAt" timestamp with time zone
+                    """,
+                    compatibility);
+                await columns.ExecuteNonQueryAsync();
+            }
             var dataSourceBuilder = new NpgsqlDataSourceBuilder(connectionString);
             dataSourceBuilder.EnableDynamicJson();
             await using var dataSource = dataSourceBuilder.Build();

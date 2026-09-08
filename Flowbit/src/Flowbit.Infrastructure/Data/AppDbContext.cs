@@ -92,6 +92,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
     public DbSet<EngineSettingEntity> EngineSettings => Set<EngineSettingEntity>();
 
+    public DbSet<RetentionPolicyEntity> RetentionPolicies => Set<RetentionPolicyEntity>();
+    public DbSet<RetentionCoordinatorEntity> RetentionCoordinators => Set<RetentionCoordinatorEntity>();
+
     public DbSet<UserDelegationEntity> UserDelegations => Set<UserDelegationEntity>();
 
     public DbSet<WorkflowDelegationPolicyEntity> WorkflowDelegationPolicies =>
@@ -114,6 +117,27 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     {
         modelBuilder.HasDefaultSchema(FlowbitDatabase.Schema);
         modelBuilder.HasPostgresExtension("citext");
+
+        modelBuilder.Entity<RetentionPolicyEntity>(entity =>
+        {
+            entity.ToTable("retention_policies", table =>
+            {
+                table.HasCheckConstraint("CK_retention_policies_days", "\"RetentionDays\" IS NULL OR \"RetentionDays\" BETWEEN 1 AND 36500");
+                table.HasCheckConstraint("CK_retention_policies_revision", "\"Revision\" > 0");
+            });
+            entity.HasKey(e => e.Category);
+            entity.Property(e => e.Category).HasMaxLength(40);
+            entity.Property(e => e.UpdatedBy).HasMaxLength(300);
+        });
+        modelBuilder.Entity<RetentionCoordinatorEntity>(entity =>
+        {
+            entity.ToTable("retention_coordinator", table => table.HasCheckConstraint("CK_retention_coordinator_singleton", "\"Id\" = 1"));
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Id).ValueGeneratedNever();
+            entity.Property(e => e.CurrentRunJson).HasColumnType("jsonb");
+            entity.Property(e => e.LastRunJson).HasColumnType("jsonb");
+            entity.Property(e => e.LeaseOwner).HasMaxLength(300);
+        });
 
         modelBuilder.Entity<WorkflowDefinitionEntity>(entity =>
         {
@@ -265,6 +289,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.HasIndex(e => e.WorkflowDefinitionId);
             entity.HasIndex(e => e.InstanceId);
             entity.HasIndex(e => e.NodeExecutionId);
+            entity.HasIndex(e => new { e.InstanceId, e.Id });
+            entity.HasIndex(e => new { e.CreatedAt, e.Id }).HasFilter("\"InstanceId\" IS NULL");
             entity.HasOne(e => e.SharedVariable)
                 .WithMany(e => e.Revisions)
                 .HasForeignKey(e => e.SharedVariableId)
@@ -441,7 +467,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
         modelBuilder.Entity<WorkflowInstanceEntity>(entity =>
         {
-            entity.ToTable("workflow_instances");
+            entity.ToTable("workflow_instances", table => table.HasCheckConstraint(
+                "CK_workflow_instances_retention_terminal", "\"HistoryPrunedAt\" IS NULL OR \"Status\" IN ('completed','cancelled','faulted')"));
             entity.HasKey(e => e.Id);
             entity.Property(e => e.Status).HasMaxLength(32).IsRequired();
             entity.Property(e => e.WorkflowKey).HasMaxLength(300).IsRequired();
@@ -457,6 +484,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.HasIndex(e => new { e.CreatedAt, e.Id });
             entity.HasIndex(e => new { e.WorkflowKey, e.IdempotencyKey });
             entity.HasIndex(e => new { e.WorkflowKey, e.BusinessKey, e.Status });
+            entity.HasIndex(e => new { e.FinishedAt, e.Id })
+                .HasFilter("\"FinishedAt\" IS NOT NULL");
             entity.HasOne(e => e.WorkflowDefinition)
                 .WithMany(e => e.Instances)
                 .HasForeignKey(e => new { e.WorkflowDefinitionId, e.WorkflowKey })
@@ -622,6 +651,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.HasIndex(e => new { e.UpdatedAt, e.Id });
             entity.HasIndex(e => new { e.Status, e.UpdatedAt, e.Id });
             entity.HasIndex(e => new { e.InstanceId, e.UpdatedAt, e.Id });
+            entity.HasIndex(e => new { e.InstanceId, e.Id });
             entity.HasIndex(e => new { e.CreatedAt, e.Id });
             entity.HasIndex(e => new { e.StartedAt, e.Id });
             entity.HasIndex(e => new { e.CompletedAt, e.Id });
@@ -1019,6 +1049,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(e => e.OccurredAt).HasDefaultValueSql("now()");
             entity.HasIndex(e => new { e.InstanceId, e.SequenceFlowId, e.Id })
                 .IsDescending(false, false, true);
+            entity.HasIndex(e => new { e.InstanceId, e.Id });
             entity.HasIndex(e => e.UserTaskId)
                 .IsUnique()
                 .HasFilter("\"UserTaskId\" IS NOT NULL AND \"IsAction\"");
@@ -1068,6 +1099,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(e => e.SetAt).HasDefaultValueSql("now()");
             entity.HasIndex(e => new { e.InstanceId, e.VariableName, e.Id })
                 .IsDescending(false, false, true);
+            entity.HasIndex(e => new { e.InstanceId, e.Id });
             // Leads with VariableName to support value lookups in the variable search.
             entity.HasIndex(e => new { e.VariableName, e.InstanceId });
             entity.HasOne(e => e.Instance)
@@ -1128,6 +1160,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.HasIndex(e => e.InstanceId);
             entity.HasIndex(e => new { e.InstanceId, e.TokenId, e.ToStepId, e.Id })
                 .IsDescending(false, false, false, true);
+            entity.HasIndex(e => new { e.InstanceId, e.Id });
             entity.HasOne(e => e.Instance)
                 .WithMany(e => e.History)
                 .HasForeignKey(e => e.InstanceId)
@@ -1160,6 +1193,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(e => e.Reason).HasMaxLength(1000).IsRequired();
             entity.Property(e => e.ChangedAt).HasDefaultValueSql("now()");
             entity.HasIndex(e => new { e.InstanceId, e.ChangedAt, e.Id });
+            entity.HasIndex(e => new { e.InstanceId, e.Id });
             entity.HasIndex(e => e.SourceWorkflowDefinitionId);
             entity.HasIndex(e => e.TargetWorkflowDefinitionId);
             entity.HasIndex(e => e.BatchId);
@@ -1552,6 +1586,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 .UseCollation("C");
             entity.Property(e => e.PerformedAt).HasDefaultValueSql("now()");
             entity.HasIndex(e => new { e.InstanceId, e.PerformedAt, e.Id });
+            entity.HasIndex(e => new { e.InstanceId, e.Id });
             entity.HasIndex(e => e.WorkflowDefinitionId);
             entity.HasIndex(e => new { e.InstanceId, e.PerformedBy, e.IdempotencyKey })
                 .IsUnique()

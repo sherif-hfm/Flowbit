@@ -930,7 +930,8 @@ public sealed class SharedVariableRepository(AppDbContext dbContext) : ISharedVa
             entity.CreatedAt,
             entity.UpdatedAt,
             entity.ArchivedAt,
-            entity.ValueRevision);
+            entity.ValueRevision,
+            entity.HistoryPrunedAt);
     }
 
     private static SharedVariableRevisionRecord MapRevision(SharedVariableRevisionEntity entity) => new(

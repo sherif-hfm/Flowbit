@@ -1,0 +1,24 @@
+.retention-policy-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1rem;
+}
+
+.retention-policy {
+    display: flex;
+    flex-direction: column;
+    gap: .75rem;
+    min-width: 0;
+    margin: 0;
+}
+
+.retention-policy h2 { margin-bottom: .5rem; font-size: 1rem; }
+.retention-policy p { margin: 0; }
+.retention-policy > div:first-child { flex: 1; }
+.retention-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+.retention-preview { padding: 1rem; border: 1px solid var(--fb-border); border-radius: var(--fb-radius-sm); background: var(--fb-surface-soft); }
+.retention-message { max-width: 30rem; overflow-wrap: anywhere; }
+
+@media (max-width: 760px) {
+    .retention-policy-grid, .retention-form { grid-template-columns: minmax(0, 1fr); }
+}

@@ -9,6 +9,41 @@ namespace Flowbit.Ui.Clients;
 
 public sealed class WorkflowApiClient(HttpClient httpClient)
 {
+    public async Task<RetentionStatusDto> GetRetentionAsync(CancellationToken cancellationToken = default)
+    {
+        using var response = await httpClient.GetAsync("/api/retention", cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<RetentionStatusDto>(cancellationToken)
+            ?? throw new InvalidOperationException("The API returned an empty retention status.");
+    }
+
+    public async Task<RetentionPolicyDto> UpdateRetentionPolicyAsync(
+        string category, UpdateRetentionPolicyRequest request, CancellationToken cancellationToken = default)
+    {
+        using var response = await httpClient.PutAsJsonAsync(
+            $"/api/retention/policies/{Uri.EscapeDataString(category)}", request, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<RetentionPolicyDto>(cancellationToken)
+            ?? throw new InvalidOperationException("The API returned an empty retention policy.");
+    }
+
+    public async Task<RetentionPreviewDto> PreviewRetentionAsync(
+        PreviewRetentionRequest request, CancellationToken cancellationToken = default)
+    {
+        using var response = await httpClient.PostAsJsonAsync("/api/retention/preview", request, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<RetentionPreviewDto>(cancellationToken)
+            ?? throw new InvalidOperationException("The API returned an empty retention preview.");
+    }
+
+    public async Task<RetentionRunDto> RequestRetentionRunAsync(CancellationToken cancellationToken = default)
+    {
+        using var response = await httpClient.PostAsync("/api/retention/runs", null, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<RetentionRunDto>(cancellationToken)
+            ?? throw new InvalidOperationException("The API returned an empty retention run.");
+    }
+
     public async Task<ActorContextDto> GetActorContextAsync(CancellationToken cancellationToken = default)
     {
         var response = await httpClient.GetAsync("/api/auth/context", cancellationToken);

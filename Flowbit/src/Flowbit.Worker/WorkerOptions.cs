@@ -14,9 +14,13 @@ public sealed class WorkerOptions
     public int HeartbeatCommandTimeoutMilliseconds { get; set; } = 2000;
     public int PollMilliseconds { get; set; } = 1000;
     public int IdleBackoffMilliseconds { get; set; } = 5000;
-    public int CleanupBatchSize { get; set; } = 1000;
     public int CompletedJobRetentionDays { get; set; } = 30;
     public int ResolvedIncidentRetentionDays { get; set; } = 90;
+    public int RetentionBatchSize { get; set; } = 250;
+    public int RetentionBatchDelayMilliseconds { get; set; } = 1000;
+    public int RetentionIdleDelayMilliseconds { get; set; } = 5000;
+    public int RetentionMaxRunnableJobs { get; set; } = 100;
+    public int RetentionMaxQueueLagSeconds { get; set; } = 30;
     public int TimerStartReconcileSeconds { get; set; } = 1;
     public int TimerStartReconcileBatchSize { get; set; } = 100;
     public int ShutdownDrainSeconds { get; set; } = 30;
@@ -62,10 +66,21 @@ public sealed class WorkerOptions
             throw new InvalidOperationException($"{SectionName}:PollMilliseconds must be between 50 and 60000.");
         if (IdleBackoffMilliseconds < PollMilliseconds || IdleBackoffMilliseconds > 300_000)
             throw new InvalidOperationException($"{SectionName}:IdleBackoffMilliseconds must be between PollMilliseconds and 300000.");
-        if (CleanupBatchSize is < 1 or > 1000)
-            throw new InvalidOperationException($"{SectionName}:CleanupBatchSize must be between 1 and 1000.");
-        if (CompletedJobRetentionDays < 1 || ResolvedIncidentRetentionDays < 1)
-            throw new InvalidOperationException($"{SectionName}: retention days must be positive.");
+        if (CompletedJobRetentionDays is < 1 or > 36500)
+            throw new InvalidOperationException($"{SectionName}:CompletedJobRetentionDays must be between 1 and 36500.");
+        if (ResolvedIncidentRetentionDays is < 1 or > 36500)
+            throw new InvalidOperationException($"{SectionName}:ResolvedIncidentRetentionDays must be between 1 and 36500.");
+        if (RetentionBatchSize is < 1 or > 1000)
+            throw new InvalidOperationException($"{SectionName}:RetentionBatchSize must be between 1 and 1000.");
+        if (RetentionBatchDelayMilliseconds is < 100 or > 60_000)
+            throw new InvalidOperationException($"{SectionName}:RetentionBatchDelayMilliseconds must be between 100 and 60000.");
+        if (RetentionIdleDelayMilliseconds < RetentionBatchDelayMilliseconds
+            || RetentionIdleDelayMilliseconds > 300_000)
+            throw new InvalidOperationException($"{SectionName}:RetentionIdleDelayMilliseconds must be between RetentionBatchDelayMilliseconds and 300000.");
+        if (RetentionMaxRunnableJobs is < 1 or > 1_000_000)
+            throw new InvalidOperationException($"{SectionName}:RetentionMaxRunnableJobs must be between 1 and 1000000.");
+        if (RetentionMaxQueueLagSeconds is < 1 or > 3600)
+            throw new InvalidOperationException($"{SectionName}:RetentionMaxQueueLagSeconds must be between 1 and 3600.");
         if (TimerStartReconcileSeconds is < 1 or > 3600)
             throw new InvalidOperationException($"{SectionName}:TimerStartReconcileSeconds must be between 1 and 3600.");
         if (TimerStartReconcileBatchSize is < 1 or > 1000)
