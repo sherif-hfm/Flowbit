@@ -1,20 +1,22 @@
 # Flowbit developer documentation
 
-Flowbit is a **BPMN-aligned JSON workflow engine** with a visual editor, an HTTP API, and a PostgreSQL-backed runtime. These guides describe the current checkout: how to execute a first approval, integrate an application, and operate durable workflows.
+Flowbit is a **BPMN-aligned JSON workflow engine** with a visual editor, an HTTP API, and a PostgreSQL-backed runtime. These guides describe the current checkout: how to execute a first approval through HTTP or Flowbit.Ui, integrate an application, and operate durable workflows.
 
 ## Start here
 
 1. [Getting started](getting-started.md) — run an isolated local database and complete an approval using HTTP.
-2. [Developer guide](developer-guide.md) — understand definitions, identities, variables, authorization, concurrency, and integration patterns.
-3. [API reference](api-guide.md) — look up every API operation, request, response, and permission contract.
-4. [BPMN support](bpmn-support.md) — choose supported nodes and understand execution semantics, extensions, and limitations.
-5. [Deployment and operations](deployment.md) — configure, publish, migrate, monitor, and recover the runtime.
+2. [Flowbit.Ui guide](ui-guide.md) — import and publish definitions, complete an approval in the browser, and use management and operations screens.
+3. [Developer guide](developer-guide.md) — understand definitions, identities, variables, authorization, concurrency, and integration patterns.
+4. [API reference](api-guide.md) — look up every API operation, request, response, and permission contract.
+5. [BPMN support](bpmn-support.md) — choose supported nodes and understand execution semantics, extensions, and limitations.
+6. [Deployment and operations](deployment.md) — configure, publish, migrate, monitor, and recover the runtime.
 
 ## Choose your path
 
 | Your goal | Recommended path |
 | --- | --- |
 | Embed workflow behavior in an application | Getting started → Developer guide → API reference. Your application calls HTTP endpoints; Flowbit.Ui is optional. |
+| Use the operations UI | Getting started setup → [Flowbit.Ui guide](ui-guide.md) → Deployment for operational requirements. |
 | Model a business process | BPMN support → [example catalog](../examples/README.md) → load a JSON definition in the [editor](../flowbit-editor.html). |
 | Deploy or operate Flowbit | Deployment → API operational sections → [detailed runtime reference](../Flowbit/README.md). |
 | Contribute to the engine | Developer guide → runtime reference → [repository architecture and contributor instructions](../AGENTS.md). |

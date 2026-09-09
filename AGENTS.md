@@ -37,6 +37,56 @@ no server required.
 
 ---
 
+## Mandatory documentation maintenance
+
+Documentation is part of completing a project change. For every feature, bug
+fix, removal, or configuration change, assess its effect on documented behavior
+and update the affected documentation in the same change. Do not wait for a
+separate request to update docs, and do not declare the work complete while
+known documentation conflicts caused by the change remain.
+
+Use this ownership map to select the relevant pages; update only those affected:
+
+| Changed area | Documentation to review and update |
+| --- | --- |
+| HTTP routes, DTOs, authorization, errors, filters, pagination, or concurrency contracts | [API reference](docs/api-guide.md); [developer guide](docs/developer-guide.md) when integration behavior changes. |
+| Workflow JSON, variables, roles, messages, version selection, retries, or idempotency | [Developer guide](docs/developer-guide.md). |
+| Node types, validation/topology rules, execution semantics, extensions, or limitations | [BPMN support](docs/bpmn-support.md). |
+| Local prerequisites, startup commands, token setup, or tutorial behavior | [Getting started](docs/getting-started.md). |
+| Flowbit.Ui navigation, forms, actions, permissions, or operational screens | [Flowbit.Ui guide](docs/ui-guide.md). |
+| Configuration, authentication boundaries, migrations, upgrades, Worker operation, monitoring, or recovery | [Deployment and operations](docs/deployment.md). |
+| Sample definitions, required actors/inputs, or expected outcomes | [Example catalog](examples/README.md) and the affected example JSON. |
+| Runtime architecture, persistence, or implementation invariants | [Runtime reference](Flowbit/README.md) and the relevant sections of this file. |
+| Product capabilities or screenshots that no longer represent the product | [Root README](README.md) and affected documentation images. |
+| New, renamed, or removed guides | [Documentation home](docs/index.md) and incoming links. |
+
+Before completing the change:
+
+1. Compare affected documentation with the final implementation and relevant
+   tests. Document current behavior, including limitations and breaking changes;
+   do not describe planned functionality as implemented.
+2. Update each explanation in its owning page and cross-link related guides.
+   Preserve unrelated marketing content and screenshots; replace an image when
+   the change makes it misleading. Keep public integration examples HTTP-only,
+   and keep runnable setup/walkthrough commands aligned in PowerShell and Bash.
+3. Validate changed relative links, anchors, image references, and JSON examples.
+   When changing API contracts, compare affected operations with registrations,
+   DTOs, authorization/error handling, tests, and development OpenAPI. Exercise
+   changed runnable commands or walkthrough steps when their behavior changes.
+   Follow [real-browser verification](#mandatory-real-browser-ui-verification)
+   for UI changes and exercise changed UI walkthroughs in a real browser. Report
+   unavailable checks explicitly; do not claim they passed.
+4. In the final response, identify the documentation updated and relevant
+   validation results. If no documentation update is needed, state
+   **Documentation impact: none** with a concrete reason, such as an internal
+   refactor preserving all documented behavior. Avoid unrelated edits merely to
+   make a documentation file appear in the diff.
+
+These are contributor and agent completion requirements, not an automatic
+background updater or a CI guarantee of documentation accuracy.
+
+---
+
 ## How it works (architecture)
 
 Everything lives in `flowbit-editor.html`. The key pieces:

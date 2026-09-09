@@ -55,6 +55,8 @@ The editor produces the same definition format the runtime consumes. Diagram lay
 
 *Flowbit.Ui brings instance health, execution positions, personal work, and workflow starts into one operations workspace. Shown with sample approval, contract review, and onboarding data.*
 
+Follow the [Flowbit.Ui guide](docs/ui-guide.md) to import and publish a definition, complete an approval in the browser, and use the management and operations screens.
+
 ### Human work and approval teams
 
 User tasks support role-based access at both the task and action level, claim ownership, direct assignee expressions, required assignment, and claim or assignment inheritance. Runtime delegation lets authorized users act on another user's eligible work with audit attribution.

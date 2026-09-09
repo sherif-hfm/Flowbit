@@ -4,6 +4,8 @@
 
 Run Flowbit locally and complete a claimed approval through HTTP. This tutorial uses the existing [Roles, Claim, and Bypass](../examples/user-tasks/01-roles-claim-and-bypass.json) definition. No application client code is needed.
 
+To complete the approval in the browser, use the setup below, then follow the [Flowbit.Ui guide](ui-guide.md).
+
 ## Contents
 
 - [Prerequisites](#prerequisites)
