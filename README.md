@@ -8,7 +8,7 @@ From a two-step approval to parallel departmental reviews, quorum voting, webhoo
 
 **Visual editor · .NET 10 · PostgreSQL · Blazor Server · REST API · BPMN-aligned**
 
-[Get started](#get-started) · [Explore features](#what-you-can-build) · [Browse examples](examples/README.md) · [Architecture](#architecture) · [Runtime reference](Flowbit/README.md)
+[Developer documentation](docs/index.md) · [HTTP quickstart](docs/getting-started.md) · [Explore features](#what-you-can-build) · [Browse examples](examples/README.md) · [Architecture](#architecture) · [Runtime reference](Flowbit/README.md)
 
 ![Flowbit visual editor in dark mode showing the Parallel Purchase Review workflow with lanes, concurrent reviews, override paths, and the task inspector](docs/images/flowbit-editor.jpg)
 
@@ -127,6 +127,8 @@ Inbox and advanced search authorization, membership, counting, sorting, and pagi
 | [`Flowbit.Worker`](Flowbit/src/Flowbit.Worker) | Durable job dispatch, timers, recovery, health probes, and metrics. |
 
 ## Get started
+
+For a complete HTTP integration walkthrough in **PowerShell or Bash**, start with the [developer documentation](docs/index.md). It covers setup, API contracts, BPMN support, and deployment. The steps below introduce the editor and operations UI.
 
 ### 1. Explore the editor
 

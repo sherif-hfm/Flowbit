@@ -2,6 +2,8 @@
 
 .NET 10 workflow runtime for definitions exported by `flowbit-editor.html`.
 
+Start with the [developer documentation](../docs/index.md) for HTTP onboarding, the complete API reference, BPMN support, and deployment. This README retains the detailed runtime implementation reference.
+
 ## Projects
 
 - `src/Flowbit.Api` - ASP.NET Core Web API, endpoints and composition root.
@@ -641,48 +643,16 @@ remove protected batch/retry records.
 
 ## Run Locally
 
-Start PostgreSQL:
+Follow the canonical [getting-started guide](../docs/getting-started.md) for
+PowerShell and Bash commands, an isolated PostgreSQL container, explicit API/UI
+configuration, development token acquisition, and an executable HTTP tutorial.
+There is no Docker Compose file in this checkout. The guide also explains when
+to start the Worker and how to keep its operational listener private.
 
-```powershell
-docker compose up -d
-```
+For an existing database, use [deployment and migration guidance](../docs/deployment.md)
+and the compatibility notes below. Development API startup applies migrations;
+it does not import workflow definitions automatically.
 
-Databases created before the `flowbit` schema was introduced must be recreated
-once during development. The application intentionally does not relocate an
-existing `public."__EFMigrationsHistory"` table automatically.
-
-Run the API:
-
-```powershell
-dotnet run --project .\src\Flowbit.Api\Flowbit.Api.csproj --launch-profile http
-```
-
-Run the Blazor UI:
-
-```powershell
-dotnet run --project .\src\Flowbit.Ui\Flowbit.Ui.csproj --launch-profile http
-```
-
-Run one or more worker replicas:
-
-```powershell
-dotnet run --project .\src\Flowbit.Worker\Flowbit.Worker.csproj
-```
-
-Open:
-
-- API OpenAPI JSON: `http://localhost:5017/openapi/v1.json`
-- Blazor UI: `http://localhost:5152`
-
-The UI's **Test identity** page can mint a development JWT with a username,
-roles, and custom string claims. A custom claim is available to workflow
-expressions such as `[sys.claim.depId]` only when its name is also configured in
-the API's `WorkflowContext:AllowedClaims` list (and in the Worker configuration
-when durable work evaluates that context). Restart the affected processes after
-changing the allowlist.
-
-In development, the API applies migrations automatically. It does not import
-the root `workflow.json`; import workflow definitions through the UI or API.
 The additive `SeedDefaultSettings` migration inserts these baseline settings
 when they are missing in any environment where migrations are applied:
 

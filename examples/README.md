@@ -13,6 +13,8 @@ Tests never call the REST or message endpoints described below.
 
 ## Load and run an example
 
+New to the runtime? Follow the [HTTP getting-started guide](../docs/getting-started.md) for isolated PostgreSQL setup, authentication, import, publication, and a complete approval.
+
 1. Open `flowbit-editor.html` and choose **Load JSON**.
 2. Select a definition below, inspect it, and save it without validation errors.
 3. Publish the definition through the API or Blazor UI and start an instance.
@@ -110,7 +112,7 @@ sequences for all six definitions.
 | Workflow | Start values | Actors and actions | Expected result | Requirements |
 | --- | --- | --- | --- | --- |
 | [Exclusive priority and default](gateways/01-exclusive-priority-and-default.json) | Set `urgent` and `amount`. | Complete the task selected by the Exclusive split. | Priority 1 wins before the amount condition; otherwise the required default is used, and a separate merge rejoins the routes. | API and database; no roles, Worker, or configuration. |
-| [Parallel fork and join](gateways/02-parallel-fork-and-join.json) | No values. | Complete Finance, Legal, and Security work in any order. | Three tokens run concurrently and the Parallel join waits for all incoming branches. | API and database; no roles, Worker, or configuration. |
+| [Parallel fork and join](gateways/02-parallel-fork-and-join.json) | No values. | Actors with `Finance`, `Legal`, and `Security` complete their respective reviews in any order; a `Coordinator` then completes **Consolidate Reviews** with **Finish**. | Three tokens run concurrently and the Parallel join waits for all incoming branches before consolidation. | Authenticated API and database with the listed actor roles; no Worker or configuration. |
 | [Inclusive split and merge](gateways/03-inclusive-conditional-split-and-merge.json) | Set the Legal and Security flags. | Complete every selected review. | Every true route is created; the default is used when none match, and the merge waits only for selected reachable branches. | API and database; no roles, Worker, or configuration. |
 | [Complex two-of-three merge](gateways/04-complex-two-of-three-merge.json) | No values. | Complete any two reviewer tasks, then finalize. | `TotalIncomingCount() >= 2` activates the coordinator task; its terminate end cancels the remaining review. | API and database; no roles, Worker, or configuration. |
 | [Complex start/reset cycle](gateways/05-complex-start-reset-cycle.json) | No values. | Choose reset/next-cycle or finish actions on the phase tasks. | `IncomingCount` and `[gateway.waitingForStart]` demonstrate persisted start/reset phases and repeatable cycles. | API and database; no roles, Worker, or configuration. |

@@ -27,7 +27,7 @@ client-side using plain HTML, CSS, and vanilla JavaScript with inline SVG.
 | File | Purpose |
 | --- | --- |
 | `flowbit-editor.html` | The entire application: markup, CSS, and JS in one file. |
-| `workflow.json` | A sample/exported workflow ("Purchase Request Approval") used as example data. It matches the JSON format the editor saves and loads. |
+| [`docs/`](docs/index.md) | Developer onboarding, HTTP API contracts, BPMN support, and deployment guides. |
 | [`examples/`](examples/README.md) | Curated, categorized workflow JSON definitions with inputs, expected behavior, and runtime prerequisites in the canonical catalog. |
 | `Flowbit/` | .NET 10 Web API + Blazor Server workflow runtime using PostgreSQL. |
 | `AGENTS.md` | This document. |
@@ -60,8 +60,7 @@ Everything lives in `flowbit-editor.html`. The key pieces:
   File System Access API `showSaveFilePicker` when available, otherwise falls
   back to a download). Loading reads a JSON file and normalizes it through
   `loadFromObject()`, which detects the schema and migrates legacy documents.
-- **Seed data**: `seedSample()` builds the "Purchase Request Approval" example
-  (including an exclusive gateway).
+- **Seed data**: `seedSample()` builds the "Parallel Purchase Review" example.
 
 The editor is dependency-free at runtime. Its save validator and selected editor
 helpers are covered by the `Flowbit/tests/Flowbit.Tests` test project; visual and
@@ -161,8 +160,8 @@ Storage follows the hybrid design:
   step or claim. `execution_tokens` own execution position and its node snapshot;
   `user_tasks` are work items created when a token rests on a `userTask` and own
   roles, claim requirements, claimant, and task lifecycle timestamps. The current
-  engine preserves one active execution token per instance; a multi-instance user
-  task can own many active or pending work items beneath that parent token.
+  engine supports multiple active execution tokens per instance; a multi-instance
+  user task can own many active or pending work items beneath its parent token.
 - `workflow_instances` snapshots the stable `WorkflowKey` and private nullable
   `IdempotencyKey` for keyed starts. Permanent ownership lives in
   `workflow_idempotency_claims`, keyed by `(WorkflowKey, IdempotencyKey)` with
@@ -505,8 +504,10 @@ Storage follows the hybrid design:
   rules, then write the complete batch to instance variables (latest write wins).
   A target matching a process variable must use its type/array contract and runs
   both validations; undeclared targets are created by the mapping. No output is
-  written until every mapping succeeds. The call is synchronous inside
-  the locked transaction with a bounded `timeoutSeconds` and **no retries**. The
+  written until every mapping succeeds. A synchronous call runs inside
+  the locked transaction with a bounded `timeoutSeconds`; an `asyncBefore`
+  service task executes through durable Worker jobs, retries, and incidents,
+  with the external call between staging and finalization transactions. The
   deployment-wide `WorkflowServiceTasks.MaxTimeoutSeconds` caps authored timeouts,
   `MaxResponseBodyBytes` bounds buffered responses, and the typed client's global
   timeout is disabled so the node timeout is authoritative. Missing URL/header
@@ -795,8 +796,8 @@ Storage follows the hybrid design:
   reserve nothing. Unconfigured catches retain the legacy behavior.
   Non-empty bodies must use a JSON media type, malformed JSON returns 400, and
   `WorkflowMessageDelivery.MaxPayloadBytes` bounds the request (default 1 MiB).
-  No timeout escape hatch exists yet (a waiting instance waits indefinitely, like
-  an unclaimed `userTask`); a future timer boundary event could address that.
+  A timer boundary can attach to a message wait to model reminders or an
+  interrupting timeout; timer processing requires the Worker.
 - **Message start events.** A `messageStartEvent` is an entry point (like a
   `startEvent`) that is started by an external system via
   `POST /api/workflows/{workflowKey}/message-start` rather than by a user. It is
@@ -1290,13 +1291,10 @@ and Task Distribution can display returned variables; Task Assignments and
 Activity only filter by them. API authorization and semantic validation remain
 authoritative.
 
-To run locally from `Flowbit/`:
-
-```powershell
-docker compose up -d
-dotnet run --project .\src\Flowbit.Api\Flowbit.Api.csproj --launch-profile http
-dotnet run --project .\src\Flowbit.Ui\Flowbit.Ui.csproj --launch-profile http
-```
+For isolated local setup in PowerShell or Bash, follow the canonical
+[getting-started guide](docs/getting-started.md). It explicitly configures the
+database, API, UI development identity, and optional Worker. This checkout does
+not contain a Docker Compose file.
 
 For instance throughput tests, start the API with the `LoadTest` environment so
 Serilog uses Warning level and console/file I/O does not dominate the result:
@@ -1316,7 +1314,7 @@ The API listens on `http://localhost:5017` and the UI on
 `http://localhost:5152` by default. In development, the API applies EF
 migrations automatically. Migrations seed missing safe engine defaults and the
 documented non-secret message-example settings without overwriting existing
-values. They do not import the root `workflow.json`; import definitions through
+values. They do not import example definitions automatically; import them through
 the UI or API. `Authentication.UserIdentityClaim` and secrets are intentionally
 not seeded.
 
@@ -1324,11 +1322,12 @@ not seeded.
 
 ## Data model
 
-The workflow is a plain JSON object. See `workflow.json` for a real example.
+The workflow is a plain JSON object. See the [example catalog](examples/README.md)
+for current editor-loadable definitions.
 
 ```jsonc
 {
-  "id": 1,
+  "id": "example-purchase-approval",
   "name": "Purchase Request Approval",
   "initialEventId": 1,           // id of the default start event (nullable)
   "variables": [ /* Variable[] */ ], // process-level declarations (see Process variables)
@@ -1518,7 +1517,7 @@ Node kinds and their outgoing-flow rules:
   header, the payload is mapped into instance variables through atomic typed
   `outputMappings`, and the engine advances down the flow. No user
   action. Correlation is by instance id only (no cross-instance signal/message
-  matching). No timeout escape hatch yet.
+  matching). Timer boundaries can provide interrupting timeout or reminder paths.
 - **`intermediateConditionalCatchEvent`**: a resting conditional event; a thin
   double-ring circle with the BPMN conditional/document glyph. Carries a required
   `conditional.condition` over declared persisted instance variables and optional
@@ -1571,7 +1570,7 @@ Ids are integers; the conventional namespacing is `sourceNodeId * 100 + n`
   "variables": [ /* Variable[] */ ], // userTask flow: data captured when taken
   "condition": "amount > 1000",// userTask / exclusiveGateway flow only (nullable)
   "conditionPriority": 1,      // exclusiveGateway non-default only; lower runs first
-  "isDefault": false,          // userTask / exclusiveGateway default flow
+  "isDefault": false,          // gateway fallback or engine-only multi-instance fallback; prohibited on normal userTask flows
   "isSelectable": true         // multi-instance user action; false = engine-only
 }
 ```
@@ -2099,7 +2098,7 @@ when extending the model so new features stay close to BPMN terminology.
 | `type: "startEvent"` | None Start Event | Entry marker; thin-ring circle. Carries start `variables` (BPMN would model these as data inputs / form fields). `roles` are enforced at runtime against JWT role claims (empty = open to anyone). May enable the engine's node-level transport-idempotency and domain-business-key extensions. |
 | `type: "userTask"` | User Task | Human-performed activity; rounded rectangle with a user marker. |
 | `type: "task"` | Abstract/automatic Task | Pass-through activity completed with no user action; closest to a BPMN Task without an implementation. |
-| `type: "serviceTask"` | Service Task | Automatic REST call (SVC marker); templated request from variables, response mapped back into variables. Simplified: REST only, synchronous, no retries. |
+| `type: "serviceTask"` | Service Task | Automatic REST call (SVC marker); templated request from variables, response mapped back into variables. REST only; supports synchronous execution or durable asynchronous execution with Worker retries/incidents. |
 | `type: "scriptTask"` | Script Task | Automatic variable mutation (SCRIPT marker); either NCalc assignments or a Jint-run JavaScript body (`scriptFormat`) writes process variables during the pass-through hop. Simplified: both run in-process (Jint, sandboxed, no CLR) rather than spawning an external script engine/process. |
 | `type: "exclusiveGateway"` | Exclusive Gateway (XOR) | X-marked diamond. Split form routes by ascending condition priority, else the required default; merge form passes every arriving token without synchronization. |
 | `type: "parallelGateway"` | Parallel Gateway (AND) | Plus-marked diamond. Two or more outgoing flows fork durable tokens; two or more incoming and exactly one outgoing form an all-static-incoming join. Fork and join pairing is inferred from runtime scope ancestry rather than authored references. |
@@ -2111,14 +2110,14 @@ when extending the model so new features stay close to BPMN terminology.
 | `type: "terminateEndEvent"` | Terminate End Event | Thick-ring terminate marker. Completes the triggering token, cancels all other instance work and active gateway scopes, and completes the instance with completion kind `terminate`. |
 | `type: "errorEndEvent"` | Error End Event | Terminal throwing marker; thick-ring circle with a filled error glyph. Requires an incoming flow, has no outgoing flow, and ends the instance with `Faulted`. Its required static `errorCode` and optional description are operational fault metadata; there is no subprocess propagation, so it is normally reached through an explicitly modeled error path. |
 | `type: "errorBoundaryEvent"` | Error Boundary Event (interrupting) | Attached to a `serviceTask`/`scriptTask`; catches the host's runtime failures and routes out the boundary's single error flow. Simplified: interrupting only; catch-all (no error code match); at most one per host. |
-| `type: "intermediateMessageCatchEvent"` | Intermediate Message Catch Event | A resting node that waits for a message delivered via `POST /api/instances/{id}/message`; thin double-ring circle with an envelope glyph. Auth is the node-config client id/secret + a required custom header (with optional NCalc validation), not the user JWT. Parallel waits are selected by exact `catchEvent` external ID when instance-only addressing is ambiguous. Simplified: no cross-instance message-name/signal matching and no timeout escape hatch (a future timer boundary could address). |
+| `type: "intermediateMessageCatchEvent"` | Intermediate Message Catch Event | A resting node that waits for a message delivered via `POST /api/instances/{id}/message`; thin double-ring circle with an envelope glyph. Auth is the node-config client id/secret + a required custom header (with optional NCalc validation), not the user JWT. Parallel waits are selected by exact `catchEvent` external ID when instance-only addressing is ambiguous. No cross-instance message-name/signal matching; timer boundaries support timeout or reminder paths. |
 | `type: "intermediateConditionalCatchEvent"` | Intermediate Conditional Catch Event | A resting double-ring event with a conditional/document glyph. It observes declared persisted instance variables only; shared aliases are rejected. It evaluates on entry and dependency-changing write batches and follows one fixed unconditional flow. Flowbit adds `atomic` and PostgreSQL-backed `durableAsync` delivery policies for transactionally safe wakeup. |
 | `type: "conditionalBoundaryEvent"` | Conditional Boundary Event | Attached to a durable activity and observes declared persisted instance variables. Missing `cancelActivity` is interrupting (solid ring); `false` is non-interrupting (dashed ring) and retriggers on each false-to-true edge. Flowbit applies its `atomic`/`durableAsync` delivery policies and persistent activation/occurrence fencing. |
 | `type: "messageStartEvent"` | Message Start Event | An entry point started by an external system via `POST /api/workflows/{workflowKey}/message-start`; thin single-ring circle with an envelope glyph. Typed `message.outputMappings` declare its start variables. System-only (`IsStart` is false). The engine creates the instance and auto-advances off it (pass-through, history note `messageStart`). Simplified: instance-less credential resolution (no `sys.user`/`sys.roles`/`sys.instanceId` for credentials since there is no caller/instance yet). It shares the same optional node-level, database-claimed transport idempotency as `startEvent`. |
 | `sequenceFlow` | Sequence Flow | First-class directed edge with its own id, `sourceRef`, `targetRef`. |
 | `sequenceFlow.condition` | Condition Expression | NCalc expression on user-task and gateway flows (comparisons, boolean/arithmetic operators, functions, bare-variable truthiness). |
 | `sequenceFlow.conditionPriority` | Engine extension | Unique positive evaluation order for non-default exclusive-gateway flows; lower values run first. Legacy all-missing values derive from JSON array order. |
-| `sequenceFlow.isDefault` | Default Flow | The gateway's fallback path; on a user-task flow it means the action is always visible regardless of condition. |
+| `sequenceFlow.isDefault` | Default Flow | A gateway fallback or the required engine-only multi-instance fallback. Normal user-task flows cannot be default flows. |
 | `sequenceFlow.isSelectable` | Engine extension | On a multi-instance user-task flow, `false` makes the route engine-only: not a user action, but still eligible for aggregate completion/default routing. Defaults to `true`. |
 | `lane` | Lane (within a Pool) | Swimlane-style container; assignment is geometric, not a formal participant/pool model. |
 | `roles` | Lane / Performer (Potential Owner) | Free-text candidate roles; not a formal resource/assignment model. |
@@ -2134,9 +2133,9 @@ when extending the model so new features stay close to BPMN terminology.
   unpaired; many-in/many-out gateways are rejected. `scopedInterruptEvent` is a
   Flowbit extension rather than a BPMN Event-Based Gateway or subprocess scope.
 - **Service tasks are REST only.** A `serviceTask` invokes an HTTP/REST endpoint
-  synchronously during the pass-through hop with a bounded timeout and no
-  retries, incidents, or async job execution; other BPMN implementations
-  (connectors, expressions, message/send-receive) are out of scope.
+  with a bounded timeout, synchronously during a pass-through hop or through
+  durable asynchronous jobs with retries and incidents. Other connector
+  implementations remain out of scope. See [durable execution](docs/developer-guide.md).
 - **A bounded event subset.** Flowbit supports none/message/timer starts,
   message/timer/conditional intermediate catches, timer/conditional/error boundaries,
   and none/error/terminate ends. Conditional events observe persisted instance variables
