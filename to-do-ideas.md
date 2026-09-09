@@ -1,6 +1,6 @@
 
 - add login option UI project like user/pass or integration with identity providers, also add  role management  
-- history and audit tables retention policy
+
 
 
 - loop user task (can done with gateway - no need now)
@@ -18,6 +18,7 @@
 - /api/instances/{id} endpoint return a lot of data may need enhancement
 
 --------------------------- done ---------------------------
+- history and audit tables retention policy (done)
 - in user tasks and outflow make roles as variables (done)
 - re-run completed instances (done)
 - add Conditional events (Interrupting conditional boundary)   done
