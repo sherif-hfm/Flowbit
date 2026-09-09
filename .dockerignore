@@ -1,0 +1,19 @@
+# Only runtime source is needed by the three Dockerfiles.
+**
+!Flowbit/
+!Flowbit/src/
+!Flowbit/src/**
+
+# Never copy host build output or local credentials into an image.
+**/bin
+**/obj
+**/Logs
+**/logs
+**/.vs
+**/.env
+**/.env.*
+**/*.user
+**/*.pfx
+**/*.p12
+**/appsettings.*.local.json
+**/secrets.json

@@ -9,6 +9,7 @@ To complete the approval in the browser, use the setup below, then follow the [F
 ## Contents
 
 - [Prerequisites](#prerequisites)
+- [Run everything with Docker Compose](#run-everything-with-docker-compose)
 - [Start an isolated PostgreSQL database](#start-an-isolated-postgresql-database)
 - [Run the API](#run-the-api)
 - [Obtain a development bearer token](#obtain-a-development-bearer-token)
@@ -21,8 +22,8 @@ To complete the approval in the browser, use the setup below, then follow the [F
 
 ## Prerequisites
 
-- .NET **10 SDK** to build and run this checkout.
-- Docker with Linux containers for the disposable PostgreSQL **17** setup below, or an explicitly configured isolated PostgreSQL database.
+- Docker with Linux containers and a current Docker Compose plugin to run the complete stack, including PostgreSQL **17**.
+- .NET **10 SDK** only if running the application processes on your host instead of using Compose. The host setup can use Docker for PostgreSQL or an explicitly configured isolated PostgreSQL database.
 - Git and a modern browser for the development token page.
 - Windows PowerShell 5.1+ or PowerShell 7 on Windows; alternatively Bash, cURL, and `jq` on Linux/macOS. Install `jq` with your operating system's package manager if needed.
 - Available local ports `55439` (database), `15017` (API), `15152` (UI), and optionally `18081` (Worker probes).
@@ -32,11 +33,30 @@ Clone the repository, then run every command below from its root directory. Open
 ```bash
 git clone https://github.com/sherif-hfm/Flowbit.git
 cd Flowbit
-dotnet --version
 docker version
+docker compose version
 ```
 
 Use either shell walkthrough, once the shared setup is complete. Both create a new definition version and a new instance when rerun. The example's `requestReference` is ordinary business data, not an automatic uniqueness constraint.
+
+## Run everything with Docker Compose
+
+From the repository root, the same commands work in PowerShell and Bash:
+
+```text
+docker compose up --build -d --wait
+docker compose ps
+```
+
+The root [Compose file](../compose.yaml) builds the .NET applications and starts PostgreSQL, the API, UI, and Worker. A local .NET SDK is not required. The API applies migrations after PostgreSQL becomes healthy; the UI and Worker start after the API responds. The default URLs match this tutorial: [API Swagger](http://127.0.0.1:15017/swagger), [UI](http://127.0.0.1:15152), and [Worker readiness](http://127.0.0.1:18081/health/ready). All published ports bind to loopback, with PostgreSQL at `127.0.0.1:55439`.
+
+Defaults run without a `.env` file. Optional [.env.example](../.env.example) overrides are documented with storage, image builds, startup ordering, and shutdown in [the Docker deployment guide](deployment.md#local-docker-compose-stack). This is a development stack with a shared UI test identity and public local credentials.
+
+Once startup succeeds, skip the host database/API/UI startup commands below and continue at [Generate the token](#generate-the-token), then complete either HTTP walkthrough. Compose already runs the Worker for the later timer exercise. Keep the default API and UI ports to use the walkthrough unchanged, and run either this stack or the host setup at one time to avoid port conflicts. The standalone [editor](../flowbit-editor.html) still opens directly in your browser.
+
+## Host setup alternative
+
+The following database and application commands run the .NET hosts on your machine. Confirm `dotnet --version` reports a .NET 10 SDK before continuing. Compose users can skip to [Generate the token](#generate-the-token).
 
 ## Start an isolated PostgreSQL database
 
@@ -66,7 +86,7 @@ docker run --name flowbit-docs-local --detach \
 docker exec flowbit-docs-local pg_isready -U flowbit -d flowbit_docs
 ```
 
-Wait for `accepting connections`; repeat `pg_isready` if the server is still starting. There is no Docker Compose file in this checkout. The application processes below run on your host and connect to the mapped port.
+Wait for `accepting connections`; repeat `pg_isready` if the server is still starting. The application processes below run on your host and connect to the mapped port.
 
 ## Run the API
 
@@ -98,7 +118,7 @@ Development exposes [Swagger](http://127.0.0.1:15017/swagger) and the [OpenAPI d
 
 ## Obtain a development bearer token
 
-In a second terminal, start Flowbit.Ui with the same issuer, audience, and signing key and the explicit API address.
+For the host setup, start Flowbit.Ui in a second terminal with the same issuer, audience, and signing key and the explicit API address. Compose users already have a configured UI and can continue at [Generate the token](#generate-the-token).
 
 PowerShell:
 
@@ -119,6 +139,8 @@ export Jwt__Audience='flowbit-docs-api'
 export Jwt__Key='flowbit-docs-demo-signing-key-only-2026-09-09'
 dotnet run --no-launch-profile --project ./Flowbit/src/Flowbit.Ui/Flowbit.Ui.csproj -- --environment Development --urls http://127.0.0.1:15152
 ```
+
+### Generate the token
 
 1. Open [Test identity](http://127.0.0.1:15152/token).
 2. Enter `docs.reviewer` in **User**.
@@ -147,7 +169,7 @@ The API assigns a **definition ID** when importing JSON, an **instance ID** when
 
 ## PowerShell HTTP walkthrough
 
-Run this in a third terminal at the repository root. `Invoke-RestMethod` handles HTTP and JSON responses; `ConvertTo-Json -Depth 100` preserves nested definition configuration.
+Run this in an available terminal at the repository root. `Invoke-RestMethod` handles HTTP and JSON responses; `ConvertTo-Json -Depth 100` preserves nested definition configuration.
 
 ### 1. Authenticate and create a definition
 
@@ -302,7 +324,7 @@ For a larger integration, refresh paged inbox results, respect server capabiliti
 
 This approval uses synchronous transitions and persisted human work, so it needs only the API and PostgreSQL. Run `Flowbit.Worker` for timers, `asyncBefore`/`asyncAfter`, durable retry processing, conditional events with `deliveryMode: "durableAsync"`, administrative batches, and retention cleanup.
 
-In another terminal, use the same database connection and a private operational listener:
+Compose already starts the Worker; continue with the timer exercise below. For the host setup, use the same database connection and a private operational listener in another terminal:
 
 PowerShell:
 
@@ -329,6 +351,7 @@ For a next exercise, import [Intermediate Timer Delay](../examples/timers/02-int
 
 | Symptom | Check |
 | --- | --- |
+| Compose fails to start or a container is unhealthy | Run `docker compose ps` and `docker compose logs --tail=100 postgres api worker ui`. Confirm Docker is running, the local ports are free, and the API completed migrations. |
 | API does not start | Confirm `pg_isready`, the explicit connection string, port availability, and migration logs. |
 | `401` | Supply a nonexpired bearer token with matching issuer, audience, and signing key. Generate another through `/token` if expired. |
 | Definition administration denied | Confirm `admin` is in the token on a fresh database; role settings may differ in an existing database. |
@@ -339,7 +362,9 @@ For a next exercise, import [Intermediate Timer Delay](../examples/timers/02-int
 
 Error bodies differ by endpoint. The [API reference](api-guide.md) documents empty authentication/not-found responses, validation envelopes, and the distinct conflict contracts.
 
-Stop the API, UI, and optional Worker with **Ctrl+C** in their terminals. To retain the tutorial database, run `docker stop flowbit-docs-local`; resume it with `docker start flowbit-docs-local`. To discard **only this disposable tutorial container and its data**, run:
+For Compose, `docker compose down` stops the stack and retains its named database volume. Resume with `docker compose up --build -d --wait`. An intentional reset with `docker compose down --volumes` **permanently deletes this stack's database and workflow history**. See [Docker storage and configuration](deployment.md#local-docker-compose-stack) before changing database credentials on an existing volume.
+
+For the host setup, stop the API, UI, and optional Worker with **Ctrl+C** in their terminals. To retain the tutorial database, run `docker stop flowbit-docs-local`; resume it with `docker start flowbit-docs-local`. To discard **only this disposable tutorial container and its data**, run:
 
 ```bash
 docker rm -f -v flowbit-docs-local

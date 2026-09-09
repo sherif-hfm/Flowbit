@@ -143,44 +143,22 @@ cd Flowbit
 
 Open `flowbit-editor.html` in your browser. Choose **File → Load JSON** and select [`examples/gateways/02-parallel-fork-and-join.json`](examples/gateways/02-parallel-fork-and-join.json) to explore a Finance, Legal, and Security review. Edit a node or connection, then choose **File → Save JSON** to validate and export the definition.
 
-### 2. Start a local database
+### 2. Run the runtime with Docker
 
-For the runtime, install the **.NET 10 SDK** and have **Docker** running. These PowerShell examples run from the cloned repository root and create a dedicated PostgreSQL 17 database for local evaluation.
+With Docker running in Linux-container mode and a current Docker Compose plugin, run these commands from the cloned repository root in PowerShell or Bash:
 
-```powershell
-docker run --name flowbit-postgres --detach `
-  --publish 127.0.0.1:55432:5432 `
-  --env POSTGRES_DB=flowbit_demo `
-  --env POSTGRES_USER=flowbit `
-  --env POSTGRES_PASSWORD=flowbit-local-only `
-  --volume flowbit-postgres-data:/var/lib/postgresql/data `
-  postgres:17-alpine
-
-docker exec flowbit-postgres pg_isready -U flowbit -d flowbit_demo
+```text
+docker compose up --build -d --wait
+docker compose ps
 ```
 
-Wait for `pg_isready` to report that the database is accepting connections. On later runs, start the existing container with `docker start flowbit-postgres`. You can also use your own PostgreSQL instance and adjust the connection string below.
+The [Compose stack](compose.yaml) builds and starts the API, Blazor UI, Worker, and PostgreSQL 17. No local .NET SDK is required. It waits for PostgreSQL, lets the Development API apply migrations, and then starts the UI and Worker.
 
-### 3. Run the API and UI
+Open the [Blazor UI](http://127.0.0.1:15152). The API exposes [Swagger](http://127.0.0.1:15017/swagger) and [OpenAPI](http://127.0.0.1:15017/openapi/v1.json); PostgreSQL is available on local port `55439`. All published ports bind to loopback. Optional [.env.example](.env.example) settings customize the ports and shared development credentials; defaults work without a `.env` file.
 
-In an **API terminal**:
+The [getting-started guide](docs/getting-started.md) also provides a host .NET 10 setup in PowerShell and Bash. Use one setup at a time. For image builds, configuration, logs, data retention, and migration limits, see [Docker deployment guidance](docs/deployment.md#local-docker-compose-stack).
 
-```powershell
-$env:ConnectionStrings__Flowbit = 'Host=localhost;Port=55432;Database=flowbit_demo;Username=flowbit;Password=flowbit-local-only'
-dotnet run --project ./Flowbit/src/Flowbit.Api/Flowbit.Api.csproj --launch-profile http
-```
-
-The `http` launch profile uses the Development environment, where the API applies database migrations automatically. Wait for startup to complete before starting the Worker or importing a workflow.
-
-In a separate **UI terminal**, also at the repository root:
-
-```powershell
-dotnet run --project ./Flowbit/src/Flowbit.Ui/Flowbit.Ui.csproj --launch-profile http
-```
-
-Open the [Blazor UI](http://localhost:5152). The development API also exposes [Swagger](http://localhost:5017/swagger) and its [OpenAPI document](http://localhost:5017/openapi/v1.json).
-
-### 4. Publish and run your first workflow
+### 3. Publish and run your first workflow
 
 1. Open **Test identity** in the UI and generate an identity with the roles `admin, Finance, Legal, Security, Coordinator` so you can exercise every part of this demo.
 2. Open **Workflows**, choose **Import editor JSON**, and select the parallel review example above.
@@ -191,18 +169,13 @@ Open the [Blazor UI](http://localhost:5152). The development API also exposes [S
 
 For a more realistic team walkthrough, use separate identities for each review role. Other examples document the roles and input values they require. Workflow definitions are imported explicitly; API startup does not load a sample for you.
 
-### 5. Enable timers and durable work
+### 4. Try timers and durable work
 
-Run the Worker in a third terminal when using asynchronous activities, timers, durable conditional events, or background administrative batches:
+Compose already runs the Worker for asynchronous activities, timers, durable conditional events, and background administrative batches. Confirm [Worker readiness](http://127.0.0.1:18081/health/ready), then try the [reminder and deadline example](examples/timers/05-user-task-reminder-and-deadline.json). [Liveness](http://127.0.0.1:18081/health/live) and [metrics](http://127.0.0.1:18081/metrics) are also available.
 
-```powershell
-$env:ConnectionStrings__Flowbit = 'Host=localhost;Port=55432;Database=flowbit_demo;Username=flowbit;Password=flowbit-local-only'
-dotnet run --project ./Flowbit/src/Flowbit.Worker/Flowbit.Worker.csproj
-```
+Use `docker compose logs --tail=100 api worker ui` to inspect the services. `docker compose down` stops them while preserving the database volume; rerun the startup command to resume. An intentional reset with `docker compose down --volumes` **deletes this stack's saved workflows, instances, and history**.
 
-Confirm [Worker readiness](http://localhost:8081/health/ready), then try the [reminder and deadline example](examples/timers/05-user-task-reminder-and-deadline.json). [Liveness](http://localhost:8081/health/live) and [metrics](http://localhost:8081/metrics) are also available on the default Worker port.
-
-The credentials above and the UI's test identity generator are for local development. Keep API/UI JWT settings aligned, supply deployment secrets through trusted configuration, and configure your deployment's authentication before exposing it. API and Worker processes must share the database and any workflow context configuration their definitions require. For existing databases and deployments, follow the migration and rollout notes in the [runtime reference](Flowbit/README.md).
+The stack's credentials and the UI's shared test identity generator are for local development. For existing databases and deployments, follow the [migration, authentication, and rollout guidance](docs/deployment.md). Changing only the environment to Production is insufficient: the bundled startup health check depends on Development OpenAPI, and production migrations and user authentication need explicit configuration.
 
 ## Integrate through the API
 

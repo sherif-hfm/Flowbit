@@ -30,6 +30,8 @@ client-side using plain HTML, CSS, and vanilla JavaScript with inline SVG.
 | [`docs/`](docs/index.md) | Developer onboarding, HTTP API contracts, BPMN support, and deployment guides. |
 | [`examples/`](examples/README.md) | Curated, categorized workflow JSON definitions with inputs, expected behavior, and runtime prerequisites in the canonical catalog. |
 | `Flowbit/` | .NET 10 Web API + Blazor Server workflow runtime using PostgreSQL. |
+| `compose.yaml`, `.env.example` | Local PostgreSQL, API, UI, and Worker stack with optional environment overrides. |
+| `Flowbit/src/Flowbit.{Api,Ui,Worker}/Dockerfile` | .NET 10 application image builds; use the repository root as build context. |
 | `AGENTS.md` | This document. |
 
 To run it, open `flowbit-editor.html` directly in a modern browser. No install,
@@ -1343,8 +1345,15 @@ authoritative.
 
 For isolated local setup in PowerShell or Bash, follow the canonical
 [getting-started guide](docs/getting-started.md). It explicitly configures the
-database, API, UI development identity, and optional Worker. This checkout does
-not contain a Docker Compose file.
+database, API, UI development identity, and Worker. The root `compose.yaml`
+starts all four services with `docker compose up --build -d --wait`; no host
+.NET SDK is needed. PostgreSQL health gates API startup, and the API's
+Development-only OpenAPI check gates UI/Worker startup after migrations.
+All published ports bind to loopback; the UI retains its shared development
+identity. Application Dockerfiles use the repository root as build context.
+The guide also retains a host .NET setup alternative. See
+[Docker deployment guidance](docs/deployment.md#local-docker-compose-stack)
+for optional `.env` settings, persistent volume behavior, and deployment limits.
 
 For instance throughput tests, start the API with the `LoadTest` environment so
 Serilog uses Warning level and console/file I/O does not dominate the result:

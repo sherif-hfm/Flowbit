@@ -9,6 +9,7 @@ For a disposable development database and your first working instance, follow [G
 ## Contents
 
 - [Deployment layout](#deployment-layout)
+- [Local Docker Compose stack](#local-docker-compose-stack)
 - [Configuration](#configuration)
 - [Authentication boundaries](#authentication-boundaries)
 - [Build and publish](#build-and-publish)
@@ -31,6 +32,69 @@ For a disposable development database and your first working instance, follow [G
 Run replicas against the same authoritative database, with matching runtime configuration and compatible binaries. In-memory definition caches are rebuildable. PostgreSQL locking and durable fences coordinate mutations; extra API/Worker replicas do not replace a database availability and recovery strategy.
 
 Terminate HTTPS at a configured hosting boundary or configure Kestrel certificates. For a reverse proxy, validate forwarded scheme/host behavior in that deployment: this checkout does not provide a complete reverse-proxy configuration. The API and UI invoke HTTPS redirection. A browser frontend that calls the API directly also needs an explicit origin/CORS design; the bundled UI calls from its server.
+
+## Local Docker Compose stack
+
+The root [compose.yaml](../compose.yaml) runs PostgreSQL 17, the API, UI, and Worker together. It is a local development setup: every published port binds to `127.0.0.1`, all application hosts use `Development`, and the UI retains its shared test identity. Docker with Linux containers and a current Docker Compose plugin is sufficient; the .NET SDK runs inside the image builds.
+
+Run from the repository root. These commands work in PowerShell and Bash:
+
+```text
+docker compose version
+docker compose up --build -d --wait
+docker compose ps
+docker compose logs --tail=100 api worker ui
+```
+
+| Service | Default host address | Container address |
+| --- | --- | --- |
+| UI | [Flowbit.Ui](http://127.0.0.1:15152) and [Test identity](http://127.0.0.1:15152/token) | `http://ui:8080` |
+| API | [Swagger](http://127.0.0.1:15017/swagger) and [OpenAPI](http://127.0.0.1:15017/openapi/v1.json) | `http://api:8080` |
+| Worker | [Readiness](http://127.0.0.1:18081/health/ready), [liveness](http://127.0.0.1:18081/health/live), and [metrics](http://127.0.0.1:18081/metrics) | `http://worker:8081` |
+| PostgreSQL | `127.0.0.1:55439` | `postgres:5432` |
+
+Startup waits for PostgreSQL's `pg_isready` health check before creating the API. The API applies migrations before accepting HTTP requests; a successful `/openapi/v1.json` check then allows the UI and Worker to start. Compose uses `depends_on` with `service_healthy` for this ordering, as described in the [Docker startup-order documentation](https://docs.docker.com/compose/how-tos/startup-order/). The Worker readiness check becomes healthy after its first successful durable-queue query and remains latched; it does not continuously verify database availability. Compose allows 45 seconds for Worker shutdown, covering its default 30-second drain and host shutdown allowance.
+
+The UI calls the API through `http://api:8080`; application database connections use `postgres:5432`. Host port changes do not change these internal addresses. The API and UI receive matching JWT configuration. Both execution hosts allow the sample `depId` claim; supply any additional workflow context values consistently to API and Worker as described under [Configuration](#configuration).
+
+Defaults work without a `.env` file. To customize them, copy [.env.example](../.env.example) to `.env` and edit its values before startup. PowerShell uses `Copy-Item .env.example .env`; Bash uses `cp .env.example .env`.
+
+Use letters, digits, and underscores for the database and user names. Single-quote `.env` passwords containing `$` so Compose preserves them literally. API and Worker receive the password separately through [Npgsql's `PGPASSWORD` support](https://www.npgsql.org/doc/connection-string-parameters#environment-variables), so password quotes and semicolons do not become connection-string syntax.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `POSTGRES_DB` | `flowbit` | Initial database name. |
+| `POSTGRES_USER` | `flowbit` | Initial PostgreSQL user. |
+| `POSTGRES_PASSWORD` | `flowbit-local-only` | Public local-development database password. |
+| `POSTGRES_PORT` | `55439` | Host database port. |
+| `FLOWBIT_API_PORT` | `15017` | Host API port. |
+| `FLOWBIT_UI_PORT` | `15152` | Host UI port. |
+| `FLOWBIT_WORKER_PORT` | `18081` | Host Worker operational port. |
+| `FLOWBIT_JWT_ISSUER` | `flowbit-local` | Shared API/UI issuer. |
+| `FLOWBIT_JWT_AUDIENCE` | `flowbit-api` | Shared API/UI audience. |
+| `FLOWBIT_JWT_KEY` | `flowbit-local-development-signing-key-change-me-2026` | Public local-development signing key. |
+
+The PostgreSQL service stores data in the Compose-managed `postgres-data` named volume. Database initialization variables apply when the volume is empty; editing `.env` does not rename an existing database or rotate its user's password. Retain the matching values or update PostgreSQL deliberately. Stop the stack while retaining its database with:
+
+```text
+docker compose down
+```
+
+Run `docker compose up --build -d --wait` again to resume. For an intentional reset of this local stack, `docker compose down --volumes` **deletes its database volume and all saved workflows, instances, and history**. API/UI file logs and UI circuit state are container-local; use Compose logs while investigating failures. Workflow definitions are imported explicitly; startup does not load examples. The standalone [editor](../flowbit-editor.html) still opens directly in a browser.
+
+Each application has a Dockerfile under its project directory. All three require the repository root as build context:
+
+```text
+docker build -f Flowbit/src/Flowbit.Api/Dockerfile -t flowbit-api:local .
+docker build -f Flowbit/src/Flowbit.Ui/Dockerfile -t flowbit-ui:local .
+docker build -f Flowbit/src/Flowbit.Worker/Dockerfile -t flowbit-worker:local .
+```
+
+Build stages use the [.NET SDK image](https://github.com/dotnet/dotnet-docker/blob/main/README.sdk.md); the final images run as a non-root user on the [.NET 10 ASP.NET Core runtime image](https://github.com/dotnet/dotnet-docker/blob/main/README.aspnet.md), including the Worker because it hosts HTTP health and metrics endpoints. The runtime variants use Ubuntu Noble.
+
+The UI Dockerfile copies Razor sources before restore so the SDK includes Blazor's framework assets. Its health check requests both the token page and the Blazor client script; server-rendered HTML alone does not establish that interactive controls can start.
+
+This Compose file is not a production deployment template. Changing only `DOTNET_ENVIRONMENT` disables automatic migrations and the API's development OpenAPI health check; it also leaves the UI's shared token generator intact. For deployment, apply [reviewed migrations](#database-migrations), provide a suitable API readiness probe, configure authentication and HTTPS, and follow the upgrade procedure below. Before rebuilding against an existing local database after schema changes, stop the stack so old API/Worker processes cannot run during migrations.
 
 ## Configuration
 

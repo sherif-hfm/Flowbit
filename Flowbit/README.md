@@ -644,10 +644,19 @@ remove protected batch/retry records.
 ## Run Locally
 
 Follow the canonical [getting-started guide](../docs/getting-started.md) for
-PowerShell and Bash commands, an isolated PostgreSQL container, explicit API/UI
-configuration, development token acquisition, and an executable HTTP tutorial.
-There is no Docker Compose file in this checkout. The guide also explains when
-to start the Worker and how to keep its operational listener private.
+PowerShell and Bash commands, development token acquisition, and an executable
+HTTP tutorial. From the repository root, `docker compose up --build -d --wait`
+builds and starts PostgreSQL 17, API, UI, and Worker using [compose.yaml](../compose.yaml).
+The application Dockerfiles live in their project directories and require the
+repository root as build context. The .NET SDK is needed only inside the builds;
+the images run on the non-root .NET 10 ASP.NET Core runtime.
+
+This local stack uses Development mode, loopback host ports, matching API/UI JWT
+settings, and a persistent PostgreSQL named volume. Database health gates API
+startup; the API migrates before its OpenAPI check allows the UI and Worker to
+start. See [Docker configuration and lifecycle](../docs/deployment.md#local-docker-compose-stack)
+for ports, optional `.env` values, volume retention/reset, and deployment limits.
+The getting-started guide also retains the alternative host .NET setup.
 
 For an existing database, use [deployment and migration guidance](../docs/deployment.md)
 and the compatibility notes below. Development API startup applies migrations;
