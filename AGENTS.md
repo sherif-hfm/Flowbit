@@ -52,8 +52,8 @@ Use this ownership map to select the relevant pages; update only those affected:
 | Changed area | Documentation to review and update |
 | --- | --- |
 | HTTP routes, DTOs, authorization, errors, filters, pagination, or concurrency contracts | [API reference](docs/api-guide.md); [developer guide](docs/developer-guide.md) when integration behavior changes. |
-| Workflow JSON, variables, roles, messages, version selection, retries, or idempotency | [Developer guide](docs/developer-guide.md). |
-| Node types, validation/topology rules, execution semantics, extensions, or limitations | [BPMN support](docs/bpmn-support.md). |
+| Workflow JSON, variables, roles, messages, version selection, retries, or idempotency | [Developer guide](docs/developer-guide.md); [node and property reference](docs/node-reference.md) for authored configuration. |
+| Node types, validation/topology rules, execution semantics, extensions, or limitations | [BPMN support](docs/bpmn-support.md) and [node and property reference](docs/node-reference.md). |
 | Local prerequisites, startup commands, token setup, or tutorial behavior | [Getting started](docs/getting-started.md). |
 | Flowbit.Ui navigation, forms, actions, permissions, or operational screens | [Flowbit.Ui guide](docs/ui-guide.md). |
 | Configuration, authentication boundaries, migrations, upgrades, Worker operation, monitoring, or recovery | [Deployment and operations](docs/deployment.md). |
@@ -387,8 +387,9 @@ Storage follows the hybrid design:
   action-only; the aggregate outcome/default is traversal-only; and automatic
   routing is traversal-only. Evidence snapshots the validated actor and all roles
   at action time, and staged evidence is visible to a downstream gateway/script
-  in the same transaction. `FlowInfo` is allowed only in exclusive-gateway and
-  MI completion conditions, NCalc script assignments, and JavaScript scripts;
+  in the same transaction. `FlowInfo` is allowed in non-default Exclusive,
+  Inclusive, and Complex outgoing conditions, MI completion conditions, NCalc
+  script assignments, and JavaScript scripts; Complex activation conditions,
   user-action visibility, assignee/cardinality, and variable/output/header
   validation expressions reject it. Existing `CountFlow`/`PercentFlow` semantics
   remain current-MI-execution scoped.

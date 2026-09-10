@@ -482,9 +482,10 @@ traversal-only; and automatic routing is traversal-only. The last evidence
 snapshots the validated actor and all their roles at action time, so a directly
 following gateway can route on the role of the user who selected the flow.
 
-`FlowInfo` is allowed only in exclusive-gateway conditions, multi-instance
-completion conditions, NCalc script assignments, and JavaScript script tasks.
-It is not available in user-action visibility conditions, assignee/cardinality
+`FlowInfo` is allowed in non-default Exclusive, Inclusive, and Complex outgoing
+conditions, multi-instance completion conditions, NCalc script assignments, and
+JavaScript script tasks. It is not available in Complex activation conditions,
+user-action visibility conditions, assignee/cardinality
 expressions, or variable/output/header validation. `CountFlow` and `PercentFlow`
 are unchanged and remain scoped to the current multi-instance execution.
 

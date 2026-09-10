@@ -6,6 +6,8 @@ Flowbit is a **BPMN-aligned JSON workflow engine**. It uses familiar events, tas
 
 Use this guide to check whether an existing process can be expressed in Flowbit before choosing it as your execution engine. The [example catalog](../examples/README.md) supplies runnable definitions, actors, inputs, and prerequisites.
 
+For each node's properties, required fields, defaults, nested configuration, and JSON fragments, use the [node and property reference](node-reference.md).
+
 ## Contents
 
 - [Supported node types](#supported-node-types)
@@ -148,7 +150,7 @@ Node `job` policy selects `boundaryFirst` (default) or `retryFirst` failure hand
 
 Process declarations support scalar `string`, `number`, `boolean`, `date`, `datetime`, and `json`, with the model's supported array forms, defaults, required inputs, and validation. Start inputs and user-action inputs are explicit contracts. Shared bindings reference a deployment catalog and are accessed through its dedicated API; they are not exposed as instance-variable history. See the [developer guide](developer-guide.md) for exact value shapes.
 
-Flowbit uses NCalc rather than FEEL for routing and assignment expressions, plus sandboxed Jint JavaScript for scripts. Function availability depends on the expression context. For example, `FlowInfo` is valid in Exclusive routing, multi-instance completion, and scripts, but not action visibility, input validation, or conditional events.
+Flowbit uses NCalc rather than FEEL for routing and assignment expressions, plus sandboxed Jint JavaScript for scripts. Function availability depends on the expression context. For example, `FlowInfo` is valid in non-default Exclusive, Inclusive, and Complex outgoing conditions, multi-instance completion, and scripts, but not Complex activation conditions, action visibility, input validation, or conditional events.
 
 `FlowInfo(flowId, 'path')` and JavaScript `execution.getFlowInfo(flowId)` inspect persisted **actions** separately from **traversals**. A child MI vote is action-only; its aggregate result is traversal-only. Summaries are bounded per instance/flow, and detailed occurrences provide audit history. They contain post-feature-deployment evidence, without fabricated historical backfill. [FlowInfo reference](../Flowbit/README.md#instance-wide-flow-evidence-flowinfo).
 

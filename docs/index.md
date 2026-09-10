@@ -9,7 +9,8 @@ Flowbit is a **BPMN-aligned JSON workflow engine** with a visual editor, an HTTP
 3. [Developer guide](developer-guide.md) — understand definitions, identities, variables, authorization, concurrency, and integration patterns.
 4. [API reference](api-guide.md) — look up every API operation, request, response, and permission contract.
 5. [BPMN support](bpmn-support.md) — choose supported nodes and understand execution semantics, extensions, and limitations.
-6. [Deployment and operations](deployment.md) — configure, publish, migrate, monitor, and recover the runtime.
+6. [Node and property reference](node-reference.md) — look up every task, event, and gateway, including properties, defaults, validation rules, and JSON fragments.
+7. [Deployment and operations](deployment.md) — configure, publish, migrate, monitor, and recover the runtime.
 
 ## Choose your path
 
@@ -17,7 +18,7 @@ Flowbit is a **BPMN-aligned JSON workflow engine** with a visual editor, an HTTP
 | --- | --- |
 | Embed workflow behavior in an application | Getting started → Developer guide → API reference. Your application calls HTTP endpoints; Flowbit.Ui is optional. |
 | Use the operations UI | Getting started setup → [Flowbit.Ui guide](ui-guide.md) → Deployment for operational requirements. |
-| Model a business process | BPMN support → [example catalog](../examples/README.md) → load a JSON definition in the [editor](../flowbit-editor.html). |
+| Model a business process | BPMN support → [node and property reference](node-reference.md) → [example catalog](../examples/README.md) → load a JSON definition in the [editor](../flowbit-editor.html). |
 | Deploy or operate Flowbit | Deployment → API operational sections → [detailed runtime reference](../Flowbit/README.md). |
 | Contribute to the engine | Developer guide → runtime reference → [repository architecture and contributor instructions](../AGENTS.md). |
 
@@ -36,7 +37,7 @@ Flowbit does not import or export BPMN XML, execute arbitrary BPMN diagrams, or 
 
 ## Reference ownership
 
-The [example catalog](../examples/README.md) owns each sample's prerequisites, actors, inputs, and expected outcome. The [runtime README](../Flowbit/README.md) remains the detailed implementation reference for database behavior and individual features. These guides explain the developer and operator workflows and link to those sources for deeper details.
+The [node and property reference](node-reference.md) owns the consolidated authoring tables for nodes and their nested configuration. The [example catalog](../examples/README.md) owns each sample's prerequisites, actors, inputs, and expected outcome. The [runtime README](../Flowbit/README.md) remains the detailed implementation reference for database behavior and individual features. These guides explain the developer and operator workflows and link to those sources for deeper details.
 
 The [root README](../README.md) introduces Flowbit's features and includes editor and operations screenshots. This folder is ordinary GitHub-readable Markdown; no documentation website or Wiki setup is required.
 

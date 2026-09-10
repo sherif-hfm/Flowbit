@@ -80,6 +80,8 @@ Access scopes differ by resource. The inbox and personal task routes enforce tas
 
 ## Understand a workflow definition
 
+For a complete catalog of task, event, and gateway properties, including defaults, validation rules, and nested configuration, see the [node and property reference](node-reference.md).
+
 The [Roles, Claim, and Bypass example](../examples/user-tasks/01-roles-claim-and-bypass.json) is the canonical first integration. Its root structure has these responsibilities:
 
 | JSON field | Meaning |
@@ -410,7 +412,7 @@ Node-execution searches apply their own read policy. Latest-variable filters on 
 
 `FlowInfo(flowId, 'path')` makes instance-lifetime action/traversal summaries available to supported workflow expressions. An explicit human selection is an action; movement of an execution token is a traversal. A multi-instance child vote is action-only, while its aggregate outcome is traversal-only. Counts and last-evidence snapshots let a downstream decision inspect who selected a route, including captured roles and values.
 
-This is an authored expression facility, not a general HTTP query endpoint. It is supported in exclusive-gateway conditions, multi-instance completion conditions, and script tasks; it is rejected in action visibility, assignee/cardinality, and variable/output/header validation. `CountFlow`/`PercentFlow` remain local to the current multi-instance execution. No pre-deployment evidence is invented. See the [flow-evidence runtime reference](../Flowbit/README.md#instance-wide-flow-evidence-flowinfo) for paths, shapes, and persistence behavior.
+This is an authored expression facility, not a general HTTP query endpoint. It is supported in non-default Exclusive, Inclusive, and Complex outgoing conditions, multi-instance completion conditions, and script tasks; it is rejected in Complex activation conditions, action visibility, assignee/cardinality, and variable/output/header validation. `CountFlow`/`PercentFlow` remain local to the current multi-instance execution. No pre-deployment evidence is invented. See the [flow-evidence runtime reference](../Flowbit/README.md#instance-wide-flow-evidence-flowinfo) for paths, shapes, and persistence behavior.
 
 ## Handle errors and concurrent changes
 
