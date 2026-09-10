@@ -1,0 +1,321 @@
+@implements IDisposable
+@using System.Net
+@using System.Text
+@using System.Text.Json
+@using Flowbit.Ui.Auth
+@using Flowbit.Ui.Components.Pages
+@inject WorkflowApiClient Api
+@inject TokenState Token
+
+@if (authorized && IsCurrent(viewEpoch))
+{
+    <section id="administrative-actions" class="panel mb-3" aria-labelledby="instance-admin-heading">
+        <div class="section-heading">
+            <div><h2 id="instance-admin-heading">Administrative actions</h2><p>Act on an exact waiting task using your configured workflow administrator permission.</p></div>
+            <button class="btn btn-outline-secondary" disabled="@(loading || submitting)" @onclick="RefreshAsync">Refresh tasks</button>
+        </div>
+        <div class="alert alert-warning" role="note">
+            This override ignores task and action roles, assignment, claims, inbox visibility, and the selected action condition.
+            It creates new history and can invoke downstream services again. Completed effects are not reversed.
+        </div>
+        @if (!string.IsNullOrWhiteSpace(error)) { <div class="alert alert-danger" role="alert">@error</div> }
+        @if (completedBatchId is long batchId)
+        {
+            <div class="alert alert-success" role="status">Administrative action completed. <a href="administrative-actions?batchId=@batchId">View audit batch #@batchId</a></div>
+        }
+        @if (positions is not null)
+        {
+            @if (positions.Items.Count == 0)
+            {
+                <p class="text-muted">No active human-task positions are available.</p>
+            }
+            @foreach (var item in positions.Items)
+            {
+                <div class="admin-position" @key="(item.Position.PositionKind, item.Position.PositionId)">
+                    <h3 class="h6">@item.Position.NodeName <span class="mono-id">@PositionLabel(item.Position)</span></h3>
+                    <p class="text-muted">@item.Position.AffectedTaskCount task(s) affected · token #@item.Position.TokenId</p>
+                    <div class="admin-position-actions">
+                        @foreach (var action in item.Actions)
+                        {
+                            <button class="btn btn-outline-primary text-start" disabled="@(loading || submitting || confirming)"
+                                    @onclick="() => SelectAction(item.Position, action)">
+                                <strong>@action.Name</strong><span class="d-block">To @action.TargetNodeName · flow #@action.FlowId</span>
+                            </button>
+                        }
+                        @if (item.Actions.Count == 0) { <span class="text-muted">No selectable actions.</span> }
+                    </div>
+                </div>
+            }
+            @if (positions.TotalCount > PageSize)
+            {
+                <div class="d-flex flex-wrap align-items-center gap-2 mt-3" aria-label="Administrative task pages">
+                    <button class="btn btn-outline-secondary" disabled="@(loading || submitting || page <= 1)" @onclick="() => ChangePageAsync(-1)">Previous</button>
+                    <span>Page @(page) of @TotalPages · @positions.TotalCount position(s)</span>
+                    <button class="btn btn-outline-secondary" disabled="@(loading || submitting || page >= TotalPages)" @onclick="() => ChangePageAsync(1)">Next</button>
+                </div>
+            }
+        }
+        @if (selectedAction is { } selected && selectedPosition is { } position)
+        {
+            <div class="admin-action-inputs mt-3">
+                <h3 class="h5">@selected.Name · @position.NodeName</h3>
+                <p>@PositionLabel(position) → @selected.TargetNodeName · @position.AffectedTaskCount task(s) affected</p>
+                <fieldset disabled="@(submitting || confirming)">
+                    @if (IsMultiInstance(position))
+                    {
+                        <label class="form-label" for="instance-admin-mode">Multi-instance operation <span class="required-mark">*</span></label>
+                        <select id="instance-admin-mode" class="form-select mb-2" @bind="multiInstanceMode">
+                            <option value="">Choose an operation</option>
+                            <option value="@AdministrativeActionMultiInstanceModes.ForceParent">Force parent</option>
+                            <option value="@AdministrativeActionMultiInstanceModes.CompleteAllChildren">Complete unfinished children</option>
+                        </select>
+                        <p class="text-muted">Force parent cancels unfinished children and takes the selected action once. Complete unfinished children applies the action and inputs to every remaining child, then advances the parent once.</p>
+                    }
+                    @foreach (var variable in selected.Variables)
+                    {
+                        var fieldId = $"instance-admin-input-{selected.Variables.ToList().IndexOf(variable)}";
+                        <div class="mb-3">
+                            <label class="form-label" for="@fieldId">@variable.Name (@TypeLabel(variable)) @if (variable.Required) { <span class="required-mark">*</span> }</label>
+                            @if (variable.IsArray || variable.DataType == WorkflowVariableTypes.Json)
+                            {
+                                <textarea id="@fieldId" class="form-control font-monospace" rows="3" value="@InputValue(variable.Name)"
+                                          @oninput="args => SetInput(variable.Name, args.Value?.ToString())" placeholder="@(variable.IsArray ? "[]" : "{}")"></textarea>
+                            }
+                            else if (variable.DataType == WorkflowVariableTypes.Boolean)
+                            {
+                                <select id="@fieldId" class="form-select" value="@InputValue(variable.Name)" @onchange="args => SetInput(variable.Name, args.Value?.ToString())">
+                                    <option value="">Choose a value</option><option value="true">True</option><option value="false">False</option>
+                                </select>
+                            }
+                            else
+                            {
+                                <input id="@fieldId" class="form-control" type="@(variable.DataType == WorkflowVariableTypes.Date ? "date" : "text")"
+                                       value="@InputValue(variable.Name)" @oninput="args => SetInput(variable.Name, args.Value?.ToString())"
+                                       placeholder="@(variable.DataType == WorkflowVariableTypes.DateTime ? "2026-09-10T12:00:00Z" : null)" />
+                            }
+                            @if (!variable.Required && variable.DefaultValue is not null)
+                            {
+                                <div class="form-text">Leave blank to use the authored default.</div>
+                            }
+                        </div>
+                    }
+                    <label class="form-label" for="instance-admin-reason">Reason (optional)</label>
+                    <textarea id="instance-admin-reason" class="form-control" rows="2" @bind="reason" @bind:event="oninput"></textarea>
+                    <div class="form-text">Up to 1,000 Unicode characters. Recorded with your identity and roles.</div>
+                </fieldset>
+                @if (confirming)
+                {
+                    <div class="alert alert-warning mt-3" role="alert">
+                        Confirm <strong>@selected.Name</strong> from <strong>@position.NodeName</strong> to <strong>@selected.TargetNodeName</strong>
+                        for <strong>@position.AffectedTaskCount task(s)</strong> at @PositionLabel(position).
+                        @if (IsMultiInstance(position)) { <span>Operation: <strong>@ModeLabel</strong>.</span> }
+                        This executes immediately with the administrative override described above.
+                    </div>
+                    <button class="btn btn-danger" disabled="@submitting" @onclick="ExecuteAsync">@(submitting ? "Executing…" : "Confirm administrative action")</button>
+                    <button class="btn btn-outline-secondary ms-2" disabled="@submitting" @onclick="() => confirming = false">Edit</button>
+                }
+                else
+                {
+                    <button class="btn btn-primary mt-3" disabled="@(submitting || loading)" @onclick="ReviewAction">Review action</button>
+                    <button class="btn btn-outline-secondary mt-3 ms-2" disabled="@submitting" @onclick="ClearSelection">Cancel</button>
+                }
+            </div>
+        }
+    </section>
+}
+else if (!string.IsNullOrWhiteSpace(error) && IsCurrent(viewEpoch))
+{
+    <div class="alert alert-danger" role="alert">@error <button class="btn btn-sm btn-outline-secondary" @onclick="RefreshAsync">Retry administrative discovery</button></div>
+}
+
+@code {
+    [Parameter] public long InstanceId { get; set; }
+    [Parameter] public int RefreshVersion { get; set; }
+    [Parameter] public EventCallback OnExecuted { get; set; }
+    private const int PageSize = 25;
+    private PagedResult<InstanceAdministrativeActionPositionDto>? positions;
+    private AdministrativeActionCandidateDto? selectedPosition;
+    private AdministrativeActionSummaryDto? selectedAction;
+    private readonly Dictionary<string, string> inputs = new(StringComparer.OrdinalIgnoreCase);
+    private Dictionary<string, JsonElement>? payload;
+    private string? multiInstanceMode;
+    private string reason = string.Empty;
+    private string? error;
+    private long? completedBatchId;
+    private int page = 1;
+    private bool authorized, loading, submitting, confirming, disposed;
+    private long identityEpoch, viewEpoch, loadedInstanceId;
+    private int loadedRefreshVersion = -1;
+    private string? loadedToken;
+    private long loadSequence;
+    private int TotalPages => Math.Max(1, (int)Math.Ceiling((positions?.TotalCount ?? 0) / (double)PageSize));
+    private string ModeLabel => multiInstanceMode == AdministrativeActionMultiInstanceModes.ForceParent ? "Force parent" : "Complete unfinished children";
+
+    protected override void OnInitialized() => Token.Changed += OnIdentityChanged;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (loadedInstanceId == InstanceId && loadedRefreshVersion == RefreshVersion) return;
+        if (loadedInstanceId != InstanceId) { Interlocked.Increment(ref identityEpoch); ClearData(); page = 1; }
+        loadedInstanceId = InstanceId;
+        loadedRefreshVersion = RefreshVersion;
+        await LoadAsync();
+    }
+
+    private bool IsCurrent(long epoch) => !disposed && epoch == Interlocked.Read(ref identityEpoch)
+        && string.Equals(loadedToken, Token.Token, StringComparison.Ordinal);
+
+    private async Task LoadAsync()
+    {
+        var epoch = Interlocked.Read(ref identityEpoch);
+        var sequence = ++loadSequence;
+        loadedToken = Token.Token;
+        viewEpoch = epoch;
+        if (!Token.HasToken) { ClearData(); return; }
+        loading = true;
+        try
+        {
+            var result = await Api.GetInstanceAdministrativeActionsAsync(InstanceId, page, PageSize);
+            if (!IsCurrent(epoch) || sequence != loadSequence) return;
+            var lastPage = Math.Max(1, (int)Math.Ceiling(result.TotalCount / (double)PageSize));
+            if (page > lastPage)
+            {
+                page = lastPage;
+                if (result.TotalCount > 0)
+                {
+                    await LoadAsync();
+                    return;
+                }
+            }
+            positions = result;
+            authorized = true;
+        }
+        catch (WorkflowApiException ex) when (ex.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+        {
+            if (IsCurrent(epoch) && sequence == loadSequence)
+            {
+                Interlocked.Increment(ref identityEpoch);
+                ClearData();
+            }
+        }
+        catch (Exception ex)
+        {
+            if (IsCurrent(epoch) && sequence == loadSequence) error = ex.Message;
+        }
+        finally { if (IsCurrent(epoch) && sequence == loadSequence) loading = false; }
+    }
+
+    private async Task RefreshAsync() { ClearSelection(); error = null; await LoadAsync(); }
+    private async Task ChangePageAsync(int delta) { page = Math.Clamp(page + delta, 1, TotalPages); await RefreshAsync(); }
+
+    private void SelectAction(AdministrativeActionCandidateDto position, AdministrativeActionSummaryDto action)
+    {
+        if (submitting || !IsCurrent(viewEpoch)) return;
+        ClearSelection();
+        selectedPosition = position;
+        selectedAction = action;
+        error = null;
+        completedBatchId = null;
+    }
+
+    private void ReviewAction()
+    {
+        if (selectedAction is null || selectedPosition is null || !IsCurrent(viewEpoch)) return;
+        error = null;
+        if (IsMultiInstance(selectedPosition) && !AdministrativeActionMultiInstanceModes.IsKnown(multiInstanceMode))
+        { error = "Choose a multi-instance operation."; return; }
+        if (reason.Trim().EnumerateRunes().Count() > 1000) { error = "Reason cannot exceed 1,000 Unicode characters."; return; }
+        payload = new(StringComparer.OrdinalIgnoreCase);
+        foreach (var variable in selectedAction.Variables)
+        {
+            var raw = InputValue(variable.Name);
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                if (variable.Required) { error = $"Variable '{variable.Name}' is required."; return; }
+                continue;
+            }
+            if (!StartVariableInputParser.TryParse(variable, raw, out var value, out error)) return;
+            payload[variable.Name] = value;
+        }
+        confirming = true;
+    }
+
+    private async Task ExecuteAsync()
+    {
+        if (submitting || !confirming || selectedPosition is null || selectedAction is null || !IsCurrent(viewEpoch)) return;
+        var epoch = viewEpoch;
+        var position = selectedPosition;
+        var action = selectedAction;
+        submitting = true;
+        error = null;
+        try
+        {
+            var result = await Api.ExecuteInstanceAdministrativeActionAsync(InstanceId, new ExecuteInstanceAdministrativeActionRequest
+            {
+                ExpectedWorkflowDefinitionId = position.WorkflowDefinitionId,
+                SourceNodeId = position.NodeId,
+                PositionKind = position.PositionKind,
+                PositionId = position.PositionId,
+                FlowId = action.FlowId,
+                ExpectedTokenId = position.TokenId,
+                ExpectedTokenActivationId = position.TokenActivationId,
+                ExpectedPositionUpdatedAt = position.PositionUpdatedAt,
+                ExpectedAffectedTaskCount = position.AffectedTaskCount,
+                MultiInstanceMode = IsMultiInstance(position) ? multiInstanceMode : null,
+                Reason = string.IsNullOrWhiteSpace(reason) ? null : reason.Trim(),
+                Variables = payload
+            });
+            if (!IsCurrent(epoch)) return;
+            ClearSelection();
+            completedBatchId = result.AdministrativeActionBatchId;
+            await OnExecuted.InvokeAsync();
+            if (IsCurrent(epoch)) await LoadAsync();
+        }
+        catch (WorkflowApiException ex) when (ex.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+        {
+            if (IsCurrent(epoch)) { Interlocked.Increment(ref identityEpoch); ++loadSequence; ClearData(); }
+        }
+        catch (WorkflowApiException ex) when (ex.StatusCode is HttpStatusCode.Conflict or HttpStatusCode.NotFound)
+        {
+            if (!IsCurrent(epoch)) return;
+            ClearSelection();
+            error = "This position changed. Tasks have been refreshed; select and review an action again.";
+            await OnExecuted.InvokeAsync();
+            if (IsCurrent(epoch)) await LoadAsync();
+        }
+        catch (Exception ex)
+        {
+            if (IsCurrent(epoch)) { confirming = false; error = ex.Message; }
+        }
+        finally { if (IsCurrent(epoch)) submitting = false; }
+    }
+
+    private void ClearSelection()
+    {
+        selectedPosition = null; selectedAction = null; multiInstanceMode = null;
+        inputs.Clear(); payload = null; reason = string.Empty; confirming = false;
+    }
+    private void ClearData()
+    {
+        ClearSelection(); positions = null; authorized = false; completedBatchId = null;
+        error = null; loading = false; submitting = false;
+    }
+    private void OnIdentityChanged()
+    {
+        Interlocked.Increment(ref identityEpoch);
+        _ = InvokeAsync(async () =>
+        {
+            if (disposed) return;
+            ClearData(); page = 1;
+            StateHasChanged();
+            await LoadAsync();
+            StateHasChanged();
+        });
+    }
+    private string InputValue(string name) => inputs.GetValueOrDefault(name, string.Empty);
+    private void SetInput(string name, string? value) => inputs[name] = value ?? string.Empty;
+    private static string TypeLabel(VariableModel variable) => variable.DataType + (variable.IsArray ? "[]" : string.Empty);
+    private static bool IsMultiInstance(AdministrativeActionCandidateDto position) => position.PositionKind == AdministrativeActionPositionKinds.MultiInstanceExecution;
+    private static string PositionLabel(AdministrativeActionCandidateDto position) => $"{(IsMultiInstance(position) ? "Multi-instance execution" : "Task")} #{position.PositionId}";
+    public void Dispose() { disposed = true; Interlocked.Increment(ref identityEpoch); Token.Changed -= OnIdentityChanged; }
+}

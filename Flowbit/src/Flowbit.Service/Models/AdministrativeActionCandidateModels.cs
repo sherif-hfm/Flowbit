@@ -9,7 +9,7 @@ public sealed record AdministrativeActionPositionKey(
 public sealed record AdministrativeActionCandidateQuery
 {
     public required long WorkflowDefinitionId { get; init; }
-    public required int SourceNodeId { get; init; }
+    public int? SourceNodeId { get; init; }
     public string? PositionKind { get; init; }
     public long? PositionId { get; init; }
     public long? InstanceId { get; init; }

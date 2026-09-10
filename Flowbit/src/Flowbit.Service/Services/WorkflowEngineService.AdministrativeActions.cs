@@ -46,7 +46,7 @@ public sealed partial class WorkflowEngineService
             CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
-        EnsureAuthenticatedAdministrativeOperator(actor);
+        await WorkflowAdministratorPolicy.RequireAsync(actor, engineSettings, cancellationToken);
         await LoadSettingsAsync(cancellationToken);
 
         var issues = new List<AdministrativeActionIssueDto>();
@@ -86,14 +86,31 @@ public sealed partial class WorkflowEngineService
             issues);
     }
 
-    public async Task<AdministrativeActionResultDto?>
+    public Task<AdministrativeActionResultDto?>
         ExecuteAdministrativeBatchActionAsync(
             AdministrativeActionRequest request,
             ActorContext actor,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken) =>
+        ExecuteAdministrativeActionCoreAsync(request, actor, cancellationToken, joinAmbientTransaction: false);
+
+    Task<AdministrativeActionResultDto?> IAdministrativeActionExecutor.ExecuteInTransactionAsync(
+        AdministrativeActionRequest request,
+        ActorContext actor,
+        CancellationToken cancellationToken) =>
+        ExecuteAdministrativeActionCoreAsync(request, actor, cancellationToken, joinAmbientTransaction: true);
+
+    private async Task<AdministrativeActionResultDto?> ExecuteAdministrativeActionCoreAsync(
+        AdministrativeActionRequest request,
+        ActorContext actor,
+        CancellationToken cancellationToken,
+        bool joinAmbientTransaction)
     {
         ArgumentNullException.ThrowIfNull(request);
-        EnsureAuthenticatedAdministrativeOperator(actor);
+        await WorkflowAdministratorPolicy.RequireAsync(actor, engineSettings, cancellationToken);
+        if (joinAmbientTransaction && request.ActionKind != AdministrativeActionKinds.DirectFlow)
+        {
+            throw new WorkflowDomainException("Immediate instance actions support direct flows only.");
+        }
         var validationIssues = new List<AdministrativeActionIssueDto>();
         if (!TryValidateAdministrativeRequest(request, validationIssues))
         {
@@ -120,7 +137,8 @@ public sealed partial class WorkflowEngineService
                 request.Variables,
                 taskId,
                 cancellationToken,
-                administrativeBatch: new AdministrativeBatchFlowContext(request));
+                administrativeBatch: new AdministrativeBatchFlowContext(request),
+                joinAmbientTransaction: joinAmbientTransaction);
             return detail is null
                 ? null
                 : new AdministrativeActionResultDto(
@@ -137,7 +155,8 @@ public sealed partial class WorkflowEngineService
                 await ExecuteAdministrativeMultiInstanceFlowAsync(
                     request,
                     actor,
-                    cancellationToken),
+                    cancellationToken,
+                    joinAmbientTransaction),
             AdministrativeActionKinds.TimerBoundary =>
                 await ExecuteAdministrativeTimerBoundaryAsync(
                     request,
@@ -152,10 +171,13 @@ public sealed partial class WorkflowEngineService
         ExecuteAdministrativeMultiInstanceFlowAsync(
             AdministrativeActionRequest request,
             ActorContext actor,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            bool joinAmbientTransaction)
     {
         await LoadSettingsAsync(cancellationToken);
-        await using var transaction = await unitOfWork.BeginTransactionAsync(cancellationToken);
+        await using var ownedTransaction = joinAmbientTransaction
+            ? null
+            : await unitOfWork.BeginTransactionAsync(cancellationToken);
         var state = await LoadAdministrativePositionAsync(
             request,
             forUpdate: true,
@@ -279,7 +301,10 @@ public sealed partial class WorkflowEngineService
             state.AffectedTaskCount,
             cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
-        await transaction.CommitAsync(cancellationToken);
+        if (ownedTransaction is not null)
+        {
+            await ownedTransaction.CommitAsync(cancellationToken);
+        }
 
         var detail = await BuildDetailAsync(advanced.Id, cancellationToken)
             ?? throw new WorkflowConflictException(
@@ -1001,17 +1026,6 @@ public sealed partial class WorkflowEngineService
         || request.ExpectedTimerOccurrence is not null
         || request.ExpectedTimerStatus is not null
         || request.ExpectedTimerSubscriptionUpdatedAt is not null;
-
-    private static void EnsureAuthenticatedAdministrativeOperator(
-        ActorContext actor)
-    {
-        ArgumentNullException.ThrowIfNull(actor);
-        if (string.IsNullOrWhiteSpace(actor.User))
-        {
-            throw new WorkflowUnauthorizedException(
-                "An authenticated administrative batch operator is required.");
-        }
-    }
 
     private static string? NormalizeOptionalReason(string? reason) =>
         string.IsNullOrWhiteSpace(reason) ? null : reason.Trim();

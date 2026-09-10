@@ -18,45 +18,54 @@ public static class AdministrativeActionEndpoints
                 ListWorkflowCatalog)
             .WithTags("Administrative Actions")
             .RequireAuthorization()
+            .RequireWorkflowAdministrator()
             .WithSummary("List exact workflow versions containing administrative batch source nodes")
             .Produces<IReadOnlyList<WorkflowSummaryDto>>()
-            .Produces(StatusCodes.Status401Unauthorized);
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status403Forbidden);
 
         app.MapGet(
                 "/api/workflows/{workflowId:long}/administrative-actions/nodes",
                 ListSourceNodes)
             .WithTags("Administrative Actions")
             .RequireAuthorization()
+            .RequireWorkflowAdministrator()
             .WithSummary("List ordinary and multi-instance user-task source nodes in an exact workflow version")
             .Produces<IReadOnlyList<AdministrativeActionSourceNodeDto>>()
             .Produces(StatusCodes.Status400BadRequest)
-            .Produces(StatusCodes.Status401Unauthorized);
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status403Forbidden);
 
         app.MapGet(
                 "/api/workflows/{workflowId:long}/nodes/{sourceNodeId:int}/administrative-actions",
                 ListWorkflowActions)
             .WithTags("Administrative Actions")
             .RequireAuthorization()
+            .RequireWorkflowAdministrator()
             .WithSummary("List direct flows and attached timer-boundary actions without normal task authorization filtering")
             .Produces<IReadOnlyList<AdministrativeActionSummaryDto>>()
             .Produces(StatusCodes.Status400BadRequest)
-            .Produces(StatusCodes.Status401Unauthorized);
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status403Forbidden);
 
         app.MapPost(
                 "/api/administrative-actions/candidates/search",
                 SearchCandidates)
             .WithTags("Administrative Actions")
             .RequireAuthorization()
+            .RequireWorkflowAdministrator()
             .Accepts<AdministrativeActionCandidateSearchRequest>("application/json")
             .WithMetadata(new RequestSizeLimitAttribute(MaxBatchRequestBodyBytes))
             .WithSummary("Search active ordinary-task and multi-instance execution positions at an exact node")
             .Produces<PagedResult<AdministrativeActionCandidateDto>>()
             .Produces(StatusCodes.Status400BadRequest)
-            .Produces(StatusCodes.Status401Unauthorized);
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status403Forbidden);
 
         var batches = app.MapGroup("/api/administrative-action-batches")
             .WithTags("Administrative Actions")
-            .RequireAuthorization();
+            .RequireAuthorization()
+            .RequireWorkflowAdministrator();
         batches.MapPost(string.Empty, CreateBatch)
             .Accepts<CreateAdministrativeActionBatchRequest>("application/json")
             .WithMetadata(new RequestSizeLimitAttribute(MaxBatchRequestBodyBytes))
@@ -64,25 +73,30 @@ public static class AdministrativeActionEndpoints
             .Produces<AdministrativeActionBatchDetailDto>(StatusCodes.Status202Accepted)
             .Produces(StatusCodes.Status400BadRequest)
             .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status403Forbidden)
             .Produces(StatusCodes.Status409Conflict);
         batches.MapGet(string.Empty, ListBatches)
             .Produces<PagedResult<AdministrativeActionBatchSummaryDto>>()
             .Produces(StatusCodes.Status400BadRequest)
-            .Produces(StatusCodes.Status401Unauthorized);
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status403Forbidden);
         batches.MapGet("/{batchId:long}", GetBatch)
             .Produces<AdministrativeActionBatchDetailDto>()
             .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status403Forbidden)
             .Produces(StatusCodes.Status404NotFound);
         batches.MapGet("/{batchId:long}/items", ListBatchItems)
             .Produces<PagedResult<AdministrativeActionBatchItemDto>>()
             .Produces(StatusCodes.Status400BadRequest)
             .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status403Forbidden)
             .Produces(StatusCodes.Status404NotFound);
         batches.MapPost("/{batchId:long}/confirm", ConfirmBatch)
             .WithSummary("Idempotently confirm the displayed eligible set and queue independent execution")
             .Produces<AdministrativeActionBatchDetailDto>()
             .Produces(StatusCodes.Status400BadRequest)
             .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status403Forbidden)
             .Produces(StatusCodes.Status404NotFound)
             .Produces(StatusCodes.Status409Conflict);
         batches.MapPost("/{batchId:long}/cancel", CancelBatch)
@@ -90,6 +104,7 @@ public static class AdministrativeActionEndpoints
             .Produces<AdministrativeActionBatchDetailDto>()
             .Produces(StatusCodes.Status400BadRequest)
             .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status403Forbidden)
             .Produces(StatusCodes.Status404NotFound)
             .Produces(StatusCodes.Status409Conflict);
         return app;

@@ -26,7 +26,13 @@ public static class ServiceCollectionExtensions
             provider.GetRequiredService<WorkflowEngineService>());
         services.AddScoped<IConditionalEventRuntimeCoordinator>(provider =>
             provider.GetRequiredService<WorkflowEngineService>());
-        services.AddScoped<IAdministrativeActionBatchService, AdministrativeActionBatchService>();
+        services.AddScoped<AdministrativeActionBatchService>();
+        services.AddScoped<IAdministrativeActionBatchService>(provider =>
+            provider.GetRequiredService<AdministrativeActionBatchService>());
+        services.AddScoped<IInstanceAdministrativeActionService>(provider =>
+            provider.GetRequiredService<AdministrativeActionBatchService>());
+        services.AddScoped<IAdministrativeActionExecutor>(provider =>
+            provider.GetRequiredService<WorkflowEngineService>());
         services.AddScoped<IAdministrativeActionBatchJobProcessor, AdministrativeActionBatchJobProcessor>();
         services.AddScoped<IInstanceVersionChangeBatchService, InstanceVersionChangeBatchService>();
         services.AddScoped<IInstanceVersionChangeBatchJobProcessor, InstanceVersionChangeBatchJobProcessor>();

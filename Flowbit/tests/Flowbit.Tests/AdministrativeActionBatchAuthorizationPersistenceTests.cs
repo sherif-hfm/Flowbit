@@ -43,8 +43,8 @@ public sealed class AdministrativeActionBatchAuthorizationPersistenceTests(
             newestId = newest.Id;
             oldestId = oldest.Id;
 
-            // Audit visibility is authentication-only and does not depend on
-            // publication state or the role snapshot of the selected action.
+            // The service requires workflow-administrator permission. The repository
+            // does not filter by publication or the selected action's authored roles.
             definition.IsPublished = false;
             await setup.SaveChangesAsync();
         }

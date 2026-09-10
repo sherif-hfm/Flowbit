@@ -2,11 +2,12 @@
 
 This directory is the canonical catalog of editor-loadable, runtime-valid
 Flowbit workflow definitions. Each JSON file uses the current editor save
-format, an `example-*` workflow id, integer node and sequence-flow ids, and no
-legacy properties. The examples are intentionally focused: combine their
+format, stable workflow ids, integer node and sequence-flow ids, and no
+legacy properties. Most ids use `example-*`; the administrative-action sample
+retains its authored `admin-action` id. The examples are intentionally focused: combine their
 patterns when building a production workflow.
 
-The catalog contains 41 workflows. Automated tests recursively discover every
+The catalog contains 42 workflows. Automated tests recursively discover every
 JSON file, deserialize it, validate it with the runtime's strict JavaScript
 parser, load and render it in the editor, and verify that this page links it.
 Tests never call the REST or message endpoints described below.
@@ -38,6 +39,12 @@ values. Adjust them before production use.
 | [Shared-variable user action](basics/07-shared-variable-user-action.json) | Create active catalog key `examples.approval.amount` as a non-nullable scalar number. | A `SharedStateOperator` completes **Update Shared Approval Amount** with the new amount. | An explicit user action updates a `readWrite` shared binding without using shared state as a conditional-event wake signal. | Authenticated API, database, and the documented catalog prerequisite; no Worker. |
 | [Interrupting conditional boundary](basics/08-interrupting-conditional-boundary.json) | `riskScore` defaults to zero. | Update `riskScore` to at least 80 while **Review Risk** is active, or complete the review normally. | The default interrupting boundary cancels the original task and opens **Escalated Review**. | API and database; no Worker or configuration. |
 | [Recurring non-interrupting conditional boundary](basics/09-recurring-non-interrupting-conditional-boundary.json) | `alertRaised` defaults to false and `alertsHandled` to zero. | Alternate `alertRaised` from false to true while **Monitor Case** remains active; run the Worker after each true edge. | Every false-to-true edge creates an independent durable alert branch, while true-to-true writes are suppressed and the host stays active. | API, database, and `Flowbit.Worker`; no configuration. |
+| [Administrative actions across protected approvals](basics/10-admin-action.json) | No values or special start role. | Ordinary approval requires `User` at `approval1` and `Manager` at `approval2`; ordinary `back`/`cancel` additionally require the flow's `admin` role. A caller holding `Workflow.RequiredRole` (default `admin`) can use instance-detail administrative actions independently of those task roles. | Administrative `approval` advances to the next approval/end; `back` returns to `approval1`; both authored `cancel` flows reach the normal end event. Overrides retain a completed audit batch and leave normal inbox permissions intact. | API and database; optional Flowbit.Ui instance detail. No Worker for immediate actions in this definition; batch execution requires a Worker. |
+
+See [instance administrative actions](../docs/ui-guide.md#use-instance-administrative-actions)
+and the [direct HTTP contract](../docs/api-guide.md#instance-administrative-actions).
+An `admin` role on a sequence flow does not itself satisfy the source task's role;
+the explicit administrative endpoints use their separate configured permission.
 
 ## User tasks
 

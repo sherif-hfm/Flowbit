@@ -29,12 +29,12 @@
   <ItemGroup>
     <None Include="..\..\..\flowbit-editor.html" Link="Fixtures\flowbit-editor.html" CopyToOutputDirectory="PreserveNewest" />
     <None Include="Fixtures\inbox-visibility-conformance.json" CopyToOutputDirectory="PreserveNewest" />
-    <None Include="..\..\..\workflow-message-start.json" Link="Fixtures\workflow-message-start.json" CopyToOutputDirectory="PreserveNewest" />
-    <None Include="..\..\..\parallel-gateway-simple.json" Link="Fixtures\parallel-gateway-simple.json" CopyToOutputDirectory="PreserveNewest" />
-    <None Include="..\..\..\parallel-gateway-complex.json" Link="Fixtures\parallel-gateway-complex.json" CopyToOutputDirectory="PreserveNewest" />
-    <None Include="..\..\..\votes-users-list.json" Link="Fixtures\votes-users-list.json" CopyToOutputDirectory="PreserveNewest" />
-    <None Include="..\..\..\votes-sequence-users-list.json" Link="Fixtures\votes-sequence-users-list.json" CopyToOutputDirectory="PreserveNewest" />
-    <None Include="..\..\..\votes-cardinality-approve-reject.json" Link="Fixtures\votes-cardinality-approve-reject.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="Fixtures\workflow-message-start.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="Fixtures\parallel-gateway-simple.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="Fixtures\parallel-gateway-complex.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="Fixtures\votes-users-list.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="Fixtures\votes-sequence-users-list.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="Fixtures\votes-cardinality-approve-reject.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\..\examples\**\*.json" Link="Fixtures\examples\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\..\examples\README.md" Link="Fixtures\examples\README.md" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>

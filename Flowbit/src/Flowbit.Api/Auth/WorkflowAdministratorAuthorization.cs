@@ -1,4 +1,5 @@
 using Flowbit.Service.Abstractions;
+using Flowbit.Service.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection;
@@ -8,13 +9,10 @@ namespace Flowbit.Api.Auth;
 
 /// <summary>
 /// Applies the dynamic workflow-administrator role policy shared by workflow
-/// definition management and running-instance version changes.
+/// definition management, running-instance management, and administrative actions.
 /// </summary>
 public static class WorkflowAdministratorAuthorization
 {
-    private const string RequiredRoleSettingKey = "Workflow.RequiredRole";
-    private const string DefaultRequiredRole = "admin";
-
     public static RouteHandlerBuilder RequireWorkflowAdministrator(
         this RouteHandlerBuilder endpoint)
     {
@@ -44,31 +42,15 @@ public static class WorkflowAdministratorAuthorization
         var actor = actorResolver.Resolve(httpContext.User);
         var settings = httpContext.RequestServices.GetRequiredService<IEngineSettingsService>();
         var setting = await settings.GetByKeyAsync(
-            RequiredRoleSettingKey,
+            WorkflowAdministratorPolicy.RequiredRoleSettingKey,
             httpContext.RequestAborted);
-        var requiredRolesText = !string.IsNullOrWhiteSpace(setting?.Value)
-            ? setting.Value
-            : DefaultRequiredRole;
-        var requiredRoles = requiredRolesText.Split(
-            ',',
-            StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        if (requiredRoles.Length == 0)
-        {
-            requiredRoles = [DefaultRequiredRole];
-            requiredRolesText = DefaultRequiredRole;
-        }
-
-        var userRoles = actor.Roles
-            .Where(role => !string.IsNullOrWhiteSpace(role))
-            .Select(role => role.Trim())
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        if (!requiredRoles.Any(userRoles.Contains))
+        if (!WorkflowAdministratorPolicy.IsAuthorized(actor.Roles, setting?.Value))
         {
             Log.Warning(
                 "User '{User}' with roles [{Roles}] is forbidden from workflow administration. Required role(s): '{RequiredRole}'",
                 actor.User ?? "anonymous",
-                string.Join(", ", userRoles),
-                requiredRolesText);
+                string.Join(", ", actor.Roles),
+                string.Join(", ", WorkflowAdministratorPolicy.RequiredRoles(setting?.Value)));
             return Results.Forbid();
         }
 

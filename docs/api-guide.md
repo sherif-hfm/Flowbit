@@ -19,6 +19,7 @@ All JSON property names below are the wire names. Database identifiers are integ
 - [Task distribution](#task-distribution)
 - [Node execution activity](#node-execution-activity)
 - [Jobs and incidents](#jobs-and-incidents)
+- [Instance administrative actions](#instance-administrative-actions)
 - [Administrative action batches](#administrative-action-batches)
 - [Version-change batches](#version-change-batches)
 - [Variable-update batches](#variable-update-batches)
@@ -40,7 +41,7 @@ The API currently validates bearer JWTs with the deployment's symmetric `Jwt:Key
 | Permission name in this reference | Actual authorization |
 | --- | --- |
 | Bearer | A valid bearer JWT. Additional actor/task checks are described at the endpoint. |
-| Workflow administrator | Bearer plus any role in the comma-separated engine setting `Workflow.RequiredRole`; missing/blank defaults to `admin`. |
+| Workflow administrator | Bearer plus any role in the comma-separated engine setting `Workflow.RequiredRole`, matched case-insensitively; missing/blank defaults to `admin`. A custom value replaces the default. Administrative-action routes also require a nonblank actor. |
 | Settings administrator | Bearer plus `Settings.RequiredRole`, default `admin`. |
 | Job operator | Bearer plus `WorkflowJobs.RequiredRole`, default `admin`. |
 | Delegation administrator | Bearer plus `Delegation.AdminRoles`, default `admin`, and a nonblank actor identity. |
@@ -56,7 +57,7 @@ The API currently validates bearer JWTs with the deployment's symmetric `Jwt:Key
 
 Shared-variable routes reject combining bearer and client credentials. A write scope permits only `PUT /api/shared-variables/{key}/value`; catalog reads require the read scope. Contract creation, metadata/lifecycle changes, history, blockers, and client management require the JWT administrator.
 
-**Integration boundary:** this checkout does not apply a universal tenant/owner filter to every bearer endpoint. Instance detail is a deployment-level read after authentication; instance lists/search separately enforce the workflow-version visibility rule above. Administrative-action catalog/candidate/batch APIs require a nonblank authenticated actor and deliberately bypass ordinary task authorization without an additional administrator-role gate. Expose those surfaces according to your application's access model. Actor-scoped inbox and personal task routes enforce their own visibility rules; filtering an API request is not an authorization mechanism.
+**Integration boundary:** this checkout does not apply a universal tenant/owner filter to every bearer endpoint. Instance detail is a deployment-level read after authentication; instance lists/search separately enforce the workflow-version visibility rule above. Every administrative-action catalog, candidate, batch, and direct instance endpoint requires a nonblank authenticated actor and workflow-administrator permission. Those explicit overrides bypass ordinary task authorization; having the administrator role alone does not bypass personal task APIs or inbox filtering. Actor-scoped inbox and personal task routes retain their own visibility rules; filtering an API request is not an authorization mechanism.
 
 ## Errors and concurrency
 
@@ -2899,9 +2900,113 @@ Content-Type: application/json
 }
 ```
 
+## Instance administrative actions
+
+Use these routes to discover active human-task positions for one instance and immediately execute a selectable authored action. **Access:** workflow administrator with a nonblank actor. Authentication and the current `Workflow.RequiredRole` permission are checked for discovery and execution. Ordinary inbox, task-addressed, legacy instance-action, and multi-instance interrupt routes keep their existing permissions; a request cannot enable an override by supplying an administrator flag or audit identifiers.
+
+Direct overrides ignore task/action roles, assignment, claims, inbox visibility, and the selected flow's condition. They preserve declared required/type/array/input validation, downstream routing, and runtime limits. Default and engine-only flows cannot be selected. Parallel positions are addressed separately; an authored continuation may still cancel a broader scope. Timer-boundary overrides use [administrative batches](#administrative-action-batches).
+
+For multi-instance parents, `forceParent` cancels unfinished children without recording votes, then traverses the selected flow once. `completeAllChildren` completes every unfinished active/pending child with the same selected flow and inputs, records their administrative results, suppresses aggregate routing until all are closed, then traverses that selected flow once. Both modes preserve previously completed children. The current affected-task limit is `WorkflowBatchActions.MaxAffectedTasks`, capped at 10,000.
+
+### GET /api/instances/{id}/administrative-actions
+
+List the instance's active ordinary tasks and multi-instance parents independently of personal inbox eligibility. A multi-instance parent appears once; its affected-task count includes unfinished active and pending children. The database applies the instance filter, count, ordering, and paging. Positions with no selectable direct flow have an empty `actions` array. A known instance with no active positions returns an empty page. Pages beyond the result set return empty `items` and the exact `totalCount`, including page values up to the `int32` maximum.
+
+**Access:** workflow administrator with nonblank actor.
+
+| Parameter | Location | Type | Required | Meaning / default |
+| --- | --- | --- | --- | --- |
+| `id` | path | integer (int64) | Yes | Exact workflow-instance ID. |
+| `page` | query | integer (int32) | No | Defaults to 1; values below 1 become 1. |
+| `pageSize` | query | integer (int32) | No | Defaults to 50; clamped to 1–200. |
+
+**Body:** none.
+
+**Success:** `200` [PagedResultOfInstanceAdministrativeActionPositionDto](#schema-pagedresultofinstanceadministrativeactionpositiondto). Each item combines the exact position, its concurrency values, and action definitions including typed input fields. Current variable values are not included by this endpoint. Ordering is position update time descending, position kind, then position ID descending.
+
+**Errors:** `400` invalid instance identifier; `401` unauthenticated or blank actor; `403` workflow-administrator role missing; `404` instance missing. See [error envelopes](#errors-and-concurrency).
+
+```http
+GET /api/instances/101/administrative-actions?page=1&pageSize=50 HTTP/1.1
+Host: localhost:5017
+Authorization: Bearer TOKEN
+```
+
+Response excerpt for the [admin-action example](../examples/basics/10-admin-action.json); use the complete linked schemas and values from your actual response:
+
+```json
+{
+  "items": [{
+    "position": {
+      "positionKind": "userTask", "positionId": 301, "instanceId": 101,
+      "tokenId": 201, "tokenActivationId": "e8a84055-97a8-47eb-b67b-8c8f9580c10d",
+      "workflowDefinitionId": 11, "nodeId": 2, "nodeName": "approval1",
+      "positionUpdatedAt": "2026-09-10T10:00:00Z", "affectedTaskCount": 1
+    },
+    "actions": [
+      { "flowId": 102, "name": "approval", "targetNodeId": 3, "targetNodeName": "approval2", "variables": [] },
+      { "flowId": 106, "name": "cancel", "targetNodeId": 4, "targetNodeName": "end", "variables": [] }
+    ]
+  }],
+  "page": 1, "pageSize": 50, "totalCount": 1
+}
+```
+
+### POST /api/instances/{id}/administrative-actions
+
+Execute one exact displayed position/action immediately. The server locks the instance and runtime state before creating an audit batch/item, rechecks the exact workflow, token activation, position timestamp, and affected count, and commits execution plus a completed one-item audit atomically. A failed transaction leaves neither a workflow change nor a partial audit. No administrative preparation/execution jobs are created; authored asynchronous steps still require the Worker normally.
+
+**Access:** workflow administrator with nonblank actor; permission is checked again on submission.
+
+| Parameter | Location | Type | Required | Meaning / default |
+| --- | --- | --- | --- | --- |
+| `id` | path | integer (int64) | Yes | Instance that owns the selected position and token. |
+
+**JSON body:** [ExecuteInstanceAdministrativeActionRequest](#schema-executeinstanceadministrativeactionrequest), limited to 1 MiB. Copy all concurrency values from discovery. `sourceNodeId` is the position's `nodeId`; `flowId` comes from its `actions`. An ordinary task uses `positionKind: "userTask"`; a multi-instance parent uses `"multiInstanceExecution"` and requires an explicit mode. Actor identity, roles, batch/item IDs, and timer identity are server-owned.
+
+**Success:** `200` [AdministrativeActionResultDto](#schema-administrativeactionresultdto), containing refreshed instance detail, the selected position, affected-task count, and the completed audit batch ID. Open that audit through the role-protected [batch detail route](#get-apiadministrative-action-batchesbatchid).
+
+**Errors:** `400` missing/invalid inputs or mode, unsupported/default flow, over-limit selection, or downstream domain failure; `401` unauthenticated or blank actor; `403` current workflow-administrator role missing; `404` missing instance/position/token or cross-instance position/token; `409` stale workflow version, active position, activation, timestamp, or affected count; `413` oversized request; `415` unsupported media type. Refresh after a conflict and require a new selection. Concurrent duplicate submissions advance the position once; there is no direct-action idempotency key or automatic replay.
+
+```http
+POST /api/instances/101/administrative-actions HTTP/1.1
+Host: localhost:5017
+Authorization: Bearer TOKEN
+Content-Type: application/json
+
+{
+  "expectedWorkflowDefinitionId": 11,
+  "sourceNodeId": 2,
+  "positionKind": "userTask",
+  "positionId": 301,
+  "flowId": 102,
+  "expectedTokenId": 201,
+  "expectedTokenActivationId": "e8a84055-97a8-47eb-b67b-8c8f9580c10d",
+  "expectedPositionUpdatedAt": "2026-09-10T10:00:00Z",
+  "expectedAffectedTaskCount": 1,
+  "multiInstanceMode": null,
+  "reason": "Approved operational correction",
+  "variables": {}
+}
+```
+
+Response excerpt:
+
+```json
+{
+  "instance": { "id": 101, "status": "running" },
+  "positionKind": "userTask",
+  "positionId": 301,
+  "affectedTaskCount": 1,
+  "administrativeActionBatchId": 401
+}
+```
+
 ## Administrative action batches
 
-**Current authorization:** all these routes require a valid bearer token and a nonblank actor identity; there is no additional administrator-role gate in this checkout. Catalog/candidate discovery and execution deliberately bypass normal task role, claim, assignment, and inbox-visibility checks. Administrative selections remain typed flow-input operations and are audited. No public endpoint executes a single position directly.
+**Authorization:** every route in this family requires workflow-administrator permission and a nonblank authenticated actor, including catalogs, candidate search, batch/item reads, creation, confirmation, cancellation, and retries of completed commands. `Workflow.RequiredRole` is a comma-separated, case-insensitive role list; missing/blank defaults to `admin`, and a custom value replaces that default. Catalog/candidate discovery and execution deliberately bypass normal task role, claim, assignment, and inbox-visibility checks. Administrative selections remain typed flow-input operations and are audited. For immediate execution of one position, use [instance administrative actions](#instance-administrative-actions).
+
+The Worker rechecks the current setting for each preparation item against the stored preparer's roles, and for each execution item against the stored confirmer's roles. Unauthorized preparation becomes `ineligible`; unauthorized execution becomes `skipped` with `errorCode: "authentication_changed"`. Stored roles are snapshots, not a live identity-provider lookup. Role-setting changes affect subsequent checks, not an already authorized executing transaction, committed successes, or committed `asyncAfter` continuations. This is a breaking access change for previously authenticated non-admin batch clients; see [upgrade rules](deployment.md#upgrade-and-compatibility-rules).
 
 Discover an exact workflow version, source user-task node, and action. `actionKind` is `directFlow` or `timerBoundary`; position references use `userTask` or `multiInstanceExecution`. `multiInstanceMode` is `forceParent` or `completeAllChildren` where applicable. `selection.mode` is `explicit` with `positions`, or `allMatching` with a candidate-search snapshot and optional exclusions. Supply an appropriate `boundaryNodeId` for a timer action. Freeze the population with POST, poll until `ready`, inspect items/issues, and confirm using the exact eligible-item count, affected-task count, and batch timestamp. Confirmation queues independent transactions; later staleness can skip an item. Cancellation stops unstarted work and cannot reverse successes.
 
@@ -2913,14 +3018,14 @@ Requests are limited to 1 MiB for candidate search and creation. A batch is boun
 
 List exact workflow versions containing administrative batch source nodes.
 
-**Access:** Bearer with nonblank actor; no additional administrator-role gate. See [authentication](#http-conventions-and-authentication).
+**Access:** Workflow administrator with nonblank actor. See [authentication](#http-conventions-and-authentication).
 
 **Parameters:** none.
 
 **Body:** none.
 
 **Success:** `200` array of [WorkflowSummaryDto](#schema-workflowsummarydto).
-**Errors:** `401` Unauthorized. See [error envelopes](#errors-and-concurrency) and the family rules above.
+**Errors:** `401` Unauthorized; `403` Forbidden. See [error envelopes](#errors-and-concurrency) and the family rules above.
 
 ```http
 GET /api/administrative-actions/workflows HTTP/1.1
@@ -2941,7 +3046,7 @@ Content-Type: application/json
 
 List ordinary and multi-instance user-task source nodes in an exact workflow version.
 
-**Access:** Bearer with nonblank actor; no additional administrator-role gate. See [authentication](#http-conventions-and-authentication).
+**Access:** Workflow administrator with nonblank actor. See [authentication](#http-conventions-and-authentication).
 
 | Parameter | Location | Type | Required | Meaning / default |
 | --- | --- | --- | --- | --- |
@@ -2950,7 +3055,7 @@ List ordinary and multi-instance user-task source nodes in an exact workflow ver
 **Body:** none.
 
 **Success:** `200` array of [AdministrativeActionSourceNodeDto](#schema-administrativeactionsourcenodedto).
-**Errors:** `400` Bad Request; `401` Unauthorized. See [error envelopes](#errors-and-concurrency) and the family rules above.
+**Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden. See [error envelopes](#errors-and-concurrency) and the family rules above.
 
 ```http
 GET /api/workflows/11/administrative-actions/nodes HTTP/1.1
@@ -2971,7 +3076,7 @@ Content-Type: application/json
 
 List direct flows and attached timer-boundary actions without normal task authorization filtering.
 
-**Access:** Bearer with nonblank actor; no additional administrator-role gate. See [authentication](#http-conventions-and-authentication).
+**Access:** Workflow administrator with nonblank actor. See [authentication](#http-conventions-and-authentication).
 
 | Parameter | Location | Type | Required | Meaning / default |
 | --- | --- | --- | --- | --- |
@@ -2981,7 +3086,7 @@ List direct flows and attached timer-boundary actions without normal task author
 **Body:** none.
 
 **Success:** `200` array of [AdministrativeActionSummaryDto](#schema-administrativeactionsummarydto).
-**Errors:** `400` Bad Request; `401` Unauthorized. See [error envelopes](#errors-and-concurrency) and the family rules above.
+**Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden. See [error envelopes](#errors-and-concurrency) and the family rules above.
 
 ```http
 GET /api/workflows/11/nodes/2/administrative-actions HTTP/1.1
@@ -3000,16 +3105,16 @@ Content-Type: application/json
 
 ### POST /api/administrative-actions/candidates/search
 
-Search active ordinary-task and multi-instance execution positions at an exact node.
+Search active ordinary-task and multi-instance execution positions at an exact node. Pages beyond the result set return empty `items` and the exact `totalCount`, including page values up to the `int32` maximum.
 
-**Access:** Bearer with nonblank actor; no additional administrator-role gate. See [authentication](#http-conventions-and-authentication).
+**Access:** Workflow administrator with nonblank actor. See [authentication](#http-conventions-and-authentication).
 
 **Parameters:** none.
 
 **JSON body:** [AdministrativeActionCandidateSearchRequest](#schema-administrativeactioncandidatesearchrequest). Required JSON object; field presence, nullability and defaults are in the linked schema.
 
 **Success:** `200` [PagedResultOfAdministrativeActionCandidateDto](#schema-pagedresultofadministrativeactioncandidatedto).
-**Errors:** `400` Bad Request; `401` Unauthorized. See [error envelopes](#errors-and-concurrency) and the family rules above.
+**Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden. See [error envelopes](#errors-and-concurrency) and the family rules above.
 
 ```http
 POST /api/administrative-actions/candidates/search HTTP/1.1
@@ -3045,14 +3150,14 @@ Content-Type: application/json
 
 Freeze a selection and asynchronously prepare an administrative-action batch.
 
-**Access:** Bearer with nonblank actor; no additional administrator-role gate. See [authentication](#http-conventions-and-authentication).
+**Access:** Workflow administrator with nonblank actor. See [authentication](#http-conventions-and-authentication).
 
 **Parameters:** none.
 
 **JSON body:** [CreateAdministrativeActionBatchRequest](#schema-createadministrativeactionbatchrequest). Required JSON object; field presence, nullability and defaults are in the linked schema.
 
 **Success:** `202` [AdministrativeActionBatchDetailDto](#schema-administrativeactionbatchdetaildto).
-**Errors:** `400` Bad Request; `401` Unauthorized; `409` Conflict. See [error envelopes](#errors-and-concurrency) and the family rules above.
+**Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden; `409` Conflict. See [error envelopes](#errors-and-concurrency) and the family rules above.
 
 ```http
 POST /api/administrative-action-batches HTTP/1.1
@@ -3108,7 +3213,7 @@ Content-Type: application/json
 
 List durable batches using workflow, actor, status and paging selectors.
 
-**Access:** Bearer with nonblank actor; no additional administrator-role gate. See [authentication](#http-conventions-and-authentication).
+**Access:** Workflow administrator with nonblank actor. See [authentication](#http-conventions-and-authentication).
 
 | Parameter | Location | Type | Required | Meaning / default |
 | --- | --- | --- | --- | --- |
@@ -3122,7 +3227,7 @@ List durable batches using workflow, actor, status and paging selectors.
 **Body:** none.
 
 **Success:** `200` [PagedResultOfAdministrativeActionBatchSummaryDto](#schema-pagedresultofadministrativeactionbatchsummarydto).
-**Errors:** `400` Bad Request; `401` Unauthorized. See [error envelopes](#errors-and-concurrency) and the family rules above.
+**Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden. See [error envelopes](#errors-and-concurrency) and the family rules above.
 
 ```http
 GET /api/administrative-action-batches?pageSize=50 HTTP/1.1
@@ -3148,7 +3253,7 @@ Content-Type: application/json
 
 Read the frozen request, progress, actor snapshots and durable job references.
 
-**Access:** Bearer with nonblank actor; no additional administrator-role gate. See [authentication](#http-conventions-and-authentication).
+**Access:** Workflow administrator with nonblank actor. See [authentication](#http-conventions-and-authentication).
 
 | Parameter | Location | Type | Required | Meaning / default |
 | --- | --- | --- | --- | --- |
@@ -3157,7 +3262,7 @@ Read the frozen request, progress, actor snapshots and durable job references.
 **Body:** none.
 
 **Success:** `200` [AdministrativeActionBatchDetailDto](#schema-administrativeactionbatchdetaildto).
-**Errors:** `401` Unauthorized; `404` Not Found. See [error envelopes](#errors-and-concurrency) and the family rules above.
+**Errors:** `401` Unauthorized; `403` Forbidden; `404` Not Found. See [error envelopes](#errors-and-concurrency) and the family rules above.
 
 ```http
 GET /api/administrative-action-batches/401 HTTP/1.1
@@ -3186,7 +3291,7 @@ Content-Type: application/json
 
 List retained per-item preparation and execution results.
 
-**Access:** Bearer with nonblank actor; no additional administrator-role gate. See [authentication](#http-conventions-and-authentication).
+**Access:** Workflow administrator with nonblank actor. See [authentication](#http-conventions-and-authentication).
 
 | Parameter | Location | Type | Required | Meaning / default |
 | --- | --- | --- | --- | --- |
@@ -3198,7 +3303,7 @@ List retained per-item preparation and execution results.
 **Body:** none.
 
 **Success:** `200` [PagedResultOfAdministrativeActionBatchItemDto](#schema-pagedresultofadministrativeactionbatchitemdto).
-**Errors:** `400` Bad Request; `401` Unauthorized; `404` Not Found. See [error envelopes](#errors-and-concurrency) and the family rules above.
+**Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden; `404` Not Found. See [error envelopes](#errors-and-concurrency) and the family rules above.
 
 ```http
 GET /api/administrative-action-batches/401/items?pageSize=50 HTTP/1.1
@@ -3224,7 +3329,7 @@ Content-Type: application/json
 
 Idempotently confirm the displayed eligible set and queue independent execution.
 
-**Access:** Bearer with nonblank actor; no additional administrator-role gate. See [authentication](#http-conventions-and-authentication).
+**Access:** Workflow administrator with nonblank actor. See [authentication](#http-conventions-and-authentication).
 
 | Parameter | Location | Type | Required | Meaning / default |
 | --- | --- | --- | --- | --- |
@@ -3233,7 +3338,7 @@ Idempotently confirm the displayed eligible set and queue independent execution.
 **JSON body:** [ConfirmAdministrativeActionBatchRequest](#schema-confirmadministrativeactionbatchrequest). Required JSON object; field presence, nullability and defaults are in the linked schema.
 
 **Success:** `200` [AdministrativeActionBatchDetailDto](#schema-administrativeactionbatchdetaildto).
-**Errors:** `400` Bad Request; `401` Unauthorized; `404` Not Found; `409` Conflict. See [error envelopes](#errors-and-concurrency) and the family rules above.
+**Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden; `404` Not Found; `409` Conflict. See [error envelopes](#errors-and-concurrency) and the family rules above.
 
 ```http
 POST /api/administrative-action-batches/401/confirm HTTP/1.1
@@ -3269,7 +3374,7 @@ Content-Type: application/json
 
 Stop unstarted items without reversing successful administrative actions.
 
-**Access:** Bearer with nonblank actor; no additional administrator-role gate. See [authentication](#http-conventions-and-authentication).
+**Access:** Workflow administrator with nonblank actor. See [authentication](#http-conventions-and-authentication).
 
 | Parameter | Location | Type | Required | Meaning / default |
 | --- | --- | --- | --- | --- |
@@ -3278,7 +3383,7 @@ Stop unstarted items without reversing successful administrative actions.
 **JSON body:** [CancelAdministrativeActionBatchRequest](#schema-canceladministrativeactionbatchrequest). Required JSON object; field presence, nullability and defaults are in the linked schema.
 
 **Success:** `200` [AdministrativeActionBatchDetailDto](#schema-administrativeactionbatchdetaildto).
-**Errors:** `400` Bad Request; `401` Unauthorized; `404` Not Found; `409` Conflict. See [error envelopes](#errors-and-concurrency) and the family rules above.
+**Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden; `404` Not Found; `409` Conflict. See [error envelopes](#errors-and-concurrency) and the family rules above.
 
 ```http
 POST /api/administrative-action-batches/401/cancel HTTP/1.1
@@ -5833,6 +5938,74 @@ mode explicit uses positions; mode allMatching uses allMatching plus optional ex
 | `name` | string | Yes | — |
 | `externalId` | null or string | Yes | — |
 | `isMultiInstance` | boolean | Yes | — |
+
+</details>
+
+<a id="schema-administrativeactionresultdto"></a>
+
+<details>
+<summary>AdministrativeActionResultDto</summary>
+
+Result of one committed direct instance administrative action. The audit batch contains one succeeded item and is already completed.
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `instance` | [InstanceDetailDto](#schema-instancedetaildto) | Yes | Actual instance state after routing, including execution positions and history. |
+| `positionKind` | string | Yes | `userTask` or `multiInstanceExecution`. |
+| `positionId` | integer (int64) | Yes | Selected ordinary-task or parent-execution ID. |
+| `affectedTaskCount` | integer (int32) | Yes | One ordinary task or the number of unfinished children affected. |
+| `administrativeActionBatchId` | integer (int64) | Yes | Server-created audit reference; use batch detail/items for audit. |
+
+</details>
+
+<a id="schema-executeinstanceadministrativeactionrequest"></a>
+
+<details>
+<summary>ExecuteInstanceAdministrativeActionRequest</summary>
+
+All identifiers are positive. The server derives actor identity, roles, and audit IDs. The maximum request body is 1 MiB.
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `expectedWorkflowDefinitionId` | integer (int64) | Yes | Exact immutable definition ID from `position.workflowDefinitionId`. |
+| `sourceNodeId` | integer (int32) | Yes | Authored source ID from `position.nodeId`. |
+| `positionKind` | string | Yes | Exactly `userTask` or `multiInstanceExecution`. |
+| `positionId` | integer (int64) | Yes | Exact displayed ordinary-task or parent-execution ID. |
+| `flowId` | integer (int32) | Yes | Selectable non-default direct flow from the position's `actions`. |
+| `expectedTokenId` | integer (int64) | Yes | `position.tokenId`. |
+| `expectedTokenActivationId` | string (uuid) | Yes | Nonempty `position.tokenActivationId`. |
+| `expectedPositionUpdatedAt` | string (date-time) | Yes | Exact `position.positionUpdatedAt`, not a client timestamp. |
+| `expectedAffectedTaskCount` | integer (int32) | Yes | Positive displayed count; must still match under the runtime locks. |
+| `multiInstanceMode` | null or string | No | Required for a multi-instance parent: `forceParent` or `completeAllChildren`; absent/null for an ordinary task. |
+| `reason` | null or string | No | Optional trimmed reason, at most 1,000 Unicode scalar values. |
+| `variables` | null or object | No | Declared action input name/value map. Required fields must be supplied; unknown/duplicate names and invalid typed values are rejected. |
+
+</details>
+
+<a id="schema-instanceadministrativeactionpositiondto"></a>
+
+<details>
+<summary>InstanceAdministrativeActionPositionDto</summary>
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `position` | [AdministrativeActionCandidateDto](#schema-administrativeactioncandidatedto) | Yes | Active ordinary task or one multi-instance parent, including immutable-version and concurrency values. |
+| `actions` | array of [AdministrativeActionSummaryDto](#schema-administrativeactionsummarydto) | Yes | Selectable, non-default direct flows; may be empty. Timer actions are excluded. |
+
+</details>
+
+<a id="schema-pagedresultofinstanceadministrativeactionpositiondto"></a>
+
+<details>
+<summary>PagedResultOfInstanceAdministrativeActionPositionDto</summary>
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `items` | array of [InstanceAdministrativeActionPositionDto](#schema-instanceadministrativeactionpositiondto) | Yes | Positions on this page. |
+| `page` | integer (int32) | Yes | One-based numbered page. |
+| `pageSize` | integer (int32) | Yes | Maximum positions per page, 1–200. |
+| `totalCount` | integer (int64) | Yes | Database count of all matching active positions. |
+| `nextCursor` | null or string | No | Omitted for this numbered-page endpoint. |
 
 </details>
 

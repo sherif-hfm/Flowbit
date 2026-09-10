@@ -2,6 +2,7 @@
 @implements IAsyncDisposable
 @using System.Text
 @using System.Text.Json
+@using System.Net
 @using Flowbit.Ui.Auth
 @inject WorkflowApiClient Api
 @inject TokenState Token
@@ -40,9 +41,16 @@
 {
     <section class="panel">
         <EmptyState Icon="token" Title="An authenticated identity is required"
-                    Description="Set a test identity before searching or executing administrative actions. This feature does not require a workflow role.">
+                    Description="Set an identity with the configured workflow administrator permission before searching or executing administrative actions.">
             <a class="btn btn-primary" href="token">Set test identity</a>
         </EmptyState>
+    </section>
+}
+else if (authorizationDenied)
+{
+    <section class="panel">
+        <EmptyState Icon="token" Title="Workflow administrator permission is required"
+                    Description="The API denied access for this identity. Use an identity with the configured workflow administrator role." />
     </section>
 }
 else
@@ -109,7 +117,7 @@ else
             else if (SelectedWorkflowVersion is { } selectedVersion && SelectedSourceNode is { } selectedNode)
             {
                 <div class="alert alert-info mt-3 mb-0">
-                    Searching definition <strong>#@selectedVersion.Id, v@selectedVersion.Version</strong> at
+                    Searching definition <strong>#@selectedVersion.Id, v@(selectedVersion.Version)</strong> at
                     <strong>@selectedNode.Name (#@selectedNode.NodeId)</strong>.
                     @(selectedNode.IsMultiInstance
                         ? "Each result represents one parent multi-instance execution."
@@ -216,7 +224,7 @@ else
                                     <span class="data-subtitle"><a href="@($"instances/{candidate.InstanceId}")">Instance #@candidate.InstanceId</a> · @(candidate.BusinessKey ?? candidate.WorkflowKey)</span>
                                     <span class="data-subtitle">Token #@candidate.TokenId · activation @ShortActivation(candidate.TokenActivationId)</span>
                                 </td>
-                                <td>@candidate.NodeName<span class="data-subtitle">Node #@candidate.NodeId@(string.IsNullOrWhiteSpace(candidate.NodeExternalId) ? string.Empty : $" · {candidate.NodeExternalId}") · v@candidate.WorkflowVersion</span></td>
+                                <td>@candidate.NodeName<span class="data-subtitle">Node #@candidate.NodeId@(string.IsNullOrWhiteSpace(candidate.NodeExternalId) ? string.Empty : $" · {candidate.NodeExternalId}") · v@(candidate.WorkflowVersion)</span></td>
                                 <td>
                                     <strong>@candidate.AffectedTaskCount.ToString("N0") task(s)</strong>
                                     <span class="data-subtitle">@(candidate.UserTaskId is long taskId ? $"Task #{taskId}" : $"MI execution #{candidate.MultiInstanceExecutionId}")</span>
@@ -372,7 +380,7 @@ else
                 <div>
                     <span class="page-eyebrow">Batch #@summary.Id</span>
                     <h2 id="admin-current-batch-heading">Preparation and execution</h2>
-                    <p>@summary.WorkflowKey · v@summary.WorkflowVersion · definition #@summary.WorkflowDefinitionId · @ActionKindLabel(summary.ActionKind) flow #@summary.FlowId</p>
+                    <p>@summary.WorkflowKey · v@(summary.WorkflowVersion) · definition #@summary.WorkflowDefinitionId · @ActionKindLabel(summary.ActionKind) flow #@summary.FlowId</p>
                 </div>
                 <div class="d-flex flex-wrap gap-2 align-items-center">
                     <StatusBadge Status="@summary.Status" />
@@ -511,7 +519,7 @@ else
                         {
                             <tr class="@(currentBatch?.Summary.Id == item.Id ? "table-active" : null)">
                                 <td>#@item.Id</td>
-                                <td>@item.WorkflowKey · v@item.WorkflowVersion<span class="data-subtitle">Definition #@item.WorkflowDefinitionId · @item.SourceNodeName (#@item.SourceNodeId)</span></td>
+                                <td>@item.WorkflowKey · v@(item.WorkflowVersion)<span class="data-subtitle">Definition #@item.WorkflowDefinitionId · @item.SourceNodeName (#@item.SourceNodeId)</span></td>
                                 <td>@ActionKindLabel(item.ActionKind) · flow #@item.FlowId<span class="data-subtitle">@(item.MultiInstanceMode is null ? "Standard position" : MultiInstanceModeLabel(item.MultiInstanceMode))</span></td>
                                 <td>@item.PreparedBy</td>
                                 <td>@item.SucceededItemCount.ToString("N0") / @item.TotalItemCount.ToString("N0")<span class="data-subtitle">@item.TotalAffectedTaskCount.ToString("N0") affected · @item.FailedItemCount.ToString("N0") failed</span></td>
@@ -598,6 +606,9 @@ else
     private bool batchOperation;
     private bool refreshingBatch;
     private bool loadingBatches;
+    private bool authorizationDenied;
+    private bool disposed;
+    private long identityEpoch;
     private readonly CancellationTokenSource pollCancellation = new();
     private Task? pollTask;
 
@@ -623,8 +634,8 @@ else
     private int CandidateTotalPages => TotalPages(candidates?.TotalCount ?? 0, CandidatePageSize);
     private int BatchItemTotalPages => TotalPages(batchItems?.TotalCount ?? 0, BatchItemPageSize);
     private int BatchListTotalPages => TotalPages(batchList?.TotalCount ?? 0, BatchListPageSize);
-    private bool CanConfirmCurrentBatch => currentBatch?.Summary.Status.Equals("ready", StringComparison.OrdinalIgnoreCase) == true;
-    private bool CanCancelCurrentBatch => currentBatch is not null && IsCancellable(currentBatch.Summary.Status);
+    private bool CanConfirmCurrentBatch => !batchOperation && currentBatch?.Summary.Status.Equals("ready", StringComparison.OrdinalIgnoreCase) == true;
+    private bool CanCancelCurrentBatch => !batchOperation && currentBatch is not null && IsCancellable(currentBatch.Summary.Status);
     private string CandidateSummary => candidateFiltersDirty
         ? "Filters changed. Search again to establish a new server-side result."
         : candidateLoading ? "Searching active execution positions…"
@@ -640,11 +651,12 @@ else
 
     private async Task LoadInitialAsync()
     {
+        var epoch = Interlocked.Read(ref identityEpoch);
         try
         {
             loading = true;
             error = null;
-            administrativeWorkflowCatalog = await Api.GetAdministrativeActionWorkflowCatalogAsync();
+            administrativeWorkflowCatalog = await GuardAdministrativeAsync(() => Api.GetAdministrativeActionWorkflowCatalogAsync());
             workflowFamilies = administrativeWorkflowCatalog
                 .GroupBy(workflow => workflow.WorkflowKey, StringComparer.OrdinalIgnoreCase)
                 .Select(group => group.OrderByDescending(workflow => workflow.Version).First())
@@ -652,25 +664,30 @@ else
                 .ToArray();
             selectedWorkflowKey = workflowFamilies.FirstOrDefault()?.WorkflowKey;
             if (!string.IsNullOrWhiteSpace(selectedWorkflowKey)) await LoadWorkflowFamilyAsync(selectedWorkflowKey);
+            EnsureIdentity(epoch);
             await LoadBatchListAsync();
+            EnsureIdentity(epoch);
             if (RequestedBatchId is > 0) await OpenBatchAsync(RequestedBatchId.Value);
         }
         catch (Exception ex)
         {
-            error = ex.Message;
-            workflowFamilies ??= [];
+            HandleError(ex, epoch);
+            if (IsCurrentIdentity(epoch)) workflowFamilies ??= [];
         }
         finally
         {
-            loading = false;
+            if (IsCurrentIdentity(epoch)) loading = false;
         }
     }
 
     private async Task RefreshAllAsync()
     {
         if (!Token.HasToken) return;
+        authorizationDenied = false;
+        var epoch = Interlocked.Read(ref identityEpoch);
         var openedBatchId = currentBatch?.Summary.Id;
         await LoadInitialAsync();
+        if (epoch != Interlocked.Read(ref identityEpoch) || authorizationDenied) return;
         if (openedBatchId is long batchId) await OpenBatchAsync(batchId);
     }
 
@@ -698,28 +715,35 @@ else
 
     private async Task LoadSelectedDefinitionAsync()
     {
+        var epoch = Interlocked.Read(ref identityEpoch);
         try
         {
             loadingDefinition = true;
             error = null;
             sourceNodes = selectedWorkflowDefinitionId is long definitionId
-                ? await Api.GetWorkflowAdministrativeActionNodesAsync(definitionId)
+                ? await GuardAdministrativeAsync(() => Api.GetWorkflowAdministrativeActionNodesAsync(definitionId))
                 : [];
             selectedSourceNodeId = sourceNodes.FirstOrDefault()?.NodeId;
             await LoadSelectedNodeActionsAsync();
         }
         catch (Exception ex)
         {
-            error = ex.Message;
-            workflowActions = [];
-            sourceNodes = [];
-            selectedSourceNodeId = null;
-            selectedActionKey = null;
+            HandleError(ex, epoch);
+            if (IsCurrentIdentity(epoch))
+            {
+                workflowActions = [];
+                sourceNodes = [];
+                selectedSourceNodeId = null;
+                selectedActionKey = null;
+            }
         }
         finally
         {
-            loadingDefinition = false;
-            ResetCandidateResults();
+            if (IsCurrentIdentity(epoch))
+            {
+                loadingDefinition = false;
+                ResetCandidateResults();
+            }
         }
     }
 
@@ -731,22 +755,26 @@ else
 
     private async Task LoadSelectedNodeActionsAsync()
     {
+        var epoch = Interlocked.Read(ref identityEpoch);
         try
         {
             workflowActions = selectedWorkflowDefinitionId is long definitionId && selectedSourceNodeId is int nodeId
-                ? await Api.GetWorkflowAdministrativeActionsAsync(definitionId, nodeId)
+                ? await GuardAdministrativeAsync(() => Api.GetWorkflowAdministrativeActionsAsync(definitionId, nodeId))
                 : [];
             SelectDefaultAction();
         }
         catch (Exception ex)
         {
-            error = ex.Message;
-            workflowActions = [];
-            selectedActionKey = null;
+            HandleError(ex, epoch);
+            if (IsCurrentIdentity(epoch))
+            {
+                workflowActions = [];
+                selectedActionKey = null;
+            }
         }
         finally
         {
-            ResetCandidateResults();
+            if (IsCurrentIdentity(epoch)) ResetCandidateResults();
         }
     }
 
@@ -802,13 +830,14 @@ else
     {
         if (!CanSearchCandidates) return;
         if (!TryParseOptionalJson(candidateVariableFilterJson, out var variableFilter, out candidateVariableFilterError)) return;
+        var epoch = Interlocked.Read(ref identityEpoch);
         try
         {
             candidateLoading = true;
             error = null;
             success = null;
             var request = BuildCandidateSearch(candidatePage, CandidatePageSize, variableFilter);
-            candidates = await Api.SearchAdministrativeActionCandidatesAsync(request);
+            candidates = await GuardAdministrativeAsync(() => Api.SearchAdministrativeActionCandidatesAsync(request));
             appliedCandidateSearch = BuildCandidateSearch(null, null, variableFilter);
             candidateFiltersDirty = false;
             knownAffectedTaskCounts.Clear();
@@ -818,29 +847,33 @@ else
         }
         catch (Exception ex)
         {
-            error = ex.Message;
-            candidates = null;
-            appliedCandidateSearch = null;
+            HandleError(ex, epoch);
+            if (IsCurrentIdentity(epoch))
+            {
+                candidates = null;
+                appliedCandidateSearch = null;
+            }
         }
         finally
         {
-            candidateLoading = false;
+            if (IsCurrentIdentity(epoch)) candidateLoading = false;
         }
     }
 
     private async Task LoadCandidatePageAsync(int page)
     {
         if (appliedCandidateSearch is null) return;
+        var epoch = Interlocked.Read(ref identityEpoch);
         try
         {
             candidateLoading = true;
             candidatePage = page;
-            candidates = await Api.SearchAdministrativeActionCandidatesAsync(
-                appliedCandidateSearch with { Page = candidatePage, PageSize = CandidatePageSize });
+            candidates = await GuardAdministrativeAsync(() => Api.SearchAdministrativeActionCandidatesAsync(
+                appliedCandidateSearch with { Page = candidatePage, PageSize = CandidatePageSize }));
             RememberAffectedTaskCounts(candidates.Items);
         }
-        catch (Exception ex) { error = ex.Message; }
-        finally { candidateLoading = false; }
+        catch (Exception ex) { HandleError(ex, epoch); }
+        finally { if (IsCurrentIdentity(epoch)) candidateLoading = false; }
     }
 
     private AdministrativeActionCandidateSearchRequest BuildCandidateSearch(int? page, int? pageSize, JsonElement? variableFilter) => new()
@@ -922,6 +955,7 @@ else
 
     private async Task CreateBatchAsync()
     {
+        var epoch = Interlocked.Read(ref identityEpoch);
         if (!CanCreateBatch || appliedCandidateSearch is null || SelectedAction is null) return;
         if (!TryParseVariables(commonVariablesJson, out var variables, out var parseError))
         {
@@ -946,7 +980,7 @@ else
                     null,
                     null);
             var action = SelectedAction;
-            currentBatch = await Api.CreateAdministrativeActionBatchAsync(new CreateAdministrativeActionBatchRequest(
+            currentBatch = await GuardAdministrativeAsync(() => Api.CreateAdministrativeActionBatchAsync(new CreateAdministrativeActionBatchRequest(
                 action.WorkflowDefinitionId,
                 action.SourceNodeId,
                 action.ActionKind,
@@ -956,91 +990,105 @@ else
                 string.IsNullOrWhiteSpace(reason) ? null : reason.Trim(),
                 action.ActionKind == AdministrativeActionKinds.TimerBoundary ? null : variables,
                 selection,
-                draftIdempotencyKey));
+                draftIdempotencyKey)));
             draftIdempotencyKey = null;
             batchItemPage = 1;
             batchItemStatus = null;
             await LoadBatchItemsAsync();
+            EnsureIdentity(epoch);
             await LoadBatchListAsync();
+            EnsureIdentity(epoch);
             success = $"Batch #{currentBatch.Summary.Id} was frozen and queued for asynchronous preparation.";
         }
-        catch (Exception ex) { error = ex.Message; }
-        finally { batchOperation = false; }
+        catch (Exception ex) { HandleError(ex, epoch); }
+        finally { if (IsCurrentIdentity(epoch)) batchOperation = false; }
     }
 
     private async Task OpenBatchAsync(long batchId)
     {
+        var epoch = Interlocked.Read(ref identityEpoch);
         try
         {
             error = null;
-            currentBatch = await Api.GetAdministrativeActionBatchAsync(batchId)
+            currentBatch = await GuardAdministrativeAsync(() => Api.GetAdministrativeActionBatchAsync(batchId))
                 ?? throw new InvalidOperationException($"Administrative batch #{batchId} was not found.");
             batchItemPage = 1;
             batchItemStatus = null;
             cancellationReason = null;
             await LoadBatchItemsAsync();
         }
-        catch (Exception ex) { error = ex.Message; }
+        catch (Exception ex) { HandleError(ex, epoch); }
     }
 
     private async Task RefreshCurrentBatchAsync()
     {
         if (currentBatch is null || refreshingBatch) return;
+        var epoch = Interlocked.Read(ref identityEpoch);
         try
         {
             refreshingBatch = true;
-            var refreshed = await Api.GetAdministrativeActionBatchAsync(currentBatch.Summary.Id);
+            var refreshed = await GuardAdministrativeAsync(() => Api.GetAdministrativeActionBatchAsync(currentBatch.Summary.Id));
             if (refreshed is not null) currentBatch = refreshed;
             await LoadBatchItemsAsync();
+            EnsureIdentity(epoch);
             await LoadBatchListAsync();
         }
-        catch (Exception ex) { error = ex.Message; }
-        finally { refreshingBatch = false; }
+        catch (Exception ex) { HandleError(ex, epoch); }
+        finally { if (IsCurrentIdentity(epoch)) refreshingBatch = false; }
     }
 
     private async Task ConfirmCurrentBatchAsync()
     {
         if (!CanConfirmCurrentBatch || currentBatch is null) return;
+        var epoch = Interlocked.Read(ref identityEpoch);
         try
         {
             batchOperation = true;
             error = null;
             var expected = currentBatch.Summary;
-            currentBatch = await Api.ConfirmAdministrativeActionBatchAsync(expected.Id,
+            currentBatch = await GuardAdministrativeAsync(() => Api.ConfirmAdministrativeActionBatchAsync(expected.Id,
                 new ConfirmAdministrativeActionBatchRequest(
                     expected.EligibleItemCount,
                     expected.TotalAffectedTaskCount,
-                    expected.UpdatedAt));
+                    expected.UpdatedAt)));
             success = $"Batch #{expected.Id} was confirmed. Eligible positions are queued for independent execution.";
             await LoadBatchItemsAsync();
+            EnsureIdentity(epoch);
             await LoadBatchListAsync();
         }
-        catch (Exception ex) { error = ex.Message; }
-        finally { batchOperation = false; }
+        catch (Exception ex) { HandleError(ex, epoch); }
+        finally { if (IsCurrentIdentity(epoch)) batchOperation = false; }
     }
 
     private async Task CancelCurrentBatchAsync()
     {
         if (!CanCancelCurrentBatch || currentBatch is null) return;
+        var epoch = Interlocked.Read(ref identityEpoch);
         try
         {
             batchOperation = true;
             error = null;
             var id = currentBatch.Summary.Id;
-            currentBatch = await Api.CancelAdministrativeActionBatchAsync(id,
-                new CancelAdministrativeActionBatchRequest(string.IsNullOrWhiteSpace(cancellationReason) ? null : cancellationReason.Trim()));
+            currentBatch = await GuardAdministrativeAsync(() => Api.CancelAdministrativeActionBatchAsync(id,
+                new CancelAdministrativeActionBatchRequest(string.IsNullOrWhiteSpace(cancellationReason) ? null : cancellationReason.Trim())));
             success = $"Batch #{id} was cancelled. Completed actions were not reversed.";
             await LoadBatchItemsAsync();
+            EnsureIdentity(epoch);
             await LoadBatchListAsync();
         }
-        catch (Exception ex) { error = ex.Message; }
-        finally { batchOperation = false; }
+        catch (Exception ex) { HandleError(ex, epoch); }
+        finally { if (IsCurrentIdentity(epoch)) batchOperation = false; }
     }
 
     private async Task LoadBatchItemsAsync()
     {
         if (currentBatch is null) return;
-        batchItems = await Api.GetAdministrativeActionBatchItemsAsync(currentBatch.Summary.Id, batchItemStatus, batchItemPage, BatchItemPageSize);
+        var epoch = Interlocked.Read(ref identityEpoch);
+        try
+        {
+            batchItems = await GuardAdministrativeAsync(() => Api.GetAdministrativeActionBatchItemsAsync(currentBatch.Summary.Id, batchItemStatus, batchItemPage, BatchItemPageSize));
+        }
+        catch (Exception ex) { HandleError(ex, epoch); }
     }
 
     private async Task OnBatchItemStatusChangedAsync(ChangeEventArgs args)
@@ -1055,17 +1103,19 @@ else
 
     private async Task LoadBatchListAsync()
     {
+        var epoch = Interlocked.Read(ref identityEpoch);
         try
         {
             loadingBatches = true;
-            batchList = await Api.GetAdministrativeActionBatchesAsync(new AdministrativeActionBatchSearchRequest
+            batchList = await GuardAdministrativeAsync(() => Api.GetAdministrativeActionBatchesAsync(new AdministrativeActionBatchSearchRequest
             {
                 Status = string.IsNullOrWhiteSpace(batchListStatus) ? null : batchListStatus,
                 Page = batchListPage,
                 PageSize = BatchListPageSize
-            });
+            }));
         }
-        finally { loadingBatches = false; }
+        catch (Exception ex) { HandleError(ex, epoch); }
+        finally { if (IsCurrentIdentity(epoch)) loadingBatches = false; }
     }
 
     private async Task OnBatchListStatusChangedAsync(ChangeEventArgs args)
@@ -1092,17 +1142,75 @@ else
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
     }
 
-    private void OnTokenChanged() => _ = InvokeAsync(async () =>
+    private void OnTokenChanged()
     {
-        if (Token.HasToken) await LoadInitialAsync();
-        else
+        Interlocked.Increment(ref identityEpoch);
+        _ = InvokeAsync(async () =>
         {
-            workflowFamilies = null;
-            currentBatch = null;
-            batchList = null;
+            if (disposed) return;
+            ClearAdministrativeData();
+            authorizationDenied = false;
+            StateHasChanged();
+            if (Token.HasToken) await LoadInitialAsync();
+            StateHasChanged();
+        });
+    }
+
+    private void EnsureIdentity(long epoch)
+    {
+        if (!IsCurrentIdentity(epoch)) throw new AdministrativeIdentityChangedException();
+    }
+
+    private bool IsCurrentIdentity(long epoch) =>
+        !disposed && Token.HasToken && !authorizationDenied && epoch == Interlocked.Read(ref identityEpoch);
+
+    private async Task<T> GuardAdministrativeAsync<T>(Func<Task<T>> request)
+    {
+        var epoch = Interlocked.Read(ref identityEpoch);
+        var identity = Token.Token;
+        EnsureIdentity(epoch);
+        try
+        {
+            var result = await request();
+            EnsureIdentity(epoch);
+            if (!string.Equals(identity, Token.Token, StringComparison.Ordinal)) throw new AdministrativeIdentityChangedException();
+            return result;
         }
-        StateHasChanged();
-    });
+        catch (WorkflowApiException ex) when (ex.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+        {
+            EnsureIdentity(epoch);
+            Interlocked.Increment(ref identityEpoch);
+            ClearAdministrativeData();
+            authorizationDenied = true;
+            throw new AdministrativeIdentityChangedException();
+        }
+        catch
+        {
+            EnsureIdentity(epoch);
+            throw;
+        }
+    }
+
+    private void HandleError(Exception ex, long epoch)
+    {
+        if (ex is not AdministrativeIdentityChangedException && IsCurrentIdentity(epoch)) error = ex.Message;
+    }
+
+    private void ClearAdministrativeData()
+    {
+        administrativeWorkflowCatalog = []; workflowFamilies = null; workflowVersions = [];
+        sourceNodes = []; workflowActions = []; selectedWorkflowKey = null;
+        selectedWorkflowDefinitionId = null; selectedSourceNodeId = null; selectedActionKey = null;
+        ResetCandidateResults(); candidatePositionId = null; candidateInstanceId = null; candidateBusinessKey = null;
+        candidateVariableFilterJson = null; candidateVariableFilterError = null;
+        currentBatch = null; batchItems = null; batchList = null; batchItemStatus = null; batchListStatus = null;
+        batchItemPage = 1; batchListPage = 1; reason = string.Empty; commonVariablesJson = "{}";
+        cancellationReason = null; draftIdempotencyKey = null; error = null; success = null;
+        loading = false; loadingDefinition = false; candidateLoading = false; batchOperation = false;
+        refreshingBatch = false; loadingBatches = false;
+    }
+
+    private sealed class AdministrativeIdentityChangedException : OperationCanceledException;
 
     private void ResetCandidateResults()
     {
@@ -1257,6 +1365,8 @@ else
 
     public async ValueTask DisposeAsync()
     {
+        disposed = true;
+        Interlocked.Increment(ref identityEpoch);
         Token.Changed -= OnTokenChanged;
         await pollCancellation.CancelAsync();
         if (pollTask is not null)

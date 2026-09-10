@@ -657,8 +657,13 @@ Storage follows the hybrid design:
   inherited user still passes the normal role check when they act.
   `ValidateDefinition` requires `requiresClaim` for a non-`fresh` mode and a valid
   `userTask` reference for `fromNode`.
-- **Position-first administrative action batches.** There are no
-  `isAdministrative` or `isBatchable` flow properties. An authenticated operator
+- **Position-first administrative actions and batches.** There are no
+  `isAdministrative` or `isBatchable` flow properties. Every administrative HTTP
+  route and public service/engine entry point requires a nonblank actor and the
+  shared `WorkflowAdministratorPolicy`, including discovery, audit reads, and
+  retries of completed commands. It reads the current `Workflow.RequiredRole`:
+  comma-separated, case-insensitive role matching, `admin` for missing/blank,
+  and a custom value replacing the default. An authorized administrator
   selects one exact immutable workflow definition and an ordinary or
   multi-instance `userTask`, searches its active execution positions, freezes an
   explicit selection or an `allMatching` result with exclusions, and then chooses
@@ -676,7 +681,10 @@ Storage follows the hybrid design:
   votes and traverses the selected flow once; `completeAllChildren` records an
   administrative completion and selected-flow count for every unfinished child,
   suppresses aggregate routing until they are closed, and then traverses the
-  selected flow once. Timer-boundary actions require the activation's exact
+  selected flow once. Administratively completed pending sequential children
+  receive a node-visit start equal to their completion timestamp and the
+  administrator as trigger; active start times remain unchanged, while cancelled
+  pending children stay unstarted. Timer-boundary actions require the activation's exact
   `active` or `paused` subscription fence and ignore its due time. They always
   interrupt the host, even when authored with `cancelActivity=false`: the host
   task or unfinished multi-instance children and sibling timer jobs are cancelled,
@@ -692,6 +700,12 @@ Storage follows the hybrid design:
   complete or cancel; both freezing and preparation enforce the combined limit.
   Durable `administrativeBatchPrepare` and `administrativeBatchExecute` activity
   jobs process bounded pages with a fresh scope and transaction per item.
+  Each preparation item rechecks the setting against the saved preparer roles;
+  each execution item checks the saved confirmer roles. Unauthorized preparation
+  becomes `ineligible`; unauthorized execution becomes `skipped` with
+  `authentication_changed`. These are stored role snapshots, not live identity-
+  provider queries. Setting changes affect subsequent checks, not an authorized
+  transaction already executing or already committed asynchronous continuations.
   Preparation exposes eligible/ineligible rows, confirmation is optimistic and
   idempotent, execution revalidates every fence, cancellation stops only unstarted
   rows, and committed successes are never reversed. Stale or newly incompatible
@@ -707,8 +721,33 @@ Storage follows the hybrid design:
   claim and assignment inheritance. The dedicated `/administrative-actions` UI
   groups direct and timer actions, displays ignored authorization/condition and
   forced-interruption warnings, reviews affected-task counts and blockers, and
-  monitors paged results. Individual task actions continue through the ordinary
-  task UI with their normal authorization and behavior.
+  monitors paged results. All batch controls and data are cleared on authorization
+  failure. Individual task actions continue through the ordinary task UI with
+  their normal authorization and behavior.
+  GET/POST `/api/instances/{id}/administrative-actions` additionally expose
+  immediate direct-flow overrides on instance detail. Discovery uses a database
+  instance filter before count/order/page; the internal candidate query permits
+  an absent source-node filter only with an explicit positive instance ID.
+  Positions include ordinary tasks and each multi-instance parent once, with
+  selectable direct actions, typed inputs, and affected counts. POST accepts
+  exact workflow/token/activation/position-timestamp/count fences; actor and
+  audit identifiers remain server-owned. Missing/cross-instance positions return
+  404 and stale same-instance positions return 409. The service locks the full
+  runtime hierarchy before inserting the one-item batch audit, then routes via
+  the scoped `IAdministrativeActionExecutor` in that same transaction. Ordinary,
+  multi-instance, conditional-boundary, and `asyncAfter` paths commit only an
+  owned transaction. The direct service completes the batch and commits execution
+  plus audit once; failures leave neither. No administrative Worker jobs are
+  created, while authored asynchronous continuations remain Worker-driven.
+  The UI requires reviewing the exact action/destination/count and an explicit
+  multi-instance mode before confirmation; it refreshes after success/conflict
+  without automatic resubmission and clears restricted data on identity change
+  or authorization failure. Timer overrides remain on the batch page. Ordinary
+  task/inbox/claim/assignment/delegation/MI-interrupt APIs keep their existing
+  permissions and immutable task-role policies; no caller override flag exists.
+  This change reuses existing audit tables/settings without a migration. Pause
+  administrative submissions and Workers and upgrade every API/Worker replica
+  together so legacy replicas cannot retain the older bearer-only access.
 - **Batch instance version changes.** The dedicated
   `/instance-version-changes` management page and
   `/api/instance-version-change-batches` API move a frozen population of running

@@ -6961,6 +6961,20 @@ public sealed partial class WorkflowRuntimeRepository(
             return;
         }
 
+        if (task.MultiInstanceExecutionId is not null
+            && nodeExecution.Status == NodeExecutionStatuses.Pending
+            && completion.Status == NodeExecutionRecordStatuses.Completed
+            && completion.CompletionReason == NodeExecutionCompletionReasons.AdministrativeAction)
+        {
+            // Complete-all may process a sequential child before its normal
+            // activation. Its administrative visit starts and ends now; a
+            // cancelled pending child must still remain unstarted.
+            nodeExecution.StartedAt = now;
+            nodeExecution.TriggeredBy = completion.Actor.User;
+            nodeExecution.TriggeredByRolesJson = JsonMapping.ToJsonDocument(completion.Actor.Roles);
+            nodeExecution.TriggeredActingFor = completion.Actor.ActingFor;
+            nodeExecution.TriggeredDelegationId = completion.Actor.DelegationId;
+        }
         CompleteNodeExecution(nodeExecution, completion, now);
         var token = dbContext.ExecutionTokens.Local.SingleOrDefault(entity => entity.Id == task.TokenId)
             ?? await dbContext.ExecutionTokens.SingleAsync(entity => entity.Id == task.TokenId, cancellationToken);

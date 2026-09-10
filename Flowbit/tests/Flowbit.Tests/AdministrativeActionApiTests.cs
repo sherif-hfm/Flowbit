@@ -19,7 +19,7 @@ public sealed class AdministrativeActionApiTests(PostgresApiFixture fixture)
         new(JsonSerializerDefaults.Web);
 
     [Fact]
-    public async Task AdministrativeCatalog_RequiresAuthenticationButDoesNotRequireRoles()
+    public async Task AdministrativeCatalog_RequiresAdministratorAndBypassesAuthoredTaskRoles()
     {
         var workflowId = await CreateWorkflowAsync(CreateAdministrativeReturnModel());
 
@@ -33,6 +33,17 @@ public sealed class AdministrativeActionApiTests(PostgresApiFixture fixture)
                    HttpMethod.Get,
                    "/api/administrative-actions/workflows",
                    user: "plain-user",
+                   roles: ["Reader"],
+                   suppressImplicitAdmin: true))
+        {
+            Assert.Equal(HttpStatusCode.Forbidden, catalog.StatusCode);
+        }
+
+        using (var catalog = await SendAsync(
+                   HttpMethod.Get,
+                   "/api/administrative-actions/workflows",
+                   user: "administrative-operator",
+                   roles: ["admin"],
                    suppressImplicitAdmin: true))
         {
             Assert.Equal(HttpStatusCode.OK, catalog.StatusCode);
@@ -44,7 +55,8 @@ public sealed class AdministrativeActionApiTests(PostgresApiFixture fixture)
         using (var nodes = await SendAsync(
                    HttpMethod.Get,
                    $"/api/workflows/{workflowId}/administrative-actions/nodes",
-                   user: "plain-user",
+                   user: "administrative-operator",
+                   roles: ["admin"],
                    suppressImplicitAdmin: true))
         {
             Assert.Equal(HttpStatusCode.OK, nodes.StatusCode);
@@ -56,7 +68,8 @@ public sealed class AdministrativeActionApiTests(PostgresApiFixture fixture)
         using (var actions = await SendAsync(
                    HttpMethod.Get,
                    $"/api/workflows/{workflowId}/nodes/3/administrative-actions",
-                   user: "plain-user",
+                   user: "administrative-operator",
+                   roles: ["admin"],
                    suppressImplicitAdmin: true))
         {
             Assert.Equal(HttpStatusCode.OK, actions.StatusCode);
@@ -267,7 +280,7 @@ public sealed class AdministrativeActionApiTests(PostgresApiFixture fixture)
     }
 
     [Fact]
-    public async Task EveryAdministrativeActionEndpoint_RequiresAuthentication()
+    public async Task EveryAdministrativeActionEndpoint_RequiresAuthenticationAndAdministratorRole()
     {
         var candidateSearch = new AdministrativeActionCandidateSearchRequest
         {
@@ -320,6 +333,14 @@ public sealed class AdministrativeActionApiTests(PostgresApiFixture fixture)
             }
             using var response = await fixture.Client.SendAsync(request);
             Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+            using var forbidden = await SendAsync(
+                call.Method,
+                call.Path,
+                call.Body,
+                user: "ordinary-user",
+                roles: ["User", "Manager"],
+                suppressImplicitAdmin: true);
+            Assert.Equal(HttpStatusCode.Forbidden, forbidden.StatusCode);
         }
     }
 
@@ -1033,7 +1054,7 @@ public sealed class AdministrativeActionApiTests(PostgresApiFixture fixture)
         {
             request.Content = JsonContent.Create(body, options: JsonOptions);
         }
-        ApiTestAuth.Authorize(request, user, roles ?? []);
+        ApiTestAuth.Authorize(request, user, roles ?? ["admin"]);
         if (suppressImplicitAdmin)
         {
             request.Headers.TryAddWithoutValidation("X-Test-Suppress-Admin", "true");

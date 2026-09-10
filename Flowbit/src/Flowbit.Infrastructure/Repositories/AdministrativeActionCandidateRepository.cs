@@ -32,7 +32,7 @@ public sealed class AdministrativeActionCandidateRepository(AppDbContext dbConte
                 BuildParameters(arguments))
             .SingleAsync(cancellationToken);
 
-        arguments.Add(("skip", (page - 1) * pageSize));
+        arguments.Add(("skip", ((long)page - 1) * pageSize));
         arguments.Add(("take", pageSize));
         var serializedKeys = await dbContext.Database.SqlQueryRaw<string>(
                 $"""
@@ -147,13 +147,17 @@ public sealed class AdministrativeActionCandidateRepository(AppDbContext dbConte
         var where = new StringBuilder("""
             WHERE workflow."Status" = 'running'
               AND workflow."WorkflowDefinitionId" = @workflowDefinitionId
-              AND position."NodeId" = @sourceNodeId
             """);
         var arguments = new List<(string Name, object Value)>
         {
-            ("workflowDefinitionId", query.WorkflowDefinitionId),
-            ("sourceNodeId", query.SourceNodeId)
+            ("workflowDefinitionId", query.WorkflowDefinitionId)
         };
+
+        if (query.SourceNodeId is int sourceNodeId)
+        {
+            arguments.Add(("sourceNodeId", sourceNodeId));
+            where.Append(" AND position.\"NodeId\" = @sourceNodeId");
+        }
 
         if (query.InstanceId is long instanceId)
         {
@@ -326,7 +330,8 @@ public sealed class AdministrativeActionCandidateRepository(AppDbContext dbConte
             : await dbContext.TimerSubscriptions.AsNoTracking()
                 .Where(subscription => subscription.TokenId != null
                     && tokenIds.Contains(subscription.TokenId.Value)
-                    && subscription.AttachedToNodeId == query.SourceNodeId)
+                    && (query.SourceNodeId == null
+                        || subscription.AttachedToNodeId == query.SourceNodeId))
                 .OrderBy(subscription => subscription.TimerNodeId)
                 .ThenBy(subscription => subscription.Id)
                 .ToListAsync(cancellationToken);
@@ -395,7 +400,8 @@ public sealed class AdministrativeActionCandidateRepository(AppDbContext dbConte
             if (!instances.TryGetValue(instanceId, out var instance)
                 || !tokens.TryGetValue(tokenId, out var token)
                 || instance.WorkflowDefinitionId != query.WorkflowDefinitionId
-                || nodeId != query.SourceNodeId
+                || (query.SourceNodeId is int sourceNodeId && nodeId != sourceNodeId)
+                || (query.InstanceId is long requestedInstanceId && instanceId != requestedInstanceId)
                 || token.InstanceId != instanceId)
             {
                 continue;
@@ -443,10 +449,11 @@ public sealed class AdministrativeActionCandidateRepository(AppDbContext dbConte
     private static void ValidateQuery(AdministrativeActionCandidateQuery query)
     {
         ArgumentNullException.ThrowIfNull(query);
-        if (query.WorkflowDefinitionId <= 0 || query.SourceNodeId <= 0)
+        if (query.WorkflowDefinitionId <= 0 || query.SourceNodeId is <= 0
+            || (query.SourceNodeId is null && query.InstanceId is not > 0))
         {
             throw new ArgumentException(
-                "Workflow definition and source node identifiers must be positive.",
+                "A positive workflow definition and source node or instance identifier are required.",
                 nameof(query));
         }
         if (query.PositionKind is not null

@@ -1,0 +1,9 @@
+.admin-position { padding: 1rem 0; border-bottom: 1px solid var(--fb-border); overflow-wrap: anywhere; }
+.admin-position-actions { display: flex; flex-wrap: wrap; gap: .6rem; }
+.admin-position-actions .btn { flex: 0 1 auto; min-width: 9rem; white-space: normal; }
+.admin-action-inputs { padding: 1rem; border: 1px solid var(--fb-border-strong); border-radius: var(--fb-radius-sm); }
+.admin-action-inputs fieldset { min-width: 0; }
+@media (max-width: 600px) {
+    .admin-position-actions .btn { flex: 1 1 100%; }
+    .admin-action-inputs { padding: .75rem; }
+}

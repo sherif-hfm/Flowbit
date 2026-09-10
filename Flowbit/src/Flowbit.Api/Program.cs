@@ -433,6 +433,7 @@ try
     app.MapWorkflowInstanceEndpoints();
     app.MapUserTaskEndpoints();
     app.MapAdministrativeActionEndpoints();
+    app.MapInstanceAdministrativeActionEndpoints();
     app.MapInstanceVersionChangeBatchEndpoints();
     app.MapInstanceVariableUpdateEndpoints();
     app.MapInstanceVariableUpdateBatchEndpoints();

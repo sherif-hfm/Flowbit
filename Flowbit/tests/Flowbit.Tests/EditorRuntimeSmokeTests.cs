@@ -2431,7 +2431,8 @@ public sealed class EditorRuntimeSmokeTests
         Assert.Null(exception);
         using var validation = JsonDocument.Parse(validationJson!);
         Assert.Empty(validation.RootElement.EnumerateArray());
-        Assert.StartsWith("example-", engine.Evaluate("model.id").AsString(), StringComparison.Ordinal);
+        using var authored = JsonDocument.Parse(json);
+        Assert.Equal(authored.RootElement.GetProperty("id").GetString(), engine.Evaluate("model.id").AsString());
     }
 
     [Fact]

@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using Flowbit.Service.Abstractions;
 using Flowbit.Service.Models;
+using Flowbit.Service.Services;
 using Flowbit.Shared.Dtos;
 using Flowbit.Shared.Models;
 using Microsoft.EntityFrameworkCore;
@@ -16,6 +17,183 @@ public sealed class AdministrativeActionBatchLifecycleApiTests(PostgresApiFixtur
 {
     private static readonly JsonSerializerOptions JsonOptions =
         new(JsonSerializerDefaults.Web);
+
+    [Fact]
+    public async Task ChangedAdministratorRoleRejectsDiscoveryAndIdempotentRetriesBeforeReturningData()
+    {
+        var workflowId = await CreateWorkflowAsync(CreateOrdinaryBatchModel());
+        await StartAsync(workflowId, "role-replay");
+        var candidate = Assert.Single((await SearchCandidatesAsync(workflowId)).Items);
+        var request = DirectRequest(workflowId, ExplicitSelection(candidate), $"role-replay-{Guid.NewGuid():N}");
+        var batch = await CreateBatchAsync(request, "changing-operator");
+        await ProcessBatchJobAsync(batch.PreparationJobId!.Value);
+        batch = await GetBatchAsync(batch.Summary.Id, "changing-operator");
+        batch = await ConfirmBatchAsync(batch, "changing-operator");
+        await ProcessBatchJobAsync(batch.ExecutionJobId!.Value);
+        batch = await GetBatchAsync(batch.Summary.Id, "changing-operator");
+        Assert.Equal(AdministrativeActionBatchStatuses.Completed, batch.Summary.Status);
+
+        var originalRole = await SetWorkflowRoleAsync(" Operations, Process Managers ");
+        try
+        {
+            var calls = new (HttpMethod Method, string Path, object? Body)[]
+            {
+                (HttpMethod.Get, "/api/administrative-actions/workflows", null),
+                (HttpMethod.Get, $"/api/administrative-action-batches/{batch.Summary.Id}", null),
+                (HttpMethod.Post, "/api/administrative-action-batches", request),
+                (HttpMethod.Post, $"/api/administrative-action-batches/{batch.Summary.Id}/confirm",
+                    new ConfirmAdministrativeActionBatchRequest(0, 0, batch.Summary.UpdatedAt)),
+                (HttpMethod.Post, $"/api/administrative-action-batches/{batch.Summary.Id}/cancel",
+                    new CancelAdministrativeActionBatchRequest(null))
+            };
+            foreach (var call in calls)
+            {
+                using var denied = await SendAsync(call.Method, call.Path, call.Body, "changing-operator", ["admin"]);
+                Assert.Equal(HttpStatusCode.Forbidden, denied.StatusCode);
+            }
+            using var permitted = await SendAsync(
+                HttpMethod.Get, $"/api/administrative-action-batches/{batch.Summary.Id}",
+                user: "custom-operator", roles: ["oPeRaTiOnS"]);
+            Assert.Equal(HttpStatusCode.OK, permitted.StatusCode);
+            Assert.Equal(batch.Summary.Id, (await ReadAsync<AdministrativeActionBatchDetailDto>(permitted)).Summary.Id);
+        }
+        finally
+        {
+            await SetWorkflowRoleAsync(originalRole);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task PreparationRechecksStoredPreparerAgainstCurrentPolicyWithoutRetrying(bool changeSetting)
+    {
+        var workflowId = await CreateWorkflowAsync(CreateOrdinaryBatchModel());
+        var instance = await StartAsync(workflowId, "preparer-policy");
+        var candidate = Assert.Single((await SearchCandidatesAsync(workflowId)).Items);
+        var batch = await CreateBatchAsync(
+            DirectRequest(workflowId, ExplicitSelection(candidate), $"preparer-{Guid.NewGuid():N}"),
+            "preparing-admin");
+        string? originalRole = null;
+        try
+        {
+            if (changeSetting)
+            {
+                originalRole = await SetWorkflowRoleAsync("Operations");
+            }
+            else
+            {
+                // Simulate a legacy batch created before administrative role enforcement.
+                await using var db = fixture.CreateDbContext();
+                var saved = await db.AdministrativeActionBatches.SingleAsync(item => item.Id == batch.Summary.Id);
+                saved.PreparedByRolesJson = JsonDocument.Parse("[]");
+                await db.SaveChangesAsync();
+            }
+            await ProcessBatchJobAsync(batch.PreparationJobId!.Value);
+            await using var verify = fixture.CreateDbContext();
+            var item = await verify.AdministrativeActionBatchItems.SingleAsync(item => item.BatchId == batch.Summary.Id);
+            Assert.Equal(AdministrativeActionBatchItemStatuses.Ineligible, item.Status);
+            Assert.Contains("administrator role", item.IssuesJson!.RootElement.GetRawText());
+            Assert.Equal(AdministrativeActionBatchStatuses.Ready,
+                (await verify.AdministrativeActionBatches.SingleAsync(item => item.Id == batch.Summary.Id)).Status);
+            Assert.Equal(WorkflowJobStatuses.Completed,
+                (await verify.WorkflowJobs.SingleAsync(item => item.Id == batch.PreparationJobId)).Status);
+            Assert.Equal(UserTaskRecordStatuses.Active,
+                (await verify.UserTasks.SingleAsync(item => item.InstanceId == instance.Id)).Status);
+        }
+        finally
+        {
+            if (changeSetting)
+            {
+                await SetWorkflowRoleAsync(originalRole);
+            }
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ExecutionRechecksStoredConfirmerAndPreservesCommittedItems(bool changeSetting)
+    {
+        var workflowId = await CreateWorkflowAsync(CreateOrdinaryBatchModel());
+        await StartAsync(workflowId, "committed-before-policy-change");
+        await StartAsync(workflowId, "unstarted-at-policy-change");
+        var candidates = (await SearchCandidatesAsync(workflowId)).Items;
+        var batch = await CreateBatchAsync(
+            DirectRequest(workflowId, ExplicitSelection(candidates), $"confirmer-{Guid.NewGuid():N}"),
+            "confirming-admin");
+        await ProcessBatchJobAsync(batch.PreparationJobId!.Value);
+        batch = await GetBatchAsync(batch.Summary.Id, "confirming-admin");
+        batch = await ConfirmBatchAsync(batch, "confirming-admin");
+        long committedInstanceId;
+        await using (var scope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            var repository = scope.ServiceProvider.GetRequiredService<IAdministrativeActionBatchRepository>();
+            var record = (await repository.GetAsync(batch.Summary.Id, false, CancellationToken.None))!;
+            var queued = await repository.ListItemsForProcessingAsync(
+                record.Id, [AdministrativeActionBatchItemStatuses.Queued], 100, CancellationToken.None);
+            committedInstanceId = queued[0].InstanceId;
+            Assert.NotNull(await scope.ServiceProvider.GetRequiredService<IWorkflowEngineService>()
+                .ExecuteAdministrativeBatchActionAsync(
+                    BuildRequest(record, queued[0]),
+                    new ActorContext("confirming-admin", ["admin"], new Dictionary<string, string>()),
+                    CancellationToken.None));
+        }
+
+        string? originalRole = null;
+        try
+        {
+            if (changeSetting)
+            {
+                originalRole = await SetWorkflowRoleAsync("Operations");
+            }
+            else
+            {
+                // The Worker must also deny legacy queued batches whose frozen confirmer has no roles.
+                await using var db = fixture.CreateDbContext();
+                var saved = await db.AdministrativeActionBatches.SingleAsync(item => item.Id == batch.Summary.Id);
+                saved.ConfirmedByRolesJson = JsonDocument.Parse("[]");
+                await db.SaveChangesAsync();
+            }
+            await ProcessBatchJobAsync(batch.ExecutionJobId!.Value);
+            await using var verify = fixture.CreateDbContext();
+            var items = await verify.AdministrativeActionBatchItems.Where(item => item.BatchId == batch.Summary.Id).ToListAsync();
+            Assert.Equal(AdministrativeActionBatchItemStatuses.Succeeded,
+                Assert.Single(items, item => item.InstanceId == committedInstanceId).Status);
+            var skipped = Assert.Single(items, item => item.InstanceId != committedInstanceId);
+            Assert.Equal(AdministrativeActionBatchItemStatuses.Skipped, skipped.Status);
+            Assert.Equal("authentication_changed", skipped.ErrorCode);
+            Assert.Equal(UserTaskRecordStatuses.Active,
+                (await verify.UserTasks.SingleAsync(item => item.InstanceId == skipped.InstanceId)).Status);
+            Assert.Equal(WorkflowJobStatuses.Completed,
+                (await verify.WorkflowJobs.SingleAsync(item => item.Id == batch.ExecutionJobId)).Status);
+            Assert.Equal(AdministrativeActionBatchStatuses.CompletedWithIssues,
+                (await verify.AdministrativeActionBatches.SingleAsync(item => item.Id == batch.Summary.Id)).Status);
+        }
+        finally
+        {
+            if (changeSetting)
+            {
+                await SetWorkflowRoleAsync(originalRole);
+            }
+        }
+    }
+
+    private async Task<string?> SetWorkflowRoleAsync(string? value)
+    {
+        await using var scope = fixture.Factory.Services.CreateAsyncScope();
+        var settings = scope.ServiceProvider.GetRequiredService<IEngineSettingsRepository>();
+        var previous = await settings.GetByKeyAsync(WorkflowAdministratorPolicy.RequiredRoleSettingKey, CancellationToken.None);
+        if (value is null)
+        {
+            await settings.DeleteAsync(WorkflowAdministratorPolicy.RequiredRoleSettingKey, CancellationToken.None);
+        }
+        else
+        {
+            await settings.SetAsync(WorkflowAdministratorPolicy.RequiredRoleSettingKey, value, CancellationToken.None);
+        }
+        return previous?.Value;
+    }
 
     [Fact]
     public async Task CreateBatch_IdempotencyReplaysSameDraftAndRejectsDifferentPayload()
@@ -322,7 +500,7 @@ public sealed class AdministrativeActionBatchLifecycleApiTests(PostgresApiFixtur
                 BuildRequest(record, committed),
                 new ActorContext(
                     "resume-operator",
-                    [],
+                    ["admin"],
                     new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)),
                 CancellationToken.None);
             Assert.NotNull(result);
@@ -603,7 +781,7 @@ public sealed class AdministrativeActionBatchLifecycleApiTests(PostgresApiFixtur
         {
             request.Content = JsonContent.Create(body, options: JsonOptions);
         }
-        ApiTestAuth.Authorize(request, user, roles ?? []);
+        ApiTestAuth.Authorize(request, user, roles ?? ["admin"]);
         request.Headers.TryAddWithoutValidation("X-Test-Suppress-Admin", "true");
         return await fixture.Client.SendAsync(request);
     }

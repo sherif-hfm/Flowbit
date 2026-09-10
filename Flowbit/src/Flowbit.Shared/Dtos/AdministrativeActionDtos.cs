@@ -72,8 +72,8 @@ public sealed record AdministrativeTimerBoundaryStateDto(
     bool Eligible);
 
 /// <summary>
-/// Internal request used by the durable worker for one frozen execution
-/// position. No public single-position administrative endpoint is exposed.
+/// Internal execution request created by the administrative services for one
+/// frozen position. Public endpoints never accept audit identifiers.
 /// </summary>
 public sealed record AdministrativeActionRequest
 {
@@ -107,6 +107,26 @@ public sealed record AdministrativeActionResultDto(
     long PositionId,
     int AffectedTaskCount,
     long AdministrativeActionBatchId);
+
+public sealed record InstanceAdministrativeActionPositionDto(
+    AdministrativeActionCandidateDto Position,
+    IReadOnlyList<AdministrativeActionSummaryDto> Actions);
+
+public sealed record ExecuteInstanceAdministrativeActionRequest
+{
+    public required long ExpectedWorkflowDefinitionId { get; init; }
+    public required int SourceNodeId { get; init; }
+    public required string PositionKind { get; init; }
+    public required long PositionId { get; init; }
+    public required int FlowId { get; init; }
+    public required long ExpectedTokenId { get; init; }
+    public required Guid ExpectedTokenActivationId { get; init; }
+    public required DateTimeOffset ExpectedPositionUpdatedAt { get; init; }
+    public required int ExpectedAffectedTaskCount { get; init; }
+    public string? MultiInstanceMode { get; init; }
+    public string? Reason { get; init; }
+    public Dictionary<string, JsonElement>? Variables { get; init; }
+}
 
 public sealed record AdministrativeActionIssueDto(
     string Code,

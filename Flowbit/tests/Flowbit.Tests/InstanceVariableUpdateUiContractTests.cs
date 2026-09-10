@@ -7,6 +7,7 @@ using Flowbit.Shared.Dtos;
 using Flowbit.Shared.Models;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Web;
+using Microsoft.AspNetCore.Components.Rendering;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.FileProviders;
@@ -95,6 +96,70 @@ public sealed class InstanceVariableUpdateUiContractTests
             StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task IdentityChangeRefreshesDisplayedActorAndPersonalActions()
+    {
+        var token = new TokenState();
+        token.Set("test-token");
+        token.ApplyResolvedContext(new ActorContextDto("admin-verifier", ["admin"]));
+        using var handler = new InstanceHandler(InstanceWithAdministrativeUpdate(), availableFlows: () =>
+            token.CurrentUser == "ordinary-verifier"
+                ? [new SequenceFlowModel { Id = 14, SourceRef = 7, TargetRef = 9, Name = "Ordinary approval" }]
+                : []);
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("https://flowbit.test") };
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton(new WorkflowApiClient(http));
+        services.AddSingleton(token);
+        services.AddSingleton<NavigationManager>(new StubNavigationManager());
+        services.AddSingleton<IJSRuntime>(new StubJsRuntime());
+        services.AddSingleton<IWebHostEnvironment>(new StubEnvironment());
+        await using var provider = services.BuildServiceProvider();
+        await using var renderer = new HtmlRenderer(provider, provider.GetRequiredService<ILoggerFactory>());
+        var component = await renderer.Dispatcher.InvokeAsync(() => renderer.RenderComponentAsync<InstanceDetailPage>(
+            ParameterView.FromDictionary(new Dictionary<string, object?> { [nameof(InstanceDetailPage.InstanceId)] = 42L })));
+        Assert.Contains("admin-verifier", await renderer.Dispatcher.InvokeAsync(component.ToHtmlString), StringComparison.Ordinal);
+
+        await renderer.Dispatcher.InvokeAsync(() => token.ApplyResolvedContext(new ActorContextDto("ordinary-verifier", ["User"])));
+        var html = await renderer.Dispatcher.InvokeAsync(component.ToHtmlString);
+
+        Assert.Contains("ordinary-verifier", html, StringComparison.Ordinal);
+        Assert.Contains("Ordinary approval", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("admin-verifier", html, StringComparison.Ordinal);
+        Assert.True(handler.Paths.Count(path => path == "/api/instances/42/flows") >= 2);
+    }
+
+    [Fact]
+    public async Task NavigatingAwayDuringInitialLoadDoesNotStartPollingAfterDisposal()
+    {
+        using var handler = new DelayedInstanceHandler();
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("https://flowbit.test") };
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton(new WorkflowApiClient(http));
+        services.AddSingleton(new TokenState());
+        services.AddSingleton<NavigationManager>(new StubNavigationManager());
+        services.AddSingleton<IJSRuntime>(new StubJsRuntime());
+        services.AddSingleton<IWebHostEnvironment>(new StubEnvironment());
+        await using var provider = services.BuildServiceProvider();
+        await using var renderer = new HtmlRenderer(provider, provider.GetRequiredService<ILoggerFactory>());
+        NavigationProbe? probe = null;
+        var rendering = renderer.Dispatcher.InvokeAsync(() => renderer.RenderComponentAsync<NavigationProbe>(
+            ParameterView.FromDictionary(new Dictionary<string, object?>
+            {
+                [nameof(NavigationProbe.Capture)] = (Action<NavigationProbe>)(value => probe = value)
+            })));
+        await handler.InitialRequestStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await renderer.Dispatcher.InvokeAsync(() => probe!.NavigateAway());
+        handler.InitialResponse.SetResult(new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = JsonContent.Create(InstanceWithAdministrativeUpdate())
+        });
+        var component = await rendering.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal("Left instance", await renderer.Dispatcher.InvokeAsync(component.ToHtmlString));
+    }
+
     private static InstanceDetailDto InstanceWithAdministrativeUpdate()
     {
         var now = DateTimeOffset.Parse("2026-08-10T12:00:00Z");
@@ -156,7 +221,8 @@ public sealed class InstanceVariableUpdateUiContractTests
 
     private sealed class InstanceHandler(
         InstanceDetailDto instance,
-        bool flowsNotFound = false) : HttpMessageHandler
+        bool flowsNotFound = false,
+        Func<IReadOnlyList<SequenceFlowModel>>? availableFlows = null) : HttpMessageHandler
     {
         public List<string> Paths { get; } = [];
 
@@ -169,7 +235,8 @@ public sealed class InstanceVariableUpdateUiContractTests
                 "/api/instances/42" => new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(instance) },
                 "/api/instances/42/flows" when flowsNotFound =>
                     new HttpResponseMessage(HttpStatusCode.NotFound),
-                "/api/instances/42/flows" => new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(Array.Empty<SequenceFlowModel>()) },
+                "/api/instances/42/flows" => new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(availableFlows?.Invoke() ?? []) },
+                "/api/instances/42/administrative-actions?page=1&pageSize=25" => new HttpResponseMessage(HttpStatusCode.Forbidden),
                 _ => new HttpResponseMessage(HttpStatusCode.NotFound)
             };
             return Task.FromResult(response);
@@ -181,6 +248,41 @@ public sealed class InstanceVariableUpdateUiContractTests
         public StubNavigationManager() => Initialize("https://flowbit.test/", "https://flowbit.test/instances/42");
         protected override void NavigateToCore(string uri, bool forceLoad) { }
         protected override void NavigateToCore(string uri, NavigationOptions options) { }
+    }
+
+    private sealed class NavigationProbe : ComponentBase
+    {
+        [Parameter] public Action<NavigationProbe>? Capture { get; set; }
+        private bool showInstance = true;
+        protected override void OnInitialized() => Capture?.Invoke(this);
+        public void NavigateAway() { showInstance = false; StateHasChanged(); }
+        protected override void BuildRenderTree(RenderTreeBuilder builder)
+        {
+            if (showInstance)
+            {
+                builder.OpenComponent<InstanceDetailPage>(0);
+                builder.AddAttribute(1, nameof(InstanceDetailPage.InstanceId), 42L);
+                builder.CloseComponent();
+            }
+            else builder.AddContent(2, "Left instance");
+        }
+    }
+
+    private sealed class DelayedInstanceHandler : HttpMessageHandler
+    {
+        public TaskCompletionSource InitialRequestStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource<HttpResponseMessage> InitialResponse { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            if (request.RequestUri!.AbsolutePath == "/api/instances/42")
+            {
+                InitialRequestStarted.TrySetResult();
+                return InitialResponse.Task;
+            }
+            return Task.FromResult(request.RequestUri.AbsolutePath.EndsWith("/flows", StringComparison.Ordinal)
+                ? new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(Array.Empty<SequenceFlowModel>()) }
+                : new HttpResponseMessage(HttpStatusCode.NotFound));
+        }
     }
 
     private sealed class StubJsRuntime : IJSRuntime

@@ -35,7 +35,7 @@ else
                 Description="@($"{instance.Workflow.Name} · Version {instance.Workflow.Version}")">
         <Actions>
             <button class="btn btn-outline-secondary" @onclick="LoadAsync"><AppIcon Name="refresh" /> Refresh</button>
-            @if (IsRunning && canChangeVersion)
+            @if (IsRunning && canChangeVersion && !identityRefreshPending)
             {
                 <button class="btn btn-outline-primary" @onclick="ToggleVersionChange">
                     Change version
@@ -121,7 +121,7 @@ else
         </div>
     }
 
-    @if (IsTerminal && reactivationAuthorized && instance.HistoryPrunedAt is null)
+    @if (IsTerminal && reactivationAuthorized && !identityRefreshPending && instance.HistoryPrunedAt is null)
     {
         <section id="reactivation" class="panel mb-3" aria-labelledby="reactivation-heading">
             <div class="section-heading">
@@ -239,7 +239,7 @@ else
         </section>
     }
 
-    @if (IsRunning && canChangeVersion && showVersionChange)
+    @if (IsRunning && canChangeVersion && !identityRefreshPending && showVersionChange)
     {
         <section class="panel mb-3" aria-labelledby="version-change-heading">
             <div class="section-heading">
@@ -356,6 +356,8 @@ else
             <div>Triggered by token #@completion.TokenId at @completion.NodeName (#@completion.NodeId) on @completion.CompletedAt.ToLocalTime().ToString("g").</div>
         </section>
     }
+
+    <InstanceAdministrativeActions InstanceId="@InstanceId" RefreshVersion="@administrativeRefreshVersion" OnExecuted="LoadAsync" />
 
     <nav class="status-tabs" aria-label="Instance sections">
         <a class="status-tab active text-decoration-none" href="#actions" @onclick='() => ScrollToSectionAsync("actions")' @onclick:preventDefault>Actions</a>
@@ -503,7 +505,7 @@ else
     {
         <div class="alert alert-info">Open a specific work item from the Inbox to claim or take an action.</div>
     }
-    @if (interruptFlows.Count > 0)
+    @if (interruptFlows.Count > 0 && !identityRefreshPending)
     {
         <section class="panel mb-3 border-danger">
             <h2 class="h4 text-danger">Interrupt actions</h2>
@@ -550,7 +552,11 @@ else
     }
     <section id="actions" class="panel mb-3">
         <h2 class="h4">Available actions</h2>
-        @if (HasAmbiguousActivePositions)
+        @if (identityRefreshPending)
+        {
+            <p role="status">Refreshing actions for the current identity…</p>
+        }
+        else if (HasAmbiguousActivePositions)
         {
             <div class="alert alert-info mb-0">
                 This instance has multiple active branches. Open a linked user task in the execution-position list to act on its exact work item.
@@ -860,6 +866,9 @@ else
     private Task? pollTask;
     private string? error;
     private bool interruptSubmitting;
+    private long identityEpoch;
+    private bool identityRefreshPending;
+    private bool disposed;
     private IReadOnlyList<WorkflowSummaryDto> versionTargets = [];
     private InstanceVersionChangePreviewDto? versionPreview;
     private long? selectedTargetWorkflowId;
@@ -1142,8 +1151,34 @@ else
 
     protected override async Task OnInitializedAsync()
     {
+        Token.Changed += OnIdentityChanged;
         await LoadAsync();
-        pollTask = PollAsync(pollCancellation.Token);
+        if (!disposed)
+        {
+            pollTask = PollAsync(pollCancellation.Token);
+        }
+    }
+
+    private void OnIdentityChanged()
+    {
+        var epoch = Interlocked.Increment(ref identityEpoch);
+        _ = InvokeAsync(async () =>
+        {
+            if (disposed) return;
+            identityRefreshPending = true;
+            availableFlows = []; interruptFlows = []; flowInputs.Clear();
+            canChangeVersion = false; showVersionChange = false; versionTargets = []; versionPreview = null;
+            loadedVersionTargetSourceId = null; selectedTargetWorkflowId = null; versionChangeReason = string.Empty;
+            versionChangeError = null; reactivationAuthorized = false; reactivationPreview = null;
+            selectedReactivationNodeId = null; reactivationReason = string.Empty; reactivationError = null; reactivationSuccess = null;
+            StateHasChanged();
+            await LoadAsync();
+            if (!disposed && epoch == Interlocked.Read(ref identityEpoch))
+            {
+                identityRefreshPending = false;
+                StateHasChanged();
+            }
+        });
     }
 
     private static string FormatTaskState(UserTaskWorkSummaryDto tasks)
@@ -1366,6 +1401,8 @@ else
         return roles.Length == 0 ? "Any role" : $"[{string.Join(", ", roles)}]";
     }
 
+    private int administrativeRefreshVersion;
+
     private async Task LoadAsync()
     {
         await refreshGate.WaitAsync();
@@ -1526,6 +1563,7 @@ else
         await LoadAvailableActionsAsync(cancellationToken);
         await LoadVersionTargetsAsync(cancellationToken, forceVersionTargets);
         await LoadReactivationPreviewAsync(cancellationToken, forceReactivationPreview);
+        administrativeRefreshVersion++;
     }
 
     private async Task LoadReactivationPreviewAsync(
@@ -1993,12 +2031,17 @@ else
 
     private async Task LoadAvailableActionsAsync(CancellationToken cancellationToken = default)
     {
-        availableFlows = instance is null || HasMultiInstances || !CanUseLegacyInstanceActions
+        var epoch = Interlocked.Read(ref identityEpoch);
+        var flows = instance is null || HasMultiInstances || !CanUseLegacyInstanceActions
             ? []
             : await Api.GetAvailableFlowsAsync(InstanceId, cancellationToken);
-        interruptFlows = SoleActiveMultiInstance is { } progress
+        if (disposed || epoch != Interlocked.Read(ref identityEpoch)) return;
+        var interrupts = SoleActiveMultiInstance is { } progress
             ? await Api.GetMultiInstanceInterruptFlowsAsync(progress.ExecutionId, cancellationToken)
             : [];
+        if (disposed || epoch != Interlocked.Read(ref identityEpoch)) return;
+        availableFlows = flows;
+        interruptFlows = interrupts;
     }
 
     private async Task RefreshFrom(Func<Task> action)
@@ -2082,6 +2125,9 @@ else
 
     public async ValueTask DisposeAsync()
     {
+        disposed = true;
+        Interlocked.Increment(ref identityEpoch);
+        Token.Changed -= OnIdentityChanged;
         pollCancellation.Cancel();
         if (pollTask is not null)
         {

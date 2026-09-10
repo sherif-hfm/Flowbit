@@ -19,6 +19,7 @@ The standalone [Flowbit editor](../flowbit-editor.html) designs workflows and ex
 - [Manage workflow versions](#manage-workflow-versions)
 - [Use My work and task forms](#use-my-work-and-task-forms)
 - [Inspect instances and activity](#inspect-instances-and-activity)
+- [Use instance administrative actions](#use-instance-administrative-actions)
 - [Manage assignments and roles](#manage-assignments-and-roles)
 - [Delegate work](#delegate-work)
 - [Monitor jobs and incidents](#monitor-jobs-and-incidents)
@@ -188,6 +189,7 @@ An early quorum, an interrupt, or another actor may cancel unfinished work. With
 Use **Instances** to filter runs, then open a result. On instance detail:
 
 - **Execution positions** shows the active or terminal tokens and links to their human work. Do not infer the whole process from one node name.
+- **Administrative actions** lists active human-task positions and their authored direct actions when the API grants workflow-administrator permission. See [the override procedure](#use-instance-administrative-actions).
 - **Variables** shows the latest displayed values and their attribution; **History** shows transition times, node/flow references, actors, and available event details.
 - **Gateway scopes**, **Complex states**, **Multi-instance results**, **Version changes**, **Variable updates**, and **Shared variables** appear when applicable.
 - **Change version** is available for authorized running-instance administration. Choose a compatible published target, enter a reason, preview, and inspect blockers/warnings before confirming.
@@ -197,6 +199,24 @@ Use **Instances** to filter runs, then open a result. On instance detail:
 Personal task visibility and instance administration are different access scopes. In particular, the current instance-detail API is authenticated but does not apply the personal task-visibility predicate. See the [API authorization boundary](api-guide.md#http-conventions-and-authentication) when designing a production interface.
 
 For a committed visit to a node, use **Activity** (**Node activity**). Combine lifecycle status, **Advanced filters**, and sorting, then open a result. The detail separates timing, actors, task/token correlations, submitted results, committed failures, and **Execution-local variable changes**. Those changes are attributed writes, not a complete execution-time snapshot. Date filters use inclusive **From** and exclusive **To** bounds; variable filters search the owning instance's latest data. Read access comes from workflow `taskAssignmentRoles` or `NodeExecution.RequiredRole` (default `admin`) and grants no task mutation authority.
+
+## Use instance administrative actions
+
+On `/instances/{id}`, the **Administrative actions** section uses `Workflow.RequiredRole` (default `admin`). The API grants access from its current setting; changing the development identity or receiving `401`/`403` clears administrative data and controls. A custom setting is a comma-separated, case-insensitive role list and replaces the default. Ordinary **My work**, task actions, claims, assignments, and parent interrupts still require their own authored permissions.
+
+The instance page also refreshes its displayed actor and personal actions when the identity changes.
+
+1. Find the exact task or multi-instance execution, its token, and affected-task count. Parallel positions appear independently. **Refresh tasks**, **Previous**, and **Next** retrieve current positions.
+2. Choose the action button, which shows its destination and flow ID. Enter its typed inputs and optional **Reason (optional)**; reasons are limited to 1,000 Unicode characters. Required inputs must be provided.
+3. For a multi-instance parent, choose **Multi-instance operation**: **Force parent** cancels unfinished children without creating votes and takes the selected action once; **Complete unfinished children** applies that action and its inputs to every remaining active/pending child, then advances the parent once. Both preserve completed-child history. No operation is preselected.
+4. Click **Review action**, inspect the source, destination, affected count, and mode, then **Confirm administrative action**. Duplicate submissions are disabled while execution is in progress. **Edit** returns to the form.
+5. After success, the instance's tasks, execution positions, variables, and history refresh. **View audit batch** opens the completed one-item audit. A stale-state conflict refreshes the page state and requires selecting an action again; it is never automatically resubmitted.
+
+The override ignores task/action roles, assignment, claims, inbox visibility, and the selected flow's condition. Declared input validation and downstream routing still apply. It creates new history and may invoke downstream services again; it does not reverse completed effects. Engine-only/default flows are unavailable. Timer-boundary overrides remain on the [administrative batch screen](#use-administrative-batches).
+
+The override executes immediately through the API and database; it creates no administrative Worker jobs. A workflow that reaches an authored asynchronous step still needs the Worker for that continuation. See [instance administrative HTTP contracts](api-guide.md#instance-administrative-actions).
+
+For [10-admin-action.json](../examples/basics/10-admin-action.json), a normal task actor needs `User` at `approval1` and `Manager` at `approval2`; `back`/`cancel` also require the flow's `admin` role. An admin-only actor therefore has no ordinary inbox task at those nodes. With the default administrator setting, the separate section offers **approval/cancel** at `approval1` and **approval/back/cancel** at `approval2`. Each authored `cancel` action reaches the normal end event; it is different from **Cancel instance**.
 
 ## Manage assignments and roles
 
@@ -234,9 +254,9 @@ These screens prepare and execute persisted batches through the Worker. The norm
 | --- | --- |
 | **Batch version changes** | Select a family, exact source version, and different published target in that family. Supply a reason; **Prepare compatibility asynchronously**. Review warnings/blockers before confirming eligible instances. Requires `Workflow.RequiredRole` (default `admin`). |
 | **Instance variables** | Select running instances, enter variable **Name** and **Raw JSON value** rows, then **Freeze and prepare asynchronously**. Review and confirm eligible instances. Requires `Workflow.RequiredRole`. These are administrative raw writes, not normal task-form validation; they can wake conditional events. |
-| **Administrative actions** | Select the family, **Exact immutable version**, and **Waiting user-task node**. Search positions; choose **Task actions** or **Timer boundary actions**, then **Prepare batch asynchronously**. Review affected positions/tasks before confirming. MI choices include **Force parent** and **Complete all unfinished children**. Timer overrides accept no submitted variables. |
+| **Administrative actions** | Requires `Workflow.RequiredRole` and a nonblank actor. Select the family, **Exact immutable version**, and **Waiting user-task node**. Search positions; choose **Task actions** or **Timer boundary actions**, then **Prepare batch asynchronously**. Review affected positions/tasks before confirming. MI choices include **Force parent** and **Complete all unfinished children**. Timer overrides accept no submitted variables. |
 
-**Current administrative-action boundary:** this screen's backing API requires an authenticated, nonblank actor, with no additional administrator-role gate. Its purpose is to bypass normal task role/claim restrictions. The **Manage** navigation label is not access control; protect this surface according to your deployment's access model. See [administrative action contracts](api-guide.md#administrative-action-batches).
+All administrative-action discovery, audit, and mutation APIs enforce the current workflow-administrator permission. The batch screen clears restricted data and reports access denial when authorization fails. Changing the development identity clears the previous selection and reloads permitted workflows; late responses from the previous identity cannot clear the new identity's selections or re-enable controls while its requests are pending. Queued preparation/execution also rechecks the setting against stored preparer/confirmer roles per item: unauthorized preparation is **ineligible**, and execution is **skipped** with `authentication_changed`. Completed items and committed asynchronous continuations remain intact. See [administrative action contracts](api-guide.md#administrative-action-batches) and [deployment changes](deployment.md#upgrade-and-compatibility-rules).
 
 ## Manage settings and shared variables
 

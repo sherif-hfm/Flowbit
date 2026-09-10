@@ -9,6 +9,26 @@ namespace Flowbit.Ui.Clients;
 
 public sealed class WorkflowApiClient(HttpClient httpClient)
 {
+    public async Task<PagedResult<InstanceAdministrativeActionPositionDto>> GetInstanceAdministrativeActionsAsync(
+        long instanceId, int page = 1, int pageSize = 25, CancellationToken cancellationToken = default)
+    {
+        using var response = await httpClient.GetAsync(
+            $"/api/instances/{instanceId}/administrative-actions?page={page}&pageSize={pageSize}", cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<PagedResult<InstanceAdministrativeActionPositionDto>>(cancellationToken)
+            ?? new PagedResult<InstanceAdministrativeActionPositionDto>([], page, pageSize, 0);
+    }
+
+    public async Task<AdministrativeActionResultDto> ExecuteInstanceAdministrativeActionAsync(
+        long instanceId, ExecuteInstanceAdministrativeActionRequest request, CancellationToken cancellationToken = default)
+    {
+        using var response = await httpClient.PostAsJsonAsync(
+            $"/api/instances/{instanceId}/administrative-actions", request, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<AdministrativeActionResultDto>(cancellationToken)
+            ?? throw new InvalidOperationException("The API returned an empty administrative action result.");
+    }
+
     public async Task<RetentionStatusDto> GetRetentionAsync(CancellationToken cancellationToken = default)
     {
         using var response = await httpClient.GetAsync("/api/retention", cancellationToken);

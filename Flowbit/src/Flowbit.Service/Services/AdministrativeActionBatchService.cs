@@ -6,7 +6,7 @@ using Flowbit.Shared.Models;
 
 namespace Flowbit.Service.Services;
 
-public sealed class AdministrativeActionBatchService(
+public sealed partial class AdministrativeActionBatchService(
     IWorkflowDefinitionRepository definitions,
     IAdministrativeActionCandidateRepository candidates,
     IAdministrativeActionBatchRepository batches,
@@ -14,7 +14,10 @@ public sealed class AdministrativeActionBatchService(
     IEngineSettingsRepository engineSettings,
     IUnitOfWork unitOfWork,
     WorkflowContextOptions contextOptions,
-    TimeProvider timeProvider) : IAdministrativeActionBatchService
+    TimeProvider timeProvider,
+    IWorkflowRuntimeRepository? instanceRuntime = null,
+    IAdministrativeActionExecutor? administrativeExecutor = null)
+    : IAdministrativeActionBatchService, IInstanceAdministrativeActionService
 {
     private static readonly TimeSpan[] BatchRetryDelays =
     [
@@ -34,6 +37,7 @@ public sealed class AdministrativeActionBatchService(
         ActorContext actor,
         CancellationToken cancellationToken)
     {
+        await WorkflowAdministratorPolicy.RequireAsync(actor, engineSettings, cancellationToken);
         RequireActor(actor);
         var latest = await definitions.ListLatestAsync(cancellationToken);
         var result = new List<WorkflowSummaryDto>();
@@ -58,6 +62,7 @@ public sealed class AdministrativeActionBatchService(
         ActorContext actor,
         CancellationToken cancellationToken)
     {
+        await WorkflowAdministratorPolicy.RequireAsync(actor, engineSettings, cancellationToken);
         RequireActor(actor);
         var workflow = await GetWorkflowAsync(workflowDefinitionId, cancellationToken);
         return workflow.Definition.FlowNodes
@@ -81,6 +86,7 @@ public sealed class AdministrativeActionBatchService(
         ActorContext actor,
         CancellationToken cancellationToken)
     {
+        await WorkflowAdministratorPolicy.RequireAsync(actor, engineSettings, cancellationToken);
         RequireActor(actor);
         var workflow = await GetWorkflowAsync(workflowDefinitionId, cancellationToken);
         RequireSourceNode(workflow, sourceNodeId);
@@ -92,6 +98,7 @@ public sealed class AdministrativeActionBatchService(
         ActorContext actor,
         CancellationToken cancellationToken)
     {
+        await WorkflowAdministratorPolicy.RequireAsync(actor, engineSettings, cancellationToken);
         ArgumentNullException.ThrowIfNull(request);
         RequireActor(actor);
         var workflow = await GetWorkflowAsync(request.WorkflowDefinitionId, cancellationToken);
@@ -110,6 +117,7 @@ public sealed class AdministrativeActionBatchService(
         ActorContext actor,
         CancellationToken cancellationToken)
     {
+        await WorkflowAdministratorPolicy.RequireAsync(actor, engineSettings, cancellationToken);
         ArgumentNullException.ThrowIfNull(request);
         var user = RequireActor(actor);
         var reason = NormalizeOptionalReason(request.Reason, "Reason");
@@ -224,6 +232,7 @@ public sealed class AdministrativeActionBatchService(
         ActorContext actor,
         CancellationToken cancellationToken)
     {
+        await WorkflowAdministratorPolicy.RequireAsync(actor, engineSettings, cancellationToken);
         ArgumentNullException.ThrowIfNull(request);
         RequireActor(actor);
         var status = NormalizeOptional(request.Status);
@@ -254,6 +263,7 @@ public sealed class AdministrativeActionBatchService(
         ActorContext actor,
         CancellationToken cancellationToken)
     {
+        await WorkflowAdministratorPolicy.RequireAsync(actor, engineSettings, cancellationToken);
         RequireActor(actor);
         EnsurePositive(batchId, "Batch id");
         var batch = await batches.GetAsync(batchId, false, cancellationToken);
@@ -268,6 +278,7 @@ public sealed class AdministrativeActionBatchService(
         ActorContext actor,
         CancellationToken cancellationToken)
     {
+        await WorkflowAdministratorPolicy.RequireAsync(actor, engineSettings, cancellationToken);
         RequireActor(actor);
         EnsurePositive(batchId, "Batch id");
         var normalizedStatus = NormalizeOptional(status);
@@ -299,6 +310,7 @@ public sealed class AdministrativeActionBatchService(
         ActorContext actor,
         CancellationToken cancellationToken)
     {
+        await WorkflowAdministratorPolicy.RequireAsync(actor, engineSettings, cancellationToken);
         ArgumentNullException.ThrowIfNull(request);
         EnsurePositive(batchId, "Batch id");
         AdministrativeActionBatchRecord batch;
@@ -383,6 +395,7 @@ public sealed class AdministrativeActionBatchService(
         ActorContext actor,
         CancellationToken cancellationToken)
     {
+        await WorkflowAdministratorPolicy.RequireAsync(actor, engineSettings, cancellationToken);
         ArgumentNullException.ThrowIfNull(request);
         EnsurePositive(batchId, "Batch id");
         var cancellationReason = NormalizeOptionalReason(request.Reason, "Cancellation reason");

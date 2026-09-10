@@ -497,7 +497,7 @@ public sealed class AdministrativeActionRuntimeModeApiTests(PostgresApiFixture f
         {
             request.Content = JsonContent.Create(body, options: JsonOptions);
         }
-        ApiTestAuth.Authorize(request, user, []);
+        ApiTestAuth.Authorize(request, user, ["admin"]);
         request.Headers.TryAddWithoutValidation("X-Test-Suppress-Admin", "true");
         return await fixture.Client.SendAsync(request);
     }

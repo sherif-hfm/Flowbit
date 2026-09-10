@@ -1,0 +1,132 @@
+{
+  "id": "message-start",
+  "name": "Message Start Workflow",
+  "initialEventId": null,
+  "variables": [],
+  "lanes": [],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Start",
+      "externalId": "message-start",
+      "type": "messageStartEvent",
+      "laneId": null,
+      "x": 100,
+      "y": 119,
+      "roles": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "assignee": null,
+      "assignments": [],
+      "attachedToRef": null,
+      "errorVariable": null,
+      "message": {
+        "clientId": "user",
+        "clientSecret": "${setting.messageStart.clientSecret}",
+        "headerName": "msg-id",
+        "headerValue": "${setting.messageStart.correlationValue}",
+        "headerValidation": "",
+        "outputMappings": [
+          {
+            "variable": "userName",
+            "path": "user-name",
+            "dataType": "string",
+            "isArray": false,
+            "required": true,
+            "defaultValue": null,
+            "validation": null
+          },
+          {
+            "variable": "requestRef",
+            "path": "request-ref",
+            "dataType": "string",
+            "isArray": false,
+            "required": true,
+            "defaultValue": null,
+            "validation": null
+          }
+        ]
+      },
+      "idempotency": {
+        "headerName": "Idempotency-Key",
+        "variable": "requestId"
+      },
+      "businessKey": {
+        "variable": "requestRef",
+        "uniqueness": "active"
+      }
+    },
+    {
+      "id": 2,
+      "name": "Confirm",
+      "externalId": null,
+      "type": "userTask",
+      "laneId": null,
+      "x": 435,
+      "y": 112,
+      "roles": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "variables": [],
+      "assignee": null,
+      "multiInstance": null,
+      "attachedToRef": null,
+      "errorVariable": null
+    },
+    {
+      "id": 3,
+      "name": "End",
+      "externalId": null,
+      "type": "endEvent",
+      "laneId": null,
+      "x": 903,
+      "y": 124,
+      "roles": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "variables": [],
+      "assignee": null,
+      "attachedToRef": null,
+      "errorVariable": null
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "",
+      "externalId": null,
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": [],
+      "condition": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
+    },
+    {
+      "id": 102,
+      "name": "Confirm",
+      "externalId": null,
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [],
+      "variables": [],
+      "condition": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
+    }
+  ],
+  "cancelRoles": [],
+  "unclaimRoles": []
+}

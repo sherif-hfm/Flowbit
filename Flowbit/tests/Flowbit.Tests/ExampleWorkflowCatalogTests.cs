@@ -12,7 +12,7 @@ public sealed class ExampleWorkflowCatalogTests
     {
         var paths = ExampleWorkflowData.RelativePaths;
         Assert.NotEmpty(paths);
-        Assert.Equal(41, paths.Count);
+        Assert.Equal(42, paths.Count);
 
         var catalogPath = Path.Combine(
             AppContext.BaseDirectory,
@@ -33,7 +33,14 @@ public sealed class ExampleWorkflowCatalogTests
                 ?? throw new InvalidOperationException($"Example '{path}' did not deserialize.");
 
             Assert.False(string.IsNullOrWhiteSpace(model.Id));
-            Assert.StartsWith("example-", model.Id, StringComparison.Ordinal);
+            if (path == "examples/basics/10-admin-action.json")
+            {
+                Assert.Equal("admin-action", model.Id);
+            }
+            else
+            {
+                Assert.StartsWith("example-", model.Id, StringComparison.Ordinal);
+            }
             Assert.False(string.IsNullOrWhiteSpace(model.Name));
             Assert.True(ids.Add(model.Id), $"Duplicate example workflow id '{model.Id}'.");
 

@@ -14,6 +14,42 @@ namespace Flowbit.Tests;
 public sealed class WorkflowApiClientAdministrativeActionTests
 {
     [Fact]
+    public async Task InstanceDiscoveryKeepsPaginationOnTheInstanceScopedRoute()
+    {
+        using var handler = new RecordingHandler(Response(HttpStatusCode.OK,
+            new PagedResult<InstanceAdministrativeActionPositionDto>([], 3, 10, 25)));
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("https://flowbit.test") };
+        var client = new WorkflowApiClient(http);
+
+        var result = await client.GetInstanceAdministrativeActionsAsync(42, 3, 10);
+
+        Assert.Equal(25, result.TotalCount);
+        Assert.Equal("/api/instances/42/administrative-actions?page=3&pageSize=10", Assert.Single(handler.Requests).Path);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.Unauthorized)]
+    [InlineData(HttpStatusCode.Forbidden)]
+    [InlineData(HttpStatusCode.Conflict)]
+    public async Task InstanceExecutionPreservesTypedAuthorizationAndConcurrencyFailures(HttpStatusCode status)
+    {
+        using var handler = new RecordingHandler(Response(status, new { error = "Administrative action denied or stale." }));
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("https://flowbit.test") };
+        var client = new WorkflowApiClient(http);
+        var request = new ExecuteInstanceAdministrativeActionRequest
+        {
+            ExpectedWorkflowDefinitionId = 8, SourceNodeId = 7, PositionKind = AdministrativeActionPositionKinds.UserTask,
+            PositionId = 73, FlowId = 14, ExpectedTokenId = 12, ExpectedTokenActivationId = Guid.NewGuid(),
+            ExpectedPositionUpdatedAt = DateTimeOffset.UtcNow, ExpectedAffectedTaskCount = 1
+        };
+
+        var exception = await Assert.ThrowsAsync<WorkflowApiException>(() => client.ExecuteInstanceAdministrativeActionAsync(42, request));
+
+        Assert.Equal(status, exception.StatusCode);
+        Assert.Equal("/api/instances/42/administrative-actions", Assert.Single(handler.Requests).Path);
+    }
+
+    [Fact]
     public async Task OrdinaryTaskAuthorizationFailureUsesWorkflowApiException()
     {
         using var handler = new RecordingHandler(

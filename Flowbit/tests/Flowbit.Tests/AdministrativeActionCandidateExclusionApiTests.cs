@@ -14,6 +14,47 @@ public sealed class AdministrativeActionCandidateExclusionApiTests(
     private static readonly JsonSerializerOptions JsonOptions =
         new(JsonSerializerDefaults.Web);
 
+    [Theory]
+    [InlineData(int.MaxValue)]
+    [InlineData(536870913)]
+    public async Task LargePagesReturnEmptyResultsWithoutOverflowOrLosingTotalCount(int page)
+    {
+        var workflowId = await CreateWorkflowAsync();
+        var instance = await StartAsync(workflowId);
+        const int pageSize = 200;
+
+        var batchPage = await SearchAsync(new AdministrativeActionCandidateSearchRequest
+        {
+            WorkflowDefinitionId = workflowId,
+            SourceNodeId = 2,
+            Page = page,
+            PageSize = pageSize
+        });
+        Assert.Empty(batchPage.Items);
+        Assert.Equal(1, batchPage.TotalCount);
+        Assert.Equal(page, batchPage.Page);
+        Assert.Equal(pageSize, batchPage.PageSize);
+
+        using var response = await SendAsync(HttpMethod.Get,
+            $"/api/instances/{instance.Id}/administrative-actions?page={page}&pageSize={pageSize}");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var instancePage = await ReadAsync<PagedResult<InstanceAdministrativeActionPositionDto>>(response);
+        Assert.Empty(instancePage.Items);
+        Assert.Equal(1, instancePage.TotalCount);
+        Assert.Equal(page, instancePage.Page);
+        Assert.Equal(pageSize, instancePage.PageSize);
+
+        var firstPage = await SearchAsync(new AdministrativeActionCandidateSearchRequest
+        {
+            WorkflowDefinitionId = workflowId,
+            SourceNodeId = 2,
+            Page = 1,
+            PageSize = pageSize
+        });
+        Assert.Equal(instance.Id, Assert.Single(firstPage.Items).InstanceId);
+        Assert.Equal(1, firstPage.TotalCount);
+    }
+
     [Fact]
     public async Task CandidateSearch_DeduplicatesAndAppliesPositionExclusions()
     {
@@ -167,7 +208,7 @@ public sealed class AdministrativeActionCandidateExclusionApiTests(
         {
             request.Content = JsonContent.Create(body, options: JsonOptions);
         }
-        ApiTestAuth.Authorize(request, "candidate-operator", []);
+        ApiTestAuth.Authorize(request, "candidate-operator", ["admin"]);
         request.Headers.TryAddWithoutValidation("X-Test-Suppress-Admin", "true");
         return await fixture.Client.SendAsync(request);
     }

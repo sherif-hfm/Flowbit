@@ -146,6 +146,10 @@ There is **no API token-issuance endpoint**. The UI's `/token` page is a develop
 
 Integrating OIDC is also a source integration: configure a trusted provider in `AddJwtBearer`, map identity/role claims to the engine's contracts, and obtain tokens through your application. Merely adding `Authority` to configuration does not replace the current symmetric-key validator. Do not treat the bundled development signing key as a production trust boundary.
 
+All administrative-action catalog, candidate, batch/audit, and direct instance endpoints require a nonblank authenticated actor and `Workflow.RequiredRole`. This engine setting accepts comma-separated roles matched case-insensitively; missing/blank defaults to `admin`, and custom roles replace the default. The HTTP and service/engine entry points share the policy. An administrator override does not relax ordinary task, inbox, claim, assignment, delegation, or multi-instance interrupt authorization. See [administrative HTTP contracts](api-guide.md#instance-administrative-actions).
+
+Queued administrative actions recheck the current role setting per item against the saved preparer roles during preparation and confirmer roles during execution. Unauthorized preparation becomes `ineligible`; unauthorized execution becomes `skipped` with `authentication_changed`. The Worker uses these stored snapshots and does not query an identity provider for live user-role revocation. Setting changes apply to later checks; they do not undo an already authorized transaction, committed successes, or already-committed asynchronous continuations.
+
 ### Machine integrations
 
 - Message-start/catch endpoints authenticate node-configured client ID/secret plus required headers, independently of bearer JWTs. Keep their secrets in `config.*`, outside immutable workflow JSON.
@@ -291,6 +295,9 @@ Classify the **actual source database and release path** before deployment. The 
 | Shared-variable REST and locking contracts | Run [shared-variable-rest-inventory.sql](../Flowbit/tools/shared-variable-rest-inventory.sql). Unsafe REST use must be empty: tasks accessing shared bindings require `asyncBefore`. Review every reported published multi-key definition, then save/republish through the monotonic lock-order validator or drain it. Existing unsafe definitions fail closed at runtime. |
 | Shared revision allocator transition | Deploy the compatibility allocator/migration, upgrade all writer replicas, then invoke the fenced sequence cutover. Legacy writers are rejected after cutover. Keep the exact staged procedure in [shared-variable deployment notes](../Flowbit/README.md#shared-variables). |
 | Conditional boundaries, role policies, retention | Apply their migrations before upgraded writers/features. Mixed legacy replicas are unsupported for these contracts. Retention rollback is additionally blocked after history has actually been pruned. |
+| Secure administrative actions | This release adds a breaking `Workflow.RequiredRole` gate to previously bearer-only administrative-action catalogs, candidates, audits, and batch mutations, plus direct instance actions. Pause administrative submissions and Workers; upgrade every API/Worker replica before resuming. Older replicas would retain the broader access. Existing audit tables/settings are reused; no new migration is needed for this change. |
+
+Before resuming administrative work, confirm the intended `Workflow.RequiredRole` value and update affected clients to send an authorized actor token. Non-admin batch clients now receive `403`; previously queued items whose stored roles no longer meet the setting become terminal `ineligible`/`skipped` outcomes. Review batch results after resuming the Worker; successful items remain committed. Deploy the updated UI to expose immediate instance actions and role-denial handling. Direct instance actions execute without administrative Worker jobs, while authored asynchronous steps keep their usual Worker requirement.
 
 After **all** shared-variable writer replicas have been upgraded and the shared-variable cutover prerequisites above are satisfied, the fenced allocator cutover is:
 

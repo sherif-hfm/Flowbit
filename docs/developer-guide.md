@@ -16,6 +16,7 @@ Start with the [runnable getting-started guide](getting-started.md). This guide 
 - [Build an inbox and action form](#build-an-inbox-and-action-form)
 - [Apply ownership and role policies](#apply-ownership-and-role-policies)
 - [Handle parallel and multi-instance work](#handle-parallel-and-multi-instance-work)
+- [Perform explicit administrative actions](#perform-explicit-administrative-actions)
 - [Select and change workflow versions](#select-and-change-workflow-versions)
 - [Integrate inbound messages](#integrate-inbound-messages)
 - [Separate retries from business identity](#separate-retries-from-business-identity)
@@ -74,7 +75,7 @@ Example response for an identity created with these roles:
 
 `Authentication.UserIdentityClaim` is an engine setting read once at API startup. When present, it selects the canonical actor claim; a missing, blank, or ambiguous value in the token fails authentication. Without that setting, the API uses `Identity.Name`, then `NameIdentifier`. Plan identity changes across all API replicas and existing task ownership; changing this setting requires restart. `WorkflowContext.AllowedClaims` separately controls expression access to claims and does not choose the actor.
 
-Workflow-definition endpoints have an additional role gate: `Workflow.RequiredRole`, defaulting to `admin`. This role does not automatically satisfy authored `Requester`, `Reviewer`, or other task roles. Administrative and operational endpoint families have their own policies, documented in the API reference.
+Workflow-definition and all administrative-action endpoints use `Workflow.RequiredRole`: any role in its comma-separated list matches case-insensitively, missing/blank defaults to `admin`, and a custom value replaces the default. Administrative actions also require a nonblank actor. This permission does not automatically satisfy authored `Requester`, `Reviewer`, or other roles on ordinary task APIs. Other administrative and operational endpoint families have their own policies, documented in the API reference.
 
 Access scopes differ by resource. The inbox and personal task routes enforce task visibility, ownership, and actor roles. **The current `GET /api/instances/{id}` endpoint requires authentication but does not apply those personal task-visibility checks.** Do not expose it as a per-tenant or per-owner data boundary without implementing that boundary in your integration. Instance lists, activity searches, management routes, and message routes each have their own authorization contract.
 
@@ -281,6 +282,20 @@ Authorization: Bearer <token>
 An authorized parent interrupt requires task and flow roles, but not an active assigned child or a claim. It can finish the parent and cancel unfinished children immediately, including under `afterAll`. Use its returned instance state to refresh the worklist. See the [multi-instance examples](../examples/multi-instance/README.md) for complete configurations.
 
 The legacy instance-addressed claim/unclaim/flow routes return `409` when more than one active task makes the target ambiguous. Build new clients on task-addressed routes.
+
+## Perform explicit administrative actions
+
+Keep explicit overrides separate from your personal inbox/action form. `GET /api/instances/{id}/administrative-actions` discovers active ordinary tasks and multi-instance parents using the caller's current workflow-administrator permission. Use its paginated positions and action definitions to present the task, destination, affected count, and typed inputs. The permission comes from the API; do not infer it from a hard-coded `admin` string in the client.
+
+After an explicit review/confirmation, POST to the same route with the selected position/action and exact workflow-definition ID, token ID/activation, position timestamp, and affected count returned by discovery. Include typed `variables` and an optional reason. The server derives the actor and creates the audit IDs. A multi-instance parent requires `forceParent` or `completeAllChildren`: the first cancels unfinished children without fabricating votes, and the second completes all unfinished active/pending children using the chosen action and common inputs. Both traverse the selected flow once and preserve completed-child history.
+
+These explicit routes bypass task/action roles, assignment, claims, inbox visibility, and the selected action condition. They retain typed input validation, downstream routing, and runtime limits; engine-only/default flows are rejected. They neither replace captured task-role policies nor grant broader access through normal task/legacy action/parent-interrupt routes. After an override, refresh the instance and inbox to display the actual newly active work under its authored permissions.
+
+A successful `200` includes refreshed instance detail and `administrativeActionBatchId` for a completed one-item audit. Execution and audit commit together; no administrative Worker jobs are created. Authored asynchronous continuations still require a Worker. On `409`, refresh and require a new selection; on `401`/`403`, clear restricted data and action controls. Disable duplicate submissions and do not automatically resubmit an uncertain or stale action.
+
+Use [administrative batches](api-guide.md#administrative-action-batches) for frozen selections across instances and timer-boundary overrides. Every batch catalog/read/mutation route now requires the same administrator permission, including retries. The Worker checks the current setting against stored preparer/confirmer roles per item; those snapshots do not query your identity provider for later role revocation. Unauthorized preparation becomes `ineligible`, and unauthorized execution becomes `skipped` with `authentication_changed`. Review [rollout rules](deployment.md#upgrade-and-compatibility-rules) before upgrading older batch clients.
+
+The [admin-action example](../examples/basics/10-admin-action.json) demonstrates why an admin-only actor cannot use the ordinary inbox at `approval1` (`User`) or `approval2` (`Manager`), while a configured workflow administrator can select their explicit administrative actions. See the [complete direct HTTP contract](api-guide.md#instance-administrative-actions) and [UI procedure](ui-guide.md#use-instance-administrative-actions).
 
 ## Select and change workflow versions
 

@@ -35,7 +35,8 @@ public sealed partial class WorkflowEngineService(
     ISharedVariableAccessPlanCache? sharedVariableAccessPlans = null,
     IConditionalBoundarySubscriptionRepository? conditionalBoundarySubscriptions = null)
     : IWorkflowEngineService, IWorkflowJobProcessor,
-      IInstanceVersionChangeBatchExecutor, IConditionalEventRuntimeCoordinator
+      IInstanceVersionChangeBatchExecutor, IConditionalEventRuntimeCoordinator,
+      IAdministrativeActionExecutor
 {
     private const string InstanceListRequiredRoleSettingKey =
         "WorkflowInstances.RequiredRole";
@@ -3405,7 +3406,8 @@ public sealed partial class WorkflowEngineService(
         long? expectedTaskId,
         CancellationToken cancellationToken,
         Action<ResolvedUserTaskAccess>? accessResolved = null,
-        AdministrativeBatchFlowContext? administrativeBatch = null)
+        AdministrativeBatchFlowContext? administrativeBatch = null,
+        bool joinAmbientTransaction = false)
     {
         await LoadSettingsAsync(cancellationToken);
         var visibilityContext = CreateInboxVisibilityContext(actor);
@@ -3455,7 +3457,9 @@ public sealed partial class WorkflowEngineService(
         }
 
         string performedBy = NormalizeUser(actor.User);
-        await using var transaction = await unitOfWork.BeginTransactionAsync(cancellationToken);
+        await using var ownedTransaction = joinAmbientTransaction
+            ? null
+            : await unitOfWork.BeginTransactionAsync(cancellationToken);
         var instance = await runtime.GetInstanceForUpdateAsync(id, false, cancellationToken);
         if (instance is null)
         {
@@ -3698,7 +3702,10 @@ public sealed partial class WorkflowEngineService(
                     cancellationToken);
             }
             await unitOfWork.SaveChangesAsync(cancellationToken);
-            await transaction.CommitAsync(cancellationToken);
+            if (ownedTransaction is not null)
+            {
+                await ownedTransaction.CommitAsync(cancellationToken);
+            }
             return await BuildDetailAsync(id, cancellationToken);
         }
         token = tokenAfterConditionalCapture!;
@@ -3797,7 +3804,10 @@ public sealed partial class WorkflowEngineService(
                     cancellationToken);
             }
             await unitOfWork.SaveChangesAsync(cancellationToken);
-            await transaction.CommitAsync(cancellationToken);
+            if (ownedTransaction is not null)
+            {
+                await ownedTransaction.CommitAsync(cancellationToken);
+            }
             return await BuildDetailAsync(id, cancellationToken);
         }
 
@@ -3899,7 +3909,10 @@ public sealed partial class WorkflowEngineService(
         }
 
         await unitOfWork.SaveChangesAsync(cancellationToken);
-        await transaction.CommitAsync(cancellationToken);
+        if (ownedTransaction is not null)
+        {
+            await ownedTransaction.CommitAsync(cancellationToken);
+        }
 
         logger.LogInformation(
             "Successfully completed transition for instance {InstanceId} through flow {FlowId} from token {TokenId}.",

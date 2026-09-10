@@ -746,6 +746,8 @@ and in-flight gateway executions are not migrated.
 - `POST /api/task-distribution/workflows/{workflowKey}/tasks/{taskId}/assign`
 - `POST /api/task-distribution/workflows/{workflowKey}/tasks/{taskId}/unassign`
 - `GET /api/auth/context` (server-resolved workflow actor and roles)
+- `GET /api/instances/{id}/administrative-actions` (workflow-administrator discovery)
+- `POST /api/instances/{id}/administrative-actions` (immediate audited override)
 - `GET /api/multi-instance-executions/{executionId}/flows`
 - `POST /api/multi-instance-executions/{executionId}/flows/{flowId}`
 
@@ -778,6 +780,62 @@ unchanged. The engine appends an `instanceReactivated` history row but records n
 sequence-flow occurrence because no authored flow was traversed. If task entry
 cannot reach the stable-wait postcondition, the status, claim, new runtime rows,
 and audit all roll back together.
+
+## Administrative task actions
+
+All administrative-action HTTP routes and public administrative service/engine
+entry points require a nonblank actor and the shared `WorkflowAdministratorPolicy`.
+The current `Workflow.RequiredRole` setting supplies comma-separated roles,
+matched case-insensitively; absent/blank means `admin`, and custom values replace
+that default. This covers catalogs, candidate search, audit reads, creation,
+confirmation, cancellation, and direct instance execution before any retry result
+is returned. It does not change ordinary task, inbox, claim, assignment,
+delegation, or multi-instance interrupt permissions or captured role policies.
+
+GET `/api/instances/{id}/administrative-actions` uses an instance-scoped database
+candidate query with exact count and numbered paging. Ordinary tasks appear
+individually and multi-instance parents appear once, with their unfinished
+active/pending child count. The response combines each position's version,
+token/activation/timestamp fences with selectable non-default direct flows and
+their input definitions. Parallel positions remain independently addressable.
+
+POST to the same route checks ownership and the displayed version, token
+activation, position timestamp, and affected count under the established
+instance → gateway state → token → multi-instance → open-task lock hierarchy.
+It then inserts a real single batch/item audit and calls the scoped engine via
+`IAdministrativeActionExecutor` in the same unit-of-work transaction. Ordinary
+routing, conditional-boundary early returns, and `asyncAfter` paths commit only
+when the engine owns its transaction; immediate execution leaves commit/disposal
+to the outer service. Successful routing, history, FlowInfo evidence, the
+succeeded item, and completed batch commit atomically. Failure rolls all of them
+back. The response is actual refreshed instance state plus the audit batch ID.
+No administrative preparation/execution job is enqueued, and the existing Worker
+entry point retains its own transaction.
+
+Direct overrides bypass task/action roles, assignment, claims, inbox visibility,
+and the selected flow condition while retaining typed input validation,
+downstream routing, and limits. `forceParent` cancels unfinished multi-instance
+children without votes; `completeAllChildren` records the chosen action/common
+inputs on every unfinished child and suppresses intermediate aggregate routing.
+Both traverse the selected flow once and retain completed-child history.
+When complete-all processes a still-pending sequential child, its node visit
+starts and completes at the administrative action time, with the administrator
+as its trigger. Existing active-visit start times are preserved; pending
+children cancelled by force-parent remain unstarted.
+Timer-boundary overrides remain on the durable batch API.
+
+Batch preparation rechecks the current administrator setting against the stored
+preparer roles per item; execution checks the stored confirmer roles. A denial
+becomes `ineligible` during preparation or `skipped` with `authentication_changed`
+during execution, without endless retries. These are role snapshots, not live
+identity-provider checks. Already committed successes and administrative
+`asyncAfter` continuations remain valid and retain their original audit context.
+Authored asynchronous work still needs the Worker after a direct action.
+
+This authorization change requires coordinated API/Worker rollout but no new
+database migration. See the [upgrade rules](../docs/deployment.md#upgrade-and-compatibility-rules),
+[HTTP contract](../docs/api-guide.md#instance-administrative-actions), and
+[UI procedure](../docs/ui-guide.md#use-instance-administrative-actions).
 
 ## Administrative instance-variable updates
 
@@ -987,7 +1045,10 @@ drain active assignments and claims before switching identity formats.
 
 ## Verification
 
-Docker is required for the isolated PostgreSQL tests:
+Docker is required for the isolated PostgreSQL tests. Historical workflow inputs
+are tracked in [test fixtures](tests/Flowbit.Tests/Fixtures/README.md) and copied
+by the test project; no generated fixture directory or custom MSBuild target is
+needed:
 
 ```powershell
 dotnet test .\tests\Flowbit.Tests\Flowbit.Tests.csproj
