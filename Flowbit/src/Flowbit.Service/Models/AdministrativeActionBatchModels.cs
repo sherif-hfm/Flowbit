@@ -53,6 +53,7 @@ public static class AdministrativeActionConstraints
 public sealed record AdministrativeActionBatchJobPayload(long BatchId)
 {
     public IReadOnlyDictionary<string, string>? ActorClaims { get; init; }
+    public IReadOnlyDictionary<string, string[]>? AuditClaims { get; init; }
 }
 
 public sealed record AdministrativeActionSnapshotRecord(

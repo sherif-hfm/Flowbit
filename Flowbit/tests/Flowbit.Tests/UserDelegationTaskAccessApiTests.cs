@@ -244,13 +244,20 @@ public sealed class UserDelegationTaskAccessApiTests(PostgresApiFixture fixture)
         }
 
         await using var db = fixture.CreateDbContext();
-        var audit = await db.InstanceHistory.SingleAsync(row =>
+        var claimAudits = await db.InstanceHistory.Where(row =>
             row.InstanceId == instance.Id
             && row.UserTaskId == poolTask.UserTaskId
-            && row.Note == "taskClaim");
+            && row.Note == "taskClaim").ToListAsync();
+        var audit = Assert.Single(claimAudits,
+            row => row.Payload!.RootElement.GetProperty("operation").GetString() == "unclaimed");
         Assert.Equal(delegateUser, audit.PerformedBy);
         Assert.Equal(owner, audit.ActingFor);
         Assert.Equal(ownerGrant.Id, audit.DelegationId);
+        var directClaim = Assert.Single(claimAudits, row =>
+            row.PerformedBy == delegateUser
+            && row.Payload!.RootElement.GetProperty("operation").GetString() == "claimed");
+        Assert.Null(directClaim.ActingFor);
+        Assert.Null(directClaim.DelegationId);
         Assert.Equal(
             "unclaimed",
             audit.Payload!.RootElement.GetProperty("operation").GetString());

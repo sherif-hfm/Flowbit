@@ -664,6 +664,13 @@ public sealed record InstanceHistoryDto(
     string? Note,
     DateTimeOffset PerformedAt)
 {
+    /// <summary>
+    /// Selected JWT claims captured for the actual actor. Null means no snapshot
+    /// was recorded; an empty object means none of the selected claims were present.
+    /// Repeated claim values are preserved in their arrays.
+    /// </summary>
+    public IReadOnlyDictionary<string, string[]>? ActorClaims { get; init; }
+
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? ActingFor { get; init; }
 

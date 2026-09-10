@@ -124,6 +124,7 @@ public sealed record NodeExecutionActorRecord(
     string? User,
     IReadOnlyList<string> Roles)
 {
+    public IReadOnlyDictionary<string, string[]>? AuditClaims { get; init; }
     public string? ActingFor { get; init; }
     public long? DelegationId { get; init; }
 }
@@ -172,6 +173,8 @@ public sealed record NodeExecutionRecord(
     DateTimeOffset? CompletedAt,
     bool IsCutoverSeeded)
 {
+    public IReadOnlyDictionary<string, string[]>? TriggeredByClaims { get; init; }
+    public IReadOnlyDictionary<string, string[]>? CompletedByClaims { get; init; }
     public string? TriggeredActingFor { get; init; }
     public long? TriggeredDelegationId { get; init; }
     public string? CompletedActingFor { get; init; }
@@ -600,6 +603,7 @@ public sealed record InstanceHistoryRecord(
     string? ActingFor = null,
     long? DelegationId = null)
 {
+    public IReadOnlyDictionary<string, string[]>? ActorClaims { get; init; }
     public long? AdministrativeActionBatchId { get; init; }
     public string? Reason { get; init; }
     public IReadOnlyList<SharedVariableWriteCorrelationDto> SharedVariableWrites { get; init; } = [];

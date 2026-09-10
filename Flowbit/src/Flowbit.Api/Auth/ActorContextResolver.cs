@@ -3,6 +3,7 @@ using System.Security.Claims;
 using Flowbit.Service.Abstractions;
 using Flowbit.Service.Services;
 using Flowbit.Shared.Models;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 
 namespace Flowbit.Api.Auth;
 
@@ -15,7 +16,9 @@ public interface IActorContextResolver
 /// Converts a validated JWT principal into the single actor identity used throughout
 /// workflow authorization, assignment, claiming, runtime context, and audit fields.
 /// </summary>
-public sealed class ActorContextResolver(ActorIdentityConfiguration configuration)
+public sealed class ActorContextResolver(
+    ActorIdentityConfiguration configuration,
+    WorkflowAuditOptions? auditOptions = null)
     : IActorContextResolver
 {
     public ActorContext Resolve(ClaimsPrincipal principal)
@@ -37,7 +40,50 @@ public sealed class ActorContextResolver(ActorIdentityConfiguration configuratio
             claims.TryAdd(claim.Type, claim.Value);
         }
 
-        return new ActorContext(user, roles, claims);
+        return new ActorContext(user, roles, claims)
+        {
+            AuditClaims = CaptureAuditClaims(principal)
+        };
+    }
+
+    private IReadOnlyDictionary<string, string[]>? CaptureAuditClaims(ClaimsPrincipal principal)
+    {
+        var selectedNames = (auditOptions?.AllowedClaims ?? [])
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Select(name => name.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (selectedNames.Length == 0)
+        {
+            return null;
+        }
+
+        // The bearer handler marks its validated identity explicitly. Other
+        // authenticated schemes, such as API client credentials, have no JWT.
+        var jwtIdentities = principal.Identities
+            .Where(identity => identity.IsAuthenticated
+                && string.Equals(identity.AuthenticationType,
+                    JwtBearerDefaults.AuthenticationScheme, StringComparison.Ordinal))
+            .ToArray();
+        if (jwtIdentities.Length == 0)
+        {
+            return null;
+        }
+
+        var claims = jwtIdentities.SelectMany(identity => identity.Claims).ToArray();
+        var snapshot = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+        foreach (var name in selectedNames)
+        {
+            var candidates = ClaimTypeCandidates(name);
+            var values = claims.Where(claim => candidates.Contains(claim.Type))
+                .Select(claim => claim.Value)
+                .ToArray();
+            if (values.Length > 0)
+            {
+                snapshot.Add(name, values);
+            }
+        }
+        return snapshot;
     }
 
     private static string ResolveConfiguredIdentity(ClaimsPrincipal principal, string configuredClaimType)

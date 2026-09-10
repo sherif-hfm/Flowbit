@@ -51,6 +51,7 @@ public static class InstanceVersionChangeBatchConstraints
 public sealed record InstanceVersionChangeBatchJobPayload(long BatchId)
 {
     public IReadOnlyDictionary<string, string>? ActorClaims { get; init; }
+    public IReadOnlyDictionary<string, string[]>? AuditClaims { get; init; }
 }
 
 public sealed record InstanceVersionChangeBatchRecord(

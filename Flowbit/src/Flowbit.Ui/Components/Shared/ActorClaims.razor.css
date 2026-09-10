@@ -1,0 +1,53 @@
+.actor-claims {
+    max-width: 32rem;
+    margin-top: .35rem;
+    font-size: .75rem;
+    overflow-wrap: anywhere;
+    white-space: normal;
+}
+
+.actor-claims summary {
+    color: var(--fb-primary, #4338ca);
+    cursor: pointer;
+}
+
+.actor-claims summary:focus-visible {
+    outline: 2px solid var(--fb-primary, #4338ca);
+    outline-offset: 3px;
+    border-radius: .2rem;
+}
+
+.actor-claims dl {
+    margin: .5rem 0 0;
+    padding: .65rem;
+    border: 1px solid var(--fb-border, #e2e8f0);
+    border-radius: .5rem;
+    background: #f8fafc;
+}
+
+.actor-claim-entry + .actor-claim-entry {
+    margin-top: .6rem;
+}
+
+.actor-claims dt {
+    color: #334155;
+    font-weight: 600;
+}
+
+.actor-claims dd {
+    margin: .2rem 0 0;
+}
+
+.actor-claim-value {
+    color: #1e293b;
+    white-space: pre-wrap;
+    min-height: 1em;
+}
+
+.actor-claim-value + .actor-claim-value {
+    margin-top: .25rem;
+}
+
+.actor-claims-empty {
+    color: #64748b;
+}

@@ -246,6 +246,8 @@ Task eligibility combines several independent rules:
 
 Empty literal task/action role lists mean unrestricted **within the endpoint's authenticated scope**. This is different from empty management-role lists, which disable that management permission. Claim inheritance and assignment inheritance can carry prior ownership into later work; inspect the created task rather than assuming every visit begins unowned.
 
+Actual claim and unclaim changes append `taskClaim` instance-history events, including normal, recovery, delegated, and inherited changes. Unchanged retries create no extra event. Inherited claims record `authority: "claimInheritance"`, `claimMode`, `sourceHistoryId`, and `sourceNodeId`; their system actor has no JWT snapshot. Claim events have no sequence-flow ID and never become the prior flow-action actor for later inheritance. Assignment operations retain one `taskAssignment` event when they clear a claim.
+
 In the tutorial, `Requester` starts; `Reviewer` or `Supervisor` can perform the review. `Supervisor` alone can select the escalation flow without acquiring the claim, including when another actor holds it. The flow still requires the supervisor role and its own input contract. `WorkflowAdministrator` permits cancellation for this example; it is not an automatic action override.
 
 ### Dynamic roles and management
@@ -422,6 +424,10 @@ List enrichment with `includeVariables=true` returns latest values. Repeated `va
 Instance lists use opaque cursors: follow `nextCursor` after the first page and keep the sort contract consistent. The inbox uses ordinary page/page-size selection. Do not assume every endpoint exposing `PagedResult` has the same paging mode; job, incident, attempt, and activity contracts are documented separately in the API reference.
 
 Node-execution searches apply their own read policy. Latest-variable filters on these searches refer to the owning instance's current values, not values captured at visit time. The node ledger records committed visits from its deployment cutover onward; older completed visits are not reconstructed from transition history. Retention may remove older audit records and is relevant if your application needs historical evidence or later reactivation.
+
+History `actorClaims` records selected JWT claims per event; node detail `startedByClaims` and `completedByClaims` record the causal starting and completing actors for one visit. Values are objects of string arrays, for example `{"depId":["finance"],"group":["reviewers","approvers"]}`. Arrays preserve repeated values. Treat null/missing as **not recorded**, and `{}` as **no selected claims present**. Claim/unclaim events do not overwrite the node's start/completion snapshots. Delegation keeps the actual caller's claims separate from `actingFor`.
+
+Capture is opt-in through `WorkflowAudit:AllowedClaims`, independently of expression access through `WorkflowContext:AllowedClaims`. Only validated caller identity supplies snapshots; clients do not send audit claims in action bodies. Deferred execution carries the captured causal snapshot through durable work rather than reconstructing it from a Worker's identity or current configuration. Older rows and older queued work are not backfilled. History claims follow workflow-history retention; node claims follow node-activity retention. See [configuration, access, and rollout](deployment.md#selected-claim-audit) and the [response schemas](api-guide.md#schema-instancehistorydto).
 
 ### Flow evidence in authored logic
 

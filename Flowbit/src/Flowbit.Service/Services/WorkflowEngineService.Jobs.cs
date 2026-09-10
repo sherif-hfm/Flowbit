@@ -38,7 +38,8 @@ public sealed partial class WorkflowEngineService
         long? ConditionalBoundarySubscriptionId = null,
         long? ConditionalBoundaryOccurrence = null,
         long? ConditionalBoundaryHostTokenId = null,
-        bool? ConditionalBoundaryCancelActivity = null);
+        bool? ConditionalBoundaryCancelActivity = null,
+        IReadOnlyDictionary<string, string[]>? AuditClaims = null);
 
     private sealed record ConditionalWakeLatchRequest(
         ExecutionTokenRecord Token,
@@ -287,7 +288,8 @@ public sealed partial class WorkflowEngineService
                 InstanceHistoryNotes.ConditionalLatched,
                 cancellationToken,
                 actor.ActingFor,
-                actor.DelegationId);
+                actor.DelegationId,
+                actorClaims: actor.AuditClaims);
             logger.LogInformation(
                 "Conditional event latched for instance {InstanceId}, token {TokenId}, node {NodeId}, job {JobId}.",
                 instance.Id,
@@ -520,7 +522,8 @@ public sealed partial class WorkflowEngineService
                     conditionalBoundarySubscriptionId,
                     conditionalBoundaryOccurrence,
                     conditionalBoundaryHostTokenId,
-                    conditionalBoundaryCancelActivity))
+                    conditionalBoundaryCancelActivity,
+                    ActorContext.CopyAuditClaims(actor.AuditClaims)))
         };
     }
 
@@ -810,7 +813,8 @@ public sealed partial class WorkflowEngineService
             parsed.Claims)
         {
             ActingFor = parsed.ActingFor,
-            DelegationId = parsed.DelegationId
+            DelegationId = parsed.DelegationId,
+            AuditClaims = ActorContext.CopyAuditClaims(parsed.AuditClaims)
         };
     }
 
@@ -3047,7 +3051,8 @@ public sealed partial class WorkflowEngineService
                 timerActor.User,
                 null,
                 "timer",
-                cancellationToken);
+                cancellationToken,
+                actorClaims: timerActor.AuditClaims);
             await runtime.UpdateExecutionTokenAsync(
                 hostToken.Id,
                 ToSnapshot(boundary),
@@ -3090,7 +3095,8 @@ public sealed partial class WorkflowEngineService
                 timerActor.User,
                 null,
                 "timer",
-                cancellationToken);
+                cancellationToken,
+                actorClaims: timerActor.AuditClaims);
             continuationTokenId = sibling.Id;
         }
 

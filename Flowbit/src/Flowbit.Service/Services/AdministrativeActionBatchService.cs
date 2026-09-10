@@ -211,6 +211,7 @@ public sealed partial class AdministrativeActionBatchService(
                 WorkflowJobKinds.AdministrativeBatchPrepare,
                 "prepare",
                 SnapshotAllowedClaims(actor.Claims, contextOptions.AllowedClaims),
+                actor.AuditClaims,
                 now,
                 cancellationToken);
             batch = await batches.UpdateAsync(
@@ -365,6 +366,7 @@ public sealed partial class AdministrativeActionBatchService(
                     WorkflowJobKinds.AdministrativeBatchExecute,
                     "execute",
                     SnapshotAllowedClaims(actor.Claims, contextOptions.AllowedClaims),
+                    actor.AuditClaims,
                     now,
                     cancellationToken);
             }
@@ -729,6 +731,7 @@ public sealed partial class AdministrativeActionBatchService(
         string kind,
         string phase,
         IReadOnlyDictionary<string, string> actorClaims,
+        IReadOnlyDictionary<string, string[]>? auditClaims,
         DateTimeOffset now,
         CancellationToken cancellationToken) =>
         await jobs.EnqueueAsync(
@@ -750,7 +753,8 @@ public sealed partial class AdministrativeActionBatchService(
                 Payload = JsonSerializer.SerializeToElement(
                     new AdministrativeActionBatchJobPayload(batchId)
                     {
-                        ActorClaims = actorClaims
+                        ActorClaims = actorClaims,
+                        AuditClaims = ActorContext.CopyAuditClaims(auditClaims)
                     })
             },
             cancellationToken);

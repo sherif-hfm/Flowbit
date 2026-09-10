@@ -69,6 +69,7 @@ public sealed record InstanceVariableUpdateBatchJobPayload(
     string Phase)
 {
     public IReadOnlyDictionary<string, string>? ActorClaims { get; init; }
+    public IReadOnlyDictionary<string, string[]>? AuditClaims { get; init; }
 }
 
 public sealed record InstanceVariableUpdateCandidateQuery(

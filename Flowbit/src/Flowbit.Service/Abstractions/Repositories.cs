@@ -62,7 +62,8 @@ public interface IWorkflowRuntimeRepository
         CurrentNodeSnapshot node,
         string? startedBy,
         IReadOnlyList<string> startedByRoles,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken,
+        IReadOnlyDictionary<string, string[]>? actorClaims = null);
 
     Task<PagedResult<InstanceListItem>> ListInstancesAsync(
         string? status,
@@ -621,7 +622,8 @@ public interface IWorkflowRuntimeRepository
         long? delegationId = null,
         string? completionKind = null,
         string? completionReason = null,
-        long? administrativeActionBatchId = null);
+        long? administrativeActionBatchId = null,
+        IReadOnlyDictionary<string, string[]>? actorClaims = null);
 
     Task CompleteUserTaskAsync(
         long taskId,
@@ -634,7 +636,8 @@ public interface IWorkflowRuntimeRepository
         long? delegationId = null,
         string? completionKind = null,
         string? completionReason = null,
-        long? administrativeActionBatchId = null);
+        long? administrativeActionBatchId = null,
+        IReadOnlyDictionary<string, string[]>? actorClaims = null);
 
     Task CompleteAdministrativeActionBatchItemAsync(
         long batchItemId,
@@ -729,7 +732,8 @@ public interface IWorkflowRuntimeRepository
         string? note,
         CancellationToken cancellationToken,
         string? actingFor = null,
-        long? delegationId = null);
+        long? delegationId = null,
+        IReadOnlyDictionary<string, string[]>? actorClaims = null);
 
     Task AddTokenHistoryAsync(
         long instanceId,
@@ -744,7 +748,8 @@ public interface IWorkflowRuntimeRepository
         string? actingFor = null,
         long? delegationId = null,
         string? reason = null,
-        long? administrativeActionBatchId = null);
+        long? administrativeActionBatchId = null,
+        IReadOnlyDictionary<string, string[]>? actorClaims = null);
 
     Task AddMultiInstanceHistoryAsync(
         long instanceId,
@@ -763,7 +768,8 @@ public interface IWorkflowRuntimeRepository
         long? delegationId = null,
         string? reason = null,
         long? administrativeActionBatchId = null,
-        IReadOnlyList<SharedVariableWriteCorrelationDto>? sharedVariableWrites = null);
+        IReadOnlyList<SharedVariableWriteCorrelationDto>? sharedVariableWrites = null,
+        IReadOnlyDictionary<string, string[]>? actorClaims = null);
 
     Task AddUserTaskActionHistoryAsync(
         long instanceId,
@@ -780,7 +786,8 @@ public interface IWorkflowRuntimeRepository
         string? note = null,
         string? reason = null,
         long? administrativeActionBatchId = null,
-        IReadOnlyList<SharedVariableWriteCorrelationDto>? sharedVariableWrites = null);
+        IReadOnlyList<SharedVariableWriteCorrelationDto>? sharedVariableWrites = null,
+        IReadOnlyDictionary<string, string[]>? actorClaims = null);
 
     Task AddUserTaskHistoryAsync(
         long instanceId,
@@ -794,7 +801,8 @@ public interface IWorkflowRuntimeRepository
         string note,
         CancellationToken cancellationToken,
         string? actingFor = null,
-        long? delegationId = null);
+        long? delegationId = null,
+        IReadOnlyDictionary<string, string[]>? actorClaims = null);
 
     Task<IReadOnlyList<InstanceHistoryRecord>> ListHistoryAsync(
         long instanceId,

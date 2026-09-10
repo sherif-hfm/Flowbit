@@ -63,6 +63,62 @@ public sealed class InstanceReactivationUiContractTests
         Assert.Contains("Retry after correction", html, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData("claimInheritance", "system", "Inherited claim for new-owner (previously claimed by old-owner) from node #7")]
+    [InlineData("user", "new-owner", "Claimed by new-owner (previously claimed by old-owner)")]
+    public async Task ClaimHistoryRendersOwnershipReplacementAndDelegatedSnapshots(
+        string authority, string actor, string expectedDescription)
+    {
+        var now = DateTimeOffset.Parse("2026-09-10T12:00:00Z");
+        var instance = CreateTerminalInstance(now) with
+        {
+            History =
+            [
+                new InstanceHistoryDto(91, 301, 501, null, null, null, 12, 12, actor,
+                    new Dictionary<string, JsonElement>
+                    {
+                        ["operation"] = JsonSerializer.SerializeToElement("claimed"),
+                        ["previousClaimedBy"] = JsonSerializer.SerializeToElement("old-owner"),
+                        ["newClaimedBy"] = JsonSerializer.SerializeToElement("new-owner"),
+                        ["authority"] = JsonSerializer.SerializeToElement(authority),
+                        ["claimMode"] = JsonSerializer.SerializeToElement("fromNode"),
+                        ["sourceHistoryId"] = JsonSerializer.SerializeToElement(81),
+                        ["sourceNodeId"] = JsonSerializer.SerializeToElement(7)
+                    }, "taskClaim", now.AddMinutes(-2)),
+                new InstanceHistoryDto(92, 301, 501, null, null, null, 12, 12, "delegate-user",
+                    new Dictionary<string, JsonElement>
+                    {
+                        ["operation"] = JsonSerializer.SerializeToElement("unclaimed"),
+                        ["previousClaimedBy"] = JsonSerializer.SerializeToElement("new-owner"),
+                        ["newClaimedBy"] = JsonSerializer.SerializeToElement<string?>(null),
+                        ["authority"] = JsonSerializer.SerializeToElement("userDelegation")
+                    }, "taskClaim", now.AddMinutes(-1))
+                {
+                    ActingFor = "new-owner",
+                    DelegationId = 29,
+                    ActorClaims = new Dictionary<string, string[]> { ["department"] = ["Delegate team"] }
+                }
+            ]
+        };
+        using var handler = new InstanceHandler(instance, null, HttpStatusCode.Forbidden);
+
+        var html = await RenderAsync(handler);
+        var historyStart = html.IndexOf("id=\"history\"", StringComparison.Ordinal);
+        Assert.True(historyStart >= 0);
+        var history = WebUtility.HtmlDecode(html[historyStart..]);
+
+        Assert.Contains(expectedDescription, history, StringComparison.Ordinal);
+        Assert.Contains(actor, history, StringComparison.Ordinal);
+        Assert.Contains("Not recorded", history, StringComparison.Ordinal);
+        Assert.Contains("Released new-owner's claim through delegation", history, StringComparison.Ordinal);
+        Assert.Contains("delegate-user", history, StringComparison.Ordinal);
+        Assert.Contains("Acting for new-owner", history, StringComparison.Ordinal);
+        Assert.Contains("grant #29", history, StringComparison.Ordinal);
+        Assert.Contains("Actor claims (1)", history, StringComparison.Ordinal);
+        Assert.Contains("department", history, StringComparison.Ordinal);
+        Assert.Contains("Delegate team", history, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task TerminalInstanceRendersPreviewBlockersAndNoEligibleTargetMessage()
     {

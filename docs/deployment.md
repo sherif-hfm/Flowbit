@@ -109,6 +109,7 @@ ASP.NET Core configuration accepts JSON and environment variables. Use `__` to s
 | `WorkflowApi:BaseUrl` / `WorkflowApi__BaseUrl` | UI | Server-to-server API address, default `http://localhost:5017`. |
 | `WorkflowContext:Config:<name>` / `WorkflowContext__Config__<name>` | API and Worker | Trusted `config.<name>` values for expressions and placeholders, including integration endpoints/credentials. Supply the same required values to both execution hosts. |
 | `WorkflowContext:AllowedClaims` / `WorkflowContext__AllowedClaims__0` etc. | API and Worker | Allowlist for `sys.claim.*`. API sample configuration allows `depId`; Worker does not automatically inherit it. |
+| `WorkflowAudit:AllowedClaims` / `WorkflowAudit__AllowedClaims__0` etc. | API and Worker | Selected JWT claims captured in history and node detail. Default `[]` disables capture; independent of expression access. See [selected-claim audit](#selected-claim-audit). |
 | `WorkflowDurableProcessing:PublicationEnabled` | API | Blocks publication/default selection of definitions requiring durable processing when false. The checked-in API value is true; set false explicitly during a gated rollout. It is not a Worker pause switch. |
 | `WorkflowMessageDelivery:MaxPayloadBytes` | API | Message request limit, default 1,048,576 bytes. |
 | `WorkflowServiceTasks:MaxTimeoutSeconds`, `MaxResponseBodyBytes` | API and Worker | REST upper bounds, defaults 300 seconds and 1,048,576 bytes. Authored node limits still apply. |
@@ -133,6 +134,20 @@ FlowbitWorker__HealthListenUrl=http://127.0.0.1:8081
 Engine and workflow **settings stored in PostgreSQL** are distinct from host configuration. They are managed through [settings APIs](api-guide.md), not arbitrary environment variable names. Examples include `Workflow.RequiredRole`, `Settings.RequiredRole`, `WorkflowJobs.RequiredRole`, `NodeExecution.RequiredRole`, `Workflow.MultiInstance.MaxInstances`, and `Workflow.Async.MaxConsecutiveAutomaticActivations`. Missing/default management roles are generally `admin`; definition-owned permissions remain separate.
 
 `Authentication.UserIdentityClaim` is a persisted engine setting read at API startup. Configure the intended claim before starting replicas, then restart APIs together when changing it. A nonblank configured claim is authoritative; do not assume `sub` automatically replaces the current identity selection. See the [authentication context API](api-guide.md).
+
+### Selected-claim audit
+
+`WorkflowAudit:AllowedClaims` is an opt-in list of JWT claim names. Its default `[]` records no claim snapshots. For example, configure `WorkflowAudit__AllowedClaims__0=depId` to retain the selected claim; this does not make `depId` available to workflow expressions. `WorkflowContext:AllowedClaims` controls expression access separately. Configure API and Worker consistently and restart the hosts when changing this configuration.
+
+Configured names are trimmed and deduplicated case-insensitively; output keys retain the selected spelling. Whole claim names are matched case-insensitively, with support for known JWT/.NET inbound mappings, not arbitrary URI suffixes. Each matching claim contributes a string value in original order, including duplicates; choosing one name does not capture every token claim.
+
+The runtime records selected claims as JSON objects of string arrays in `instance_history` and as independent starting/completing snapshots in `node_executions`. Repeated values are retained. The snapshot belongs to the authenticated caller, including when acting through delegation; `actingFor` identifies the represented owner separately. System-only activity has no JWT snapshot. Durable work carries its captured causal snapshot across Worker execution and retries. Configuration changes affect new captures and do not rewrite existing snapshots.
+
+Select claims with their read audience in mind: instance history is available through the authenticated instance-detail route, while node detail uses node-activity authorization. The allowlist must not include credentials, bearer tokens, or claims whose disclosure is inappropriate for those readers. Snapshots are audit data, not a new source of authorization or workflow expressions.
+
+Apply the additive claim-audit migration before upgrading writers, then deploy matching API, Worker, and UI versions together. Existing rows and older queued jobs remain without a snapshot; there is no historical backfill. Avoid mixed old/new writers when complete claim-event coverage is required. Verify a controlled claim/unclaim and a durable action before enabling capture for general use. `null` means not recorded, and `{}` means capture was enabled but no selected name was present.
+
+Workflow-history retention deletes a row's actor claims with that history row; node-activity retention independently deletes visit snapshots. Database backups include captured claims. Existing retention protections and reactivation restrictions still apply; see [retention and backup](#retention-and-backup).
 
 ## Authentication boundaries
 

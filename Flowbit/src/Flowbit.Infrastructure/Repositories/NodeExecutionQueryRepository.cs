@@ -79,6 +79,8 @@ public sealed class NodeExecutionQueryRepository(AppDbContext dbContext)
                ne."NodeRolesJson"::text AS "NodeRolesJson",
                ne."TriggeredByRolesJson"::text AS "StartedByRolesJson",
                ne."CompletedByRolesJson"::text AS "CompletedByRolesJson",
+               ne."TriggeredByClaimsJson"::text AS "StartedByClaimsJson",
+               ne."CompletedByClaimsJson"::text AS "CompletedByClaimsJson",
                ne."ErrorCode" AS "ErrorCode",
                ne."ErrorDescription" AS "ErrorDescription",
                ut."RequiresClaim" AS "RequiresClaim",
@@ -651,6 +653,8 @@ public sealed class NodeExecutionQueryRepository(AppDbContext dbContext)
             NodeRoles = ParseStringArray(row.NodeRolesJson),
             StartedByRoles = ParseStringArray(row.StartedByRolesJson),
             CompletedByRoles = ParseStringArray(row.CompletedByRolesJson),
+            StartedByClaims = ParseActorClaims(row.StartedByClaimsJson),
+            CompletedByClaims = ParseActorClaims(row.CompletedByClaimsJson),
             RequiresClaim = row.RequiresClaim,
             RequiresAssignment = row.RequiresAssignment,
             AssignedTo = row.AssignedTo,
@@ -716,6 +720,9 @@ public sealed class NodeExecutionQueryRepository(AppDbContext dbContext)
         }
         return JsonSerializer.Deserialize<string[]>(json) ?? [];
     }
+
+    private static IReadOnlyDictionary<string, string[]>? ParseActorClaims(string? json) =>
+        json is null ? null : JsonSerializer.Deserialize<Dictionary<string, string[]>>(json);
 
     private static JsonElement? ParseElement(string? json)
     {
@@ -787,6 +794,8 @@ public sealed class NodeExecutionQueryRepository(AppDbContext dbContext)
         public string? NodeRolesJson { get; set; }
         public string? StartedByRolesJson { get; set; }
         public string? CompletedByRolesJson { get; set; }
+        public string? StartedByClaimsJson { get; set; }
+        public string? CompletedByClaimsJson { get; set; }
         public string? ErrorCode { get; set; }
         public string? ErrorDescription { get; set; }
         public bool? RequiresClaim { get; set; }

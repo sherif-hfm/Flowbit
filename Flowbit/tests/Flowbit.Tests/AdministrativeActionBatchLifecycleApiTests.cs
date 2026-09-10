@@ -179,6 +179,56 @@ public sealed class AdministrativeActionBatchLifecycleApiTests(PostgresApiFixtur
         }
     }
 
+    [Fact]
+    public async Task ExecutionPersistsConfirmingAuditSnapshotInsteadOfPreparationClaims()
+    {
+        var workflowId = await CreateWorkflowAsync(CreateOrdinaryBatchModel());
+        var instance = await StartAsync(workflowId, "audit-confirmer");
+        var candidate = Assert.Single((await SearchCandidatesAsync(workflowId)).Items);
+        AdministrativeActionBatchDetailDto batch;
+        await using (var createScope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            var preparer = new ActorContext("audit-preparer", ["admin"], new Dictionary<string, string>())
+            {
+                AuditClaims = new Dictionary<string, string[]> { ["employeeId"] = ["preparer"] }
+            };
+            batch = await createScope.ServiceProvider.GetRequiredService<IAdministrativeActionBatchService>()
+                .CreateAsync(DirectRequest(workflowId, ExplicitSelection(candidate), $"audit-{Guid.NewGuid():N}"),
+                    preparer, CancellationToken.None);
+        }
+        await ProcessBatchJobAsync(batch.PreparationJobId!.Value);
+        batch = await GetBatchAsync(batch.Summary.Id, "audit-preparer");
+
+        var values = new[] { "confirmer-17", "confirmer-19", "confirmer-17" };
+        await using (var confirmScope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            var confirmer = new ActorContext("audit-confirmer", ["admin"],
+                new Dictionary<string, string> { ["department"] = "expression-only" })
+            {
+                AuditClaims = new Dictionary<string, string[]> { ["employeeId"] = values }
+            };
+            batch = await confirmScope.ServiceProvider.GetRequiredService<IAdministrativeActionBatchService>()
+                .ConfirmAsync(batch.Summary.Id,
+                    new ConfirmAdministrativeActionBatchRequest(batch.Summary.EligibleItemCount,
+                        batch.Summary.TotalAffectedTaskCount, batch.Summary.UpdatedAt),
+                    confirmer, CancellationToken.None) ?? throw new InvalidOperationException("Batch missing.");
+        }
+        values[0] = "changed-after-confirmation";
+        await ProcessBatchJobAsync(batch.ExecutionJobId!.Value);
+
+        await using var db = fixture.CreateDbContext();
+        var history = await db.InstanceHistory.SingleAsync(row => row.InstanceId == instance.Id
+            && row.FromStepId == 2 && row.AdministrativeActionBatchId == batch.Summary.Id);
+        Assert.Equal("audit-confirmer", history.PerformedBy);
+        var snapshot = history.ActorClaimsJson!.RootElement.Deserialize<Dictionary<string, string[]>>()!;
+        Assert.Equal(["confirmer-17", "confirmer-19", "confirmer-17"], snapshot["employeeId"]);
+        Assert.False(snapshot.ContainsKey("department"));
+        var execution = await db.NodeExecutions.SingleAsync(row => row.InstanceId == instance.Id && row.NodeId == 2);
+        Assert.Equal("audit-confirmer", execution.CompletedBy);
+        Assert.True(JsonElement.DeepEquals(history.ActorClaimsJson.RootElement,
+            execution.CompletedByClaimsJson!.RootElement));
+    }
+
     private async Task<string?> SetWorkflowRoleAsync(string? value)
     {
         await using var scope = fixture.Factory.Services.CreateAsyncScope();

@@ -1,0 +1,31 @@
+@if (Claims is null || Claims.Count == 0)
+{
+    <div class="actor-claims actor-claims-empty">
+        <span>@Label:</span> @(Claims is null ? "Not recorded" : "No selected claims present")
+    </div>
+}
+else
+{
+    <details class="actor-claims">
+        <summary>@Label (@Claims.Count)</summary>
+        <dl>
+            @foreach (var claim in Claims.OrderBy(pair => pair.Key, StringComparer.Ordinal))
+            {
+                <div class="actor-claim-entry">
+                    <dt>@claim.Key</dt>
+                    <dd>
+                        @foreach (var value in claim.Value)
+                        {
+                            <div class="actor-claim-value">@value</div>
+                        }
+                    </dd>
+                </div>
+            }
+        </dl>
+    </details>
+}
+
+@code {
+    [Parameter] public IReadOnlyDictionary<string, string[]>? Claims { get; set; }
+    [Parameter] public string Label { get; set; } = "Actor claims";
+}

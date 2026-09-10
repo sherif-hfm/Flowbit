@@ -806,12 +806,12 @@ else
         <h2 class="h4">History</h2>
         @if (instance.History.Count == 0)
         {
-            <p>No transitions yet.</p>
+            <p>No history events yet.</p>
         }
         else
         {
             <div class="table-responsive"><table class="table table-sm">
-                <caption class="visually-hidden">Transition history for instance #@instance.Id</caption>
+                <caption class="visually-hidden">Transition and action history for instance #@instance.Id</caption>
                 <thead>
                     <tr>
                         <th scope="col">When</th>
@@ -833,7 +833,14 @@ else
                             <td>#@item.FromNodeId</td>
                             <td>#@item.ToNodeId</td>
                             <td>@(item.SequenceFlowId?.ToString() ?? "-")</td>
-                            <td>@(item.PerformedBy ?? "-")</td>
+                            <td class="history-actor">
+                                @(item.PerformedBy ?? "-")
+                                @if (item.ActingFor is not null)
+                                {
+                                    <ActingForBadge ActingFor="@item.ActingFor" DelegationId="@item.DelegationId" />
+                                }
+                                <ActorClaims Claims="@item.ActorClaims" />
+                            </td>
                             <td>@HistoryDetails(item)</td>
                             <td>
                                 @if (item.AdministrativeActionBatchId is long batchId)
@@ -1253,6 +1260,25 @@ else
 
     private static string HistoryDetails(InstanceHistoryDto item)
     {
+        if (item.Note is "taskClaim")
+        {
+            var previousClaimant = HistoryPayloadString(item, "previousClaimedBy");
+            var newClaimant = HistoryPayloadString(item, "newClaimedBy") ?? item.PerformedBy ?? "unknown actor";
+            var claimOperation = HistoryPayloadString(item, "operation");
+            var authority = HistoryPayloadString(item, "authority");
+            var description = claimOperation == "unclaimed"
+                ? $"Released {previousClaimant ?? "unknown actor"}'s claim"
+                : authority == "claimInheritance"
+                    ? $"Inherited claim for {newClaimant}"
+                    : $"Claimed by {newClaimant}";
+            if (claimOperation != "unclaimed" && previousClaimant is not null)
+                description += $" (previously claimed by {previousClaimant})";
+            if (authority == "unclaimOverride") description += " using unclaim permission";
+            if (authority == "userDelegation") description += " through delegation";
+            if (authority == "claimInheritance" && HistoryPayloadString(item, "sourceNodeId") is { } sourceNodeId)
+                description += $" from node #{sourceNodeId}";
+            return description;
+        }
         if (item.Note is "parallelFork")
         {
             return item.TokenId is long tokenId

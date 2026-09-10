@@ -1064,7 +1064,8 @@ public sealed partial class WorkflowEngineService(
                 ToSnapshot(startEvent),
                 startedBy,
                 SnapshotRoles(actor.Roles),
-                cancellationToken);
+                cancellationToken,
+                actorClaims: actor.AuditClaims);
             if (idempotency is not null)
             {
                 await runtime.BindIdempotencyKeyAsync(
@@ -1290,7 +1291,8 @@ public sealed partial class WorkflowEngineService(
             ToSnapshot(startEvent),
             performedBy,
             SnapshotRoles(actor.Roles),
-            cancellationToken);
+            cancellationToken,
+            actorClaims: actor.AuditClaims);
         if (idempotency is not null)
         {
             await runtime.BindIdempotencyKeyAsync(
@@ -2178,6 +2180,7 @@ public sealed partial class WorkflowEngineService(
                 "The actor has no currently visible action on this user task and cannot claim it.");
 
         var updatedAt = await runtime.UpdateUserTaskClaimAsync(taskId, user, cancellationToken);
+        await AddTaskClaimHistoryAsync(instance.Id, task, actor, user, "user", cancellationToken);
         await runtime.TouchInstanceAsync(instance.Id, cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
@@ -2251,28 +2254,13 @@ public sealed partial class WorkflowEngineService(
             throw new WorkflowDomainException("Only the claimant or a configured unclaim role can unclaim this user task.");
 
         var updatedAt = await runtime.UpdateUserTaskClaimAsync(taskId, null, cancellationToken);
-        if (access?.DelegationId is long delegationId)
-        {
-            var auditPayload = new Dictionary<string, JsonElement>
-            {
-                ["operation"] = JsonSerializer.SerializeToElement("unclaimed"),
-                ["previousClaimedBy"] = JsonSerializer.SerializeToElement(task.ClaimedBy),
-                ["authority"] = JsonSerializer.SerializeToElement("userDelegation")
-            };
-            await runtime.AddUserTaskHistoryAsync(
-                instance.Id,
-                task.TokenId,
-                task.Id,
-                task.MultiInstanceExecutionId,
-                task.ItemIndex,
-                task.NodeId,
-                user,
-                auditPayload,
-                "taskClaim",
-                cancellationToken,
-                access.RepresentedOwner,
-                delegationId);
-        }
+        var authority = access?.DelegationId is not null
+            ? "userDelegation"
+            : !string.Equals(task.ClaimedBy, EffectiveUser(executionActor), StringComparison.OrdinalIgnoreCase)
+                ? "unclaimOverride"
+                : "user";
+        await AddTaskClaimHistoryAsync(
+            instance.Id, task, executionActor, null, authority, cancellationToken);
         await runtime.TouchInstanceAsync(instance.Id, cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
@@ -2280,6 +2268,35 @@ public sealed partial class WorkflowEngineService(
             task with { ClaimedBy = null, UpdatedAt = updatedAt },
             executionActor,
             cancellationToken);
+    }
+
+    private Task AddTaskClaimHistoryAsync(
+        long instanceId,
+        UserTaskRecord task,
+        ActorContext actor,
+        string? newClaimedBy,
+        string authority,
+        CancellationToken cancellationToken,
+        string? claimMode = null,
+        InstanceHistoryRecord? source = null)
+    {
+        var payload = new Dictionary<string, JsonElement>
+        {
+            ["operation"] = JsonSerializer.SerializeToElement(newClaimedBy is null ? "unclaimed" : "claimed"),
+            ["previousClaimedBy"] = JsonSerializer.SerializeToElement(task.ClaimedBy),
+            ["newClaimedBy"] = JsonSerializer.SerializeToElement(newClaimedBy),
+            ["authority"] = JsonSerializer.SerializeToElement(authority)
+        };
+        if (source is not null)
+        {
+            payload["claimMode"] = JsonSerializer.SerializeToElement(claimMode);
+            payload["sourceHistoryId"] = JsonSerializer.SerializeToElement(source.Id);
+            payload["sourceNodeId"] = JsonSerializer.SerializeToElement(source.FromStepId);
+        }
+        return runtime.AddUserTaskHistoryAsync(
+            instanceId, task.TokenId, task.Id, task.MultiInstanceExecutionId, task.ItemIndex,
+            task.NodeId, NormalizeUser(actor.User), payload, "taskClaim", cancellationToken,
+            actor.ActingFor, actor.DelegationId, actorClaims: actor.AuditClaims);
     }
 
     public async Task<PagedResult<ManagedUserTaskDto>> ListManageableUserTasksAsync(
@@ -2646,7 +2663,8 @@ public sealed partial class WorkflowEngineService(
             performedBy,
             auditPayload,
             "taskAssignment",
-            cancellationToken);
+            cancellationToken,
+            actorClaims: actor.AuditClaims);
         await runtime.TouchInstanceAsync(instance.Id, cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
@@ -3025,7 +3043,8 @@ public sealed partial class WorkflowEngineService(
             values,
             cancellationToken,
             executionActor.ActingFor,
-            executionActor.DelegationId);
+            executionActor.DelegationId,
+            actorClaims: executionActor.AuditClaims);
         await RecordSequenceFlowOccurrenceAsync(
             flowInfo,
             instance.Id,
@@ -3087,7 +3106,8 @@ public sealed partial class WorkflowEngineService(
             await runtime.AddMultiInstanceHistoryAsync(instance.Id, task.TokenId, task.Id, execution.Id,
                 task.ItemIndex ?? 0, flow.Id, node.Id, node.Id, user,
                 CloneDictionary(values), "multiInstanceItem", cancellationToken,
-                executionActor.ActingFor, executionActor.DelegationId);
+                executionActor.ActingFor, executionActor.DelegationId,
+                actorClaims: executionActor.AuditClaims);
             var activityAt = await runtime.TouchInstanceAsync(instance.Id, cancellationToken);
             await unitOfWork.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
@@ -3226,7 +3246,8 @@ public sealed partial class WorkflowEngineService(
             actor.DelegationId,
             administrativeBatch?.Reason,
             administrativeBatch?.BatchId,
-            directParentInterrupt ? sharedVariableWrites : null);
+            directParentInterrupt ? sharedVariableWrites : null,
+            actorClaims: actor.AuditClaims);
 
         // The aggregate result and any direct-parent action values are one
         // observable host-output batch. Capture attached boundaries before the
@@ -3692,7 +3713,8 @@ public sealed partial class WorkflowEngineService(
                     : NodeExecutionCompletionReasons.AdministrativeAction,
                 reason: administrativeBatch?.Reason,
                 administrativeActionBatchId: administrativeBatch?.BatchId,
-                sharedVariableWrites: sharedVariableWrites);
+                sharedVariableWrites: sharedVariableWrites,
+                actorClaims: executionActor.AuditClaims);
             if (administrativeBatch is not null)
             {
                 await CompleteAdministrativeBatchItemAsync(
@@ -3723,7 +3745,8 @@ public sealed partial class WorkflowEngineService(
                 ? null
                 : NodeExecutionCompletionReasons.AdministrativeAction,
             completionReason: administrativeBatch?.Reason,
-            administrativeActionBatchId: administrativeBatch?.BatchId);
+            administrativeActionBatchId: administrativeBatch?.BatchId,
+            actorClaims: executionActor.AuditClaims);
         await RecordSequenceFlowOccurrenceAsync(
             flowInfo,
             instance.Id,
@@ -3761,7 +3784,8 @@ public sealed partial class WorkflowEngineService(
                 : NodeExecutionCompletionReasons.AdministrativeAction,
             reason: administrativeBatch?.Reason,
             administrativeActionBatchId: administrativeBatch?.BatchId,
-            sharedVariableWrites: sharedVariableWrites);
+            sharedVariableWrites: sharedVariableWrites,
+            actorClaims: executionActor.AuditClaims);
 
         if (!await runtime.SetExecutionTokenAutomaticActivationCountAsync(
                 token.Id,
@@ -4152,7 +4176,8 @@ public sealed partial class WorkflowEngineService(
             performedBy,
             null,
             "message",
-            cancellationToken);
+            cancellationToken,
+            actorClaims: actor.AuditClaims);
 
             var tokenInstance = instance with
             {
@@ -5668,7 +5693,8 @@ public sealed partial class WorkflowEngineService(
                     "error",
                     cancellationToken,
                     actor.ActingFor,
-                    actor.DelegationId);
+                    actor.DelegationId,
+                    actorClaims: actor.AuditClaims);
                 await CancelAttachedBoundaryWaitsAsync(
                     instance.Id,
                     [token.Id],
@@ -7805,7 +7831,8 @@ public sealed partial class WorkflowEngineService(
             actor.ActingFor,
             actor.DelegationId,
             administrativeBatch?.Reason,
-            administrativeBatch?.BatchId);
+            administrativeBatch?.BatchId,
+            actorClaims: actor.AuditClaims);
 
         var targetTokenStatus = BpmnFlowNodeTypes.IsErrorEnd(nextNode.Type)
             ? ExecutionTokenRecordStatuses.Faulted
@@ -8504,10 +8531,10 @@ public sealed partial class WorkflowEngineService(
                 userActions = userActions.Where(h => h.FromStepId == node.InheritClaimFromNodeId);
             }
 
-            var claimant = userActions
+            var source = userActions
                 .OrderByDescending(h => h.PerformedAt)
-                .Select(h => h.ActingFor ?? h.PerformedBy)
                 .FirstOrDefault();
+            var claimant = source?.ActingFor ?? source?.PerformedBy;
             if (string.IsNullOrWhiteSpace(claimant))
             {
                 logger.LogDebug(
@@ -8516,8 +8543,17 @@ public sealed partial class WorkflowEngineService(
                 continue;
             }
 
+            if (string.Equals(task.ClaimedBy, claimant, StringComparison.OrdinalIgnoreCase))
+            {
+                representativeClaimant ??= task.ClaimedBy;
+                continue;
+            }
+
             var updatedAt = await runtime.UpdateUserTaskClaimAsync(
                 task.Id, claimant, cancellationToken);
+            await AddTaskClaimHistoryAsync(
+                instance.Id, task, new ActorContext("system", [], new Dictionary<string, string>()),
+                claimant, "claimInheritance", cancellationToken, node.ClaimMode, source);
             var instanceUpdatedAt = await runtime.TouchInstanceAsync(instance.Id, cancellationToken);
             latestUpdate = new[] { latestUpdate, updatedAt, instanceUpdatedAt }.Max();
             representativeClaimant ??= claimant;
@@ -10153,6 +10189,7 @@ public sealed partial class WorkflowEngineService(
             {
                 ActingFor = h.ActingFor,
                 DelegationId = h.DelegationId,
+                ActorClaims = h.ActorClaims,
                 Reason = h.Reason,
                 AdministrativeActionBatchId = h.AdministrativeActionBatchId
             }).ToList(),
@@ -11594,7 +11631,8 @@ public sealed partial class WorkflowEngineService(
             SnapshotRoles(actor.Roles))
         {
             ActingFor = actor.ActingFor,
-            DelegationId = actor.DelegationId
+            DelegationId = actor.DelegationId,
+            AuditClaims = actor.AuditClaims
         };
 
     private static void EnsureTaskAssignmentManager(WorkflowModel definition, ActorContext actor)

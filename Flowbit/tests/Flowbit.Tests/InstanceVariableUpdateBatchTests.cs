@@ -463,6 +463,64 @@ public sealed class InstanceVariableUpdateBatchTests(PostgresApiFixture fixture)
         return new VersionFamily(versionOne, versionTwo);
     }
 
+    [Fact]
+    public async Task ExecutionReceivesConfirmingAuditSnapshotSeparatelyFromExpressionClaims()
+    {
+        var family = await CreateFamilyAsync("variable-batch-audit");
+        var instance = await StartAsync(family.VersionOne.Id);
+        InstanceVariableUpdateBatchDetailDto batch;
+        await using (var createScope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            var preparer = new ActorContext("audit-preparer", ["admin"], new Dictionary<string, string>())
+            {
+                AuditClaims = new Dictionary<string, string[]> { ["employeeId"] = ["preparer"] }
+            };
+            batch = await createScope.ServiceProvider.GetRequiredService<IInstanceVariableUpdateBatchService>()
+                .CreateAsync(new CreateInstanceVariableUpdateBatchRequest(family.VersionOne.WorkflowKey,
+                    [new InstanceVariableWriteDto("auditScore", JsonSerializer.SerializeToElement(7))],
+                    "confirming actor snapshot", ExplicitSelection(instance.Id), $"audit-{Guid.NewGuid():N}"),
+                    preparer, CancellationToken.None);
+        }
+        await ProcessJobAsync(Assert.Single(PrepareJobs(batch)).JobId!.Value, fixture.Factory.Services);
+        batch = await GetBatchAsync(batch.Summary.Id);
+
+        var values = new[] { "confirmer-17", "confirmer-19", "confirmer-17" };
+        await using (var confirmScope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            var confirmer = new ActorContext("audit-confirmer", ["admin"],
+                new Dictionary<string, string> { ["department"] = "expression-only" })
+            {
+                AuditClaims = new Dictionary<string, string[]> { ["employeeId"] = values }
+            };
+            batch = await confirmScope.ServiceProvider.GetRequiredService<IInstanceVariableUpdateBatchService>()
+                .ConfirmAsync(batch.Summary.Id,
+                    new ConfirmInstanceVariableUpdateBatchRequest(batch.Summary.EligibleItemCount,
+                        batch.Summary.IneligibleItemCount, batch.Summary.WarningItemCount, batch.Summary.UpdatedAt),
+                    confirmer, CancellationToken.None) ?? throw new InvalidOperationException("Batch missing.");
+        }
+        values[0] = "changed-after-confirmation";
+        ActorContext? observed = null;
+        await using var worker = fixture.Factory.WithWebHostBuilder(builder =>
+            builder.ConfigureTestServices(services =>
+            {
+                services.RemoveAll<IInstanceVariableUpdateExecutor>();
+                services.AddScoped<IInstanceVariableUpdateExecutor>(provider =>
+                    new AuditCapturingExecutor(provider.GetRequiredService<InstanceVariableUpdateService>(),
+                        actor => observed = actor));
+            }));
+        await ProcessJobAsync(Assert.Single(ExecuteJobs(batch)).JobId!.Value, worker.Services);
+
+        var completed = await GetBatchAsync(batch.Summary.Id);
+        Assert.Equal(InstanceVariableUpdateBatchStatuses.Completed, completed.Summary.Status);
+        Assert.Equal(1, completed.Summary.SucceededItemCount);
+        var actorSnapshot = Assert.IsType<ActorContext>(observed);
+        Assert.Equal("audit-confirmer", actorSnapshot.User);
+        Assert.Equal(["confirmer-17", "confirmer-19", "confirmer-17"], actorSnapshot.AuditClaims!["employeeId"]);
+        Assert.Equal("expression-only", actorSnapshot.Claims["department"]);
+        Assert.False(actorSnapshot.AuditClaims.ContainsKey("department"));
+        Assert.False(actorSnapshot.Claims.ContainsKey("employeeId"));
+    }
+
     private async Task<WorkflowDetailDto> CreateWorkflowAsync(WorkflowModel model)
     {
         using var response = await SendAsync(
@@ -733,6 +791,20 @@ public sealed class InstanceVariableUpdateBatchTests(PostgresApiFixture fixture)
         string Method,
         bool HasBody,
         IReadOnlyList<int> ResponseStatuses);
+
+    private sealed class AuditCapturingExecutor(
+        IInstanceVariableUpdateExecutor inner,
+        Action<ActorContext> capture) : IInstanceVariableUpdateExecutor
+    {
+        public Task<InstanceVariableUpdateExecutionOutcome> ExecuteAsync(
+            InstanceVariableUpdateExecutionRequest request,
+            ActorContext actor,
+            CancellationToken cancellationToken)
+        {
+            capture(actor);
+            return inner.ExecuteAsync(request, actor, cancellationToken);
+        }
+    }
 
     private sealed class SelectiveThrowingExecutor(
         IInstanceVariableUpdateExecutor inner,

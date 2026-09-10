@@ -22,6 +22,8 @@ public sealed class InstanceHistoryEntity
 
     public string? PerformedBy { get; set; }
 
+    public JsonDocument? ActorClaimsJson { get; set; }
+
     public string? ActingFor { get; set; }
 
     public long? DelegationId { get; set; }

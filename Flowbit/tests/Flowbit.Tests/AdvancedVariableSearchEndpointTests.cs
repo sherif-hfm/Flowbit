@@ -6,6 +6,7 @@ using System.Security.Claims;
 using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
@@ -1131,7 +1132,25 @@ public sealed class AdvancedVariableSearchGetPostParityApiTests(
             getRoot.GetProperty("totalCount").GetInt64(),
             postRoot.GetProperty("totalCount").GetInt64());
         Assert.Equal(
-            getRoot.GetProperty("items").GetRawText(),
-            postRoot.GetProperty("items").GetRawText());
+            NormalizeActiveExecutionDurations(getRoot.GetProperty("items")),
+            NormalizeActiveExecutionDurations(postRoot.GetProperty("items")));
+    }
+
+    private static string NormalizeActiveExecutionDurations(JsonElement items)
+    {
+        var normalized = JsonNode.Parse(items.GetRawText())!.AsArray();
+        foreach (var item in normalized.OfType<JsonObject>())
+        {
+            if (item["status"]?.GetValue<string>() == "active"
+                && item.TryGetPropertyValue("durationMilliseconds", out var duration)
+                && duration is not null)
+            {
+                // Each search captures its own current time for active visits.
+                // Completed/pending durations and every other field stay comparable.
+                Assert.True(duration.GetValue<long>() >= 0);
+                item["durationMilliseconds"] = 0;
+            }
+        }
+        return normalized.ToJsonString();
     }
 }

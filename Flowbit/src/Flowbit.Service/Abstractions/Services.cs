@@ -25,6 +25,20 @@ public sealed record ActorContext(
     /// <summary>The standing delegation grant authorizing <see cref="ActingFor"/>.</summary>
     public long? DelegationId { get; init; }
 
+    /// <summary>
+    /// Selected validated JWT claims captured for auditing. Null means capture was
+    /// disabled, no JWT actor was present, or the actor predates audit capture.
+    /// An empty dictionary means capture was enabled but no selected claim existed.
+    /// This snapshot is independent of expression claims and is never reselected.
+    /// </summary>
+    public IReadOnlyDictionary<string, string[]>? AuditClaims { get; init; }
+
+    public static IReadOnlyDictionary<string, string[]>? CopyAuditClaims(
+        IReadOnlyDictionary<string, string[]>? claims) => claims?.ToDictionary(
+        pair => pair.Key,
+        pair => pair.Value.ToArray(),
+        StringComparer.OrdinalIgnoreCase);
+
     public static readonly ActorContext Anonymous =
         new(null, [], new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase));
 }
@@ -44,6 +58,14 @@ public sealed class WorkflowContextOptions
     public const string SectionName = "WorkflowContext";
 
     public Dictionary<string, string> Config { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+    public List<string> AllowedClaims { get; set; } = [];
+}
+
+/// <summary>Deployment-wide, opt-in selection of JWT claims retained in runtime audit records.</summary>
+public sealed class WorkflowAuditOptions
+{
+    public const string SectionName = "WorkflowAudit";
 
     public List<string> AllowedClaims { get; set; } = [];
 }

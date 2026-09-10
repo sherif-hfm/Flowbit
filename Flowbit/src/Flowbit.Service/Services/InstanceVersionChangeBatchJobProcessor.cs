@@ -46,13 +46,14 @@ public sealed class InstanceVersionChangeBatchJobProcessor(
         {
             if (lease.Job.Kind == WorkflowJobKinds.InstanceVersionChangeBatchPrepare)
             {
-                await PrepareAsync(payload.BatchId, payload.ActorClaims, cancellationToken);
+                await PrepareAsync(payload.BatchId, payload.ActorClaims, payload.AuditClaims, cancellationToken);
             }
             else
             {
                 await ExecuteAsync(
                     payload.BatchId,
                     payload.ActorClaims,
+                    payload.AuditClaims,
                     lease.AttemptNumber >= lease.Job.MaxAttempts,
                     cancellationToken);
             }
@@ -79,6 +80,7 @@ public sealed class InstanceVersionChangeBatchJobProcessor(
     private async Task PrepareAsync(
         long batchId,
         IReadOnlyDictionary<string, string>? actorClaims,
+        IReadOnlyDictionary<string, string[]>? auditClaims,
         CancellationToken cancellationToken)
     {
         while (true)
@@ -107,7 +109,7 @@ public sealed class InstanceVersionChangeBatchJobProcessor(
             }
             foreach (var item in items)
             {
-                await PrepareItemAsync(item.Id, actorClaims, cancellationToken);
+                await PrepareItemAsync(item.Id, actorClaims, auditClaims, cancellationToken);
             }
             await RefreshPreparationProgressAsync(batchId, cancellationToken);
         }
@@ -154,6 +156,7 @@ public sealed class InstanceVersionChangeBatchJobProcessor(
     private async Task PrepareItemAsync(
         long itemId,
         IReadOnlyDictionary<string, string>? actorClaims,
+        IReadOnlyDictionary<string, string[]>? auditClaims,
         CancellationToken cancellationToken)
     {
         await using var scope = scopeFactory.CreateAsyncScope();
@@ -218,7 +221,7 @@ public sealed class InstanceVersionChangeBatchJobProcessor(
                 var preview = await engine.PreviewInstanceVersionChangeAsync(
                     item.InstanceId,
                     batch.TargetWorkflowDefinitionId,
-                    PreparedActor(batch, actorClaims),
+                    PreparedActor(batch, actorClaims, auditClaims),
                     cancellationToken);
                 if (preview is null)
                 {
@@ -312,6 +315,7 @@ public sealed class InstanceVersionChangeBatchJobProcessor(
     private async Task ExecuteAsync(
         long batchId,
         IReadOnlyDictionary<string, string>? actorClaims,
+        IReadOnlyDictionary<string, string[]>? auditClaims,
         bool isFinalAttempt,
         CancellationToken cancellationToken)
     {
@@ -351,6 +355,7 @@ public sealed class InstanceVersionChangeBatchJobProcessor(
                 var unexpectedFailure = await ExecuteItemAsync(
                     item.Id,
                     actorClaims,
+                    auditClaims,
                     isFinalAttempt,
                     cancellationToken);
                 firstUnexpectedItemFailure ??= unexpectedFailure;
@@ -410,6 +415,7 @@ public sealed class InstanceVersionChangeBatchJobProcessor(
     private async Task<Exception?> ExecuteItemAsync(
         long itemId,
         IReadOnlyDictionary<string, string>? actorClaims,
+        IReadOnlyDictionary<string, string[]>? auditClaims,
         bool isFinalAttempt,
         CancellationToken cancellationToken)
     {
@@ -491,7 +497,7 @@ public sealed class InstanceVersionChangeBatchJobProcessor(
                         item.CapturedInstanceUpdatedAt,
                         batch.TargetWorkflowDefinitionId,
                         batch.Reason),
-                    ConfirmedActor(batch, actorClaims),
+                    ConfirmedActor(batch, actorClaims, auditClaims),
                     cancellationToken);
             }
             catch (Exception exception) when (IsExpectedBusinessException(exception))
@@ -750,12 +756,17 @@ public sealed class InstanceVersionChangeBatchJobProcessor(
 
     private static ActorContext PreparedActor(
         InstanceVersionChangeBatchRecord batch,
-        IReadOnlyDictionary<string, string>? claims) =>
-        new(batch.PreparedBy, batch.PreparedByRoles, SnapshotClaims(claims));
+        IReadOnlyDictionary<string, string>? claims,
+        IReadOnlyDictionary<string, string[]>? auditClaims) =>
+        new(batch.PreparedBy, batch.PreparedByRoles, SnapshotClaims(claims))
+        {
+            AuditClaims = ActorContext.CopyAuditClaims(auditClaims)
+        };
 
     private static ActorContext ConfirmedActor(
         InstanceVersionChangeBatchRecord batch,
-        IReadOnlyDictionary<string, string>? claims) =>
+        IReadOnlyDictionary<string, string>? claims,
+        IReadOnlyDictionary<string, string[]>? auditClaims) =>
         new(
             batch.ConfirmedBy
                 ?? throw new WorkflowConflictException(
@@ -763,7 +774,10 @@ public sealed class InstanceVersionChangeBatchJobProcessor(
             batch.ConfirmedByRoles
                 ?? throw new WorkflowConflictException(
                     $"Instance version-change batch #{batch.Id} has no confirmer role snapshot."),
-            SnapshotClaims(claims));
+            SnapshotClaims(claims))
+        {
+            AuditClaims = ActorContext.CopyAuditClaims(auditClaims)
+        };
 
     private static IReadOnlyDictionary<string, string> SnapshotClaims(
         IReadOnlyDictionary<string, string>? claims) =>

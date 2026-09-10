@@ -45,11 +45,13 @@ public sealed class NodeExecutionEntity
 
     public string? TriggeredBy { get; set; }
     public JsonDocument? TriggeredByRolesJson { get; set; }
+    public JsonDocument? TriggeredByClaimsJson { get; set; }
     public string? TriggeredActingFor { get; set; }
     public long? TriggeredDelegationId { get; set; }
 
     public string? CompletedBy { get; set; }
     public JsonDocument? CompletedByRolesJson { get; set; }
+    public JsonDocument? CompletedByClaimsJson { get; set; }
     public string? CompletedActingFor { get; set; }
     public long? CompletedDelegationId { get; set; }
 

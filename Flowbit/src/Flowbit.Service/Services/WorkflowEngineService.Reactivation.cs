@@ -229,7 +229,8 @@ public sealed partial class WorkflowEngineService
                 cancellationToken,
                 actor.ActingFor,
                 actor.DelegationId,
-                reason);
+                reason,
+                actorClaims: actor.AuditClaims);
 
             var running = await runtime.GetInstanceAsync(
                     instance.Id,

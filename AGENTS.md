@@ -257,6 +257,24 @@ Storage follows the hybrid design:
   instance DTOs do not expose `ClaimedBy`; claim ownership belongs to task DTOs.
   Progress and work-summary projections use bounded grouped queries rather than
   loading every child item.
+- **Claim events and selected JWT audit.** Every actual explicit, recovery,
+  delegated, or inherited claim/unclaim change writes one `taskClaim` history row
+  in its existing transaction. Unchanged retries write nothing. Payload retains
+  `operation`, `previousClaimedBy`, `newClaimedBy`, and `authority`; inherited
+  claims also identify `claimMode`, `sourceHistoryId`, and `sourceNodeId`, with
+  system attribution and no JWT claims. Ownership rows keep a null ActionId and
+  cannot become a prior flow-action actor for inheritance. Assignment clearing
+  remains covered by its single `taskAssignment` event.
+  `WorkflowAudit:AllowedClaims` defaults to `[]` and is independent of expression
+  allowlisting. Selected actual-caller claims are immutable JSON objects of
+  string arrays, preserving repeated values: history `ActorClaims` and node
+  detail `StartedByClaims`/`CompletedByClaims`. Null means not recorded; `{}`
+  means capture was enabled without matching claims. Claim changes do not
+  overwrite visit snapshots. Preserve delegation attribution and captured
+  causal claims through durable work; do not reconstruct claims for system-only
+  work or older rows/jobs. Apply the additive migration before upgraded writers.
+  Claims retain the owning read authorization and retention policy. See
+  [audit configuration](docs/deployment.md#selected-claim-audit).
 - **Current-variable projection and advanced search.** `instance_variables`
   remains the authoritative append-only history. The migration backfills the
   greatest history ID for every `(InstanceId, VariableName)`, and an

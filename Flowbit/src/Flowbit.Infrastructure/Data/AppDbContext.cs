@@ -639,9 +639,11 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(e => e.NodeRolesJson).HasColumnType("jsonb");
             entity.Property(e => e.TriggeredBy).HasMaxLength(UserTaskConstraints.MaxActorNameLength);
             entity.Property(e => e.TriggeredByRolesJson).HasColumnType("jsonb");
+            entity.Property(e => e.TriggeredByClaimsJson).HasColumnType("jsonb");
             entity.Property(e => e.TriggeredActingFor).HasMaxLength(UserTaskConstraints.MaxActorNameLength);
             entity.Property(e => e.CompletedBy).HasMaxLength(UserTaskConstraints.MaxActorNameLength);
             entity.Property(e => e.CompletedByRolesJson).HasColumnType("jsonb");
+            entity.Property(e => e.CompletedByClaimsJson).HasColumnType("jsonb");
             entity.Property(e => e.CompletedActingFor).HasMaxLength(UserTaskConstraints.MaxActorNameLength);
             entity.Property(e => e.ErrorCode).HasMaxLength(ErrorEndConstraints.MaxCodeLength);
             entity.Property(e => e.ErrorDescription).HasMaxLength(ErrorEndConstraints.MaxDescriptionLength);
@@ -1151,6 +1153,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.HasKey(e => e.Id);
             entity.HasIndex(e => e.WorkflowDefinitionId);
             entity.Property(e => e.Payload).HasColumnType("jsonb");
+            entity.Property(e => e.ActorClaimsJson).HasColumnType("jsonb");
             entity.Property(e => e.SharedVariableWritesJson).HasColumnType("jsonb");
             entity.Property(e => e.PerformedBy).HasMaxLength(300);
             entity.Property(e => e.ActingFor).HasMaxLength(UserTaskConstraints.MaxActorNameLength);

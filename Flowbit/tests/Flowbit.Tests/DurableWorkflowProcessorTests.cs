@@ -5,7 +5,9 @@ using Flowbit.Service.Abstractions;
 using Flowbit.Service.Models;
 using Flowbit.Shared.Models;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Xunit;
 
 namespace Flowbit.Tests;
@@ -446,9 +448,126 @@ public sealed class DurableWorkflowProcessorTests(PostgresApiFixture fixture)
         }
     }
 
+    [Theory]
+    [InlineData("captured")]
+    [InlineData("empty")]
+    [InlineData("legacy")]
+    public async Task DurableContinuationPreservesCapturedEmptyAndLegacyAuditClaims(string snapshotKind)
+    {
+        var workflowKey = $"durable-audit-{Guid.NewGuid():N}";
+        fixture.ServiceInvocations.Reset();
+        try
+        {
+            var values = new[] { "E17", "E19", "E17" };
+            var snapshot = snapshotKind == "empty"
+                ? new Dictionary<string, string[]>()
+                : new Dictionary<string, string[]> { ["employeeId"] = values };
+            var actor = new ActorContext("audit-starter", ["admin"],
+                new Dictionary<string, string> { ["department"] = "Finance" })
+            {
+                AuditClaims = snapshot
+            };
+            var instanceId = await InsertAndStartAsync(workflowKey,
+                CreateAsyncServiceWorkflow(workflowKey, new JobPolicyModel { RetryDelays = [] }), actor);
+            values[0] = "changed-after-enqueue";
+            long jobId;
+            await using (var inspect = fixture.CreateDbContext())
+            {
+                var job = await inspect.WorkflowJobs.SingleAsync(item => item.InstanceId == instanceId);
+                jobId = job.Id;
+                if (snapshotKind == "legacy")
+                {
+                    var payload = job.PayloadJson!.RootElement.Deserialize<Dictionary<string, JsonElement>>()!;
+                    Assert.True(payload.Remove("AuditClaims"));
+                    job.PayloadJson = JsonSerializer.SerializeToDocument(payload);
+                    await inspect.SaveChangesAsync();
+                }
+            }
+
+            // Force an actual failed durable attempt after its request snapshot
+            // has committed, while the external activity is running.
+            var block = fixture.ServiceInvocations.BlockNext("/typed-output-success");
+            var firstAttempt = PromoteAndProcessAsync(jobId, WorkflowJobClasses.Activity);
+            await block.WaitUntilEnteredAsync(CancellationToken.None);
+            try
+            {
+                await using var invalidate = fixture.CreateDbContext();
+                var job = await invalidate.WorkflowJobs.SingleAsync(item => item.Id == jobId);
+                var stagedSnapshotId = Assert.IsType<long>(job.SnapshotId);
+                job.SnapshotId = null;
+                await invalidate.SaveChangesAsync();
+                Assert.Equal(1, await invalidate.WorkflowJobSnapshots
+                    .Where(item => item.Id == stagedSnapshotId).ExecuteDeleteAsync());
+            }
+            finally
+            {
+                block.Release();
+            }
+            await firstAttempt;
+
+            long incidentId;
+            await using (var failed = fixture.CreateDbContext())
+            {
+                var job = await failed.WorkflowJobs.SingleAsync(item => item.Id == jobId);
+                Assert.Equal(WorkflowJobStatuses.Incident, job.Status);
+                var incident = await failed.WorkflowIncidents.SingleAsync(item =>
+                    item.JobId == jobId && item.Status == WorkflowIncidentStatuses.Open);
+                Assert.Equal("job_invariant_violation", incident.Type);
+                incidentId = incident.Id;
+                Assert.False(await failed.InstanceHistory.AnyAsync(item =>
+                    item.InstanceId == instanceId && item.FromStepId == 2 && item.Note == "service"));
+            }
+
+            // A restarted Worker has a different audit selection. The legacy
+            // expression department claim must never replace the captured audit.
+            await using var changedWorker = fixture.Factory.WithWebHostBuilder(builder =>
+                builder.ConfigureTestServices(services =>
+                {
+                    services.RemoveAll<WorkflowAuditOptions>();
+                    services.AddSingleton(new WorkflowAuditOptions { AllowedClaims = ["department"] });
+                }));
+            Assert.Equal(["department"], changedWorker.Services
+                .GetRequiredService<WorkflowAuditOptions>().AllowedClaims);
+            await RetryIncidentAsync(incidentId);
+            await using (var requeued = fixture.CreateDbContext())
+            {
+                Assert.Equal(WorkflowJobStatuses.Queued,
+                    (await requeued.WorkflowJobs.SingleAsync(item => item.Id == jobId)).Status);
+            }
+            await PromoteAndProcessAsync(jobId, WorkflowJobClasses.Activity, changedWorker.Services);
+
+            await using var completed = fixture.CreateDbContext();
+            var history = await completed.InstanceHistory.SingleAsync(item =>
+                item.InstanceId == instanceId && item.FromStepId == 2 && item.Note == "service");
+            var execution = await completed.NodeExecutions.SingleAsync(item =>
+                item.InstanceId == instanceId && item.NodeId == 2);
+            if (snapshotKind == "legacy")
+            {
+                Assert.Null(history.ActorClaimsJson);
+                Assert.Null(execution.CompletedByClaimsJson);
+            }
+            else
+            {
+                var expected = snapshotKind == "empty" ? "{}" : "{\"employeeId\":[\"E17\",\"E19\",\"E17\"]}";
+                Assert.True(JsonElement.DeepEquals(JsonSerializer.Deserialize<JsonElement>(expected),
+                    history.ActorClaimsJson!.RootElement));
+                Assert.True(JsonElement.DeepEquals(history.ActorClaimsJson.RootElement,
+                    execution.CompletedByClaimsJson!.RootElement));
+            }
+            Assert.Equal("audit-starter", execution.CompletedBy);
+            Assert.Equal(2, await completed.WorkflowJobAttempts.CountAsync(item => item.JobId == jobId));
+        }
+        finally
+        {
+            fixture.ServiceInvocations.Reset();
+            await DeleteWorkflowAsync(workflowKey);
+        }
+    }
+
     private async Task<long> InsertAndStartAsync(
         string workflowKey,
-        WorkflowModel definition)
+        WorkflowModel definition,
+        ActorContext? actor = null)
     {
         long workflowId;
         await using (var setup = fixture.CreateDbContext())
@@ -474,7 +593,7 @@ public sealed class DurableWorkflowProcessorTests(PostgresApiFixture fixture)
         var started = await engine.StartInstanceSlimAsync(
             workflowId,
             null,
-            new ActorContext(
+            actor ?? new ActorContext(
                 "starter",
                 ["User", "admin"],
                 new Dictionary<string, string>()),
@@ -497,7 +616,7 @@ public sealed class DurableWorkflowProcessorTests(PostgresApiFixture fixture)
             CancellationToken.None));
     }
 
-    private async Task PromoteAndProcessAsync(long jobId, string queueClass)
+    private async Task PromoteAndProcessAsync(long jobId, string queueClass, IServiceProvider? services = null)
     {
         await using (var promote = fixture.CreateDbContext())
         {
@@ -509,7 +628,7 @@ public sealed class DurableWorkflowProcessorTests(PostgresApiFixture fixture)
             Assert.Equal(1, changed);
         }
 
-        await using var scope = fixture.Factory.Services.CreateAsyncScope();
+        await using var scope = (services ?? fixture.Factory.Services).CreateAsyncScope();
         var repository = scope.ServiceProvider
             .GetRequiredService<IWorkflowJobRepository>();
         var leases = await repository.LeaseRunnableAsync(

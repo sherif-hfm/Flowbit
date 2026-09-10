@@ -253,11 +253,22 @@ public sealed class RetentionRepositoryTests(PostgresApiFixture fixture)
         await using var db = fixture.CreateDbContext();
         await db.WorkflowInstances.Where(i => i.Id == instances[0])
             .ExecuteUpdateAsync(set => set.SetProperty(i => i.HistoryPrunedAt, scope.Now));
-        var exception = await Assert.ThrowsAsync<PostgresException>(() => db.GetService<IMigrator>()
-            .MigrateAsync("20260905143652_AddUserTaskRolePolicies"));
-        Assert.Contains("Cannot downgrade retention", exception.MessageText);
-        Assert.True(await db.RetentionCoordinators.AnyAsync());
-        Assert.NotNull((await db.WorkflowInstances.FindAsync(instances[0]))!.HistoryPrunedAt);
+        try
+        {
+            var exception = await Assert.ThrowsAsync<PostgresException>(() => db.GetService<IMigrator>()
+                .MigrateAsync("20260905143652_AddUserTaskRolePolicies"));
+            Assert.Contains("Cannot downgrade retention", exception.MessageText);
+            Assert.True(await db.RetentionCoordinators.AnyAsync());
+            Assert.NotNull((await db.WorkflowInstances.FindAsync(instances[0]))!.HistoryPrunedAt);
+        }
+        finally
+        {
+            // EF can commit newer migrations' Down operations before the retention
+            // guard rejects its own downgrade. Restore the shared fixture for the
+            // current model even when an assertion above fails.
+            await db.Database.MigrateAsync();
+        }
+        Assert.Empty(await db.Database.GetPendingMigrationsAsync());
     }
 
     [Fact]

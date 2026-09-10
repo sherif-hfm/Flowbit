@@ -351,6 +351,55 @@ public sealed class InstanceVersionChangeBatchProcessorTests(PostgresApiFixture 
     }
 
     [Fact]
+    public async Task Execution_PreservesConfirmerAuditSnapshotSeparatelyFromExpressionClaims()
+    {
+        var family = await CreateFamilyAsync("processor-confirmer-audit-snapshot");
+        var instance = await StartAsync(family.Source.Id);
+        await using var scope = fixture.Factory.Services.CreateAsyncScope();
+        var service = scope.ServiceProvider.GetRequiredService<IInstanceVersionChangeBatchService>();
+        var preparer = new ActorContext("audit-preparer", ["admin"], new Dictionary<string, string>())
+        {
+            AuditClaims = new Dictionary<string, string[]> { ["employeeId"] = ["preparer"] }
+        };
+        var batch = await service.CreateAsync(
+            new CreateInstanceVersionChangeBatchRequest(
+                family.Source.Id, family.Target.Id, "audit confirmer snapshot",
+                ExplicitSelection(instance.Id), $"audit-snapshot-{Guid.NewGuid():N}"),
+            preparer, CancellationToken.None);
+        await ProcessJobAsync(batch.PreparationJobId!.Value, fixture.Factory.Services);
+        batch = await GetBatchAsync(batch.Summary.Id);
+
+        var values = new[] { "employee-17", "employee-19", "employee-17" };
+        var confirmer = new ActorContext("audit-confirmer", ["admin"],
+            new Dictionary<string, string> { ["department"] = "release-department" })
+        {
+            AuditClaims = new Dictionary<string, string[]> { ["employeeId"] = values }
+        };
+        await using var confirmScope = fixture.Factory.Services.CreateAsyncScope();
+        var confirmService = confirmScope.ServiceProvider.GetRequiredService<IInstanceVersionChangeBatchService>();
+        batch = await confirmService.ConfirmAsync(
+            batch.Summary.Id,
+            new ConfirmInstanceVersionChangeBatchRequest(
+                batch.Summary.EligibleItemCount, batch.Summary.IneligibleItemCount,
+                batch.Summary.WarningItemCount, batch.Summary.UpdatedAt),
+            confirmer, CancellationToken.None) ?? throw new InvalidOperationException("Batch missing.");
+        values[0] = "changed-after-confirmation";
+
+        var executor = ControlledExecutor.Returning(new InstanceVersionChangeBatchExecutionOutcome(
+            false, null, "test_classification", "Audit actor captured.", [], []));
+        await using var workerFactory = CreateExecutorFactory(executor);
+        Assert.Empty(workerFactory.Services.GetRequiredService<WorkflowAuditOptions>().AllowedClaims);
+        await ProcessJobAsync(batch.ExecutionJobId!.Value, workerFactory.Services);
+
+        var observed = Assert.IsType<ActorContext>(executor.ObservedActor);
+        Assert.Equal("audit-confirmer", observed.User);
+        Assert.Equal(["employee-17", "employee-19", "employee-17"], observed.AuditClaims!["employeeId"]);
+        Assert.Equal("release-department", observed.Claims["department"]);
+        Assert.False(observed.Claims.ContainsKey("employeeId"));
+        Assert.False(observed.AuditClaims.ContainsKey("department"));
+    }
+
+    [Fact]
     public async Task Create_RejectsInvalidPairsSelectionsReasonsAndConfiguredLimit()
     {
         var family = await CreateFamilyAsync("service-negative");

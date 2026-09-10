@@ -232,7 +232,8 @@ public sealed partial class WorkflowEngineService
                     delegationId: actor.DelegationId,
                     completionKind: NodeExecutionCompletionReasons.AdministrativeAction,
                     completionReason: administrative.Reason,
-                    administrativeActionBatchId: request.BatchId);
+                    administrativeActionBatchId: request.BatchId,
+                    actorClaims: actor.AuditClaims);
                 await RecordSequenceFlowOccurrenceAsync(
                     flowInfo,
                     state.Instance.Id,
@@ -264,7 +265,8 @@ public sealed partial class WorkflowEngineService
                     actor.ActingFor,
                     actor.DelegationId,
                     administrative.Reason,
-                    request.BatchId);
+                    request.BatchId,
+                    actorClaims: actor.AuditClaims);
             }
         }
 
@@ -393,7 +395,8 @@ public sealed partial class WorkflowEngineService
                 actor.DelegationId,
                 NodeExecutionCompletionReasons.AdministrativeAction,
                 NormalizeOptionalReason(request.Reason),
-                request.BatchId);
+                request.BatchId,
+                actorClaims: actor.AuditClaims);
         }
         else if (state.MultiInstance is not null)
         {
@@ -413,7 +416,8 @@ public sealed partial class WorkflowEngineService
                 actor.ActingFor,
                 actor.DelegationId,
                 NormalizeOptionalReason(request.Reason),
-                request.BatchId);
+                request.BatchId,
+                actorClaims: actor.AuditClaims);
         }
 
         await runtime.UpdateExecutionTokenAsync(

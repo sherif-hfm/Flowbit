@@ -39,6 +39,7 @@ try
         {
             options.TokenValidationParameters = new TokenValidationParameters
             {
+                AuthenticationType = JwtBearerDefaults.AuthenticationScheme,
                 ValidateIssuer = true,
                 ValidateAudience = true,
                 ValidateLifetime = true,
@@ -279,6 +280,9 @@ try
         .GetSection(WorkflowContextOptions.SectionName)
         .Get<WorkflowContextOptions>() ?? new WorkflowContextOptions();
     builder.Services.AddSingleton(workflowContextOptions);
+    builder.Services.AddSingleton(provider => provider.GetRequiredService<IConfiguration>()
+        .GetSection(WorkflowAuditOptions.SectionName)
+        .Get<WorkflowAuditOptions>() ?? new WorkflowAuditOptions());
     builder.Services.AddSingleton(TimeProvider.System);
 
     // The actor identity claim is read from flowbit.engine_settings once during startup.

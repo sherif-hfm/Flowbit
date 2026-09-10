@@ -153,6 +153,7 @@ public sealed class InstanceVersionChangeBatchService(
                 WorkflowJobKinds.InstanceVersionChangeBatchPrepare,
                 "prepare",
                 SnapshotAllowedClaims(actor.Claims, contextOptions.AllowedClaims),
+                actor.AuditClaims,
                 now,
                 cancellationToken);
             batch = await batches.UpdateAsync(
@@ -336,6 +337,7 @@ public sealed class InstanceVersionChangeBatchService(
                     WorkflowJobKinds.InstanceVersionChangeBatchExecute,
                     "execute",
                     SnapshotAllowedClaims(actor.Claims, contextOptions.AllowedClaims),
+                    actor.AuditClaims,
                     now,
                     cancellationToken);
             }
@@ -517,6 +519,7 @@ public sealed class InstanceVersionChangeBatchService(
         string kind,
         string phase,
         IReadOnlyDictionary<string, string> actorClaims,
+        IReadOnlyDictionary<string, string[]>? auditClaims,
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
@@ -542,7 +545,8 @@ public sealed class InstanceVersionChangeBatchService(
                 Payload = JsonSerializer.SerializeToElement(
                     new InstanceVersionChangeBatchJobPayload(batchId)
                     {
-                        ActorClaims = actorClaims
+                        ActorClaims = actorClaims,
+                        AuditClaims = ActorContext.CopyAuditClaims(auditClaims)
                     })
             },
             cancellationToken);

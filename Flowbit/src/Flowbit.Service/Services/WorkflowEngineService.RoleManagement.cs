@@ -83,13 +83,15 @@ public sealed partial class WorkflowEngineService
         {
             await runtime.AddUserTaskHistoryAsync(
                 scope.Instance.Id, scope.Token.Id, normalTaskId, null, null, scope.Node.Id,
-                NormalizeUser(actor.User), payload, "taskRolesChanged", cancellationToken);
+                NormalizeUser(actor.User), payload, "taskRolesChanged", cancellationToken,
+                actorClaims: actor.AuditClaims);
         }
         else
         {
             await runtime.AddTokenHistoryAsync(
                 scope.Instance.Id, scope.Token.Id, null, scope.Node.Id, scope.Node.Id,
-                NormalizeUser(actor.User), payload, "taskRolesChanged", cancellationToken);
+                NormalizeUser(actor.User), payload, "taskRolesChanged", cancellationToken,
+                actorClaims: actor.AuditClaims);
         }
         await runtime.TouchInstanceAsync(scope.Instance.Id, cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);

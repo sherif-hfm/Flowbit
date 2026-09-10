@@ -155,6 +155,18 @@ public sealed record NodeExecutionDetailDto : NodeExecutionSummaryDto
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public IReadOnlyList<string>? CompletedByRoles { get; init; }
 
+    /// <summary>
+    /// Selected claims of the causal starting actor. Null means not recorded;
+    /// an empty object means no selected claims were present. Values retain repeats.
+    /// </summary>
+    public IReadOnlyDictionary<string, string[]>? StartedByClaims { get; init; }
+
+    /// <summary>
+    /// Selected claims of the completing actor, independent of the start snapshot.
+    /// Null means not recorded; an empty object means no selected claims were present.
+    /// </summary>
+    public IReadOnlyDictionary<string, string[]>? CompletedByClaims { get; init; }
+
     public bool? RequiresClaim { get; init; }
     public bool? RequiresAssignment { get; init; }
     public string? AssignedTo { get; init; }

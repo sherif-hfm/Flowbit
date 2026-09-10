@@ -96,7 +96,7 @@ else if (execution is not null)
 
             <section class="panel" aria-labelledby="execution-actors-heading">
                 <div class="section-heading">
-                    <div><h2 id="execution-actors-heading">Actors and roles</h2><p>Role values are immutable snapshots captured for this execution.</p></div>
+                    <div><h2 id="execution-actors-heading">Actors, roles, and claims</h2><p>Roles and selected claims are snapshots captured for this execution.</p></div>
                 </div>
                 <div class="summary-grid">
                     <div class="summary-item"><span>Owner</span><strong>@(execution.Owner ?? "—")</strong></div>
@@ -105,6 +105,10 @@ else if (execution is not null)
                     <div class="summary-item"><span>Node roles</span><strong>@FormatRoles(execution.NodeRoles, true)</strong></div>
                     <div class="summary-item"><span>Starting actor roles</span><strong>@FormatRoles(execution.StartedByRoles, true)</strong></div>
                     <div class="summary-item"><span>Completing actor roles</span><strong>@FormatRoles(execution.CompletedByRoles, true)</strong></div>
+                </div>
+                <div class="summary-grid mt-3">
+                    <div><ActorClaims Claims="@execution.StartedByClaims" Label="Starting actor claims" /></div>
+                    <div><ActorClaims Claims="@execution.CompletedByClaims" Label="Completing actor claims" /></div>
                 </div>
             </section>
 

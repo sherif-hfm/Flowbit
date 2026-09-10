@@ -260,6 +260,10 @@ code { color: #4338ca; }
     .table > :not(caption) > * > * { padding: .7rem .6rem; }
 }
 
+#history .history-actor {
+    min-width: 14rem;
+}
+
 @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }

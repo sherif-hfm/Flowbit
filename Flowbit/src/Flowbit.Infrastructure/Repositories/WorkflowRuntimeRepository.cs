@@ -31,7 +31,8 @@ public sealed partial class WorkflowRuntimeRepository(
         CurrentNodeSnapshot node,
         string? startedBy,
         IReadOnlyList<string> startedByRoles,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlyDictionary<string, string[]>? actorClaims = null)
     {
         var now = DateTimeOffset.UtcNow;
         var entity = new WorkflowInstanceEntity
@@ -64,7 +65,7 @@ public sealed partial class WorkflowRuntimeRepository(
             NodeExecutionStatuses.Active,
             null,
             null,
-            new NodeExecutionActorRecord(startedBy, startedByRoles),
+            new NodeExecutionActorRecord(startedBy, startedByRoles) { AuditClaims = actorClaims },
             now);
         dbContext.NodeExecutions.Add(nodeExecution);
         token.CurrentNodeExecution = nodeExecution;
@@ -4057,7 +4058,7 @@ public sealed partial class WorkflowRuntimeRepository(
                          "MultiInstanceExecutionId", "ItemIndex", "NodeId",
                          "NodeName", "NodeExternalId", "NodeType", "ExecutionKind",
                          "Status", "EntryGatewayBranchId", "EnteredViaFlowId",
-                         "NodeRolesJson", "TriggeredBy", "TriggeredByRolesJson",
+                         "NodeRolesJson", "TriggeredBy", "TriggeredByRolesJson", "TriggeredByClaimsJson",
                          "TriggeredActingFor", "TriggeredDelegationId", "CreatedAt",
                          "StartedAt", "UpdatedAt", "IsCutoverSeeded")
                     SELECT
@@ -4065,7 +4066,7 @@ public sealed partial class WorkflowRuntimeRepository(
                         @execution_id, task."ItemIndex", @node_id,
                         @node_name, @node_external_id, @node_type, 'userTaskItem',
                         task."Status", @entry_gateway_branch_id, @entered_via_flow_id,
-                        @node_roles, @triggered_by, @triggered_by_roles,
+                        @node_roles, @triggered_by, @triggered_by_roles, @triggered_by_claims,
                         @triggered_acting_for, @triggered_delegation_id, @now,
                         CASE WHEN task."Status" = 'pending' THEN NULL ELSE @now END,
                         @now, false
@@ -4145,6 +4146,12 @@ public sealed partial class WorkflowRuntimeRepository(
                     NpgsqlDbType.Jsonb)
                 {
                     Value = JsonSerializer.Serialize(triggeredBy.Roles)
+                });
+                insertItems.Parameters.Add(new NpgsqlParameter("triggered_by_claims", NpgsqlDbType.Jsonb)
+                {
+                    Value = triggeredBy.AuditClaims is null
+                        ? DBNull.Value
+                        : JsonSerializer.Serialize(triggeredBy.AuditClaims)
                 });
                 insertItems.Parameters.Add(new NpgsqlParameter(
                     "triggered_acting_for",
@@ -5031,7 +5038,8 @@ public sealed partial class WorkflowRuntimeRepository(
         long? delegationId = null,
         string? completionKind = null,
         string? completionReason = null,
-        long? administrativeActionBatchId = null)
+        long? administrativeActionBatchId = null,
+        IReadOnlyDictionary<string, string[]>? actorClaims = null)
     {
         var task = dbContext.UserTasks.Local.Single(t => t.Id == taskId);
         var execution = dbContext.MultiInstanceExecutions.Local.Single(e => e.Id == task.MultiInstanceExecutionId);
@@ -5081,6 +5089,7 @@ public sealed partial class WorkflowRuntimeRepository(
                 token.GatewayBranchId,
                 new NodeExecutionActorRecord(completedBy, completedByRoles)
                 {
+                    AuditClaims = actorClaims,
                     ActingFor = actingFor,
                     DelegationId = delegationId
                 }),
@@ -5099,7 +5108,8 @@ public sealed partial class WorkflowRuntimeRepository(
         long? delegationId = null,
         string? completionKind = null,
         string? completionReason = null,
-        long? administrativeActionBatchId = null)
+        long? administrativeActionBatchId = null,
+        IReadOnlyDictionary<string, string[]>? actorClaims = null)
     {
         var task = dbContext.UserTasks.Local.SingleOrDefault(entity => entity.Id == taskId)
             ?? await dbContext.UserTasks.SingleAsync(entity => entity.Id == taskId, cancellationToken);
@@ -5128,6 +5138,7 @@ public sealed partial class WorkflowRuntimeRepository(
                 token.GatewayBranchId,
                 new NodeExecutionActorRecord(completedBy, completedByRoles)
                 {
+                    AuditClaims = actorClaims,
                     ActingFor = actingFor,
                     DelegationId = delegationId
                 }),
@@ -5225,6 +5236,7 @@ public sealed partial class WorkflowRuntimeRepository(
             nodeExecution.UpdatedAt = now;
             nodeExecution.TriggeredBy = actor.User;
             nodeExecution.TriggeredByRolesJson = JsonMapping.ToJsonDocument(actor.Roles);
+            nodeExecution.TriggeredByClaimsJson = JsonMapping.ToJsonDocument(actor.AuditClaims);
             nodeExecution.TriggeredActingFor = actor.ActingFor;
             nodeExecution.TriggeredDelegationId = actor.DelegationId;
         }
@@ -5371,6 +5383,7 @@ public sealed partial class WorkflowRuntimeRepository(
                     "ExitGatewayBranchId" = node_execution."EntryGatewayBranchId",
                     "CompletedBy" = @completed_by,
                     "CompletedByRolesJson" = @completed_by_roles,
+                    "CompletedByClaimsJson" = @completed_by_claims,
                     "CompletedActingFor" = @completed_acting_for,
                     "CompletedDelegationId" = @completed_delegation_id,
                     "ErrorCode" = NULL,
@@ -5407,6 +5420,10 @@ public sealed partial class WorkflowRuntimeRepository(
             NpgsqlDbType.Jsonb)
         {
             Value = JsonSerializer.Serialize(actor.Roles)
+        });
+        command.Parameters.Add(new NpgsqlParameter("completed_by_claims", NpgsqlDbType.Jsonb)
+        {
+            Value = actor.AuditClaims is null ? DBNull.Value : JsonSerializer.Serialize(actor.AuditClaims)
         });
         command.Parameters.Add(new NpgsqlParameter(
             "completed_acting_for",
@@ -5943,7 +5960,8 @@ public sealed partial class WorkflowRuntimeRepository(
         string? note,
         CancellationToken cancellationToken,
         string? actingFor = null,
-        long? delegationId = null)
+        long? delegationId = null,
+        IReadOnlyDictionary<string, string[]>? actorClaims = null)
     {
         var workflowDefinitionId = await GetCurrentWorkflowDefinitionIdAsync(instanceId, cancellationToken);
         dbContext.InstanceHistory.Add(new InstanceHistoryEntity
@@ -5954,6 +5972,7 @@ public sealed partial class WorkflowRuntimeRepository(
             FromStepId = fromStepId,
             ToStepId = toStepId,
             PerformedBy = performedBy,
+            ActorClaimsJson = JsonMapping.ToJsonDocument(actorClaims),
             ActingFor = actingFor,
             DelegationId = delegationId,
             Payload = JsonMapping.ToJsonDocument(payload),
@@ -5979,7 +5998,8 @@ public sealed partial class WorkflowRuntimeRepository(
         long? delegationId = null,
         string? reason = null,
         long? administrativeActionBatchId = null,
-        IReadOnlyList<SharedVariableWriteCorrelationDto>? sharedVariableWrites = null)
+        IReadOnlyList<SharedVariableWriteCorrelationDto>? sharedVariableWrites = null,
+        IReadOnlyDictionary<string, string[]>? actorClaims = null)
     {
         var workflowDefinitionId = await GetCurrentWorkflowDefinitionIdAsync(instanceId, cancellationToken);
         dbContext.InstanceHistory.Add(new InstanceHistoryEntity
@@ -5994,6 +6014,7 @@ public sealed partial class WorkflowRuntimeRepository(
             FromStepId = fromStepId,
             ToStepId = toStepId,
             PerformedBy = performedBy,
+            ActorClaimsJson = JsonMapping.ToJsonDocument(actorClaims),
             ActingFor = actingFor,
             DelegationId = delegationId,
             Payload = JsonMapping.ToJsonDocument(payload),
@@ -6018,7 +6039,8 @@ public sealed partial class WorkflowRuntimeRepository(
         string? actingFor = null,
         long? delegationId = null,
         string? reason = null,
-        long? administrativeActionBatchId = null)
+        long? administrativeActionBatchId = null,
+        IReadOnlyDictionary<string, string[]>? actorClaims = null)
     {
         var workflowDefinitionId = await GetCurrentWorkflowDefinitionIdAsync(instanceId, cancellationToken);
         dbContext.InstanceHistory.Add(new InstanceHistoryEntity
@@ -6030,6 +6052,7 @@ public sealed partial class WorkflowRuntimeRepository(
             FromStepId = fromStepId,
             ToStepId = toStepId,
             PerformedBy = performedBy,
+            ActorClaimsJson = JsonMapping.ToJsonDocument(actorClaims),
             ActingFor = actingFor,
             DelegationId = delegationId,
             Payload = JsonMapping.ToJsonDocument(payload),
@@ -6055,7 +6078,8 @@ public sealed partial class WorkflowRuntimeRepository(
         string? note = null,
         string? reason = null,
         long? administrativeActionBatchId = null,
-        IReadOnlyList<SharedVariableWriteCorrelationDto>? sharedVariableWrites = null)
+        IReadOnlyList<SharedVariableWriteCorrelationDto>? sharedVariableWrites = null,
+        IReadOnlyDictionary<string, string[]>? actorClaims = null)
     {
         var workflowDefinitionId = await GetCurrentWorkflowDefinitionIdAsync(instanceId, cancellationToken);
         dbContext.InstanceHistory.Add(new InstanceHistoryEntity
@@ -6068,6 +6092,7 @@ public sealed partial class WorkflowRuntimeRepository(
             FromStepId = fromStepId,
             ToStepId = toStepId,
             PerformedBy = performedBy,
+            ActorClaimsJson = JsonMapping.ToJsonDocument(actorClaims),
             ActingFor = actingFor,
             DelegationId = delegationId,
             Payload = JsonMapping.ToJsonDocument(payload),
@@ -6091,7 +6116,8 @@ public sealed partial class WorkflowRuntimeRepository(
         string note,
         CancellationToken cancellationToken,
         string? actingFor = null,
-        long? delegationId = null)
+        long? delegationId = null,
+        IReadOnlyDictionary<string, string[]>? actorClaims = null)
     {
         var workflowDefinitionId = await GetCurrentWorkflowDefinitionIdAsync(instanceId, cancellationToken);
         dbContext.InstanceHistory.Add(new InstanceHistoryEntity
@@ -6106,6 +6132,7 @@ public sealed partial class WorkflowRuntimeRepository(
             FromStepId = nodeId,
             ToStepId = nodeId,
             PerformedBy = performedBy,
+            ActorClaimsJson = JsonMapping.ToJsonDocument(actorClaims),
             ActingFor = actingFor,
             DelegationId = delegationId,
             Payload = JsonMapping.ToJsonDocument(payload),
@@ -6873,6 +6900,8 @@ public sealed partial class WorkflowRuntimeRepository(
             entity.CompletedAt,
             entity.IsCutoverSeeded)
         {
+            TriggeredByClaims = JsonMapping.ToActorClaims(entity.TriggeredByClaimsJson),
+            CompletedByClaims = JsonMapping.ToActorClaims(entity.CompletedByClaimsJson),
             TriggeredActingFor = entity.TriggeredActingFor,
             TriggeredDelegationId = entity.TriggeredDelegationId,
             CompletedActingFor = entity.CompletedActingFor,
@@ -6911,6 +6940,7 @@ public sealed partial class WorkflowRuntimeRepository(
             NodeRolesJson = JsonMapping.ToJsonDocument((node.RolePolicy?.Roles ?? node.Roles).ToList()),
             TriggeredBy = triggeredBy.User,
             TriggeredByRolesJson = JsonMapping.ToJsonDocument(triggeredBy.Roles),
+            TriggeredByClaimsJson = JsonMapping.ToJsonDocument(triggeredBy.AuditClaims),
             TriggeredActingFor = triggeredBy.ActingFor,
             TriggeredDelegationId = triggeredBy.DelegationId,
             CreatedAt = now,
@@ -6972,6 +7002,7 @@ public sealed partial class WorkflowRuntimeRepository(
             nodeExecution.StartedAt = now;
             nodeExecution.TriggeredBy = completion.Actor.User;
             nodeExecution.TriggeredByRolesJson = JsonMapping.ToJsonDocument(completion.Actor.Roles);
+            nodeExecution.TriggeredByClaimsJson = JsonMapping.ToJsonDocument(completion.Actor.AuditClaims);
             nodeExecution.TriggeredActingFor = completion.Actor.ActingFor;
             nodeExecution.TriggeredDelegationId = completion.Actor.DelegationId;
         }
@@ -7021,6 +7052,7 @@ public sealed partial class WorkflowRuntimeRepository(
             : completion.ExitGatewayBranchId ?? nodeExecution.EntryGatewayBranchId;
         nodeExecution.CompletedBy = completion.Actor.User;
         nodeExecution.CompletedByRolesJson = JsonMapping.ToJsonDocument(completion.Actor.Roles);
+        nodeExecution.CompletedByClaimsJson = JsonMapping.ToJsonDocument(completion.Actor.AuditClaims);
         nodeExecution.CompletedActingFor = completion.Actor.ActingFor;
         nodeExecution.CompletedDelegationId = completion.Actor.DelegationId;
         nodeExecution.ErrorCode = completion.ErrorCode;
@@ -7180,6 +7212,7 @@ public sealed partial class WorkflowRuntimeRepository(
             entity.ActingFor,
             entity.DelegationId)
         {
+            ActorClaims = JsonMapping.ToActorClaims(entity.ActorClaimsJson),
             AdministrativeActionBatchId = entity.AdministrativeActionBatchId,
             Reason = entity.Reason,
             SharedVariableWrites = JsonMapping.ToSharedVariableWrites(

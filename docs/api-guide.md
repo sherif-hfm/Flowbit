@@ -853,6 +853,8 @@ Retrieves full structural and execution details of a specific workflow instance.
 
 This is an authenticated deployment-level detail read, not a personal-task visibility check.
 
+Each history row may include `actorClaims`, a snapshot of the actual actor's selected JWT claims, separate from the business `payload`. Claim names map to arrays of strings, including repeated values. `null` or an absent property means not recorded; `{}` means capture was enabled but no selected claim was present. These values have the same access boundary as instance detail; select suitable claims through [audit configuration](deployment.md#selected-claim-audit).
+
 ```http
 GET /api/instances/101 HTTP/1.1
 Host: localhost:5017
@@ -1182,6 +1184,8 @@ Content-Type: application/json
 
 Claims a userTask within a workflow instance for the current authenticated actor.
 
+A changed claim writes the same `taskClaim` history event as the [task-addressed claim](#post-apiuser-taskstaskidclaim). An unchanged retry writes no additional event.
+
 **Access:** Task actor through legacy instance addressing. See [authentication](#http-conventions-and-authentication).
 
 | Parameter | Location | Type | Required | Meaning / default |
@@ -1227,6 +1231,8 @@ Content-Type: application/json
 ### POST /api/instances/{id}/unclaim
 
 Releases a previously claimed userTask, returning it to the pool of unclaimed tasks.
+
+A changed claim writes the same `taskClaim` history event as the [task-addressed unclaim](#post-apiuser-taskstaskidunclaim). An unchanged retry writes no additional event.
 
 **Access:** Task actor through legacy instance addressing. See [authentication](#http-conventions-and-authentication).
 
@@ -1612,6 +1618,8 @@ Content-Type: application/json
 
 Claim an active pooled task for the authenticated actor.
 
+A successful ownership change appends one `taskClaim` instance-history row in the same transaction. Its payload includes `operation: "claimed"`, `previousClaimedBy`, `newClaimedBy`, and `authority: "user"`. The row has no sequence-flow ID and its source and target are the task node. An already-owned retry, denied request, or losing concurrent claim does not create a history row.
+
 **Access:** Task actor. See [authentication](#http-conventions-and-authentication).
 
 | Parameter | Location | Type | Required | Meaning / default |
@@ -1660,6 +1668,8 @@ Content-Type: application/json
 ### POST /api/user-tasks/{taskId}/unclaim
 
 Release a claim as its owner or an authorized recovery actor.
+
+A successful release appends one `taskClaim` history row with `operation: "unclaimed"`, `previousClaimedBy`, `newClaimedBy: null`, and authority `user`, `unclaimOverride`, or `userDelegation`. Delegated releases retain the actual caller in `performedBy` and `actorClaims`, with the represented owner in `actingFor` and grant in `delegationId`. Releasing an already unclaimed task writes no additional row. Assignment-related claim clearing remains part of the existing `taskAssignment` event.
 
 **Access:** Task actor. See [authentication](#http-conventions-and-authentication).
 
@@ -2541,6 +2551,8 @@ Content-Type: application/json
 ### GET /api/node-executions/{id}
 
 Get one authorized node execution.
+
+Detail includes `startedByClaims` and `completedByClaims`, independent snapshots for the visit's causal starting and completing actors. They use the same claim-name-to-string-array shape and null/empty distinction as history `actorClaims`. Claims are detail-only: node-activity list/search results do not include them. A claim or unclaim does not replace either visit snapshot. See [audit configuration and retention](deployment.md#selected-claim-audit).
 
 **Access:** Node-activity reader. See [authentication](#http-conventions-and-authentication).
 
@@ -6832,6 +6844,7 @@ Represents a single step in the execution history of a workflow instance.
 | `fromNodeId` | integer (int32) | Yes | The ID of the source flow node transitioned from. |
 | `toNodeId` | integer (int32) | Yes | The ID of the destination flow node transitioned to. |
 | `performedBy` | null or string | Yes | The username of the actor who triggered or performed this step. |
+| `actorClaims` | null or object of string arrays | No | Selected claims of the actual actor at this event. Repeated values are retained; null/absent means not recorded, `{}` means no selected claims were present. |
 | `payload` | null or object | Yes | Optional. The input payload or variables submitted during the transition. |
 | `note` | null or string | Yes | Optional. Execution notes describing internal hops or transition kinds. |
 | `performedAt` | string (date-time) | Yes | The timestamp when this step was executed. |
@@ -7884,6 +7897,8 @@ Authorized detail for one node execution. VariableChanges contains only writes e
 | `nodeRoles` | array of string or null | No | Immutable node-role snapshot. Null means the snapshot was unavailable at migration cutover; an empty list means the node was known to have no roles. |
 | `startedByRoles` | array of string or null | No | — |
 | `completedByRoles` | array of string or null | No | — |
+| `startedByClaims` | null or object of string arrays | No | Selected claims of the causal starting actor, captured independently of completion. Null/absent means not recorded; `{}` means no selected claims were present. |
+| `completedByClaims` | null or object of string arrays | No | Selected claims of the completing actor. Null/absent means not recorded; `{}` means no selected claims were present. |
 | `requiresClaim` | null or boolean | No | — |
 | `requiresAssignment` | null or boolean | No | — |
 | `assignedTo` | null or string | No | — |

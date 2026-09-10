@@ -8,6 +8,14 @@ internal static class JsonMapping
 {
     private static readonly JsonSerializerOptions Options = new(JsonSerializerDefaults.Web);
 
+    public static JsonDocument? ToJsonDocument(IReadOnlyDictionary<string, string[]>? claims) =>
+        claims is null ? null : JsonDocument.Parse(JsonSerializer.Serialize(claims, Options));
+
+    public static IReadOnlyDictionary<string, string[]>? ToActorClaims(JsonDocument? document) =>
+        document is null || document.RootElement.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined
+            ? null
+            : JsonSerializer.Deserialize<Dictionary<string, string[]>>(document.RootElement.GetRawText(), Options);
+
     public static JsonDocument ToJsonDocument(JsonElement value) =>
         JsonDocument.Parse(value.GetRawText());
 

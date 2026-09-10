@@ -240,6 +240,7 @@ public sealed class InstanceVariableUpdateBatchService(
                     WorkflowJobKinds.InstanceVariableUpdateBatchPrepare,
                     InstanceVariableUpdateBatchPhases.Prepare,
                     claims,
+                    actor.AuditClaims,
                     now,
                     cancellationToken);
                 await batches.AddJobLinkAsync(
@@ -421,6 +422,7 @@ public sealed class InstanceVariableUpdateBatchService(
                         WorkflowJobKinds.InstanceVariableUpdateBatchExecute,
                         InstanceVariableUpdateBatchPhases.Execute,
                         claims,
+                        actor.AuditClaims,
                         now,
                         cancellationToken);
                     await batches.AddJobLinkAsync(
@@ -632,6 +634,7 @@ public sealed class InstanceVariableUpdateBatchService(
         string kind,
         string phase,
         IReadOnlyDictionary<string, string> actorClaims,
+        IReadOnlyDictionary<string, string[]>? auditClaims,
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
@@ -660,7 +663,8 @@ public sealed class InstanceVariableUpdateBatchService(
                         definition.Id,
                         phase)
                     {
-                        ActorClaims = actorClaims
+                        ActorClaims = actorClaims,
+                        AuditClaims = ActorContext.CopyAuditClaims(auditClaims)
                     })
             },
             cancellationToken);

@@ -982,6 +982,26 @@ legacy instance detail and claim/assignment inheritance. It is not a complete
 node-lifecycle ledger and should not be used to derive visit cardinality,
 durations, or every cancellation.
 
+Actual user-task claim/unclaim changes append one `taskClaim` event in the same
+transaction, including recovery, delegated release, and inherited claims.
+Unchanged retries add no event. The payload records `operation`,
+`previousClaimedBy`, `newClaimedBy`, and `authority`; inheritance additionally
+records `claimMode`, `sourceHistoryId`, and `sourceNodeId` with a system actor.
+These rows have a null action/flow ID and do not participate in prior-flow-actor
+inheritance. Assignment clearing keeps its existing `taskAssignment` event.
+
+`WorkflowAudit:AllowedClaims` (default `[]`) independently selects JWT claims for
+audit capture. History exposes `actorClaims`; node detail exposes independent
+`startedByClaims` and `completedByClaims`. Each is a JSON object of string arrays
+that retains repeated values. Null means not recorded; an empty object means
+capture was enabled but no selected claim was present. Claim/unclaim does not
+replace either node snapshot. Delegation retains the actual caller's claims and
+separate represented-owner attribution. Durable work preserves its captured
+causal snapshot. System-only events, older rows, and older queued work do not
+receive invented JWT claims. Snapshots follow their respective history and
+node-activity retention policies, and list/search DTOs remain compact. See
+[configuration, access, and rollout](../docs/deployment.md#selected-claim-audit).
+
 The multi-instance execution endpoints expose only selectable interrupting flows
 (`cancelRemainingInstances=true`) authorized by both the current node and flow
 roles. They let an authorized actor interrupt the parent execution even without

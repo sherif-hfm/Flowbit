@@ -47,6 +47,7 @@ public sealed class AdministrativeActionBatchJobProcessor(
                 await PrepareAsync(
                     payload.BatchId,
                     payload.ActorClaims,
+                    payload.AuditClaims,
                     cancellationToken);
             }
             else
@@ -54,6 +55,7 @@ public sealed class AdministrativeActionBatchJobProcessor(
                 await ExecuteAsync(
                     payload.BatchId,
                     payload.ActorClaims,
+                    payload.AuditClaims,
                     cancellationToken);
             }
         }
@@ -80,6 +82,7 @@ public sealed class AdministrativeActionBatchJobProcessor(
     private async Task PrepareAsync(
         long batchId,
         IReadOnlyDictionary<string, string>? actorClaims,
+        IReadOnlyDictionary<string, string[]>? auditClaims,
         CancellationToken cancellationToken)
     {
         while (true)
@@ -108,7 +111,7 @@ public sealed class AdministrativeActionBatchJobProcessor(
             }
             foreach (var item in items)
             {
-                await PrepareItemAsync(item.Id, actorClaims, cancellationToken);
+                await PrepareItemAsync(item.Id, actorClaims, auditClaims, cancellationToken);
             }
         }
 
@@ -176,6 +179,7 @@ public sealed class AdministrativeActionBatchJobProcessor(
     private async Task PrepareItemAsync(
         long itemId,
         IReadOnlyDictionary<string, string>? actorClaims,
+        IReadOnlyDictionary<string, string[]>? auditClaims,
         CancellationToken cancellationToken)
     {
         await using var scope = scopeFactory.CreateAsyncScope();
@@ -220,7 +224,7 @@ public sealed class AdministrativeActionBatchJobProcessor(
             return;
         }
 
-        var actor = PreparedActor(batch, actorClaims);
+        var actor = PreparedActor(batch, actorClaims, auditClaims);
         AdministrativeActionEligibilityDto eligibility;
         try
         {
@@ -262,6 +266,7 @@ public sealed class AdministrativeActionBatchJobProcessor(
     private async Task ExecuteAsync(
         long batchId,
         IReadOnlyDictionary<string, string>? actorClaims,
+        IReadOnlyDictionary<string, string[]>? auditClaims,
         CancellationToken cancellationToken)
     {
         if (!await MarkRunningAsync(batchId, cancellationToken))
@@ -297,7 +302,7 @@ public sealed class AdministrativeActionBatchJobProcessor(
             }
             foreach (var item in items)
             {
-                await ExecuteItemAsync(item.Id, actorClaims, cancellationToken);
+                await ExecuteItemAsync(item.Id, actorClaims, auditClaims, cancellationToken);
             }
             await RefreshExecutionProgressAsync(batchId, cancellationToken);
         }
@@ -375,6 +380,7 @@ public sealed class AdministrativeActionBatchJobProcessor(
     private async Task ExecuteItemAsync(
         long itemId,
         IReadOnlyDictionary<string, string>? actorClaims,
+        IReadOnlyDictionary<string, string[]>? auditClaims,
         CancellationToken cancellationToken)
     {
         AdministrativeActionBatchRecord batch;
@@ -442,7 +448,7 @@ public sealed class AdministrativeActionBatchJobProcessor(
         await using (var actionScope = scopeFactory.CreateAsyncScope())
         {
             var engine = actionScope.ServiceProvider.GetRequiredService<IWorkflowEngineService>();
-            var actor = ConfirmedActor(batch, actorClaims);
+            var actor = ConfirmedActor(batch, actorClaims, auditClaims);
             try
             {
                 result = await engine.ExecuteAdministrativeBatchActionAsync(
@@ -680,15 +686,20 @@ public sealed class AdministrativeActionBatchJobProcessor(
 
     private static ActorContext PreparedActor(
         AdministrativeActionBatchRecord batch,
-        IReadOnlyDictionary<string, string>? actorClaims) =>
+        IReadOnlyDictionary<string, string>? actorClaims,
+        IReadOnlyDictionary<string, string[]>? auditClaims) =>
         new(
             batch.PreparedBy,
             batch.PreparedByRoles,
-            SnapshotClaims(actorClaims));
+            SnapshotClaims(actorClaims))
+        {
+            AuditClaims = ActorContext.CopyAuditClaims(auditClaims)
+        };
 
     private static ActorContext ConfirmedActor(
         AdministrativeActionBatchRecord batch,
-        IReadOnlyDictionary<string, string>? actorClaims) =>
+        IReadOnlyDictionary<string, string>? actorClaims,
+        IReadOnlyDictionary<string, string[]>? auditClaims) =>
         new(
             batch.ConfirmedBy
                 ?? throw new WorkflowConflictException(
@@ -696,7 +707,10 @@ public sealed class AdministrativeActionBatchJobProcessor(
             batch.ConfirmedByRoles
                 ?? throw new WorkflowConflictException(
                     $"Administrative batch #{batch.Id} has no confirmer role snapshot."),
-            SnapshotClaims(actorClaims));
+            SnapshotClaims(actorClaims))
+        {
+            AuditClaims = ActorContext.CopyAuditClaims(auditClaims)
+        };
 
     private static IReadOnlyDictionary<string, string> SnapshotClaims(
         IReadOnlyDictionary<string, string>? claims) =>

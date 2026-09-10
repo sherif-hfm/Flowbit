@@ -64,6 +64,7 @@ public sealed class InstanceVariableUpdateBatchJobProcessor(
                     payload.BatchId,
                     payload.WorkflowDefinitionId,
                     payload.ActorClaims,
+                    payload.AuditClaims,
                     lease.AttemptNumber >= lease.Job.MaxAttempts,
                     cancellationToken);
             }
@@ -314,6 +315,7 @@ public sealed class InstanceVariableUpdateBatchJobProcessor(
         long batchId,
         long workflowDefinitionId,
         IReadOnlyDictionary<string, string>? actorClaims,
+        IReadOnlyDictionary<string, string[]>? auditClaims,
         bool isFinalAttempt,
         CancellationToken cancellationToken)
     {
@@ -354,6 +356,7 @@ public sealed class InstanceVariableUpdateBatchJobProcessor(
                 var failure = await ExecuteItemAsync(
                     item.Id,
                     actorClaims,
+                    auditClaims,
                     isFinalAttempt,
                     cancellationToken);
                 firstUnexpectedFailure ??= failure;
@@ -408,6 +411,7 @@ public sealed class InstanceVariableUpdateBatchJobProcessor(
     private async Task<Exception?> ExecuteItemAsync(
         long itemId,
         IReadOnlyDictionary<string, string>? actorClaims,
+        IReadOnlyDictionary<string, string[]>? auditClaims,
         bool isFinalAttempt,
         CancellationToken cancellationToken)
     {
@@ -487,7 +491,7 @@ public sealed class InstanceVariableUpdateBatchJobProcessor(
                         batch.Reason,
                         batch.Id,
                         item.Id),
-                    ConfirmedActor(batch, actorClaims),
+                    ConfirmedActor(batch, actorClaims, auditClaims),
                     cancellationToken);
             }
             catch (Exception exception) when (IsExpectedBusinessException(exception))
@@ -767,7 +771,8 @@ public sealed class InstanceVariableUpdateBatchJobProcessor(
 
     private static ActorContext ConfirmedActor(
         InstanceVariableUpdateBatchRecord batch,
-        IReadOnlyDictionary<string, string>? claims) => new(
+        IReadOnlyDictionary<string, string>? claims,
+        IReadOnlyDictionary<string, string[]>? auditClaims) => new(
         batch.ConfirmedBy
             ?? throw new WorkflowConflictException(
                 $"Instance-variable update batch #{batch.Id} has no confirmer."),
@@ -776,7 +781,10 @@ public sealed class InstanceVariableUpdateBatchJobProcessor(
                 $"Instance-variable update batch #{batch.Id} has no confirmer role snapshot."),
         claims is null
             ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-            : new Dictionary<string, string>(claims, StringComparer.OrdinalIgnoreCase));
+            : new Dictionary<string, string>(claims, StringComparer.OrdinalIgnoreCase))
+    {
+        AuditClaims = ActorContext.CopyAuditClaims(auditClaims)
+    };
 
     private static bool IsExpectedBusinessException(Exception exception) =>
         exception is WorkflowDomainException

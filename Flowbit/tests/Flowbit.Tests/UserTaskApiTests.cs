@@ -442,6 +442,28 @@ public sealed class UserTaskApiTests(PostgresApiFixture fixture)
                    roles: ["Supervisor"]))
             Assert.Equal(HttpStatusCode.OK, legacyRetry.StatusCode);
         Assert.Equal(released.UpdatedAt, (await GetTaskAsync(task.Id, "alice", "Worker")).UpdatedAt);
+
+        var history = (await GetInstanceAsync(instance.Id)).History
+            .Where(row => row.Note == "taskClaim").ToArray();
+        Assert.Equal(2, history.Length);
+        Assert.All(history, row =>
+        {
+            Assert.Equal(task.Id, row.UserTaskId);
+            Assert.Equal(task.TokenId, row.TokenId);
+            Assert.Equal(task.NodeId, row.FromNodeId);
+            Assert.Equal(row.FromNodeId, row.ToNodeId);
+            Assert.Null(row.SequenceFlowId);
+        });
+        Assert.Equal("alice", history[0].PerformedBy);
+        Assert.Equal("claimed", history[0].Payload!["operation"].GetString());
+        Assert.Equal(JsonValueKind.Null, history[0].Payload!["previousClaimedBy"].ValueKind);
+        Assert.Equal("alice", history[0].Payload!["newClaimedBy"].GetString());
+        Assert.Equal("user", history[0].Payload!["authority"].GetString());
+        Assert.Equal("sue", history[1].PerformedBy);
+        Assert.Equal("unclaimed", history[1].Payload!["operation"].GetString());
+        Assert.Equal("alice", history[1].Payload!["previousClaimedBy"].GetString());
+        Assert.Equal(JsonValueKind.Null, history[1].Payload!["newClaimedBy"].ValueKind);
+        Assert.Equal("unclaimOverride", history[1].Payload!["authority"].GetString());
     }
 
     [Fact]
@@ -466,6 +488,49 @@ public sealed class UserTaskApiTests(PostgresApiFixture fixture)
 
         var winner = await GetTaskAsync(task.Id, "alice");
         Assert.Contains(winner.ClaimedBy, new[] { "alice", "bob" });
+        var audit = Assert.Single((await GetInstanceAsync(instance.Id)).History,
+            row => row.Note == "taskClaim");
+        Assert.Equal(winner.ClaimedBy, audit.PerformedBy);
+        Assert.Equal(winner.ClaimedBy, audit.Payload!["newClaimedBy"].GetString());
+    }
+
+    [Fact]
+    public async Task InheritedClaimRecordsItsSourceWithoutBecomingAnActorAction()
+    {
+        var model = CreateModel("inherited-claim", requiresClaim: true, loop: true);
+        model.FlowNodes.Single(node => node.Id == 2).ClaimMode = ClaimModes.Previous;
+        var workflowId = await CreateWorkflowAsync(model);
+        var instance = await StartAsync(workflowId, 1);
+        var firstTask = await GetSingleTaskAsync(instance.Id, "active", "alice");
+        using (var claim = await SendAsync(HttpMethod.Post,
+                   $"/api/instances/{instance.Id}/claim", user: "alice"))
+            Assert.Equal(HttpStatusCode.OK, claim.StatusCode);
+        using (var action = await SendAsync(HttpMethod.Post,
+                   $"/api/user-tasks/{firstTask.Id}/flows/201", new TakeFlowRequest(null), "alice"))
+            Assert.Equal(HttpStatusCode.OK, action.StatusCode);
+
+        var nextTask = await GetSingleTaskAsync(instance.Id, "active", "alice");
+        Assert.Equal("alice", nextTask.ClaimedBy);
+        var detail = await GetInstanceAsync(instance.Id);
+        var source = Assert.Single(detail.History, row => row.SequenceFlowId == 201);
+        var inherited = Assert.Single(detail.History,
+            row => row.Note == "taskClaim" && row.UserTaskId == nextTask.Id);
+        Assert.Equal("system", inherited.PerformedBy);
+        Assert.Null(inherited.ActorClaims);
+        Assert.Null(inherited.SequenceFlowId);
+        Assert.Equal("claimInheritance", inherited.Payload!["authority"].GetString());
+        Assert.Equal("alice", inherited.Payload!["newClaimedBy"].GetString());
+        Assert.Equal(source.Id, inherited.Payload!["sourceHistoryId"].GetInt64());
+        Assert.Equal(source.FromNodeId, inherited.Payload!["sourceNodeId"].GetInt32());
+        Assert.Equal(ClaimModes.Previous, inherited.Payload!["claimMode"].GetString());
+
+        using (var retry = await SendAsync(HttpMethod.Post,
+                   $"/api/user-tasks/{nextTask.Id}/claim", user: "ALICE"))
+            Assert.Equal(HttpStatusCode.OK, retry.StatusCode);
+        Assert.Equal(detail.History.Count, (await GetInstanceAsync(instance.Id)).History.Count);
+        using (var finish = await SendAsync(HttpMethod.Post,
+                   $"/api/user-tasks/{nextTask.Id}/flows/202", new TakeFlowRequest(null), "alice"))
+            Assert.Equal(HttpStatusCode.OK, finish.StatusCode);
     }
 
     [Fact]

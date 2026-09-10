@@ -27,6 +27,9 @@ var contextOptions = builder.Configuration
     .GetSection(WorkflowContextOptions.SectionName)
     .Get<WorkflowContextOptions>() ?? new WorkflowContextOptions();
 builder.Services.AddSingleton(contextOptions);
+builder.Services.AddSingleton(provider => provider.GetRequiredService<IConfiguration>()
+    .GetSection(WorkflowAuditOptions.SectionName)
+    .Get<WorkflowAuditOptions>() ?? new WorkflowAuditOptions());
 
 var serviceTaskOptions = builder.Configuration
     .GetSection(ServiceTaskOptions.SectionName)
