@@ -8,6 +8,7 @@ using Microsoft.OpenApi;
 using Serilog;
 using Flowbit.Api.Auth;
 using Flowbit.Api.Endpoints;
+using Flowbit.Api.OpenApi;
 using Flowbit.Infrastructure.Data;
 using Flowbit.Infrastructure.DependencyInjection;
 using Flowbit.Service.Abstractions;
@@ -73,11 +74,18 @@ try
 
                     Workflow definitions are immutable, versioned JSON snapshots created in the
                     single-file visual editor (`flowbit-editor.html`). Definitions are loaded,
-                    validated, published, and then instantiated. Instances progress through flow
-                    nodes (startEvent, userTask, task, serviceTask, scriptTask, exclusiveGateway,
-                    endEvent, errorEndEvent, errorBoundaryEvent, intermediateMessageCatchEvent,
-                    messageStartEvent) connected by sequence flows, with pass-through routing,
-                    role enforcement, claim locking, and NCalc condition evaluation.
+                    validated, published, and then instantiated. Instances progress through the
+                    documented BPMN-aligned tasks, events, and Exclusive, Parallel, Inclusive, and
+                    Complex gateways, plus the documented Flowbit extensions. Sequence flows,
+                    persisted execution tokens, role enforcement, claim locking, typed variables,
+                    messages, timers, durable jobs, and NCalc conditions drive execution.
+
+                    Every operation has a stable path-derived `operationId`, purpose-specific
+                    summary and description, described parameters and request bodies, explicit
+                    status-response descriptions, and described component schemas. These contracts
+                    are intended for Swagger UI, SDK generators, and AI coding tools. Workflow-authored
+                    correlation and idempotency header names remain dynamic and are explained on the
+                    affected operations.
 
                     Start events may derive a generic domain business key from a required
                     string start variable. Message-start output mappings are both payload
@@ -223,8 +231,9 @@ try
             var endpointMetadata = context.Description.ActionDescriptor.EndpointMetadata;
             var isAnonymous = endpointMetadata is not null
                 && endpointMetadata.Any(m => m is IAllowAnonymous || (m?.GetType().Name == "AllowAnonymousAttribute"));
+            var requiresAuthorization = endpointMetadata?.OfType<IAuthorizeData>().Any() == true;
 
-            if (!isAnonymous)
+            if (requiresAuthorization && !isAnonymous)
             {
                 operation.Security ??= [];
                 operation.Security.Add(new OpenApiSecurityRequirement
@@ -273,6 +282,8 @@ try
 
             return Task.CompletedTask;
         });
+
+        FlowbitOpenApiEnrichment.Configure(options);
     });
 
     // Read-only workflow context sources (sys.* / config.*) and a clock for sys.now/today.
@@ -431,25 +442,7 @@ try
     app.UseAuthentication();
     app.UseAuthorization();
 
-    app.MapGet("/", () => Results.Redirect("/swagger"));
-    app.MapAuthenticationEndpoints();
-    app.MapWorkflowDefinitionEndpoints();
-    app.MapWorkflowInstanceEndpoints();
-    app.MapUserTaskEndpoints();
-    app.MapAdministrativeActionEndpoints();
-    app.MapInstanceAdministrativeActionEndpoints();
-    app.MapInstanceVersionChangeBatchEndpoints();
-    app.MapInstanceVariableUpdateEndpoints();
-    app.MapInstanceVariableUpdateBatchEndpoints();
-    app.MapTaskDistributionEndpoints();
-    app.MapMultiInstanceExecutionEndpoints();
-    app.MapNodeExecutionEndpoints();
-    app.MapWorkflowJobEndpoints();
-    app.MapUserDelegationEndpoints();
-    app.MapSettingsEndpoints();
-    app.MapRetentionEndpoints();
-    app.MapSharedVariableEndpoints();
-    app.MapSharedVariableClientEndpoints();
+    app.MapFlowbitApiEndpoints();
 
     app.Run();
 }

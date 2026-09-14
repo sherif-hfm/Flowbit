@@ -9,6 +9,7 @@ Start with the [runnable getting-started guide](getting-started.md). This guide 
 ## Contents
 
 - [Choose the integration boundary](#choose-the-integration-boundary)
+- [Generate clients and AI-assisted integrations](#generate-clients-and-ai-assisted-integrations)
 - [Authenticate the actual actor](#authenticate-the-actual-actor)
 - [Understand a workflow definition](#understand-a-workflow-definition)
 - [Keep identifiers distinct](#keep-identifiers-distinct)
@@ -49,6 +50,14 @@ flowchart LR
 Keep application business records in your application's store and retain the returned Flowbit instance ID as the link. Use a configured business key when the engine must also enforce domain uniqueness. Update engine state through its APIs and authored activities; direct writes to runtime tables bypass transactions, authorization, subscriptions, and audit.
 
 No BPMN XML import/export or embedded BPMN SDK is implied by this integration. Flowbit consumes its own BPMN-aligned JSON model; consult the [supported elements and extensions](bpmn-support.md) before translating another engine's process.
+
+## Generate clients and AI-assisted integrations
+
+In Development, use `GET /openapi/v1.json` as the machine-readable contract for SDK generation, API explorers, and AI coding tools. Every published API operation has a stable path-derived `operationId`, a purpose-specific summary and description, described parameters and request bodies, explicit response descriptions, and described component schemas and properties. A contract test generates the real endpoint surface in memory and fails when a route is missing its catalog entry, when operation IDs collide, or when operation, input, output, or schema descriptions are absent.
+
+Bearer-protected routes declare the bearer security scheme. Message delivery and message-start routes instead declare the paired `MessageClientId` and `MessageClientSecret` schemes; task-distribution routes declare their separate paired distributor schemes. Both pairs use the `X-Client-Id` and `X-Client-Secret` header names, but they represent different configured credentials. Shared-variable data routes continue to declare bearer **or** the complete managed shared-variable client pair. Do not combine schemes unless the operation's OpenAPI `security` alternatives say to do so.
+
+Some runtime headers are authored per workflow and therefore cannot have a fixed OpenAPI parameter name: message correlation headers, delivery idempotency headers, and start idempotency headers. Read the operation description and the selected immutable workflow definition before issuing those calls. The [HTTP API reference](api-guide.md) remains the source for complete examples, concurrency behavior, dynamic-header rules, and business-level constraints that a structural schema cannot express.
 
 ## Authenticate the actual actor
 

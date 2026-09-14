@@ -9642,7 +9642,11 @@ HTTP/1.1 200 OK
 Content-Type: application/json
 ```
 
-The OpenAPI JSON describes operations and component schemas; the endpoint rules in this reference also cover service validation and authorization that OpenAPI metadata alone cannot express.
+The OpenAPI JSON is intended for Swagger UI, generated SDKs, and AI coding tools. Every published operation has a stable path-derived `operationId`, purpose-specific summary and description, descriptions for parameters and JSON request bodies, status-specific response descriptions, and descriptions for component schemas and their properties. The generated contract also distinguishes bearer authentication, paired message-client credentials, paired task-distributor credentials, and the bearer-or-client alternatives on shared-variable data routes.
+
+OpenAPI generation is guarded by `OpenApiContractTests`: it hosts the real endpoint map without PostgreSQL and fails if a new route lacks a canonical catalog entry, operation IDs collide, descriptive metadata is missing, or the machine-client security pairs regress. Add or change the matching catalog description whenever an HTTP route changes.
+
+The endpoint rules and examples in this reference remain authoritative for service validation, concurrency, business semantics, and workflow-authored header names that static OpenAPI metadata cannot express. In particular, message correlation/idempotency headers and start idempotency headers are selected by the immutable workflow definition rather than by one fixed global header name.
 
 ---
 
