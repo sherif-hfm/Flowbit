@@ -1,0 +1,22 @@
+name: Flowbit tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+      - name: Check Docker access
+        run: docker info --format '{{.ServerVersion}}'
+      - name: Run test suite
+        run: dotnet test Flowbit/Flowbit.slnx --nologo --verbosity normal

@@ -22,6 +22,7 @@ public sealed class WorkerOperationalSurfaceTests
     public async Task OperationalEndpointsExposeLivenessReadinessAndMetrics()
     {
         var builder = WebApplication.CreateBuilder();
+        TestWebHostDefaults.IsolateFromMachine(builder);
         builder.WebHost.UseTestServer();
         var telemetry = new WorkerTelemetry();
         builder.Services.AddSingleton(telemetry);

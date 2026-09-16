@@ -118,6 +118,7 @@ public sealed class RetentionApiTests
         public static async Task<TestHost> CreateAsync()
         {
             var builder = WebApplication.CreateBuilder();
+            TestWebHostDefaults.IsolateFromMachine(builder);
             builder.WebHost.UseTestServer();
             var repository = new StubRepository();
             var settings = new StubSettings();

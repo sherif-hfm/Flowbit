@@ -529,7 +529,7 @@ public sealed class AdvancedVariableSearchEndpointTests
         {
             EnvironmentName = "Testing"
         });
-        builder.Logging.ClearProviders();
+        TestWebHostDefaults.IsolateFromMachine(builder);
         builder.WebHost.UseUrls("http://127.0.0.1:0");
         builder.Services.AddAuthorization();
         builder.Services.AddAuthentication(options =>

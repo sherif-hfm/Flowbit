@@ -29,6 +29,7 @@ public sealed class SharedVariableEndpointMetadataTests
     public void PublicDataRoutesUseClientCapablePoliciesAndContractRoutesAreAdministratorOnly()
     {
         var builder = WebApplication.CreateBuilder();
+        TestWebHostDefaults.IsolateFromMachine(builder);
         using var app = builder.Build();
         app.MapSharedVariableEndpoints();
 
@@ -101,6 +102,7 @@ public sealed class SharedVariableEndpointMetadataTests
     public void ClientLifecycleRoutesAreJwtAdministratorOnly()
     {
         var builder = WebApplication.CreateBuilder();
+        TestWebHostDefaults.IsolateFromMachine(builder);
         using var app = builder.Build();
         app.MapSharedVariableClientEndpoints();
 

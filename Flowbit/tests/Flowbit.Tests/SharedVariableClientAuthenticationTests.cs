@@ -109,6 +109,7 @@ public sealed class SharedVariableClientAuthenticationTests
     private static async Task<WebApplication> CreateAppAsync()
     {
         var builder = WebApplication.CreateBuilder();
+        TestWebHostDefaults.IsolateFromMachine(builder);
         builder.WebHost.UseTestServer();
         builder.Services.AddSingleton<FakeClientService>();
         builder.Services.AddSingleton<ISharedVariableClientService>(provider =>

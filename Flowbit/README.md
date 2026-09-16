@@ -1065,15 +1065,28 @@ drain active assignments and claims before switching identity formats.
 
 ## Verification
 
-Docker is required for the isolated PostgreSQL tests. Historical workflow inputs
+Docker is required for the isolated PostgreSQL tests. Confirm that the current
+account can reach the Docker daemon with `docker info` before running the full
+suite. The [GitHub Actions test job](../.github/workflows/tests.yml) runs the
+same suite on pushes and pull requests. Historical workflow inputs
 are tracked in [test fixtures](tests/Flowbit.Tests/Fixtures/README.md) and copied
 by the test project; no generated fixture directory or custom MSBuild target is
 needed:
 
 ```powershell
+docker info
 dotnet test .\tests\Flowbit.Tests\Flowbit.Tests.csproj
 dotnet run --project .\tools\MultiInstanceVerifier\MultiInstanceVerifier.csproj
 dotnet run --project .\tools\MultiInstanceApiTests\MultiInstanceApiTests.csproj -- --manage-api
+```
+
+From Bash:
+
+```bash
+docker info
+dotnet test ./tests/Flowbit.Tests/Flowbit.Tests.csproj
+dotnet run --project ./tools/MultiInstanceVerifier/MultiInstanceVerifier.csproj
+dotnet run --project ./tools/MultiInstanceApiTests/MultiInstanceApiTests.csproj -- --manage-api
 ```
 
 The live API runner writes Markdown and JSON evidence under the repository-level

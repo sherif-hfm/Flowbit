@@ -203,13 +203,14 @@ Durable state transitions are fenced and transactional. External REST effects ha
 
 ## Development and verification
 
-The runtime solution is [`Flowbit/Flowbit.slnx`](Flowbit/Flowbit.slnx). Run the automated suite from the repository root:
+The runtime solution is [`Flowbit/Flowbit.slnx`](Flowbit/Flowbit.slnx). With Docker running and your account able to access its daemon, check access and run the automated suite from the repository root in PowerShell or Bash:
 
-```powershell
+```text
+docker info
 dotnet test ./Flowbit/tests/Flowbit.Tests/Flowbit.Tests.csproj
 ```
 
-Docker is required for the isolated PostgreSQL integration tests. The suite covers engine behavior, persistence, authorization, API contracts, definition validation, selected editor helpers, and the example catalog. Browser layout and pointer interactions require real-browser verification in addition to automated tests.
+Docker is required for the isolated PostgreSQL integration tests. The same full suite runs in [GitHub Actions](.github/workflows/tests.yml) on pushes and pull requests. The suite covers engine behavior, persistence, authorization, API contracts, definition validation, selected editor helpers, and the example catalog. Browser layout and pointer interactions require real-browser verification in addition to automated tests.
 
 See the [verification guide](Flowbit/README.md#verification) for the multi-instance verification tools, and [AGENTS.md](AGENTS.md) for architecture conventions and contribution checks.
 

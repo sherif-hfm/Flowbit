@@ -85,7 +85,7 @@ public sealed class OpenApiContractTests
         {
             EnvironmentName = "Development"
         });
-        builder.Logging.ClearProviders();
+        TestWebHostDefaults.IsolateFromMachine(builder);
         builder.WebHost.UseTestServer();
         builder.Services.AddAuthorization();
         RegisterHandlerServiceParameters(builder.Services);
