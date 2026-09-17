@@ -38,7 +38,7 @@ public interface IWorkflowDefinitionRepository
     Task<bool> DeleteAsync(long id, CancellationToken cancellationToken);
 }
 
-public interface IWorkflowRuntimeRepository
+public interface IWorkflowRuntimeRepository : IWorkflowInstanceQueryRepository
 {
     Task<UserTaskRolePolicyRecord?> GetRolePolicyAsync(long id, CancellationToken cancellationToken) =>
         Task.FromResult<UserTaskRolePolicyRecord?>(null);
@@ -64,23 +64,6 @@ public interface IWorkflowRuntimeRepository
         IReadOnlyList<string> startedByRoles,
         CancellationToken cancellationToken,
         IReadOnlyDictionary<string, string[]>? actorClaims = null);
-
-    Task<PagedResult<InstanceListItem>> ListInstancesAsync(
-        string? status,
-        long? instanceId,
-        long? workflowId,
-        string? workflowKey,
-        string? businessKey,
-        int? nodeId,
-        string? nodeExternalId,
-        VariableFilterExpression? variableFilter,
-        IReadOnlyList<InstanceSortCriterion> sort,
-        InstanceListAuthorization authorization,
-        string? cursor,
-        bool includeVariables,
-        int page,
-        int pageSize,
-        CancellationToken cancellationToken);
 
     Task<PagedResult<InboxListItem>> ListInboxAsync(
         InboxVisibilityEvaluationContext visibilityContext,

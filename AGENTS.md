@@ -182,7 +182,10 @@ Projects:
   migrations seed safe default settings in every environment where they run.
 - `src/Flowbit.Service` - Service layer: workflow engine behavior,
   definition validation, sequence-flow condition evaluation
-  (`SequenceFlowConditionEvaluator`, NCalc), service interfaces, repository
+  (`SequenceFlowConditionEvaluator`, NCalc), the focused instance list/search
+  query service (`WorkflowInstanceQueryService` behind
+  `IWorkflowInstanceQueryService`, with the engine retaining the two members as
+  compatibility forwards), service interfaces, repository
   ports, and DI extension.
 - `src/Flowbit.Infrastructure` - Infrastructure layer: EF Core,
   PostgreSQL/Npgsql, JSONB mapping, migrations, repository implementations,

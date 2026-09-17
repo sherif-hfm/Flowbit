@@ -260,7 +260,7 @@ public static class WorkflowInstanceEndpoints
     /// <param name="pageSize">Optional. The number of items per page (default 50, max 200).</param>
     /// <param name="principal">The security principal containing the actor identity.</param>
     /// <param name="actorResolver">Validates the configured canonical actor identity.</param>
-    /// <param name="service">The workflow engine service.</param>
+    /// <param name="service">The workflow instance query service.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <remarks>
     /// Returns a <see cref="PagedResult{T}"/> of <see cref="InstanceSummaryDto"/> ordered by
@@ -284,7 +284,7 @@ public static class WorkflowInstanceEndpoints
         int? pageSize,
         ClaimsPrincipal principal,
         IActorContextResolver actorResolver,
-        IWorkflowEngineService service,
+        IWorkflowInstanceQueryService service,
         CancellationToken cancellationToken)
     {
         var actor = actorResolver.Resolve(principal);
@@ -311,7 +311,7 @@ public static class WorkflowInstanceEndpoints
         InstanceSearchRequest request,
         ClaimsPrincipal principal,
         IActorContextResolver actorResolver,
-        IWorkflowEngineService service,
+        IWorkflowInstanceQueryService service,
         CancellationToken cancellationToken)
     {
         return Results.Ok(await service.SearchInstancesAsync(

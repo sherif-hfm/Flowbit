@@ -2,7 +2,10 @@
 
 [Plan index](README.md) · [Next: repository helpers](stage-02-repository-query-helpers.md)
 
-**Status: Planned — not implemented.** Begin from a passing test baseline.
+**Status: Implemented.** Instance list/search orchestration now lives in
+`WorkflowInstanceQueryService` behind `IWorkflowInstanceQueryService` with the
+narrow `IWorkflowInstanceQueryRepository` port. The two engine members remain
+as compatibility forwards. See [Implementation record](#implementation-record).
 
 ## Objective and scope
 
@@ -11,7 +14,8 @@ focused query service. Preserve existing callers through forwarding methods.
 This stage changes ownership of read behavior without changing SQL or public
 HTTP contracts.
 
-Current implementation anchors:
+Implementation anchors at planning time (the extracted members moved to the
+new query service; the engine file now retains only the forwards):
 
 - [WorkflowEngineService.cs](../../Flowbit/src/Flowbit.Service/Services/WorkflowEngineService.cs):
   `ListInstancesAsync`, `SearchInstancesAsync`, `ListInstancesCoreAsync`,
@@ -113,7 +117,7 @@ From the repository root, in PowerShell or Bash:
 
 ```text
 docker info
-dotnet test Flowbit/Flowbit.slnx --filter "FullyQualifiedName~WorkflowInstanceCursorTests|FullyQualifiedName~InstanceSortingApiTests|FullyQualifiedName~InstanceListVariablesApiTests|FullyQualifiedName~RepositoryProjectionTests|FullyQualifiedName~AdvancedVariableSearchEndpointTests|FullyQualifiedName~AdvancedVariableFilterPostgresTests|FullyQualifiedName~AdvancedVariableFilterAuthorizationPostgresTests|FullyQualifiedName~WorkflowApiClientAdvancedSearchTests|FullyQualifiedName~OpenApiContractTests"
+dotnet test Flowbit/Flowbit.slnx --filter "FullyQualifiedName~WorkflowInstanceCursorTests|FullyQualifiedName~InstanceSortingApiTests|FullyQualifiedName~InstanceListVariablesApiTests|FullyQualifiedName~RepositoryProjectionTests|FullyQualifiedName~AdvancedVariableSearchEndpointTests|FullyQualifiedName~AdvancedVariableFilterPostgresTests|FullyQualifiedName~AdvancedVariableFilterAuthorizationPostgresTests|FullyQualifiedName~WorkflowApiClientAdvancedSearchTests|FullyQualifiedName~OpenApiContractTests|FullyQualifiedName~WorkflowEngineInstanceQueryForwardingTests|FullyQualifiedName~WorkflowInstanceQueryServiceTests"
 dotnet test Flowbit/Flowbit.slnx --nologo --verbosity quiet
 git diff --check
 ```
@@ -151,3 +155,53 @@ necessary characterization tests may be a preceding commit. Mark the stage
 implemented only after acceptance. Revert the extraction to roll back; no data
 or deployment configuration changes are required. Retained forwarding members
 can be considered for removal in a separate compatibility review.
+
+## Implementation record
+
+Delivered as one buildable change:
+
+- `InstanceQueryAbstractions.cs` (Service/Abstractions) declares
+  `IWorkflowInstanceQueryService` and `IWorkflowInstanceQueryRepository`.
+  `IWorkflowRuntimeRepository` inherits the query port and no longer
+  re-declares `ListInstancesAsync`.
+- `WorkflowInstanceQueryService` owns the two entry methods, the core query,
+  the dynamic instance-list authorization resolver, instance sort parsing, and
+  the private instance-list `ToSummary` mapping, with the
+  `WorkflowInstances.RequiredRole` constants.
+- `WorkflowQueryInputParser` (internal) owns the legacy `name:value` variable
+  filter parsing, structured-sort conversion, and the generic sort-clause
+  grammar; the engine's inbox, management, and distribution paths call the same
+  parser. `RuntimeProjectionMapper` (internal) owns the pure `ToFault` and
+  `ToUserTaskWorkSummary` mappings shared by engine responses and the query
+  service.
+- `WorkflowEngineService` takes `IWorkflowInstanceQueryService` as a required
+  constructor parameter and retains the two interface members as simple
+  forwards. The GET instance-list and POST instance-search handlers inject the
+  query service; all other endpoints keep their existing services.
+- The service DI registers the query service as scoped. Infrastructure DI
+  registers one scoped `WorkflowRuntimeRepository` and resolves both repository
+  interfaces through that same instance.
+- `AdvancedVariableSearchEndpointTests` stubs the new interface for the
+  instance routes; a new `WorkflowEngineInstanceQueryForwardingTests`
+  characterizes the forwards.
+- `WorkflowInstanceQueryServiceTests` covers setting freshness and role
+  normalization for both list and search, repository identity within and
+  across production DI scopes, and page-bounded job/definition enrichment.
+  Empty, single-item, and 40-item pages exercise binding reads once per distinct
+  workflow, including multiple workflows, omitted variables, and the optional
+  variable-store composition. Assertions retain result order, paging metadata,
+  job/shared metadata, cancellation tokens, and immutable source records.
+
+Validation (2026-09-17): the focused set passed 73/73 (56 baseline-matching
+tests, two forwarding characterizations, and 15 query-service acceptance
+cases), and the full suite passed 1,852 passed / 0 failed / 0 skipped
+(baseline 1,835 plus 17 new cases) with Docker PostgreSQL tests. The focused
+command above includes both new test classes. `git diff --check` is clean,
+and all 30 relative links and anchors in this stage and the plan index resolve.
+No HTTP route, DTO, JSON, error,
+authorization, ordering, paging, or cursor contract changed; no UI changes, so
+no browser verification was required. Documentation updates:
+[Flowbit/README.md](../../Flowbit/README.md) query ownership note,
+[AGENTS.md](../../AGENTS.md) service-layer bullet, this record, and the
+[plan index](README.md) status. The API and developer guides needed no change
+because their HTTP integration contracts are unaffected.

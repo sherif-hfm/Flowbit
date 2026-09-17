@@ -18,7 +18,7 @@ namespace Flowbit.Infrastructure.Repositories;
 public sealed partial class WorkflowRuntimeRepository(
     AppDbContext dbContext,
     IInstanceVariableMutationTracker? variableMutationTracker = null)
-    : IWorkflowRuntimeRepository
+    : IWorkflowRuntimeRepository, IWorkflowInstanceQueryRepository
 {
     private readonly HashSet<long> loadedSequenceFlowSummaryInstances = [];
 

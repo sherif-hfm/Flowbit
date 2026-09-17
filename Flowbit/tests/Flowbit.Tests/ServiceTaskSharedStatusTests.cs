@@ -158,6 +158,7 @@ public sealed class ServiceTaskSharedStatusTests
             Proxy<IWorkflowSettingsRepository>(Unexpected),
             Proxy<IEngineSettingsRepository>(Unexpected),
             NullLogger<WorkflowEngineService>.Instance,
+            Proxy<IWorkflowInstanceQueryService>(Unexpected),
             workflowVariables: store);
         return (engine, instance, definition, definition.FlowNodes.Single(item => item.Id == 2));
     }

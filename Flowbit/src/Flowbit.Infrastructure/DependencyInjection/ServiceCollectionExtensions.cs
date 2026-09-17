@@ -37,7 +37,14 @@ public static class ServiceCollectionExtensions
             options.UseNpgsql(dataSource, FlowbitDatabase.ConfigureProvider));
         services.AddMemoryCache();
         services.AddScoped<IWorkflowDefinitionRepository, WorkflowDefinitionRepository>();
-        services.AddScoped<IWorkflowRuntimeRepository, WorkflowRuntimeRepository>();
+        // One scoped concrete repository instance serves both the full runtime
+        // port and the narrow instance-query port, preserving a shared DbContext
+        // and per-scope bookkeeping across the engine and query services.
+        services.AddScoped<WorkflowRuntimeRepository>();
+        services.AddScoped<IWorkflowRuntimeRepository>(static provider =>
+            provider.GetRequiredService<WorkflowRuntimeRepository>());
+        services.AddScoped<IWorkflowInstanceQueryRepository>(static provider =>
+            provider.GetRequiredService<WorkflowRuntimeRepository>());
         services.AddScoped<ISharedVariableRepository, SharedVariableRepository>();
         services.AddScoped<ISharedVariableClientRepository, SharedVariableClientRepository>();
         services.AddScoped<IAdministrativeActionCandidateRepository, AdministrativeActionCandidateRepository>();

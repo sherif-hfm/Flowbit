@@ -28,6 +28,7 @@ public sealed partial class WorkflowEngineService(
     IWorkflowSettingsRepository settings,
     IEngineSettingsRepository engineSettings,
     ILogger<WorkflowEngineService> logger,
+    IWorkflowInstanceQueryService instanceQueries,
     IInstanceVariableUpdateRepository? variableUpdates = null,
     IInstanceVariableMutationTracker? variableMutationTracker = null,
     IConditionalEventDependencyPlanCache? conditionalEventPlans = null,
@@ -38,9 +39,6 @@ public sealed partial class WorkflowEngineService(
       IInstanceVersionChangeBatchExecutor, IConditionalEventRuntimeCoordinator,
       IAdministrativeActionExecutor
 {
-    private const string InstanceListRequiredRoleSettingKey =
-        "WorkflowInstances.RequiredRole";
-    private const string DefaultInstanceListRequiredRole = "admin";
     private static readonly JsonSerializerOptions InstanceVariableUpdateJsonOptions =
         new(JsonSerializerDefaults.Web);
     private readonly ISharedVariableAccessPlanCache sharedAccessPlanCache =
@@ -922,7 +920,7 @@ public sealed partial class WorkflowEngineService(
             instance.StartedBy,
             instance.CreatedAt,
             instance.UpdatedAt,
-            ToFault(instance.Status, instance.FaultCode, instance.FaultDescription, node.Name))
+            RuntimeProjectionMapper.ToFault(instance.Status, instance.FaultCode, instance.FaultDescription, node.Name))
         {
             ExecutionPositions = projection.ExecutionPositions,
             Completion = projection.Completion
@@ -1384,7 +1382,7 @@ public sealed partial class WorkflowEngineService(
             node.ExternalId,
             instance.Status,
             instance.CreatedAt,
-            ToFault(instance.Status, instance.FaultCode, instance.FaultDescription, node.Name))
+            RuntimeProjectionMapper.ToFault(instance.Status, instance.FaultCode, instance.FaultDescription, node.Name))
         {
             ExecutionPositions = projection.ExecutionPositions,
             Completion = projection.Completion
@@ -1424,6 +1422,9 @@ public sealed partial class WorkflowEngineService(
         };
     }
 
+    // Compatibility forwards: instance list/search orchestration lives in
+    // WorkflowInstanceQueryService; the engine interface keeps its original
+    // members so existing callers continue to resolve the same behavior.
     public Task<PagedResult<InstanceSummaryDto>> ListInstancesAsync(
         ActorContext actor,
         string? status,
@@ -1440,172 +1441,16 @@ public sealed partial class WorkflowEngineService(
         int page,
         int pageSize,
         CancellationToken cancellationToken) =>
-        ListInstancesCoreAsync(
+        instanceQueries.ListInstancesAsync(
             actor, status, instanceId, workflowId, workflowKey, businessKey,
-            nodeId, nodeExternalId,
-            VariableFilterParser.FromLegacy(ParseVariableFilters(variables)),
-            ParseInstanceSort(sort), cursor, includeVariables, page, pageSize,
-            cancellationToken);
+            nodeId, nodeExternalId, variables, sort, cursor, includeVariables,
+            page, pageSize, cancellationToken);
 
     public Task<PagedResult<InstanceSummaryDto>> SearchInstancesAsync(
         ActorContext actor,
         InstanceSearchRequest request,
-        CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(request);
-        return ListInstancesCoreAsync(
-            actor,
-            request.Status,
-            request.InstanceId,
-            request.WorkflowId,
-            request.WorkflowKey,
-            request.BusinessKey,
-            request.NodeId,
-            request.NodeExternalId,
-            VariableFilterParser.Parse(request.VariableFilter),
-            ParseInstanceSort(ToLegacySort(request.Sort)),
-            request.Cursor,
-            request.IncludeVariables ?? false,
-            Math.Max(1, request.Page ?? 1),
-            Math.Clamp(request.PageSize ?? 50, 1, 200),
-            cancellationToken);
-    }
-
-    private async Task<PagedResult<InstanceSummaryDto>> ListInstancesCoreAsync(
-        ActorContext actor,
-        string? status,
-        long? instanceId,
-        long? workflowId,
-        string? workflowKey,
-        string? businessKey,
-        int? nodeId,
-        string? nodeExternalId,
-        VariableFilterExpression? variableFilter,
-        IReadOnlyList<InstanceSortCriterion> sortCriteria,
-        string? cursor,
-        bool includeVariables,
-        int page,
-        int pageSize,
-        CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(actor);
-        var normalizedSort = WorkflowInstanceCursor.NormalizeSort(sortCriteria);
-        if (!string.IsNullOrWhiteSpace(cursor)
-            && !WorkflowInstanceCursor.TryDecode(
-                cursor,
-                normalizedSort,
-                out _))
-        {
-            throw new WorkflowDomainException(
-                "The instance cursor is invalid, expired, or belongs to a different sort order.");
-        }
-        if (string.IsNullOrWhiteSpace(cursor) && page > 1)
-        {
-            throw new WorkflowDomainException(
-                "Instance pages after the first require the opaque cursor returned by the preceding page.");
-        }
-
-        var authorization = await ResolveInstanceListAuthorizationAsync(
-            actor,
-            cancellationToken);
-        var paged = await runtime.ListInstancesAsync(
-            status,
-            instanceId,
-            workflowId,
-            workflowKey,
-            businessKey,
-            nodeId,
-            nodeExternalId,
-            variableFilter,
-            normalizedSort,
-            authorization,
-            cursor,
-            includeVariables,
-            page,
-            pageSize,
-            cancellationToken);
-        var jobSummaries = await jobs.GetInstanceJobSummariesAsync(
-            paged.Items.Select(item => item.Id).ToArray(),
-            cancellationToken);
-        var sharedMetadataByWorkflowId = new Dictionary<long, IReadOnlyList<SharedVariableBindingMetadataDto>>();
-        if (includeVariables && workflowVariables is not null)
-        {
-            var workflowRecords = await definitions.GetManyAsync(
-                paged.Items.Select(item => item.WorkflowId).Distinct().ToArray(),
-                cancellationToken);
-            foreach (var pair in workflowRecords)
-            {
-                sharedMetadataByWorkflowId[pair.Key] = await workflowVariables.DescribeBindingsAsync(
-                    pair.Value.Definition,
-                    cancellationToken);
-            }
-        }
-        var items = paged.Items.Select(row =>
-        {
-            var summary = ToSummary(row);
-            if (jobSummaries.TryGetValue(row.Id, out var jobsForInstance))
-            {
-                summary = summary with
-                {
-                    Jobs = new InstanceJobSummaryDto(
-                        jobsForInstance.OpenCount,
-                        jobsForInstance.QueuedCount,
-                        jobsForInstance.RunningCount,
-                        jobsForInstance.IncidentCount,
-                        jobsForInstance.NearestDueAt)
-                };
-            }
-            if (sharedMetadataByWorkflowId.TryGetValue(
-                    row.WorkflowId,
-                    out var sharedMetadata))
-            {
-                summary = summary with { SharedVariables = sharedMetadata };
-            }
-            return summary;
-        }).ToArray();
-        return new PagedResult<InstanceSummaryDto>(
-            items,
-            paged.Page,
-            paged.PageSize,
-            paged.TotalCount)
-        {
-            NextCursor = paged.NextCursor
-        };
-    }
-
-    private async Task<InstanceListAuthorization> ResolveInstanceListAuthorizationAsync(
-        ActorContext actor,
-        CancellationToken cancellationToken)
-    {
-        var setting = await engineSettings.GetByKeyAsync(
-            InstanceListRequiredRoleSettingKey,
-            cancellationToken);
-        var configuredGlobalRoles = string.IsNullOrWhiteSpace(setting?.Value)
-            ? [DefaultInstanceListRequiredRole]
-            : setting.Value
-                .Split(
-                    ',',
-                    StringSplitOptions.RemoveEmptyEntries
-                    | StringSplitOptions.TrimEntries)
-                .Where(static role => role.Length > 0)
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToArray();
-        if (configuredGlobalRoles.Length == 0)
-        {
-            configuredGlobalRoles = [DefaultInstanceListRequiredRole];
-        }
-
-        var lowerCallerRoles = actor.Roles
-            .Where(static role => !string.IsNullOrWhiteSpace(role))
-            .Select(static role => role.Trim().ToLowerInvariant())
-            .Distinct(StringComparer.Ordinal)
-            .ToArray();
-        var isGlobalReader = configuredGlobalRoles
-            .Select(static role => role.ToLowerInvariant())
-            .Intersect(lowerCallerRoles, StringComparer.Ordinal)
-            .Any();
-        return new InstanceListAuthorization(isGlobalReader, lowerCallerRoles);
-    }
+        CancellationToken cancellationToken) =>
+        instanceQueries.SearchInstancesAsync(actor, request, cancellationToken);
 
     public Task<PagedResult<InboxItemDto>> GetInboxAsync(
         ActorContext actor,
@@ -1624,7 +1469,7 @@ public sealed partial class WorkflowEngineService(
         GetInboxCoreAsync(
             actor, instanceId, workflowId, workflowKey, businessKey, nodeId,
             nodeExternalId,
-            VariableFilterParser.FromLegacy(ParseVariableFilters(variables)),
+            VariableFilterParser.FromLegacy(WorkflowQueryInputParser.ParseVariableFilters(variables)),
             ParseInboxSort(sort), includeVariables, page, pageSize,
             cancellationToken);
 
@@ -1643,7 +1488,7 @@ public sealed partial class WorkflowEngineService(
             request.NodeId,
             request.NodeExternalId,
             VariableFilterParser.Parse(request.VariableFilter),
-            ParseInboxSort(ToLegacySort(request.Sort)),
+            ParseInboxSort(WorkflowQueryInputParser.ToLegacySort(request.Sort)),
             request.IncludeVariables ?? false,
             Math.Max(1, request.Page ?? 1),
             Math.Clamp(request.PageSize ?? 50, 1, 200),
@@ -2331,7 +2176,7 @@ public sealed partial class WorkflowEngineService(
             nodeExternalId,
             owner,
             normalizedOwnership,
-            VariableFilterParser.FromLegacy(ParseVariableFilters(variables)),
+            VariableFilterParser.FromLegacy(WorkflowQueryInputParser.ParseVariableFilters(variables)),
             page,
             pageSize,
             cancellationToken,
@@ -2402,7 +2247,7 @@ public sealed partial class WorkflowEngineService(
             nodeExternalId,
             owner,
             NormalizeTaskOwnershipFilter(ownership),
-            VariableFilterParser.FromLegacy(ParseVariableFilters(variables)),
+            VariableFilterParser.FromLegacy(WorkflowQueryInputParser.ParseVariableFilters(variables)),
             includeVariables,
             page,
             pageSize,
@@ -3145,7 +2990,7 @@ public sealed partial class WorkflowEngineService(
         return new UserTaskActionAckDto(task.Id, instance.Id, UserTaskRecordStatuses.Completed,
             lockedInstance.Status, flow.Id, resting.Id, resting.Name, resting.ExternalId,
             closedProgress, lockedInstance.UpdatedAt,
-            ToFault(lockedInstance.Status, lockedInstance.FaultCode, lockedInstance.FaultDescription, resting.Name))
+            RuntimeProjectionMapper.ToFault(lockedInstance.Status, lockedInstance.FaultCode, lockedInstance.FaultDescription, resting.Name))
         {
             ExecutionPositions = closedProjection.ExecutionPositions,
             Completion = closedProjection.Completion,
@@ -4256,7 +4101,7 @@ public sealed partial class WorkflowEngineService(
             restingNode.ExternalId,
             instance.Status,
             instance.UpdatedAt,
-            ToFault(
+            RuntimeProjectionMapper.ToFault(
                 instance.Status,
                 instance.FaultCode,
                 instance.FaultDescription,
@@ -10141,7 +9986,7 @@ public sealed partial class WorkflowEngineService(
                 progress.Status == MultiInstanceRecordStatuses.Active);
         var workSummaries = await runtime.GetUserTaskWorkSummariesAsync([id], cancellationToken);
         var userTasks = workSummaries.TryGetValue(id, out var workSummary)
-            ? ToUserTaskWorkSummary(workSummary)
+            ? RuntimeProjectionMapper.ToUserTaskWorkSummary(workSummary)
             : null;
         var sharedVariableMetadata = workflowVariables is null
             ? []
@@ -10195,7 +10040,7 @@ public sealed partial class WorkflowEngineService(
             }).ToList(),
             multiProgress,
             userTasks,
-            ToFault(instance.Status, instance.FaultCode, instance.FaultDescription, node.Name))
+            RuntimeProjectionMapper.ToFault(instance.Status, instance.FaultCode, instance.FaultDescription, node.Name))
         {
             ExecutionPositions = projection.ExecutionPositions,
             MultiInstances = projection.MultiInstances,
@@ -10563,71 +10408,6 @@ public sealed partial class WorkflowEngineService(
         await definitions.GetAsync(id, cancellationToken)
         ?? throw new WorkflowDomainException($"Workflow definition #{id} was not found.");
 
-    // Parses raw "name:value" filter strings (split on the first ':') into
-    // exact-match VariableFilters. Malformed or empty-name entries are rejected.
-    private static IReadOnlyList<VariableFilter> ParseVariableFilters(IReadOnlyList<string>? variables)
-    {
-        if (variables is null || variables.Count == 0)
-        {
-            return [];
-        }
-
-        var filters = new List<VariableFilter>(variables.Count);
-        foreach (var raw in variables)
-        {
-            if (string.IsNullOrWhiteSpace(raw))
-            {
-                continue;
-            }
-
-            var separator = raw.IndexOf(':');
-            if (separator <= 0)
-            {
-                throw new WorkflowDomainException(
-                    $"Invalid variable filter '{raw}'. Expected format 'name:value'.");
-            }
-
-            var name = raw[..separator].Trim();
-            var value = raw[(separator + 1)..].Trim();
-            if (name.Length == 0)
-            {
-                throw new WorkflowDomainException(
-                    $"Invalid variable filter '{raw}'. Variable name is required.");
-            }
-
-            filters.Add(new VariableFilter(name, value));
-        }
-
-        return filters;
-    }
-
-    private static IReadOnlyList<string>? ToLegacySort(
-        IReadOnlyList<SearchSortDto>? sort) =>
-        sort?.Select(static criterion =>
-            criterion is null
-                ? string.Empty
-                : $"{criterion.Field}:{criterion.Direction}").ToArray();
-
-    private static IReadOnlyList<InstanceSortCriterion> ParseInstanceSort(IReadOnlyList<string>? sort)
-    {
-        if (sort is null || sort.Count == 0)
-        {
-            return [new InstanceSortCriterion(InstanceSortField.UpdatedAt, SortDirection.Descending)];
-        }
-
-        return ParseSort(
-            sort,
-            field => field.ToLowerInvariant() switch
-            {
-                "id" => InstanceSortField.Id,
-                "createdat" => InstanceSortField.CreatedAt,
-                "updatedat" => InstanceSortField.UpdatedAt,
-                _ => throw new WorkflowDomainException(
-                    $"Unknown instance sort field '{field}'. Allowed fields: id, createdAt, updatedAt.")
-            },
-            static (field, direction) => new InstanceSortCriterion(field, direction));
-    }
-
     private static IReadOnlyList<InboxSortCriterion> ParseInboxSort(IReadOnlyList<string>? sort)
     {
         if (sort is null || sort.Count == 0)
@@ -10635,7 +10415,7 @@ public sealed partial class WorkflowEngineService(
             return [new InboxSortCriterion(InboxSortField.TaskUpdatedAt, SortDirection.Descending)];
         }
 
-        return ParseSort(
+        return WorkflowQueryInputParser.ParseSort(
             sort,
             field => field.ToLowerInvariant() switch
             {
@@ -10650,108 +10430,6 @@ public sealed partial class WorkflowEngineService(
             },
             static (field, direction) => new InboxSortCriterion(field, direction));
     }
-
-    private static IReadOnlyList<TCriterion> ParseSort<TField, TCriterion>(
-        IReadOnlyList<string> sort,
-        Func<string, TField> parseField,
-        Func<TField, SortDirection, TCriterion> createCriterion)
-        where TField : struct, Enum
-    {
-        const int maxSortCriteria = 3;
-        if (sort.Count > maxSortCriteria)
-        {
-            throw new WorkflowDomainException($"At most {maxSortCriteria} sort clauses are allowed.");
-        }
-
-        var result = new List<TCriterion>(sort.Count);
-        var fields = new HashSet<TField>();
-        foreach (var raw in sort)
-        {
-            if (string.IsNullOrWhiteSpace(raw))
-            {
-                throw new WorkflowDomainException("Sort clauses must not be blank. Expected format 'field:asc' or 'field:desc'.");
-            }
-
-            var separator = raw.IndexOf(':');
-            if (separator <= 0 || separator == raw.Length - 1 || raw.IndexOf(':', separator + 1) >= 0)
-            {
-                throw new WorkflowDomainException(
-                    $"Invalid sort clause '{raw}'. Expected format 'field:asc' or 'field:desc'.");
-            }
-
-            var fieldText = raw[..separator].Trim();
-            var directionText = raw[(separator + 1)..].Trim();
-            if (fieldText.Length == 0 || directionText.Length == 0)
-            {
-                throw new WorkflowDomainException(
-                    $"Invalid sort clause '{raw}'. Expected format 'field:asc' or 'field:desc'.");
-            }
-
-            var field = parseField(fieldText);
-            if (!fields.Add(field))
-            {
-                throw new WorkflowDomainException($"Sort field '{fieldText}' was specified more than once.");
-            }
-
-            var direction = directionText.ToLowerInvariant() switch
-            {
-                "asc" => SortDirection.Ascending,
-                "desc" => SortDirection.Descending,
-                _ => throw new WorkflowDomainException(
-                    $"Unknown sort direction '{directionText}'. Allowed directions: asc, desc.")
-            };
-            result.Add(createCriterion(field, direction));
-        }
-
-        return result;
-    }
-
-    private static InstanceSummaryDto ToSummary(InstanceListItem row) =>
-        new(
-            row.Id,
-            row.WorkflowId,
-            row.WorkflowName,
-            row.WorkflowVersion,
-            row.CurrentNodeId,
-            row.CurrentNodeName,
-            row.CurrentNodeExternalId,
-            row.Status,
-            row.BusinessKey,
-            row.BusinessKeyUniqueness,
-            row.StartedBy,
-            row.CreatedAt,
-            row.UpdatedAt,
-            row.UserTasks is null ? null : ToUserTaskWorkSummary(row.UserTasks),
-            row.Variables,
-            ToFault(row.Status, row.FaultCode, row.FaultDescription, row.CurrentNodeName))
-        {
-            ExecutionPositions = (row.ExecutionPositions ?? [])
-                .Select(position => new ExecutionPositionDto(
-                    position.TokenId,
-                    position.NodeId,
-                    position.NodeName,
-                    position.NodeExternalId,
-                    position.NodeType,
-                    position.Status,
-                    position.ArrivedViaFlowId,
-                    position.TerminationReason,
-                    position.UserTaskId,
-                    position.MultiInstanceExecutionId,
-                    position.ActivationId,
-                    position.WaitState,
-                    position.WaitingJobId,
-                    position.WaitingTimerSubscriptionId))
-                .ToArray(),
-            Completion = row.Completion is null
-                ? null
-                : new CompletionInfoDto(
-                    row.Completion.Kind,
-                    row.Completion.TokenId,
-                    row.Completion.NodeId,
-                    row.Completion.NodeName,
-                    row.Completion.NodeExternalId,
-                    row.Completion.CompletedAt)
-        };
 
     private async Task<UserTaskDto> BuildUserTaskDtoAsync(
         UserTaskRecord task,
@@ -11074,21 +10752,6 @@ public sealed partial class WorkflowEngineService(
                 .ToList());
     }
 
-    private static UserTaskWorkSummaryDto ToUserTaskWorkSummary(UserTaskWorkSummaryRecord summary) =>
-        new(
-            summary.IsMultiInstance,
-            summary.ActiveCount,
-            summary.PendingCount,
-            summary.ClaimedCount,
-            summary.AssignedCount,
-            summary.SoleClaimedBy,
-            summary.SoleAssignee)
-        {
-            NormalTaskCount = summary.NormalTaskCount,
-            MultiInstanceTaskCount = summary.MultiInstanceTaskCount,
-            SoleUserTaskId = summary.SoleUserTaskId
-        };
-
     private sealed record MultiInstanceParentInterruptResult(
         int SelectedFlowId,
         string CompletedBy,
@@ -11370,15 +11033,6 @@ public sealed partial class WorkflowEngineService(
             RolePolicy = rolePolicy
         };
     }
-
-    private static FaultInfoDto? ToFault(
-        string status,
-        string? code,
-        string? description,
-        string nodeName) =>
-        status == WorkflowInstanceStatuses.Faulted
-            ? new FaultInfoDto(code, string.IsNullOrWhiteSpace(description) ? nodeName : description)
-            : null;
 
     private static FlowNodeModel GetFlowNode(WorkflowModel definition, int nodeId) =>
         definition.FlowNodes.SingleOrDefault(n => n.Id == nodeId)

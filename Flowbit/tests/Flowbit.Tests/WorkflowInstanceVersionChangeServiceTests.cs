@@ -456,7 +456,8 @@ public sealed class WorkflowInstanceVersionChangeServiceTests
                 TimeProvider.System,
                 settings,
                 Proxy<IEngineSettingsRepository>(Unexpected),
-                NullLogger<WorkflowEngineService>.Instance);
+                NullLogger<WorkflowEngineService>.Instance,
+                Proxy<IWorkflowInstanceQueryService>(Unexpected));
         }
 
         public WorkflowEngineService Service { get; }

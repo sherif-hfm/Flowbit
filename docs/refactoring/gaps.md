@@ -19,8 +19,8 @@ the named symbols before implementation; size alone does not justify extraction.
 
 | # | Gap | Current evidence (at `c654024`) | Existing stage coverage |
 | --- | --- | --- | --- |
-| 1 | Engine core responsibilities still interleaved in `WorkflowEngineService` | 18,468 lines across 9 partial files; 19 constructor parameters; 5 implemented interfaces | [Stage 1](stage-01-instance-queries.md) and [Stage 3](stage-03-engine-responsibilities.md) extract two read-side slices only |
-| 2 | Engine interface breadth | `IWorkflowEngineService` declares 40 `Task`-returning members | Stage 1 moves implementation and endpoint consumers, retaining both engine members as forwards; Stage 3 also retains `GetInstanceAsync` |
+| 1 | Engine core responsibilities still interleaved in `WorkflowEngineService` | 18,468 lines across 9 partial files; 19 constructor parameters; 5 implemented interfaces | [Stage 1](stage-01-instance-queries.md) (implemented) and [Stage 3](stage-03-engine-responsibilities.md) extract two read-side slices only |
+| 2 | Engine interface breadth | `IWorkflowEngineService` declares 40 `Task`-returning members | Stage 1 (implemented) moves implementation and endpoint consumers, retaining both engine members as forwards; Stage 3 also retains `GetInstanceAsync` |
 | 3 | `WorkflowDefinitionService` | 3,795 lines combining validation and lifecycle operations | Added [Stage 6](stage-06-definition-validation.md) for validation extraction |
 | 4 | Remaining query assembly duplication | `WorkflowRuntimeRepository` has 7,289 lines; basic filters and instance/inbox sort parsing are already shared | [Stage 2](stage-02-repository-query-helpers.md) extracts ownership predicates and inbox visibility CTEs; further candidates need separate evidence |
 | 5 | Editor hotspots outside save validation | `renderNodeInspector` (~524 lines), `compileInboxVisibilityCondition` (~499 lines), `applyTypeInvariants` (~327 lines); flat script with no modules | [Stage 4](stage-04-editor-validation.md) covers `validateModelForSave` only |
@@ -56,7 +56,8 @@ is a `sealed partial class` whose nine partial files total 18,468 physical lines
 | `WorkflowEngineService.RolePolicies.cs` | 60 |
 
 Stages 1 and 3 remove instance list/search orchestration and detail/execution
-projection. The [plan index](README.md) explicitly defers the remaining
+projection. Stage 1 is implemented; Stage 3 remains planned. The
+[plan index](README.md) explicitly defers the remaining
 responsibility groups, which are interleaved in the main partial:
 
 - Conditional wait and boundary triggering.
@@ -91,11 +92,12 @@ attribution, as noted by
 [Services.cs](../../Flowbit/src/Flowbit.Service/Abstractions/Services.cs),
 exposes 40 `Task`-returning members spanning queries, workflow/task commands,
 and lifecycle operations. Job processing is exposed through a separate
-`IWorkflowJobProcessor` implemented by the same class. Stage 1 adds a focused
-instance-query port and moves the two endpoint consumers to it, while retaining
-both engine members as compatibility forwards. Stage 3 adds a projection port
-but keeps `GetInstanceAsync` as a forwarding compatibility method. Neither stage
-reduces the engine interface's member count. Broad interface removal remains
+`IWorkflowJobProcessor` implemented by the same class. Stage 1 (implemented)
+added a focused instance-query port and moved the two endpoint consumers to it,
+while retaining both engine members as compatibility forwards. Stage 3 adds a
+projection port but keeps `GetInstanceAsync` as a forwarding compatibility
+method. Neither stage reduces the engine interface's member count. Broad
+interface removal remains
 outside the current plans. Interface segmentation should follow the responsibility
 extractions in gap 1, so each member group moves once.
 

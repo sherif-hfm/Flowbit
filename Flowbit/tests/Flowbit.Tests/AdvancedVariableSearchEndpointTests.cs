@@ -150,8 +150,8 @@ public sealed class AdvancedVariableSearchEndpointTests
         using var response = await harness.Client.SendAsync(request);
 
         Assert.Equal(HttpStatusCode.RequestEntityTooLarge, response.StatusCode);
-        Assert.Empty(harness.Workflow.InvocationsFor(
-            nameof(IWorkflowEngineService.SearchInstancesAsync)));
+        Assert.Empty(harness.InstanceQueries.InvocationsFor(
+            nameof(IWorkflowInstanceQueryService.SearchInstancesAsync)));
     }
 
     [Theory]
@@ -228,8 +228,8 @@ public sealed class AdvancedVariableSearchEndpointTests
         using var response = await harness.Client.SendAsync(request);
 
         AssertPagedResponse(response, 1, 25);
-        var invocation = harness.Workflow.SingleInvocation(
-            nameof(IWorkflowEngineService.SearchInstancesAsync));
+        var invocation = harness.InstanceQueries.SingleInvocation(
+            nameof(IWorkflowInstanceQueryService.SearchInstancesAsync));
         var actor = Assert.IsType<ActorContext>(invocation.Arguments[0]);
         var body = Assert.IsType<InstanceSearchRequest>(invocation.Arguments[1]);
         Assert.Equal("medical-user", actor.User);
@@ -520,6 +520,7 @@ public sealed class AdvancedVariableSearchEndpointTests
             factory,
             client,
             factory.Workflow,
+            factory.InstanceQueries,
             factory.NodeExecutions);
     }
 
@@ -549,6 +550,11 @@ public sealed class AdvancedVariableSearchEndpointTests
             RecordingWorkflowServiceProxy>();
         var workflowRecorder = (RecordingWorkflowServiceProxy)(object)workflowService;
         builder.Services.AddSingleton(workflowService);
+        var instanceQueryService = DispatchProxy.Create<
+            IWorkflowInstanceQueryService,
+            RecordingInstanceQueryServiceProxy>();
+        var instanceQueryRecorder = (RecordingInstanceQueryServiceProxy)(object)instanceQueryService;
+        builder.Services.AddSingleton(instanceQueryService);
 
         var app = builder.Build();
         app.UseAuthentication();
@@ -564,7 +570,8 @@ public sealed class AdvancedVariableSearchEndpointTests
         return new KestrelSearchHarness(
             app,
             new HttpClient { BaseAddress = new Uri(address) },
-            workflowRecorder);
+            workflowRecorder,
+            instanceQueryRecorder);
     }
 
     private static HttpRequestMessage AuthorizedPost(string path, string json)
@@ -666,11 +673,6 @@ public sealed class AdvancedVariableSearchEndpointTests
 
             return targetMethod.Name switch
             {
-                nameof(IWorkflowEngineService.ListInstancesAsync) =>
-                    Task.FromResult(InstancePage(copiedArguments)),
-                nameof(IWorkflowEngineService.SearchInstancesAsync) =>
-                    Task.FromResult(InstancePage(
-                        Assert.IsType<InstanceSearchRequest>(copiedArguments[1]))),
                 nameof(IWorkflowEngineService.GetInboxAsync) =>
                     Task.FromResult(InboxPage(copiedArguments)),
                 nameof(IWorkflowEngineService.SearchInboxAsync) =>
@@ -689,6 +691,35 @@ public sealed class AdvancedVariableSearchEndpointTests
                         Assert.IsType<DistributableUserTaskSearchRequest>(copiedArguments[2]))),
                 _ => throw new NotSupportedException(
                     $"The endpoint contract proxy did not expect {targetMethod.Name}.")
+            };
+        }
+    }
+
+    public class RecordingInstanceQueryServiceProxy : DispatchProxy
+    {
+        private readonly ConcurrentQueue<RecordedInvocation> invocations = new();
+
+        public RecordedInvocation SingleInvocation(string method) =>
+            Assert.Single(invocations, invocation => invocation.Method == method);
+
+        public IReadOnlyList<RecordedInvocation> InvocationsFor(string method) =>
+            invocations.Where(invocation => invocation.Method == method).ToArray();
+
+        protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
+        {
+            ArgumentNullException.ThrowIfNull(targetMethod);
+            var copiedArguments = args?.ToArray() ?? [];
+            invocations.Enqueue(new RecordedInvocation(targetMethod.Name, copiedArguments));
+
+            return targetMethod.Name switch
+            {
+                nameof(IWorkflowInstanceQueryService.ListInstancesAsync) =>
+                    Task.FromResult(InstancePage(copiedArguments)),
+                nameof(IWorkflowInstanceQueryService.SearchInstancesAsync) =>
+                    Task.FromResult(InstancePage(
+                        Assert.IsType<InstanceSearchRequest>(copiedArguments[1]))),
+                _ => throw new NotSupportedException(
+                    $"The instance query contract proxy did not expect {targetMethod.Name}.")
             };
         }
     }
@@ -722,6 +753,7 @@ public sealed class AdvancedVariableSearchEndpointTests
     private sealed class ContractApiFactory : WebApplicationFactory<Program>
     {
         private readonly IWorkflowEngineService workflowService;
+        private readonly IWorkflowInstanceQueryService instanceQueryService;
 
         public ContractApiFactory()
         {
@@ -729,9 +761,14 @@ public sealed class AdvancedVariableSearchEndpointTests
                 IWorkflowEngineService,
                 RecordingWorkflowServiceProxy>();
             Workflow = (RecordingWorkflowServiceProxy)(object)workflowService;
+            instanceQueryService = DispatchProxy.Create<
+                IWorkflowInstanceQueryService,
+                RecordingInstanceQueryServiceProxy>();
+            InstanceQueries = (RecordingInstanceQueryServiceProxy)(object)instanceQueryService;
         }
 
         public RecordingWorkflowServiceProxy Workflow { get; }
+        public RecordingInstanceQueryServiceProxy InstanceQueries { get; }
         public RecordingNodeExecutionQueryService NodeExecutions { get; } = new();
 
         protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -753,6 +790,8 @@ public sealed class AdvancedVariableSearchEndpointTests
             {
                 services.RemoveAll<IWorkflowEngineService>();
                 services.AddSingleton(workflowService);
+                services.RemoveAll<IWorkflowInstanceQueryService>();
+                services.AddSingleton(instanceQueryService);
                 services.RemoveAll<INodeExecutionQueryService>();
                 services.AddSingleton<INodeExecutionQueryService>(NodeExecutions);
                 services.RemoveAll<IEngineSettingsService>();
@@ -836,11 +875,13 @@ public sealed class AdvancedVariableSearchEndpointTests
         ContractApiFactory factory,
         HttpClient client,
         RecordingWorkflowServiceProxy workflow,
+        RecordingInstanceQueryServiceProxy instanceQueries,
         RecordingNodeExecutionQueryService nodeExecutions) : IDisposable
     {
         public ContractApiFactory Factory { get; } = factory;
         public HttpClient Client { get; } = client;
         public RecordingWorkflowServiceProxy Workflow { get; } = workflow;
+        public RecordingInstanceQueryServiceProxy InstanceQueries { get; } = instanceQueries;
         public RecordingNodeExecutionQueryService NodeExecutions { get; } = nodeExecutions;
 
         public void Dispose()
@@ -853,10 +894,12 @@ public sealed class AdvancedVariableSearchEndpointTests
     private sealed class KestrelSearchHarness(
         WebApplication app,
         HttpClient client,
-        RecordingWorkflowServiceProxy workflow) : IAsyncDisposable
+        RecordingWorkflowServiceProxy workflow,
+        RecordingInstanceQueryServiceProxy instanceQueries) : IAsyncDisposable
     {
         public HttpClient Client { get; } = client;
         public RecordingWorkflowServiceProxy Workflow { get; } = workflow;
+        public RecordingInstanceQueryServiceProxy InstanceQueries { get; } = instanceQueries;
 
         public async ValueTask DisposeAsync()
         {

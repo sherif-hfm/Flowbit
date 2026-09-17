@@ -18,6 +18,23 @@ Start with the [developer documentation](../docs/index.md) for HTTP onboarding, 
 - `tools/*` - the existing definition verifier, live API regression runner, and
   instance load runner.
 
+### Instance query ownership
+
+Instance list and advanced-search orchestration lives in
+`WorkflowInstanceQueryService` (`IWorkflowInstanceQueryService`), a focused
+scoped read service over the narrow `IWorkflowInstanceQueryRepository` port.
+It parses list/search input (sharing the internal `WorkflowQueryInputParser`
+and `RuntimeProjectionMapper` helpers with the engine's inbox and response
+paths), resolves the dynamic `WorkflowInstances.RequiredRole` authorization,
+delegates membership/count/ordering/paging to the repository, and enriches the
+selected page with job summaries, variables, and shared-binding metadata. The
+`GET /api/instances` and `POST /api/instances/search` handlers inject it
+directly, and `WorkflowEngineService` retains `ListInstancesAsync` /
+`SearchInstancesAsync` as compatibility forwards for existing callers. The
+scoped `WorkflowRuntimeRepository` implements both the full runtime port and
+the query port as one instance per scope, so the engine and the query service
+share the same DbContext and per-scope bookkeeping.
+
 ## Workflow examples
 
 The categorized [workflow example catalog](../examples/README.md) contains
