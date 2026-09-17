@@ -35,6 +35,14 @@ Flowbit is a **BPMN-aligned JSON workflow engine** with a visual editor, an HTTP
 
 Flowbit does not import or export BPMN XML, execute arbitrary BPMN diagrams, or provide production OIDC/per-user UI authentication out of the box. Read [BPMN support](bpmn-support.md) and [deployment](deployment.md) before choosing your integration and authentication boundaries.
 
+## Planned refactoring
+
+The [staged refactoring plans](refactoring/README.md) describe future contributor
+work, with a separate scope, implementation sequence, and acceptance gate for
+each stage. They are plans, not descriptions of implemented behavior. The
+[refactoring gap inventory](refactoring/gaps.md) records deferred and unplanned
+work as the starting point for future stages.
+
 ## Reference ownership
 
 The [node and property reference](node-reference.md) owns the consolidated authoring tables for nodes and their nested configuration. The [example catalog](../examples/README.md) owns each sample's prerequisites, actors, inputs, and expected outcome. The [runtime README](../Flowbit/README.md) remains the detailed implementation reference for database behavior and individual features. These guides explain the developer and operator workflows and link to those sources for deeper details.
