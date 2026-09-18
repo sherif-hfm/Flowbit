@@ -167,8 +167,10 @@ framework is not presently justified.
 
 ## 5. Editor hotspots outside save validation
 
-Stage 4 addresses `validateModelForSave` (line 10369; validator region
-9555–12305) in [flowbit-editor.html](../../flowbit-editor.html). Other
+Stage 4 addressed `validateModelForSave` (now a dispatcher that builds a fresh
+context with `createSaveValidationContext` and runs named `validateSave*`
+phase functions; the validator region is 9555–12493) in
+[flowbit-editor.html](../../flowbit-editor.html). Other
 measured hotspots, in descending size:
 
 | Function | Line | Approximate length |

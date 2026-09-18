@@ -10366,15 +10366,16 @@ function normalizeTimerTimeDate(value) {
 function validatorTimeDate(value) {
   return parseTimerTimeDate(value) !== null;
 }
-function validateModelForSave(candidate) {
-  const errors = [];
-  const nodes = Array.isArray(candidate && candidate.flowNodes) ? candidate.flowNodes : [];
-  const flows = Array.isArray(candidate && candidate.sequenceFlows) ? candidate.sequenceFlows : [];
-  const processVariables = Array.isArray(candidate && candidate.variables) ? candidate.variables : [];
-  const isSharedProcessVariable = variable => variable && variable.scope === "shared";
-  const isWritableProcessVariable = variable => !isSharedProcessVariable(variable) ||
-    variable.access === "readWrite";
-  const declaredVariablesReferencedByExpression = (expression, variables, predicate) => {
+// Validator-local shared-variable predicates. They keep the strict,
+// pre-extraction save-validation semantics (exact "shared" scope text) instead
+// of the canonicalizing editor-wide helpers of the same names above.
+function saveIsSharedProcessVariable(variable) {
+  return variable && variable.scope === "shared";
+}
+function saveIsWritableProcessVariable(variable) {
+  return !saveIsSharedProcessVariable(variable) || variable.access === "readWrite";
+}
+function declaredVariablesReferencedByExpression(expression, variables, predicate) {
     if (typeof expression !== "string" || !expression) return [];
     return (Array.isArray(variables) ? variables : [])
       .filter(variable => predicate(variable) &&
@@ -10403,35 +10404,56 @@ function validateModelForSave(candidate) {
         return false;
       });
   };
-  const sharedVariablesReferencedByExpression = (expression, variables) =>
-    declaredVariablesReferencedByExpression(
-      expression,
-      variables,
-      isSharedProcessVariable);
-  const instanceVariablesReferencedByExpression = (expression, variables) =>
-    declaredVariablesReferencedByExpression(
-      expression,
-      variables,
-      variable => !isSharedProcessVariable(variable));
-  const hasText = value => typeof value === "string" && value.trim().length > 0;
-  const hasMappingDefault = value => value !== null && value !== undefined;
-  const countItems = value => Array.isArray(value) ? value.length : 0;
-  const assignmentModes = { fresh: "fresh", previous: "previous", fromNode: "fromNode" };
-  const hasUnsupportedPassThroughMetadata = flow => flow.isSelectable === false || !!flow.isDefault ||
+function saveSharedVariablesReferencedByExpression(expression, variables) {
+  return declaredVariablesReferencedByExpression(
+    expression,
+    variables,
+    saveIsSharedProcessVariable);
+}
+function instanceVariablesReferencedByExpression(expression, variables) {
+  return declaredVariablesReferencedByExpression(
+    expression,
+    variables,
+    variable => !saveIsSharedProcessVariable(variable));
+}
+function hasText(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+function hasMappingDefault(value) {
+  return value !== null && value !== undefined;
+}
+function countItems(value) {
+  return Array.isArray(value) ? value.length : 0;
+}
+function hasOwn(value, property) {
+  return !!value && Object.prototype.hasOwnProperty.call(value, property);
+}
+const assignmentModes = { fresh: "fresh", previous: "previous", fromNode: "fromNode" };
+function hasUnsupportedPassThroughMetadata(flow) {
+  return flow.isSelectable === false || !!flow.isDefault ||
     !!flow.canActWithoutClaim || countItems(flow.canActWithoutClaimRoles) > 0 ||
     !!flow.cancelRemainingInstances || countItems(flow.roles) > 0 ||
     countItems(flow.variables) > 0 || hasText(flow.condition) ||
     hasText(flow.completionCondition) || flow.completionPriority != null;
-  const hasGatewayActionMetadata = flow => flow.isSelectable === false ||
+}
+function hasGatewayActionMetadata(flow) {
+  return flow.isSelectable === false ||
     !!flow.canActWithoutClaim || countItems(flow.canActWithoutClaimRoles) > 0 ||
     !!flow.cancelRemainingInstances || countItems(flow.roles) > 0 ||
     countItems(flow.variables) > 0 || hasText(flow.completionCondition) ||
     flow.completionPriority != null;
-  const nodeLabel = node => "User task #" + String(node && node.id) +
+}
+function saveNodeLabel(node) {
+  return "User task #" + String(node && node.id) +
     (hasText(node && node.name) ? " (" + node.name.trim() + ")" : "");
-  const flowLabel = flow => "Sequence flow #" + String(flow && flow.id);
-  const unicodeLength = value => Array.from(value).length;
-  const validateAttributes = (owner, label) => {
+}
+function saveFlowLabel(flow) {
+  return "Sequence flow #" + String(flow && flow.id);
+}
+function unicodeLength(value) {
+  return Array.from(value).length;
+}
+function validateAttributes(errors, owner, label) {
     const attributes = owner && owner.attributes;
     // Missing/null is the backwards-compatible empty collection.
     if (attributes == null) return;
@@ -10476,8 +10498,8 @@ function validateModelForSave(candidate) {
         errors.push(entryLabel + " value cannot exceed 4000 Unicode characters.");
       }
     });
-  };
-  const flowInfoPaths = new Set([
+}
+const flowInfoPaths = new Set([
     "all",
     "actions.count",
     "actions.last.user",
@@ -10491,26 +10513,33 @@ function validateModelForSave(candidate) {
     "traversals.last.occurredat",
     "traversals.last.kind",
     "traversals.last.values"
-  ]);
-  const knownFlowIds = new Set(
-    flows.filter(flow => Number.isInteger(flow && flow.id)).map(flow => flow.id));
-  const nodesById = new Map(nodes.filter(Boolean).map(node => [node.id, node]));
-  const incomingByNode = new Map();
-  const outgoingByNode = new Map();
-  const structuralTargetsByNode = new Map();
+]);
+function createSaveValidationContext(candidate) {
+  const ctx = { candidate };
+  ctx.errors = [];
+  ctx.nodes = Array.isArray(candidate && candidate.flowNodes) ? candidate.flowNodes : [];
+  ctx.flows = Array.isArray(candidate && candidate.sequenceFlows) ? candidate.sequenceFlows : [];
+  ctx.processVariables = Array.isArray(candidate && candidate.variables) ? candidate.variables : [];
+  ctx.workflowKey = candidate && candidate.id != null ? String(candidate.id) : "";
+  ctx.knownFlowIds = new Set(
+    ctx.flows.filter(flow => Number.isInteger(flow && flow.id)).map(flow => flow.id));
+  ctx.nodesById = new Map(ctx.nodes.filter(Boolean).map(node => [node.id, node]));
+  ctx.incomingByNode = new Map();
+  ctx.outgoingByNode = new Map();
+  ctx.structuralTargetsByNode = new Map();
   const addStructuralTarget = (sourceId, targetId) => {
-    if (!structuralTargetsByNode.has(sourceId)) structuralTargetsByNode.set(sourceId, []);
-    structuralTargetsByNode.get(sourceId).push(targetId);
+    if (!ctx.structuralTargetsByNode.has(sourceId)) ctx.structuralTargetsByNode.set(sourceId, []);
+    ctx.structuralTargetsByNode.get(sourceId).push(targetId);
   };
-  for (const flow of flows) {
+  for (const flow of ctx.flows) {
     if (!flow) continue;
-    if (!incomingByNode.has(flow.targetRef)) incomingByNode.set(flow.targetRef, []);
-    if (!outgoingByNode.has(flow.sourceRef)) outgoingByNode.set(flow.sourceRef, []);
-    incomingByNode.get(flow.targetRef).push(flow);
-    outgoingByNode.get(flow.sourceRef).push(flow);
+    if (!ctx.incomingByNode.has(flow.targetRef)) ctx.incomingByNode.set(flow.targetRef, []);
+    if (!ctx.outgoingByNode.has(flow.sourceRef)) ctx.outgoingByNode.set(flow.sourceRef, []);
+    ctx.incomingByNode.get(flow.targetRef).push(flow);
+    ctx.outgoingByNode.get(flow.sourceRef).push(flow);
     addStructuralTarget(flow.sourceRef, flow.targetRef);
   }
-  for (const boundary of nodes) {
+  for (const boundary of ctx.nodes) {
     if (boundary && (boundary.type === "errorBoundaryEvent" ||
         boundary.type === "timerBoundaryEvent" ||
         boundary.type === "conditionalBoundaryEvent") &&
@@ -10518,13 +10547,92 @@ function validateModelForSave(candidate) {
       addStructuralTarget(boundary.attachedToRef, boundary.id);
     }
   }
-  const incomingFor = nodeId => incomingByNode.get(nodeId) || [];
-  const outgoingFor = nodeId => outgoingByNode.get(nodeId) || [];
+  ctx.incomingFor = nodeId => ctx.incomingByNode.get(nodeId) || [];
+  ctx.outgoingFor = nodeId => ctx.outgoingByNode.get(nodeId) || [];
+  ctx.userTasksById = new Map(ctx.nodes
+    .filter(node => node && node.type === "userTask" && Number.isInteger(node.id))
+    .map(node => [node.id, node]));
+  ctx.processByName = new Map();
+  for (const variable of ctx.processVariables) {
+    if (hasText(variable && variable.name)) {
+      const key = variable.name.trim().toLowerCase();
+      if (!ctx.processByName.has(key)) ctx.processByName.set(key, variable);
+    }
+  }
+  const reachabilityBySource = new Map();
+  const reachableFrom = sourceId => {
+    if (reachabilityBySource.has(sourceId)) return reachabilityBySource.get(sourceId);
+    const queue = [sourceId];
+    const visited = new Set();
+    while (queue.length > 0) {
+      const current = queue.shift();
+      if (visited.has(current)) continue;
+      visited.add(current);
+      for (const targetId of ctx.structuralTargetsByNode.get(current) || []) {
+        if (!visited.has(targetId)) queue.push(targetId);
+      }
+    }
+    reachabilityBySource.set(sourceId, visited);
+    return visited;
+  };
+  ctx.canReachNode = (sourceId, targetId) => reachableFrom(sourceId).has(targetId);
+  ctx.canReachNodeAvoiding = (sourceId, targetId, blockedNodeId) => {
+    const queue = [sourceId];
+    const visited = new Set();
+    while (queue.length > 0) {
+      const current = queue.shift();
+      if (visited.has(current)) continue;
+      visited.add(current);
+      if (current === blockedNodeId) continue;
+      if (current === targetId) return true;
+      for (const next of ctx.structuralTargetsByNode.get(current) || []) {
+        if (!visited.has(next)) queue.push(next);
+      }
+    }
+    return false;
+  };
+  return ctx;
+}
+function validateModelForSave(candidate) {
+  const ctx = createSaveValidationContext(candidate);
+  validateSaveAttributes(ctx);
+  validateSaveWorkflowKey(ctx);
+  validateSaveUniqueIds(ctx);
+  validateSaveRoleSources(ctx);
+  validateSaveTaskDistribution(ctx);
+  validateSaveInboxVisibilityConditions(ctx);
+  validateSaveAssignmentSettings(ctx);
+  validateSaveVariableNames(ctx);
+  validateFlowInfoUsage(ctx);
+  validateGatewayExpressionUsage(ctx);
+  validateSaveSharedBindings(ctx);
+  validateSaveScriptTasks(ctx);
+  validateSaveVariableContracts(ctx);
+  validateSaveDeclaredProducers(ctx);
+  validateSaveAsyncJobsAndTimers(ctx);
+  validateSaveServiceTasks(ctx);
+  validateSaveErrorBoundaries(ctx);
+  validateSaveWaitBoundaries(ctx);
+  validateSaveMessageCatches(ctx);
+  validateSaveTimerCatches(ctx);
+  validateSaveConditionalEvents(ctx);
+  validateSaveMessageStarts(ctx);
+  validateSaveEntries(ctx);
+  validateSaveEndEvents(ctx);
+  validateSaveNodeTypes(ctx);
+  validateSaveGateways(ctx);
+  validateSaveGraphScopes(ctx);
+  validateSaveEntryIdentity(ctx);
+  validateSaveMultiInstance(ctx);
+  return ctx.errors;
+}
+function validateSaveAttributes(ctx) {
+  ctx.nodes.filter(Boolean).forEach(node =>
+    validateAttributes(ctx.errors, node, "Flow node #" + String(node.id)));
+  ctx.flows.filter(Boolean).forEach(flow =>
+    validateAttributes(ctx.errors, flow, saveFlowLabel(flow)));
+}
 
-  nodes.filter(Boolean).forEach(node =>
-    validateAttributes(node, "Flow node #" + String(node.id)));
-  flows.filter(Boolean).forEach(flow =>
-    validateAttributes(flow, flowLabel(flow)));
 
   function splitFlowInfoArguments(source) {
     const args = [];
@@ -10576,7 +10684,7 @@ function validateModelForSave(candidate) {
     return quote !== null;
   }
 
-  function validateFlowInfoExpression(expression, owner, allowed) {
+function validateFlowInfoExpression(ctx, expression, owner, allowed) {
     if (!hasText(expression)) return;
     const helperPattern = /\bFlowInfo\b/gi;
     let match;
@@ -10587,7 +10695,7 @@ function validateModelForSave(candidate) {
       if (isInsideQuotedExpressionText(expression, match.index)) continue;
 
       if (!allowed && !unsupportedReported) {
-        errors.push(owner +
+        ctx.errors.push(owner +
           " cannot use FlowInfo; it is supported only in conditional gateway flows, " +
           "multi-instance completion conditions, and NCalc script assignments.");
         unsupportedReported = true;
@@ -10596,7 +10704,7 @@ function validateModelForSave(candidate) {
       let open = match.index + match[0].length;
       while (/\s/.test(expression[open] || "")) open++;
       if (expression[open] !== "(") {
-        errors.push(owner +
+        ctx.errors.push(owner +
           " has an invalid FlowInfo call; expected FlowInfo(<literal flow id>, '<supported path>').");
         continue;
       }
@@ -10629,7 +10737,7 @@ function validateModelForSave(candidate) {
       }
 
       if (close < 0) {
-        errors.push(owner +
+        ctx.errors.push(owner +
           " has an invalid FlowInfo call; expected FlowInfo(<literal flow id>, '<supported path>').");
         break;
       }
@@ -10638,76 +10746,78 @@ function validateModelForSave(candidate) {
       const idLiteral = args.length === 2 ? args[0].match(/^\d+$/) : null;
       const pathLiteral = args.length === 2 ? args[1].match(/^(['"])([\s\S]*)\1$/) : null;
       if (!idLiteral || !pathLiteral) {
-        errors.push(owner +
+        ctx.errors.push(owner +
           " has an invalid FlowInfo call; exactly two literal arguments are required: " +
           "FlowInfo(<flow id>, '<path>').");
       } else {
         const flowId = Number(args[0]);
         const path = pathLiteral[2];
-        if (!Number.isInteger(flowId) || !knownFlowIds.has(flowId)) {
-          errors.push(owner + " FlowInfo references unknown sequence flow #" + args[0] + ".");
+        if (!Number.isInteger(flowId) || !ctx.knownFlowIds.has(flowId)) {
+          ctx.errors.push(owner + " FlowInfo references unknown sequence flow #" + args[0] + ".");
         }
         if (!flowInfoPaths.has(path.toLowerCase())) {
-          errors.push(owner + " FlowInfo path '" + path + "' is not supported.");
+          ctx.errors.push(owner + " FlowInfo path '" + path + "' is not supported.");
         }
       }
       helperPattern.lastIndex = close + 1;
     }
-  }
+}
 
-  function validateFlowInfoUsage() {
+function validateFlowInfoUsage(ctx) {
     const validateVariables = (variables, owner) => {
       for (const variable of Array.isArray(variables) ? variables : []) {
         validateFlowInfoExpression(
+          ctx,
           variable && variable.validation,
           "Validation for variable '" + String(variable && variable.name || "") + "' on " + owner,
           false);
       }
     };
 
-    validateVariables(processVariables, "process variables");
-    for (const node of nodes) {
+    validateVariables(ctx.processVariables, "process variables");
+    for (const node of ctx.nodes) {
       const label = "Flow node #" + String(node && node.id);
       validateVariables(node && node.variables, label);
-      validateFlowInfoExpression(node && node.assignee, label + " assignee expression", false);
+      validateFlowInfoExpression(ctx, node && node.assignee, label + " assignee expression", false);
       validateFlowInfoExpression(
+        ctx,
         node && node.multiInstance && node.multiInstance.cardinalityExpression,
         label + " cardinality expression",
         false);
-      validateFlowInfoExpression(node && node.activationCondition,
+      validateFlowInfoExpression(ctx, node && node.activationCondition,
         label + " activationCondition", false);
 
       const serviceMappings = node && node.service && node.service.outputMappings;
       for (const mapping of Array.isArray(serviceMappings) ? serviceMappings : []) {
-        validateFlowInfoExpression(mapping && mapping.validation,
+        validateFlowInfoExpression(ctx, mapping && mapping.validation,
           label + " service output validation", false);
       }
       const message = node && node.message;
-      validateFlowInfoExpression(message && message.headerValidation,
+      validateFlowInfoExpression(ctx, message && message.headerValidation,
         label + " message header validation", false);
       for (const mapping of Array.isArray(message && message.outputMappings) ? message.outputMappings : []) {
-        validateFlowInfoExpression(mapping && mapping.validation,
+        validateFlowInfoExpression(ctx, mapping && mapping.validation,
           label + " message output validation", false);
       }
 
       const isNCalcScript = node && node.type === "scriptTask" && node.scriptFormat !== "javascript";
       for (const assignment of Array.isArray(node && node.assignments) ? node.assignments : []) {
-        validateFlowInfoExpression(assignment && assignment.expression,
+        validateFlowInfoExpression(ctx, assignment && assignment.expression,
           label + " NCalc assignment", isNCalcScript);
       }
     }
 
-    for (const flow of flows) {
-      const label = flowLabel(flow);
-      const source = nodesById.get(flow && flow.sourceRef);
+    for (const flow of ctx.flows) {
+      const label = saveFlowLabel(flow);
+      const source = ctx.nodesById.get(flow && flow.sourceRef);
       validateVariables(flow && flow.variables, label);
-      validateFlowInfoExpression(flow && flow.condition, label + " condition",
+      validateFlowInfoExpression(ctx, flow && flow.condition, label + " condition",
         !!source && ["exclusiveGateway", "inclusiveGateway", "complexGateway"].includes(source.type) &&
           !flow.isDefault);
-      validateFlowInfoExpression(flow && flow.completionCondition, label + " completionCondition",
+      validateFlowInfoExpression(ctx, flow && flow.completionCondition, label + " completionCondition",
         !!source && source.type === "userTask" && !!source.multiInstance);
     }
-  }
+}
 
   function readGatewayHelperCall(expression, openParenthesis) {
     let depth = 0;
@@ -10741,11 +10851,11 @@ function validateModelForSave(candidate) {
     return null;
   }
 
-  function validateGatewayExpression(
-      expression, owner, complexGateway, waitingForStartAllowed) {
+function validateGatewayExpression(
+      ctx, expression, owner, complexGateway, waitingForStartAllowed) {
     if (!hasText(expression)) return;
     const incomingIds = complexGateway
-      ? new Set(incomingFor(complexGateway.id).map(flow => flow.id))
+      ? new Set(ctx.incomingFor(complexGateway.id).map(flow => flow.id))
       : new Set();
     const waitingPattern = /\bgateway\.waitingForStart/gi;
     let waitingMatch;
@@ -10755,7 +10865,7 @@ function validateModelForSave(candidate) {
       const following = expression[end] || "";
       if (/[A-Za-z0-9_]/.test(following) || following === ".") continue;
       if (!complexGateway || !waitingForStartAllowed) {
-        errors.push(owner +
+        ctx.errors.push(owner +
           " has invalid Complex gateway expression usage: [gateway.waitingForStart] " +
           "is available only in Complex gateway outgoing-flow conditions.");
         break;
@@ -10772,12 +10882,12 @@ function validateModelForSave(candidate) {
       // ordinary expression parsing rather than treated as a helper call.
       if (expression[open] !== "(") continue;
       if (!complexGateway) {
-        errors.push(owner + " has invalid Complex gateway expression usage: " +
+        ctx.errors.push(owner + " has invalid Complex gateway expression usage: " +
           match[1] + " is available only in Complex gateway expressions.");
       }
       const call = readGatewayHelperCall(expression, open);
       if (!call) {
-        errors.push(owner + " has invalid Complex gateway expression usage: " +
+        ctx.errors.push(owner + " has invalid Complex gateway expression usage: " +
           match[1] + " has an unterminated argument list.");
         break;
       }
@@ -10785,31 +10895,32 @@ function validateModelForSave(candidate) {
         !String(call.arguments[0]).trim();
       if (match[1].toLowerCase() === "totalincomingcount") {
         if (!hasNoArguments) {
-          errors.push(owner + " has invalid Complex gateway expression usage: " +
+          ctx.errors.push(owner + " has invalid Complex gateway expression usage: " +
             "TotalIncomingCount requires no arguments.");
         }
       } else if (hasNoArguments || call.arguments.length !== 1) {
-        errors.push(owner + " has invalid Complex gateway expression usage: " +
+        ctx.errors.push(owner + " has invalid Complex gateway expression usage: " +
           "IncomingCount requires exactly one literal incoming-flow id.");
       } else {
         const flowIdText = String(call.arguments[0]).trim();
         if (!/^[+-]?\d+$/.test(flowIdText)) {
-          errors.push(owner + " has invalid Complex gateway expression usage: " +
+          ctx.errors.push(owner + " has invalid Complex gateway expression usage: " +
             "IncomingCount's argument must be a literal integer incoming-flow id.");
         } else if (complexGateway && !incomingIds.has(Number(flowIdText))) {
-          errors.push(owner + " has invalid Complex gateway expression usage: " +
+          ctx.errors.push(owner + " has invalid Complex gateway expression usage: " +
             "IncomingCount references sequence flow #" + flowIdText +
             ", which is not incoming to this Complex gateway.");
         }
       }
       helperPattern.lastIndex = call.close + 1;
     }
-  }
+}
 
-  function validateGatewayExpressionUsage() {
+function validateGatewayExpressionUsage(ctx) {
     const validateVariables = (variables, owner) => {
       for (const variable of Array.isArray(variables) ? variables : []) {
         validateGatewayExpression(
+          ctx,
           variable && variable.validation,
           "Validation for variable '" + String(variable && variable.name || "") +
             "' on " + owner,
@@ -10818,59 +10929,62 @@ function validateModelForSave(candidate) {
       }
     };
 
-    validateVariables(processVariables, "process variables");
-    for (const node of nodes) {
+    validateVariables(ctx.processVariables, "process variables");
+    for (const node of ctx.nodes) {
       const label = "Flow node #" + String(node && node.id);
       const complex = node && node.type === "complexGateway" ? node : null;
-      validateGatewayExpression(node && node.activationCondition,
+      validateGatewayExpression(ctx, node && node.activationCondition,
         label + " activationCondition", complex, false);
-      validateGatewayExpression(node && node.assignee,
+      validateGatewayExpression(ctx, node && node.assignee,
         label + " assignee expression", null, false);
       validateGatewayExpression(
+        ctx,
         node && node.multiInstance && node.multiInstance.cardinalityExpression,
         label + " cardinality expression", null, false);
       validateVariables(node && node.variables, label);
 
       const serviceMappings = node && node.service && node.service.outputMappings;
       for (const mapping of Array.isArray(serviceMappings) ? serviceMappings : []) {
-        validateGatewayExpression(mapping && mapping.validation,
+        validateGatewayExpression(ctx, mapping && mapping.validation,
           label + " service output validation", null, false);
       }
       const message = node && node.message;
-      validateGatewayExpression(message && message.headerValidation,
+      validateGatewayExpression(ctx, message && message.headerValidation,
         label + " message header validation", null, false);
       for (const mapping of Array.isArray(message && message.outputMappings)
           ? message.outputMappings : []) {
-        validateGatewayExpression(mapping && mapping.validation,
+        validateGatewayExpression(ctx, mapping && mapping.validation,
           label + " message output validation", null, false);
       }
       for (const assignment of Array.isArray(node && node.assignments)
           ? node.assignments : []) {
-        validateGatewayExpression(assignment && assignment.expression,
+        validateGatewayExpression(ctx, assignment && assignment.expression,
           label + " assignment", null, false);
       }
     }
 
-    for (const flow of flows) {
-      const label = flowLabel(flow);
-      const source = nodesById.get(flow && flow.sourceRef);
+    for (const flow of ctx.flows) {
+      const label = saveFlowLabel(flow);
+      const source = ctx.nodesById.get(flow && flow.sourceRef);
       const complex = source && source.type === "complexGateway" ? source : null;
-      validateGatewayExpression(flow && flow.condition,
+      validateGatewayExpression(ctx, flow && flow.condition,
         label + " condition", complex, true);
-      validateGatewayExpression(flow && flow.completionCondition,
+      validateGatewayExpression(ctx, flow && flow.completionCondition,
         label + " completionCondition", null, false);
       validateVariables(flow && flow.variables, label);
     }
-  }
+}
 
-  const workflowKey = candidate && candidate.id != null ? String(candidate.id) : "";
+function validateSaveWorkflowKey(ctx) {
+  const workflowKey = ctx.workflowKey;
   if (!workflowKey.trim()) {
-    errors.push("Workflow id is required and is used as the stable workflow key.");
+    ctx.errors.push("Workflow id is required and is used as the stable workflow key.");
   } else if (Array.from(workflowKey).length > 300) {
-    errors.push("Workflow id must contain at most 300 Unicode scalar values.");
+    ctx.errors.push("Workflow id must contain at most 300 Unicode scalar values.");
   }
+}
 
-  function validateUniqueIds(items, kind) {
+function validateUniqueIds(errors, items, kind) {
     const seen = new Set();
     for (const item of items) {
       if (!Number.isInteger(item && item.id)) {
@@ -10880,9 +10994,9 @@ function validateModelForSave(candidate) {
       if (seen.has(item.id)) errors.push(kind + " id #" + item.id + " is duplicated.");
       seen.add(item.id);
     }
-  }
+}
 
-  function validateVariableNames(variables, owner) {
+function validateVariableNames(errors, variables, owner) {
     const seen = new Map();
     for (const variable of Array.isArray(variables) ? variables : []) {
       if (!hasText(variable && variable.name)) {
@@ -10898,52 +11012,57 @@ function validateModelForSave(candidate) {
         seen.set(key, name);
       }
     }
-  }
+}
 
-  validateUniqueIds(nodes, "Flow node");
-  validateUniqueIds(flows, "Sequence flow");
-  const validateRoleSource = (owner, label, allowed) => {
+function validateSaveUniqueIds(ctx) {
+  validateUniqueIds(ctx.errors, ctx.nodes, "Flow node");
+  validateUniqueIds(ctx.errors, ctx.flows, "Sequence flow");
+}
+function validateRoleSource(ctx, owner, label, allowed) {
     if (owner.rolesVariable == null) return;
     if (!allowed) {
-      errors.push(label + " rolesVariable is supported only on user tasks and selectable, non-default user-task flows.");
+      ctx.errors.push(label + " rolesVariable is supported only on user tasks and selectable, non-default user-task flows.");
       return;
     }
     if (!hasText(owner.rolesVariable)) {
-      errors.push(label + " rolesVariable must name a declared string[] variable.");
+      ctx.errors.push(label + " rolesVariable must name a declared string[] variable.");
       return;
     }
     if (normalizeRoles(owner.roles).length > 0) {
-      errors.push(label + " cannot combine rolesVariable with nonempty literal roles.");
+      ctx.errors.push(label + " cannot combine rolesVariable with nonempty literal roles.");
     }
-    const matches = processVariables.filter(variable => variable &&
+    const matches = ctx.processVariables.filter(variable => variable &&
       typeof variable.name === "string" &&
       variable.name.trim().toLowerCase() === owner.rolesVariable.trim().toLowerCase());
     if (matches.length !== 1 || matches[0].dataType !== "string" || !matches[0].isArray) {
-      errors.push(label + " rolesVariable '" + owner.rolesVariable + "' must reference a declared string[] variable.");
+      ctx.errors.push(label + " rolesVariable '" + owner.rolesVariable + "' must reference a declared string[] variable.");
     }
-  };
-  nodes.filter(Boolean).forEach(node => validateRoleSource(node,
+}
+function validateSaveRoleSources(ctx) {
+  ctx.nodes.filter(Boolean).forEach(node => validateRoleSource(ctx, node,
     "Flow node #" + node.id, node.type === "userTask"));
-  flows.filter(Boolean).forEach(flow => validateRoleSource(flow,
-    flowLabel(flow), !flow.isDefault && flow.isSelectable !== false &&
-      nodes.some(node => node && node.id === flow.sourceRef && node.type === "userTask")));
+  ctx.flows.filter(Boolean).forEach(flow => validateRoleSource(ctx, flow,
+    saveFlowLabel(flow), !flow.isDefault && flow.isSelectable !== false &&
+      ctx.nodes.some(node => node && node.id === flow.sourceRef && node.type === "userTask")));
+}
+function validateSaveTaskDistribution(ctx) {
+  const candidate = ctx.candidate;
   if (candidate && candidate.taskDistribution != null) {
     if (!hasText(candidate.taskDistribution.clientId)) {
-      errors.push("Workflow taskDistribution must have a clientId when enabled.");
+      ctx.errors.push("Workflow taskDistribution must have a clientId when enabled.");
     }
     if (!hasText(candidate.taskDistribution.clientSecret)) {
-      errors.push("Workflow taskDistribution must have a clientSecret when enabled.");
+      ctx.errors.push("Workflow taskDistribution must have a clientSecret when enabled.");
     }
   }
-  const userTasksById = new Map(nodes
-    .filter(node => node && node.type === "userTask" && Number.isInteger(node.id))
-    .map(node => [node.id, node]));
-  for (const node of nodes) {
+}
+function validateSaveInboxVisibilityConditions(ctx) {
+  for (const node of ctx.nodes) {
     if (!node || node.type !== "userTask") {
       if (node && node.inboxVisibilityCondition != null &&
           (typeof node.inboxVisibilityCondition !== "string" ||
             node.inboxVisibilityCondition.trim())) {
-        errors.push("Flow node #" + String(node.id) +
+        ctx.errors.push("Flow node #" + String(node.id) +
           " can define inboxVisibilityCondition only when type='userTask'.");
       }
       continue;
@@ -10955,63 +11074,63 @@ function validateModelForSave(candidate) {
     }
     const compiledInboxCondition = compileInboxVisibilityCondition(
       node.inboxVisibilityCondition,
-      candidate);
+      ctx.candidate);
     if (!compiledInboxCondition.ok) {
-      errors.push(nodeLabel(node) + " has an invalid inboxVisibilityCondition: " +
+      ctx.errors.push(saveNodeLabel(node) + " has an invalid inboxVisibilityCondition: " +
         compiledInboxCondition.error);
     }
   }
-  for (const node of nodes.filter(node => node && node.type === "userTask")) {
-    const label = nodeLabel(node);
+}
+function validateSaveAssignmentSettings(ctx) {
+  const candidate = ctx.candidate;
+  for (const node of ctx.nodes.filter(node => node && node.type === "userTask")) {
+    const label = saveNodeLabel(node);
     const assignmentMode = node.assignmentMode || assignmentModes.fresh;
     if (!Object.values(assignmentModes).includes(assignmentMode)) {
-      errors.push(label + " has unsupported assignmentMode '" + String(assignmentMode) + "'.");
+      ctx.errors.push(label + " has unsupported assignmentMode '" + String(assignmentMode) + "'.");
       continue;
     }
     if (!node.requiresAssignment) {
       if (assignmentMode !== assignmentModes.fresh || node.inheritAssignmentFromNodeId != null) {
-        errors.push(label + " must use assignmentMode='fresh' with no assignment source when requiresAssignment=false.");
+        ctx.errors.push(label + " must use assignmentMode='fresh' with no assignment source when requiresAssignment=false.");
       }
       continue;
     }
     if (normalizeRoles(candidate.taskAssignmentRoles).length === 0 &&
         candidate.taskDistribution == null) {
-      errors.push(label + " requires workflow taskAssignmentRoles or taskDistribution credentials.");
+      ctx.errors.push(label + " requires workflow taskAssignmentRoles or taskDistribution credentials.");
     }
     if (node.multiInstance) {
-      errors.push(label + " cannot require assignment while multi-instance is enabled.");
+      ctx.errors.push(label + " cannot require assignment while multi-instance is enabled.");
     }
     if (node.requiresClaim || (node.claimMode || "fresh") !== "fresh") {
-      errors.push(label + " cannot combine requiresAssignment with requiresClaim or claim inheritance.");
+      ctx.errors.push(label + " cannot combine requiresAssignment with requiresClaim or claim inheritance.");
     }
     if (assignmentMode !== assignmentModes.fresh && hasText(node.assignee)) {
-      errors.push(label + " cannot define an assignee expression with inherited assignment.");
+      ctx.errors.push(label + " cannot define an assignee expression with inherited assignment.");
     }
     if (assignmentMode === assignmentModes.fromNode) {
       if (!Number.isInteger(node.inheritAssignmentFromNodeId) ||
-          !userTasksById.has(node.inheritAssignmentFromNodeId)) {
-        errors.push(label + " assignmentMode='fromNode' must reference an existing userTask.");
+          !ctx.userTasksById.has(node.inheritAssignmentFromNodeId)) {
+        ctx.errors.push(label + " assignmentMode='fromNode' must reference an existing userTask.");
       }
     } else if (node.inheritAssignmentFromNodeId != null) {
-      errors.push(label + " can define inheritAssignmentFromNodeId only with assignmentMode='fromNode'.");
+      ctx.errors.push(label + " can define inheritAssignmentFromNodeId only with assignmentMode='fromNode'.");
     }
   }
-  validateVariableNames(processVariables, "process variables");
-  for (const node of nodes) validateVariableNames(node && node.variables, "flow node #" + String(node && node.id));
-  for (const flow of flows) validateVariableNames(flow && flow.variables, "sequence flow #" + String(flow && flow.id));
-  validateFlowInfoUsage();
-  validateGatewayExpressionUsage();
+}
+function validateSaveVariableNames(ctx) {
+  validateVariableNames(ctx.errors, ctx.processVariables, "process variables");
+  for (const node of ctx.nodes) validateVariableNames(ctx.errors, node && node.variables, "flow node #" + String(node && node.id));
+  for (const flow of ctx.flows) validateVariableNames(ctx.errors, flow && flow.variables, "sequence flow #" + String(flow && flow.id));
+}
 
-  const processByName = new Map();
-  for (const variable of processVariables) {
-    if (hasText(variable && variable.name)) {
-      const key = variable.name.trim().toLowerCase();
-      if (!processByName.has(key)) processByName.set(key, variable);
-    }
-  }
 
-  const hasOwn = (value, property) => !!value &&
-    Object.prototype.hasOwnProperty.call(value, property);
+function validateSaveSharedBindings(ctx) {
+  const processVariables = ctx.processVariables;
+  const errors = ctx.errors;
+  const nodes = ctx.nodes;
+  const flows = ctx.flows;
   const sharedKeys = new Map();
   for (const variable of processVariables) {
     if (!variable || typeof variable !== "object") continue;
@@ -11072,15 +11191,17 @@ function validateModelForSave(candidate) {
       }
     }
   }
+}
 
-  const reservedIdempotencyHeaders = new Set([
-    "authorization", "proxy-authorization", "cookie", "host", "content-length",
-    "content-type", "content-encoding", "transfer-encoding", "connection",
-    "keep-alive", "te", "trailer", "upgrade", "expect", "x-client-id", "x-client-secret"
-  ]);
-  const httpFieldName = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+const reservedIdempotencyHeaders = new Set([
+  "authorization", "proxy-authorization", "cookie", "host", "content-length",
+  "content-type", "content-encoding", "transfer-encoding", "connection",
+  "keep-alive", "te", "trailer", "upgrade", "expect", "x-client-id", "x-client-secret"
+]);
+const httpFieldName = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 
-  function validateMessageAuthentication(label, message, deliveryIdempotency) {
+function validateMessageAuthentication(ctx, label, message, deliveryIdempotency) {
+    const errors = ctx.errors;
     if (!hasText(message.clientId)) errors.push(label + " must have a clientId.");
     if (!hasText(message.clientSecret)) errors.push(label + " must have a clientSecret.");
     if (!hasText(message.headerName)) errors.push(label + " must have a headerName.");
@@ -11112,6 +11233,12 @@ function validateModelForSave(candidate) {
     }
   }
 
+function validateSaveScriptTasks(ctx) {
+  const errors = ctx.errors;
+  const nodes = ctx.nodes;
+  const flows = ctx.flows;
+  const processVariables = ctx.processVariables;
+  const processByName = ctx.processByName;
   for (const node of nodes.filter(candidate => candidate && candidate.type === "scriptTask")) {
     const label = "Script task #" + String(node.id);
     const format = typeof node.scriptFormat === "string"
@@ -11146,7 +11273,7 @@ function validateModelForSave(candidate) {
         errors.push(label + " calls execution.getFlowInfo but usesFlowInfo is false.");
       }
       for (const variable of processVariables.filter(variable =>
-          isSharedProcessVariable(variable) && !isWritableProcessVariable(variable) &&
+          saveIsSharedProcessVariable(variable) && !saveIsWritableProcessVariable(variable) &&
           hasText(variable.name))) {
         const escaped = variable.name.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
         const setter = new RegExp(
@@ -11179,7 +11306,7 @@ function validateModelForSave(candidate) {
       } else if (!processByName.has(assignment.variable.trim().toLowerCase())) {
         errors.push(label + " assigns '" + assignment.variable.trim() +
           "' which is not a declared process variable.");
-      } else if (!isWritableProcessVariable(
+      } else if (!saveIsWritableProcessVariable(
           processByName.get(assignment.variable.trim().toLowerCase()))) {
         errors.push(label + " cannot assign read-only shared variable '" +
           assignment.variable.trim() + "'.");
@@ -11190,16 +11317,19 @@ function validateModelForSave(candidate) {
       }
     }
   }
+}
 
-  const supportedVariableTypes = new Set(["string", "number", "boolean", "date", "datetime", "json"]);
-  const isIsoDate = value => {
+const supportedVariableTypes = new Set(["string", "number", "boolean", "date", "datetime", "json"]);
+function isIsoDate(value) {
     if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
     const [year, month, day] = value.split("-").map(Number);
     const date = new Date(Date.UTC(year, month - 1, day));
     return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
-  };
-  const isIsoDateTime = value => typeof value === "string" && value.includes("T") && !Number.isNaN(Date.parse(value));
-  const validTypedScalar = (value, dataType) => {
+}
+function isIsoDateTime(value) {
+  return typeof value === "string" && value.includes("T") && !Number.isNaN(Date.parse(value));
+}
+function validTypedScalar(value, dataType) {
     if (typeof value === "string" && value.includes("${")) return true;
     if (dataType === "string") return typeof value === "string";
     if (dataType === "number") return (typeof value === "number" && Number.isFinite(value)) ||
@@ -11210,12 +11340,15 @@ function validateModelForSave(candidate) {
     if (dataType === "datetime") return isIsoDateTime(value);
     if (dataType === "json") return value !== undefined;
     return false;
-  };
-  const validTypedValue = (value, mapping) => mapping.isArray
+}
+function validTypedValue(value, mapping) {
+  return mapping.isArray
     ? Array.isArray(value) && value.every(item => validTypedScalar(item, mapping.dataType))
     : validTypedScalar(value, mapping.dataType);
+}
 
-  function validateVariableContracts(variables, owner, requireDefault, allowNullable) {
+function validateVariableContracts(ctx, variables, owner, requireDefault, allowNullable) {
+    const errors = ctx.errors;
     for (const variable of Array.isArray(variables) ? variables : []) {
       if (!hasText(variable && variable.name)) continue;
       const name = variable.name.trim();
@@ -11232,7 +11365,7 @@ function validateModelForSave(candidate) {
         errors.push("Variable '" + name + "' on " + owner +
           " cannot be nullable; nullable is supported only for process variables.");
       }
-      const sharedBinding = requireDefault && isSharedProcessVariable(variable);
+      const sharedBinding = requireDefault && saveIsSharedProcessVariable(variable);
       if (requireDefault && !sharedBinding && !variable.nullable && !hasDefault) {
         errors.push("Process variable '" + name + "' must have a defaultValue.");
       }
@@ -11248,22 +11381,26 @@ function validateModelForSave(candidate) {
           " does not match " + variable.dataType + (variable.isArray ? "[]" : "") + ".");
       }
     }
-  }
+}
 
-  validateVariableContracts(processVariables, "process variables", true, true);
-  for (const node of nodes) {
-    validateVariableContracts(node && node.variables, "flow node #" + String(node && node.id), false, false);
+function validateSaveVariableContracts(ctx) {
+  validateVariableContracts(ctx, ctx.processVariables, "process variables", true, true);
+  for (const node of ctx.nodes) {
+    validateVariableContracts(ctx, node && node.variables, "flow node #" + String(node && node.id), false, false);
   }
-  for (const flow of flows) {
-    validateVariableContracts(flow && flow.variables, "sequence flow #" + String(flow && flow.id), false, false);
+  for (const flow of ctx.flows) {
+    validateVariableContracts(ctx, flow && flow.variables, "sequence flow #" + String(flow && flow.id), false, false);
   }
+}
 
-  function validateDeclaredProducerVariables(variables, owner) {
+function validateDeclaredProducerVariables(ctx, variables, owner) {
+    const errors = ctx.errors;
+    const processByName = ctx.processByName;
     for (const variable of Array.isArray(variables) ? variables : []) {
       if (!hasText(variable && variable.name)) continue;
       const processVariable = processByName.get(variable.name.trim().toLowerCase());
-      if (!processVariable || !isSharedProcessVariable(processVariable)) continue;
-      if (!isWritableProcessVariable(processVariable)) {
+      if (!processVariable || !saveIsSharedProcessVariable(processVariable)) continue;
+      if (!saveIsWritableProcessVariable(processVariable)) {
         errors.push(owner + " variable '" + variable.name.trim() +
           "' cannot target a read-only shared variable.");
       } else if (variable.dataType !== processVariable.dataType ||
@@ -11273,15 +11410,19 @@ function validateModelForSave(candidate) {
           (processVariable.isArray ? "[]" : "") + ".");
       }
     }
+}
+function validateSaveDeclaredProducers(ctx) {
+  for (const node of ctx.nodes) {
+    validateDeclaredProducerVariables(ctx, node && node.variables, "Flow node #" + String(node && node.id));
   }
-  for (const node of nodes) {
-    validateDeclaredProducerVariables(node && node.variables, "Flow node #" + String(node && node.id));
+  for (const flow of ctx.flows) {
+    validateDeclaredProducerVariables(ctx, flow && flow.variables, "Sequence flow #" + String(flow && flow.id));
   }
-  for (const flow of flows) {
-    validateDeclaredProducerVariables(flow && flow.variables, "Sequence flow #" + String(flow && flow.id));
-  }
+}
 
-  function validateTypedOutputMappings(label, mappings, pathKind, enforceProcessContract) {
+function validateTypedOutputMappings(ctx, label, mappings, pathKind, enforceProcessContract) {
+    const errors = ctx.errors;
+    const processByName = ctx.processByName;
     const seenMappings = new Set();
     for (const mapping of Array.isArray(mappings) ? mappings : []) {
       if (!hasText(mapping && mapping.variable)) {
@@ -11317,7 +11458,7 @@ function validateModelForSave(candidate) {
       }
 
       const processVariable = processByName.get(key);
-      if (processVariable && !isWritableProcessVariable(processVariable)) {
+      if (processVariable && !saveIsWritableProcessVariable(processVariable)) {
         errors.push(label + " output mapping '" + variableName +
           "' cannot target a read-only shared variable.");
       }
@@ -11328,9 +11469,11 @@ function validateModelForSave(candidate) {
       }
     }
     return seenMappings;
-  }
+}
 
-  function validateRuntimeOutputTarget(label, rawName, expectedType) {
+function validateRuntimeOutputTarget(ctx, label, rawName, expectedType) {
+    const errors = ctx.errors;
+    const processByName = ctx.processByName;
     if (!hasText(rawName)) return;
     const name = rawName.trim();
     if (Array.from(name).length > 300) {
@@ -11340,19 +11483,22 @@ function validateModelForSave(candidate) {
       errors.push(label + " '" + name + "' uses a reserved context prefix.");
     }
     const processVariable = processByName.get(name.toLowerCase());
-    if (processVariable && !isWritableProcessVariable(processVariable)) {
+    if (processVariable && !saveIsWritableProcessVariable(processVariable)) {
       errors.push(label + " '" + name + "' cannot target a read-only shared variable.");
     }
     if (processVariable &&
         (processVariable.dataType !== expectedType || !!processVariable.isArray)) {
       errors.push(label + " '" + name + "' must target a scalar " + expectedType + " process variable.");
     }
-  }
+}
 
-  const asyncTaskTypes = new Set(["userTask", "task", "serviceTask", "scriptTask"]);
-  const timerTypes = new Set([
-    "timerStartEvent", "intermediateTimerCatchEvent", "timerBoundaryEvent"
-  ]);
+const asyncTaskTypes = new Set(["userTask", "task", "serviceTask", "scriptTask"]);
+const timerTypes = new Set([
+  "timerStartEvent", "intermediateTimerCatchEvent", "timerBoundaryEvent"
+]);
+function validateSaveAsyncJobsAndTimers(ctx) {
+  const errors = ctx.errors;
+  const nodes = ctx.nodes;
   for (const node of nodes.filter(Boolean)) {
     const asyncMetadata = !!node.asyncBefore || !!node.asyncAfter || node.job != null;
     if (!asyncTaskTypes.has(node.type) && asyncMetadata) {
@@ -11445,7 +11591,12 @@ function validateModelForSave(candidate) {
       }
     }
   }
+}
 
+function validateSaveServiceTasks(ctx) {
+  const errors = ctx.errors;
+  const nodes = ctx.nodes;
+  const flows = ctx.flows;
   for (const node of nodes.filter(candidate => candidate && candidate.type === "serviceTask")) {
     const service = node.service && typeof node.service === "object" ? node.service : {};
     const label = "Service task #" + String(node.id);
@@ -11496,18 +11647,24 @@ function validateModelForSave(candidate) {
     }
 
     const outputTargets = validateTypedOutputMappings(
+      ctx,
       "Service task #" + String(node.id),
       service.outputMappings,
       "response",
       true);
     if (hasText(service.statusVariable)) {
-      validateRuntimeOutputTarget(label + " statusVariable", service.statusVariable, "number");
+      validateRuntimeOutputTarget(ctx, label + " statusVariable", service.statusVariable, "number");
       if (outputTargets.has(service.statusVariable.trim().toLowerCase())) {
         errors.push(label + " statusVariable cannot also be an output mapping target.");
       }
     }
   }
+}
 
+function validateSaveErrorBoundaries(ctx) {
+  const errors = ctx.errors;
+  const nodes = ctx.nodes;
+  const flows = ctx.flows;
   for (const node of nodes.filter(candidate => candidate && candidate.type === "errorBoundaryEvent")) {
     const label = "Error boundary event #" + String(node.id);
     const host = nodes.find(candidate => candidate && candidate.id === node.attachedToRef);
@@ -11528,7 +11685,7 @@ function validateModelForSave(candidate) {
       errors.push("Host node #" + String(node.attachedToRef) + " has more than one error boundary event.");
     }
     if (!hasText(node.errorVariable)) continue;
-    validateRuntimeOutputTarget(label + " errorVariable", node.errorVariable, "string");
+    validateRuntimeOutputTarget(ctx, label + " errorVariable", node.errorVariable, "string");
     const hostService = host && host.type === "serviceTask" && host.service;
     if (hostService) {
       const errorName = node.errorVariable.trim().toLowerCase();
@@ -11542,7 +11699,12 @@ function validateModelForSave(candidate) {
       }
     }
   }
+}
 
+function validateSaveWaitBoundaries(ctx) {
+  const errors = ctx.errors;
+  const nodes = ctx.nodes;
+  const flows = ctx.flows;
   for (const node of nodes.filter(candidate => candidate &&
       ["timerBoundaryEvent", "conditionalBoundaryEvent"].includes(candidate.type))) {
     const label = (node.type === "conditionalBoundaryEvent"
@@ -11581,11 +11743,16 @@ function validateModelForSave(candidate) {
         " has more than eight combined timer and conditional boundary events.");
     }
   }
+}
 
+function validateSaveMessageCatches(ctx) {
+  const errors = ctx.errors;
+  const nodes = ctx.nodes;
+  const flows = ctx.flows;
   for (const node of nodes.filter(candidate => candidate && candidate.type === "intermediateMessageCatchEvent")) {
     const label = "Message catch event #" + String(node.id);
     const message = node.message && typeof node.message === "object" ? node.message : {};
-    validateMessageAuthentication(label, message, message.deliveryIdempotency === true);
+    validateMessageAuthentication(ctx, label, message, message.deliveryIdempotency === true);
     const outgoing = flows.filter(flow => flow && flow.sourceRef === node.id);
     if (outgoing.length !== 1) {
       errors.push(label + " must have exactly one outgoing sequence flow.");
@@ -11594,12 +11761,18 @@ function validateModelForSave(candidate) {
         "user-action or multi-instance metadata.");
     }
     validateTypedOutputMappings(
+      ctx,
       label,
       message.outputMappings,
       "body",
       true);
   }
+}
 
+function validateSaveTimerCatches(ctx) {
+  const errors = ctx.errors;
+  const nodes = ctx.nodes;
+  const flows = ctx.flows;
   for (const node of nodes.filter(candidate => candidate &&
       candidate.type === "intermediateTimerCatchEvent")) {
     const label = "Timer catch event #" + String(node.id);
@@ -11615,7 +11788,13 @@ function validateModelForSave(candidate) {
         "user-action or multi-instance metadata.");
     }
   }
+}
 
+function validateSaveConditionalEvents(ctx) {
+  const errors = ctx.errors;
+  const nodes = ctx.nodes;
+  const flows = ctx.flows;
+  const processVariables = ctx.processVariables;
   for (const node of nodes.filter(candidate => candidate &&
       ["intermediateConditionalCatchEvent", "conditionalBoundaryEvent"].includes(candidate.type))) {
     const boundary = node.type === "conditionalBoundaryEvent";
@@ -11655,7 +11834,7 @@ function validateModelForSave(candidate) {
         errors.push(label + " condition may reference at most 64 instance variables.");
       }
     }
-    for (const variable of sharedVariablesReferencedByExpression(
+    for (const variable of saveSharedVariablesReferencedByExpression(
         conditional.condition,
         processVariables)) {
       errors.push(label + " condition cannot reference shared process variable '" +
@@ -11667,7 +11846,11 @@ function validateModelForSave(candidate) {
       errors.push(label + " deliveryMode must be atomic or durableAsync.");
     }
   }
+}
 
+function validateSaveMessageStarts(ctx) {
+  const errors = ctx.errors;
+  const nodes = ctx.nodes;
   const messageStarts = nodes.filter(candidate => candidate && candidate.type === "messageStartEvent");
   if (messageStarts.length > 1) {
     const externalIds = new Set();
@@ -11687,9 +11870,9 @@ function validateModelForSave(candidate) {
   for (const node of messageStarts) {
     const label = "Message start event #" + String(node.id);
     const message = node.message && typeof node.message === "object" ? node.message : {};
-    validateMessageAuthentication(label, message, false);
+    validateMessageAuthentication(ctx, label, message, false);
     const mappings = Array.isArray(message.outputMappings) ? message.outputMappings : [];
-    const seenMappings = validateTypedOutputMappings(label, mappings, "body", false);
+    const seenMappings = validateTypedOutputMappings(ctx, label, mappings, "body", false);
 
     if (hasText(message.idempotencyVariable)) {
       errors.push(label + " cannot configure both legacy message.idempotencyVariable and node idempotency.");
@@ -11698,7 +11881,14 @@ function validateModelForSave(candidate) {
       errors.push(label + " cannot define deliveryIdempotency; use node-level idempotency instead.");
     }
   }
+}
 
+function validateSaveEntries(ctx) {
+  const errors = ctx.errors;
+  const nodes = ctx.nodes;
+  const flows = ctx.flows;
+  const candidate = ctx.candidate;
+  const processByName = ctx.processByName;
   const entries = nodes.filter(node => node &&
     (node.type === "startEvent" || node.type === "messageStartEvent" ||
      node.type === "timerStartEvent"));
@@ -11746,10 +11936,10 @@ function validateModelForSave(candidate) {
       if (!hasText(target.name)) continue;
       const processVariable = processByName.get(target.name.trim().toLowerCase());
       if (!processVariable) continue;
-      if (!isSharedProcessVariable(processVariable)) {
+      if (!saveIsSharedProcessVariable(processVariable)) {
         errors.push("Entry event #" + entry.id + " variable '" + target.name.trim() +
           "' collides with a process variable; only a compatible readWrite shared binding may be an entry output target.");
-      } else if (!isWritableProcessVariable(processVariable)) {
+      } else if (!saveIsWritableProcessVariable(processVariable)) {
         errors.push("Entry event #" + entry.id + " cannot write read-only shared variable '" +
           target.name.trim() + "'.");
       } else if (target.dataType !== processVariable.dataType ||
@@ -11766,7 +11956,12 @@ function validateModelForSave(candidate) {
       }
     }
   }
+}
 
+function validateSaveEndEvents(ctx) {
+  const errors = ctx.errors;
+  const nodes = ctx.nodes;
+  const flows = ctx.flows;
   for (const node of nodes.filter(node => node &&
       (node.type === "endEvent" || node.type === "errorEndEvent" ||
        node.type === "terminateEndEvent"))) {
@@ -11792,15 +11987,19 @@ function validateModelForSave(candidate) {
       }
     }
   }
+}
 
-  const supportedNodeTypes = new Set([
-    "startEvent", "messageStartEvent", "timerStartEvent", "userTask", "task", "serviceTask",
-    "scriptTask", "exclusiveGateway", "parallelGateway", "inclusiveGateway",
-    "complexGateway", "scopedInterruptEvent", "endEvent", "terminateEndEvent",
-    "errorEndEvent", "errorBoundaryEvent", "timerBoundaryEvent", "conditionalBoundaryEvent",
-    "intermediateMessageCatchEvent", "intermediateTimerCatchEvent",
-    "intermediateConditionalCatchEvent"
-  ]);
+const supportedNodeTypes = new Set([
+  "startEvent", "messageStartEvent", "timerStartEvent", "userTask", "task", "serviceTask",
+  "scriptTask", "exclusiveGateway", "parallelGateway", "inclusiveGateway",
+  "complexGateway", "scopedInterruptEvent", "endEvent", "terminateEndEvent",
+  "errorEndEvent", "errorBoundaryEvent", "timerBoundaryEvent", "conditionalBoundaryEvent",
+  "intermediateMessageCatchEvent", "intermediateTimerCatchEvent",
+  "intermediateConditionalCatchEvent"
+]);
+function validateSaveNodeTypes(ctx) {
+  const errors = ctx.errors;
+  const nodes = ctx.nodes;
   for (const node of nodes.filter(Boolean)) {
     if (!supportedNodeTypes.has(node.type)) {
       errors.push("Flow node #" + String(node.id) +
@@ -11824,41 +12023,49 @@ function validateModelForSave(candidate) {
         " can define conditional only when its type is a conditional catch or boundary event.");
     }
   }
-  const gatewayTypes = new Set([
-    "exclusiveGateway", "parallelGateway", "inclusiveGateway", "complexGateway"
-  ]);
-  const gatewayTopologyFor = node => {
-    const incoming = incomingFor(node.id).length;
-    const outgoing = outgoingFor(node.id).length;
-    if (incoming === 1 && outgoing >= 2) return "split";
-    if (incoming >= 2 && outgoing === 1) return "merge";
-    return "invalid";
-  };
-  const gatewayName = type => ({
+}
+
+const gatewayTypes = new Set([
+  "exclusiveGateway", "parallelGateway", "inclusiveGateway", "complexGateway"
+]);
+function gatewayTopologyFor(ctx, node) {
+  const incoming = ctx.incomingFor(node.id).length;
+  const outgoing = ctx.outgoingFor(node.id).length;
+  if (incoming === 1 && outgoing >= 2) return "split";
+  if (incoming >= 2 && outgoing === 1) return "merge";
+  return "invalid";
+}
+function gatewayName(type) {
+  return ({
     exclusiveGateway: "Exclusive",
     parallelGateway: "Parallel",
     inclusiveGateway: "Inclusive",
     complexGateway: "Complex"
   })[type] || "Gateway";
+}
 
-  function validateComplexActivation(gateway) {
+function validateComplexActivation(ctx, gateway) {
+    const errors = ctx.errors;
     const label = "Complex gateway #" + String(gateway.id) + " activationCondition";
     if (!hasText(gateway.activationCondition)) {
       errors.push(label + " is required.");
     }
-  }
+}
 
+function validateSaveGateways(ctx) {
+  const errors = ctx.errors;
+  const nodes = ctx.nodes;
   for (const gateway of nodes.filter(node => node && gatewayTypes.has(node.type))) {
     const label = gatewayName(gateway.type) + " gateway #" + String(gateway.id);
-    const incoming = incomingFor(gateway.id);
-    const outgoing = outgoingFor(gateway.id);
-    const topology = gatewayTopologyFor(gateway);
+    const incoming = ctx.incomingFor(gateway.id);
+    const outgoing = ctx.outgoingFor(gateway.id);
+    const topology = gatewayTopologyFor(ctx, gateway);
     if (topology === "invalid") {
       errors.push(label + " must be either a split (exactly one incoming and at least two outgoing flows) " +
         "or a merge (at least two incoming and exactly one outgoing flow); use two adjacent gateways for merge-then-split.");
     }
     if (gateway.type === "complexGateway") {
-      validateComplexActivation(gateway);
+      validateComplexActivation(ctx, gateway);
     }
     if (countItems(gateway.roles) > 0 || countItems(gateway.variables) > 0 ||
         !!gateway.requiresClaim || hasText(gateway.assignee) ||
@@ -11876,7 +12083,7 @@ function validateModelForSave(candidate) {
     }
     for (const flow of outgoing) {
       if (hasGatewayActionMetadata(flow)) {
-        errors.push(flowLabel(flow) + " leaving " + label.toLowerCase() +
+        errors.push(saveFlowLabel(flow) + " leaving " + label.toLowerCase() +
           " cannot define user-action or multi-instance metadata.");
       }
     }
@@ -11885,7 +12092,7 @@ function validateModelForSave(candidate) {
         (topology === "merge" && gateway.type !== "complexGateway")) {
       for (const flow of outgoing) {
         if (hasText(flow.condition) || !!flow.isDefault || flow.conditionPriority != null) {
-          errors.push(flowLabel(flow) + " leaving " + label.toLowerCase() +
+          errors.push(saveFlowLabel(flow) + " leaving " + label.toLowerCase() +
             " must be unconditional and cannot define default or condition metadata.");
         }
       }
@@ -11912,12 +12119,12 @@ function validateModelForSave(candidate) {
         continue;
       }
       if (!hasText(flow.condition)) {
-        errors.push(flowLabel(flow) + " leaving " + label.toLowerCase() +
+        errors.push(saveFlowLabel(flow) + " leaving " + label.toLowerCase() +
           " must define a condition.");
       }
       if (gateway.type === "exclusiveGateway") {
         if (!Number.isInteger(flow.conditionPriority) || flow.conditionPriority <= 0) {
-          errors.push(flowLabel(flow) + " leaving " + label.toLowerCase() +
+          errors.push(saveFlowLabel(flow) + " leaving " + label.toLowerCase() +
             " must define a positive integer conditionPriority.");
         } else if (priorities.has(flow.conditionPriority)) {
           errors.push(label + " has duplicate conditionPriority " + flow.conditionPriority + ".");
@@ -11925,49 +12132,23 @@ function validateModelForSave(candidate) {
           priorities.add(flow.conditionPriority);
         }
       } else if (flow.conditionPriority != null) {
-        errors.push(flowLabel(flow) + " leaving " + label.toLowerCase() +
+        errors.push(saveFlowLabel(flow) + " leaving " + label.toLowerCase() +
           " cannot define conditionPriority.");
       }
     }
   }
+}
 
-  const reachabilityBySource = new Map();
-  const reachableFrom = sourceId => {
-    if (reachabilityBySource.has(sourceId)) return reachabilityBySource.get(sourceId);
-    const queue = [sourceId];
-    const visited = new Set();
-    while (queue.length > 0) {
-      const current = queue.shift();
-      if (visited.has(current)) continue;
-      visited.add(current);
-      for (const targetId of structuralTargetsByNode.get(current) || []) {
-        if (!visited.has(targetId)) queue.push(targetId);
-      }
-    }
-    reachabilityBySource.set(sourceId, visited);
-    return visited;
-  };
-  const canReachNode = (sourceId, targetId) => reachableFrom(sourceId).has(targetId);
-  const canReachNodeAvoiding = (sourceId, targetId, blockedNodeId) => {
-    const queue = [sourceId];
-    const visited = new Set();
-    while (queue.length > 0) {
-      const current = queue.shift();
-      if (visited.has(current)) continue;
-      visited.add(current);
-      if (current === blockedNodeId) continue;
-      if (current === targetId) return true;
-      for (const next of structuralTargetsByNode.get(current) || []) {
-        if (!visited.has(next)) queue.push(next);
-      }
-    }
-    return false;
-  };
-
+function validateSaveGraphScopes(ctx) {
+  const errors = ctx.errors;
+  const nodes = ctx.nodes;
+  const flows = ctx.flows;
+  const canReachNode = ctx.canReachNode;
+  const canReachNodeAvoiding = ctx.canReachNodeAvoiding;
   for (const node of nodes.filter(node => node && node.joinCancellation != null)) {
     const label = gatewayName(node.type) +
       " gateway #" + String(node.id) + " joinCancellation";
-    const topology = gatewayTypes.has(node.type) ? gatewayTopologyFor(node) : "invalid";
+    const topology = gatewayTypes.has(node.type) ? gatewayTopologyFor(ctx, node) : "invalid";
     if (!gatewayTypes.has(node.type)) {
       errors.push("Flow node #" + String(node.id) +
         " can define joinCancellation only when its type is a gateway merge.");
@@ -11988,19 +12169,19 @@ function validateModelForSave(candidate) {
       continue;
     }
 
-    const referenced = nodesById.get(gatewayRef);
+    const referenced = ctx.nodesById.get(gatewayRef);
     if (!referenced ||
         !["parallelGateway", "inclusiveGateway", "complexGateway"].includes(referenced.type)) {
       errors.push(label +
         " gatewayRef must reference an existing Parallel, Inclusive, or Complex gateway split.");
       continue;
     }
-    if (gatewayTopologyFor(referenced) !== "split") {
+    if (gatewayTopologyFor(ctx, referenced) !== "split") {
       errors.push(label +
         " gatewayRef must reference a split with exactly one incoming and at least two outgoing flows.");
       continue;
     }
-    if (topology === "merge" && incomingFor(node.id).some(flow =>
+    if (topology === "merge" && ctx.incomingFor(node.id).some(flow =>
         !canReachNodeAvoiding(referenced.id, flow.sourceRef, node.id))) {
       errors.push(label +
         " gatewayRef must reference an upstream split whose scope contains every merge input.");
@@ -12009,14 +12190,14 @@ function validateModelForSave(candidate) {
 
   for (const interrupt of nodes.filter(node => node && node.type === "scopedInterruptEvent")) {
     const label = "Scoped interrupt event #" + String(interrupt.id);
-    const incoming = incomingFor(interrupt.id);
-    const outgoing = outgoingFor(interrupt.id);
-    const referenced = nodesById.get(interrupt.gatewayRef);
+    const incoming = ctx.incomingFor(interrupt.id);
+    const outgoing = ctx.outgoingFor(interrupt.id);
+    const referenced = ctx.nodesById.get(interrupt.gatewayRef);
     if (!Number.isInteger(interrupt.gatewayRef) || !referenced ||
         !["parallelGateway", "inclusiveGateway", "complexGateway"].includes(referenced.type)) {
       errors.push(label + " gatewayRef must reference an existing Parallel, Inclusive, or Complex gateway split.");
     } else {
-      if (gatewayTopologyFor(referenced) !== "split") {
+      if (gatewayTopologyFor(ctx, referenced) !== "split") {
         errors.push(label + " gatewayRef must reference a split with exactly one incoming and at least two outgoing flows.");
       }
       if (!canReachNode(referenced.id, interrupt.id)) {
@@ -12035,7 +12216,7 @@ function validateModelForSave(candidate) {
         errors.push(label + " must have one unconditional outgoing sequence flow without " +
           "user-action, gateway-condition, or multi-instance metadata.");
       }
-      const target = nodesById.get(continuation.targetRef);
+      const target = ctx.nodesById.get(continuation.targetRef);
       if (!target) {
         errors.push(label + " continuation must reference an existing target node.");
       } else if (target.id === interrupt.id) {
@@ -12045,7 +12226,7 @@ function validateModelForSave(candidate) {
       } else if (target.type === "errorBoundaryEvent") {
         errors.push(label + " cannot continue directly to an error boundary event.");
       } else if ((target.type === "parallelGateway" || target.type === "complexGateway") &&
-          gatewayTopologyFor(target) === "merge") {
+          gatewayTopologyFor(ctx, target) === "merge") {
         errors.push(label + " cannot continue directly to " +
           gatewayName(target.type).toLowerCase() + " merge #" + String(target.id) + ".");
       }
@@ -12067,15 +12248,21 @@ function validateModelForSave(candidate) {
   }
 
   for (const flow of flows) {
-    const source = nodesById.get(flow && flow.sourceRef);
+    const source = ctx.nodesById.get(flow && flow.sourceRef);
     if (flow && flow.conditionPriority != null &&
         (!source || source.type !== "exclusiveGateway" ||
-         gatewayTopologyFor(source) !== "split")) {
-      errors.push(flowLabel(flow) +
+         gatewayTopologyFor(ctx, source) !== "split")) {
+      errors.push(saveFlowLabel(flow) +
         " can define conditionPriority only when leaving an Exclusive gateway split.");
     }
   }
+}
 
+function validateSaveEntryIdentity(ctx) {
+  const errors = ctx.errors;
+  const entries = ctx.nodes.filter(node => node &&
+    (node.type === "startEvent" || node.type === "messageStartEvent" ||
+     node.type === "timerStartEvent"));
   for (const node of entries.filter(entry => entry.idempotency != null)) {
     const config = node.idempotency;
     const label = "Entry event #" + String(node.id);
@@ -12147,11 +12334,17 @@ function validateModelForSave(candidate) {
       }
     }
   }
+}
 
+function validateSaveMultiInstance(ctx) {
+  const errors = ctx.errors;
+  const nodes = ctx.nodes;
+  const flows = ctx.flows;
+  const processByName = ctx.processByName;
   for (const node of nodes) {
     const multi = node && node.multiInstance;
     if (!multi) continue;
-    const label = nodeLabel(node);
+    const label = saveNodeLabel(node);
 
     if (node.type !== "userTask") {
       errors.push(label + " has multiInstance configuration but is not a userTask.");
@@ -12173,9 +12366,9 @@ function validateModelForSave(candidate) {
 
     const resultName = hasText(multi.resultVariable) ? multi.resultVariable.trim() : "";
     const result = resultName ? processByName.get(resultName.toLowerCase()) : null;
-    const sharedResult = result && isSharedProcessVariable(result);
+      const sharedResult = result && saveIsSharedProcessVariable(result);
     if (!result || result.dataType !== "json" || result.isArray ||
-        !isWritableProcessVariable(result) ||
+        !saveIsWritableProcessVariable(result) ||
         (!sharedResult && !Array.isArray(result.defaultValue))) {
       errors.push(label +
         " resultVariable must reference a writable scalar JSON process variable whose defaultValue is a JSON array for instance scope.");
@@ -12251,7 +12444,7 @@ function validateModelForSave(candidate) {
           hasText(fallback.completionCondition) ||
           fallback.completionPriority != null ||
           !!fallback.cancelRemainingInstances) {
-        errors.push(flowLabel(fallback) +
+        errors.push(saveFlowLabel(fallback) +
           " must be a pure engine-only default with no actor or completion settings.");
       }
     }
@@ -12259,21 +12452,21 @@ function validateModelForSave(candidate) {
     const priorities = new Set();
     for (const flow of conditioned) {
       if (!Number.isInteger(flow.completionPriority) || flow.completionPriority <= 0) {
-        errors.push(flowLabel(flow) + " requires a positive integer completionPriority.");
+        errors.push(saveFlowLabel(flow) + " requires a positive integer completionPriority.");
       } else if (priorities.has(flow.completionPriority)) {
         errors.push(label + " has duplicate completionPriority " + flow.completionPriority + ".");
       } else {
         priorities.add(flow.completionPriority);
       }
       if (!hasText(flow.completionCondition)) {
-        errors.push(flowLabel(flow) + " requires completionCondition.");
+        errors.push(saveFlowLabel(flow) + " requires completionCondition.");
       } else {
         const helperPattern = /\b(?:CountFlow|PercentFlow)\s*\(\s*([^)]+)\s*\)/gi;
         let match;
         while ((match = helperPattern.exec(flow.completionCondition)) !== null) {
           const referencedId = Number(match[1].trim());
           if (!Number.isInteger(referencedId) || !selectableOutcomeIds.has(referencedId)) {
-            errors.push(flowLabel(flow) +
+            errors.push(saveFlowLabel(flow) +
               " completionCondition references a non-selectable outcome flow.");
           }
         }
@@ -12284,7 +12477,7 @@ function validateModelForSave(candidate) {
            hasText(flow.condition) ||
            !!flow.canActWithoutClaim ||
            countItems(flow.canActWithoutClaimRoles) > 0)) {
-        errors.push(flowLabel(flow) +
+        errors.push(saveFlowLabel(flow) +
           " is engine-only and cannot define roles, action variables, condition, or canActWithoutClaim.");
       }
     }
@@ -12294,13 +12487,11 @@ function validateModelForSave(candidate) {
           !!flow.isDefault ||
           hasText(flow.completionCondition) ||
           flow.completionPriority != null) {
-        errors.push(flowLabel(flow) +
+        errors.push(saveFlowLabel(flow) +
           " interrupt must be selectable, non-default, and have no completion rules.");
       }
     }
   }
-
-  return errors;
 }
 // END WORKFLOW SAVE VALIDATOR
 

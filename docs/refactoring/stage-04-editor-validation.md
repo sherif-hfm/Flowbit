@@ -2,8 +2,10 @@
 
 [Plan index](README.md) · [Next: instance detail components](stage-05-instance-detail-components.md)
 
-**Status: Planned — not implemented.** This stage can begin independently of the
-backend extractions after a passing baseline.
+**Status: Implemented.** The save validator now builds a fresh validation
+context per call and executes named phase functions and rule helpers; the
+editor remains the single standalone HTML file. The implementation record at
+the end of this document reports scope, tests, and browser verification.
 
 ## Objective and boundary
 
@@ -116,7 +118,7 @@ second production validator as a test oracle.
 From the repository root, in PowerShell or Bash:
 
 ```text
-dotnet test Flowbit/Flowbit.slnx --filter "FullyQualifiedName~EditorValidatorTests|FullyQualifiedName~EditorRuntimeSmokeTests|FullyQualifiedName~EditorConditionalEventTests|FullyQualifiedName~EditorNavigationTests|FullyQualifiedName~InboxVisibilityConditionCompilerTests"
+dotnet test Flowbit/Flowbit.slnx --filter "FullyQualifiedName~EditorValidatorTests|FullyQualifiedName~EditorRuntimeSmokeTests|FullyQualifiedName~EditorConditionalEventTests|FullyQualifiedName~EditorNavigationTests|FullyQualifiedName~InboxVisibilityConditionCompilerTests|FullyQualifiedName~EditorValidatorCharacterizationTests"
 docker info
 dotnet test Flowbit/Flowbit.slnx --nologo --verbosity quiet
 git diff --check
@@ -168,3 +170,88 @@ Deliver characterization coverage first if missing, then small buildable
 extraction commits with their relevant test results. Mark the whole stage
 implemented only after the final full-suite and browser gate. Revert the
 extraction commits to roll back; saved workflow JSON requires no migration.
+
+## Implementation record
+
+Delivered as one buildable change to [flowbit-editor.html](../../flowbit-editor.html):
+
+- `validateModelForSave(candidate)` remains the public entry point and returns
+  the same ordered error array. It now builds a fresh
+  `createSaveValidationContext(candidate)` (error accumulator, node/flow/variable
+  collections, `nodesById`, incoming/outgoing/structural adjacency,
+  `knownFlowIds`, `processByName`, `userTasksById`, workflow key, and lazy
+  reachability helpers) and then calls named phase functions in the original
+  sequence: attributes, workflow key, unique ids, role sources, task
+  distribution, inbox visibility conditions, assignment settings, variable
+  names, FlowInfo usage, gateway expression usage, shared bindings, script
+  tasks, variable contracts, declared producers, async/job/timer metadata,
+  service tasks, error boundaries, timer/conditional boundaries, message
+  catches, timer catches, conditional events, message starts, entries, end
+  events, node types, gateway topology, graph scopes (joinCancellation,
+  scoped interrupt, flow condition priority), entry identity (idempotency and
+  business keys), and multi-instance outcomes.
+- Shared rule helpers — `validateTypedOutputMappings`,
+  `validateRuntimeOutputTarget`, `validateMessageAuthentication`,
+  `validateVariableContracts`, `validateDeclaredProducerVariables`,
+  `validateRoleSource`, `validateUniqueIds`, `validateVariableNames`,
+  `validateAttributes`, expression inspectors, and pure predicates such as
+  `hasUnsupportedPassThroughMetadata` — moved to top level with the context or
+  explicit parameters. The label helpers are `saveNodeLabel`/`saveFlowLabel`
+  because `flowLabel(flow, source)` already exists outside the validator, and
+  the shared-variable predicates are `saveIsSharedProcessVariable`,
+  `saveIsWritableProcessVariable`, and
+  `saveSharedVariablesReferencedByExpression` because the editor already defines
+  canonicalizing helpers with those names at top level; the validator-local
+  copies keep the strict pre-extraction semantics (exact `"shared"` scope text
+  and no default-argument model lookup) and are used only inside the marked
+  block.
+- No validation policy changed: every traversal, condition expression, label,
+  and message string is unchanged, and each phase keeps its original position
+  in the error sequence. The parser, timer helpers, and Unicode helpers inside
+  the `// BEGIN/END WORKFLOW SAVE VALIDATOR` markers are unchanged, and the
+  harness dependencies (`normalizeRoles`) are unchanged.
+- New `EditorValidatorCharacterizationTests` pin the complete ordered error
+  arrays of two multi-phase models (attributes through gateways, and a
+  gateway/shared/role-source/multi-instance model), assert per-call context
+  isolation across alternating models, and assert via the Jint harness that
+  validation never mutates the supplied candidate.
+- Differential verification: the pre-extraction validator was recovered from
+  git history and both implementations ran over 376 models — the two
+  multi-error probes, the empty and reused-context probes, all 42 curated
+  examples, and seven deterministic damaged variants of each (missing workflow
+  id, removed start event, forced priorities, bogus data types, duplicated
+  variable, stripped node configuration, altered expressions). Old and new
+  validators returned identical ordered arrays for every model, and no variant
+  mutated its input.
+
+Validation (2026-09-18):
+
+- Focused editor tests (`EditorValidatorTests`,
+  `EditorRuntimeSmokeTests`, `EditorConditionalEventTests`,
+  `EditorNavigationTests`, `InboxVisibilityConditionCompilerTests`, and
+  `EditorValidatorCharacterizationTests`) passed 297/297 before extraction and
+  301/301 after it. The full suite passed 1,873/0/0 with Docker PostgreSQL
+  (one unrelated `WorkerDispatcherTests` timing case failed once and passed on
+  re-run and in the final full-suite run). `git diff --check` is clean.
+- Real-browser verification: Google Chrome 153.0.8010.50 (desktop, driven by
+  `playwright-core` 1.63.0 with real input events) against
+  `http://127.0.0.1:8000/flowbit-editor.html`, served by a small local Node
+  static-file server from the repository root, plus a `file://` reopen of the
+  final HTML. 42/42 checks passed (rerun after the helper rename): seed model
+  and curated examples load and save (save via the File menu; the File System
+  Access picker was stubbed to capture the serialized model — the download
+  fallback was not separately exercised); save/reload round trips preserve the
+  authored model; inspector edits (duplicate process variable, missing
+  scoped-interrupt continuation, duplicate multi-instance completion priority,
+  reserved shared catalog key) reproduce exactly the validator's ordered arrays
+  in the modal; undo/redo, node and lane pointer drags, connect mode, model
+  switching, and a 1024 × 768 viewport with modal keyboard focus all behaved;
+  the only console entry was the browser's automatic favicon.ico 404.
+  Screenshots recorded for both viewports; no visual change was introduced by
+  the extraction.
+- Documentation updates: the validator ownership bullet in
+  [AGENTS.md](../../AGENTS.md), this record and status, and the stage status in
+  the [plan index](README.md) with the [gap inventory](gaps.md) line reference.
+  Validation-rule documentation ([BPMN support](../bpmn-support.md),
+  [node reference](../node-reference.md), [Flowbit/README.md](../../Flowbit/README.md))
+  is unchanged because the rules and diagnostics are unchanged.

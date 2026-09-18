@@ -113,6 +113,20 @@ Everything lives in `flowbit-editor.html`. The key pieces:
   back to a download). Loading reads a JSON file and normalizes it through
   `loadFromObject()`, which detects the schema and migrates legacy documents.
 - **Seed data**: `seedSample()` builds the "Parallel Purchase Review" example.
+- **Save validator**: `validateModelForSave(candidate)` is a thin entry point.
+  Each call builds a fresh context with `createSaveValidationContext(candidate)`
+  (error accumulator, candidate arrays, lookup maps, structural adjacency, and
+  reachability helpers), then executes named `validateSave*` phase functions in
+  a fixed order: attributes, workflow key, unique ids, role sources, task
+  distribution, inbox visibility, assignment, variable names, FlowInfo and
+  gateway expression usage, shared bindings, script tasks, variable contracts,
+  declared producers, async/job/timer settings, per-node-type settings,
+  end events, node types, gateway topology, graph scopes, entry identity,
+  and multi-instance outcomes. Rule helpers such as `validateTypedOutputMappings`
+  and `validateRuntimeOutputTarget` stay shared across phases. The whole
+  validator lives between the `// BEGIN/END WORKFLOW SAVE VALIDATOR` markers and
+  must return the same ordered error array for the same candidate; see
+  [docs/refactoring/stage-04-editor-validation.md](docs/refactoring/stage-04-editor-validation.md).
 
 The editor is dependency-free at runtime. Its save validator and selected editor
 helpers are covered by the `Flowbit/tests/Flowbit.Tests` test project; visual and
