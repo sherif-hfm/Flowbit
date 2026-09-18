@@ -135,9 +135,10 @@ public interface IWorkflowEngineService
 
     /// <summary>
     /// Starts a new instance and returns a slim result (no definition/variables/
-    /// history). This is the high-throughput path: it avoids the 4 extra SELECTs
-    /// that <see cref="StartInstanceAsync"/> runs in BuildDetailAsync. Use this
-    /// overload when the caller only needs the instance id and resting node.
+    /// history). This is the high-throughput path: it avoids the extra
+    /// projection reads that <see cref="StartInstanceAsync"/> runs in the
+    /// instance detail projection service. Use this overload when the caller
+    /// only needs the instance id and resting node.
     /// </summary>
     Task<StartInstanceResultDto> StartInstanceSlimAsync(
         long? workflowId,

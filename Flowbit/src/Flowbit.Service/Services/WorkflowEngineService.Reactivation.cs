@@ -281,7 +281,7 @@ public sealed partial class WorkflowEngineService
                 actor.User ?? "anonymous");
         }
 
-        return await BuildDetailAsync(id, cancellationToken)
+        return await projections.GetDetailAsync(id, cancellationToken)
             ?? throw new WorkflowConflictException(
                 "The workflow instance no longer exists after reactivation.");
     }

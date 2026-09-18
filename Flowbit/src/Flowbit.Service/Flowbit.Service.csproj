@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
+    <InternalsVisibleTo Include="Flowbit.Tests" />
     <ProjectReference Include="..\Flowbit.Shared\Flowbit.Shared.csproj" />
   </ItemGroup>
 

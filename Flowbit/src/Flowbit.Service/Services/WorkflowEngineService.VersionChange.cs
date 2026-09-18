@@ -57,7 +57,7 @@ public sealed partial class WorkflowEngineService
             cancellationToken);
         var result = WorkflowVersionCompatibilityEvaluator.Evaluate(context);
 
-        return ToVersionChangePreview(instance, source, target, result);
+        return RuntimeProjectionMapper.ToVersionChangePreview(instance, source, target, result);
     }
 
     public async Task<ChangeInstanceVersionResultDto?> ChangeInstanceVersionAsync(
@@ -214,14 +214,14 @@ public sealed partial class WorkflowEngineService
             source.Version,
             target.Id,
             target.Version,
-            VersionChangeDirection(source, target),
+            RuntimeProjectionMapper.VersionChangeDirection(source, target),
             actor.User ?? "anonymous");
 
-        var detail = await BuildDetailAsync(id, cancellationToken)
+        var detail = await projections.GetDetailAsync(id, cancellationToken)
             ?? throw new WorkflowConflictException(
                 "The workflow instance no longer exists after its version change.");
         var auditDto = detail.VersionChanges.FirstOrDefault(change => change.Id == audit.Id)
-            ?? ToVersionChangeAudit(audit, source, target);
+            ?? RuntimeProjectionMapper.ToVersionChangeAudit(audit, source, target);
         return new ChangeInstanceVersionResultDto(detail, auditDto);
     }
 
@@ -356,128 +356,6 @@ public sealed partial class WorkflowEngineService
                 || flowSummaries.Any(summary => summary.TraversalCount > 0)
         };
     }
-
-    private async Task<IReadOnlyList<InstanceVersionChangeAuditDto>>
-        BuildVersionChangeAuditDtosAsync(
-            long instanceId,
-            CancellationToken cancellationToken)
-    {
-        var records = await runtime.ListVersionChangesAsync(
-            instanceId,
-            cancellationToken);
-        if (records.Count == 0)
-        {
-            return [];
-        }
-
-        var workflowIds = records
-            .SelectMany(record => new[]
-            {
-                record.SourceWorkflowDefinitionId,
-                record.TargetWorkflowDefinitionId
-            })
-            .Distinct()
-            .ToArray();
-        var workflows = await definitions.GetManyAsync(workflowIds, cancellationToken);
-        var result = new List<InstanceVersionChangeAuditDto>(records.Count);
-        foreach (var record in records.OrderByDescending(change => change.ChangedAt)
-                     .ThenByDescending(change => change.Id))
-        {
-            if (!workflows.TryGetValue(record.SourceWorkflowDefinitionId, out var source)
-                || !workflows.TryGetValue(record.TargetWorkflowDefinitionId, out var target))
-            {
-                throw new InvalidOperationException(
-                    $"Version-change audit #{record.Id} references a missing workflow definition.");
-            }
-            result.Add(ToVersionChangeAudit(record, source, target));
-        }
-
-        return result;
-    }
-
-    private static InstanceVersionChangePreviewDto ToVersionChangePreview(
-        WorkflowInstanceRecord instance,
-        WorkflowDefinitionRecord source,
-        WorkflowDefinitionRecord target,
-        WorkflowVersionCompatibilityResult result) =>
-        new(
-            instance.Id,
-            ToVersionSummary(source),
-            ToVersionSummary(target),
-            VersionChangeDirection(source, target),
-            result.IsCompatible,
-            result.Blockers.Select(ToVersionChangeIssue).ToList(),
-            result.Warnings.Select(ToVersionChangeIssue).ToList(),
-            instance.WorkflowDefinitionId,
-            instance.UpdatedAt);
-
-    private static InstanceVersionChangeIssueDto ToVersionChangeIssue(
-        WorkflowVersionCompatibilityIssue issue) =>
-        new(
-            Code: issue.Code,
-            Message: issue.Message,
-            StateType: VersionChangeStateType(issue),
-            StateId: issue.RuntimeId,
-            NodeId: issue.NodeId,
-            FlowId: issue.FlowId,
-            VariableName: issue.VariableName);
-
-    private static string? VersionChangeStateType(
-        WorkflowVersionCompatibilityIssue issue)
-    {
-        if (issue.RuntimeId is null)
-        {
-            return null;
-        }
-
-        return issue.Code switch
-        {
-            WorkflowVersionCompatibilityCodes.InstanceNotRunning
-                or WorkflowVersionCompatibilityCodes.SourceDefinitionMismatch => "instance",
-            WorkflowVersionCompatibilityCodes.MultiInstanceContractChanged =>
-                "multiInstanceExecution",
-            WorkflowVersionCompatibilityCodes.OpenJobNodeMissing
-                or WorkflowVersionCompatibilityCodes.OpenJobContractChanged => "job",
-            WorkflowVersionCompatibilityCodes.OpenTimerNodeMissing
-                or WorkflowVersionCompatibilityCodes.OpenTimerContractChanged => "timerSubscription",
-            _ => "runtimeState"
-        };
-    }
-
-    private static InstanceVersionChangeAuditDto ToVersionChangeAudit(
-        WorkflowInstanceVersionChangeRecord record,
-        WorkflowDefinitionRecord source,
-        WorkflowDefinitionRecord target) =>
-        new(
-            record.Id,
-            record.InstanceId,
-            ToVersionSummary(source),
-            ToVersionSummary(target),
-            VersionChangeDirection(source, target),
-            record.ChangedBy,
-            record.ChangedByRoles,
-            record.Reason,
-            record.ChangedAt,
-            record.BatchId,
-            record.BatchItemId);
-
-    private static WorkflowSummaryDto ToVersionSummary(
-        WorkflowDefinitionRecord workflow) =>
-        new(
-            workflow.Id,
-            workflow.Name,
-            workflow.WorkflowKey,
-            workflow.Version,
-            workflow.IsPublished,
-            workflow.IsDefault,
-            workflow.CreatedAt);
-
-    private static string VersionChangeDirection(
-        WorkflowDefinitionRecord source,
-        WorkflowDefinitionRecord target) =>
-        target.Version > source.Version
-            ? InstanceVersionChangeDirections.Upgrade
-            : InstanceVersionChangeDirections.Downgrade;
 
     private static void EnsureValidVersionChangeTarget(long targetWorkflowId)
     {

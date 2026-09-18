@@ -1,8 +1,14 @@
 # Stage 3 — Extract instance detail and execution projections
 
-**Status: Planned.** This document describes future implementation. The types and
-ownership below are targets, not current capabilities. Complete Stage 1 before
-beginning this stage; Stage 2 is recommended but is not a technical dependency.
+**Status: Implemented.** Instance detail assembly, execution-position
+projection, grouped multi-instance progress, and version-change/variable-update
+audit loading now live in a scoped
+`WorkflowInstanceProjectionService` (`IWorkflowInstanceProjectionService`)
+in the Service project. The engine forwards detail and slim-ack projections to
+it; task capability assembly, routing, authorization, and settings caching
+remain in the engine. See the implementation record at the bottom of this
+document. Stage 1 is a prerequisite and was completed first; Stage 2 was also
+completed before this stage.
 
 [Plan index](README.md) · [Next: editor validation](stage-04-editor-validation.md)
 
@@ -13,7 +19,7 @@ mapping helpers out of `WorkflowEngineService`. This is one bounded reduction of
 engine responsibilities; completion does not mean that the whole engine has
 been decomposed.
 
-The current implementation is in
+The pre-extraction implementation was in
 [WorkflowEngineService.cs](../../Flowbit/src/Flowbit.Service/Services/WorkflowEngineService.cs)
 (`BuildDetailAsync`, `BuildExecutionProjectionAsync`, and `BuildProgressAsync`)
 and the audit reader in
@@ -190,3 +196,77 @@ encountered. Retained compatibility forwards mean interface member counts do
 not shrink in these stages. Use that evidence to choose one later command
 responsibility; it is not authorization to add routing, message authentication,
 or a broad interface rewrite to this stage.
+
+## Implementation record
+
+Implemented on top of Stage 1 (`e60d26d`) and Stage 2 (`b711328`). The
+implementation matches the target ownership above with these concrete choices:
+
+- `IWorkflowInstanceProjectionService` (`InstanceProjectionAbstractions.cs`)
+  exposes `GetDetailAsync`, `BuildExecutionAsync(instance, includeHistory, ct)`,
+  and grouped/single `GetMultiInstanceProgressAsync` overloads (the single-ID
+  overload delegates to the grouped read). The internal
+  `WorkflowInstanceProjectionService` takes the runtime and definition
+  repository ports plus the optional variable-update audit repository and
+  workflow-variable store; it has no engine, unit-of-work, or scope-factory
+  dependency. The public `InstanceExecutionProjection` record (the same five
+  fields) moved to `Flowbit.Service.Models`.
+- `RuntimeProjectionMapper` gained the moved pure mappings: workflow
+  cloning/redaction (`ToRuntimeWorkflowDetail`, `[redacted]` extent unchanged),
+  multi-instance progress (`ToProgress`), and the version-change
+  audit/summary/direction/issue helpers. The VersionChange and
+  VersionChangeBatch partials now call those shared helpers; message
+  authentication helpers and authentication constants stayed with the engine.
+  The engine's variable-update serializer options moved with the audit loader.
+- The engine constructor takes `IWorkflowInstanceProjectionService`, and the
+  now-unread optional `variableUpdates` constructor parameter was removed (the
+  audit repository moved to the projection service). Every former
+  `BuildDetailAsync`/`BuildExecutionProjectionAsync` call site now
+  calls the service; the two `BuildProgressAsync` overloads are thin
+  delegations, and `IWorkflowEngineService.GetInstanceAsync` remains a
+  compatibility forward. The projection service is registered scoped in
+  `AddServiceLayer`; the shared scoped `WorkflowRuntimeRepository` preserves
+  one DbContext per scope. No HTTP route, DTO, JSON shape, error text, commit
+  point, or lock order changed.
+- `Flowbit.Service` grants `InternalsVisibleTo Flowbit.Tests` (matching the
+  Api/Ui projects) so test fixtures can compose the internal service with the
+  same proxied repositories.
+
+Validation (actual runs):
+
+- Characterization first (`InstanceProjectionTests`): a database-backed detail
+  projection records **17 reader commands** as the warm-definition baseline and
+  **18** for the cold-cache first projection (the warm baseline plus the
+  one-time immutable definition lookup), and proves projection-only reads
+  write no history/variable/audit rows; a second test proves the reader count
+  is independent of multi-instance child items (1 vs 6) and version-change
+  audit/definition volumes (1 vs 5 audits across 3 definitions); a
+  current-only (slim-ack) execution projection records **7 reader commands**
+  (current tokens/tasks/multi-instance executions, grouped progress, current
+  gateway executions, and complex states; no branch read without an active
+  gateway execution) — that baseline was recorded post-extraction against the
+  moved code, whose pre-extraction equivalence is covered by the full suite;
+  a mapper test proves redaction of message clientSecret/headerValue and
+  task-distribution clientSecret leaves the cached record's authored secrets
+  intact; a DI-scope test proves projection reads see flushed uncommitted
+  state inside the caller's transaction and a rollback leaves a fresh scope
+  seeing nothing.
+- After extraction the same characterization tests pass unchanged (still 17
+  warm readers), the engine forwarding tests cover `GetInstanceAsync`, and the
+  DI composition test asserts the projection service is scoped and resolvable.
+- Focused suites passed during implementation. Final gate:
+  `dotnet test Flowbit/Flowbit.slnx --no-restore --nologo --verbosity quiet`
+  → **1,867 passed, 0 failed, 0 skipped**; `git diff --check` clean (CRLF
+  normalization warnings only, no whitespace errors). Docker Desktop was
+  started for the Testcontainer-backed PostgreSQL tests.
+- Documentation updated: this file, the [plan index](README.md),
+  [Flowbit/README.md](../../Flowbit/README.md), the service-layer ownership
+  note in [AGENTS.md](../../AGENTS.md), and the [gap inventory](gaps.md)
+  (remaining engine responsibilities, current partial-file line counts, and
+  the measured reader baselines). A follow-up review caught and fixed two
+  documentation/validation gaps: the cold-cache and current-projection reader
+  baselines above were added after the initial record, and a Windows-1252
+  round-trip had corrupted the gap inventory's en/em dashes; `gaps.md` was
+  restored from the committed UTF-8 text and its Stage 3 edits reapplied.
+  API and developer guides still describe behavior, not ownership, so they
+  needed no edits.

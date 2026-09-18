@@ -35,6 +35,27 @@ scoped `WorkflowRuntimeRepository` implements both the full runtime port and
 the query port as one instance per scope, so the engine and the query service
 share the same DbContext and per-scope bookkeeping.
 
+### Instance projection ownership
+
+Instance detail assembly and execution-position projection live in
+`WorkflowInstanceProjectionService` (`IWorkflowInstanceProjectionService`), a
+scoped read-only service over the full runtime and definition repository
+ports. It owns detail loading, variable/history DTO assembly, execution
+projection (`BuildExecutionAsync`), grouped multi-instance progress reads, and
+version-change/variable-update audit loading. It returns the public
+`InstanceExecutionProjection` model (execution positions, multi-instance
+progress, gateway executions, complex gateway states, completion) and shares
+the scoped `WorkflowRuntimeRepository` instance with the engine, so projection
+reads see flushed state inside an ambient transaction and create no rows.
+`WorkflowEngineService` forwards `GetInstanceAsync`, `BuildDetailAsync` call
+sites, slim-ack projections, and progress reads to it as thin delegations and
+retains routing, authorization, capability evaluation, and settings caching.
+Task capability assembly stays in the engine; the pure response mappings
+(runtime workflow cloning/redaction, fault info, work summaries, multi-instance
+progress, version-change audit/summary/direction) live in the shared
+internal `RuntimeProjectionMapper`.
+
+
 The repository's private SQL helpers live in partial class files beside the
 main implementation. `WorkflowRuntimeRepository.QuerySql.cs` owns
 `AppendTaskOwnershipFilter`, the shared management/distribution owner and

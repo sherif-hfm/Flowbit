@@ -29,7 +29,7 @@ public sealed partial class WorkflowEngineService(
     IEngineSettingsRepository engineSettings,
     ILogger<WorkflowEngineService> logger,
     IWorkflowInstanceQueryService instanceQueries,
-    IInstanceVariableUpdateRepository? variableUpdates = null,
+    IWorkflowInstanceProjectionService projections,
     IInstanceVariableMutationTracker? variableMutationTracker = null,
     IConditionalEventDependencyPlanCache? conditionalEventPlans = null,
     IWorkflowVariableStore? workflowVariables = null,
@@ -39,8 +39,6 @@ public sealed partial class WorkflowEngineService(
       IInstanceVersionChangeBatchExecutor, IConditionalEventRuntimeCoordinator,
       IAdministrativeActionExecutor
 {
-    private static readonly JsonSerializerOptions InstanceVariableUpdateJsonOptions =
-        new(JsonSerializerDefaults.Web);
     private readonly ISharedVariableAccessPlanCache sharedAccessPlanCache =
         sharedVariableAccessPlans
         ?? new SharedVariableAccessPlanCache(new ConditionalEventDefinitionAnalyzer());
@@ -893,7 +891,7 @@ public sealed partial class WorkflowEngineService(
     {
         var (instance, definition) = await StartInstanceCoreAsync(
             workflowId, workflowKey, actor, startEventId, variableValues, requestHeaders, cancellationToken);
-        return (await BuildDetailAsync(instance.Id, cancellationToken))!;
+        return (await projections.GetDetailAsync(instance.Id, cancellationToken))!;
     }
 
     public async Task<StartInstanceResultDto> StartInstanceSlimAsync(
@@ -908,7 +906,7 @@ public sealed partial class WorkflowEngineService(
         var (instance, definition) = await StartInstanceCoreAsync(
             workflowId, workflowKey, actor, startEventId, variableValues, requestHeaders, cancellationToken);
         var node = GetFlowNode(definition, instance.CurrentStepId);
-        var projection = await BuildExecutionProjectionAsync(instance, cancellationToken);
+        var projection = await projections.BuildExecutionAsync(instance, includeHistory: false, cancellationToken);
         return new StartInstanceResultDto(
             instance.Id,
             node.Id,
@@ -1374,7 +1372,7 @@ public sealed partial class WorkflowEngineService(
         CancellationToken cancellationToken)
     {
         var node = GetFlowNode(definition, instance.CurrentStepId);
-        var projection = await BuildExecutionProjectionAsync(instance, cancellationToken);
+        var projection = await projections.BuildExecutionAsync(instance, includeHistory: false, cancellationToken);
         return new MessageStartAckDto(
             instance.Id,
             node.Id,
@@ -1423,7 +1421,8 @@ public sealed partial class WorkflowEngineService(
     }
 
     // Compatibility forwards: instance list/search orchestration lives in
-    // WorkflowInstanceQueryService; the engine interface keeps its original
+    // WorkflowInstanceQueryService, instance detail/execution projection in
+    // WorkflowInstanceProjectionService; the engine interface keeps its original
     // members so existing callers continue to resolve the same behavior.
     public Task<PagedResult<InstanceSummaryDto>> ListInstancesAsync(
         ActorContext actor,
@@ -1617,7 +1616,7 @@ public sealed partial class WorkflowEngineService(
         var progressByExecution = paged.Items
             .Where(row => row.MultiInstanceProgress is not null)
             .GroupBy(row => row.MultiInstanceProgress!.Execution.Id)
-            .ToDictionary(group => group.Key, group => ToProgress(group.First().MultiInstanceProgress!));
+            .ToDictionary(group => group.Key, group => RuntimeProjectionMapper.ToProgress(group.First().MultiInstanceProgress!));
         var items = paged.Items.Select(row => ToInboxItem(row, normalizedUser, normalizedRoles,
             accessByTask, attributesByTask, canActByTask, hasBypassClaimByTask,
             row.MultiInstanceExecutionId is long executionId ? progressByExecution.GetValueOrDefault(executionId) : null,
@@ -1736,7 +1735,7 @@ public sealed partial class WorkflowEngineService(
     }
 
     public Task<InstanceDetailDto?> GetInstanceAsync(long id, CancellationToken cancellationToken) =>
-        BuildDetailAsync(id, cancellationToken);
+        projections.GetDetailAsync(id, cancellationToken);
 
     public async Task<IReadOnlyList<SequenceFlowModel>?> GetAvailableFlowsAsync(
         long id,
@@ -1786,7 +1785,7 @@ public sealed partial class WorkflowEngineService(
         {
             return null;
         }
-        return await BuildDetailAsync(id, cancellationToken);
+        return await projections.GetDetailAsync(id, cancellationToken);
     }
 
     public async Task<InstanceDetailDto?> UnclaimAsync(long id, ActorContext actor, CancellationToken cancellationToken)
@@ -1819,7 +1818,7 @@ public sealed partial class WorkflowEngineService(
         {
             return null;
         }
-        return await BuildDetailAsync(id, cancellationToken);
+        return await projections.GetDetailAsync(id, cancellationToken);
     }
 
     private async Task<(UserTaskRecord? Task, long VisibleCount, bool HasAnyActiveTask)>
@@ -2565,7 +2564,7 @@ public sealed partial class WorkflowEngineService(
             cancellationToken,
             sharedAccess: null);
         var progressRecords = await runtime.GetMultiInstanceProgressAsync(executionIds, cancellationToken);
-        var progressCache = progressRecords.ToDictionary(pair => pair.Key, pair => ToProgress(pair.Value));
+        var progressCache = progressRecords.ToDictionary(pair => pair.Key, pair => RuntimeProjectionMapper.ToProgress(pair.Value));
         var executionsById = progressRecords.ToDictionary(pair => pair.Key, pair => pair.Value.Execution);
         var accessByTask = pageRecords.ToDictionary(
             task => task.Id,
@@ -2764,7 +2763,7 @@ public sealed partial class WorkflowEngineService(
             cancellationToken,
             sharedVariableWrites: sharedVariableWrites);
         await transaction.CommitAsync(cancellationToken);
-        return await BuildDetailAsync(instance.Id, cancellationToken);
+        return await projections.GetDetailAsync(instance.Id, cancellationToken);
     }
 
     public async Task<UserTaskActionAckDto?> TakeUserTaskFlowAsync(
@@ -2957,7 +2956,7 @@ public sealed partial class WorkflowEngineService(
             await unitOfWork.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
             var progress = await BuildProgressAsync(execution.Id, cancellationToken);
-            var projection = await BuildExecutionProjectionAsync(instance, cancellationToken);
+            var projection = await projections.BuildExecutionAsync(instance, includeHistory: false, cancellationToken);
             return new UserTaskActionAckDto(task.Id, instance.Id, UserTaskRecordStatuses.Completed,
                 instance.Status, flow.Id, node.Id, node.Name, node.ExternalId, progress, activityAt)
             {
@@ -2986,7 +2985,7 @@ public sealed partial class WorkflowEngineService(
 
         var resting = GetFlowNode(workflow.Definition, lockedInstance.CurrentStepId);
         var closedProgress = await BuildProgressAsync(execution.Id, cancellationToken);
-        var closedProjection = await BuildExecutionProjectionAsync(lockedInstance, cancellationToken);
+        var closedProjection = await projections.BuildExecutionAsync(lockedInstance, includeHistory: false, cancellationToken);
         return new UserTaskActionAckDto(task.Id, instance.Id, UserTaskRecordStatuses.Completed,
             lockedInstance.Status, flow.Id, resting.Id, resting.Name, resting.ExternalId,
             closedProgress, lockedInstance.UpdatedAt,
@@ -3319,7 +3318,7 @@ public sealed partial class WorkflowEngineService(
             {
                 return null;
             }
-            return await BuildDetailAsync(id, cancellationToken);
+            return await projections.GetDetailAsync(id, cancellationToken);
         }
 
         string performedBy = NormalizeUser(actor.User);
@@ -3573,7 +3572,7 @@ public sealed partial class WorkflowEngineService(
             {
                 await ownedTransaction.CommitAsync(cancellationToken);
             }
-            return await BuildDetailAsync(id, cancellationToken);
+            return await projections.GetDetailAsync(id, cancellationToken);
         }
         token = tokenAfterConditionalCapture!;
 
@@ -3677,7 +3676,7 @@ public sealed partial class WorkflowEngineService(
             {
                 await ownedTransaction.CommitAsync(cancellationToken);
             }
-            return await BuildDetailAsync(id, cancellationToken);
+            return await projections.GetDetailAsync(id, cancellationToken);
         }
 
         var nextNode = GetFlowNode(workflow.Definition, flow.TargetRef);
@@ -3787,7 +3786,7 @@ public sealed partial class WorkflowEngineService(
             "Successfully completed transition for instance {InstanceId} through flow {FlowId} from token {TokenId}.",
             instance.Id, flowId, token.Id);
 
-        return await BuildDetailAsync(id, cancellationToken);
+        return await projections.GetDetailAsync(id, cancellationToken);
     }
 
     public async Task<MessageDeliveryAckDto?> DeliverMessageAsync(
@@ -4136,7 +4135,7 @@ public sealed partial class WorkflowEngineService(
         logger.LogInformation("Successfully delivered message to instance {InstanceId} on node {NodeId}. Advancing to {NextNodeId} ({NextNodeType})",
             instance.Id, node.Id, instance.CurrentStepId, restingNode.Type);
 
-        var projection = await BuildExecutionProjectionAsync(instance, cancellationToken);
+        var projection = await projections.BuildExecutionAsync(instance, includeHistory: false, cancellationToken);
         return ack with
         {
             ExecutionPositions = projection.ExecutionPositions,
@@ -9956,341 +9955,6 @@ public sealed partial class WorkflowEngineService(
         return raw.Clone();
     }
 
-    private async Task<InstanceDetailDto?> BuildDetailAsync(long id, CancellationToken cancellationToken)
-    {
-        var instance = await runtime.GetInstanceAsync(id, cancellationToken);
-        if (instance is null)
-        {
-            return null;
-        }
-
-        var workflow = await GetWorkflowAsync(instance.WorkflowDefinitionId, cancellationToken);
-        var variables = await runtime.ListVariablesAsync(id, cancellationToken);
-        var history = await runtime.ListHistoryAsync(id, cancellationToken);
-        var versionChanges = await BuildVersionChangeAuditDtosAsync(id, cancellationToken);
-        IReadOnlyList<InstanceVariableUpdateAuditDto> variableUpdateAudits = variableUpdates is null
-            ? []
-            : await BuildVariableUpdateAuditDtosAsync(id, cancellationToken);
-        var node = GetFlowNode(workflow.Definition, instance.CurrentStepId);
-        var projection = await BuildExecutionProjectionAsync(
-            instance,
-            cancellationToken,
-            includeHistory: true);
-        var multiProgress = projection.MultiInstances
-            .FirstOrDefault(progress =>
-                progress.Status == MultiInstanceRecordStatuses.Active
-                && projection.ExecutionPositions.Any(position =>
-                    position.TokenId == instance.ActiveTokenId
-                    && position.MultiInstanceExecutionId == progress.ExecutionId))
-            ?? projection.MultiInstances.FirstOrDefault(progress =>
-                progress.Status == MultiInstanceRecordStatuses.Active);
-        var workSummaries = await runtime.GetUserTaskWorkSummariesAsync([id], cancellationToken);
-        var userTasks = workSummaries.TryGetValue(id, out var workSummary)
-            ? RuntimeProjectionMapper.ToUserTaskWorkSummary(workSummary)
-            : null;
-        var sharedVariableMetadata = workflowVariables is null
-            ? []
-            : await workflowVariables.DescribeBindingsAsync(
-                workflow.Definition,
-                cancellationToken);
-
-        return new InstanceDetailDto(
-            instance.Id,
-            ToRuntimeWorkflowDetail(workflow),
-            instance.CurrentStepId,
-            node.Name,
-            node.ExternalId,
-            instance.Status,
-            instance.BusinessKey,
-            instance.BusinessKeyUniqueness,
-            instance.StartedBy,
-            instance.CreatedAt,
-            instance.UpdatedAt,
-            variables.Select(v => new InstanceVariableDto(
-                v.Id,
-                v.VariableName,
-                v.SourceActionId,
-                v.SetBy,
-                v.Value,
-                v.SetAt)
-            {
-                ActingFor = v.ActingFor,
-                DelegationId = v.DelegationId,
-                InstanceVariableUpdateAuditId = v.InstanceVariableUpdateAuditId
-            }).ToList(),
-            history.Select(h => new InstanceHistoryDto(
-                h.Id,
-                h.TokenId,
-                h.UserTaskId,
-                h.MultiInstanceExecutionId,
-                h.ItemIndex,
-                h.ActionId,
-                h.FromStepId,
-                h.ToStepId,
-                h.PerformedBy,
-                h.Payload,
-                h.Note,
-                h.PerformedAt)
-            {
-                ActingFor = h.ActingFor,
-                DelegationId = h.DelegationId,
-                ActorClaims = h.ActorClaims,
-                Reason = h.Reason,
-                AdministrativeActionBatchId = h.AdministrativeActionBatchId
-            }).ToList(),
-            multiProgress,
-            userTasks,
-            RuntimeProjectionMapper.ToFault(instance.Status, instance.FaultCode, instance.FaultDescription, node.Name))
-        {
-            ExecutionPositions = projection.ExecutionPositions,
-            MultiInstances = projection.MultiInstances,
-            GatewayExecutions = projection.GatewayExecutions,
-            ComplexGatewayStates = projection.ComplexGatewayStates,
-            Completion = projection.Completion,
-            VersionChanges = versionChanges,
-            VariableUpdates = variableUpdateAudits,
-            SharedVariables = sharedVariableMetadata,
-            FinishedAt = instance.FinishedAt,
-            HistoryPrunedAt = instance.HistoryPrunedAt
-        };
-    }
-
-    private async Task<IReadOnlyList<InstanceVariableUpdateAuditDto>>
-        BuildVariableUpdateAuditDtosAsync(
-            long instanceId,
-            CancellationToken cancellationToken)
-    {
-        var records = await variableUpdates!.ListByInstanceAsync(
-            instanceId,
-            cancellationToken);
-        return records.Select(record => new InstanceVariableUpdateAuditDto(
-            record.Id,
-            record.InstanceId,
-            record.WorkflowDefinitionId,
-            record.PerformedBy,
-            record.PerformedByRoles,
-            record.Reason,
-            record.Result.Deserialize<
-                IReadOnlyList<InstanceVariableUpdateOutcomeDto>>(
-                    InstanceVariableUpdateJsonOptions) ?? [],
-            record.PerformedAt,
-            record.IdempotencyKey,
-            record.BatchId,
-            record.BatchItemId)).ToArray();
-    }
-
-    private async Task<InstanceExecutionProjection> BuildExecutionProjectionAsync(
-        WorkflowInstanceRecord instance,
-        CancellationToken cancellationToken,
-        bool includeHistory = false)
-    {
-        var tokens = includeHistory
-            ? await runtime.ListExecutionTokensAsync(instance.Id, null, cancellationToken)
-            : await runtime.ListCurrentExecutionTokensAsync(
-                instance.Id,
-                instance.ActiveTokenId,
-                cancellationToken);
-        var tasks = includeHistory
-            ? await runtime.ListUserTasksAsync(instance.Id, null, cancellationToken)
-            : await runtime.ListCurrentUserTasksAsync(instance.Id, cancellationToken);
-        var multiExecutions = includeHistory
-            ? await runtime.ListMultiInstancesAsync(instance.Id, null, cancellationToken)
-            : await runtime.ListCurrentMultiInstancesAsync(instance.Id, cancellationToken);
-
-        var taskByTokenAndNode = tasks
-            .GroupBy(task => (task.TokenId, task.NodeId))
-            .ToDictionary(
-                group => group.Key,
-                group => group
-                    .OrderBy(task => task.Status == UserTaskRecordStatuses.Active ? 0
-                        : task.Status == UserTaskRecordStatuses.Pending ? 1 : 2)
-                    .ThenByDescending(task => task.UpdatedAt)
-                    .ThenByDescending(task => task.Id)
-                    .First());
-        var multiByTokenAndNode = multiExecutions
-            .GroupBy(execution => (execution.TokenId, execution.NodeId))
-            .ToDictionary(
-                group => group.Key,
-                group => group
-                    .OrderBy(execution => execution.Status == MultiInstanceRecordStatuses.Active ? 0 : 1)
-                    .ThenByDescending(execution => execution.UpdatedAt)
-                    .ThenByDescending(execution => execution.Id)
-                    .First());
-
-        var positions = tokens
-            .Where(token => token.Status != ExecutionTokenRecordStatuses.Merged)
-            .OrderBy(token => token.Id)
-            .Select(token =>
-            {
-                taskByTokenAndNode.TryGetValue((token.Id, token.NodeId), out var task);
-                multiByTokenAndNode.TryGetValue((token.Id, token.NodeId), out var multi);
-                return new ExecutionPositionDto(
-                    token.Id,
-                    token.NodeId,
-                    token.NodeName,
-                    token.NodeExternalId,
-                    token.NodeType,
-                    token.Status,
-                    token.ArrivedViaFlowId,
-                    token.TerminationReason,
-                    task?.Id,
-                    multi?.Id,
-                    token.ActivationId == Guid.Empty ? null : token.ActivationId,
-                    token.WaitState,
-                    token.WaitingJobId,
-                    token.WaitingTimerSubscriptionId);
-            })
-            .ToList();
-
-        var progressById = await BuildProgressAsync(
-            multiExecutions.Select(execution => execution.Id).ToList(),
-            cancellationToken);
-        var multiProgress = multiExecutions
-            .OrderBy(execution => execution.Id)
-            .Select(execution => progressById.GetValueOrDefault(execution.Id))
-            .Where(progress => progress is not null)
-            .Cast<MultiInstanceProgressDto>()
-            .ToList();
-
-        var gatewayExecutions = includeHistory
-            ? await runtime.ListGatewayExecutionsAsync(
-                instance.Id, null, cancellationToken)
-            : await runtime.ListCurrentGatewayExecutionsAsync(
-                instance.Id, cancellationToken);
-        var branches = includeHistory
-            ? await runtime.ListGatewayBranchesForInstanceAsync(
-                instance.Id, false, cancellationToken)
-            : await runtime.ListGatewayBranchesForExecutionsAsync(
-                gatewayExecutions.Select(execution => execution.Id).ToArray(),
-                cancellationToken);
-        var branchExecutionIds = branches.ToDictionary(branch => branch.Id, branch => branch.ExecutionId);
-        var branchesByExecution = branches
-            .GroupBy(branch => branch.ExecutionId)
-            .ToDictionary(group => group.Key, group => group.ToList());
-        var gatewayDtos = gatewayExecutions
-            .OrderBy(execution => execution.Id)
-            .Select(execution =>
-            {
-                var executionBranches = branchesByExecution.GetValueOrDefault(execution.Id) ?? [];
-                return new GatewayExecutionDto(
-                    execution.Id,
-                    execution.GatewayNodeId,
-                    execution.GatewayType,
-                    execution.Direction,
-                    execution.Phase,
-                    execution.Cycle,
-                    execution.SelectedFlowIds,
-                    execution.ParentBranchId is long parentBranchId
-                        ? branchExecutionIds.GetValueOrDefault(parentBranchId)
-                        : null,
-                    execution.Status,
-                    execution.CompletionReason,
-                    execution.InterruptingNodeId,
-                    execution.InterruptingTokenId,
-                    executionBranches.Count,
-                    executionBranches.Count(branch =>
-                        branch.Status == GatewayBranchRecordStatuses.Active),
-                    executionBranches.Count(branch =>
-                        branch.Status == GatewayBranchRecordStatuses.Completed),
-                    executionBranches.Count(branch =>
-                        branch.Status == GatewayBranchRecordStatuses.Merged),
-                    executionBranches.Count(branch =>
-                        branch.Status == GatewayBranchRecordStatuses.Interrupted),
-                    executionBranches.Count(branch =>
-                        branch.Status == GatewayBranchRecordStatuses.Cancelled),
-                    execution.CreatedAt,
-                    execution.UpdatedAt,
-                    execution.CompletedAt);
-            })
-            .ToList();
-        var complexStateDtos = (await runtime.ListComplexGatewayStatesAsync(
-                instance.Id, cancellationToken))
-            .Select(state => new ComplexGatewayStateDto(
-                state.GatewayNodeId,
-                state.Phase,
-                state.Cycle,
-                state.ContributingFlowIds,
-                state.RemainingFlowIds,
-                state.DrainingTokenIds,
-                state.ActiveExecutionId,
-                state.UpdatedAt))
-            .ToList();
-
-        CompletionInfoDto? completion = null;
-        if (instance.Status == WorkflowInstanceStatuses.Completed)
-        {
-            var terminal = tokens
-                .Where(token => token.Status == ExecutionTokenRecordStatuses.Completed
-                                && token.TerminationReason is
-                                    ExecutionTokenTerminationReasons.NormalEnd
-                                    or ExecutionTokenTerminationReasons.TerminateEnd)
-                .OrderByDescending(token => token.UpdatedAt)
-                .ThenByDescending(token =>
-                    token.TerminationReason == ExecutionTokenTerminationReasons.TerminateEnd)
-                .ThenByDescending(token => token.Id)
-                .FirstOrDefault();
-            if (terminal is not null)
-            {
-                completion = new CompletionInfoDto(
-                    terminal.TerminationReason == ExecutionTokenTerminationReasons.TerminateEnd
-                        ? WorkflowCompletionKinds.Terminate
-                        : WorkflowCompletionKinds.Normal,
-                    terminal.Id,
-                    terminal.NodeId,
-                    terminal.NodeName,
-                    terminal.NodeExternalId,
-                    terminal.UpdatedAt);
-            }
-        }
-
-        return new InstanceExecutionProjection(
-            positions,
-            multiProgress,
-            gatewayDtos,
-            complexStateDtos,
-            completion);
-    }
-
-    private sealed record InstanceExecutionProjection(
-        IReadOnlyList<ExecutionPositionDto> ExecutionPositions,
-        IReadOnlyList<MultiInstanceProgressDto> MultiInstances,
-        IReadOnlyList<GatewayExecutionDto> GatewayExecutions,
-        IReadOnlyList<ComplexGatewayStateDto> ComplexGatewayStates,
-        CompletionInfoDto? Completion);
-
-    private static WorkflowDetailDto ToRuntimeWorkflowDetail(WorkflowDefinitionRecord workflow)
-    {
-        var definition = JsonSerializer.Deserialize<WorkflowModel>(
-            JsonSerializer.Serialize(workflow.Definition))
-            ?? throw new InvalidOperationException("Unable to clone the workflow definition.");
-        foreach (var node in definition.FlowNodes)
-        {
-            if (node.Message is null)
-            {
-                continue;
-            }
-
-            node.Message.ClientSecret = RedactedSecret;
-            node.Message.HeaderValue = RedactedSecret;
-        }
-        if (definition.TaskDistribution is not null)
-        {
-            definition.TaskDistribution.ClientSecret = RedactedSecret;
-        }
-
-        return new WorkflowDetailDto(
-            workflow.Id,
-            workflow.Name,
-            workflow.WorkflowKey,
-            workflow.Version,
-            workflow.IsPublished,
-            workflow.IsDefault,
-            workflow.CreatedAt,
-            definition);
-    }
-
-    private const string RedactedSecret = "[redacted]";
-
     private void EnsureConditionalDefinitionSupported(
         WorkflowDefinitionRecord workflow)
     {
@@ -10716,41 +10380,13 @@ public sealed partial class WorkflowEngineService(
         return new PagedResult<ManagedUserTaskDto>(items, paged.Page, paged.PageSize, paged.TotalCount);
     }
 
-    private async Task<MultiInstanceProgressDto?> BuildProgressAsync(long executionId, CancellationToken cancellationToken)
-    {
-        var progress = await BuildProgressAsync([executionId], cancellationToken);
-        return progress.GetValueOrDefault(executionId);
-    }
+    private Task<MultiInstanceProgressDto?> BuildProgressAsync(long executionId, CancellationToken cancellationToken) =>
+        projections.GetMultiInstanceProgressAsync(executionId, cancellationToken);
 
-    private async Task<IReadOnlyDictionary<long, MultiInstanceProgressDto>> BuildProgressAsync(
+    private Task<IReadOnlyDictionary<long, MultiInstanceProgressDto>> BuildProgressAsync(
         IReadOnlyCollection<long> executionIds,
-        CancellationToken cancellationToken)
-    {
-        var records = await runtime.GetMultiInstanceProgressAsync(executionIds, cancellationToken);
-        return records.ToDictionary(pair => pair.Key, pair => ToProgress(pair.Value));
-    }
-
-    private static MultiInstanceProgressDto ToProgress(MultiInstanceProgressRecord record)
-    {
-        var execution = record.Execution;
-        return new MultiInstanceProgressDto(
-            execution.Id,
-            execution.Mode,
-            execution.Status,
-            execution.TotalCount,
-            execution.CompletedCount,
-            record.ActiveCount,
-            record.PendingCount,
-            record.CancelledCount,
-            execution.WinningFlowId,
-            execution.CompletionReason,
-            record.FlowCounts.OrderBy(pair => pair.Key)
-                .Select(pair => new MultiInstanceFlowCountDto(
-                    pair.Key,
-                    pair.Value,
-                    execution.TotalCount == 0 ? 0d : pair.Value * 100d / execution.TotalCount))
-                .ToList());
-    }
+        CancellationToken cancellationToken) =>
+        projections.GetMultiInstanceProgressAsync(executionIds, cancellationToken);
 
     private sealed record MultiInstanceParentInterruptResult(
         int SelectedFlowId,

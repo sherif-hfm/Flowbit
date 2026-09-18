@@ -185,8 +185,13 @@ Projects:
   (`SequenceFlowConditionEvaluator`, NCalc), the focused instance list/search
   query service (`WorkflowInstanceQueryService` behind
   `IWorkflowInstanceQueryService`, with the engine retaining the two members as
-  compatibility forwards), service interfaces, repository
-  ports, and DI extension.
+  compatibility forwards), the instance detail/execution projection service
+  (`WorkflowInstanceProjectionService` behind `IWorkflowInstanceProjectionService`,
+  which owns detail assembly, execution-position projection, grouped
+  multi-instance progress, and version-change/variable-update audit loading
+  while the engine forwards detail and slim-ack projections to it), shared
+  runtime response mapping helpers (`RuntimeProjectionMapper`), service
+  interfaces, repository ports, and DI extension.
 - `src/Flowbit.Infrastructure` - Infrastructure layer: EF Core,
   PostgreSQL/Npgsql, JSONB mapping, migrations, repository implementations,
   scriptTask JavaScript execution (`JintScriptEvaluator`, sandboxed Jint), and

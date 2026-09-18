@@ -308,7 +308,7 @@ public sealed partial class WorkflowEngineService
             await ownedTransaction.CommitAsync(cancellationToken);
         }
 
-        var detail = await BuildDetailAsync(advanced.Id, cancellationToken)
+        var detail = await projections.GetDetailAsync(advanced.Id, cancellationToken)
             ?? throw new WorkflowConflictException(
                 "The workflow instance disappeared after administrative execution.");
         return new AdministrativeActionResultDto(
@@ -486,7 +486,7 @@ public sealed partial class WorkflowEngineService
         await unitOfWork.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
 
-        var detail = await BuildDetailAsync(state.Instance.Id, cancellationToken)
+        var detail = await projections.GetDetailAsync(state.Instance.Id, cancellationToken)
             ?? throw new WorkflowConflictException(
                 "The workflow instance disappeared after the timer override.");
         logger.LogInformation(
@@ -870,7 +870,7 @@ public sealed partial class WorkflowEngineService
         var instance = await runtime.GetInstanceAsync(instanceId, cancellationToken)
             ?? throw new WorkflowConflictException(
                 "The workflow instance disappeared before the administrative result was recorded.");
-        var projection = await BuildExecutionProjectionAsync(instance, cancellationToken);
+        var projection = await projections.BuildExecutionAsync(instance, includeHistory: false, cancellationToken);
         await runtime.CompleteAdministrativeActionBatchItemAsync(
             request.BatchItemId,
             request.BatchId,

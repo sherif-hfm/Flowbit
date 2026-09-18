@@ -159,10 +159,10 @@ public sealed partial class WorkflowEngineService
                 cancellationToken);
             var compatibility = WorkflowVersionCompatibilityEvaluator.Evaluate(context);
             var blockers = compatibility.Blockers
-                .Select(ToVersionChangeIssue)
+                .Select(RuntimeProjectionMapper.ToVersionChangeIssue)
                 .ToList();
             var warnings = compatibility.Warnings
-                .Select(ToVersionChangeIssue)
+                .Select(RuntimeProjectionMapper.ToVersionChangeIssue)
                 .ToList();
             if (blockers.Count > 0)
             {

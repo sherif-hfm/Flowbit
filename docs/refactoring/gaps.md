@@ -41,22 +41,37 @@ the named symbols before implementation; size alone does not justify extraction.
 ## 1. Engine core responsibilities
 
 [WorkflowEngineService.cs](../../Flowbit/src/Flowbit.Service/Services/WorkflowEngineService.cs)
-is a `sealed partial class` whose nine partial files total 18,468 physical lines:
+is a `sealed partial class` whose nine partial files total 17,636 physical
+lines (updated after Stage 3):
 
 | Partial file | Lines |
 | --- | --- |
-| `WorkflowEngineService.cs` | 11,972 |
+| `WorkflowEngineService.cs` | 11,262 |
 | `WorkflowEngineService.Jobs.cs` | 3,397 |
 | `WorkflowEngineService.AdministrativeActions.cs` | 1,050 |
 | `WorkflowEngineService.Reactivation.cs` | 874 |
-| `WorkflowEngineService.VersionChange.cs` | 530 |
+| `WorkflowEngineService.VersionChange.cs` | 408 |
 | `WorkflowEngineService.RoleManagement.cs` | 219 |
 | `WorkflowEngineService.VersionChangeBatch.cs` | 212 |
 | `WorkflowEngineService.InboxVisibility.cs` | 154 |
 | `WorkflowEngineService.RolePolicies.cs` | 60 |
 
 Stages 1 and 3 remove instance list/search orchestration and detail/execution
-projection. Stage 1 is implemented; Stage 3 remains planned. The
+projection. Both are implemented. Stage 3 extracted `BuildDetailAsync`,
+`BuildExecutionProjectionAsync`, grouped/single multi-instance progress, and
+version-change/variable-update audit loading into the scoped
+`WorkflowInstanceProjectionService` behind `IWorkflowInstanceProjectionService`,
+and moved the pure runtime mappings (workflow cloning/redaction, fault info,
+work summaries, multi-instance progress, version-change audit/summary/
+direction) into the shared `RuntimeProjectionMapper`. The engine keeps thin
+delegations so command call sites retain their `SaveChangesAsync`/`CommitAsync`
+positions, and it retains routing, claim/action authorization, capability
+assembly (`BuildUserTaskPresentationAsync`, `BuildUserTaskCapabilities`,
+`GetEligibleUserTaskFlows`), settings caching, and message authentication.
+Measured during Stage 3: one warm-definition detail projection issues 17
+reader commands through the service — identical to the recorded pre-extraction
+baseline — and the count does not grow with multi-instance child items or
+version-change audit volumes. The
 [plan index](README.md) explicitly defers the remaining
 responsibility groups, which are interleaved in the main partial:
 

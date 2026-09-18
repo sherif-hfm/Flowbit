@@ -144,9 +144,11 @@ public sealed class ServiceTaskSharedStatusTests
             _ => Unexpected(method)
         };
 
+        var definitionsProxy = Proxy<IWorkflowDefinitionRepository>(Definitions);
+        var runtimeProxy = Proxy<IWorkflowRuntimeRepository>(Runtime);
         var engine = new WorkflowEngineService(
-            Proxy<IWorkflowDefinitionRepository>(Definitions),
-            Proxy<IWorkflowRuntimeRepository>(Runtime),
+            definitionsProxy,
+            runtimeProxy,
             Proxy<IWorkflowJobRepository>(Unexpected),
             Proxy<ITimerSubscriptionRepository>(Unexpected),
             Proxy<IUserDelegationRepository>(Unexpected),
@@ -159,6 +161,7 @@ public sealed class ServiceTaskSharedStatusTests
             Proxy<IEngineSettingsRepository>(Unexpected),
             NullLogger<WorkflowEngineService>.Instance,
             Proxy<IWorkflowInstanceQueryService>(Unexpected),
+            new WorkflowInstanceProjectionService(runtimeProxy, definitionsProxy),
             workflowVariables: store);
         return (engine, instance, definition, definition.FlowNodes.Single(item => item.Id == 2));
     }

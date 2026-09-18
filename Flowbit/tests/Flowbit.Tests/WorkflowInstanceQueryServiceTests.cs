@@ -153,6 +153,8 @@ public sealed class WorkflowInstanceQueryServiceTests
             var query = scope.GetRequiredService<IWorkflowInstanceQueryService>();
             Assert.IsType<WorkflowInstanceQueryService>(query);
             Assert.Same(query, scope.GetRequiredService<IWorkflowInstanceQueryService>());
+            var projections = scope.GetRequiredService<IWorkflowInstanceProjectionService>();
+            Assert.Same(projections, scope.GetRequiredService<IWorkflowInstanceProjectionService>());
             var engine = scope.GetRequiredService<WorkflowEngineService>();
             Assert.Same(engine, scope.GetRequiredService<IWorkflowEngineService>());
             Assert.Same(engine, scope.GetRequiredService<IConditionalEventRuntimeCoordinator>());

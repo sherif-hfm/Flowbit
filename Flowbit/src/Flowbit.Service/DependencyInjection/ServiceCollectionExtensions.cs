@@ -25,6 +25,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IWorkflowEngineService>(provider =>
             provider.GetRequiredService<WorkflowEngineService>());
         services.AddScoped<IWorkflowInstanceQueryService, WorkflowInstanceQueryService>();
+        services.AddScoped<IWorkflowInstanceProjectionService, WorkflowInstanceProjectionService>();
         services.AddScoped<IConditionalEventRuntimeCoordinator>(provider =>
             provider.GetRequiredService<WorkflowEngineService>());
         services.AddScoped<AdministrativeActionBatchService>();

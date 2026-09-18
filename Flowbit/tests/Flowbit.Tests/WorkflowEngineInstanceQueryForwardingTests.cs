@@ -11,8 +11,9 @@ namespace Flowbit.Tests;
 
 /// <summary>
 /// Characterizes the retained engine compatibility members: instance list and
-/// search orchestration lives in WorkflowInstanceQueryService, and the engine
-/// forwards the original interface members to that service unchanged.
+/// search orchestration lives in WorkflowInstanceQueryService, instance detail
+/// projection lives in WorkflowInstanceProjectionService, and the engine
+/// forwards the original interface members to those services unchanged.
 /// </summary>
 public sealed class WorkflowEngineInstanceQueryForwardingTests
 {
@@ -78,10 +79,51 @@ public sealed class WorkflowEngineInstanceQueryForwardingTests
         Assert.Equal([actor, request, CancellationToken.None], call.Arguments);
     }
 
+    [Fact]
+    public async Task GetInstanceForwardsToTheProjectionService()
+    {
+        var recorded = new List<RecordedCall>();
+        var detail = new InstanceDetailDto(
+            5,
+            new WorkflowDetailDto(9, "Health", "health-certificate", 1, true, true,
+                DateTimeOffset.UnixEpoch, new WorkflowModel()),
+            3,
+            "Review",
+            "MEDICAL_REVIEW",
+            "running",
+            null,
+            null,
+            "alice",
+            DateTimeOffset.UnixEpoch,
+            DateTimeOffset.UnixEpoch,
+            [],
+            [],
+            null,
+            null);
+        var projectionService = Proxy<IWorkflowInstanceProjectionService>((method, arguments) =>
+        {
+            recorded.Add(new RecordedCall(method.Name, arguments));
+            return Task.FromResult<InstanceDetailDto?>(detail);
+        });
+        var engine = CreateEngine(
+            [],
+            "unused",
+            () => throw new InvalidOperationException("The query service must not be called."),
+            projectionService);
+
+        var forwarded = await engine.GetInstanceAsync(5, CancellationToken.None);
+
+        Assert.Same(detail, forwarded);
+        var call = Assert.Single(recorded);
+        Assert.Equal(nameof(IWorkflowInstanceProjectionService.GetDetailAsync), call.Method);
+        Assert.Equal([5L, CancellationToken.None], call.Arguments);
+    }
+
     private static WorkflowEngineService CreateEngine(
         List<RecordedCall> recorded,
         string expectedMethod,
-        Func<PagedResult<InstanceSummaryDto>> result)
+        Func<PagedResult<InstanceSummaryDto>> result,
+        IWorkflowInstanceProjectionService? projectionService = null)
     {
         var queryService = Proxy<IWorkflowInstanceQueryService>((method, arguments) =>
         {
@@ -92,9 +134,11 @@ public sealed class WorkflowEngineInstanceQueryForwardingTests
             }
             return Unexpected(method, arguments);
         });
+        var runtimeProxy = Proxy<IWorkflowRuntimeRepository>(Unexpected);
+        var definitionsProxy = Proxy<IWorkflowDefinitionRepository>(Unexpected);
         return new WorkflowEngineService(
-            Proxy<IWorkflowDefinitionRepository>(Unexpected),
-            Proxy<IWorkflowRuntimeRepository>(Unexpected),
+            definitionsProxy,
+            runtimeProxy,
             Proxy<IWorkflowJobRepository>(Unexpected),
             Proxy<ITimerSubscriptionRepository>(Unexpected),
             Proxy<IUserDelegationRepository>(Unexpected),
@@ -106,7 +150,9 @@ public sealed class WorkflowEngineInstanceQueryForwardingTests
             Proxy<IWorkflowSettingsRepository>(Unexpected),
             Proxy<IEngineSettingsRepository>(Unexpected),
             NullLogger<WorkflowEngineService>.Instance,
-            queryService);
+            queryService,
+            projectionService
+                ?? new WorkflowInstanceProjectionService(runtimeProxy, definitionsProxy));
     }
 
     private sealed record RecordedCall(string Method, IReadOnlyList<object?> Arguments);
