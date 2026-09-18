@@ -1,6 +1,10 @@
 # Stage 2 — Repository query helpers
 
-**Status: Planned — not implemented**
+**Status: Implemented.** The shared task-ownership helper and the
+inbox-visibility CTE constant now live in
+`WorkflowRuntimeRepository.QuerySql.cs`; each caller keeps its own candidate
+projection, authorization, ranking, count/page execution, and transactions.
+See [Implementation record](#implementation-record).
 
 [Plan index](README.md) · [Next: engine projections](stage-03-engine-responsibilities.md)
 
@@ -154,3 +158,57 @@ API/Worker upgrade requirement. Roll back by reverting this change and deploying
 the previous application version; no stored data needs conversion. Investigate
 any changed membership, totals, ordering, or query counts before further query
 refactoring.
+
+## Implementation record
+
+Delivered as one buildable change:
+
+- `WorkflowRuntimeRepository.QuerySql.cs` (Infrastructure/Repositories) joins
+  the existing partial class beside the main file and holds both private
+  helpers. No repository interface, DI registration, DTO, schema, or migration
+  changed.
+- `AppendTaskOwnershipFilter(StringBuilder where, List<(string Name,
+  object Value)> args, string? owner, string? ownership)` moved the owner
+  predicate and ownership switch out of `ListManageableUserTasksAsync` and
+  `ListDistributableUserTasksAsync` unchanged: the bound `owner` parameter,
+  whitespace trimming, case-insensitive comparison against
+  `COALESCE(Assignee, ClaimedBy)`, and the assigned/claimed/unassigned
+  definitions. Normalization and validation stay in the service entry points;
+  the two methods keep their distinct manager-role and workflow-key scopes.
+- `InboxVisibilityEvaluationCtes` contains the complete `evaluation_targets`
+  and `visibility_results` definitions with their separating comma and no
+  leading or trailing comma. `ListInboxAsync` and `ListUserTasksPageAsync`
+  interpolate it between their own `base_candidates` and their subsequent
+  `visible_candidates` / `eligible` CTEs, keeping their existing aliases,
+  bound `@user` / `@visibilityFixedValues` parameters, representative
+  ranking, count/page queries, ordering, empty-page handling, and
+  repeatable-read transaction ownership. The two CTE bodies were compared
+  byte-for-byte before extraction, and the constant's value was verified
+  against the original text afterwards.
+- `TaskOwnershipFiltersPreserveManagerAndDistributionMembership` (new
+  PostgreSQL theory in `AdvancedVariableFilterAuthorizationPostgresTests`,
+  nine cases) exercises both repository methods over assigned, claimed-only,
+  unowned, and both-owner tasks in an authorized workflow with a second,
+  unauthorized workflow present. Cases cover each ownership filter bare and
+  with a trimmed, differently cased owner filter, an owner mismatch, and an
+  owner/unassigned contradiction; the both-owner task proves assignee
+  precedence. Each case asserts exact returned IDs and `TotalCount` for both
+  methods, and the multi-match cases page both methods through results at
+  page size one against the `UpdatedAt DESC, Id DESC` order. A second call
+  with the other workflow's manager role confirms per-workflow management
+  authorization.
+
+Validation (2026-09-17): Docker was reachable, and the focused command above
+passed 86/86 (77 matching the pre-change baseline plus the nine new theory
+cases) with no failures or skips. The full suite passed 1,861 passed / 0
+failed / 0 skipped, including all named acceptance checks. `git diff --check`
+is clean. No membership, totals, ordering, or query-count change was observed,
+so the stage's "no new database round trips" requirement holds. No UI
+rendering or interaction changed, so no browser validation was required.
+Documentation updates: [Flowbit/README.md](../../Flowbit/README.md) records
+the private helper ownership and preserved query boundaries;
+[this plan index](README.md) marks the stage implemented.
+[API reference](../api-guide.md), [developer guide](../developer-guide.md),
+and [AGENTS.md](../../AGENTS.md) were reviewed and stay accurate because no
+HTTP route, DTO, JSON, error, authorization, ordering, paging, or cursor
+contract changed.

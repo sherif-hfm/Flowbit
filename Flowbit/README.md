@@ -35,6 +35,21 @@ scoped `WorkflowRuntimeRepository` implements both the full runtime port and
 the query port as one instance per scope, so the engine and the query service
 share the same DbContext and per-scope bookkeeping.
 
+The repository's private SQL helpers live in partial class files beside the
+main implementation. `WorkflowRuntimeRepository.QuerySql.cs` owns
+`AppendTaskOwnershipFilter`, the shared management/distribution owner and
+ownership predicates (bound trimmed case-insensitive owner match against
+`COALESCE(Assignee, ClaimedBy)` plus the assigned/claimed/unassigned
+definitions), and the `InboxVisibilityEvaluationCtes` constant, the identical
+`evaluation_targets` / `visibility_results` text that both `ListInboxAsync`
+and `ListUserTasksPageAsync` interpolate between their own `base_candidates`
+and visible/eligible CTEs. `WorkflowRuntimeRepository.RolePolicies.cs` holds
+the role-policy reads. Candidate projection (including each query's own
+delegation and acting-for derivation), authorization, representative ranking,
+count/page execution, ordering, and transaction ownership remain in each
+calling method; the shared helpers bind no new parameters and add no database
+round trips.
+
 ## Workflow examples
 
 The categorized [workflow example catalog](../examples/README.md) contains

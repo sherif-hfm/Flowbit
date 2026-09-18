@@ -169,6 +169,184 @@ public sealed class AdvancedVariableFilterAuthorizationPostgresTests(
             executions.Items.Select(item => item.Id));
     }
 
+    [Theory]
+    [InlineData(OwnershipCase.AllTasks)]
+    [InlineData(OwnershipCase.OwnedByTrimmedMixedCase)]
+    [InlineData(OwnershipCase.Assigned)]
+    [InlineData(OwnershipCase.ClaimedOnly)]
+    [InlineData(OwnershipCase.Unowned)]
+    [InlineData(OwnershipCase.AssignedWithOwner)]
+    [InlineData(OwnershipCase.ClaimedWithOwner)]
+    [InlineData(OwnershipCase.OwnerMismatch)]
+    [InlineData(OwnershipCase.OwnerWithUnowned)]
+    public async Task TaskOwnershipFiltersPreserveManagerAndDistributionMembership(
+        OwnershipCase ownershipCase)
+    {
+        var seed = await SeedOwnershipMatrixAsync();
+        var (owner, ownership, expectedIds) = ownershipCase switch
+        {
+            OwnershipCase.AllTasks => ((string?)null, (string?)null, new[]
+            {
+                seed.AssignedOnlyTaskId,
+                seed.ClaimedOnlyTaskId,
+                seed.UnownedTaskId,
+                seed.BothOwnerTaskId
+            }),
+            OwnershipCase.OwnedByTrimmedMixedCase => ("  cAsE oWnEr  ", (string?)null, new[]
+            {
+                seed.AssignedOnlyTaskId,
+                seed.ClaimedOnlyTaskId,
+                seed.BothOwnerTaskId
+            }),
+            OwnershipCase.Assigned => ((string?)null, UserTaskOwnershipKinds.Assigned, new[]
+            {
+                seed.AssignedOnlyTaskId,
+                seed.BothOwnerTaskId
+            }),
+            OwnershipCase.ClaimedOnly => ((string?)null, UserTaskOwnershipKinds.Claimed,
+                new[] { seed.ClaimedOnlyTaskId }),
+            OwnershipCase.Unowned => ((string?)null, UserTaskOwnershipKinds.Unassigned,
+                new[] { seed.UnownedTaskId }),
+            OwnershipCase.AssignedWithOwner => ("  CASE OWNER  ", UserTaskOwnershipKinds.Assigned,
+                new[]
+                {
+                    seed.AssignedOnlyTaskId,
+                    seed.BothOwnerTaskId
+                }),
+            OwnershipCase.ClaimedWithOwner => ("case owner", UserTaskOwnershipKinds.Claimed,
+                new[] { seed.ClaimedOnlyTaskId }),
+            OwnershipCase.OwnerMismatch => ("nobody-here", (string?)null, Array.Empty<long>()),
+            OwnershipCase.OwnerWithUnowned => ("case owner", UserTaskOwnershipKinds.Unassigned,
+                Array.Empty<long>()),
+            _ => throw new ArgumentOutOfRangeException(nameof(ownershipCase))
+        };
+
+        await using var context = fixture.CreateDbContext();
+        var runtime = new WorkflowRuntimeRepository(context);
+
+        var manageable = await runtime.ListManageableUserTasksAsync(
+            managerRoles: [seed.ManagerRole],
+            taskId: null,
+            instanceId: null,
+            workflowId: null,
+            workflowKey: seed.PrimaryWorkflowKey,
+            businessKey: null,
+            nodeId: null,
+            nodeExternalId: null,
+            owner,
+            ownership,
+            variableFilter: null,
+            page: 1,
+            pageSize: 50,
+            CancellationToken.None);
+        AssertIds(
+            manageable.TotalCount,
+            manageable.Items.Select(item => item.UserTaskId),
+            expectedIds);
+
+        var distributable = await runtime.ListDistributableUserTasksAsync(
+            workflowKey: seed.PrimaryWorkflowKey,
+            taskId: null,
+            instanceId: null,
+            workflowId: null,
+            businessKey: null,
+            nodeId: null,
+            nodeExternalId: null,
+            owner,
+            ownership,
+            variableFilter: null,
+            includeVariables: false,
+            page: 1,
+            pageSize: 50,
+            CancellationToken.None);
+        AssertIds(
+            distributable.TotalCount,
+            distributable.Items.Select(item => item.UserTaskId),
+            expectedIds);
+
+        Assert.DoesNotContain(
+            seed.OtherFamilyTaskId,
+            manageable.Items.Select(item => item.UserTaskId));
+        Assert.DoesNotContain(
+            seed.OtherFamilyTaskId,
+            distributable.Items.Select(item => item.UserTaskId));
+
+        // The second workflow's tasks remain scoped to their own manager role.
+        var otherOnly = await runtime.ListManageableUserTasksAsync(
+            managerRoles: [seed.OtherManagerRole],
+            taskId: null,
+            instanceId: null,
+            workflowId: null,
+            workflowKey: null,
+            businessKey: null,
+            nodeId: null,
+            nodeExternalId: null,
+            owner: null,
+            ownership: null,
+            variableFilter: null,
+            page: 1,
+            pageSize: 50,
+            CancellationToken.None);
+        AssertIds(
+            otherOnly.TotalCount,
+            otherOnly.Items.Select(item => item.UserTaskId),
+            seed.OtherFamilyTaskId);
+
+        if (expectedIds.Length <= 1)
+        {
+            return;
+        }
+
+        var expectedOrder = seed.PrimaryTasks
+            .Where(task => expectedIds.Contains(task.Id))
+            .OrderByDescending(task => task.UpdatedAt)
+            .ThenByDescending(task => task.Id)
+            .Select(task => task.Id)
+            .ToArray();
+        for (var page = 1; page <= expectedIds.Length; page++)
+        {
+            var manageableSingle = await runtime.ListManageableUserTasksAsync(
+                managerRoles: [seed.ManagerRole],
+                taskId: null,
+                instanceId: null,
+                workflowId: null,
+                workflowKey: seed.PrimaryWorkflowKey,
+                businessKey: null,
+                nodeId: null,
+                nodeExternalId: null,
+                owner,
+                ownership,
+                variableFilter: null,
+                page,
+                pageSize: 1,
+                CancellationToken.None);
+            Assert.Equal(expectedIds.Length, manageableSingle.TotalCount);
+            Assert.Equal(
+                expectedOrder[page - 1],
+                Assert.Single(manageableSingle.Items).UserTaskId);
+
+            var distributableSingle = await runtime.ListDistributableUserTasksAsync(
+                workflowKey: seed.PrimaryWorkflowKey,
+                taskId: null,
+                instanceId: null,
+                workflowId: null,
+                businessKey: null,
+                nodeId: null,
+                nodeExternalId: null,
+                owner,
+                ownership,
+                variableFilter: null,
+                includeVariables: false,
+                page,
+                pageSize: 1,
+                CancellationToken.None);
+            Assert.Equal(expectedIds.Length, distributableSingle.TotalCount);
+            Assert.Equal(
+                expectedOrder[page - 1],
+                Assert.Single(distributableSingle.Items).UserTaskId);
+        }
+    }
+
     [Fact]
     public async Task LegacyGetAstAndAdvancedEqIgnoreCaseHaveLatestScalarParity()
     {
@@ -538,6 +716,85 @@ public sealed class AdvancedVariableFilterAuthorizationPostgresTests(
             executions[3].Id);
     }
 
+    private async Task<OwnershipMatrixSeed> SeedOwnershipMatrixAsync()
+    {
+        var suffix = Guid.NewGuid().ToString("N");
+        var primaryWorkflowKey = $"ownership-primary-{suffix}";
+        var otherWorkflowKey = $"ownership-other-{suffix}";
+        var managerRole = $"ownership-manager-{suffix}";
+        var otherManagerRole = $"ownership-other-manager-{suffix}";
+        var actorRole = $"ownership-user-{suffix}";
+        var now = DateTimeOffset.UtcNow.AddMinutes(-1);
+
+        await using var setup = fixture.CreateDbContext();
+        var primaryDefinition = Definition(
+            primaryWorkflowKey,
+            version: 1,
+            name: "Ownership primary",
+            managerRole);
+        var otherDefinition = Definition(
+            otherWorkflowKey,
+            version: 1,
+            name: "Ownership other",
+            otherManagerRole);
+        setup.WorkflowDefinitions.AddRange(primaryDefinition, otherDefinition);
+        await setup.SaveChangesAsync();
+
+        var primaryInstances = new[]
+        {
+            Instance(primaryDefinition, primaryWorkflowKey, now),
+            Instance(primaryDefinition, primaryWorkflowKey, now.AddSeconds(1)),
+            Instance(primaryDefinition, primaryWorkflowKey, now.AddSeconds(2)),
+            Instance(primaryDefinition, primaryWorkflowKey, now.AddSeconds(3))
+        };
+        var otherInstance = Instance(otherDefinition, otherWorkflowKey, now.AddSeconds(4));
+        setup.WorkflowInstances.AddRange(primaryInstances);
+        setup.WorkflowInstances.Add(otherInstance);
+        await setup.SaveChangesAsync();
+
+        var tokens = primaryInstances
+            .Select((instance, index) => Token(instance, now.AddSeconds(index)))
+            .Append(Token(otherInstance, now.AddSeconds(4)))
+            .ToArray();
+        setup.ExecutionTokens.AddRange(tokens);
+        await setup.SaveChangesAsync();
+
+        // Distinct UpdatedAt values keep the page ordering deterministic. The
+        // both-owner task proves assignee precedence: the owner filter matches
+        // through it, it counts as assigned, and it never counts as claimed.
+        var assignedOnly = Task(primaryInstances[0], tokens[0], actorRole, now);
+        assignedOnly.Assignee = "Case Owner";
+        var claimedOnly = Task(primaryInstances[1], tokens[1], actorRole, now.AddSeconds(1));
+        claimedOnly.ClaimedBy = "Case Owner";
+        var unowned = Task(primaryInstances[2], tokens[2], actorRole, now.AddSeconds(2));
+        var bothOwner = Task(primaryInstances[3], tokens[3], actorRole, now.AddSeconds(3));
+        bothOwner.Assignee = "Case Owner";
+        bothOwner.ClaimedBy = "Case Holder";
+        var otherFamily = Task(otherInstance, tokens[4], actorRole, now.AddSeconds(4));
+        otherFamily.Assignee = "Case Owner";
+        var primaryTasks = new[]
+        {
+            assignedOnly,
+            claimedOnly,
+            unowned,
+            bothOwner
+        };
+        setup.UserTasks.AddRange(primaryTasks);
+        setup.UserTasks.Add(otherFamily);
+        await setup.SaveChangesAsync();
+
+        return new OwnershipMatrixSeed(
+            primaryWorkflowKey,
+            managerRole,
+            otherManagerRole,
+            assignedOnly.Id,
+            claimedOnly.Id,
+            unowned.Id,
+            bothOwner.Id,
+            otherFamily.Id,
+            primaryTasks);
+    }
+
     private static WorkflowDefinitionEntity Definition(
         string workflowKey,
         int version,
@@ -704,4 +961,28 @@ public sealed class AdvancedVariableFilterAuthorizationPostgresTests(
         long AllowedBlockedExecutionId,
         long HiddenVersionMatchingExecutionId,
         long OtherFamilyMatchingExecutionId);
+
+    public enum OwnershipCase
+    {
+        AllTasks,
+        OwnedByTrimmedMixedCase,
+        Assigned,
+        ClaimedOnly,
+        Unowned,
+        AssignedWithOwner,
+        ClaimedWithOwner,
+        OwnerMismatch,
+        OwnerWithUnowned
+    }
+
+    private sealed record OwnershipMatrixSeed(
+        string PrimaryWorkflowKey,
+        string ManagerRole,
+        string OtherManagerRole,
+        long AssignedOnlyTaskId,
+        long ClaimedOnlyTaskId,
+        long UnownedTaskId,
+        long BothOwnerTaskId,
+        long OtherFamilyTaskId,
+        IReadOnlyList<UserTaskEntity> PrimaryTasks);
 }

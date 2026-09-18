@@ -2,7 +2,7 @@
 
 [Documentation home](../index.md)
 
-**Status: In progress.** Stage 1 is implemented; stages 2–6 remain planned.
+**Status: In progress.** Stages 1–2 are implemented; stages 3–6 remain planned.
 Each stage records its own implementation and acceptance status below. The
 architecture and API guides describe the current application.
 
@@ -11,7 +11,7 @@ architecture and API guides describe the current application.
 | Stage | Deliverable | Dependency | Status |
 | --- | --- | --- | --- |
 | [1 — Instance list and search](stage-01-instance-queries.md) | A focused query service and repository port, with compatible engine forwarding methods. | Passing test baseline. | Implemented |
-| [2 — Repository query helpers](stage-02-repository-query-helpers.md) | Shared task ownership predicates and inbox visibility SQL fragments. | Stage 1 recommended; can proceed independently without conflicting edits. | Planned |
+| [2 — Repository query helpers](stage-02-repository-query-helpers.md) | Shared task ownership predicates and inbox visibility SQL fragments. | Stage 1 recommended; can proceed independently without conflicting edits. | Implemented |
 | [3 — Engine projections](stage-03-engine-responsibilities.md) | Instance detail and execution projection service, including existing redaction and audit mapping. | Stage 1; Stage 2 recommended. | Planned |
 | [4 — Editor validation](stage-04-editor-validation.md) | Smaller validation phases and rule helpers inside the standalone HTML file. | Passing test baseline; independent of backend stages. | Planned |
 | [5 — Instance detail components](stage-05-instance-detail-components.md) | Display components with refresh, identity, and mutation coordination retained by the page. | Passing test baseline; independent of stages 1–4. | Planned |
