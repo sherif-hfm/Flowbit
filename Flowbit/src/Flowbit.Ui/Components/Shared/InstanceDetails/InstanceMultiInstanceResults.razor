@@ -1,0 +1,72 @@
+@using System.Text.Json
+
+@if (ShowSection)
+{
+    <section id="multi-instance-results" class="panel mb-3">
+        <h2 class="h4">Multi-instance result</h2>
+        @if (CompletedItems.Count == 0)
+        {
+            <p>No work items completed yet.</p>
+        }
+        else
+        {
+            <div class="table-responsive">
+                <table class="table table-sm align-middle">
+                    <thead>
+                        <tr>
+                            <th>Execution</th>
+                            <th>Item</th>
+                            <th>User</th>
+                            <th>Action</th>
+                            <th>Submitted data</th>
+                            <th>When</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var item in CompletedItems)
+                        {
+                            <tr>
+                                <td>#@item.MultiInstanceExecutionId</td>
+                                <td>@FormatItemNumber(item.ItemIndex)</td>
+                                <td>@(item.PerformedBy ?? "-")</td>
+                                <td>@FlowLabel(item.SequenceFlowId)</td>
+                                <td><code class="text-break">@FormatPayload(item.Payload)</code></td>
+                                <td>@item.PerformedAt.LocalDateTime</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </section>
+}
+
+@code {
+    [Parameter]
+    public bool ShowSection { get; set; }
+
+    [Parameter]
+    public IReadOnlyList<InstanceHistoryDto> CompletedItems { get; set; } = [];
+
+    [Parameter]
+    public IReadOnlyList<SequenceFlowModel> SequenceFlows { get; set; } = [];
+
+    private string FlowLabel(int? flowId)
+    {
+        if (flowId is null)
+        {
+            return "-";
+        }
+
+        var flow = SequenceFlows.SingleOrDefault(candidate => candidate.Id == flowId.Value);
+        return string.IsNullOrWhiteSpace(flow?.Name)
+            ? $"Flow #{flowId.Value}"
+            : $"{flow.Name} (#{flowId.Value})";
+    }
+
+    private static string FormatItemNumber(int? itemIndex) =>
+        itemIndex is null ? "-" : (itemIndex.Value + 1).ToString();
+
+    private static string FormatPayload(Dictionary<string, JsonElement>? payload) =>
+        payload is null || payload.Count == 0 ? "-" : JsonSerializer.Serialize(payload);
+}

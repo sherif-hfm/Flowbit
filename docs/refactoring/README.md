@@ -2,7 +2,9 @@
 
 [Documentation home](../index.md)
 
-**Status: In progress.** Stages 1–4 are implemented; stages 5–6 remain planned.
+**Status: In progress.** Stages 1–4 are implemented; stage 5 is in progress
+(extraction and tests complete, browser verification pending); stage 6 remains
+planned.
 Each stage records its own implementation and acceptance status below. The
 architecture and API guides describe the current application.
 
@@ -14,7 +16,7 @@ architecture and API guides describe the current application.
 | [2 — Repository query helpers](stage-02-repository-query-helpers.md) | Shared task ownership predicates and inbox visibility SQL fragments. | Stage 1 recommended; can proceed independently without conflicting edits. | Implemented |
 | [3 — Engine projections](stage-03-engine-responsibilities.md) | Instance detail and execution projection service, including existing redaction and audit mapping. | Stage 1; Stage 2 recommended. | Implemented |
 | [4 — Editor validation](stage-04-editor-validation.md) | Smaller validation phases and rule helpers inside the standalone HTML file. | Passing test baseline; independent of backend stages. | Implemented |
-| [5 — Instance detail components](stage-05-instance-detail-components.md) | Display components with refresh, identity, and mutation coordination retained by the page. | Passing test baseline; independent of stages 1–4. | Planned |
+| [5 — Instance detail components](stage-05-instance-detail-components.md) | Display components with refresh, identity, and mutation coordination retained by the page. | Passing test baseline; independent of stages 1–4. | In progress |
 | [6 — Definition validation](stage-06-definition-validation.md) | Separate authored/normalized validation from definition lifecycle and publication orchestration. | Passing test baseline; independent of stages 1–5. | Planned |
 
 The recommended sequence is the original stages 1 through 5, followed by Stage 6.

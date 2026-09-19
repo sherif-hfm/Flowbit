@@ -1,0 +1,59 @@
+@using System.Text.Json
+
+<section id="variables" class="panel mb-3">
+    <h2 class="h4">Variables</h2>
+    @if (Variables.Count == 0)
+    {
+        <p>No variables captured.</p>
+    }
+    else
+    {
+        <div class="table-responsive"><table class="table table-sm">
+            <caption class="visually-hidden">Latest variables stored on instance #@InstanceId</caption>
+            <thead>
+                <tr>
+                    <th scope="col">Name</th>
+                    <th scope="col">Flow</th>
+                    <th scope="col">Set by</th>
+                    <th scope="col">Value</th>
+                    <th scope="col">Update audit</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var variable in Variables)
+                {
+                    <tr>
+                        <td>@variable.VariableName</td>
+                        <td>@(variable.SourceFlowId?.ToString() ?? "start")</td>
+                        <td>@(variable.SetBy ?? "-")</td>
+                        <td><code>@FormatJson(variable.Value)</code></td>
+                        <td>
+                            @if (variable.InstanceVariableUpdateAuditId is long operationId)
+                            {
+                                <a href="#variable-updates" @onclick='() => OnNavigateToSection.InvokeAsync("variable-updates")' @onclick:preventDefault>#@operationId</a>
+                            }
+                            else
+                            {
+                                <span>&mdash;</span>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table></div>
+    }
+</section>
+
+@code {
+    [Parameter]
+    public long InstanceId { get; set; }
+
+    [Parameter]
+    public IReadOnlyList<InstanceVariableDto> Variables { get; set; } = [];
+
+    [Parameter]
+    public EventCallback<string> OnNavigateToSection { get; set; }
+
+    private static string FormatJson(JsonElement element) =>
+        InstanceDetailFormatting.FormatJson(element);
+}

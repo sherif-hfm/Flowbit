@@ -4,8 +4,40 @@
 
 [Next planned stage: definition validation](stage-06-definition-validation.md)
 
-**Status: Planned — not implemented.** This stage is independent of backend
+**Status: In progress — extraction implemented; real-browser verification
+pending.** The seven display components are extracted and the automated suite
+passes, but the required localhost browser checks
+([below](#required-browser-verification)) have not been completed, so the
+acceptance gate remains open. This stage is independent of backend
 extractions and Stage 4 after a passing baseline.
+
+## Implemented component boundaries
+
+All components live under `Flowbit/src/Flowbit.Ui/Components/Shared/InstanceDetails/`
+(namespace `Flowbit.Ui.Components.Shared.InstanceDetails`, wired through
+`Components/_Imports.razor`). Each is display-only: no injected services, no
+fetches, mutations, timers, or identity subscriptions. The page keeps instance
+loading, the `refreshGate` semaphore, identity epochs, polling, cancellation,
+disposal, input state, authorization, and every mutation. Display-only label and
+history formatting moved with its owning section:
+
+| Component | Inputs | Owns |
+| --- | --- | --- |
+| `InstanceGatewayState.razor` | `GatewayExecutions`, `ComplexGatewayStates`, `Nodes` | Both gateway sections, gateway labels, completion-reason labels, id-list formatting, per-section visibility. |
+| `InstanceMultiInstanceResults.razor` | `ShowSection`, `CompletedItems`, `SequenceFlows` | The multi-instance result section, flow labels, item numbers, payload JSON. |
+| `InstanceVersionChangeHistory.razor` | `InstanceId`, `Changes` | Version-change audit table, ordering, batch links. |
+| `InstanceVariableUpdateHistory.razor` | `InstanceId`, `Updates` | Variable-update audit table, outcome JSON, batch links. |
+| `InstanceSharedBindings.razor` | `InstanceId`, `Bindings` | Value-free shared-binding table and visibility rule. |
+| `InstanceVariables.razor` | `InstanceId`, `Variables`, `EventCallback<string> OnNavigateToSection` | Latest variables, audit links (delegated to the page's `ScrollToSectionAsync`). |
+| `InstanceHistory.razor` | `InstanceId`, `HistoryItems` | History table, details text, claims/delegation attribution, batch links. |
+
+`InstanceDetailFormatting.cs` beside the components holds the pure
+`FormatJson` helper shared by the variables and variable-update components.
+The page keeps `CompletedMultiInstanceItems` derivation and all section
+navigation (`ScrollToSectionAsync`); section IDs are unchanged. Component
+rendering coverage lives in
+[InstanceDetailDisplayComponentTests](../../Flowbit/tests/Flowbit.Tests/InstanceDetailDisplayComponentTests.cs).
+
 
 ## Objective and boundary
 

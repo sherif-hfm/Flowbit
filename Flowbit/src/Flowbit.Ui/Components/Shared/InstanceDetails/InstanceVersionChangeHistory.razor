@@ -1,0 +1,63 @@
+@if (Changes.Count > 0)
+{
+    <section id="version-changes" class="panel mb-3">
+        <div class="section-heading">
+            <div><h2>Version changes</h2><p>Immutable upgrade and downgrade history for this instance</p></div>
+            <span class="mono-id">@Changes.Count change@(Changes.Count == 1 ? null : "s")</span>
+        </div>
+        <div class="table-responsive">
+            <table class="table table-sm align-middle">
+                <caption class="visually-hidden">Workflow version changes for instance #@InstanceId</caption>
+                <thead>
+                    <tr>
+                        <th scope="col">When</th>
+                        <th scope="col">Direction</th>
+                        <th scope="col">From</th>
+                        <th scope="col">To</th>
+                        <th scope="col">Actor</th>
+                        <th scope="col">Reason</th>
+                        <th scope="col">Batch</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var change in Changes.OrderByDescending(item => item.ChangedAt).ThenByDescending(item => item.Id))
+                    {
+                        <tr>
+                            <td>@change.ChangedAt.ToLocalTime().ToString("g")</td>
+                            <td><StatusBadge Status="@change.Direction" /></td>
+                            <td>v@(change.SourceWorkflow.Version)<span class="data-subtitle">@change.SourceWorkflow.Name</span></td>
+                            <td>v@(change.TargetWorkflow.Version)<span class="data-subtitle">@change.TargetWorkflow.Name</span></td>
+                            <td>
+                                @(change.ChangedBy ?? "anonymous")
+                                <span class="data-subtitle">@(change.ChangedByRoles.Count == 0 ? "No roles recorded" : string.Join(", ", change.ChangedByRoles))</span>
+                            </td>
+                            <td class="text-break">@change.Reason</td>
+                            <td>
+                                @if (change.BatchId is long batchId)
+                                {
+                                    <a href="@($"instance-version-changes?batchId={batchId}")">Batch #@batchId</a>
+                                    @if (change.BatchItemId is long batchItemId)
+                                    {
+                                        <span class="data-subtitle">Item #@batchItemId</span>
+                                    }
+                                }
+                                else
+                                {
+                                    <span>&mdash;</span>
+                                }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    </section>
+}
+
+@code {
+    [Parameter]
+    public long InstanceId { get; set; }
+
+    [Parameter]
+    public IReadOnlyList<InstanceVersionChangeAuditDto> Changes { get; set; } = [];
+}

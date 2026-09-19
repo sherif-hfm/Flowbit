@@ -1,0 +1,126 @@
+@if (GatewayExecutions.Count > 0)
+{
+    <section id="gateway-scopes" class="panel mb-3">
+        <div class="section-heading">
+            <div><h2>Gateway scopes</h2><p>Parallel, Inclusive, and Complex branch activations</p></div>
+            <span class="mono-id">@GatewayExecutions.Count scope@(GatewayExecutions.Count == 1 ? null : "s")</span>
+        </div>
+        <div class="table-responsive">
+            <table class="table table-sm align-middle">
+                <thead>
+                    <tr>
+                        <th scope="col">Scope</th>
+                        <th scope="col">Gateway</th>
+                        <th scope="col">Status</th>
+                        <th scope="col">Branches</th>
+                        <th scope="col">Outcome</th>
+                        <th scope="col">Updated</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var scope in GatewayExecutions.OrderByDescending(item => item.Id))
+                    {
+                        <tr>
+                            <td><span class="mono-id">#@scope.Id</span>@if (scope.ParentExecutionId is long parentId) { <span class="data-subtitle">Parent #@parentId</span> }</td>
+                            <td>@GatewayLabel(scope.GatewayNodeId)<span class="data-subtitle">@scope.GatewayType · @scope.Direction@if (scope.Phase is not null) { <text> · @scope.Phase</text> }</span></td>
+                            <td><StatusBadge Status="@scope.Status" /></td>
+                            <td>
+                                @scope.TotalBranchCount total
+                                <span class="data-subtitle">
+                                    @scope.ActiveBranchCount active · @scope.CompletedBranchCount completed ·
+                                    @scope.MergedBranchCount merged · @scope.InterruptedBranchCount interrupted ·
+                                    @scope.CancelledBranchCount cancelled
+                                </span>
+                            </td>
+                            <td>
+                                @(string.IsNullOrWhiteSpace(scope.CompletionReason) ? "—" : GatewayCompletionReason(scope.CompletionReason))
+                                @if (scope.InterruptingTokenId is long tokenId)
+                                {
+                                    <span class="data-subtitle">Token #@tokenId@if (scope.InterruptingNodeId is int nodeId) { <text> · Node #@nodeId</text> }</span>
+                                }
+                            </td>
+                            <td>@scope.UpdatedAt.ToLocalTime().ToString("g")</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    </section>
+}
+
+@if (ComplexGatewayStates.Count > 0)
+{
+    <section id="complex-gateway-states" class="panel mb-3">
+        <div class="section-heading">
+            <div><h2>Complex gateway states</h2><p>Current phase, cycle, input sets, and interruption draining frontier</p></div>
+            <span class="mono-id">@ComplexGatewayStates.Count state@(ComplexGatewayStates.Count == 1 ? null : "s")</span>
+        </div>
+        <div class="table-responsive">
+            <table class="table table-sm align-middle">
+                <thead>
+                    <tr>
+                        <th scope="col">Gateway</th>
+                        <th scope="col">Phase</th>
+                        <th scope="col">Cycle</th>
+                        <th scope="col">Contributing</th>
+                        <th scope="col">Remaining</th>
+                        <th scope="col">Draining tokens</th>
+                        <th scope="col">Updated</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var state in ComplexGatewayStates.OrderBy(item => item.GatewayNodeId))
+                    {
+                        <tr>
+                            <td>@GatewayLabel(state.GatewayNodeId)</td>
+                            <td><StatusBadge Status="@state.Phase" /></td>
+                            <td>@state.Cycle</td>
+                            <td>@FormatIds(state.ContributingFlowIds)</td>
+                            <td>@FormatIds(state.RemainingFlowIds)</td>
+                            <td>@FormatLongIds(state.DrainingTokenIds)</td>
+                            <td>@state.UpdatedAt.ToLocalTime().ToString("g")</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    </section>
+}
+
+@code {
+    [Parameter]
+    public IReadOnlyList<GatewayExecutionDto> GatewayExecutions { get; set; } = [];
+
+    [Parameter]
+    public IReadOnlyList<ComplexGatewayStateDto> ComplexGatewayStates { get; set; } = [];
+
+    [Parameter]
+    public IReadOnlyList<FlowNodeModel> Nodes { get; set; } = [];
+
+    private string GatewayLabel(int nodeId)
+    {
+        var node = Nodes.SingleOrDefault(candidate => candidate.Id == nodeId);
+        return node is null ? $"Node #{nodeId}" : $"{node.Name} (#{nodeId})";
+    }
+
+    private static string GatewayCompletionReason(string reason) => reason switch
+    {
+        "join" => "Joined",
+        "joinCancellation" => "Cancelling join completed",
+        "interruptingJoin" => "Interrupted by a cancelling join",
+        "interrupt" or "scopedInterrupt" => "Scoped interrupt",
+        "terminateEnd" => "Terminate end",
+        "errorEnd" => "Workflow fault",
+        "instanceCancelled" => "Instance cancellation",
+        "allEnded" => "All branches ended",
+        "resetNoOutput" => "Reset completed without output",
+        "complex" => "Complex phase completed",
+        _ => reason
+    };
+
+    private static string FormatIds(IReadOnlyList<int> ids) =>
+        ids.Count == 0 ? "—" : string.Join(", ", ids.Select(id => $"#{id}"));
+
+    private static string FormatLongIds(IReadOnlyList<long> ids) =>
+        ids.Count == 0 ? "—" : string.Join(", ", ids.Select(id => $"#{id}"));
+}

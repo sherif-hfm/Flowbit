@@ -1,0 +1,68 @@
+@using System.Text.Json
+
+@if (Updates.Count > 0)
+{
+    <section id="variable-updates" class="panel mb-3">
+        <div class="section-heading">
+            <div><h2>Administrative variable updates</h2><p>Raw JSON values appended outside workflow variable contracts</p></div>
+            <span class="mono-id">@Updates.Count operation@(Updates.Count == 1 ? null : "s")</span>
+        </div>
+        <div class="table-responsive">
+            <table class="table table-sm align-middle">
+                <caption class="visually-hidden">Administrative variable updates for instance #@InstanceId</caption>
+                <thead>
+                    <tr>
+                        <th scope="col">When</th>
+                        <th scope="col">Actor</th>
+                        <th scope="col">Reason</th>
+                        <th scope="col">Variables</th>
+                        <th scope="col">Batch</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var update in Updates.OrderByDescending(item => item.PerformedAt).ThenByDescending(item => item.Id))
+                    {
+                        <tr>
+                            <td>@update.PerformedAt.ToLocalTime().ToString("g")<span class="data-subtitle">Operation #@update.Id</span></td>
+                            <td>@update.PerformedBy<span class="data-subtitle">@(update.PerformedByRoles.Count == 0 ? "No roles recorded" : string.Join(", ", update.PerformedByRoles))</span></td>
+                            <td class="text-break">@(update.Reason ?? "—")</td>
+                            <td>
+                                <div class="d-grid gap-1">
+                                    @foreach (var outcome in update.Variables)
+                                    {
+                                        <span><code>@outcome.Name</code> <StatusBadge Status="@outcome.Outcome" /> <span class="data-subtitle d-inline">history #@outcome.VariableId · @FormatJson(outcome.Value)</span></span>
+                                    }
+                                </div>
+                            </td>
+                            <td>
+                                @if (update.BatchId is long batchId)
+                                {
+                                    <a href="@($"instance-variable-updates?batchId={batchId}")">Batch #@batchId</a>
+                                    @if (update.BatchItemId is long batchItemId)
+                                    {
+                                        <span class="data-subtitle">Item #@batchItemId</span>
+                                    }
+                                }
+                                else
+                                {
+                                    <span>&mdash;</span>
+                                }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    </section>
+}
+
+@code {
+    [Parameter]
+    public long InstanceId { get; set; }
+
+    [Parameter]
+    public IReadOnlyList<InstanceVariableUpdateAuditDto> Updates { get; set; } = [];
+
+    private static string FormatJson(JsonElement element) =>
+        InstanceDetailFormatting.FormatJson(element);
+}

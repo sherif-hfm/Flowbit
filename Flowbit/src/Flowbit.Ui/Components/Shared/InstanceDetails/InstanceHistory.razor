@@ -1,0 +1,235 @@
+@using System.Text.Json
+
+<section id="history" class="panel">
+    <h2 class="h4">History</h2>
+    @if (HistoryItems.Count == 0)
+    {
+        <p>No history events yet.</p>
+    }
+    else
+    {
+        <div class="table-responsive"><table class="table table-sm">
+            <caption class="visually-hidden">Transition and action history for instance #@InstanceId</caption>
+            <thead>
+                <tr>
+                    <th scope="col">When</th>
+                    <th scope="col">Token</th>
+                    <th scope="col">From</th>
+                    <th scope="col">To</th>
+                    <th scope="col">Flow</th>
+                    <th scope="col">Actor</th>
+                    <th scope="col">Details</th>
+                    <th scope="col">Batch</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var item in HistoryItems)
+                {
+                    <tr>
+                        <td>@item.PerformedAt.LocalDateTime</td>
+                        <td>@(item.TokenId is long tokenId ? $"#{tokenId}" : "—")</td>
+                        <td>#@item.FromNodeId</td>
+                        <td>#@item.ToNodeId</td>
+                        <td>@(item.SequenceFlowId?.ToString() ?? "-")</td>
+                        <td class="history-actor">
+                            @(item.PerformedBy ?? "-")
+                            @if (item.ActingFor is not null)
+                            {
+                                <ActingForBadge ActingFor="@item.ActingFor" DelegationId="@item.DelegationId" />
+                            }
+                            <ActorClaims Claims="@item.ActorClaims" />
+                        </td>
+                        <td>@HistoryDetails(item)</td>
+                        <td>
+                            @if (item.AdministrativeActionBatchId is long batchId)
+                            {
+                                <a href="@($"administrative-actions?batchId={batchId}")">Batch #@batchId</a>
+                            }
+                            else
+                            {
+                                <span>&mdash;</span>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table></div>
+    }
+</section>
+
+@code {
+    [Parameter]
+    public long InstanceId { get; set; }
+
+    [Parameter]
+    public IReadOnlyList<InstanceHistoryDto> HistoryItems { get; set; } = [];
+
+    private static string HistoryDetails(InstanceHistoryDto item)
+    {
+        if (item.Note is "taskClaim")
+        {
+            var previousClaimant = HistoryPayloadString(item, "previousClaimedBy");
+            var newClaimant = HistoryPayloadString(item, "newClaimedBy") ?? item.PerformedBy ?? "unknown actor";
+            var claimOperation = HistoryPayloadString(item, "operation");
+            var authority = HistoryPayloadString(item, "authority");
+            var description = claimOperation == "unclaimed"
+                ? $"Released {previousClaimant ?? "unknown actor"}'s claim"
+                : authority == "claimInheritance"
+                    ? $"Inherited claim for {newClaimant}"
+                    : $"Claimed by {newClaimant}";
+            if (claimOperation != "unclaimed" && previousClaimant is not null)
+                description += $" (previously claimed by {previousClaimant})";
+            if (authority == "unclaimOverride") description += " using unclaim permission";
+            if (authority == "userDelegation") description += " through delegation";
+            if (authority == "claimInheritance" && HistoryPayloadString(item, "sourceNodeId") is { } sourceNodeId)
+                description += $" from node #{sourceNodeId}";
+            return description;
+        }
+        if (item.Note is "parallelFork")
+        {
+            return item.TokenId is long tokenId
+                ? $"Parallel branch forked for token #{tokenId}"
+                : "Parallel branch forked";
+        }
+        if (item.Note is "parallelJoin")
+        {
+            return item.TokenId is long tokenId
+                ? $"Parallel join released token #{tokenId}"
+                : "Parallel join released";
+        }
+        if (item.Note is "inclusiveSplit")
+        {
+            return item.TokenId is long tokenId
+                ? $"Inclusive branches selected for token #{tokenId}"
+                : "Inclusive branches selected";
+        }
+        if (item.Note is "inclusiveMerge")
+        {
+            return item.TokenId is long tokenId
+                ? $"Inclusive merge released token #{tokenId}"
+                : "Inclusive merge released";
+        }
+        if (item.Note is "complexActivation" or "complexReset")
+        {
+            return item.TokenId is long tokenId
+                ? $"Complex gateway {item.Note["complex".Length..].ToLowerInvariant()} routed token #{tokenId}"
+                : $"Complex gateway {item.Note["complex".Length..].ToLowerInvariant()}";
+        }
+        if (item.Note is "scopedInterrupt")
+        {
+            return item.TokenId is long tokenId
+                ? $"Gateway scope interrupted by token #{tokenId}; active sibling work was cancelled"
+                : "Gateway scope interrupted; active sibling work was cancelled";
+        }
+        if (item.Note is "scopedInterruptSkipped")
+        {
+            return "No matching active gateway scope remained; continuation ran without cancellation";
+        }
+        if (item.Note is "gatewayScopeCancelled")
+        {
+            return "Token cancelled by a scoped interrupt";
+        }
+        if (item.Note is "terminateEnd")
+        {
+            return item.TokenId is long tokenId
+                ? $"Terminate end completed the instance from token #{tokenId}"
+                : "Terminate end completed the instance";
+        }
+        if (item.Note is "instanceReactivated")
+        {
+            var sourceStatus = HistoryPayloadString(item, "sourceStatus") ?? "terminal";
+            var targetNodeId = HistoryPayloadString(item, "targetNodeId") ?? item.ToNodeId.ToString();
+            var newTaskId = HistoryPayloadString(item, "newUserTaskId");
+            var reactivationHistoryReason = HistoryPayloadString(item, "reason") ?? item.Reason;
+            var reactivationHistorySummary = $"Instance reactivated from {sourceStatus} at user task #{targetNodeId}";
+            if (!string.IsNullOrWhiteSpace(newTaskId))
+            {
+                reactivationHistorySummary += $" (new work item #{newTaskId})";
+            }
+            return string.IsNullOrWhiteSpace(reactivationHistoryReason)
+                ? reactivationHistorySummary
+                : $"{reactivationHistorySummary} — {reactivationHistoryReason}";
+        }
+        if (string.Equals(item.Note, "taskRolesChanged", StringComparison.Ordinal))
+        {
+            var roleReason = HistoryPayloadString(item, "reason");
+            var previousRoles = item.Payload?.GetValueOrDefault("previousRoles") ?? default;
+            var newRoles = item.Payload?.GetValueOrDefault("newRoles") ?? default;
+            var changes = new List<string>();
+            if (!SameHistoryRoles(previousRoles, newRoles))
+                changes.Add($"task roles {HistoryRolesLabel(previousRoles)} → {HistoryRolesLabel(newRoles)}");
+            var previousFlows = HistoryFlowRoles(item, "previousFlowRoles");
+            var newFlows = HistoryFlowRoles(item, "newFlowRoles");
+            foreach (var flowId in previousFlows.Keys.Union(newFlows.Keys)
+                         .OrderBy(id => int.TryParse(id, out var number) ? number : int.MaxValue)
+                         .ThenBy(id => id, StringComparer.Ordinal))
+            {
+                var previousFlowRoles = previousFlows.GetValueOrDefault(flowId);
+                var currentFlowRoles = newFlows.GetValueOrDefault(flowId);
+                if (!SameHistoryRoles(previousFlowRoles, currentFlowRoles))
+                    changes.Add($"flow #{flowId} roles {HistoryRolesLabel(previousFlowRoles)} → {HistoryRolesLabel(currentFlowRoles)}");
+            }
+            var executionId = HistoryPayloadString(item, "multiInstanceExecutionId")
+                              ?? item.MultiInstanceExecutionId?.ToString();
+            var affected = HistoryPayloadString(item, "affectedTaskCount") ?? "1";
+            var roleScope = executionId is not null
+                ? $"the whole multi-instance execution #{executionId} ({affected} waiting items)"
+                : item.UserTaskId is long userTaskId ? $"task #{userTaskId}" : "the waiting task";
+            var roleSummary = $"Updated roles for {roleScope}";
+            if (changes.Count > 0) roleSummary += $": {string.Join("; ", changes)}";
+            return string.IsNullOrWhiteSpace(roleReason) ? roleSummary : $"{roleSummary} — {roleReason}";
+        }
+        if (!string.Equals(item.Note, "taskAssignment", StringComparison.Ordinal))
+        {
+            return item.Note ?? "-";
+        }
+
+        var operation = HistoryPayloadString(item, "operation") ?? "assignment";
+        var previous = HistoryPayloadString(item, "previousOwner") ?? "shared pool";
+        var current = HistoryPayloadString(item, "newOwner") ?? "shared pool";
+        var reason = HistoryPayloadString(item, "reason");
+        var summary = operation switch
+        {
+            UserTaskAssignmentOperations.Assigned => $"Assigned to {current}",
+            UserTaskAssignmentOperations.Reassigned => $"Reassigned from {previous} to {current}",
+            UserTaskAssignmentOperations.Unassigned => $"Released {previous} to the shared pool",
+            _ => $"Assignment changed from {previous} to {current}"
+        };
+        return string.IsNullOrWhiteSpace(reason) ? summary : $"{summary} — {reason}";
+    }
+
+    private static string? HistoryPayloadString(InstanceHistoryDto item, string name)
+    {
+        if (item.Payload is null || !item.Payload.TryGetValue(name, out var value)
+                                 || value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+        {
+            return null;
+        }
+        return value.ValueKind == JsonValueKind.String ? value.GetString() : value.GetRawText();
+    }
+
+    private static Dictionary<string, JsonElement> HistoryFlowRoles(InstanceHistoryDto item, string name)
+    {
+        var value = item.Payload?.GetValueOrDefault(name) ?? default;
+        return value.ValueKind == JsonValueKind.Object
+            ? value.EnumerateObject().ToDictionary(property => property.Name, property => property.Value)
+            : [];
+    }
+
+    private static string[] HistoryRoleValues(JsonElement value) => value.ValueKind == JsonValueKind.Array
+        ? value.EnumerateArray().Select(role => role.ValueKind == JsonValueKind.String
+            ? role.GetString() ?? "" : role.GetRawText()).ToArray()
+        : [];
+
+    private static bool SameHistoryRoles(JsonElement previous, JsonElement current) =>
+        previous.ValueKind == current.ValueKind
+        && new HashSet<string>(HistoryRoleValues(previous), StringComparer.OrdinalIgnoreCase)
+            .SetEquals(HistoryRoleValues(current));
+
+    private static string HistoryRolesLabel(JsonElement value)
+    {
+        if (value.ValueKind != JsonValueKind.Array) return "not recorded";
+        var roles = HistoryRoleValues(value);
+        return roles.Length == 0 ? "Any role" : $"[{string.Join(", ", roles)}]";
+    }
+}
