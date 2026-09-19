@@ -118,3 +118,13 @@ definition validation received Stage 6, why Stage 2 remains bounded, and which
 engine, editor, UI, and browser-test candidates still need separate planning.
 The existing stages include the relevant parser conformance and UI lifecycle
 regressions; a new browser automation harness is not an additional prerequisite.
+
+## Prioritized follow-up roadmap
+
+The [remaining-gaps implementation plan](remaining-gaps-implementation-plan.md)
+records the review at `fbe0721` and planned stages 7–11: browser smoke coverage,
+removal of seven migrated engine-interface methods, waiting-task role-management
+extraction, editor node-type transitions, and administrative-action display
+components. It includes an explicitly accepted C# compatibility break and keeps
+the other candidates deferred. These follow-up stages are planned, not
+implemented; the existing stage statuses above remain unchanged.

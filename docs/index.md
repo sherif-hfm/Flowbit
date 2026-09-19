@@ -37,11 +37,13 @@ Flowbit does not import or export BPMN XML, execute arbitrary BPMN diagrams, or 
 
 ## Planned refactoring
 
-The [staged refactoring plans](refactoring/README.md) describe future contributor
-work, with a separate scope, implementation sequence, and acceptance gate for
-each stage. They are plans, not descriptions of implemented behavior. The
+The [staged refactoring plans](refactoring/README.md) describe contributor work,
+with a separate scope, implementation sequence, and acceptance gate for each
+stage. Each stage records its implementation and acceptance status. The
 [refactoring gap inventory](refactoring/gaps.md) records deferred and unplanned
-work as the starting point for future stages.
+work; the [remaining-gaps implementation plan](refactoring/remaining-gaps-implementation-plan.md)
+selects the prioritized follow-up stages and records their boundaries. The
+follow-up roadmap is planned work, not implemented behavior.
 
 ## Reference ownership
 
