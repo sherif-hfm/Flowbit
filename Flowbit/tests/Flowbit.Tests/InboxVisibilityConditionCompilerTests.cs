@@ -623,8 +623,9 @@ public sealed class InboxVisibilityConditionCompilerTests
     private static WorkflowDefinitionService DefinitionService() =>
         new(
             DispatchProxy.Create<IWorkflowDefinitionRepository, UnexpectedProxy>(),
-            DispatchProxy.Create<IScriptEvaluator, UnexpectedProxy>(),
-            new ServiceTaskOptions(),
+            new WorkflowDefinitionValidator(
+                DispatchProxy.Create<IScriptEvaluator, UnexpectedProxy>(),
+                new ServiceTaskOptions()),
             NullLogger<WorkflowDefinitionService>.Instance);
 
     public class UnexpectedProxy : DispatchProxy

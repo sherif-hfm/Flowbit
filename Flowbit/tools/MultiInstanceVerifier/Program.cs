@@ -1,6 +1,4 @@
-using System.Reflection;
 using System.Text.Json;
-using Microsoft.Extensions.Logging.Abstractions;
 using Flowbit.Service.Abstractions;
 using Flowbit.Service.Services;
 using Flowbit.Shared.Models;
@@ -13,14 +11,9 @@ var loadedModel = JsonSerializer.Deserialize<WorkflowModel>(await File.ReadAllTe
 var model = Clone(loadedModel);
 WorkflowModelMigrator.Normalize(model);
 
-var validator = new WorkflowDefinitionService(
-    null!,
+var validator = new WorkflowDefinitionValidator(
     new ParseOnlyScriptEvaluator(),
-    new ServiceTaskOptions(),
-    NullLogger<WorkflowDefinitionService>.Instance);
-var validate = typeof(WorkflowDefinitionService).GetMethod(
-    "ValidateDefinition", BindingFlags.Instance | BindingFlags.NonPublic)
-    ?? throw new InvalidOperationException("ValidateDefinition was not found.");
+    new ServiceTaskOptions());
 Validate(model);
 
 foreach (var fileName in new[]
@@ -233,14 +226,7 @@ void VerifyLegacyDefaultSplit(WorkflowModel source, bool preserveCompletionCondi
 
 void Validate(WorkflowModel candidate)
 {
-    try
-    {
-        validate.Invoke(validator, [candidate]);
-    }
-    catch (TargetInvocationException ex) when (ex.InnerException is not null)
-    {
-        throw ex.InnerException;
-    }
+    validator.ValidateNormalized(candidate);
 }
 
 void ExpectValidationFailure(WorkflowModel candidate, string message)

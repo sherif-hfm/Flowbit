@@ -2,9 +2,13 @@
 
 [Plan index](README.md) · [Gap inventory](gaps.md#3-workflowdefinitionservice)
 
-**Status: Planned — not implemented.** Added after reviewing the gap inventory.
-This stage can proceed independently after a passing baseline. Stage 4 offers
-related editor regression evidence, but the two validators remain separate.
+**Status: Implemented.** Authored and normalized definition validation now
+lives in a scoped `WorkflowDefinitionValidator` behind
+`IWorkflowDefinitionValidator`; `WorkflowDefinitionService` retains lifecycle
+orchestration. The implementation record at the end of this document reports
+scope and test results. Added after reviewing the gap inventory. This stage
+can proceed independently after a passing baseline. Stage 4 offers related
+editor regression evidence, but the two validators remain separate.
 
 ## Objective and boundary
 
@@ -161,3 +165,62 @@ Mark this stage and the index implemented only after acceptance. Roll back by
 reverting the extraction and deploying the previous application version. No
 schema migration, saved-definition conversion, or coordinated API/Worker
 upgrade is required.
+
+## Implementation record
+
+Implemented (2026-09-19). The new
+[WorkflowDefinitionValidator.cs](../../Flowbit/src/Flowbit.Service/Services/WorkflowDefinitionValidator.cs)
+owns `ValidateAuthored` (the nine authored-metadata checks plus
+`ValidateRoleSources` in the create/version order) and `ValidateNormalized`
+(the former internal `ValidateDefinition` body ending with
+`InboxVisibilityConditionCompiler.CompileAll` followed by conditional
+analysis), together with the `SharedValidationFunctions` and
+`ReservedIdempotencyHeaders` constants and all supporting static rules. Its
+dependencies are `IScriptEvaluator`, `ServiceTaskOptions`, and an optional
+`IConditionalEventDefinitionAnalyzer` (defaulting to
+`ConditionalEventDefinitionAnalyzer`); it has no repository, logger, engine,
+unit of work, or scope factory, performs no database access, and neither
+normalizes nor persists.
+
+[WorkflowDefinitionService.cs](../../Flowbit/src/Flowbit.Service/Services/WorkflowDefinitionService.cs)
+now injects `IWorkflowDefinitionValidator` in place of
+`IScriptEvaluator`/`ServiceTaskOptions`; create and create-new-version call
+`ValidateAuthored` → `WorkflowModelMigrator.Normalize` → `ValidateNormalized`
+→ shared-catalog, durability, lock-order, and publication checks in the
+original order. Publish/set-default keep conditional analysis plus the
+shared/durability/lock-order/publication checks and intentionally do not run
+full authored/normalized validation. `NormalizeContractRule`,
+`ToSummary`, and `ToDetail` stayed with the lifecycle service because the
+shared-catalog comparison and other services use them. The validator is
+registered scoped in the service DI extension. `WorkflowVersionCompatibilityEvaluator`
+and runtime version-switch behavior are unchanged; no rule, order, message,
+status code, or accepted legacy shape changed, and no aggregate-error
+response was introduced.
+
+Test and tool callers updated: `DefinitionValidationTests` builds the
+validator through a new `CreateValidator` helper and replaced the reflection
+helper with direct `ValidateNormalized` calls for its validation-only cases;
+create/version/publication tests still exercise `WorkflowDefinitionService`.
+`ConditionalEventDefinitionTests` and `InboxVisibilityConditionCompilerTests`
+compose the validator with the same script evaluator/analyzer substitutes
+their service compositions used, and `MultiInstanceVerifier` calls
+`ValidateNormalized` directly without reflection. Five characterization tests
+cover previously unverified lifecycle effects: rejected create and missing
+source-version create make no repository write or cache-warming call, a
+successful create writes the repository and warms both plan caches, and a
+rejected new-version request makes no write.
+
+Validation (2026-09-19): Docker PostgreSQL reachable. The focused set passed
+471/471 (467 baseline tests plus five new characterization cases), and the
+full suite passed 1,889 / 0 failed / 0 skipped. `git diff --check` is clean.
+`MultiInstanceVerifier` compiles against the new validator but its
+`votes*.json` samples are not present in this checkout, so it could not be
+executed; that limitation is recorded here rather than claimed as a pass. No
+HTTP route, DTO, JSON, error, authorization, or saved-model contract changed,
+so no browser verification was required. Documentation updates:
+[Flowbit/README.md](../../Flowbit/README.md) definition validation ownership
+section, [AGENTS.md](../../AGENTS.md) service-layer bullet, the
+[node reference](../node-reference.md) validation link, this record, and the
+[plan index](README.md) status. The API, developer, BPMN support, and node
+property pages needed no change because their public rules and HTTP examples
+are unaffected.

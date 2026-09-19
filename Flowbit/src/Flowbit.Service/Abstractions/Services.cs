@@ -122,6 +122,26 @@ public interface IWorkflowDefinitionService
     Task<bool> DeleteAsync(long id, CancellationToken cancellationToken);
 }
 
+/// <summary>
+/// Validates workflow definition structure and configuration, separated from the
+/// definition lifecycle operations owned by <see cref="IWorkflowDefinitionService"/>.
+/// <para>
+/// <see cref="ValidateAuthored"/> runs the authored-input checks that reject
+/// metadata the tolerant migrator would otherwise discard; it must run before
+/// <c>WorkflowModelMigrator.Normalize</c>. <see cref="ValidateNormalized"/> runs the
+/// full normalized-definition rules; the caller must already have normalized the
+/// model. Both operations validate structure and configuration only: a successful
+/// result does not establish catalog existence, publication readiness, or
+/// version-switch compatibility. They do not normalize, persist, or warm caches.
+/// </para>
+/// </summary>
+public interface IWorkflowDefinitionValidator
+{
+    void ValidateAuthored(WorkflowModel definition);
+
+    void ValidateNormalized(WorkflowModel definition);
+}
+
 public interface IWorkflowEngineService
 {
     Task<InstanceDetailDto> StartInstanceAsync(
@@ -568,7 +588,7 @@ public interface IScriptEvaluator
 
     /// <summary>
     /// Parse-only syntax check used for author-time validation
-    /// (<c>ValidateDefinition</c>); does not execute the script.
+    /// (<c>WorkflowDefinitionValidator</c>); does not execute the script.
     /// </summary>
     bool IsValid(string script, out string? error);
 }

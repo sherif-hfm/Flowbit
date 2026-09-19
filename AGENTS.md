@@ -195,7 +195,11 @@ Projects:
   composition, and automatic development migration application. The additive
   migrations seed safe default settings in every environment where they run.
 - `src/Flowbit.Service` - Service layer: workflow engine behavior,
-  definition validation, sequence-flow condition evaluation
+  definition validation (`WorkflowDefinitionValidator` behind
+  `IWorkflowDefinitionValidator` owns the authored/normalized definition rules,
+  while `WorkflowDefinitionService` keeps definition lifecycle orchestration,
+  publication gates, shared-catalog binding checks, durability/lock-order
+  checks, and DTO mapping), sequence-flow condition evaluation
   (`SequenceFlowConditionEvaluator`, NCalc), the focused instance list/search
   query service (`WorkflowInstanceQueryService` behind
   `IWorkflowInstanceQueryService`, with the engine retaining the two members as

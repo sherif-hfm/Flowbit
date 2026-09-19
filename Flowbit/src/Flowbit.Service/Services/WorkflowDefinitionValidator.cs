@@ -1,0 +1,3512 @@
+using System.Net.Http.Headers;
+using System.Text.Json;
+using System.Text.RegularExpressions;
+using Flowbit.Service.Abstractions;
+using Flowbit.Shared.Models;
+using NCalc;
+using NCalc.Helpers;
+
+namespace Flowbit.Service.Services;
+
+/// <summary>
+/// Validates authored and normalized workflow definitions. Owns the definition
+/// validation rules extracted from WorkflowDefinitionService; lifecycle
+/// operations (create/version/publish/unpublish/default/delete), shared-catalog
+/// binding checks, service durability, lock-order, and publication gates remain
+/// in WorkflowDefinitionService. A successful validation does not establish
+/// catalog existence, publication readiness, or version-switch compatibility,
+/// and never normalizes, persists, or warms caches.
+/// </summary>
+public sealed class WorkflowDefinitionValidator(
+    IScriptEvaluator scriptEvaluator,
+    ServiceTaskOptions serviceTaskOptions,
+    IConditionalEventDefinitionAnalyzer? conditionalEventAnalyzer = null)
+    : IWorkflowDefinitionValidator
+{
+    private readonly IConditionalEventDefinitionAnalyzer conditionalAnalyzer =
+        conditionalEventAnalyzer ?? new ConditionalEventDefinitionAnalyzer();
+    private static readonly HashSet<string> SharedValidationFunctions = new(
+        BuiltInFunctionHelper.GetBuiltInFunctionNames()
+            .Concat([
+                "Length", "Len", "IsNullOrEmpty", "IsNullOrWhiteSpace",
+                "Contains", "StartsWith", "EndsWith", "Lower", "Upper",
+                "Trim", "IsMatch"
+            ]),
+        StringComparer.OrdinalIgnoreCase);
+    private static readonly HashSet<string> ReservedIdempotencyHeaders = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Authorization",
+        "Proxy-Authorization",
+        "Cookie",
+        "Host",
+        "Content-Length",
+        "Content-Type",
+        "Content-Encoding",
+        "Transfer-Encoding",
+        "Connection",
+        "Keep-Alive",
+        "TE",
+        "Trailer",
+        "Upgrade",
+        "Expect",
+        "X-Client-Id",
+        "X-Client-Secret"
+    };
+
+    /// <summary>
+    /// Validates authored workflow definition input before tolerant
+    /// normalization. Rejects metadata the migrator would otherwise discard, in
+    /// the create/version request order.
+    /// </summary>
+    public void ValidateAuthored(WorkflowModel definition)
+    {
+        ValidateAuthoredGatewayControlFlowMetadata(definition);
+        ValidateAuthoredClaimBypassMetadata(definition);
+        ValidateAuthoredScriptTaskMetadata(definition);
+        ValidateAuthoredExclusiveGatewayMetadata(definition);
+        ValidateAuthoredMessageStartMetadata(definition);
+        ValidateAuthoredAsyncTimerMetadata(definition);
+        ValidateAuthoredInboxVisibilityMetadata(definition);
+        ValidateAuthoredConditionalEventMetadata(definition);
+        ValidateAuthoredSharedVariableMetadata(definition);
+        ValidateRoleSources(definition);
+    }
+
+    /// <summary>
+    /// Validates a normalized workflow definition. The caller must already have
+    /// applied WorkflowModelMigrator.Normalize to the model.
+    /// </summary>
+    public void ValidateNormalized(WorkflowModel definition)
+    {
+        if (string.IsNullOrWhiteSpace(definition.Id))
+        {
+            throw new WorkflowDomainException("Workflow id is required and is used as the stable workflow key.");
+        }
+
+        if (definition.Id.EnumerateRunes().Count() > 300)
+        {
+            throw new WorkflowDomainException("Workflow id must contain at most 300 Unicode scalar values.");
+        }
+
+        if (string.IsNullOrWhiteSpace(definition.Name))
+        {
+            throw new WorkflowDomainException("Workflow name is required.");
+        }
+
+        if (definition.FlowNodes.Count == 0)
+        {
+            throw new WorkflowDomainException("Workflow must contain at least one flow node.");
+        }
+
+        ValidateUniqueIdentifiers(definition);
+        ValidateRoleSources(definition);
+        ValidateMessageStartExternalIds(definition);
+        ValidateFlowInfoUsage(definition);
+        ValidateGatewayExpressionUsage(definition);
+
+        // initialEventId is optional: a workflow whose only entry is a
+        // messageStartEvent (system-started) has no user-facing default start.
+        // When set it must reference an existing node that is a user startEvent
+        // (a messageStartEvent is a valid entry but cannot be the default).
+        if (definition.InitialEventId is not null)
+        {
+            if (definition.FlowNodes.All(n => n.Id != definition.InitialEventId))
+            {
+                throw new WorkflowDomainException("Workflow initialEventId must reference an existing flow node.");
+            }
+
+            var initialNode = definition.FlowNodes.Single(n => n.Id == definition.InitialEventId);
+            if (!BpmnFlowNodeTypes.IsStart(initialNode.Type))
+            {
+                throw new WorkflowDomainException("Workflow initialEventId must reference a start event.");
+            }
+        }
+
+        // A workflow must have at least one entry event (a user startEvent started
+        // via POST /api/instances, or a messageStartEvent started via the webhook).
+        if (!definition.FlowNodes.Any(n => BpmnFlowNodeTypes.IsEntry(n.Type)))
+        {
+            throw new WorkflowDomainException(
+                "Workflow must have at least one entry event (startEvent, messageStartEvent, or timerStartEvent).");
+        }
+
+        ValidateBusinessKeys(definition);
+        ValidateIdempotency(definition);
+        ValidateTaskDistribution(definition);
+
+        ValidateProcessVariables(definition.Variables);
+        ValidateEntryProcessVariableCollisions(definition);
+        ValidateSharedVariableProducerAccess(definition);
+
+        var nodeIds = definition.FlowNodes.Select(n => n.Id).ToHashSet();
+        var incomingByNodeId = nodeIds.ToDictionary(
+            id => id,
+            _ => new List<SequenceFlowModel>());
+        var outgoingByNodeId = nodeIds.ToDictionary(
+            id => id,
+            _ => new List<SequenceFlowModel>());
+
+        foreach (var flow in definition.SequenceFlows)
+        {
+            ValidateAttributes(flow.Attributes, $"sequence flow #{flow.Id}");
+
+            if (!nodeIds.Contains(flow.SourceRef))
+            {
+                throw new WorkflowDomainException($"Sequence flow #{flow.Id} has a missing sourceRef #{flow.SourceRef}.");
+            }
+
+            if (!nodeIds.Contains(flow.TargetRef))
+            {
+                throw new WorkflowDomainException($"Sequence flow #{flow.Id} has a missing targetRef #{flow.TargetRef}.");
+            }
+
+            var sourceNode = definition.FlowNodes.Single(n => n.Id == flow.SourceRef);
+            if (flow.Variables is not null && flow.Variables.Count > 0 && !BpmnFlowNodeTypes.IsUserTask(sourceNode.Type))
+            {
+                throw new WorkflowDomainException($"Sequence flow #{flow.Id} has variables but its source node is not a user task.");
+            }
+
+            if ((flow.CanActWithoutClaim || flow.CanActWithoutClaimRoles.Count > 0)
+                && !BpmnFlowNodeTypes.IsUserTask(sourceNode.Type))
+            {
+                throw new WorkflowDomainException($"Sequence flow #{flow.Id} defines claim-bypass metadata, but its source node is not a user task.");
+            }
+
+            ValidateVariables(flow.Variables ?? [], $"sequence flow #{flow.Id}");
+            outgoingByNodeId[flow.SourceRef].Add(flow);
+            incomingByNodeId[flow.TargetRef].Add(flow);
+        }
+
+        var structuralTargetsBySource = BuildStructuralAdjacency(definition);
+        foreach (var node in definition.FlowNodes)
+        {
+            ValidateAttributes(node.Attributes, $"flow node #{node.Id}");
+
+            if (string.IsNullOrWhiteSpace(node.Name))
+            {
+                throw new WorkflowDomainException($"Flow node #{node.Id} name is required.");
+            }
+
+            if (!BpmnFlowNodeTypes.IsSupported(node.Type))
+            {
+                throw new WorkflowDomainException($"Flow node #{node.Id} has an unsupported type '{node.Type}'.");
+            }
+
+            var outgoing = outgoingByNodeId[node.Id];
+            var incoming = incomingByNodeId[node.Id];
+
+            ValidateAsyncConfiguration(node);
+
+            if (BpmnFlowNodeTypes.IsTimer(node.Type))
+            {
+                ValidateTimerDefinition(node);
+            }
+
+            if (BpmnFlowNodeTypes.IsEntry(node.Type))
+            {
+                ValidateEntryTopology(node, incoming, outgoing);
+            }
+
+            if (outgoing.Any(f => !f.IsSelectable)
+                && (!BpmnFlowNodeTypes.IsUserTask(node.Type) || node.MultiInstance is null))
+            {
+                throw new WorkflowDomainException(
+                    $"Flow isSelectable=false is supported only on multi-instance user task #{node.Id}.");
+            }
+
+            // errorEndEvent and terminateEndEvent are covered by IsEnd (incoming
+            // and no outgoing). errorBoundaryEvent has exactly one outgoing (the
+            // error path) and no incoming flows (it is attached, not reached via
+            // a normal sequence flow).
+            if (BpmnFlowNodeTypes.IsEnd(node.Type) && incoming.Count == 0)
+            {
+                throw new WorkflowDomainException($"End event #{node.Id} must have at least one incoming sequence flow.");
+            }
+
+            if (BpmnFlowNodeTypes.IsEnd(node.Type) && outgoing.Count > 0)
+            {
+                throw new WorkflowDomainException($"End event #{node.Id} cannot have outgoing sequence flows.");
+            }
+
+            if (BpmnFlowNodeTypes.IsErrorEnd(node.Type))
+            {
+                ValidateErrorEnd(node);
+            }
+
+            if (BpmnFlowNodeTypes.IsParallelGateway(node.Type))
+            {
+                ValidateParallelGateway(node, incoming, outgoing);
+            }
+
+            if (BpmnFlowNodeTypes.IsInclusiveGateway(node.Type))
+            {
+                ValidateInclusiveGateway(node, incoming, outgoing);
+            }
+
+            if (BpmnFlowNodeTypes.IsComplexGateway(node.Type))
+            {
+                ValidateComplexGateway(node, incoming, outgoing);
+            }
+
+            if (node.JoinCancellation is not null)
+            {
+                ValidateJoinCancellation(
+                    node,
+                    definition,
+                    incoming,
+                    outgoing,
+                    incomingByNodeId,
+                    outgoingByNodeId,
+                    structuralTargetsBySource);
+            }
+
+            if (BpmnFlowNodeTypes.IsScopedInterrupt(node.Type))
+            {
+                ValidateScopedInterrupt(
+                    node,
+                    definition,
+                    incoming,
+                    outgoing,
+                    incomingByNodeId,
+                    outgoingByNodeId,
+                    structuralTargetsBySource);
+            }
+
+            if ((BpmnFlowNodeTypes.IsStart(node.Type)
+                    || BpmnFlowNodeTypes.IsAutomatic(node.Type)
+                    || BpmnFlowNodeTypes.IsServiceTask(node.Type)
+                    || BpmnFlowNodeTypes.IsScriptTask(node.Type)
+                    || BpmnFlowNodeTypes.IsErrorBoundary(node.Type)
+                    || BpmnFlowNodeTypes.IsTimerBoundary(node.Type)
+                    || BpmnFlowNodeTypes.IsConditionalBoundary(node.Type)
+                    || BpmnFlowNodeTypes.IsMessageCatch(node.Type)
+                    || BpmnFlowNodeTypes.IsTimerCatch(node.Type)
+                    || BpmnFlowNodeTypes.IsConditionalCatch(node.Type)
+                    || BpmnFlowNodeTypes.IsTimerStart(node.Type)
+                    || BpmnFlowNodeTypes.IsMessageStart(node.Type))
+                && outgoing.Count != 1)
+            {
+                var kind = BpmnFlowNodeTypes.IsStart(node.Type)
+                    ? "Start event"
+                    : BpmnFlowNodeTypes.IsServiceTask(node.Type)
+                        ? "Service task"
+                        : BpmnFlowNodeTypes.IsScriptTask(node.Type)
+                            ? "Script task"
+                            : BpmnFlowNodeTypes.IsErrorBoundary(node.Type)
+                                ? "Error boundary event"
+                                : BpmnFlowNodeTypes.IsTimerBoundary(node.Type)
+                                    ? "Timer boundary event"
+                                : BpmnFlowNodeTypes.IsConditionalBoundary(node.Type)
+                                    ? "Conditional boundary event"
+                                : BpmnFlowNodeTypes.IsMessageCatch(node.Type)
+                                    ? "Message catch event"
+                                    : BpmnFlowNodeTypes.IsTimerCatch(node.Type)
+                                        ? "Timer catch event"
+                                        : BpmnFlowNodeTypes.IsConditionalCatch(node.Type)
+                                            ? "Conditional catch event"
+                                        : BpmnFlowNodeTypes.IsTimerStart(node.Type)
+                                            ? "Timer start event"
+                                    : BpmnFlowNodeTypes.IsMessageStart(node.Type)
+                                        ? "Message start event"
+                                        : "Automatic task";
+                throw new WorkflowDomainException($"{kind} #{node.Id} must have exactly one outgoing sequence flow.");
+            }
+
+            if (BpmnFlowNodeTypes.IsErrorBoundary(node.Type))
+            {
+                ValidateErrorBoundary(node, definition, incoming, outgoing);
+            }
+
+            if (BpmnFlowNodeTypes.IsTimerBoundary(node.Type))
+            {
+                ValidateTimerBoundary(node, definition, incoming, outgoing);
+            }
+
+            if (BpmnFlowNodeTypes.IsConditionalBoundary(node.Type))
+            {
+                ValidateConditionalBoundary(node, definition, incoming, outgoing);
+            }
+
+            if (BpmnFlowNodeTypes.IsServiceTask(node.Type))
+            {
+                ValidateServiceTask(node, definition.Variables);
+            }
+
+            if (BpmnFlowNodeTypes.IsScriptTask(node.Type))
+            {
+                ValidateScriptTaskOutgoingFlow(node, outgoing);
+                ValidateScriptTask(node, definition);
+            }
+
+            if (BpmnFlowNodeTypes.IsMessageCatch(node.Type))
+            {
+                ValidateMessageCatch(node, outgoing, definition.Variables);
+            }
+
+            if (BpmnFlowNodeTypes.IsTimerCatch(node.Type))
+            {
+                ValidateTimerCatch(node, incoming, outgoing);
+            }
+
+            if (BpmnFlowNodeTypes.IsConditionalCatch(node.Type))
+            {
+                ValidateConditionalCatch(node, incoming, outgoing);
+            }
+
+            if (BpmnFlowNodeTypes.IsMessageStart(node.Type))
+            {
+                ValidateMessageStart(node);
+            }
+
+            if (!BpmnFlowNodeTypes.IsUserTask(node.Type)
+                && !string.IsNullOrWhiteSpace(node.AssigneeExpression))
+            {
+                throw new WorkflowDomainException(
+                    $"Flow node #{node.Id} has an assignee expression but is not a user task.");
+            }
+
+            if (BpmnFlowNodeTypes.IsUserTask(node.Type) && outgoing.Count == 0)
+            {
+                throw new WorkflowDomainException($"User task #{node.Id} must have at least one outgoing sequence flow.");
+            }
+
+            if (BpmnFlowNodeTypes.IsUserTask(node.Type))
+            {
+                ValidateClaimMode(node, definition);
+                ValidateAssignmentMode(node, definition);
+
+                if (node.MultiInstance is not null)
+                {
+                    if (!string.IsNullOrWhiteSpace(node.AssigneeExpression))
+                    {
+                        throw new WorkflowDomainException(
+                            $"Multi-instance user task #{node.Id} cannot define an assignee expression.");
+                    }
+                    ValidateMultiInstance(node, outgoing, definition);
+                }
+                else
+                {
+                    if (outgoing.Any(f => f.CancelRemainingInstances
+                                          || f.CompletionPriority is not null
+                                          || !string.IsNullOrWhiteSpace(f.CompletionCondition)))
+                    {
+                        throw new WorkflowDomainException(
+                            $"User task #{node.Id} has multi-instance flow settings but no multiInstance configuration.");
+                    }
+
+                    if (outgoing.Any(f => f.IsDefault))
+                    {
+                        throw new WorkflowDomainException(
+                            $"User task #{node.Id} cannot define a default flow unless it is multi-instance.");
+                    }
+                }
+
+                if (!string.IsNullOrWhiteSpace(node.AssigneeExpression)
+                    && !SequenceFlowConditionEvaluator.IsValid(node.AssigneeExpression))
+                {
+                    throw new WorkflowDomainException(
+                        $"User task #{node.Id} has an invalid assignee expression: '{node.AssigneeExpression}'.");
+                }
+
+                foreach (var flow in outgoing.Where(f => !string.IsNullOrWhiteSpace(f.Condition)))
+                {
+                    if (!SequenceFlowConditionEvaluator.IsValid(flow.Condition))
+                    {
+                        throw new WorkflowDomainException(
+                            $"Sequence flow #{flow.Id} has an invalid condition expression: '{flow.Condition}'.");
+                    }
+                }
+            }
+
+            if (BpmnFlowNodeTypes.IsExclusiveGateway(node.Type))
+            {
+                ValidateExclusiveGateway(node, incoming, outgoing);
+            }
+
+            ValidateVariables(node.Variables, $"flow node #{node.Id}");
+        }
+
+        _ = InboxVisibilityConditionCompiler.CompileAll(definition);
+        _ = conditionalAnalyzer.Analyze(definition);
+    }
+
+    private static void ValidateRoleSources(WorkflowModel definition)
+    {
+        foreach (var node in definition.FlowNodes ?? [])
+        {
+            if (node.RolesVariable is null) continue;
+            if (!BpmnFlowNodeTypes.IsUserTask(node.Type))
+                throw new WorkflowDomainException($"Flow node #{node.Id} can define rolesVariable only when type='userTask'.");
+            UserTaskRolePolicyResolver.ValidateRoleSource(definition, node.RolesVariable, node.Roles, $"User task #{node.Id}");
+        }
+        foreach (var flow in definition.SequenceFlows ?? [])
+        {
+            if (flow.RolesVariable is null) continue;
+            var source = (definition.FlowNodes ?? []).FirstOrDefault(node => node.Id == flow.SourceRef);
+            if (source is null || !BpmnFlowNodeTypes.IsUserTask(source.Type)
+                || !flow.IsSelectable || flow.IsDefault)
+                throw new WorkflowDomainException($"Sequence flow #{flow.Id} rolesVariable is supported only on selectable, non-default user-task flows.");
+            UserTaskRolePolicyResolver.ValidateRoleSource(definition, flow.RolesVariable, flow.Roles, $"Sequence flow #{flow.Id}");
+        }
+    }
+
+    private static void ValidateAuthoredInboxVisibilityMetadata(WorkflowModel definition)
+    {
+        var invalid = definition.FlowNodes.FirstOrDefault(node =>
+            !BpmnFlowNodeTypes.IsUserTask(node.Type)
+            && !string.IsNullOrWhiteSpace(node.InboxVisibilityCondition));
+        if (invalid is not null)
+        {
+            throw new WorkflowDomainException(
+                $"Flow node #{invalid.Id} defines inboxVisibilityCondition but is not a user task.");
+        }
+
+        foreach (var node in definition.FlowNodes.Where(node =>
+                     BpmnFlowNodeTypes.IsUserTask(node.Type)
+                     && !string.IsNullOrWhiteSpace(node.InboxVisibilityCondition)))
+        {
+            try
+            {
+                InboxVisibilityConditionCompiler.ValidateAuthoredSource(
+                    node.InboxVisibilityCondition);
+            }
+            catch (WorkflowDomainException exception)
+            {
+                throw new WorkflowDomainException(
+                    $"User task #{node.Id} has an invalid inboxVisibilityCondition: {exception.Message}");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Rejects conditional-event data on other node types and metadata that the
+    /// tolerant migrator would otherwise discard from a conditional event.
+    /// </summary>
+    private static void ValidateAuthoredConditionalEventMetadata(WorkflowModel definition)
+    {
+        foreach (var node in definition.FlowNodes ?? [])
+        {
+            if (!BpmnFlowNodeTypes.IsConditionalEvent(node.Type))
+            {
+                if (node.Conditional is not null)
+                {
+                    throw new WorkflowDomainException(
+                        $"Flow node #{node.Id} defines conditional metadata but is not a conditional event.");
+                }
+                continue;
+            }
+
+            var isBoundary = BpmnFlowNodeTypes.IsConditionalBoundary(node.Type);
+            var description = isBoundary
+                ? $"Conditional boundary event #{node.Id}"
+                : $"Conditional catch event #{node.Id}";
+            if (node.Conditional is not null
+                && !string.IsNullOrWhiteSpace(node.Conditional.DeliveryMode)
+                && ConditionalEventDeliveryModes.GetEffective(node.Conditional.DeliveryMode)
+                    is not (ConditionalEventDeliveryModes.Atomic
+                        or ConditionalEventDeliveryModes.DurableAsync))
+            {
+                throw new WorkflowDomainException(
+                    $"{description} has unsupported deliveryMode '{node.Conditional.DeliveryMode}'.");
+            }
+
+            if (node.AsyncBefore || node.AsyncAfter || node.Job is not null
+                || node.Timer is not null
+                || node.Roles is { Count: > 0 } || node.RequiresClaim
+                || !string.Equals(node.ClaimMode, ClaimModes.Fresh, StringComparison.OrdinalIgnoreCase)
+                || node.InheritClaimFromNodeId is not null
+                || node.Variables is { Count: > 0 } || node.Service is not null
+                || node.Message is not null || node.BusinessKey is not null
+                || node.Idempotency is not null
+                || !string.Equals(node.ScriptFormat, ScriptFormats.NCalc, StringComparison.OrdinalIgnoreCase)
+                || node.Assignments is { Count: > 0 }
+                || !string.IsNullOrWhiteSpace(node.Script) || node.UsesFlowInfo is not null
+                || !string.IsNullOrWhiteSpace(node.AssigneeExpression)
+                || node.RequiresAssignment
+                || !string.Equals(node.AssignmentMode, AssignmentModes.Fresh, StringComparison.OrdinalIgnoreCase)
+                || node.InheritAssignmentFromNodeId is not null
+                || !string.IsNullOrWhiteSpace(node.InboxVisibilityCondition)
+                || node.MultiInstance is not null
+                || (!isBoundary && (node.AttachedToRef is not null || node.CancelActivity is not null))
+                || !string.IsNullOrWhiteSpace(node.ErrorVariable)
+                || !string.IsNullOrWhiteSpace(node.ErrorCode)
+                || !string.IsNullOrWhiteSpace(node.ErrorDescription)
+                || !string.IsNullOrWhiteSpace(node.ActivationCondition)
+                || node.GatewayRef is not null || node.JoinCancellation is not null)
+            {
+                throw new WorkflowDomainException(
+                    $"{description} cannot define task, role, variable, async, or other event metadata.");
+            }
+        }
+    }
+
+    private void ValidateServiceTask(
+        FlowNodeModel node,
+        IReadOnlyList<VariableModel> processVariables)
+    {
+        var service = node.Service
+            ?? throw new WorkflowDomainException($"Service task #{node.Id} must have a service configuration.");
+
+        if (!string.Equals(service.Type, ServiceConnectorTypes.Rest, StringComparison.Ordinal))
+        {
+            throw new WorkflowDomainException(
+                $"Service task #{node.Id} has an unsupported connector type '{service.Type ?? "null"}'.");
+        }
+
+        if (string.IsNullOrWhiteSpace(service.Url))
+        {
+            throw new WorkflowDomainException($"Service task #{node.Id} must have a URL.");
+        }
+
+        if (!service.Url.Contains("${", StringComparison.Ordinal))
+        {
+            ValidateRestUri(service.Url, $"Service task #{node.Id} URL");
+        }
+
+        var allowedMethods = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "GET", "POST", "PUT", "PATCH", "DELETE"
+        };
+        if (!allowedMethods.Contains(service.Method))
+        {
+            throw new WorkflowDomainException(
+                $"Service task #{node.Id} has an unsupported HTTP method '{service.Method}'.");
+        }
+
+        if (service.TimeoutSeconds <= 0 || service.TimeoutSeconds > serviceTaskOptions.MaxTimeoutSeconds)
+        {
+            throw new WorkflowDomainException(
+                $"Service task #{node.Id} timeout must be between 1 and {serviceTaskOptions.MaxTimeoutSeconds} seconds.");
+        }
+
+        foreach (var header in service.Headers)
+        {
+            if (header is null)
+            {
+                throw new WorkflowDomainException($"Service task #{node.Id} has a null header entry.");
+            }
+
+            if (string.IsNullOrWhiteSpace(header.Name))
+            {
+                throw new WorkflowDomainException($"Service task #{node.Id} has a header with no name.");
+            }
+
+            ValidateRestHeader(node.Id, header);
+        }
+
+        if (service.OutputMappings.Any(mapping => mapping is null))
+        {
+            throw new WorkflowDomainException($"Service task #{node.Id} has a null output mapping entry.");
+        }
+
+        if (!string.IsNullOrWhiteSpace(service.StatusVariable))
+        {
+            ValidateRuntimeOutputTarget(
+                service.StatusVariable,
+                WorkflowVariableTypes.Number,
+                processVariables,
+                $"Service task #{node.Id} statusVariable");
+
+            if (service.OutputMappings.Any(mapping => string.Equals(
+                    mapping.Variable,
+                    service.StatusVariable,
+                    StringComparison.OrdinalIgnoreCase)))
+            {
+                throw new WorkflowDomainException(
+                    $"Service task #{node.Id} statusVariable '{service.StatusVariable}' cannot also be an output mapping target.");
+            }
+        }
+
+        ValidateTypedOutputMappings(
+            node.Id,
+            "Service task",
+            service.OutputMappings.Select(ToTypedOutputDefinition),
+            processVariables);
+    }
+
+    // An intermediateMessageCatchEvent rests until a message is delivered via
+    // POST /api/instances/{id}/message. The delivery caller is authenticated
+    // against the expected clientId/clientSecret and a required custom header
+    // (headerName/headerValue); headerValidation is an optional NCalc rule
+    // evaluated with the incoming header value bound as `header`. outputMappings
+    // extract dotted-path values from the inbound JSON body. All scalar fields
+    // are ${var}-templatable (only presence is checked at author time).
+    // Shared credential/header validation for an intermediateMessageCatchEvent
+    // and a messageStartEvent. Their mapping-contract rules are applied by the
+    // entry/catch-specific validators below.
+    private static void ValidateMessageConfig(FlowNodeModel node, string kind)
+    {
+        var message = node.Message
+            ?? throw new WorkflowDomainException($"{kind} #{node.Id} must have a message configuration.");
+
+        if (string.IsNullOrWhiteSpace(message.ClientId))
+        {
+            throw new WorkflowDomainException($"{kind} #{node.Id} must have a client id.");
+        }
+
+        if (string.IsNullOrWhiteSpace(message.ClientSecret))
+        {
+            throw new WorkflowDomainException($"{kind} #{node.Id} must have a client secret.");
+        }
+
+        if (string.IsNullOrWhiteSpace(message.HeaderName))
+        {
+            throw new WorkflowDomainException($"{kind} #{node.Id} must have a header name.");
+        }
+
+        if (string.IsNullOrWhiteSpace(message.HeaderValue))
+        {
+            throw new WorkflowDomainException($"{kind} #{node.Id} must have a header value.");
+        }
+
+        if (!message.ClientId.Contains("${", StringComparison.Ordinal)
+            && message.ClientId.EnumerateRunes().Take(UserTaskConstraints.MaxActorNameLength + 1).Count()
+                > UserTaskConstraints.MaxActorNameLength)
+        {
+            throw new WorkflowDomainException(
+                $"{kind} #{node.Id} client id cannot exceed {UserTaskConstraints.MaxActorNameLength} Unicode characters.");
+        }
+
+        if (!message.HeaderName.Contains("${", StringComparison.Ordinal))
+        {
+            ValidateMessageHeaderName(node.Id, kind, message.HeaderName);
+        }
+
+        if (message.DeliveryIdempotency)
+        {
+            var idempotencyHeaderName = message.DeliveryIdempotencyHeaderName?.Trim() ?? string.Empty;
+            ValidateDeliveryIdempotencyHeaderName(node.Id, kind, idempotencyHeaderName);
+            if (!message.HeaderName.Contains("${", StringComparison.Ordinal)
+                && string.Equals(message.HeaderName.Trim(), idempotencyHeaderName, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new WorkflowDomainException(
+                    $"{kind} #{node.Id} delivery idempotency header must differ from the message correlation header.");
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(message.HeaderValidation)
+            && !SequenceFlowConditionEvaluator.IsValid(message.HeaderValidation))
+        {
+            throw new WorkflowDomainException(
+                $"{kind} #{node.Id} has an invalid header validation expression: '{message.HeaderValidation}'.");
+        }
+
+        foreach (var mapping in message.OutputMappings)
+        {
+            if (mapping is null)
+            {
+                throw new WorkflowDomainException(
+                    $"{kind} #{node.Id} has a null output mapping.");
+            }
+
+            if (string.IsNullOrWhiteSpace(mapping.Variable))
+            {
+                throw new WorkflowDomainException(
+                    $"{kind} #{node.Id} has an output mapping with no variable name.");
+            }
+
+        }
+    }
+
+    private static void ValidateAuthoredClaimBypassMetadata(WorkflowModel definition)
+    {
+        var nodes = definition.FlowNodes ?? [];
+        foreach (var flow in definition.SequenceFlows ?? [])
+        {
+            if (!flow.CanActWithoutClaim) continue;
+            var source = nodes.FirstOrDefault(node => node.Id == flow.SourceRef);
+            if (source is null) continue;
+            if (!BpmnFlowNodeTypes.IsUserTask(source.Type))
+                throw new WorkflowDomainException(
+                    $"Sequence flow #{flow.Id} is marked to act without claim, but its source node is not a user task.");
+            if (!flow.IsSelectable)
+                throw new WorkflowDomainException(
+                    $"Engine-only sequence flow #{flow.Id} cannot define claim-bypass metadata.");
+        }
+    }
+
+    /// <summary>
+    /// Rejects catch-only delivery-idempotency metadata on newly authored message
+    /// starts before the tolerant migrator removes it. Persisted legacy snapshots
+    /// continue to normalize without failing at runtime.
+    /// </summary>
+    private static void ValidateAuthoredMessageStartMetadata(WorkflowModel definition)
+    {
+        foreach (var node in definition.FlowNodes ?? [])
+        {
+            if (node is null || !BpmnFlowNodeTypes.IsMessageStart(node.Type) || node.Message is null)
+            {
+                continue;
+            }
+
+            if (node.Message.DeliveryIdempotency
+                || !string.IsNullOrWhiteSpace(node.Message.DeliveryIdempotencyHeaderName))
+            {
+                throw new WorkflowDomainException(
+                    $"Message start event #{node.Id} cannot define deliveryIdempotency; use node-level idempotency instead.");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Rejects async/timer fields that tolerant compatibility normalization would
+    /// otherwise discard from an inapplicable node type.
+    /// </summary>
+    private static void ValidateAuthoredAsyncTimerMetadata(WorkflowModel definition)
+    {
+        foreach (var node in definition.FlowNodes ?? [])
+        {
+            if (!BpmnFlowNodeTypes.IsAsyncCapableTask(node.Type)
+                && (node.AsyncBefore || node.AsyncAfter || node.Job is not null))
+            {
+                throw new WorkflowDomainException(
+                    $"Flow node #{node.Id} defines async job metadata but is not a task activity.");
+            }
+
+            if (node.Job is not null)
+            {
+                if (!node.AsyncBefore && !node.AsyncAfter)
+                {
+                    throw new WorkflowDomainException(
+                        $"Flow node #{node.Id} defines a job policy but has neither asyncBefore nor asyncAfter enabled.");
+                }
+            }
+
+            if (!BpmnFlowNodeTypes.IsTimer(node.Type) && node.Timer is not null)
+            {
+                throw new WorkflowDomainException(
+                    $"Flow node #{node.Id} defines a timer but is not a timer event.");
+            }
+
+            if (BpmnFlowNodeTypes.IsTimerStart(node.Type)
+                && (node.BusinessKey is not null || node.Idempotency is not null))
+            {
+                throw new WorkflowDomainException(
+                    $"Timer start event #{node.Id} cannot define businessKey or idempotency; scheduler occurrences use an internal key.");
+            }
+
+            if (!BpmnFlowNodeTypes.IsTimerBoundary(node.Type)
+                && !BpmnFlowNodeTypes.IsConditionalBoundary(node.Type)
+                && node.CancelActivity is not null)
+            {
+                throw new WorkflowDomainException(
+                    $"Flow node #{node.Id} defines cancelActivity but is not a timer or conditional boundary event.");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Rejects gateway/control-event metadata before tolerant normalization can
+    /// discard inactive node fields. Incoming flows remain unrestricted because
+    /// they may originate at user activities.
+    /// </summary>
+    private static void ValidateAuthoredGatewayControlFlowMetadata(WorkflowModel definition)
+    {
+        var nodes = definition.FlowNodes ?? [];
+        var flows = definition.SequenceFlows ?? [];
+        var incomingCounts = flows
+            .GroupBy(flow => flow.TargetRef)
+            .ToDictionary(group => group.Key, group => group.Count());
+        var outgoingCounts = flows
+            .GroupBy(flow => flow.SourceRef)
+            .ToDictionary(group => group.Key, group => group.Count());
+
+        foreach (var node in nodes)
+        {
+            if (!BpmnFlowNodeTypes.IsComplexGateway(node.Type)
+                && !string.IsNullOrWhiteSpace(node.ActivationCondition))
+            {
+                throw new WorkflowDomainException(
+                    $"Flow node #{node.Id} defines activationCondition but is not a Complex gateway.");
+            }
+
+            if (!BpmnFlowNodeTypes.IsScopedInterrupt(node.Type) && node.GatewayRef is not null)
+            {
+                throw new WorkflowDomainException(
+                    $"Flow node #{node.Id} defines gatewayRef but is not a scoped interrupt event.");
+            }
+
+            if (node.JoinCancellation is not null)
+            {
+                if (!BpmnFlowNodeTypes.IsGateway(node.Type))
+                {
+                    throw new WorkflowDomainException(
+                        $"Flow node #{node.Id} defines joinCancellation but is not a gateway merge.");
+                }
+
+                var incomingCount = incomingCounts.GetValueOrDefault(node.Id);
+                var outgoingCount = outgoingCounts.GetValueOrDefault(node.Id);
+                if (!IsGatewayMergeTopology(incomingCount, outgoingCount))
+                {
+                    throw new WorkflowDomainException(
+                        $"Gateway #{node.Id} defines joinCancellation but is not a merge with at least two incoming and exactly one outgoing sequence flow.");
+                }
+
+                if (node.JoinCancellation.GatewayRef is null or <= 0)
+                {
+                    throw new WorkflowDomainException(
+                        $"Gateway merge #{node.Id} joinCancellation must define a positive gatewayRef.");
+                }
+            }
+
+            if (BpmnFlowNodeTypes.IsScopedInterrupt(node.Type)
+                && HasUnsupportedScopedInterruptNodeMetadata(node))
+            {
+                throw new WorkflowDomainException(
+                    $"Scoped interrupt event #{node.Id} cannot define task, role, variable, event, or multi-instance metadata.");
+            }
+        }
+
+        foreach (var flow in flows)
+        {
+            var source = nodes.FirstOrDefault(node => node.Id == flow.SourceRef);
+            if (source is null)
+            {
+                continue;
+            }
+
+            var incomingCount = incomingCounts.GetValueOrDefault(source.Id);
+            var outgoingCount = outgoingCounts.GetValueOrDefault(source.Id);
+            var isSplit = IsGatewaySplitTopology(incomingCount, outgoingCount);
+            var isMerge = IsGatewayMergeTopology(incomingCount, outgoingCount);
+
+            if (BpmnFlowNodeTypes.IsParallelGateway(source.Type)
+                || BpmnFlowNodeTypes.IsScopedInterrupt(source.Type)
+                || (BpmnFlowNodeTypes.IsInclusiveGateway(source.Type) && isMerge))
+            {
+                if (HasUnsupportedPassThroughMetadata(flow))
+                {
+                    throw new WorkflowDomainException(
+                        $"Sequence flow #{flow.Id} from {GatewayKind(source.Type).ToLowerInvariant()} #{source.Id} must be unconditional and cannot define action or multi-instance metadata.");
+                }
+                continue;
+            }
+
+            if (BpmnFlowNodeTypes.IsInclusiveGateway(source.Type))
+            {
+                if (flow.ConditionPriority is not null)
+                {
+                    throw new WorkflowDomainException(
+                        $"Sequence flow #{flow.Id} from inclusive gateway #{source.Id} cannot define conditionPriority.");
+                }
+
+                if (flow.IsDefault && !string.IsNullOrWhiteSpace(flow.Condition))
+                {
+                    throw new WorkflowDomainException(
+                        $"Default sequence flow #{flow.Id} from inclusive gateway #{source.Id} cannot define a condition.");
+                }
+
+                if (HasUnsupportedGatewayActionMetadata(flow))
+                {
+                    throw new WorkflowDomainException(
+                        $"Sequence flow #{flow.Id} from inclusive gateway #{source.Id} cannot define user-action or multi-instance metadata.");
+                }
+                continue;
+            }
+
+            if (BpmnFlowNodeTypes.IsComplexGateway(source.Type))
+            {
+                if (flow.ConditionPriority is not null)
+                {
+                    throw new WorkflowDomainException(
+                        $"Sequence flow #{flow.Id} from Complex gateway #{source.Id} cannot define conditionPriority.");
+                }
+
+                if (flow.IsDefault && !string.IsNullOrWhiteSpace(flow.Condition))
+                {
+                    throw new WorkflowDomainException(
+                        $"Default sequence flow #{flow.Id} from Complex gateway #{source.Id} cannot define a condition.");
+                }
+
+                if (HasUnsupportedGatewayActionMetadata(flow))
+                {
+                    throw new WorkflowDomainException(
+                        $"Sequence flow #{flow.Id} from Complex gateway #{source.Id} cannot define user-action or multi-instance metadata.");
+                }
+            }
+        }
+    }
+
+    private static bool HasUnsupportedScopedInterruptNodeMetadata(FlowNodeModel node) =>
+        node.Roles is { Count: > 0 }
+        || node.RequiresClaim
+        || !string.Equals(node.ClaimMode, ClaimModes.Fresh, StringComparison.OrdinalIgnoreCase)
+        || node.InheritClaimFromNodeId is not null
+        || node.Variables is { Count: > 0 }
+        || node.Service is not null
+        || node.Message is not null
+        || node.BusinessKey is not null
+        || node.Idempotency is not null
+        || !string.Equals(node.ScriptFormat, ScriptFormats.NCalc, StringComparison.OrdinalIgnoreCase)
+        || node.Assignments is { Count: > 0 }
+        || !string.IsNullOrWhiteSpace(node.Script)
+        || node.UsesFlowInfo is not null
+        || !string.IsNullOrWhiteSpace(node.AssigneeExpression)
+        || node.RequiresAssignment
+        || !string.Equals(node.AssignmentMode, AssignmentModes.Fresh, StringComparison.OrdinalIgnoreCase)
+        || node.InheritAssignmentFromNodeId is not null
+        || node.MultiInstance is not null
+        || node.AttachedToRef is not null
+        || !string.IsNullOrWhiteSpace(node.ErrorVariable)
+        || !string.IsNullOrWhiteSpace(node.ErrorCode)
+        || !string.IsNullOrWhiteSpace(node.ErrorDescription);
+
+    /// <summary>
+    /// Rejects gateway metadata that the tolerant migrator may otherwise clear.
+    /// Existing persisted definitions still normalize without this authored-input
+    /// check, while create/update requests receive an actionable validation error.
+    /// </summary>
+    private static void ValidateAuthoredExclusiveGatewayMetadata(WorkflowModel definition)
+    {
+        var nodes = definition.FlowNodes ?? [];
+        var flows = definition.SequenceFlows ?? [];
+        var incomingCounts = flows
+            .GroupBy(flow => flow.TargetRef)
+            .ToDictionary(group => group.Key, group => group.Count());
+        var outgoingCounts = flows
+            .GroupBy(flow => flow.SourceRef)
+            .ToDictionary(group => group.Key, group => group.Count());
+        foreach (var flow in flows)
+        {
+            var source = nodes.FirstOrDefault(node => node.Id == flow.SourceRef);
+            var isGateway = source is not null && BpmnFlowNodeTypes.IsExclusiveGateway(source.Type);
+            if (!isGateway)
+            {
+                if (flow.ConditionPriority is not null)
+                {
+                    throw new WorkflowDomainException(
+                        $"Sequence flow #{flow.Id} defines conditionPriority but its source node is not an Exclusive split.");
+                }
+                continue;
+            }
+
+            var incomingCount = incomingCounts.GetValueOrDefault(source!.Id);
+            var outgoingCount = outgoingCounts.GetValueOrDefault(source.Id);
+            if (!IsGatewaySplitTopology(incomingCount, outgoingCount))
+            {
+                if (IsGatewayMergeTopology(incomingCount, outgoingCount)
+                    && HasUnsupportedPassThroughMetadata(flow))
+                {
+                    throw new WorkflowDomainException(
+                        $"Sequence flow #{flow.Id} from Exclusive merge #{source!.Id} must be unconditional and cannot define action or multi-instance metadata.");
+                }
+                continue;
+            }
+
+            if (flow.IsDefault
+                && (!string.IsNullOrWhiteSpace(flow.Condition) || flow.ConditionPriority is not null))
+            {
+                throw new WorkflowDomainException(
+                    $"Default sequence flow #{flow.Id} from exclusive gateway #{source!.Id} cannot define a condition or conditionPriority.");
+            }
+
+            if (!flow.IsDefault && flow.ConditionPriority is null)
+            {
+                throw new WorkflowDomainException(
+                    $"Non-default sequence flow #{flow.Id} from exclusive gateway #{source!.Id} must explicitly define a positive conditionPriority.");
+            }
+
+            if (flow.Roles is { Count: > 0 }
+                || flow.Variables is { Count: > 0 }
+                || !flow.IsSelectable
+                || flow.CanActWithoutClaim
+                || flow.CanActWithoutClaimRoles is { Count: > 0 }
+                || !string.IsNullOrWhiteSpace(flow.CompletionCondition)
+                || flow.CompletionPriority is not null
+                || flow.CancelRemainingInstances)
+            {
+                throw new WorkflowDomainException(
+                    $"Sequence flow #{flow.Id} from exclusive gateway #{source!.Id} cannot define user-action or multi-instance metadata.");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Rejects malformed authored Script Task payloads before the tolerant model
+    /// migrator can discard inactive fields or canonicalize an unknown format.
+    /// Persisted legacy definitions still use the tolerant normalization path.
+    /// </summary>
+    private static void ValidateAuthoredScriptTaskMetadata(WorkflowModel definition)
+    {
+        foreach (var node in definition.FlowNodes ?? [])
+        {
+            if (!BpmnFlowNodeTypes.IsScriptTask(node.Type))
+            {
+                if (node.UsesFlowInfo == true)
+                {
+                    throw new WorkflowDomainException(
+                        $"Flow node #{node.Id} enables usesFlowInfo but is not a script task.");
+                }
+
+                continue;
+            }
+
+            if (string.IsNullOrWhiteSpace(node.ScriptFormat))
+            {
+                throw new WorkflowDomainException(
+                    $"Script task #{node.Id} must have scriptFormat 'ncalc' or 'javascript'.");
+            }
+
+            var isNCalc = string.Equals(
+                node.ScriptFormat,
+                ScriptFormats.NCalc,
+                StringComparison.OrdinalIgnoreCase);
+            var isJavaScript = string.Equals(
+                node.ScriptFormat,
+                ScriptFormats.JavaScript,
+                StringComparison.OrdinalIgnoreCase);
+            if (!isNCalc && !isJavaScript)
+            {
+                throw new WorkflowDomainException(
+                    $"Script task #{node.Id} has an unsupported scriptFormat '{node.ScriptFormat}'.");
+            }
+
+            if (isJavaScript)
+            {
+                if (node.Assignments is { Count: > 0 })
+                {
+                    throw new WorkflowDomainException(
+                        $"Script task #{node.Id} uses scriptFormat 'javascript' and must not have assignments.");
+                }
+
+                if (string.IsNullOrWhiteSpace(node.Script))
+                {
+                    throw new WorkflowDomainException($"Script task #{node.Id} must have a script body.");
+                }
+
+                if (node.UsesFlowInfo == false
+                    && JavaScriptFlowInfoUsage.ContainsDirectCall(node.Script))
+                {
+                    throw new WorkflowDomainException(
+                        $"Script task #{node.Id} calls execution.getFlowInfo but usesFlowInfo is false.");
+                }
+
+                continue;
+            }
+
+            if (!string.IsNullOrWhiteSpace(node.Script))
+            {
+                throw new WorkflowDomainException(
+                    $"Script task #{node.Id} uses scriptFormat 'ncalc' and must not have a script body.");
+            }
+
+            if (node.UsesFlowInfo == true)
+            {
+                throw new WorkflowDomainException(
+                    $"Script task #{node.Id} uses scriptFormat 'ncalc'; usesFlowInfo applies only to JavaScript.");
+            }
+
+            if (node.Assignments is null)
+            {
+                throw new WorkflowDomainException(
+                    $"Script task #{node.Id} uses scriptFormat 'ncalc' and must have an assignments array.");
+            }
+
+            if (node.Assignments.Any(assignment => assignment is null))
+            {
+                throw new WorkflowDomainException(
+                    $"Script task #{node.Id} has a null assignment entry.");
+            }
+        }
+    }
+
+    private static void ValidateScriptTaskOutgoingFlow(
+        FlowNodeModel node,
+        IReadOnlyList<SequenceFlowModel> outgoing)
+    {
+        if (outgoing.Count != 1)
+        {
+            return;
+        }
+
+        if (HasUnsupportedPassThroughMetadata(outgoing[0]))
+        {
+            throw new WorkflowDomainException(
+                $"Script task #{node.Id} must have one unconditional outgoing sequence flow without user-action or multi-instance metadata.");
+        }
+    }
+
+    private static bool HasUnsupportedPassThroughMetadata(SequenceFlowModel flow) =>
+        !flow.IsSelectable
+        || flow.IsDefault
+        || !string.IsNullOrWhiteSpace(flow.Condition)
+        || flow.ConditionPriority is not null
+        || flow.Roles is { Count: > 0 }
+        || flow.Variables is { Count: > 0 }
+        || flow.CanActWithoutClaim
+        || flow.CanActWithoutClaimRoles is { Count: > 0 }
+        || !string.IsNullOrWhiteSpace(flow.CompletionCondition)
+        || flow.CompletionPriority is not null
+        || flow.CancelRemainingInstances;
+
+    private static bool HasUnsupportedGatewayActionMetadata(SequenceFlowModel flow) =>
+        !flow.IsSelectable
+        || flow.Roles is { Count: > 0 }
+        || flow.Variables is { Count: > 0 }
+        || flow.CanActWithoutClaim
+        || flow.CanActWithoutClaimRoles is { Count: > 0 }
+        || !string.IsNullOrWhiteSpace(flow.CompletionCondition)
+        || flow.CompletionPriority is not null
+        || flow.CancelRemainingInstances;
+
+    private static string GatewayKind(string type) =>
+        BpmnFlowNodeTypes.IsExclusiveGateway(type) ? "Exclusive gateway"
+        : BpmnFlowNodeTypes.IsParallelGateway(type) ? "Parallel gateway"
+        : BpmnFlowNodeTypes.IsInclusiveGateway(type) ? "Inclusive gateway"
+        : BpmnFlowNodeTypes.IsComplexGateway(type) ? "Complex gateway"
+        : BpmnFlowNodeTypes.IsScopedInterrupt(type) ? "Scoped interrupt event"
+        : "Flow node";
+
+    private static bool ValidateGatewayTopology(
+        FlowNodeModel node,
+        IReadOnlyCollection<SequenceFlowModel> incoming,
+        IReadOnlyCollection<SequenceFlowModel> outgoing)
+    {
+        var isSplit = IsGatewaySplitTopology(incoming.Count, outgoing.Count);
+        var isMerge = IsGatewayMergeTopology(incoming.Count, outgoing.Count);
+        if (!isSplit && !isMerge)
+        {
+            throw new WorkflowDomainException(
+                $"{GatewayKind(node.Type)} #{node.Id} must be a split with exactly one incoming and at least two outgoing sequence flows, or a merge with at least two incoming and exactly one outgoing sequence flow. Use two adjacent gateways instead of a one-in/one-out or many-in/many-out gateway.");
+        }
+
+        return isSplit;
+    }
+
+    private static void ValidateExclusiveGateway(
+        FlowNodeModel node,
+        IReadOnlyCollection<SequenceFlowModel> incoming,
+        IReadOnlyCollection<SequenceFlowModel> outgoing)
+    {
+        var isSplit = ValidateGatewayTopology(node, incoming, outgoing);
+        if (!isSplit)
+        {
+            var invalidMergeFlow = outgoing.FirstOrDefault(HasUnsupportedPassThroughMetadata);
+            if (invalidMergeFlow is not null)
+            {
+                throw new WorkflowDomainException(
+                    $"Sequence flow #{invalidMergeFlow.Id} from Exclusive merge #{node.Id} must be unconditional and cannot define action or multi-instance metadata.");
+            }
+            return;
+        }
+
+        var defaultCount = outgoing.Count(flow => flow.IsDefault);
+        if (defaultCount != 1)
+        {
+            throw new WorkflowDomainException(
+                $"Exclusive gateway #{node.Id} must have exactly one default sequence flow; actual count was {defaultCount}.");
+        }
+
+        var defaultFlow = outgoing.Single(flow => flow.IsDefault);
+        if (!string.IsNullOrWhiteSpace(defaultFlow.Condition)
+            || defaultFlow.ConditionPriority is not null)
+        {
+            throw new WorkflowDomainException(
+                $"Default sequence flow #{defaultFlow.Id} from Exclusive gateway #{node.Id} cannot define a condition or conditionPriority.");
+        }
+
+        var invalidActionFlow = outgoing.FirstOrDefault(HasUnsupportedGatewayActionMetadata);
+        if (invalidActionFlow is not null)
+        {
+            throw new WorkflowDomainException(
+                $"Sequence flow #{invalidActionFlow.Id} from Exclusive gateway #{node.Id} cannot define user-action or multi-instance metadata.");
+        }
+
+        var conditionalFlows = outgoing.Where(flow => !flow.IsDefault).ToList();
+        if (conditionalFlows.Any(flow => string.IsNullOrWhiteSpace(flow.Condition)))
+        {
+            throw new WorkflowDomainException(
+                $"Every non-default sequence flow from Exclusive gateway #{node.Id} must define a condition.");
+        }
+
+        if (conditionalFlows.Any(flow => flow.ConditionPriority is null or <= 0))
+        {
+            throw new WorkflowDomainException(
+                $"Every non-default sequence flow from Exclusive gateway #{node.Id} must define a positive conditionPriority.");
+        }
+
+        var duplicatePriority = conditionalFlows
+            .GroupBy(flow => flow.ConditionPriority!.Value)
+            .FirstOrDefault(group => group.Count() > 1)?.Key;
+        if (duplicatePriority is not null)
+        {
+            throw new WorkflowDomainException(
+                $"Exclusive gateway #{node.Id} has duplicate conditionPriority {duplicatePriority}.");
+        }
+
+        foreach (var flow in conditionalFlows)
+        {
+            if (!SequenceFlowConditionEvaluator.IsValid(flow.Condition))
+            {
+                throw new WorkflowDomainException(
+                    $"Sequence flow #{flow.Id} has an invalid condition expression: '{flow.Condition}'.");
+            }
+        }
+    }
+
+    private static void ValidateParallelGateway(
+        FlowNodeModel node,
+        IReadOnlyCollection<SequenceFlowModel> incoming,
+        IReadOnlyCollection<SequenceFlowModel> outgoing)
+    {
+        ValidateGatewayTopology(node, incoming, outgoing);
+
+        var invalidFlow = outgoing.FirstOrDefault(HasUnsupportedPassThroughMetadata);
+        if (invalidFlow is not null)
+        {
+            throw new WorkflowDomainException(
+                $"Sequence flow #{invalidFlow.Id} from parallel gateway #{node.Id} must be unconditional and cannot define action or multi-instance metadata.");
+        }
+    }
+
+    private static void ValidateInclusiveGateway(
+        FlowNodeModel node,
+        IReadOnlyCollection<SequenceFlowModel> incoming,
+        IReadOnlyCollection<SequenceFlowModel> outgoing)
+    {
+        var isSplit = ValidateGatewayTopology(node, incoming, outgoing);
+        if (!isSplit)
+        {
+            var invalidMergeFlow = outgoing.FirstOrDefault(HasUnsupportedPassThroughMetadata);
+            if (invalidMergeFlow is not null)
+            {
+                throw new WorkflowDomainException(
+                    $"Sequence flow #{invalidMergeFlow.Id} from Inclusive merge #{node.Id} must be unconditional and cannot define action or multi-instance metadata.");
+            }
+            return;
+        }
+
+        var defaultCount = outgoing.Count(flow => flow.IsDefault);
+        if (defaultCount != 1)
+        {
+            throw new WorkflowDomainException(
+                $"Inclusive gateway #{node.Id} must have exactly one default sequence flow; actual count was {defaultCount}.");
+        }
+
+        var defaultFlow = outgoing.Single(flow => flow.IsDefault);
+        if (!string.IsNullOrWhiteSpace(defaultFlow.Condition))
+        {
+            throw new WorkflowDomainException(
+                $"Default sequence flow #{defaultFlow.Id} from Inclusive gateway #{node.Id} cannot define a condition.");
+        }
+
+        var priorityFlow = outgoing.FirstOrDefault(flow => flow.ConditionPriority is not null);
+        if (priorityFlow is not null)
+        {
+            throw new WorkflowDomainException(
+                $"Sequence flow #{priorityFlow.Id} from Inclusive gateway #{node.Id} cannot define conditionPriority.");
+        }
+
+        var invalidActionFlow = outgoing.FirstOrDefault(HasUnsupportedGatewayActionMetadata);
+        if (invalidActionFlow is not null)
+        {
+            throw new WorkflowDomainException(
+                $"Sequence flow #{invalidActionFlow.Id} from Inclusive gateway #{node.Id} cannot define user-action or multi-instance metadata.");
+        }
+
+        foreach (var flow in outgoing.Where(flow => !flow.IsDefault))
+        {
+            if (string.IsNullOrWhiteSpace(flow.Condition))
+            {
+                throw new WorkflowDomainException(
+                    $"Every non-default sequence flow from Inclusive gateway #{node.Id} must define a condition.");
+            }
+
+            if (!SequenceFlowConditionEvaluator.IsValid(flow.Condition))
+            {
+                throw new WorkflowDomainException(
+                    $"Sequence flow #{flow.Id} has an invalid condition expression: '{flow.Condition}'.");
+            }
+        }
+    }
+
+    private static void ValidateComplexGateway(
+        FlowNodeModel node,
+        IReadOnlyCollection<SequenceFlowModel> incoming,
+        IReadOnlyCollection<SequenceFlowModel> outgoing)
+    {
+        ValidateGatewayTopology(node, incoming, outgoing);
+        if (string.IsNullOrWhiteSpace(node.ActivationCondition))
+        {
+            throw new WorkflowDomainException(
+                $"Complex gateway #{node.Id} must define activationCondition.");
+        }
+
+        if (!SequenceFlowConditionEvaluator.IsValid(node.ActivationCondition))
+        {
+            throw new WorkflowDomainException(
+                $"Complex gateway #{node.Id} has an invalid activationCondition: '{node.ActivationCondition}'.");
+        }
+
+        var defaultCount = outgoing.Count(flow => flow.IsDefault);
+        if (defaultCount > 1)
+        {
+            throw new WorkflowDomainException(
+                $"Complex gateway #{node.Id} may have at most one default sequence flow; actual count was {defaultCount}.");
+        }
+
+        foreach (var flow in outgoing)
+        {
+            if (flow.ConditionPriority is not null)
+            {
+                throw new WorkflowDomainException(
+                    $"Sequence flow #{flow.Id} from Complex gateway #{node.Id} cannot define conditionPriority.");
+            }
+
+            if (flow.IsDefault && !string.IsNullOrWhiteSpace(flow.Condition))
+            {
+                throw new WorkflowDomainException(
+                    $"Default sequence flow #{flow.Id} from Complex gateway #{node.Id} cannot define a condition.");
+            }
+
+            if (!flow.IsDefault && string.IsNullOrWhiteSpace(flow.Condition))
+            {
+                throw new WorkflowDomainException(
+                    $"Every non-default sequence flow from Complex gateway #{node.Id} must define a condition.");
+            }
+
+            if (!string.IsNullOrWhiteSpace(flow.Condition)
+                && !SequenceFlowConditionEvaluator.IsValid(flow.Condition))
+            {
+                throw new WorkflowDomainException(
+                    $"Sequence flow #{flow.Id} has an invalid condition expression: '{flow.Condition}'.");
+            }
+
+            if (HasUnsupportedGatewayActionMetadata(flow))
+            {
+                throw new WorkflowDomainException(
+                    $"Sequence flow #{flow.Id} from Complex gateway #{node.Id} cannot define user-action or multi-instance metadata.");
+            }
+        }
+    }
+
+    private static void ValidateScopedInterrupt(
+        FlowNodeModel node,
+        WorkflowModel definition,
+        IReadOnlyCollection<SequenceFlowModel> incoming,
+        IReadOnlyCollection<SequenceFlowModel> outgoing,
+        IReadOnlyDictionary<int, List<SequenceFlowModel>> incomingByNodeId,
+        IReadOnlyDictionary<int, List<SequenceFlowModel>> outgoingByNodeId,
+        IReadOnlyDictionary<int, int[]> structuralTargetsBySource)
+    {
+        if (incoming.Count != 1 || outgoing.Count != 1)
+        {
+            throw new WorkflowDomainException(
+                $"Scoped interrupt event #{node.Id} must have exactly one incoming and exactly one outgoing sequence flow.");
+        }
+
+        if (node.GatewayRef is null)
+        {
+            throw new WorkflowDomainException(
+                $"Scoped interrupt event #{node.Id} must reference a Parallel, Inclusive, or Complex split via gatewayRef.");
+        }
+
+        var fork = definition.FlowNodes.SingleOrDefault(candidate =>
+            candidate.Id == node.GatewayRef.Value);
+        if (fork is null)
+        {
+            throw new WorkflowDomainException(
+                $"Scoped interrupt event #{node.Id} gatewayRef #{node.GatewayRef} does not reference an existing flow node.");
+        }
+
+        if (!BpmnFlowNodeTypes.IsScopeProducingGateway(fork.Type))
+        {
+            throw new WorkflowDomainException(
+                $"Scoped interrupt event #{node.Id} gatewayRef #{fork.Id} must reference a Parallel, Inclusive, or Complex gateway.");
+        }
+
+        var forkIncomingCount = incomingByNodeId[fork.Id].Count;
+        var forkOutgoingCount = outgoingByNodeId[fork.Id].Count;
+        if (!IsGatewaySplitTopology(forkIncomingCount, forkOutgoingCount))
+        {
+            throw new WorkflowDomainException(
+                $"Scoped interrupt event #{node.Id} gatewayRef #{fork.Id} must reference a split with exactly one incoming and at least two outgoing sequence flows.");
+        }
+
+        var continuation = outgoing.Single();
+        if (HasUnsupportedPassThroughMetadata(continuation))
+        {
+            throw new WorkflowDomainException(
+                $"Scoped interrupt event #{node.Id} must have one unconditional outgoing sequence flow without user-action or multi-instance metadata.");
+        }
+
+        var target = definition.FlowNodes.Single(candidate =>
+            candidate.Id == continuation.TargetRef);
+        if (BpmnFlowNodeTypes.IsEntry(target.Type))
+        {
+            throw new WorkflowDomainException(
+                $"Scoped interrupt event #{node.Id} cannot continue directly to entry event #{target.Id}.");
+        }
+
+        if (BpmnFlowNodeTypes.IsErrorBoundary(target.Type))
+        {
+            throw new WorkflowDomainException(
+                $"Scoped interrupt event #{node.Id} cannot continue directly to error boundary event #{target.Id}.");
+        }
+
+        if (target.Id == node.Id)
+        {
+            throw new WorkflowDomainException(
+                $"Scoped interrupt event #{node.Id} cannot continue directly to itself.");
+        }
+
+        if (BpmnFlowNodeTypes.IsParallelGateway(target.Type)
+            || BpmnFlowNodeTypes.IsComplexGateway(target.Type))
+        {
+            var targetIncomingCount = incomingByNodeId[target.Id].Count;
+            var targetOutgoingCount = outgoingByNodeId[target.Id].Count;
+            if (IsGatewayMergeTopology(targetIncomingCount, targetOutgoingCount))
+            {
+                throw new WorkflowDomainException(
+                    $"Scoped interrupt event #{node.Id} cannot continue directly to {GatewayKind(target.Type).ToLowerInvariant()} merge #{target.Id}.");
+            }
+        }
+
+        if (!HasStructuralPath(structuralTargetsBySource, fork.Id, node.Id))
+        {
+            throw new WorkflowDomainException(
+                $"Scoped interrupt event #{node.Id} must be structurally reachable from referenced gateway split #{fork.Id}.");
+        }
+    }
+
+    private static void ValidateJoinCancellation(
+        FlowNodeModel node,
+        WorkflowModel definition,
+        IReadOnlyCollection<SequenceFlowModel> incoming,
+        IReadOnlyCollection<SequenceFlowModel> outgoing,
+        IReadOnlyDictionary<int, List<SequenceFlowModel>> incomingByNodeId,
+        IReadOnlyDictionary<int, List<SequenceFlowModel>> outgoingByNodeId,
+        IReadOnlyDictionary<int, int[]> structuralTargetsBySource)
+    {
+        if (!BpmnFlowNodeTypes.IsGateway(node.Type)
+            || !IsGatewayMergeTopology(incoming.Count, outgoing.Count))
+        {
+            throw new WorkflowDomainException(
+                $"Flow node #{node.Id} may define joinCancellation only on an Exclusive, Parallel, Inclusive, or Complex gateway merge.");
+        }
+
+        var gatewayRef = node.JoinCancellation!.GatewayRef;
+        if (gatewayRef is null or <= 0)
+        {
+            throw new WorkflowDomainException(
+                $"Gateway merge #{node.Id} joinCancellation must define a positive gatewayRef.");
+        }
+
+        var split = definition.FlowNodes.SingleOrDefault(candidate =>
+            candidate.Id == gatewayRef.Value);
+        if (split is null)
+        {
+            throw new WorkflowDomainException(
+                $"Gateway merge #{node.Id} joinCancellation gatewayRef #{gatewayRef} does not reference an existing flow node.");
+        }
+
+        if (split.Id == node.Id)
+        {
+            throw new WorkflowDomainException(
+                $"Gateway merge #{node.Id} joinCancellation gatewayRef cannot reference the merge itself.");
+        }
+
+        if (!BpmnFlowNodeTypes.IsScopeProducingGateway(split.Type))
+        {
+            throw new WorkflowDomainException(
+                $"Gateway merge #{node.Id} joinCancellation gatewayRef #{split.Id} must reference a Parallel, Inclusive, or Complex gateway.");
+        }
+
+        var splitIncomingCount = incomingByNodeId[split.Id].Count;
+        var splitOutgoingCount = outgoingByNodeId[split.Id].Count;
+        if (!IsGatewaySplitTopology(splitIncomingCount, splitOutgoingCount))
+        {
+            throw new WorkflowDomainException(
+                $"Gateway merge #{node.Id} joinCancellation gatewayRef #{split.Id} must reference a split with exactly one incoming and at least two outgoing sequence flows.");
+        }
+
+        var unrelatedInput = incoming.FirstOrDefault(flow =>
+            !IsStructurallyDownstreamBeforeMerge(
+                structuralTargetsBySource,
+                split.Id,
+                flow.SourceRef,
+                node.Id));
+        if (unrelatedInput is not null)
+        {
+            throw new WorkflowDomainException(
+                $"Gateway merge #{node.Id} incoming sequence flow #{unrelatedInput.Id} is not structurally downstream of joinCancellation gateway split #{split.Id}.");
+        }
+    }
+
+    private static bool IsGatewaySplitTopology(int incomingCount, int outgoingCount) =>
+        incomingCount == 1 && outgoingCount >= 2;
+
+    private static bool IsGatewayMergeTopology(int incomingCount, int outgoingCount) =>
+        incomingCount >= 2 && outgoingCount == 1;
+
+    private static IReadOnlyDictionary<int, int[]> BuildStructuralAdjacency(
+        WorkflowModel definition)
+    {
+        // A boundary event is structurally reached through its attachment rather
+        // than an authored incoming sequence flow.
+        return definition.SequenceFlows
+            .Select(flow => (Source: flow.SourceRef, Target: flow.TargetRef))
+            .Concat(definition.FlowNodes
+                .Where(node =>
+                    (BpmnFlowNodeTypes.IsErrorBoundary(node.Type)
+                        || BpmnFlowNodeTypes.IsTimerBoundary(node.Type)
+                        || BpmnFlowNodeTypes.IsConditionalBoundary(node.Type))
+                    && node.AttachedToRef is not null)
+                .Select(node => (Source: node.AttachedToRef!.Value, Target: node.Id)))
+            .GroupBy(edge => edge.Source)
+            .ToDictionary(
+                group => group.Key,
+                group => group.Select(edge => edge.Target).Distinct().ToArray());
+    }
+
+    private static bool HasStructuralPath(
+        IReadOnlyDictionary<int, int[]> targetsBySource,
+        int sourceNodeId,
+        int targetNodeId)
+    {
+        var visited = new HashSet<int> { sourceNodeId };
+        var queue = new Queue<int>();
+        queue.Enqueue(sourceNodeId);
+
+        while (queue.TryDequeue(out var current))
+        {
+            if (!targetsBySource.TryGetValue(current, out var targets))
+            {
+                continue;
+            }
+
+            foreach (var target in targets)
+            {
+                if (target == targetNodeId)
+                {
+                    return true;
+                }
+
+                if (visited.Add(target))
+                {
+                    queue.Enqueue(target);
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsStructurallyDownstreamBeforeMerge(
+        IReadOnlyDictionary<int, int[]> targetsBySource,
+        int splitNodeId,
+        int candidateNodeId,
+        int mergeNodeId)
+    {
+        if (candidateNodeId == splitNodeId)
+        {
+            return true;
+        }
+
+        // Do not accept a cyclic path that reaches the candidate only after
+        // passing through the cancelling merge itself.
+        var visited = new HashSet<int> { splitNodeId, mergeNodeId };
+        var queue = new Queue<int>();
+        queue.Enqueue(splitNodeId);
+
+        while (queue.TryDequeue(out var current))
+        {
+            if (!targetsBySource.TryGetValue(current, out var targets))
+            {
+                continue;
+            }
+
+            foreach (var target in targets)
+            {
+                if (target == mergeNodeId)
+                {
+                    continue;
+                }
+
+                if (target == candidateNodeId)
+                {
+                    return true;
+                }
+
+                if (visited.Add(target))
+                {
+                    queue.Enqueue(target);
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private static void ValidateTaskDistribution(WorkflowModel definition)
+    {
+        var distribution = definition.TaskDistribution;
+        if (distribution is null)
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(distribution.ClientId))
+        {
+            throw new WorkflowDomainException(
+                "Workflow taskDistribution must have a clientId when configured.");
+        }
+
+        if (string.IsNullOrWhiteSpace(distribution.ClientSecret))
+        {
+            throw new WorkflowDomainException(
+                "Workflow taskDistribution must have a clientSecret when configured.");
+        }
+    }
+
+    private static void ValidateMessageCatch(
+        FlowNodeModel node,
+        IReadOnlyList<SequenceFlowModel> outgoing,
+        IReadOnlyList<VariableModel> processVariables)
+    {
+        ValidateMessageConfig(node, "Message catch event");
+        if (outgoing.Count == 1 && HasUnsupportedPassThroughMetadata(outgoing[0]))
+        {
+            throw new WorkflowDomainException(
+                $"Message catch event #{node.Id} must have one unconditional outgoing sequence flow without user-action or multi-instance metadata.");
+        }
+
+        ValidateTypedOutputMappings(
+            node.Id,
+            "Message catch event",
+            node.Message!.OutputMappings.Select(ToTypedOutputDefinition),
+            processVariables);
+    }
+
+    private static void ValidateMessageHeaderName(
+        int nodeId,
+        string kind,
+        string value)
+    {
+        var name = value.Trim();
+        if (name.Length > 300 || !Regex.IsMatch(name, @"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$"))
+        {
+            throw new WorkflowDomainException(
+                $"{kind} #{nodeId} header name '{value}' is not a valid HTTP field name.");
+        }
+
+        if (name.Equals("X-Client-Id", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("X-Client-Secret", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new WorkflowDomainException(
+                $"{kind} #{nodeId} header name '{value}' is reserved.");
+        }
+    }
+
+    private static void ValidateDeliveryIdempotencyHeaderName(
+        int nodeId,
+        string kind,
+        string name)
+    {
+        if (name.Length == 0
+            || name.Length > 300
+            || !Regex.IsMatch(name, @"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$"))
+        {
+            throw new WorkflowDomainException(
+                $"{kind} #{nodeId} deliveryIdempotencyHeaderName must be a valid HTTP field name of at most 300 characters.");
+        }
+
+        if (ReservedIdempotencyHeaders.Contains(name))
+        {
+            throw new WorkflowDomainException(
+                $"{kind} #{nodeId} delivery idempotency header '{name}' is reserved.");
+        }
+    }
+
+    private static void ValidateRestUri(string value, string owner)
+    {
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri)
+            || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps)
+            || !string.IsNullOrEmpty(uri.UserInfo)
+            || !string.IsNullOrEmpty(uri.Fragment))
+        {
+            throw new WorkflowDomainException(
+                $"{owner} must be an absolute HTTP(S) URL without embedded credentials or a fragment.");
+        }
+    }
+
+    private static void ValidateRestHeader(int nodeId, ServiceHeaderModel header)
+    {
+        var name = header.Name.Trim();
+        if (name.Length > 300 || !Regex.IsMatch(name, @"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$"))
+        {
+            throw new WorkflowDomainException(
+                $"Service task #{nodeId} header name '{header.Name}' is not a valid HTTP field name.");
+        }
+
+        var forbidden = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "Host", "Content-Length", "Transfer-Encoding", "Connection", "TE", "Trailer", "Upgrade"
+        };
+        if (forbidden.Contains(name))
+        {
+            throw new WorkflowDomainException(
+                $"Service task #{nodeId} cannot set request-framing header '{name}'.");
+        }
+
+
+        if (header.Value is not null && (header.Value.Contains('\r') || header.Value.Contains('\n')))
+        {
+            throw new WorkflowDomainException(
+                $"Service task #{nodeId} header '{name}' cannot contain line breaks.");
+        }
+
+        if (string.Equals(name, "Content-Type", StringComparison.OrdinalIgnoreCase)
+            && header.Value?.Contains("${", StringComparison.Ordinal) != true
+            && !MediaTypeHeaderValue.TryParse(header.Value, out _))
+        {
+            throw new WorkflowDomainException(
+                $"Service task #{nodeId} has an invalid Content-Type header value.");
+        }
+    }
+
+    private static void ValidateRuntimeOutputTarget(
+        string target,
+        string expectedDataType,
+        IReadOnlyList<VariableModel> processVariables,
+        string owner)
+    {
+        if (string.IsNullOrWhiteSpace(target) || target.EnumerateRunes().Count() > 300)
+        {
+            throw new WorkflowDomainException($"{owner} must be a nonblank variable name of at most 300 characters.");
+        }
+
+        if (target.StartsWith("sys.", StringComparison.OrdinalIgnoreCase)
+            || target.StartsWith("config.", StringComparison.OrdinalIgnoreCase)
+            || target.StartsWith("setting.", StringComparison.OrdinalIgnoreCase)
+            || target.StartsWith("mi.", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new WorkflowDomainException($"{owner} '{target}' uses a reserved context prefix.");
+        }
+
+        var processVariable = processVariables.FirstOrDefault(variable =>
+            string.Equals(variable.Name, target, StringComparison.OrdinalIgnoreCase));
+        if (processVariable is not null
+            && (!string.Equals(processVariable.DataType, expectedDataType, StringComparison.Ordinal)
+                || processVariable.IsArray))
+        {
+            throw new WorkflowDomainException(
+                $"{owner} '{target}' must target a scalar {expectedDataType} process variable.");
+        }
+    }
+
+    // A messageStartEvent's typed output mappings are its start-variable
+    // declarations. Node-level idempotency is a separate implicit required string
+    // variable populated only from the configured request header.
+    private static void ValidateMessageStart(FlowNodeModel node)
+    {
+        ValidateMessageConfig(node, "Message start event");
+
+        var message = node.Message!;
+        var variables = new List<VariableModel>(message.OutputMappings.Count);
+        foreach (var mapping in message.OutputMappings)
+        {
+            if (mapping.DataType is null || mapping.IsArray is null)
+            {
+                throw new WorkflowDomainException(
+                    $"Message start event #{node.Id} output mapping for '{mapping.Variable}' must declare dataType and isArray.");
+            }
+
+            var hasDefault = mapping.DefaultValue is { } defaultValue
+                && defaultValue.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined);
+            if (string.IsNullOrWhiteSpace(mapping.Path) && !hasDefault)
+            {
+                throw new WorkflowDomainException(
+                    $"Message start event #{node.Id} output mapping for '{mapping.Variable}' must have a path unless defaultValue is configured.");
+            }
+
+            var variable = ToMessageStartVariable(mapping);
+            variables.Add(variable);
+
+            if (hasDefault
+                && !TypedOutputValueValidator.IsValidAuthoredDefault(
+                    mapping.DefaultValue!.Value,
+                    variable.DataType,
+                    variable.IsArray))
+            {
+                throw new WorkflowDomainException(
+                    $"Message start event #{node.Id} output mapping default for '{mapping.Variable}' must be {TypedOutputValueValidator.DescribeExpected(variable.DataType, variable.IsArray)}.");
+            }
+        }
+        ValidateVariables(
+            variables,
+            $"message start event #{node.Id} output mappings",
+            requireDefault: false,
+            allowRequiredDefault: true);
+
+        if (!string.IsNullOrWhiteSpace(message.IdempotencyVariable))
+        {
+            throw new WorkflowDomainException(
+                $"Message start event #{node.Id} cannot configure both legacy message.idempotencyVariable and node idempotency.");
+        }
+    }
+
+    private static VariableModel ToMessageStartVariable(MessageOutputMappingModel mapping) => new()
+    {
+        Name = mapping.Variable,
+        DataType = mapping.DataType ?? string.Empty,
+        IsArray = mapping.IsArray ?? false,
+        Required = mapping.Required,
+        DefaultValue = mapping.DefaultValue,
+        Validation = mapping.Validation
+    };
+
+    private static TypedOutputDefinition ToTypedOutputDefinition(ServiceOutputMappingModel mapping) => new(
+        mapping.Variable,
+        mapping.Path,
+        mapping.Required,
+        mapping.DataType,
+        mapping.IsArray,
+        mapping.DefaultValue,
+        mapping.Validation);
+
+    private static TypedOutputDefinition ToTypedOutputDefinition(MessageOutputMappingModel mapping) => new(
+        mapping.Variable,
+        mapping.Path,
+        mapping.Required,
+        mapping.DataType,
+        mapping.IsArray,
+        mapping.DefaultValue,
+        mapping.Validation);
+
+    private static void ValidateTypedOutputMappings(
+        int nodeId,
+        string kind,
+        IEnumerable<TypedOutputDefinition> source,
+        IReadOnlyList<VariableModel> processVariables)
+    {
+        var mappings = source.ToList();
+        var variables = new List<VariableModel>(mappings.Count);
+        foreach (var mapping in mappings)
+        {
+            if (mapping.DataType is null || mapping.IsArray is null)
+            {
+                throw new WorkflowDomainException(
+                    $"{kind} #{nodeId} output mapping for '{mapping.Variable}' must declare dataType and isArray.");
+            }
+
+            var hasDefault = mapping.DefaultValue is { } defaultValue
+                && defaultValue.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined);
+            if (string.IsNullOrWhiteSpace(mapping.Path) && !hasDefault)
+            {
+                throw new WorkflowDomainException(
+                    $"{kind} #{nodeId} output mapping for '{mapping.Variable}' must have a path unless defaultValue is configured.");
+            }
+
+            var variable = new VariableModel
+            {
+                Name = mapping.Variable,
+                DataType = mapping.DataType,
+                IsArray = mapping.IsArray.Value,
+                Required = mapping.Required,
+                DefaultValue = mapping.DefaultValue,
+                Validation = mapping.Validation
+            };
+            variables.Add(variable);
+
+            if (hasDefault
+                && !TypedOutputValueValidator.IsValidAuthoredDefault(
+                    mapping.DefaultValue!.Value,
+                    variable.DataType,
+                    variable.IsArray))
+            {
+                throw new WorkflowDomainException(
+                    $"{kind} #{nodeId} output mapping default for '{mapping.Variable}' must be {TypedOutputValueValidator.DescribeExpected(variable.DataType, variable.IsArray)}.");
+            }
+
+            var processVariable = processVariables.FirstOrDefault(candidate =>
+                string.Equals(candidate.Name, mapping.Variable, StringComparison.OrdinalIgnoreCase));
+            if (processVariable is not null
+                && (!string.Equals(processVariable.DataType, variable.DataType, StringComparison.Ordinal)
+                    || processVariable.IsArray != variable.IsArray))
+            {
+                throw new WorkflowDomainException(
+                    $"{kind} #{nodeId} output mapping '{mapping.Variable}' must match process variable '{processVariable.Name}' type {TypedOutputValueValidator.DescribeExpected(processVariable.DataType, processVariable.IsArray)}.");
+            }
+        }
+
+        ValidateVariables(
+            variables,
+            $"{kind.ToLowerInvariant()} #{nodeId} output mappings",
+            requireDefault: false,
+            allowRequiredDefault: true);
+    }
+
+    private sealed record TypedOutputDefinition(
+        string Variable,
+        string Path,
+        bool Required,
+        string? DataType,
+        bool? IsArray,
+        JsonElement? DefaultValue,
+        string? Validation);
+
+    // An errorBoundaryEvent is attached to exactly one serviceTask/scriptTask
+    // (attachedToRef), has no incoming sequence flows (it is reached by the
+    // engine's error routing, not a normal flow), and at most one boundary may
+    // be attached to a given host.
+    private static void ValidateErrorBoundary(
+        FlowNodeModel node,
+        WorkflowModel definition,
+        List<SequenceFlowModel> incoming,
+        List<SequenceFlowModel> outgoing)
+    {
+        if (node.AttachedToRef is null)
+        {
+            throw new WorkflowDomainException($"Error boundary event #{node.Id} must reference a host via attachedToRef.");
+        }
+
+        var host = definition.FlowNodes.SingleOrDefault(n => n.Id == node.AttachedToRef);
+        if (host is null)
+        {
+            throw new WorkflowDomainException(
+                $"Error boundary event #{node.Id} attachedToRef #{node.AttachedToRef} does not reference an existing flow node.");
+        }
+
+        if (!BpmnFlowNodeTypes.IsServiceTask(host.Type) && !BpmnFlowNodeTypes.IsScriptTask(host.Type))
+        {
+            throw new WorkflowDomainException(
+                $"Error boundary event #{node.Id} attachedToRef #{node.AttachedToRef} must reference a service task or script task.");
+        }
+
+        if (incoming.Count != 0)
+        {
+            throw new WorkflowDomainException(
+                $"Error boundary event #{node.Id} cannot have incoming sequence flows.");
+        }
+
+        if (outgoing.Count == 1 && HasUnsupportedPassThroughMetadata(outgoing[0]))
+        {
+            throw new WorkflowDomainException(
+                $"Error boundary event #{node.Id} must have one unconditional outgoing sequence flow without user-action or multi-instance metadata.");
+        }
+
+        var siblings = definition.FlowNodes.Count(n =>
+            BpmnFlowNodeTypes.IsErrorBoundary(n.Type) && n.AttachedToRef == node.AttachedToRef);
+        if (siblings > 1)
+        {
+            throw new WorkflowDomainException(
+                $"Host node #{host.Id} has {siblings} error boundary events; at most one is allowed.");
+        }
+
+        if (!string.IsNullOrWhiteSpace(node.ErrorVariable))
+        {
+            ValidateRuntimeOutputTarget(
+                node.ErrorVariable,
+                WorkflowVariableTypes.String,
+                definition.Variables,
+                $"Error boundary event #{node.Id} errorVariable");
+
+            if (host.Service is { } service
+                && (string.Equals(service.StatusVariable, node.ErrorVariable, StringComparison.OrdinalIgnoreCase)
+                    || service.OutputMappings.Any(mapping => mapping is not null && string.Equals(
+                        mapping.Variable,
+                        node.ErrorVariable,
+                        StringComparison.OrdinalIgnoreCase))))
+            {
+                throw new WorkflowDomainException(
+                    $"Error boundary event #{node.Id} errorVariable '{node.ErrorVariable}' collides with a host service output target.");
+            }
+        }
+    }
+
+    private static void ValidateClaimMode(FlowNodeModel node, WorkflowModel definition)
+    {
+        var mode = node.ClaimMode;
+        if (mode != ClaimModes.Fresh && mode != ClaimModes.Previous && mode != ClaimModes.FromNode)
+        {
+            throw new WorkflowDomainException(
+                $"User task #{node.Id} has an unsupported claimMode '{mode}'.");
+        }
+
+        if (mode == ClaimModes.Fresh)
+        {
+            return;
+        }
+
+        if (!node.RequiresClaim)
+        {
+            throw new WorkflowDomainException(
+                $"User task #{node.Id} claimMode '{mode}' requires requiresClaim to be true.");
+        }
+
+        if (mode == ClaimModes.FromNode)
+        {
+            if (node.InheritClaimFromNodeId is null)
+            {
+                throw new WorkflowDomainException(
+                    $"User task #{node.Id} claimMode 'fromNode' requires inheritClaimFromNodeId.");
+            }
+
+            var source = definition.FlowNodes.SingleOrDefault(n => n.Id == node.InheritClaimFromNodeId);
+            if (source is null)
+            {
+                throw new WorkflowDomainException(
+                    $"User task #{node.Id} inheritClaimFromNodeId #{node.InheritClaimFromNodeId} does not reference an existing flow node.");
+            }
+
+            if (!BpmnFlowNodeTypes.IsUserTask(source.Type))
+            {
+                throw new WorkflowDomainException(
+                    $"User task #{node.Id} inheritClaimFromNodeId #{node.InheritClaimFromNodeId} must reference a user task.");
+            }
+        }
+    }
+
+    private static void ValidateAssignmentMode(FlowNodeModel node, WorkflowModel definition)
+    {
+        var mode = node.AssignmentMode;
+        if (mode != AssignmentModes.Fresh
+            && mode != AssignmentModes.Previous
+            && mode != AssignmentModes.FromNode)
+        {
+            throw new WorkflowDomainException(
+                $"User task #{node.Id} has an unsupported assignmentMode '{mode}'.");
+        }
+
+        if (!node.RequiresAssignment)
+        {
+            if (mode != AssignmentModes.Fresh)
+            {
+                throw new WorkflowDomainException(
+                    $"User task #{node.Id} assignmentMode '{mode}' requires requiresAssignment to be true.");
+            }
+            return;
+        }
+
+        if (node.MultiInstance is not null)
+        {
+            throw new WorkflowDomainException(
+                $"User task #{node.Id} cannot require direct assignment while multi-instance is enabled.");
+        }
+
+        if (node.RequiresClaim || node.ClaimMode != ClaimModes.Fresh)
+        {
+            throw new WorkflowDomainException(
+                $"User task #{node.Id} requiresAssignment must use requiresClaim=false and claimMode='fresh'.");
+        }
+
+        if (definition.TaskAssignmentRoles.Count == 0
+            && definition.TaskDistribution is null)
+        {
+            throw new WorkflowDomainException(
+                $"User task #{node.Id} requiresAssignment requires workflow taskAssignmentRoles or taskDistribution credentials.");
+        }
+
+        if (mode != AssignmentModes.Fresh && !string.IsNullOrWhiteSpace(node.AssigneeExpression))
+        {
+            throw new WorkflowDomainException(
+                $"User task #{node.Id} cannot combine assignmentMode '{mode}' with an assignee expression.");
+        }
+
+        if (mode != AssignmentModes.FromNode)
+        {
+            return;
+        }
+
+        if (node.InheritAssignmentFromNodeId is null)
+        {
+            throw new WorkflowDomainException(
+                $"User task #{node.Id} assignmentMode 'fromNode' requires inheritAssignmentFromNodeId.");
+        }
+
+        var source = definition.FlowNodes.SingleOrDefault(n => n.Id == node.InheritAssignmentFromNodeId);
+        if (source is null)
+        {
+            throw new WorkflowDomainException(
+                $"User task #{node.Id} inheritAssignmentFromNodeId #{node.InheritAssignmentFromNodeId} does not reference an existing flow node.");
+        }
+
+        if (!BpmnFlowNodeTypes.IsUserTask(source.Type))
+        {
+            throw new WorkflowDomainException(
+                $"User task #{node.Id} inheritAssignmentFromNodeId #{node.InheritAssignmentFromNodeId} must reference a user task.");
+        }
+    }
+
+    private static void ValidateTimerBoundary(
+        FlowNodeModel node,
+        WorkflowModel definition,
+        IReadOnlyCollection<SequenceFlowModel> incoming,
+        IReadOnlyList<SequenceFlowModel> outgoing)
+    {
+        ValidateObservableBoundary(
+            node,
+            definition,
+            incoming,
+            outgoing,
+            "Timer boundary event");
+    }
+
+    private static void ValidateConditionalBoundary(
+        FlowNodeModel node,
+        WorkflowModel definition,
+        IReadOnlyCollection<SequenceFlowModel> incoming,
+        IReadOnlyList<SequenceFlowModel> outgoing)
+    {
+        ValidateObservableBoundary(
+            node,
+            definition,
+            incoming,
+            outgoing,
+            "Conditional boundary event");
+    }
+
+    private static void ValidateObservableBoundary(
+        FlowNodeModel node,
+        WorkflowModel definition,
+        IReadOnlyCollection<SequenceFlowModel> incoming,
+        IReadOnlyList<SequenceFlowModel> outgoing,
+        string eventName)
+    {
+        if (node.AttachedToRef is null)
+        {
+            throw new WorkflowDomainException(
+                $"{eventName} #{node.Id} must reference a host via attachedToRef.");
+        }
+
+        var host = definition.FlowNodes.SingleOrDefault(candidate => candidate.Id == node.AttachedToRef);
+        if (host is null)
+        {
+            throw new WorkflowDomainException(
+                $"{eventName} #{node.Id} attachedToRef #{node.AttachedToRef} does not reference an existing flow node.");
+        }
+
+        var durableWait = BpmnFlowNodeTypes.IsUserTask(host.Type)
+            || BpmnFlowNodeTypes.IsMessageCatch(host.Type)
+            || BpmnFlowNodeTypes.IsTimerCatch(host.Type);
+        var asyncAutomatic = (BpmnFlowNodeTypes.IsAutomatic(host.Type)
+                || BpmnFlowNodeTypes.IsServiceTask(host.Type)
+                || BpmnFlowNodeTypes.IsScriptTask(host.Type))
+            && host.AsyncBefore;
+        if (!durableWait && !asyncAutomatic)
+        {
+            throw new WorkflowDomainException(
+                $"{eventName} #{node.Id} host #{host.Id} must be a durable wait or an automatic task with asyncBefore enabled.");
+        }
+
+        if (incoming.Count != 0)
+        {
+            throw new WorkflowDomainException(
+                $"{eventName} #{node.Id} cannot have incoming sequence flows.");
+        }
+
+        if (outgoing.Count == 1 && HasUnsupportedPassThroughMetadata(outgoing[0]))
+        {
+            throw new WorkflowDomainException(
+                $"{eventName} #{node.Id} must have one unconditional outgoing sequence flow without user-action or multi-instance metadata.");
+        }
+
+        var siblingCount = definition.FlowNodes.Count(candidate =>
+            (BpmnFlowNodeTypes.IsTimerBoundary(candidate.Type)
+                || BpmnFlowNodeTypes.IsConditionalBoundary(candidate.Type))
+            && candidate.AttachedToRef == node.AttachedToRef);
+        if (siblingCount > BoundaryEventRules.MaxObservableBoundariesPerHost)
+        {
+            throw new WorkflowDomainException(
+                $"Host node #{host.Id} has {siblingCount} timer and conditional boundary events; "
+                + $"at most {BoundaryEventRules.MaxObservableBoundariesPerHost} are allowed.");
+        }
+    }
+
+    private static void ValidateTimerCatch(
+        FlowNodeModel node,
+        IReadOnlyCollection<SequenceFlowModel> incoming,
+        IReadOnlyList<SequenceFlowModel> outgoing)
+    {
+        if (incoming.Count == 0)
+        {
+            throw new WorkflowDomainException(
+                $"Timer catch event #{node.Id} must have at least one incoming sequence flow.");
+        }
+
+        if (outgoing.Count == 1 && HasUnsupportedPassThroughMetadata(outgoing[0]))
+        {
+            throw new WorkflowDomainException(
+                $"Timer catch event #{node.Id} must have one unconditional outgoing sequence flow without user-action or multi-instance metadata.");
+        }
+    }
+
+    private static void ValidateConditionalCatch(
+        FlowNodeModel node,
+        IReadOnlyCollection<SequenceFlowModel> incoming,
+        IReadOnlyList<SequenceFlowModel> outgoing)
+    {
+        if (incoming.Count == 0)
+        {
+            throw new WorkflowDomainException(
+                $"Conditional catch event #{node.Id} must have at least one incoming sequence flow.");
+        }
+
+        if (outgoing.Count == 1 && HasUnsupportedPassThroughMetadata(outgoing[0]))
+        {
+            throw new WorkflowDomainException(
+                $"Conditional catch event #{node.Id} must have one unconditional outgoing sequence flow without user-action or multi-instance metadata.");
+        }
+    }
+
+    private static void ValidateAsyncConfiguration(FlowNodeModel node)
+    {
+        if (!BpmnFlowNodeTypes.IsAsyncCapableTask(node.Type))
+        {
+            if (node.AsyncBefore || node.AsyncAfter || node.Job is not null)
+            {
+                throw new WorkflowDomainException(
+                    $"Flow node #{node.Id} defines async job metadata but is not a task activity.");
+            }
+            return;
+        }
+
+        if (node.Job is null)
+        {
+            return;
+        }
+
+        if (!node.AsyncBefore && !node.AsyncAfter)
+        {
+            throw new WorkflowDomainException(
+                $"Flow node #{node.Id} defines a job policy but has neither asyncBefore nor asyncAfter enabled.");
+        }
+
+        if (node.Job.FailureHandling is not (
+                JobFailureHandling.BoundaryFirst or JobFailureHandling.RetryFirst))
+        {
+            throw new WorkflowDomainException(
+                $"Flow node #{node.Id} has unsupported job.failureHandling '{node.Job.FailureHandling ?? "null"}'.");
+        }
+
+        if (node.Job.RetryDelays is null)
+        {
+            // Omission selects the deployment-wide default retry schedule.
+            // An explicitly authored empty array remains the opt-out for
+            // automatic retries.
+            return;
+        }
+
+        if (node.Job.RetryDelays.Count > TimerDefinitionRules.MaxRetryDelays)
+        {
+            throw new WorkflowDomainException(
+                $"Flow node #{node.Id} job.retryDelays may contain at most {TimerDefinitionRules.MaxRetryDelays} entries.");
+        }
+
+        for (var index = 0; index < node.Job.RetryDelays.Count; index++)
+        {
+            if (!TimerDefinitionRules.TryParseFixedDuration(
+                    node.Job.RetryDelays[index],
+                    out _))
+            {
+                throw new WorkflowDomainException(
+                    $"Flow node #{node.Id} job.retryDelays[{index}] must be a positive fixed-unit ISO-8601 duration.");
+            }
+        }
+    }
+
+    private static void ValidateTimerDefinition(FlowNodeModel node)
+    {
+        var timer = node.Timer
+            ?? throw new WorkflowDomainException(
+                $"Timer event #{node.Id} must have a timer configuration.");
+        if (TimerDefinitionRules.CountConfiguredExpressions(timer) != 1)
+        {
+            throw new WorkflowDomainException(
+                $"Timer event #{node.Id} must define exactly one of timeDate, timeDuration, or timeCycle.");
+        }
+
+        if (timer.TimeDate is not null
+            && !TimerDefinitionRules.TryParseTimeDate(timer.TimeDate, out _))
+        {
+            throw new WorkflowDomainException(
+                $"Timer event #{node.Id} timeDate must be an ISO-8601 timestamp with an explicit UTC offset.");
+        }
+
+        if (timer.TimeDuration is not null
+            && !TimerDefinitionRules.TryParseFixedDuration(timer.TimeDuration, out _))
+        {
+            throw new WorkflowDomainException(
+                $"Timer event #{node.Id} timeDuration must be a positive fixed-unit ISO-8601 duration.");
+        }
+
+        if (timer.TimeCycle is not null)
+        {
+            if (!TimerDefinitionRules.TryParseTimeCycle(
+                    timer.TimeCycle,
+                    out _,
+                    out var interval))
+            {
+                throw new WorkflowDomainException(
+                    $"Timer event #{node.Id} timeCycle must use 'R/Duration' or 'R<n>/Duration' with a positive fixed-unit ISO-8601 duration.");
+            }
+
+            if (interval < TimerDefinitionRules.MinimumRecurringInterval)
+            {
+                throw new WorkflowDomainException(
+                    $"Timer event #{node.Id} timeCycle interval must be at least one second.");
+            }
+        }
+    }
+
+    private static void ValidateMultiInstance(
+        FlowNodeModel node,
+        IReadOnlyList<SequenceFlowModel> outgoing,
+        WorkflowModel definition)
+    {
+        var multi = node.MultiInstance!;
+        if (multi.Mode is not (MultiInstanceModes.Parallel or MultiInstanceModes.Sequential))
+        {
+            throw new WorkflowDomainException($"User task #{node.Id} has unsupported multi-instance mode '{multi.Mode}'.");
+        }
+        if (multi.Source is not (MultiInstanceSources.Collection or MultiInstanceSources.Cardinality))
+        {
+            throw new WorkflowDomainException($"User task #{node.Id} has unsupported multi-instance source '{multi.Source}'.");
+        }
+        if (multi.CompletionEvaluation is not (MultiInstanceCompletionEvaluations.AfterEach
+                                                or MultiInstanceCompletionEvaluations.AfterAll))
+        {
+            throw new WorkflowDomainException(
+                $"User task #{node.Id} has unsupported multi-instance completionEvaluation '{multi.CompletionEvaluation}'.");
+        }
+
+        var result = definition.Variables.SingleOrDefault(v =>
+            string.Equals(v.Name, multi.ResultVariable, StringComparison.OrdinalIgnoreCase));
+        var sharedResult = result is not null
+            && string.Equals(result.Scope, VariableScopes.Shared, StringComparison.Ordinal);
+        if (result is null || result.DataType != WorkflowVariableTypes.Json || result.IsArray
+            || (!sharedResult
+                && (result.DefaultValue is null
+                    || result.DefaultValue.Value.ValueKind != JsonValueKind.Array)))
+        {
+            throw new WorkflowDomainException(
+                $"User task #{node.Id} resultVariable must reference a declared json process variable"
+                + (sharedResult ? "." : " initialized to []."));
+        }
+
+        if (multi.Source == MultiInstanceSources.Collection)
+        {
+            if (!string.IsNullOrWhiteSpace(multi.CardinalityExpression))
+            {
+                throw new WorkflowDomainException($"User task #{node.Id} collection source cannot define cardinalityExpression.");
+            }
+            var collection = definition.Variables.SingleOrDefault(v =>
+                string.Equals(v.Name, multi.CollectionVariable, StringComparison.OrdinalIgnoreCase));
+            if (collection is null || collection.DataType != WorkflowVariableTypes.String || !collection.IsArray)
+            {
+                throw new WorkflowDomainException(
+                    $"User task #{node.Id} collectionVariable must reference a declared string[] process variable.");
+            }
+            if (string.Equals(collection.Name, result.Name, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new WorkflowDomainException($"User task #{node.Id} collectionVariable and resultVariable must be different.");
+            }
+            if (node.RequiresClaim || node.ClaimMode != ClaimModes.Fresh)
+            {
+                throw new WorkflowDomainException(
+                    $"Collection multi-instance user task #{node.Id} must use requiresClaim=false and claimMode='fresh'.");
+            }
+        }
+        else
+        {
+            if (!string.IsNullOrWhiteSpace(multi.CollectionVariable)
+                || !SequenceFlowConditionEvaluator.IsValid(multi.CardinalityExpression))
+            {
+                throw new WorkflowDomainException(
+                    $"User task #{node.Id} cardinality source requires a valid cardinalityExpression and no collectionVariable.");
+            }
+            if (node.ClaimMode != ClaimModes.Fresh)
+            {
+                throw new WorkflowDomainException($"Cardinality multi-instance user task #{node.Id} must use claimMode='fresh'.");
+            }
+        }
+
+        var outcomes = outgoing.Where(f => !f.CancelRemainingInstances).ToList();
+        var interrupts = outgoing.Where(f => f.CancelRemainingInstances).ToList();
+        if (outcomes.Count == 0 || outcomes.Count(f => f.IsDefault) != 1)
+        {
+            throw new WorkflowDomainException(
+                $"Multi-instance user task #{node.Id} requires at least one outcome flow and exactly one default outcome flow.");
+        }
+        var defaultOutcome = outcomes.Single(f => f.IsDefault);
+        var conditionedOutcomes = outcomes.Where(f => !f.IsDefault).ToList();
+        if (defaultOutcome.IsSelectable)
+        {
+            throw new WorkflowDomainException(
+                $"The default flow from multi-instance user task #{node.Id} must be engine-only.");
+        }
+        if (!string.IsNullOrWhiteSpace(defaultOutcome.CompletionCondition)
+            || defaultOutcome.CompletionPriority is not null)
+        {
+            throw new WorkflowDomainException(
+                $"The default flow from multi-instance user task #{node.Id} cannot define a completion condition or priority.");
+        }
+        if (!conditionedOutcomes.Any(f => f.IsSelectable))
+        {
+            throw new WorkflowDomainException(
+                $"Multi-instance user task #{node.Id} requires at least one selectable outcome flow.");
+        }
+        if (interrupts.Any(f => !f.IsSelectable))
+        {
+            throw new WorkflowDomainException(
+                $"Interrupting flows from multi-instance user task #{node.Id} must be selectable.");
+        }
+        var engineOnly = outcomes.Where(f => !f.IsSelectable).ToList();
+        if (engineOnly.Any(f => f.Roles.Count > 0 || f.Variables.Count > 0
+                                || !string.IsNullOrWhiteSpace(f.Condition) || f.CanActWithoutClaim
+                                || f.CanActWithoutClaimRoles.Count > 0))
+        {
+            throw new WorkflowDomainException(
+                $"Engine-only flows from multi-instance user task #{node.Id} cannot define roles, action variables, condition, or canActWithoutClaim.");
+        }
+        if (interrupts.Any(f => f.IsDefault || f.CompletionPriority is not null
+                                || !string.IsNullOrWhiteSpace(f.CompletionCondition)))
+        {
+            throw new WorkflowDomainException(
+                $"Interrupting flows from multi-instance user task #{node.Id} cannot be default or define completion rules.");
+        }
+        if (conditionedOutcomes.Any(f => f.CompletionPriority is null or <= 0)
+            || conditionedOutcomes.Select(f => f.CompletionPriority!.Value).Distinct().Count()
+            != conditionedOutcomes.Count)
+        {
+            throw new WorkflowDomainException(
+                $"Non-default outcome flows from multi-instance user task #{node.Id} require unique positive completionPriority values.");
+        }
+        if (conditionedOutcomes.Any(f => string.IsNullOrWhiteSpace(f.CompletionCondition)))
+        {
+            throw new WorkflowDomainException(
+                $"Every non-default outcome flow from multi-instance user task #{node.Id} requires completionCondition.");
+        }
+
+        var selectableOutcomeIds = outcomes.Where(f => f.IsSelectable).Select(f => f.Id).ToHashSet();
+        foreach (var flow in conditionedOutcomes)
+        {
+            if (!SequenceFlowConditionEvaluator.IsValid(flow.CompletionCondition))
+            {
+                throw new WorkflowDomainException($"Sequence flow #{flow.Id} has an invalid completionCondition.");
+            }
+
+            foreach (Match match in Regex.Matches(
+                         flow.CompletionCondition!,
+                         @"(?i)\b(?:CountFlow|PercentFlow)\s*\(\s*([^\)]+)\s*\)"))
+            {
+                if (!int.TryParse(match.Groups[1].Value.Trim(), out var referencedFlowId)
+                    || !selectableOutcomeIds.Contains(referencedFlowId))
+                {
+                    throw new WorkflowDomainException(
+                        $"Sequence flow #{flow.Id} completionCondition references a non-selectable outcome flow.");
+                }
+            }
+        }
+    }
+
+    private static void ValidateErrorEnd(FlowNodeModel node)
+    {
+        if (string.IsNullOrWhiteSpace(node.ErrorCode))
+        {
+            throw new WorkflowDomainException($"Error end event #{node.Id} must have an errorCode.");
+        }
+
+        if (node.ErrorCode.EnumerateRunes().Count() > ErrorEndConstraints.MaxCodeLength)
+        {
+            throw new WorkflowDomainException(
+                $"Error end event #{node.Id} errorCode must contain at most {ErrorEndConstraints.MaxCodeLength} characters.");
+        }
+
+        if (!Regex.IsMatch(node.ErrorCode, ErrorEndConstraints.CodePattern, RegexOptions.CultureInvariant))
+        {
+            throw new WorkflowDomainException(
+                $"Error end event #{node.Id} errorCode must start with an ASCII letter or digit and contain only letters, digits, '.', '_' or '-'.");
+        }
+
+        if (node.ErrorDescription is not null
+            && node.ErrorDescription.EnumerateRunes().Count() > ErrorEndConstraints.MaxDescriptionLength)
+        {
+            throw new WorkflowDomainException(
+                $"Error end event #{node.Id} errorDescription must contain at most {ErrorEndConstraints.MaxDescriptionLength} characters.");
+        }
+    }
+
+    private static void ValidateBusinessKeys(WorkflowModel definition)
+    {
+        // Timer starts are scheduler-owned and deliberately have no domain
+        // business key. They do not participate in the all-external-entries
+        // business-key consistency contract.
+        var entries = definition.FlowNodes
+            .Where(node => BpmnFlowNodeTypes.IsEntry(node.Type)
+                && !BpmnFlowNodeTypes.IsTimerStart(node.Type))
+            .ToList();
+        if (entries.All(n => n.BusinessKey is null))
+        {
+            return;
+        }
+
+        var missing = entries.FirstOrDefault(n => n.BusinessKey is null);
+        if (missing is not null)
+        {
+            throw new WorkflowDomainException(
+                $"Entry event #{missing.Id} must configure businessKey because business keys are enabled for this workflow.");
+        }
+
+        foreach (var entry in entries)
+        {
+            var businessKey = entry.BusinessKey!;
+            if (string.IsNullOrWhiteSpace(businessKey.Variable))
+            {
+                throw new WorkflowDomainException($"Entry event #{entry.Id} businessKey.variable is required.");
+            }
+
+            if (businessKey.Uniqueness is not (BusinessKeyUniqueness.Active or BusinessKeyUniqueness.All))
+            {
+                throw new WorkflowDomainException(
+                    $"Entry event #{entry.Id} has unsupported businessKey.uniqueness '{businessKey.Uniqueness}'.");
+            }
+
+            if (BpmnFlowNodeTypes.IsMessageStart(entry.Type))
+            {
+                var mapping = entry.Message?.OutputMappings.FirstOrDefault(candidate =>
+                    candidate is not null
+                    && string.Equals(candidate.Variable, businessKey.Variable, StringComparison.Ordinal));
+                if (mapping is null)
+                {
+                    throw new WorkflowDomainException(
+                        $"Entry event #{entry.Id} businessKey variable '{businessKey.Variable}' is not a typed output mapping on the message start event.");
+                }
+
+                if (!mapping.Required
+                    || mapping.IsArray is not false
+                    || !string.Equals(mapping.DataType, WorkflowVariableTypes.String, StringComparison.Ordinal)
+                    || mapping.DefaultValue is not null
+                    || string.IsNullOrWhiteSpace(mapping.Path))
+                {
+                    throw new WorkflowDomainException(
+                        $"Entry event #{entry.Id} businessKey mapping '{businessKey.Variable}' must be a required scalar string with an explicit path and no defaultValue.");
+                }
+
+                continue;
+            }
+
+            var variable = entry.Variables.SingleOrDefault(v =>
+                string.Equals(v.Name, businessKey.Variable, StringComparison.Ordinal));
+            if (variable is null)
+            {
+                throw new WorkflowDomainException(
+                    $"Entry event #{entry.Id} businessKey variable '{businessKey.Variable}' is not a declared start variable on the node.");
+            }
+
+            if (!variable.Required || variable.IsArray
+                || !string.Equals(variable.DataType, WorkflowVariableTypes.String, StringComparison.Ordinal)
+                || variable.DefaultValue is not null)
+            {
+                throw new WorkflowDomainException(
+                    $"Entry event #{entry.Id} businessKey variable '{businessKey.Variable}' must be a required scalar string with no defaultValue.");
+            }
+        }
+    }
+
+    private static void ValidateIdempotency(WorkflowModel definition)
+    {
+        foreach (var entry in definition.FlowNodes.Where(node => BpmnFlowNodeTypes.IsEntry(node.Type)))
+        {
+            var idempotency = entry.Idempotency;
+            if (idempotency is null)
+            {
+                continue;
+            }
+
+            var headerName = idempotency.HeaderName?.Trim() ?? string.Empty;
+            if (headerName.Length == 0
+                || headerName.Length > 300
+                || !Regex.IsMatch(headerName, @"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$"))
+            {
+                throw new WorkflowDomainException(
+                    $"Entry event #{entry.Id} idempotency.headerName must be a valid HTTP field name of at most 300 characters.");
+            }
+
+            if (ReservedIdempotencyHeaders.Contains(headerName))
+            {
+                throw new WorkflowDomainException(
+                    $"Entry event #{entry.Id} idempotency.headerName '{headerName}' is reserved.");
+            }
+
+            if (BpmnFlowNodeTypes.IsMessageStart(entry.Type)
+                && string.Equals(entry.Message?.HeaderName?.Trim(), headerName, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new WorkflowDomainException(
+                    $"Entry event #{entry.Id} idempotency.headerName must differ from the message correlation header.");
+            }
+
+            var variableName = idempotency.Variable?.Trim() ?? string.Empty;
+            ValidateVariables(
+                [new VariableModel
+                {
+                    Name = variableName,
+                    DataType = WorkflowVariableTypes.String,
+                    Required = true
+                }],
+                $"entry event #{entry.Id} idempotency variable");
+
+            var collidesWithEntryVariable = BpmnFlowNodeTypes.IsMessageStart(entry.Type)
+                ? entry.Message?.OutputMappings.Any(mapping => mapping is not null
+                    && string.Equals(mapping.Variable, variableName, StringComparison.OrdinalIgnoreCase)) == true
+                : entry.Variables.Any(variable =>
+                    string.Equals(variable.Name, variableName, StringComparison.OrdinalIgnoreCase));
+            if (collidesWithEntryVariable)
+            {
+                throw new WorkflowDomainException(
+                    $"Entry event #{entry.Id} idempotency variable '{variableName}' cannot also be an entry variable or output mapping.");
+            }
+
+            if (entry.BusinessKey is not null
+                && string.Equals(entry.BusinessKey.Variable, variableName, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new WorkflowDomainException(
+                    $"Entry event #{entry.Id} must use different variables for idempotency and businessKey.");
+            }
+        }
+    }
+
+    private static void ValidateVariables(IEnumerable<VariableModel> variables, string owner)
+    {
+        foreach (var variable in variables)
+        {
+            if (variable is not null
+                && (!string.IsNullOrWhiteSpace(variable.Scope)
+                    || !string.IsNullOrWhiteSpace(variable.SharedKey)
+                    || !string.IsNullOrWhiteSpace(variable.Access)))
+            {
+                throw new WorkflowDomainException(
+                    $"Variable '{variable.Name}' on {owner} cannot define scope, sharedKey, or access; "
+                    + "shared bindings are supported only on top-level process variables.");
+            }
+        }
+
+        ValidateVariables(
+            variables,
+            owner,
+            requireDefault: false,
+            allowRequiredDefault: false,
+            allowNullable: false);
+    }
+
+    // Instance process variables are computed and retain the historical default
+    // contract. Shared declarations are aliases for catalog-owned values, so a
+    // workflow must not initialize them.
+    private static void ValidateProcessVariables(IEnumerable<VariableModel> variables)
+    {
+        var materialized = variables.ToList();
+        ValidateVariables(
+            materialized,
+            "process variables",
+            requireDefault: false,
+            allowRequiredDefault: true,
+            allowNullable: true);
+
+        foreach (var variable in materialized)
+        {
+            var scope = string.IsNullOrWhiteSpace(variable.Scope)
+                ? VariableScopes.Instance
+                : variable.Scope;
+            if (scope == VariableScopes.Instance)
+            {
+                if (variable.DefaultValue is null && !variable.Nullable)
+                {
+                    throw new WorkflowDomainException(
+                        $"Variable '{variable.Name}' on process variables must have a defaultValue unless nullable is true.");
+                }
+                if (!string.IsNullOrWhiteSpace(variable.SharedKey)
+                    || !string.IsNullOrWhiteSpace(variable.Access))
+                {
+                    throw new WorkflowDomainException(
+                        $"Instance process variable '{variable.Name}' cannot define sharedKey or access.");
+                }
+                continue;
+            }
+
+            if (scope != VariableScopes.Shared)
+            {
+                throw new WorkflowDomainException(
+                    $"Process variable '{variable.Name}' has unsupported scope '{variable.Scope}'.");
+            }
+            if (string.IsNullOrWhiteSpace(variable.SharedKey))
+            {
+                throw new WorkflowDomainException(
+                    $"Shared process variable '{variable.Name}' requires sharedKey.");
+            }
+            if (variable.SharedKey.EnumerateRunes().Count() > 300)
+            {
+                throw new WorkflowDomainException(
+                    $"Shared process variable '{variable.Name}' sharedKey must contain at most 300 Unicode scalar values.");
+            }
+            if (variable.Access is not (Flowbit.Shared.Models.SharedVariableAccessModes.Read
+                or Flowbit.Shared.Models.SharedVariableAccessModes.ReadWrite))
+            {
+                throw new WorkflowDomainException(
+                    $"Shared process variable '{variable.Name}' access must be 'read' or 'readWrite'.");
+            }
+            if (variable.Required || variable.DefaultValue is not null)
+            {
+                throw new WorkflowDomainException(
+                    $"Shared process variable '{variable.Name}' cannot define required or defaultValue; "
+                    + "its value is owned by the shared-variable catalog.");
+            }
+
+            ValidateSharedVariableRule(variable);
+        }
+
+        var duplicateSharedKey = materialized
+            .Where(variable => string.Equals(
+                variable.Scope,
+                VariableScopes.Shared,
+                StringComparison.Ordinal))
+            .GroupBy(variable => variable.SharedKey!, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault(group => group.Count() > 1)?.Key;
+        if (duplicateSharedKey is not null)
+        {
+            throw new WorkflowDomainException(
+                $"Shared catalog key '{duplicateSharedKey}' may be bound to only one local alias per workflow definition.");
+        }
+    }
+
+    private static void ValidateAuthoredSharedVariableMetadata(WorkflowModel definition)
+    {
+        foreach (var variable in definition.Variables ?? [])
+        {
+            if (variable is null)
+            {
+                continue;
+            }
+
+            var authoredScope = variable.Scope?.Trim();
+            if (string.Equals(authoredScope, VariableScopes.Shared, StringComparison.OrdinalIgnoreCase))
+            {
+                if (string.IsNullOrWhiteSpace(variable.SharedKey))
+                {
+                    throw new WorkflowDomainException(
+                        $"Shared process variable '{variable.Name}' requires sharedKey.");
+                }
+                if (string.IsNullOrWhiteSpace(variable.Access))
+                {
+                    throw new WorkflowDomainException(
+                        $"Shared process variable '{variable.Name}' requires explicit access 'read' or 'readWrite'.");
+                }
+            }
+            else if (!string.IsNullOrWhiteSpace(variable.SharedKey)
+                     || !string.IsNullOrWhiteSpace(variable.Access))
+            {
+                throw new WorkflowDomainException(
+                    $"Process variable '{variable.Name}' can define sharedKey/access only when scope is 'shared'.");
+            }
+        }
+
+        foreach (var (variables, owner) in EnumerateNonProcessVariableOwners(definition))
+        {
+            foreach (var variable in variables)
+            {
+                if (variable is not null
+                    && (!string.IsNullOrWhiteSpace(variable.Scope)
+                        || !string.IsNullOrWhiteSpace(variable.SharedKey)
+                        || !string.IsNullOrWhiteSpace(variable.Access)))
+                {
+                    throw new WorkflowDomainException(
+                        $"Variable '{variable.Name}' on {owner} cannot define scope, sharedKey, or access; "
+                        + "shared bindings are supported only on top-level process variables.");
+                }
+            }
+        }
+    }
+
+    private static IEnumerable<(IEnumerable<VariableModel> Variables, string Owner)>
+        EnumerateNonProcessVariableOwners(WorkflowModel definition)
+    {
+        foreach (var node in definition.FlowNodes ?? [])
+        {
+            if (node is not null)
+            {
+                yield return (node.Variables ?? [], $"flow node #{node.Id}");
+            }
+        }
+        foreach (var flow in definition.SequenceFlows ?? [])
+        {
+            if (flow is not null)
+            {
+                yield return (flow.Variables ?? [], $"sequence flow #{flow.Id}");
+            }
+        }
+    }
+
+    private static void ValidateSharedVariableRule(VariableModel variable)
+    {
+        if (string.IsNullOrWhiteSpace(variable.Validation))
+        {
+            return;
+        }
+
+        var expression = new Expression(
+            variable.Validation,
+            ExpressionOptions.CaseInsensitiveStringComparer
+            | ExpressionOptions.AllowNullParameter);
+        if (expression.HasErrors())
+        {
+            throw new WorkflowDomainException(
+                $"Shared process variable '{variable.Name}' has an invalid validation expression.");
+        }
+
+        var invalidParameter = expression.GetParameterNames()
+            .FirstOrDefault(name => !string.Equals(name, "value", StringComparison.OrdinalIgnoreCase)
+                                    && !string.Equals(name, "null", StringComparison.OrdinalIgnoreCase));
+        if (invalidParameter is not null)
+        {
+            throw new WorkflowDomainException(
+                $"Shared process variable '{variable.Name}' validation may reference only 'value'; "
+                + $"found '{invalidParameter}'.");
+        }
+
+        var invalidFunction = expression.GetFunctionNames()
+            .FirstOrDefault(name => !SharedValidationFunctions.Contains(name));
+        if (invalidFunction is not null)
+        {
+            throw new WorkflowDomainException(
+                $"Shared process variable '{variable.Name}' validation uses unsupported function '{invalidFunction}'.");
+        }
+    }
+
+    private static void ValidateEntryProcessVariableCollisions(WorkflowModel definition)
+    {
+        var processVariables = definition.Variables
+            .ToDictionary(variable => variable.Name, StringComparer.OrdinalIgnoreCase);
+
+        foreach (var entry in definition.FlowNodes.Where(node => BpmnFlowNodeTypes.IsEntry(node.Type)))
+        {
+            var entryNames = BpmnFlowNodeTypes.IsMessageStart(entry.Type)
+                ? entry.Message?.OutputMappings
+                    .Where(mapping => mapping is not null)
+                    .Select(mapping => mapping.Variable) ?? []
+                : entry.Variables.Select(variable => variable.Name);
+
+            foreach (var entryName in entryNames)
+            {
+                if (!processVariables.TryGetValue(entryName, out var processVariable))
+                {
+                    continue;
+                }
+
+                if (!string.Equals(processVariable.Scope, VariableScopes.Shared, StringComparison.Ordinal)
+                    || processVariable.Access != Flowbit.Shared.Models.SharedVariableAccessModes.ReadWrite)
+                {
+                    throw new WorkflowDomainException(
+                        $"Entry event #{entry.Id} variable '{entryName}' collides with a process variable; "
+                        + "only a compatible readWrite shared process variable may be an entry output target.");
+                }
+            }
+
+            var identityCollision = new[]
+                {
+                    entry.Idempotency?.Variable,
+                    entry.BusinessKey?.Variable
+                }
+                .Where(name => !string.IsNullOrWhiteSpace(name))
+                .FirstOrDefault(name => processVariables.ContainsKey(name!));
+            if (identityCollision is not null)
+            {
+                throw new WorkflowDomainException(
+                    $"Entry event #{entry.Id} identity variable '{identityCollision}' collides with a process variable; "
+                    + "business-key and idempotency values are always instance-scoped.");
+            }
+        }
+    }
+
+    private static void ValidateSharedVariableProducerAccess(WorkflowModel definition)
+    {
+        var sharedByAlias = definition.Variables
+            .Where(variable => string.Equals(
+                variable.Scope,
+                VariableScopes.Shared,
+                StringComparison.Ordinal))
+            .ToDictionary(variable => variable.Name, StringComparer.OrdinalIgnoreCase);
+        if (sharedByAlias.Count == 0)
+        {
+            return;
+        }
+
+        void RequireWritable(string? target, string owner)
+        {
+            if (string.IsNullOrWhiteSpace(target)
+                || !sharedByAlias.TryGetValue(target.Trim(), out var declaration))
+            {
+                return;
+            }
+
+            if (declaration.Access != Flowbit.Shared.Models.SharedVariableAccessModes.ReadWrite)
+            {
+                throw new WorkflowDomainException(
+                    $"{owner} targets read-only shared variable alias '{declaration.Name}'. "
+                    + "Change the binding access to 'readWrite' or select an instance variable.");
+            }
+        }
+
+        foreach (var node in definition.FlowNodes)
+        {
+            foreach (var variable in node.Variables ?? [])
+            {
+                RequireWritable(variable.Name, $"Flow node #{node.Id} variable");
+            }
+            foreach (var mapping in node.Service?.OutputMappings ?? [])
+            {
+                RequireWritable(mapping?.Variable, $"Service task #{node.Id} output mapping");
+            }
+            RequireWritable(node.Service?.StatusVariable, $"Service task #{node.Id} statusVariable");
+            foreach (var mapping in node.Message?.OutputMappings ?? [])
+            {
+                RequireWritable(mapping?.Variable, $"Message event #{node.Id} output mapping");
+            }
+            RequireWritable(node.ErrorVariable, $"Error boundary event #{node.Id} errorVariable");
+            foreach (var assignment in node.Assignments ?? [])
+            {
+                RequireWritable(assignment?.Variable, $"Script task #{node.Id} assignment");
+            }
+            RequireWritable(node.MultiInstance?.ResultVariable, $"Multi-instance task #{node.Id} resultVariable");
+        }
+
+        foreach (var flow in definition.SequenceFlows)
+        {
+            foreach (var variable in flow.Variables ?? [])
+            {
+                RequireWritable(variable.Name, $"Sequence flow #{flow.Id} variable");
+            }
+        }
+    }
+
+    private static void ValidateEntryTopology(
+        FlowNodeModel entry,
+        IReadOnlyCollection<SequenceFlowModel> incoming,
+        IReadOnlyCollection<SequenceFlowModel> outgoing)
+    {
+        var kind = BpmnFlowNodeTypes.IsMessageStart(entry.Type)
+            ? "Message start event"
+            : BpmnFlowNodeTypes.IsTimerStart(entry.Type)
+                ? "Timer start event"
+            : "Start event";
+
+        if (incoming.Count != 0)
+        {
+            throw new WorkflowDomainException($"{kind} #{entry.Id} cannot have incoming sequence flows.");
+        }
+
+        if (outgoing.Count != 1)
+        {
+            return;
+        }
+
+        var flow = outgoing.Single();
+        if (HasUnsupportedPassThroughMetadata(flow))
+        {
+            throw new WorkflowDomainException(
+                $"The outgoing sequence flow from {kind.ToLowerInvariant()} #{entry.Id} must be unconditional and cannot define action or multi-instance metadata.");
+        }
+    }
+
+    private static void ValidateAttributes(
+        IReadOnlyList<WorkflowAttributeModel>? attributes,
+        string owner)
+    {
+        attributes ??= [];
+        if (attributes.Count > WorkflowAttributeConstraints.MaxCount)
+        {
+            throw new WorkflowDomainException(
+                $"{owner} cannot define more than {WorkflowAttributeConstraints.MaxCount} attributes.");
+        }
+
+        var keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        for (var index = 0; index < attributes.Count; index++)
+        {
+            var attribute = attributes[index];
+            if (attribute is null)
+            {
+                throw new WorkflowDomainException(
+                    $"Attribute #{index + 1} on {owner} must be an object with string key and value fields.");
+            }
+
+            if (string.IsNullOrWhiteSpace(attribute.Key))
+            {
+                throw new WorkflowDomainException(
+                    $"Attribute #{index + 1} key is required on {owner}.");
+            }
+
+            if (attribute.Key.EnumerateRunes()
+                    .Take(WorkflowAttributeConstraints.MaxKeyLength + 1)
+                    .Count() > WorkflowAttributeConstraints.MaxKeyLength)
+            {
+                throw new WorkflowDomainException(
+                    $"Attribute key '{attribute.Key}' on {owner} must contain at most {WorkflowAttributeConstraints.MaxKeyLength} Unicode scalar values.");
+            }
+
+            if (!keys.Add(attribute.Key))
+            {
+                throw new WorkflowDomainException(
+                    $"Attribute key '{attribute.Key}' is duplicated on {owner}; attribute keys are case-insensitive.");
+            }
+
+            if (attribute.Value is null)
+            {
+                throw new WorkflowDomainException(
+                    $"Attribute '{attribute.Key}' value is required on {owner}.");
+            }
+
+            if (attribute.Value.EnumerateRunes()
+                    .Take(WorkflowAttributeConstraints.MaxValueLength + 1)
+                    .Count() > WorkflowAttributeConstraints.MaxValueLength)
+            {
+                throw new WorkflowDomainException(
+                    $"Attribute '{attribute.Key}' value on {owner} must contain at most {WorkflowAttributeConstraints.MaxValueLength} Unicode scalar values.");
+            }
+        }
+    }
+
+    private static void ValidateVariables(
+        IEnumerable<VariableModel> variables,
+        string owner,
+        bool requireDefault,
+        bool allowRequiredDefault,
+        bool allowNullable = false)
+    {
+        var materialized = variables.ToList();
+        var duplicateName = materialized
+            .Where(variable => !string.IsNullOrWhiteSpace(variable.Name))
+            .GroupBy(variable => variable.Name.Trim(), StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault(group => group.Count() > 1)?.Key;
+        if (duplicateName is not null)
+        {
+            throw new WorkflowDomainException(
+                $"Variable name '{duplicateName}' is duplicated on {owner}; variable names are case-insensitive.");
+        }
+
+        var allowedTypes = new HashSet<string>
+        {
+            WorkflowVariableTypes.String,
+            WorkflowVariableTypes.Number,
+            WorkflowVariableTypes.Boolean,
+            WorkflowVariableTypes.Date,
+            WorkflowVariableTypes.DateTime,
+            WorkflowVariableTypes.Json
+        };
+
+        foreach (var variable in materialized)
+        {
+            if (string.IsNullOrWhiteSpace(variable.Name))
+            {
+                throw new WorkflowDomainException($"Variable name is required on {owner}.");
+            }
+
+            if (variable.Name.EnumerateRunes().Count() > 300)
+            {
+                throw new WorkflowDomainException(
+                    $"Variable '{variable.Name}' on {owner} must contain at most 300 characters.");
+            }
+
+            if (variable.Name.StartsWith("sys.", StringComparison.OrdinalIgnoreCase)
+                || variable.Name.StartsWith("config.", StringComparison.OrdinalIgnoreCase)
+                || variable.Name.StartsWith("setting.", StringComparison.OrdinalIgnoreCase)
+                || variable.Name.StartsWith("mi.", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new WorkflowDomainException(
+                    $"Variable '{variable.Name}' on {owner} uses a reserved context prefix.");
+            }
+
+            if (!allowedTypes.Contains(variable.DataType))
+            {
+                throw new WorkflowDomainException($"Variable '{variable.Name}' on {owner} has unsupported type '{variable.DataType}'.");
+            }
+
+            if (variable.Nullable && !allowNullable)
+            {
+                throw new WorkflowDomainException(
+                    $"Variable '{variable.Name}' on {owner} cannot be nullable; nullable is supported only for process variables.");
+            }
+
+            var defaultValue = variable.DefaultValue.GetValueOrDefault();
+            var hasDefault = variable.DefaultValue is not null
+                && defaultValue.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined);
+            if (requireDefault && !variable.Nullable && !hasDefault)
+            {
+                throw new WorkflowDomainException(
+                    $"Process variable '{variable.Name}' on {owner} must have a defaultValue.");
+            }
+
+            if (!requireDefault && !allowRequiredDefault && variable.Required && hasDefault)
+            {
+                throw new WorkflowDomainException(
+                    $"Required variable '{variable.Name}' on {owner} cannot define a defaultValue.");
+            }
+
+            if (hasDefault
+                && !TypedOutputValueValidator.IsValidAuthoredDefault(
+                    defaultValue,
+                    variable.DataType,
+                    variable.IsArray))
+            {
+                throw new WorkflowDomainException(
+                    $"Variable '{variable.Name}' defaultValue on {owner} must be {TypedOutputValueValidator.DescribeExpected(variable.DataType, variable.IsArray)}.");
+            }
+
+            if (!string.IsNullOrWhiteSpace(variable.Validation)
+                && !SequenceFlowConditionEvaluator.IsValid(variable.Validation))
+            {
+                throw new WorkflowDomainException(
+                    $"Variable '{variable.Name}' on {owner} has an invalid validation expression: '{variable.Validation}'.");
+            }
+        }
+    }
+
+    private static void ValidateUniqueIdentifiers(WorkflowModel definition)
+    {
+        var duplicateNodeId = definition.FlowNodes
+            .GroupBy(node => node.Id)
+            .FirstOrDefault(group => group.Count() > 1)?.Key;
+        if (duplicateNodeId is not null)
+        {
+            throw new WorkflowDomainException($"Flow node id #{duplicateNodeId} is duplicated.");
+        }
+
+        var duplicateFlowId = definition.SequenceFlows
+            .GroupBy(flow => flow.Id)
+            .FirstOrDefault(group => group.Count() > 1)?.Key;
+        if (duplicateFlowId is not null)
+        {
+            throw new WorkflowDomainException($"Sequence flow id #{duplicateFlowId} is duplicated.");
+        }
+    }
+
+    private static void ValidateMessageStartExternalIds(WorkflowModel definition)
+    {
+        var messageStarts = definition.FlowNodes
+            .Where(node => BpmnFlowNodeTypes.IsMessageStart(node.Type))
+            .ToList();
+        if (messageStarts.Count <= 1)
+        {
+            return;
+        }
+
+        var missing = messageStarts.FirstOrDefault(node => string.IsNullOrWhiteSpace(node.ExternalId));
+        if (missing is not null)
+        {
+            throw new WorkflowDomainException(
+                $"Message start event #{missing.Id} must have an externalId when a workflow has multiple message start events.");
+        }
+
+        var duplicate = messageStarts
+            .GroupBy(node => node.ExternalId!, StringComparer.Ordinal)
+            .FirstOrDefault(group => group.Count() > 1);
+        if (duplicate is not null)
+        {
+            throw new WorkflowDomainException(
+                $"Message start event externalId '{duplicate.Key}' is duplicated; matching is case-sensitive.");
+        }
+    }
+
+    /// <summary>
+    /// FlowInfo reads persisted instance history, so it is deliberately limited
+    /// to routing and script contexts where that history is transactionally
+    /// available. NCalc's parser accepts unknown functions and cannot enforce
+    /// literal arguments, therefore these checks are semantic and definition-wide.
+    /// </summary>
+    private static void ValidateFlowInfoUsage(WorkflowModel definition)
+    {
+        var knownFlowIds = definition.SequenceFlows.Select(flow => flow.Id).ToHashSet();
+        var nodesById = definition.FlowNodes.ToDictionary(node => node.Id);
+
+        void Check(string? expression, bool allowed, string owner)
+        {
+            if (!SequenceFlowConditionEvaluator.TryValidateFlowInfoReferences(
+                    expression,
+                    knownFlowIds,
+                    allowed,
+                    out var error))
+            {
+                throw new WorkflowDomainException($"{owner} has invalid FlowInfo usage: {error}");
+            }
+        }
+
+        foreach (var flow in definition.SequenceFlows)
+        {
+            nodesById.TryGetValue(flow.SourceRef, out var source);
+            Check(
+                flow.Condition,
+                source is not null
+                && (BpmnFlowNodeTypes.IsExclusiveGateway(source.Type)
+                    || BpmnFlowNodeTypes.IsInclusiveGateway(source.Type)
+                    || BpmnFlowNodeTypes.IsComplexGateway(source.Type))
+                && !flow.IsDefault,
+                $"Sequence flow #{flow.Id} condition");
+            Check(
+                flow.CompletionCondition,
+                source is not null
+                && BpmnFlowNodeTypes.IsUserTask(source.Type)
+                && source.MultiInstance is not null
+                && !flow.IsDefault
+                && !flow.CancelRemainingInstances,
+                $"Sequence flow #{flow.Id} completionCondition");
+
+            foreach (var variable in flow.Variables)
+            {
+                Check(variable.Validation, false, $"Variable '{variable.Name}' on sequence flow #{flow.Id}");
+            }
+        }
+
+        foreach (var variable in definition.Variables)
+        {
+            Check(variable.Validation, false, $"Process variable '{variable.Name}'");
+        }
+
+        foreach (var node in definition.FlowNodes)
+        {
+            Check(node.ActivationCondition, false,
+                $"Complex gateway #{node.Id} activationCondition");
+            Check(node.AssigneeExpression, false, $"User task #{node.Id} assignee expression");
+            Check(node.MultiInstance?.CardinalityExpression, false,
+                $"User task #{node.Id} cardinalityExpression");
+            Check(node.Message?.HeaderValidation, false,
+                $"Flow node #{node.Id} headerValidation");
+
+            foreach (var variable in node.Variables)
+            {
+                Check(variable.Validation, false, $"Variable '{variable.Name}' on flow node #{node.Id}");
+            }
+
+            foreach (var mapping in node.Service?.OutputMappings ?? [])
+            {
+                if (mapping is null)
+                {
+                    // The service-task validator reports a precise domain error.
+                    continue;
+                }
+
+                Check(mapping.Validation, false,
+                    $"Service task #{node.Id} output mapping '{mapping.Variable}' validation");
+            }
+
+            foreach (var mapping in node.Message?.OutputMappings ?? [])
+            {
+                if (mapping is null)
+                {
+                    // The message-event validator reports a precise domain error.
+                    continue;
+                }
+
+                Check(mapping.Validation, false,
+                    $"Message event #{node.Id} output mapping '{mapping.Variable}' validation");
+            }
+
+            foreach (var assignment in node.Assignments)
+            {
+                if (assignment is null)
+                {
+                    // The Script Task validator reports a precise domain error.
+                    continue;
+                }
+
+                Check(
+                    assignment.Expression,
+                    BpmnFlowNodeTypes.IsScriptTask(node.Type)
+                    && string.Equals(node.ScriptFormat, ScriptFormats.NCalc, StringComparison.Ordinal),
+                    $"Script task #{node.Id} assignment for '{assignment.Variable}'");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Restricts Complex-gateway count helpers and phase state to the gateway
+    /// expressions whose runtime context can supply them.
+    /// </summary>
+    private static void ValidateGatewayExpressionUsage(WorkflowModel definition)
+    {
+        var nodesById = definition.FlowNodes.ToDictionary(node => node.Id);
+        var emptyIncoming = new HashSet<int>();
+        var incomingIdsByNode = definition.SequenceFlows
+            .GroupBy(flow => flow.TargetRef)
+            .ToDictionary(
+                group => group.Key,
+                group => (IReadOnlySet<int>)group.Select(flow => flow.Id).ToHashSet());
+
+        void Check(
+            string? expression,
+            FlowNodeModel? complexGateway,
+            bool waitingForStartAllowed,
+            string owner)
+        {
+            var helpersAllowed = complexGateway is not null
+                && BpmnFlowNodeTypes.IsComplexGateway(complexGateway.Type);
+            var incomingIds = helpersAllowed
+                ? incomingIdsByNode.GetValueOrDefault(complexGateway!.Id, emptyIncoming)
+                : emptyIncoming;
+            if (!SequenceFlowConditionEvaluator.TryValidateGatewayReferences(
+                    expression,
+                    incomingIds,
+                    helpersAllowed,
+                    helpersAllowed && waitingForStartAllowed,
+                    out var error))
+            {
+                throw new WorkflowDomainException(
+                    $"{owner} has invalid Complex gateway expression usage: {error}");
+            }
+        }
+
+        foreach (var flow in definition.SequenceFlows)
+        {
+            nodesById.TryGetValue(flow.SourceRef, out var source);
+            var complex = source is not null && BpmnFlowNodeTypes.IsComplexGateway(source.Type)
+                ? source
+                : null;
+            Check(flow.Condition, complex, true, $"Sequence flow #{flow.Id} condition");
+            Check(flow.CompletionCondition, null, false,
+                $"Sequence flow #{flow.Id} completionCondition");
+            foreach (var variable in flow.Variables)
+            {
+                Check(variable.Validation, null, false,
+                    $"Variable '{variable.Name}' on sequence flow #{flow.Id}");
+            }
+        }
+
+        foreach (var variable in definition.Variables)
+        {
+            Check(variable.Validation, null, false, $"Process variable '{variable.Name}'");
+        }
+
+        foreach (var node in definition.FlowNodes)
+        {
+            var complex = BpmnFlowNodeTypes.IsComplexGateway(node.Type) ? node : null;
+            Check(node.ActivationCondition, complex, false,
+                $"Complex gateway #{node.Id} activationCondition");
+            Check(node.AssigneeExpression, null, false,
+                $"User task #{node.Id} assignee expression");
+            Check(node.MultiInstance?.CardinalityExpression, null, false,
+                $"User task #{node.Id} cardinalityExpression");
+            Check(node.Message?.HeaderValidation, null, false,
+                $"Flow node #{node.Id} headerValidation");
+
+            foreach (var variable in node.Variables)
+            {
+                Check(variable.Validation, null, false,
+                    $"Variable '{variable.Name}' on flow node #{node.Id}");
+            }
+
+            foreach (var mapping in node.Service?.OutputMappings ?? [])
+            {
+                if (mapping is not null)
+                {
+                    Check(mapping.Validation, null, false,
+                        $"Service task #{node.Id} output mapping '{mapping.Variable}' validation");
+                }
+            }
+
+            foreach (var mapping in node.Message?.OutputMappings ?? [])
+            {
+                if (mapping is not null)
+                {
+                    Check(mapping.Validation, null, false,
+                        $"Message event #{node.Id} output mapping '{mapping.Variable}' validation");
+                }
+            }
+
+            foreach (var assignment in node.Assignments)
+            {
+                if (assignment is not null)
+                {
+                    Check(assignment.Expression, null, false,
+                        $"Script task #{node.Id} assignment for '{assignment.Variable}'");
+                }
+            }
+        }
+    }
+
+    // Validates a scriptTask's authoring mode. Exactly one of the two payloads may
+    // be populated per scriptFormat:
+    //   - "ncalc" (default): each assignment must target a declared process
+    //     variable with a parse-checkable NCalc expression; `script` must be empty.
+    //   - "javascript": `script` is required and syntax-checked (parse-only, no
+    //     execution) via IScriptEvaluator; `assignments` must be empty. setVariable
+    //     targets inside the script body cannot be fully checked at author time
+    //     since JS is dynamic - that remains a runtime check (WorkflowEngineService).
+    private void ValidateScriptTask(FlowNodeModel node, WorkflowModel definition)
+    {
+        if (node.ScriptFormat != ScriptFormats.NCalc && node.ScriptFormat != ScriptFormats.JavaScript)
+        {
+            throw new WorkflowDomainException(
+                $"Script task #{node.Id} has an unsupported scriptFormat '{node.ScriptFormat}'.");
+        }
+
+        if (node.ScriptFormat == ScriptFormats.JavaScript)
+        {
+            if (node.Assignments.Count > 0)
+            {
+                throw new WorkflowDomainException(
+                    $"Script task #{node.Id} uses scriptFormat 'javascript' and must not have assignments.");
+            }
+
+            if (string.IsNullOrWhiteSpace(node.Script))
+            {
+                throw new WorkflowDomainException($"Script task #{node.Id} must have a script body.");
+            }
+
+            if (!scriptEvaluator.IsValid(node.Script, out var error))
+            {
+                throw new WorkflowDomainException(
+                    $"Script task #{node.Id} has an invalid JavaScript body: {error}");
+            }
+
+            if (node.UsesFlowInfo != true
+                && JavaScriptFlowInfoUsage.ContainsDirectCall(node.Script))
+            {
+                throw new WorkflowDomainException(
+                    $"Script task #{node.Id} calls execution.getFlowInfo but usesFlowInfo is false.");
+            }
+
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(node.Script))
+        {
+            throw new WorkflowDomainException(
+                $"Script task #{node.Id} uses scriptFormat 'ncalc' and must not have a script body.");
+        }
+
+        var declared = definition.Variables
+            .Where(v => !string.IsNullOrWhiteSpace(v.Name))
+            .Select(v => v.Name!)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var assignment in node.Assignments)
+        {
+            if (assignment is null)
+            {
+                throw new WorkflowDomainException(
+                    $"Script task #{node.Id} has a null assignment entry.");
+            }
+
+            if (string.IsNullOrWhiteSpace(assignment.Variable))
+            {
+                throw new WorkflowDomainException(
+                    $"Script task #{node.Id} has an assignment with no variable name.");
+            }
+
+            if (!declared.Contains(assignment.Variable))
+            {
+                throw new WorkflowDomainException(
+                    $"Script task #{node.Id} assigns '{assignment.Variable}' which is not a declared process variable.");
+            }
+
+            if (string.IsNullOrWhiteSpace(assignment.Expression))
+            {
+                throw new WorkflowDomainException(
+                    $"Script task #{node.Id} assignment for '{assignment.Variable}' must have an expression.");
+            }
+
+            if (!SequenceFlowConditionEvaluator.IsValid(assignment.Expression))
+            {
+                throw new WorkflowDomainException(
+                    $"Script task #{node.Id} assignment for '{assignment.Variable}' has an invalid expression: '{assignment.Expression}'.");
+            }
+        }
+    }
+}

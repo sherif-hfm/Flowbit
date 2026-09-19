@@ -1557,7 +1557,7 @@ public sealed class VariableModel
     // Optional NCalc expression validated at start / flow-take against the final
     // collected values (supplied + resolved defaults) overlaid with sys.*/config.*
     // context. A falsy or unresolvable expression rejects the operation. Empty means
-    // no rule. Parse-checked at author time in ValidateDefinition.
+    // no rule. Parse-checked at author time in WorkflowDefinitionValidator.
     /// <summary>
     /// An optional NCalc validation expression.
     /// </summary>

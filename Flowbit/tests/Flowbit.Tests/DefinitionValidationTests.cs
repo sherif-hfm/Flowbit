@@ -76,6 +76,95 @@ public sealed class DefinitionValidationTests
         Assert.Contains("rolesVariable", error.Message, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task CreateAsync_RejectedValidationMakesNoRepositoryWrite()
+    {
+        var model = CreateTerminalModel(BpmnFlowNodeTypes.EndEvent);
+        model.FlowNodes.Add(new FlowNodeModel
+        {
+            Id = 2,
+            Name = "Duplicate review",
+            Type = BpmnFlowNodeTypes.UserTask
+        });
+        var conditionalCache = new RecordingConditionalPlanCache();
+        var sharedCache = new RecordingSharedPlanCache();
+        var service = CreateService(
+            out var repository,
+            conditionalEventPlanCache: conditionalCache,
+            sharedVariableAccessPlanCache: sharedCache);
+
+        await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            service.CreateAsync(model, false, CancellationToken.None));
+
+        Assert.Null(repository.Added);
+        Assert.Equal(0, conditionalCache.GetOrAddCalls);
+        Assert.Equal(0, sharedCache.GetOrAddCalls);
+    }
+
+    [Fact]
+    public async Task CreateNewVersionAsync_RejectedValidationMakesNoRepositoryWrite()
+    {
+        var model = CreateTerminalModel(BpmnFlowNodeTypes.EndEvent);
+        model.FlowNodes.Add(new FlowNodeModel
+        {
+            Id = 2,
+            Name = "Duplicate review",
+            Type = BpmnFlowNodeTypes.UserTask
+        });
+        var service = CreateService(out var repository);
+        repository.Source = new WorkflowDefinitionRecord(
+            78,
+            model.Name,
+            model.Id,
+            1,
+            model,
+            IsPublished: true,
+            IsDefault: false,
+            DateTimeOffset.UtcNow);
+
+        await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            service.CreateNewVersionAsync(78, model, false, CancellationToken.None));
+
+        Assert.Null(repository.Added);
+    }
+
+    [Fact]
+    public async Task CreateAsync_SuccessWritesRepositoryAndWarmsBothPlanCaches()
+    {
+        var model = CreateTerminalModel(BpmnFlowNodeTypes.EndEvent);
+        var conditionalCache = new RecordingConditionalPlanCache();
+        var sharedCache = new RecordingSharedPlanCache();
+        var service = CreateService(
+            out var repository,
+            conditionalEventPlanCache: conditionalCache,
+            sharedVariableAccessPlanCache: sharedCache);
+
+        await service.CreateAsync(model, false, CancellationToken.None);
+
+        Assert.NotNull(repository.Added);
+        Assert.Equal(1, conditionalCache.GetOrAddCalls);
+        Assert.Equal(1, sharedCache.GetOrAddCalls);
+    }
+
+    [Fact]
+    public async Task CreateNewVersionAsync_MissingSourceReturnsNullBeforeValidation()
+    {
+        var model = CreateTerminalModel(BpmnFlowNodeTypes.EndEvent);
+        var conditionalCache = new RecordingConditionalPlanCache();
+        var sharedCache = new RecordingSharedPlanCache();
+        var service = CreateService(
+            out var repository,
+            conditionalEventPlanCache: conditionalCache,
+            sharedVariableAccessPlanCache: sharedCache);
+
+        var result = await service.CreateNewVersionAsync(99, model, false, CancellationToken.None);
+
+        Assert.Null(result);
+        Assert.Null(repository.Added);
+        Assert.Equal(0, conditionalCache.GetOrAddCalls);
+        Assert.Equal(0, sharedCache.GetOrAddCalls);
+    }
+
     [Theory]
     [InlineData("parallel-gateway-simple.json")]
     [InlineData("parallel-gateway-complex.json")]
@@ -3843,7 +3932,7 @@ public sealed class DefinitionValidationTests
             }
         ];
 
-        ValidateDefinition(CreateService(out _), model);
+        ValidateDefinition(model);
     }
 
     [Fact]
@@ -3864,7 +3953,7 @@ public sealed class DefinitionValidationTests
         ];
 
         var error = Assert.Throws<WorkflowDomainException>(() =>
-            ValidateDefinition(CreateService(out _), model));
+            ValidateDefinition(model));
 
         Assert.Contains("only 'value'", error.Message, StringComparison.Ordinal);
     }
@@ -3894,7 +3983,7 @@ public sealed class DefinitionValidationTests
         ];
 
         var error = Assert.Throws<WorkflowDomainException>(() =>
-            ValidateDefinition(CreateService(out _), model));
+            ValidateDefinition(model));
 
         Assert.Contains("only one local alias", error.Message, StringComparison.Ordinal);
     }
@@ -3924,7 +4013,7 @@ public sealed class DefinitionValidationTests
         ];
 
         var error = Assert.Throws<WorkflowDomainException>(() =>
-            ValidateDefinition(CreateService(out _), model));
+            ValidateDefinition(model));
 
         Assert.Contains("read-only shared", error.Message, StringComparison.OrdinalIgnoreCase);
     }
@@ -4260,17 +4349,27 @@ public sealed class DefinitionValidationTests
         ServiceTaskOptions? options = null,
         IScriptEvaluator? scriptEvaluator = null,
         DurableProcessingOptions? durableProcessing = null,
-        ISharedVariableRepository? sharedVariables = null)
+        ISharedVariableRepository? sharedVariables = null,
+        IConditionalEventDependencyPlanCache? conditionalEventPlanCache = null,
+        ISharedVariableAccessPlanCache? sharedVariableAccessPlanCache = null)
     {
         repository = new CapturingDefinitionRepository();
         return new WorkflowDefinitionService(
             repository,
-            scriptEvaluator ?? new ParseOnlyScriptEvaluator(),
-            options ?? new ServiceTaskOptions(),
+            CreateValidator(options, scriptEvaluator),
             NullLogger<WorkflowDefinitionService>.Instance,
             durableProcessing,
-            sharedVariables: sharedVariables ?? CreateExampleWorkflowSharedCatalog());
+            conditionalEventPlanCache: conditionalEventPlanCache,
+            sharedVariables: sharedVariables ?? CreateExampleWorkflowSharedCatalog(),
+            sharedVariableAccessPlanCache: sharedVariableAccessPlanCache);
     }
+
+    private static WorkflowDefinitionValidator CreateValidator(
+        ServiceTaskOptions? options = null,
+        IScriptEvaluator? scriptEvaluator = null) =>
+        new(
+            scriptEvaluator ?? new ParseOnlyScriptEvaluator(),
+            options ?? new ServiceTaskOptions());
 
     private static ISharedVariableRepository CreateExampleWorkflowSharedCatalog() =>
         TestSharedVariableCatalog.Create(
@@ -4359,26 +4458,8 @@ public sealed class DefinitionValidationTests
         ]
     };
 
-    private static void ValidateDefinition(
-        WorkflowDefinitionService service,
-        WorkflowModel definition)
-    {
-        var method = typeof(WorkflowDefinitionService).GetMethod(
-            "ValidateDefinition",
-            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
-            ?? throw new InvalidOperationException("Workflow definition validator was not found.");
-        try
-        {
-            method.Invoke(service, [definition]);
-        }
-        catch (System.Reflection.TargetInvocationException exception)
-            when (exception.InnerException is not null)
-        {
-            System.Runtime.ExceptionServices.ExceptionDispatchInfo
-                .Capture(exception.InnerException)
-                .Throw();
-        }
-    }
+    private static void ValidateDefinition(WorkflowModel definition) =>
+        CreateValidator().ValidateNormalized(definition);
 
     internal static WorkflowModel LoadModel(string fileName)
     {
@@ -4400,6 +4481,52 @@ public sealed class DefinitionValidationTests
         {
             error = null;
             return true;
+        }
+    }
+
+    private sealed class RecordingConditionalPlanCache : IConditionalEventDependencyPlanCache
+    {
+        public int GetOrAddCalls { get; private set; }
+
+        public ConditionalEventDependencyPlan GetOrAdd(
+            long workflowDefinitionId,
+            WorkflowModel definition)
+        {
+            GetOrAddCalls++;
+            return ConditionalEventDependencyPlan.Empty;
+        }
+
+        public bool TryGet(long workflowDefinitionId, out ConditionalEventDependencyPlan plan)
+        {
+            plan = ConditionalEventDependencyPlan.Empty;
+            return false;
+        }
+
+        public void Remove(long workflowDefinitionId)
+        {
+        }
+    }
+
+    private sealed class RecordingSharedPlanCache : ISharedVariableAccessPlanCache
+    {
+        public int GetOrAddCalls { get; private set; }
+
+        public SharedVariableAccessPlan GetOrAdd(
+            long workflowDefinitionId,
+            WorkflowModel definition)
+        {
+            GetOrAddCalls++;
+            return SharedVariableAccessPlan.Empty;
+        }
+
+        public bool TryGet(long workflowDefinitionId, out SharedVariableAccessPlan plan)
+        {
+            plan = SharedVariableAccessPlan.Empty;
+            return false;
+        }
+
+        public void Remove(long workflowDefinitionId)
+        {
         }
     }
 

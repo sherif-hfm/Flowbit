@@ -141,7 +141,7 @@ public sealed class JintScriptEvaluator : IScriptEvaluator
         {
             // Parses without executing (no `execution` binding exists at this
             // point, and nothing in the script runs), so this is safe to call at
-            // author time (ValidateDefinition) with untrusted-shaped input.
+            // author time (definition validation) with untrusted-shaped input.
             _ = Engine.PrepareScript(script, strict: true);
             error = null;
             return true;

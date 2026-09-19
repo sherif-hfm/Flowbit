@@ -18,6 +18,7 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton<ISharedVariableAccessPlanCache, SharedVariableAccessPlanCache>();
         services.AddScoped<IInstanceVariableMutationTracker, InstanceVariableMutationTracker>();
         services.AddScoped<IWorkflowVariableStore, WorkflowVariableStore>();
+        services.AddScoped<IWorkflowDefinitionValidator, WorkflowDefinitionValidator>();
         services.AddScoped<IWorkflowDefinitionService, WorkflowDefinitionService>();
         services.AddScoped<ISharedVariableService, SharedVariableService>();
         services.AddScoped<ISharedVariableClientService, SharedVariableClientService>();

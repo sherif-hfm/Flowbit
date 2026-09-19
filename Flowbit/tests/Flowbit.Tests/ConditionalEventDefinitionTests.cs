@@ -517,12 +517,18 @@ public sealed class ConditionalEventDefinitionTests
         DefaultValue = JsonSerializer.SerializeToElement(defaultValue)
     };
 
-    private static WorkflowDefinitionService CreateDefinitionService() => new(
-        null!,
-        new ParseOnlyScriptEvaluator(),
-        new ServiceTaskOptions(),
-        NullLogger<WorkflowDefinitionService>.Instance,
-        conditionalEventAnalyzer: new ConditionalEventDefinitionAnalyzer());
+    private static WorkflowDefinitionService CreateDefinitionService()
+    {
+        var analyzer = new ConditionalEventDefinitionAnalyzer();
+        return new WorkflowDefinitionService(
+            null!,
+            new WorkflowDefinitionValidator(
+                new ParseOnlyScriptEvaluator(),
+                new ServiceTaskOptions(),
+                analyzer),
+            NullLogger<WorkflowDefinitionService>.Instance,
+            conditionalEventAnalyzer: analyzer);
+    }
 
     private sealed class ParseOnlyScriptEvaluator : IScriptEvaluator
     {

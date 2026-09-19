@@ -3969,8 +3969,8 @@ public sealed partial class WorkflowEngineService(
         {
             token = tokenAfterConditionalCapture!;
 
-            // Advance down the single unconditional outgoing flow (ValidateDefinition
-            // enforced exactly one for a message catch event). SingleOrDefault + a
+            // Advance down the single unconditional outgoing flow (definition
+            // validation enforced exactly one for a message catch event). SingleOrDefault + a
             // domain exception keeps a malformed legacy definition from surfacing as a
             // bare 500 (matching SelectPassThroughFlow's style).
             var outgoing = OutgoingFlows(workflow.Id, workflow.Definition, node.Id).Take(2).ToList();
@@ -10700,7 +10700,7 @@ public sealed partial class WorkflowEngineService(
         GatewayTopologyCache.Get(definitionId, definition).IncomingFlows(nodeId);
 
     // Resolves the errorBoundaryEvent attached to a host activity, or null when
-    // none is attached. ValidateDefinition enforces at most one boundary per host;
+    // none is attached. Definition validation enforces at most one boundary per host;
     // FirstOrDefault keeps this defensive against a hand-seeded definition that
     // somehow violates that invariant (avoids an uncaught InvalidOperationException).
     private static FlowNodeModel? FindErrorBoundary(WorkflowModel definition, int hostNodeId) =>

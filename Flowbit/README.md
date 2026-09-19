@@ -71,6 +71,27 @@ count/page execution, ordering, and transaction ownership remain in each
 calling method; the shared helpers bind no new parameters and add no database
 round trips.
 
+### Definition validation ownership
+
+Authored and normalized definition validation lives in
+`WorkflowDefinitionValidator` (`IWorkflowDefinitionValidator`), a scoped
+validator over `IScriptEvaluator`, `ServiceTaskOptions`, and
+`IConditionalEventDefinitionAnalyzer`. `ValidateAuthored` runs the request-time
+metadata checks that reject data the tolerant migrator would otherwise
+discard, before `WorkflowModelMigrator.Normalize`; `ValidateNormalized` runs
+the full normalized rule set and ends with
+`InboxVisibilityConditionCompiler.CompileAll` followed by conditional
+analysis. The validator performs no database access, never normalizes, and
+never persists or warms caches. `WorkflowDefinitionService` keeps the
+lifecycle operations (create/new version/publish/unpublish/default/delete),
+shared-catalog binding checks, service-task durability, transaction
+lock-order proofs, the durable publication gate, cache warming, logging, and
+DTO mapping; create and new-version calls run authored validation around
+normalization in the validator, then their shared and publication checks.
+Publication and set-default re-run conditional analysis plus the
+shared/durability/lock-order/publication checks but deliberately not full
+authored/normalized validation.
+
 ## Workflow examples
 
 The categorized [workflow example catalog](../examples/README.md) contains
