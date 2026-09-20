@@ -1,0 +1,34 @@
+{
+  "id": "browser-lifecycle-r1",
+  "name": "Browser lifecycle lifecycle",
+  "initialEventId": 1,
+  "variables": [],
+  "lanes": [],
+  "flowNodes": [
+    { "id": 1, "name": "Start", "type": "startEvent", "laneId": null, "x": 60, "y": 90 },
+    { "id": 2, "name": "Review request", "externalId": "TASK_REVIEW_REQUEST", "type": "userTask", "laneId": null, "x": 240, "y": 80, "roles": ["Agent"], "requiresClaim": true },
+    { "id": 3, "name": "End", "type": "endEvent", "laneId": null, "x": 480, "y": 90 }
+  ],
+  "sequenceFlows": [
+    { "id": 101, "name": "", "sourceRef": 1, "targetRef": 2 },
+    {
+      "id": 102,
+      "name": "Approve",
+      "externalId": "FLOW_APPROVE",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": ["Agent"],
+      "variables": [
+        {
+          "id": 1,
+          "name": "decisionNote",
+          "dataType": "string",
+          "isArray": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": "Len(decisionNote) > 0"
+        }
+      ]
+    }
+  ]
+}

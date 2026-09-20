@@ -13327,6 +13327,9 @@ window.addEventListener("keydown", (e) => {
       || t.tagName === "SELECT" || t.tagName === "BUTTON"
       || t.tagName === "A" || t.isContentEditable))) {
     e.preventDefault();
+    // Reveal the auto-hidden dock through :focus-within before focusing its
+    // input; a visibility:hidden input cannot receive focus.
+    diagramToolsHandle.focus();
     diagramSearchInput.focus();
     diagramSearchInput.select();
     return;

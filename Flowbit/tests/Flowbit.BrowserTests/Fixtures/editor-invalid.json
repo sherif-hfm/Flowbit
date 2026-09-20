@@ -1,0 +1,18 @@
+{
+  "id": "browser-editor-invalid",
+  "name": "Browser editor invalid workflow",
+  "initialEventId": 1,
+  "variables": [],
+  "lanes": [],
+  "flowNodes": [
+    { "id": 1, "name": "Submitted", "type": "startEvent", "laneId": null, "x": 60, "y": 90 },
+    { "id": 2, "name": "Review", "type": "userTask", "laneId": null, "x": 200, "y": 90, "roles": [], "requiresClaim": false },
+    { "id": 3, "name": "Route", "type": "exclusiveGateway", "laneId": null, "x": 380, "y": 90 },
+    { "id": 4, "name": "Done", "type": "endEvent", "laneId": null, "x": 560, "y": 90 }
+  ],
+  "sequenceFlows": [
+    { "id": 101, "name": "", "sourceRef": 1, "targetRef": 2 },
+    { "id": 102, "name": "", "sourceRef": 2, "targetRef": 3 },
+    { "id": 103, "name": "", "sourceRef": 3, "targetRef": 4 }
+  ]
+}

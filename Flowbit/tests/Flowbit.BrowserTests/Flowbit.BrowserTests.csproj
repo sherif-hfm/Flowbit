@@ -1,0 +1,52 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Standalone browser smoke suite (Stage 7).
+
+    This project is deliberately NOT part of Flowbit.sln / Flowbit.slnx: the
+    normal solution test command must stay free of Chromium requirements. Run it
+    explicitly; see README.md in this directory for the documented commands.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <WarningsAsErrors>nullable</WarningsAsErrors>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.7.0" />
+    <PackageReference Include="Microsoft.Playwright" Version="1.62.0" />
+    <PackageReference Include="Testcontainers.PostgreSql" Version="4.13.0" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.5">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Test-only static host for the copied editor; no production dependency. -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Response DTO contracts only; HTTP setup clients stay test-owned. -->
+    <ProjectReference Include="..\..\src\Flowbit.Shared\Flowbit.Shared.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      The real editor is copied from the repository file; no second edited HTML
+      fixture is maintained. Fixtures are minimal definitions with their
+      prerequisites documented in Fixtures/README.md.
+    -->
+    <None Include="..\..\..\flowbit-editor.html" Link="Fixtures\flowbit-editor.html" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="Fixtures\**\*.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="Fixtures\README.md" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

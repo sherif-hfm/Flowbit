@@ -1,0 +1,37 @@
+{
+  "id": "browser-gateway-r4",
+  "name": "Browser gateway detail",
+  "initialEventId": 1,
+  "variables": [],
+  "lanes": [
+    { "id": 1, "name": "Gateway flow", "x": 20, "y": 20, "w": 1200, "h": 480 }
+  ],
+  "flowNodes": [
+    { "id": 1, "name": "Start", "externalId": "START_GATEWAY", "type": "startEvent", "laneId": 1, "x": 60, "y": 230 },
+    { "id": 2, "name": "Fork reviews", "externalId": "GATEWAY_FORK", "type": "parallelGateway", "laneId": 1, "x": 200, "y": 220 },
+    { "id": 3, "name": "Reviewer A", "externalId": "TASK_REVIEWER_A", "type": "userTask", "laneId": 1, "x": 380, "y": 90, "roles": ["Reviewer"], "requiresClaim": false },
+    { "id": 4, "name": "Reviewer B", "externalId": "TASK_REVIEWER_B", "type": "userTask", "laneId": 1, "x": 380, "y": 340, "roles": ["Reviewer"], "requiresClaim": false },
+    {
+      "id": 5,
+      "name": "Merge after both",
+      "externalId": "GATEWAY_MERGE",
+      "type": "complexGateway",
+      "laneId": 1,
+      "x": 580,
+      "y": 220,
+      "activationCondition": "TotalIncomingCount() >= 2",
+      "joinCancellation": { "gatewayRef": 2 }
+    },
+    { "id": 6, "name": "Finalize", "externalId": "TASK_FINALIZE", "type": "userTask", "laneId": 1, "x": 780, "y": 210, "roles": ["Reviewer"], "requiresClaim": false },
+    { "id": 7, "name": "End", "type": "endEvent", "laneId": 1, "x": 980, "y": 230 }
+  ],
+  "sequenceFlows": [
+    { "id": 101, "name": "Create branches", "sourceRef": 1, "targetRef": 2 },
+    { "id": 201, "name": "Reviewer A branch", "sourceRef": 2, "targetRef": 3 },
+    { "id": 202, "name": "Reviewer B branch", "sourceRef": 2, "targetRef": 4 },
+    { "id": 301, "name": "Reviewer A completed", "sourceRef": 3, "targetRef": 5, "roles": ["Reviewer"] },
+    { "id": 401, "name": "Reviewer B completed", "sourceRef": 4, "targetRef": 5, "roles": ["Reviewer"] },
+    { "id": 601, "name": "Quorum reached", "sourceRef": 5, "targetRef": 6, "condition": "true" },
+    { "id": 701, "name": "Finalize decision", "sourceRef": 6, "targetRef": 7, "roles": ["Reviewer"] }
+  ]
+}

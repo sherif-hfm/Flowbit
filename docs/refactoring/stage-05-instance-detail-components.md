@@ -11,6 +11,26 @@ passes, but the required localhost browser checks
 acceptance gate remains open. This stage is independent of backend
 extractions and Stage 4 after a passing baseline.
 
+**Stage 7 browser automation (2026-09-20).** The new
+[Flowbit.BrowserTests](../../Flowbit/tests/Flowbit.BrowserTests/README.md)
+suite now covers a large part of this gate automatically: R1/R2 (normal-task
+lifecycle, detail states, section links), R3 (identity replacement),
+R4 (gateway/complex/multi-instance sections and navigation), R5 (real
+five-second polling after an out-of-band HTTP completion), R6 (responsive
+navigation and keyboard focus at 1024x768 and 390x844), and a deterministic
+server-side regression for an in-flight identity response with a
+request-count characterization. The initial product scenarios passed (17/17 locally,
+Chromium 151.0.7922.34). The gate is still open for the manual headed
+inspection rows (per-state screenshots, native-picker success/cancel,
+claim-capture and delegation attribution, Worker-driven batch links,
+administrative action refresh, and the pre-extraction visual comparison).
+
+The [Stage 7 review fixes](stage-07-browser-smoke-and-stage-05-acceptance.md#review-fixes-2026-09-20)
+strengthen this evidence with real in-app navigation, separately gated identity
+responses (including a failed replacement), complete-refresh polling counts,
+gateway state values, and wheel-accessible submitted JSON. Those fixes do not
+close the remaining manual acceptance rows.
+
 ## Implemented component boundaries
 
 All components live under `Flowbit/src/Flowbit.Ui/Components/Shared/InstanceDetails/`
@@ -134,8 +154,12 @@ Retain
 [InstanceReactivationUiContractTests](../../Flowbit/tests/Flowbit.Tests/InstanceReactivationUiContractTests.cs)
 and
 [InstanceVariableUpdateUiContractTests](../../Flowbit/tests/Flowbit.Tests/InstanceVariableUpdateUiContractTests.cs),
-including `IdentityChangeRefreshesDisplayedActorAndPersonalActions` and
-`NavigatingAwayDuringInitialLoadDoesNotStartPollingAfterDisposal`. Continue to
+including `IdentityChangeRefreshesDisplayedActorAndPersonalActions`,
+`NavigatingAwayDuringInitialLoadDoesNotStartPollingAfterDisposal`, and the
+newer `InFlightActionDiscoveryResponseCannotRevivePriorActorActions`
+(delayed action-discovery response released after an identity change; only the
+new actor's presentation survives; discovery request count characterized at
+exactly two). Continue to
 test the assembled page, so broken integration cannot pass solely because an
 isolated component renders.
 

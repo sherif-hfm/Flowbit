@@ -14,7 +14,11 @@ window.flowbit.scrollToSection = (sectionId) => {
 
     const hash = `#${sectionId}`;
     if (window.location.hash !== hash) {
-        window.history.pushState(null, "", hash);
+        // A fragment-only URL resolves against <base href="/">. Preserve the
+        // actual page path/query so reload/back stay on this instance.
+        const url = new URL(window.location.href);
+        url.hash = sectionId;
+        window.history.pushState(null, "", url.href);
     }
 };
 

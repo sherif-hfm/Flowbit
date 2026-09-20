@@ -15,6 +15,9 @@ Start with the [developer documentation](../docs/index.md) for HTTP onboarding, 
   heartbeats, timer-start reconciliation, metrics, and retention cleanup.
 - `tests/Flowbit.Tests` - xUnit definition/editor tests plus an in-process
   API host backed by an isolated PostgreSQL Testcontainer.
+- `tests/Flowbit.BrowserTests` - standalone Chromium smoke suite (outside both
+  solution files) that runs the real copied editor and the real published
+  API/UI over localhost; see its [README](tests/Flowbit.BrowserTests/README.md).
 - `tools/*` - the existing definition verifier, live API regression runner, and
   instance load runner.
 
@@ -1165,6 +1168,42 @@ dotnet run --project ./tools/MultiInstanceApiTests/MultiInstanceApiTests.csproj 
 
 The live API runner writes Markdown and JSON evidence under the repository-level
 `TestResults` directory and includes restart recovery plus a 1,000-item load case.
+
+### Browser smoke suite (separate command)
+
+The standalone Chromium suite is not part of `Flowbit.slnx`; run it explicitly
+after publishing the hosts. It starts its own disposable PostgreSQL container
+and API/UI processes on ephemeral loopback ports, so no development stack or
+fixed port is needed:
+
+```powershell
+dotnet publish ./src/Flowbit.Api/Flowbit.Api.csproj -c Release -o ../artifacts/browser/hosts/api /p:UseAppHost=false
+dotnet publish ./src/Flowbit.Ui/Flowbit.Ui.csproj -c Release -o ../artifacts/browser/hosts/ui /p:UseAppHost=false
+dotnet build ./tests/Flowbit.BrowserTests/Flowbit.BrowserTests.csproj -c Release
+pwsh ./tests/Flowbit.BrowserTests/bin/Release/net10.0/playwright.ps1 install chromium
+dotnet test ./tests/Flowbit.BrowserTests/Flowbit.BrowserTests.csproj -c Release --no-build --no-restore
+```
+
+From Bash (add `--with-deps` on Linux so OS browser dependencies are installed):
+
+```bash
+dotnet publish ./src/Flowbit.Api/Flowbit.Api.csproj -c Release -o ../artifacts/browser/hosts/api /p:UseAppHost=false
+dotnet publish ./src/Flowbit.Ui/Flowbit.Ui.csproj -c Release -o ../artifacts/browser/hosts/ui /p:UseAppHost=false
+dotnet build ./tests/Flowbit.BrowserTests/Flowbit.BrowserTests.csproj -c Release
+pwsh ./tests/Flowbit.BrowserTests/bin/Release/net10.0/playwright.ps1 install --with-deps chromium
+dotnet test ./tests/Flowbit.BrowserTests/Flowbit.BrowserTests.csproj -c Release --no-build --no-restore
+```
+
+Set `FLOWBIT_BROWSER_HEADED=1` to launch Chromium headed for local diagnosis.
+The suite covers editor E1–E5 and runtime R1–R6 scenarios (see the project
+README); manual native-picker and full acceptance checks remain the caller's
+responsibility.
+
+The browser project also checks its own auxiliary-page diagnostics, retained
+warnings/network failures, and timeout cleanup (20 cases including 17 product
+scenarios). Each scenario retains `diagnostics.json`, including successful runs.
+The UI shell and instance summary expose nonvisual `data-interactive` markers
+from Blazor's renderer state so tests do not act on prerendered controls.
 
 ## Advanced variable search
 

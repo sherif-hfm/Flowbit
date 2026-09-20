@@ -43,10 +43,13 @@ stage. Each stage records its implementation and acceptance status. The
 [refactoring gap inventory](refactoring/gaps.md) records deferred and unplanned
 work; the [remaining-gaps implementation plan](refactoring/remaining-gaps-implementation-plan.md)
 selects the prioritized follow-up stages and records their boundaries. The
-follow-up roadmap is planned work, not implemented behavior.
-The [detailed Stage 7 plan](refactoring/stage-07-browser-smoke-and-stage-05-acceptance.md)
-specifies automated browser smoke coverage and the remaining Stage 5 acceptance
-checks; both remain planned work.
+follow-up roadmap is planned work except Stage 7, whose no-Worker smoke suite
+is implemented and passing locally.
+The [Stage 7 browser smoke suite](refactoring/stage-07-browser-smoke-and-stage-05-acceptance.md)
+is implemented and passing locally (`Flowbit/tests/Flowbit.BrowserTests/`); the
+remaining Stage 5 acceptance rows (headed manual inspection, native-picker
+manual evidence, Worker-driven batch links, and the pre-extraction comparison)
+and the remote CI observation remain open.
 
 ## Reference ownership
 

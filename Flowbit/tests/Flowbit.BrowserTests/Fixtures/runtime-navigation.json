@@ -1,0 +1,18 @@
+{
+  "id": "browser-navigation-r2",
+  "name": "Browser navigation approvals",
+  "initialEventId": 1,
+  "variables": [],
+  "lanes": [],
+  "flowNodes": [
+    { "id": 1, "name": "Start", "type": "startEvent", "laneId": null, "x": 60, "y": 90 },
+    { "id": 2, "name": "approval1", "externalId": "TASK_APPROVAL_ONE", "type": "userTask", "laneId": null, "x": 240, "y": 80, "roles": [], "requiresClaim": false },
+    { "id": 3, "name": "approval2", "externalId": "TASK_APPROVAL_TWO", "type": "userTask", "laneId": null, "x": 420, "y": 80, "roles": [], "requiresClaim": false },
+    { "id": 4, "name": "End", "type": "endEvent", "laneId": null, "x": 620, "y": 90 }
+  ],
+  "sequenceFlows": [
+    { "id": 101, "name": "", "sourceRef": 1, "targetRef": 2 },
+    { "id": 102, "name": "approval", "sourceRef": 2, "targetRef": 3 },
+    { "id": 103, "name": "approval", "sourceRef": 3, "targetRef": 4 }
+  ]
+}

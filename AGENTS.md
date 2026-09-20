@@ -153,6 +153,16 @@ interactions:
      console result;
    - a screenshot when the visual appearance changed.
 
+A repeatable Chromium smoke suite exists at
+`Flowbit/tests/Flowbit.BrowserTests/` (outside both solution files). It runs the
+real copied editor and the real published API/UI over localhost with a
+disposable PostgreSQL container; see its
+[README](Flowbit/tests/Flowbit.BrowserTests/README.md) for setup and the
+E1–E5/R1–R6 coverage matrix. It is the baseline for editor/runtime UI changes,
+but it does not replace scenario-specific manual verification: the native
+file-picker success/cancel path, visual comparisons, and behaviors outside the
+matrix still need the manual steps above.
+
 ---
 
 ## Runtime engine (`Flowbit/`)

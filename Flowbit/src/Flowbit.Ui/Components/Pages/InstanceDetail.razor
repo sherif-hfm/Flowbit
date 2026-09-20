@@ -45,7 +45,8 @@ else
         </Actions>
     </PageHeader>
 
-    <section class="panel mb-3" aria-labelledby="instance-summary-heading">
+    <section class="panel mb-3" aria-labelledby="instance-summary-heading"
+             data-interactive="@(RendererInfo.IsInteractive ? "true" : "false")">
         <div class="section-heading">
             <div><h2 id="instance-summary-heading">@ExecutionHeading</h2><p>Workflow lifecycle and token positions</p></div>
             <StatusBadge Status="@instance.Status" />

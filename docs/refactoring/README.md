@@ -3,10 +3,12 @@
 [Documentation home](../index.md)
 
 **Status: In progress.** Stages 1–4 are implemented; stage 5 is in progress
-(extraction and tests complete, browser verification pending); stage 6 is
-implemented; stage 7 has a detailed implementation plan and is not implemented.
-Each stage records its own implementation and acceptance status below. The
-architecture and API guides describe the current application.
+(extraction and tests complete; browser acceptance pending); stage 6 is
+implemented; stage 7 is in progress (the automated Chromium smoke suite and its
+CI job are implemented and passing locally; Stage 5's residual manual
+acceptance and the remote CI observation remain open). Each stage records its
+own implementation and acceptance status below. The architecture and API guides
+describe the current application.
 
 ## Stages
 
@@ -18,7 +20,7 @@ architecture and API guides describe the current application.
 | [4 — Editor validation](stage-04-editor-validation.md) | Smaller validation phases and rule helpers inside the standalone HTML file. | Passing test baseline; independent of backend stages. | Implemented |
 | [5 — Instance detail components](stage-05-instance-detail-components.md) | Display components with refresh, identity, and mutation coordination retained by the page. | Passing test baseline; independent of stages 1–4. | In progress |
 | [6 — Definition validation](stage-06-definition-validation.md) | Separate authored/normalized validation from definition lifecycle and publication orchestration. | Passing test baseline; independent of stages 1–5. | Implemented |
-| [7 — Browser smoke suite and Stage 5 acceptance](stage-07-browser-smoke-and-stage-05-acceptance.md) | Isolated Chromium smoke coverage, a separate CI job, and completion of Stage 5's browser gate. | Passing baseline; extracted Stage 5 components available for verification. | Planned |
+| [7 — Browser smoke suite and Stage 5 acceptance](stage-07-browser-smoke-and-stage-05-acceptance.md) | Isolated Chromium smoke coverage, a separate CI job, and completion of Stage 5's browser gate. | Passing baseline; extracted Stage 5 components available for verification. | In progress (suite implemented and passing; residual Stage 5 acceptance open) |
 
 The original recommended sequence is stages 1 through 5, followed by Stage 6.
 Stage 6 may move earlier if definition maintenance is the immediate priority.
@@ -129,8 +131,9 @@ records the review at `fbe0721` and planned stages 7–11: browser smoke coverag
 removal of seven migrated engine-interface methods, waiting-task role-management
 extraction, editor node-type transitions, and administrative-action display
 components. It includes an explicitly accepted C# compatibility break and keeps
-the other candidates deferred. These follow-up stages are planned, not
-implemented; the existing stage statuses above remain unchanged.
+the other candidates deferred. Stage 7 is in progress (smoke suite implemented
+locally; residual Stage 5 acceptance and remote CI observation remain open).
+Stages 8–11 remain planned. The existing stage statuses above remain unchanged.
 
 The [detailed Stage 7 plan](stage-07-browser-smoke-and-stage-05-acceptance.md)
 defines the isolated stack, fixtures, editor/runtime smoke matrix, CI artifacts,

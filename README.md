@@ -49,6 +49,9 @@ The [workflow editor](flowbit-editor.html) is a single HTML file built with vani
 
 The editor produces the same definition format the runtime consumes. Diagram layout and executable configuration travel together in one document.
 
+Press `/` while working on the canvas to reveal the diagram search
+dock and focus its search field, even when the dock is hidden.
+
 ## Execute with control
 
 ![Flowbit.Ui operations dashboard showing workflow metrics, recent instances, active review tasks, and published workflows](docs/images/flowbit-ui.jpg)

@@ -2,15 +2,27 @@
 
 [Plan index](README.md) · [Remaining-gaps roadmap](remaining-gaps-implementation-plan.md#stage-7--automated-browser-smoke-suite-and-stage-5-acceptance) · [Browser coverage gap](gaps.md#7-automated-visual-and-interaction-coverage)
 
-**Status: Planned — not implemented.** This document expands Stage 7 of the
-remaining-gaps roadmap. It defines implementation work and acceptance evidence;
-writing the plan does not add browser coverage or complete Stage 5.
+**Status: In progress — the automated smoke suite is implemented and passing;
+Stage 5's residual manual acceptance remains open.** The suite
+`Flowbit/tests/Flowbit.BrowserTests/` (20 tests: 17 product scenarios, E1–E5 at
+both editor viewports and R1–R6, plus three harness regression tests) runs the
+real copied editor and the real published API/UI over localhost with a
+disposable PostgreSQL Testcontainer, outside both solutions and outside the
+normal solution test command. The `browser-smoke` CI job runs it on Ubuntu 24.04
+with TRX and artifact uploads. What is still open for this stage:
 
-Prepared against commit `7c67ac2` on 2026-09-20. Source inspection was read-only;
-no application tests or browser acceptance scenarios were run while preparing
-this plan. Refresh the source anchors and establish a passing baseline before
-implementation. Historical test results in earlier stage records are not this
-stage's results.
+- The manual native-picker success/cancel check on a headed desktop Chromium
+  (the automated suite covers the forced download fallback only). The headed
+  mode (`FLOWBIT_BROWSER_HEADED=1`) was verified working; the recorded
+  native-picker manual evidence is not yet collected.
+- The full Stage 5 acceptance rows that need a separate Worker-driven stack:
+  batch links for real version-change and variable-update batches, plus the
+  pre-extraction visual comparison. See the checklist below for per-row status.
+- Observing the new remote `browser-smoke` job pass on a real CI run; the
+  workflow YAML is committed but a remote run has not been observed yet.
+
+Prepared against commit `7c67ac2` on 2026-09-20. Historical test results in
+earlier stage records are not this stage's results.
 
 ## Objective and boundary
 
@@ -58,15 +70,17 @@ Blazor's workflow API requests originate on the UI server. Browser network
 interception cannot deterministically delay those API calls or establish their
 counts. Put delayed-response, disposal, and request-count assertions in the
 server-side tests; use browser checks for rendered behavior and real navigation.
-Correlate host logs when investigating server-to-API requests. The current
-instance-detail tests cover identity replacement after rendering and delayed
-initial-load disposal, but do not establish in-flight identity-response ordering
-or exact polling counts. Add the missing characterization described below.
+Correlate host logs when investigating server-to-API requests.
+[InstanceVariableUpdateUiContractTests](../../Flowbit/tests/Flowbit.Tests/InstanceVariableUpdateUiContractTests.cs)
+now covers identity replacement after rendering, delayed initial-load disposal,
+separately gated in-flight responses with successful/failed replacement, and poll-eligible instance request-count
+characterization (load, one five-second tick, then dispose).
 
 ## Target ownership and file layout
 
 Create `Flowbit/tests/Flowbit.BrowserTests/` with the following bounded structure.
-These are proposed files, not existing implementation links.
+These files are implemented; the harness also has `ScenarioCancellation.cs`
+and `HarnessDiagnosticsTests.cs` for cancellation propagation and fault injection.
 
 | Proposed file or group | Responsibility |
 | --- | --- |
@@ -231,8 +245,8 @@ cannot identify the control; that production markup change still requires UI
 verification and documentation assessment.
 
 Instance-detail section links use page-owned scrolling and prevent the anchor's
-default navigation. Assert the target section's scroll position/visibility,
-not a URL hash change. Use distinguishable fixture values and relative ordering
+default navigation. Assert the target section's scroll position/visibility and
+that updating the URL fragment preserves the instance path/query. Use distinguishable fixture values and relative ordering
 instead of hard-coding localized timestamp strings.
 
 ### Automated editor matrix
@@ -294,19 +308,20 @@ where required; do not claim existing test names alone prove these properties.
 Maintain the following evidence checklist alongside the Stage 5 browser section.
 All rows must have actual results before Stage 5 is marked implemented. A
 passing CI smoke run satisfies only the scenarios it actually exercises.
+Status after the Stage 7 smoke implementation (2026-09-20):
 
-| Stage 5 requirement | Evidence to collect | Execution surface |
-| --- | --- | --- |
-| Newly started/empty, normal task, terminal detail | Summaries, section visibility/empty states, and available actions; screenshots for each state. | R1/R2 plus headed inspection. |
-| Gateway and complex state | Labels, statuses, row ordering, gateway/complex section links and scroll targets. | R4 plus headed inspection. |
-| MI detail and submitted results | Progress, item ordering, flow labels, submitted JSON, completed/cancelled item presentation where applicable. | R4/R5 plus headed inspection. |
-| Variables and shared bindings | Variable values and empty states; variable-to-update-audit navigation; value-free shared-binding table with a real catalog-backed definition. | Full acceptance fixtures; create prerequisites through HTTP. |
-| Version-change and variable-update histories | Real actor/roles, reasons, JSON values, ordering, and links to the correct completed batch screens. | Separate full isolated stack with Worker-driven batches. Direct version/variable changes alone do not supply every required batch link. |
-| Ordinary history attribution | Selected claims and delegation badges from actual authorized actions, with readable escaped values. | Configure test claim capture and delegation through existing contracts; perform the action, then inspect history. |
-| Administrative action refresh | Exercise an existing administrative action in instance detail and confirm refreshed state/audit; follow its real administrative batch link. | Use a small synchronous example and authorized administrator. The immediate action atomically creates a completed one-item audit batch; that path needs no Worker. |
-| Identity and disposal during refresh | Change identity while refresh is occurring; navigate away and return; no revived prior-actor actions, stale display, duplicate polling, or disposal failures. | R3/R5, retained identity/disposal tests, and the new deterministic in-flight identity-response and relevant request-count characterization. |
-| Layout and navigation | All required states at 1440 × 900, 1024 × 768, and 390 × 844; real clicks, typing, keyboard traversal, scrolling, and link destinations. | Headed browser inspection and screenshots. |
-| Console/network and comparison evidence | Browser/version, exact localhost URLs, console warnings/errors, failed requests, relevant host logs, and before/after screenshots. | Automated artifacts plus acceptance record. |
+| Stage 5 requirement | Evidence to collect | Execution surface | Status |
+| --- | --- | --- | --- |
+| Newly started/empty, normal task, terminal detail | Summaries, section visibility/empty states, and available actions; screenshots for each state. | R1/R2 plus headed inspection. | Automated (R1/R2) passed; headed per-state screenshots not yet recorded — open. |
+| Gateway and complex state | Labels, statuses, row ordering, gateway/complex section links and scroll targets. | R4 plus headed inspection. | Automated (R4) passed; headed inspection not yet recorded — open. |
+| MI detail and submitted results | Progress, item ordering, flow labels, submitted JSON, completed/cancelled item presentation where applicable. | R4/R5 plus headed inspection. | Automated (R4/R5) passed; headed inspection not yet recorded — open. |
+| Variables and shared bindings | Variable values and empty states; variable-to-update-audit navigation; value-free shared-binding table with a real catalog-backed definition. | Full acceptance fixtures; create prerequisites through HTTP. | Empty/normal variable states covered (R1/R2/R6); a real catalog-backed shared-binding walkthrough and variable-to-update-audit navigation still open. |
+| Version-change and variable-update histories | Real actor/roles, reasons, JSON values, ordering, and links to the correct completed batch screens. | Separate full isolated stack with Worker-driven batches. Direct version/variable changes alone do not supply every required batch link. | Open — requires the separate Worker-driven stack. |
+| Ordinary history attribution | Selected claims and delegation badges from actual authorized actions, with readable escaped values. | Configure test claim capture and delegation through existing contracts; perform the action, then inspect history. | Open — requires configured claim capture and a delegation grant in the acceptance stack. |
+| Administrative action refresh | Exercise an existing administrative action in instance detail and confirm refreshed state/audit; follow its real administrative batch link. | Use a small synchronous example and authorized administrator. The immediate action atomically creates a completed one-item audit batch; that path needs no Worker. | Open — the smoke fixtures do not exercise administrative actions yet. |
+| Identity and disposal during refresh | Change identity while refresh is occurring; navigate away and return; no revived prior-actor actions, stale display, duplicate polling, or disposal failures. | R3/R5, retained identity/disposal tests, and the new deterministic in-flight identity-response and relevant request-count characterization. | Passed — R3/R5 plus the new deterministic in-flight regression and request-count characterization. |
+| Layout and navigation | All required states at 1440 × 900, 1024 × 768, and 390 × 844; real clicks, typing, keyboard traversal, scrolling, and link destinations. | Headed browser inspection and screenshots. | Automated viewport coverage passed (R6 at 1024/390; E matrix at 1440/1024); headed manual inspection with screenshots remains open. |
+| Console/network and comparison evidence | Browser/version, exact localhost URLs, console warnings/errors, failed requests, relevant host logs, and before/after screenshots. | Automated artifacts plus acceptance record. | Partially collected (Chromium 151.0.7922.34, run artifacts include console/error/request capture and host logs); before/after pre-extraction comparison still open. |
 
 Use the [getting-started guide](../getting-started.md),
 [UI guide](../ui-guide.md), and [deployment guide](../deployment.md) for the
@@ -406,10 +421,10 @@ complete after checkpoint 5 if Stage 5 acceptance is still pending.
 
 ## Validation commands
 
-Run from the repository root. **The browser commands below are intended for
-the implementation; the proposed project does not exist when this plan is
-written.** They require .NET 10, Docker, and PowerShell 7 (`pwsh`), including
-when invoked from Bash. Both shells use the same arguments and paths.
+Run from the repository root. The project now exists; the commands below are
+the implemented commands. They require .NET 10, Docker, and PowerShell 7
+(`pwsh`), including when invoked from Bash. Both shells use the same arguments
+and paths.
 
 Existing baseline and focused regression commands, valid in PowerShell or Bash:
 
@@ -419,7 +434,7 @@ dotnet test Flowbit/Flowbit.slnx --nologo --verbosity quiet
 dotnet test Flowbit/Flowbit.slnx --filter "FullyQualifiedName~EditorRuntimeSmokeTests|FullyQualifiedName~EditorNavigationTests|FullyQualifiedName~EditorValidatorCharacterizationTests|FullyQualifiedName~InstanceDetailDisplayComponentTests|FullyQualifiedName~InstanceReactivationUiContractTests|FullyQualifiedName~InstanceVariableUpdateUiContractTests|FullyQualifiedName~TestIdentityUiContractTests"
 ```
 
-Proposed PowerShell setup and test commands:
+PowerShell setup and test commands:
 
 ```powershell
 dotnet publish Flowbit/src/Flowbit.Api/Flowbit.Api.csproj -c Release -o artifacts/browser/hosts/api /p:UseAppHost=false
@@ -430,7 +445,7 @@ dotnet test Flowbit/tests/Flowbit.BrowserTests/Flowbit.BrowserTests.csproj -c Re
 git diff --check
 ```
 
-Proposed Bash setup and test commands on Linux, including CI:
+Bash setup and test commands on Linux, including CI:
 
 ```bash
 dotnet publish Flowbit/src/Flowbit.Api/Flowbit.Api.csproj -c Release -o artifacts/browser/hosts/api /p:UseAppHost=false
@@ -443,30 +458,170 @@ git diff --check
 
 The Linux installer additionally installs operating-system browser dependencies.
 Use the same Release configuration for publishing, building, installing, and
-testing. Provide a documented fixture-supported headed mode for local diagnosis;
-implement and verify its option before documenting an environment-variable name
-as functional. It must use the same isolation and cleanup rules.
+testing. The headed mode is implemented and verified locally:
+set `FLOWBIT_BROWSER_HEADED=1` before running the suite; it launches Chromium
+headed with the same isolation and cleanup rules.
+
+## Implementation results (2026-09-20)
+
+The following records describe the initial implementation. The subsequent
+[review fixes](#review-fixes-2026-09-20) supersede its harness and coverage details.
+
+- **Suite:** `Flowbit/tests/Flowbit.BrowserTests/` — a standalone `net10.0`
+  project outside both solution files. The project pins Microsoft.Playwright
+  1.62.0, Testcontainers.PostgreSql 4.13.0, xUnit 2.9.3,
+  xunit.runner.visualstudio 3.1.5, and Microsoft.NET.Test.Sdk 18.7.0, and
+  references `Flowbit.Shared` for response DTOs only.
+- **Local browser run:** `dotnet test Flowbit/tests/Flowbit.BrowserTests/Flowbit.BrowserTests.csproj -c Release --no-build --no-restore`
+  — **17 passed, 0 failed, 0 skipped** (E1–E5 at 1440×900 and 1024×768; R1–R5;
+  R6 at 1024×768 and 390×844). Duration 1 m 8 s. Browser: Chromium 151.0.7922.34
+  on Windows. Headed mode (`FLOWBIT_BROWSER_HEADED=1`) was verified separately
+  with the same pass result for the E4 pair.
+- **Focused UI contract tests:** `dotnet test Flowbit/Flowbit.slnx --filter FullyQualifiedName~InstanceVariableUpdateUiContractTests`
+  — **6 passed, 0 failed, 0 skipped**, Duration 11 s. Includes
+  `InFlightActionDiscoveryResponseCannotRevivePriorActorActions` and
+  `PollEligibleInstanceRefreshesOncePerTickAndStopsAfterDispose` (one
+  `GET /api/instances/42` after load, two after one 5s tick, unchanged after
+  renderer dispose). The full `Flowbit.slnx` suite was not re-run for this
+  gap-fix.
+- **`git diff --check`:** clean (CRLF checkout warnings only).
+- **Harness:** one serialized xUnit collection fixture owns the disposable
+  PostgreSQL container (120s start bound), the published API/UI processes on
+  ephemeral loopback ports (app config stripped; `DOTNET_ROOT` and similar
+  runtime vars preserved), readiness probed over `/openapi/v1.json`, `/token`,
+  and `/_framework/blazor.web.js`, the in-process editor host serving the
+  repository `flowbit-editor.html`, and Playwright. Each `RunAsync` body is
+  bounded to 120s. Setup identity is minted through the real `/token` screen
+  and used for HTTP setup. Workflow fixture POST suffixes the authored `id`
+  with a unique token; checked-in JSON is unchanged. A passing body still fails
+  when page errors, unexpected `console.error` messages, or unexpected dialogs
+  were recorded (snapshots, not drained queues). Identity cleanup failures are
+  written to `setup.log` and fail a passing scenario; the next scenario still
+  clears and applies identity. Each run writes `manifest.json` (browser
+  version, loopback URLs without secrets, headed flag, scenario names). Partial
+  startup failure writes `setup.log` and disposes owned resources. Failure
+  artifacts (trace, screenshot, failure log, host logs) land under
+  `artifacts/browser/runs/<run>/`.
+- **Editor matrix:** E1–E5 pass at 1440×900 and 1024×768 with the forced
+  download fallback (context init script blocking `showSaveFilePicker`),
+  fallback-alert handling, and downloaded-JSON assertions. E4 asserts the
+  visible title `Workflow cannot be saved`. E5 covers keyboard menus, Escape
+  focus restore, `/` diagram search with result selection, and undo/redo
+  invariants, waiting on the name field rather than a fixed sleep.
+- **Runtime matrix:** R1–R6 pass as specified. R1 asserts the Approve action is
+  absent before claim and present after. R2 asserts empty variables/history on
+  the running instance and that prior instance rows are gone after navigating
+  to the terminal instance. R6 scrolls the gateway-scopes table and Tabs from a
+  section link onto a reachable control.
+- **CI:** the `browser-smoke` job is added to
+  [tests.yml](../../.github/workflows/tests.yml) with publish/build/install
+  steps, `--with-deps` Chromium, TRX output, and an `always()` artifact upload
+  (runs + test results only, 14-day retention). A remote run has not been
+  observed yet; this change does not claim a CI pass.
+- **Headed mode:** `FLOWBIT_BROWSER_HEADED=1` verified by running the E4
+  scenario pair headed locally with an identical result. Native-picker
+  success/cancel, Worker-driven Stage 5 batch links, and headed screenshots
+  remain open.
+
+## Review fixes (2026-09-20)
+
+- Browser diagnostics now attach to every context page and include transport
+  failures. Every scenario retains `diagnostics.json`, including warnings and
+  failed requests on successful runs. Three fault-injection tests verify the
+  harness; `harness-expected-*` directories deliberately contain injected errors.
+- Scenario budgets cancel HTTP/retry work, capture evidence, close the browser
+  context, and drain the body before returning. An uncooperative body invalidates
+  and stops the shared stack so later scenarios cannot reuse unknown state.
+- The static host serves the build copy of the editor and ignores ambient
+  configuration. API/UI log pumps drain redirected pipes before closing files.
+- Fresh runtime navigation waits for nonvisual renderer-state markers. R2/R5
+  use actual links/back navigation and assert that the document was retained.
+  R4 asserts rendered statuses, phases, and cycle values. R6 uses real horizontal
+  wheel input, checks clipped-column reachability, and parses submitted JSON.
+- E2 checks both connector endpoints touching the moved node with the intended
+  arrowhead clearance. File loading waits for the fixture's workflow name.
+  E5 starts with the search dock hidden and exercises `/` to reveal and focus it.
+- The identity regression begins with rendered actor A, gates A/B responses
+  separately, and checks both successful and failed B refreshes. Removing the
+  epoch guards in an isolated copy now makes the failed-replacement case fail.
+  Polling assertions wait for both request counts and are serialized against
+  other integration collections, with a 30-second observation bound.
+- Stronger checks exposed two focused product fixes: section scrolling now
+  preserves the instance path/query when writing its URL fragment, and `/`
+  reveals the hidden editor dock before focusing its input. These change neither
+  workflow contracts nor API request counts. See the [UI guide](../ui-guide.md#inspect-instances-and-activity)
+  and [editor overview](../../README.md#design-visually).
+
+Validation of the review fixes:
+
+- `dotnet test Flowbit/Flowbit.slnx --nologo --verbosity quiet` — **1,892 passed,
+  0 failed, 0 skipped** (4m 9s), including the seven focused instance refresh
+  tests. Results: `artifacts/browser/fix-test-results/fix-full-suite.trx`.
+- `dotnet test Flowbit/tests/Flowbit.BrowserTests/Flowbit.BrowserTests.csproj
+  -c Release --no-build --no-restore` — **20 passed, 0 failed, 0 skipped**
+  (59s). Results: `artifacts/browser/fix-test-results/fix-browser-verified.trx`.
+  This repeats an earlier successful 20-case run after the build-copy change.
+- After correcting the Serilog severity matcher, synchronizing diagnostic-page
+  snapshots, and disabling screenshot animations, the browser command with
+  `--filter 'FullyQualifiedName~R5_|FullyQualifiedName~E5_|FullyQualifiedName~HarnessDiagnosticsTests'`
+  passed **6/6** (15s). Results:
+  `artifacts/browser/fix-test-results/fix-final-diagnostics.trx`; screenshots
+  and logs: `artifacts/browser/runs/20260920-161130-3061d76b/`.
+- Real browser: **Chromium 151.0.7922.34**, headless on Windows; editor
+  `http://127.0.0.1:59467`, UI `http://127.0.0.1:59465`, API
+  `http://127.0.0.1:59463`. E1–E5 exercised real keyboard input, pointer drags,
+  file loading, and fallback downloads at **1440×900 and 1024×768**. R1–R5
+  exercised identity, task actions, section navigation, detail projections,
+  polling, and in-app disposal/navigation at **1440×900**; R6 exercised section
+  links, responsive controls, horizontal wheel scrolling, and submitted JSON
+  at **1024×768 and 390×844**.
+- Every product scenario retained **zero browser console errors, warnings,
+  page errors, and failed requests**. Deliberately injected harness diagnostics
+  are separate. Evidence, including search/responsive screenshots, is under
+  `artifacts/browser/runs/20260920-160449-c37842c3/`.
+- Host logs were inspected separately. Fresh-database startup logged a missing
+  migration-history-table probe before successful migration; HTTP-only hosts
+  warned about the absent HTTPS redirect port; restricted actors generated
+  expected authorization warnings. During R6 navigation, three canceled
+  dashboard `/api/instances` requests logged `OperationCanceledException` at
+  error level with status 500. These were server-side cancellation logs, not
+  browser request failures; the run is not claimed to have error-free host
+  logs. R5's error matcher now recognizes timestamped Serilog severity labels.
+- Isolated mutation: removing the identity epoch guards produced the expected
+  failed-replacement regression failure (one failed, one passed), demonstrating
+  that stale actor actions are detected. The isolated source was restored.
+- Isolated harness probes confirmed that an ambient Kestrel IPv6 endpoint does
+  not override the editor's ephemeral IPv4 loopback listener, and that all
+  100,001 stdout lines plus final stderr survive process exit and log draining.
+- Documentation validation: **265 relative links/anchors** and **six fixture
+  JSON files** passed; `git diff --check` passed (line-ending notices only).
+  Restore still reports the existing SSH.NET 2025.1.0 NU1903 advisories.
+
+The native picker, complete Stage 5 manual acceptance (including Worker-driven
+batches and visual comparisons), and remote CI observation remain open.
 
 ## Acceptance criteria
 
-- [ ] A fresh checkout can build/publish/install/run the documented commands;
+- [x] A fresh checkout can build/publish/install/run the documented commands;
   the project remains outside both `Flowbit.sln` and `Flowbit.slnx`.
-- [ ] The harness uses real localhost browser/application processes and a
+- [x] The harness uses real localhost browser/application processes and a
   disposable database, with no dependency on machine data, fixed ports, or
   an existing development identity. Partial startup failure preserves evidence
   and cleans up owned resources.
-- [ ] E1–E5 and R1–R6 pass at their declared viewports with meaningful behavior
+- [x] E1–E5 and R1–R6 pass at their declared viewports with meaningful behavior
   assertions. No UI interaction is replaced by directly invoking app internals.
 - [ ] Native-picker manual success/cancel checks are recorded; fallback download
   is automated. Unavailable checks are explicit and remain open.
 - [ ] The existing focused/full suites pass with actual counts recorded and no
-  unexplained new skips; the separate browser suite passes locally and in CI.
-- [ ] The browser job produces TRX and usable failure traces/screenshots/logs,
+  unexplained new skips; the separate browser suite passes locally. The
+  `browser-smoke` CI job YAML is configured; a remote CI pass has not been
+  observed yet.
+- [x] The browser job produces TRX and usable failure traces/screenshots/logs,
   including setup-failure diagnostics; normal tests require no browser install.
 - [ ] Every Stage 5 checklist row is completed, including genuine batch links,
   claims/delegation, all three viewports, before/after references, and unchanged
   page ownership/request behavior. Console/network results are recorded.
-- [ ] Documentation, links, commands, and fixture JSON match the implemented
+- [x] Documentation, links, commands, and fixture JSON match the implemented
   result; `git diff --check` is clean.
 
 ## Documentation, delivery, and rollback

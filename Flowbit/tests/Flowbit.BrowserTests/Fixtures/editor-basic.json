@@ -1,0 +1,32 @@
+{
+  "id": "browser-editor-basic",
+  "name": "Browser editor basic workflow",
+  "initialEventId": 1,
+  "variables": [
+    {
+      "id": 1,
+      "name": "requestNote",
+      "dataType": "string",
+      "isArray": false,
+      "nullable": false,
+      "required": false,
+      "defaultValue": "",
+      "validation": null
+    }
+  ],
+  "lanes": [
+    { "id": 1, "name": "Request", "x": 20, "y": 20, "w": 460, "h": 200 },
+    { "id": 2, "name": "Handle", "x": 20, "y": 240, "w": 700, "h": 220 }
+  ],
+  "flowNodes": [
+    { "id": 1, "name": "Submitted", "type": "startEvent", "laneId": 1, "x": 60, "y": 90 },
+    { "id": 2, "name": "Review", "type": "userTask", "laneId": 2, "x": 200, "y": 280, "roles": ["Agent"], "requiresClaim": true },
+    { "id": 3, "name": "Archive", "type": "task", "laneId": 2, "x": 420, "y": 280 },
+    { "id": 4, "name": "Done", "type": "endEvent", "laneId": 2, "x": 620, "y": 280 }
+  ],
+  "sequenceFlows": [
+    { "id": 101, "name": "", "sourceRef": 1, "targetRef": 2 },
+    { "id": 102, "name": "", "sourceRef": 2, "targetRef": 3 },
+    { "id": 103, "name": "", "sourceRef": 3, "targetRef": 4 }
+  ]
+}

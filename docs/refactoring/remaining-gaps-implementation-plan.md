@@ -2,9 +2,10 @@
 
 [Plan index](README.md) · [Gap inventory](gaps.md)
 
-**Status: Planned — not implemented.** This roadmap records the selected
-follow-up work and the accepted C# compatibility break. Saving this document
-does not complete any implementation or acceptance gate.
+**Status: In progress — Stage 7's smoke suite is implemented; stages 8–11
+remain planned.** This roadmap records the selected follow-up work and the
+accepted C# compatibility break. Saving this document does not complete any
+implementation or acceptance gate.
 
 ## Assessment
 
@@ -19,7 +20,7 @@ Reviewed the code at commit `fbe0721` against [gaps.md](gaps.md) on
 | 4. Repository duplication | Stage 2 implemented; limited duplication remains | Defer further abstraction until a concrete maintenance need arises. |
 | 5. Editor hotspots | Node rendering contains substantial graph-mutation logic | Extract node-type transition handling; defer parser and normalization rewrites. |
 | 6. Oversized UI units | Candidates remain; stage 5 browser acceptance is pending | Verify stage 5, then extract three administrative-action display sections. |
-| 7. Browser automation | No automated real-browser suite | Add a small isolated smoke suite and CI job. |
+| 7. Browser automation | Automated Chromium smoke suite implemented | Stage 5's residual manual acceptance and remote CI observation remain. |
 
 ## Implementation stages
 
@@ -33,7 +34,16 @@ Reviewed the code at commit `fbe0721` against [gaps.md](gaps.md) on
 
 [Detailed implementation plan](stage-07-browser-smoke-and-stage-05-acceptance.md)
 — harness ownership, test matrix, commands, CI evidence, and the complete
-Stage 5 acceptance checklist. Status remains planned.
+Stage 5 acceptance checklist. **Status: in progress.** The suite
+(`Flowbit/tests/Flowbit.BrowserTests/`, 17 scenarios E1–E5 and R1–R6 plus three
+harness regression tests) is
+implemented and passing locally; the `browser-smoke` CI job is committed but a
+remote run has not been observed yet; Stage 5's residual manual acceptance
+(native-picker manual evidence, Worker-driven batch links, delegation/claim
+attribution, administrative action refresh, headed screenshots, and the
+pre-extraction visual comparison) remains open. See the plan's
+[implementation results](stage-07-browser-smoke-and-stage-05-acceptance.md#implementation-results-2026-09-20)
+and the per-row checklist status.
 
 - Add a standalone `net10.0` browser-test project outside the existing solutions. Match existing xUnit/Testcontainers versions and pin [Microsoft.Playwright 1.62.0](https://www.nuget.org/packages/Microsoft.Playwright/1.62.0), using Chromium.
 - Start disposable PostgreSQL, actual API/UI processes on ephemeral localhost ports, and a test-only static editor host. Capture logs, bound startup timeouts, and clean up fixture-owned resources.

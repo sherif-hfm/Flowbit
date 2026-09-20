@@ -188,6 +188,10 @@ An early quorum, an interrupt, or another actor may cancel unfinished work. With
 
 Use **Instances** to filter runs, then open a result. On instance detail:
 
+Section links scroll within the instance detail and update the URL fragment
+while preserving `/instances/{id}` and any query string. Reloading after using
+a section link therefore stays on the same instance.
+
 - **Execution positions** shows the active or terminal tokens and links to their human work. Do not infer the whole process from one node name.
 - **Administrative actions** lists active human-task positions and their authored direct actions when the API grants workflow-administrator permission. See [the override procedure](#use-instance-administrative-actions).
 - **Variables** shows the latest displayed values and their attribution; **History** shows transition times, node/flow references, actors, and available event details.

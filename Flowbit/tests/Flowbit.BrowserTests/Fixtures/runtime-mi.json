@@ -1,0 +1,85 @@
+{
+  "id": "browser-mi-r5",
+  "name": "Browser multi-instance review",
+  "initialEventId": 1,
+  "variables": [
+    {
+      "id": 1,
+      "name": "reviewers",
+      "dataType": "string",
+      "isArray": true,
+      "nullable": false,
+      "required": false,
+      "defaultValue": ["alpha", "beta", "gamma"],
+      "validation": null
+    },
+    {
+      "id": 2,
+      "name": "reviewResults",
+      "dataType": "json",
+      "isArray": false,
+      "nullable": false,
+      "required": false,
+      "defaultValue": [],
+      "validation": null
+    }
+  ],
+  "flowNodes": [
+    { "id": 1, "name": "Start", "externalId": "START_MI", "type": "startEvent", "laneId": null, "x": 60, "y": 120 },
+    {
+      "id": 2,
+      "name": "Parallel review",
+      "externalId": "TASK_MI_REVIEW",
+      "type": "userTask",
+      "laneId": null,
+      "x": 260,
+      "y": 110,
+      "roles": ["Reviewer"],
+      "requiresClaim": false,
+      "multiInstance": {
+        "mode": "parallel",
+        "source": "collection",
+        "collectionVariable": "reviewers",
+        "cardinalityExpression": null,
+        "onePerActor": false,
+        "completionEvaluation": "afterEach",
+        "resultVariable": "reviewResults"
+      }
+    },
+    { "id": 3, "name": "End", "type": "endEvent", "laneId": null, "x": 520, "y": 120 }
+  ],
+  "sequenceFlows": [
+    { "id": 101, "name": "Create items", "sourceRef": 1, "targetRef": 2 },
+    {
+      "id": 201,
+      "name": "Complete review",
+      "externalId": "FLOW_MI_COMPLETE",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": ["Reviewer"],
+      "variables": [
+        {
+          "id": 1,
+          "name": "reviewComment",
+          "dataType": "string",
+          "isArray": false,
+          "nullable": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": "Length(Trim(reviewComment)) > 0"
+        }
+      ],
+      "completionCondition": "CountFlow(201) == [mi.total]",
+      "completionPriority": 1
+    },
+    {
+      "id": 202,
+      "name": "Engine fallback",
+      "externalId": "FLOW_MI_FALLBACK",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "isDefault": true,
+      "isSelectable": false
+    }
+  ]
+}

@@ -27,7 +27,7 @@ the named symbols before implementation; size alone does not justify extraction.
 | 4 | Remaining query assembly duplication | `WorkflowRuntimeRepository` has 7,289 lines; basic filters and instance/inbox sort parsing are already shared | [Stage 2](stage-02-repository-query-helpers.md) extracts ownership predicates and inbox visibility CTEs; further candidates need separate evidence |
 | 5 | Editor hotspots outside save validation | `renderNodeInspector` (~524 lines), `compileInboxVisibilityCondition` (~499 lines), `applyTypeInvariants` (~327 lines); flat script with no modules | [Stage 4](stage-04-editor-validation.md) covers `validateModelForSave` only |
 | 6 | Secondary oversized UI units | Four management pages with approximately 332–835-line `@code` blocks; `WorkflowApiClient` 1,857 lines | [Stage 5](stage-05-instance-detail-components.md) covers `InstanceDetail.razor` only |
-| 7 | No automated real-browser layout/interaction suite | Jint interaction tests and Blazor rendering tests exist; browser layout/focus/pointer verification remains manual | [Stage 7](stage-07-browser-smoke-and-stage-05-acceptance.md) now plans an isolated smoke suite and Stage 5 acceptance; not implemented |
+| 7 | Automated Chromium smoke suite exists; residual Stage 5 acceptance remains | Repeatable E1–E5/R1–R6 coverage plus a `browser-smoke` CI job; native-picker, Worker-driven batch links, and remote CI observation are still open | [Stage 7](stage-07-browser-smoke-and-stage-05-acceptance.md) implemented for the no-Worker smoke suite; Stage 5 acceptance still open |
 
 ## Decisions for the stage plans
 
@@ -216,24 +216,28 @@ should follow endpoint groups.
 
 ## 7. Automated visual and interaction coverage
 
-[EditorRuntimeSmokeTests](../../Flowbit/tests/Flowbit.Tests/EditorRuntimeSmokeTests.cs)
-and related Jint tests exercise selected interaction logic with simulated
-pointer/focus behavior. UI contract tests use `HtmlRenderer` to verify Blazor
-output and selected identity refresh behavior. These are useful automated checks.
-They do not run browser layout, real focus/pointer behavior, or screenshot
-comparisons. No repository real-browser automation suite was found in the test
-project or CI workflow.
+The standalone
+[Flowbit.BrowserTests](../../Flowbit/tests/Flowbit.BrowserTests/README.md)
+suite now provides repeatable Chromium coverage: E1–E5 drive the real copied
+editor (load/save via the file chooser and forced download fallback, node and
+lane drags with persisted-JSON assertions, validation dialog recovery, keyboard
+menus/search/undo) and R1–R6 drive the real published API/UI (inbox claim and
+action lifecycle, instance navigation, identity replacement, gateway/complex/
+multi-instance detail sections, genuine five-second polling with an out-of-band
+HTTP completion, and responsive/keyboard coverage at the narrower viewports).
+The suite owns a disposable PostgreSQL container and published API/UI child
+processes on ephemeral loopback ports, runs serially with per-scenario browser
+contexts, and the `browser-smoke` CI job uploads TRX, traces, screenshots, and
+host logs. The Jint and `HtmlRenderer` tests remain in place, including the new
+deterministic in-flight identity-response regression.
 
-The [real-browser gate](../../AGENTS.md#mandatory-real-browser-ui-verification)
-remains required for UI changes. The
-[detailed Stage 7 plan](stage-07-browser-smoke-and-stage-05-acceptance.md) now
-selects repeatable editor save/load/drag and runtime navigation/identity smoke
-scenarios, with isolated fixtures and a separate CI job. It uses test-only
-dependencies and behavioral assertions without screenshot comparison baselines.
-It also carries the complete outstanding Stage 5 browser checklist, using a
-separate full stack where a Worker is needed. This gap remains open until the
-suite is implemented and verified; automation does not replace manual checks
-outside its coverage.
+What remains open: the manual native-file-picker success/cancel check on a
+headed desktop Chromium; Stage 5's real version/variable batch links using a
+separate Worker-driven stack; selected-claim and delegation attribution;
+administrative action refresh (the immediate action needs no Worker); the pre-extraction visual
+comparison, and observing the remote `browser-smoke` job pass. The
+[real-browser gate](../../AGENTS.md#mandatory-real-browser-ui-verification)
+remains required for UI changes beyond this suite's coverage.
 
 ## Converting a gap into a stage
 

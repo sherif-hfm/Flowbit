@@ -20,6 +20,7 @@ using Xunit;
 
 namespace Flowbit.Tests;
 
+[Collection("instance-refresh-timing")]
 public sealed class InstanceVariableUpdateUiContractTests
 {
     [Fact]
@@ -129,6 +130,132 @@ public sealed class InstanceVariableUpdateUiContractTests
         Assert.True(handler.Paths.Count(path => path == "/api/instances/42/flows") >= 2);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task InFlightActionDiscoveryResponseCannotRevivePriorActorActions(bool replacementFails)
+    {
+        var token = new TokenState();
+        token.Set("a-token");
+        token.ApplyResolvedContext(new ActorContextDto("admin-verifier", ["admin"]));
+        using var handler = new InFlightFlowsHandler();
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("https://flowbit.test") };
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton(new WorkflowApiClient(http));
+        services.AddSingleton(token);
+        services.AddSingleton<NavigationManager>(new StubNavigationManager());
+        services.AddSingleton<IJSRuntime>(new StubJsRuntime());
+        services.AddSingleton<IWebHostEnvironment>(new StubEnvironment());
+        await using var provider = services.BuildServiceProvider();
+        await using var renderer = new HtmlRenderer(provider, provider.GetRequiredService<ILoggerFactory>());
+
+        var component = await renderer.Dispatcher.InvokeAsync(() => renderer.RenderComponentAsync<InstanceDetailPage>(
+            ParameterView.FromDictionary(new Dictionary<string, object?>
+            {
+                [nameof(InstanceDetailPage.InstanceId)] = 42L
+            })));
+
+        Assert.Contains("Existing admin approval", await renderer.Dispatcher.InvokeAsync(component.ToHtmlString));
+
+        // Refresh an already-rendered actor, then hold that refresh in flight.
+        await renderer.Dispatcher.InvokeAsync(
+            () => token.ApplyResolvedContext(new ActorContextDto("admin-verifier", ["admin"])));
+        await handler.FlowsRequestStarted.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+        // Replace the identity while that request is still in flight, then
+        // release A's stale response. Only B's presentation and actions may
+        // survive; the epoch guard must discard the in-flight response.
+        await renderer.Dispatcher.InvokeAsync(
+            () => token.ApplyResolvedContext(new ActorContextDto("ordinary-verifier", ["User"])));
+        Assert.DoesNotContain("Existing admin approval", await renderer.Dispatcher.InvokeAsync(component.ToHtmlString));
+        handler.ReleaseFlowsResponse([new SequenceFlowModel
+        {
+            Id = 88,
+            SourceRef = 7,
+            TargetRef = 9,
+            Name = "Stale admin approval"
+        }]);
+
+        await handler.ReplacementRequestStarted.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        var pendingHtml = await renderer.Dispatcher.InvokeAsync(component.ToHtmlString);
+        Assert.DoesNotContain("Stale admin approval", pendingHtml);
+        Assert.DoesNotContain("Existing admin approval", pendingHtml);
+        Assert.Contains("Refreshing actions", pendingHtml);
+
+        // A failed replacement must not expose a stale response cached while
+        // pending. A successful replacement must display only B's own action.
+        handler.ReleaseReplacement(replacementFails);
+        await WaitUntilAsync(async () => !(await renderer.Dispatcher.InvokeAsync(component.ToHtmlString))
+            .Contains("Refreshing actions", StringComparison.Ordinal), TimeSpan.FromSeconds(30));
+        var html = await renderer.Dispatcher.InvokeAsync(component.ToHtmlString);
+
+        Assert.Contains("ordinary-verifier", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("admin-verifier", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("Stale admin approval", html, StringComparison.Ordinal);
+        if (replacementFails)
+            Assert.Contains("No user actions are available.", html, StringComparison.Ordinal);
+        else
+            Assert.Contains("Ordinary approval", html, StringComparison.Ordinal);
+
+        // Initial discovery, A's held refresh, and B's replacement refresh,
+        // with no extra discovery calls.
+        Assert.Equal(3, handler.FlowsRequestCount);
+    }
+
+    [Fact]
+    public async Task PollEligibleInstanceRefreshesOncePerTickAndStopsAfterDispose()
+    {
+        var token = new TokenState();
+        token.Set("a-token");
+        token.ApplyResolvedContext(new ActorContextDto("reviewer", ["Reviewer"]));
+        using var handler = new PollCountingHandler(InstanceWithActiveMultiInstance());
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("https://flowbit.test") };
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton(new WorkflowApiClient(http));
+        services.AddSingleton(token);
+        services.AddSingleton<NavigationManager>(new StubNavigationManager());
+        services.AddSingleton<IJSRuntime>(new StubJsRuntime());
+        services.AddSingleton<IWebHostEnvironment>(new StubEnvironment());
+        await using var provider = services.BuildServiceProvider();
+        await using var renderer = new HtmlRenderer(provider, provider.GetRequiredService<ILoggerFactory>());
+
+        var component = await renderer.Dispatcher.InvokeAsync(() => renderer.RenderComponentAsync<InstanceDetailPage>(
+            ParameterView.FromDictionary(new Dictionary<string, object?>
+            {
+                [nameof(InstanceDetailPage.InstanceId)] = 42L
+            })));
+
+        Assert.Equal(1, handler.InstanceGetCount);
+        Assert.Equal(1, handler.InterruptFlowGetCount);
+
+        await WaitUntilAsync(async () => await renderer.Dispatcher.InvokeAsync(() =>
+            handler.InstanceGetCount >= 2 && handler.InterruptFlowGetCount >= 2), TimeSpan.FromSeconds(30));
+        Assert.Equal(2, handler.InstanceGetCount);
+        Assert.Equal(2, handler.InterruptFlowGetCount);
+
+        await renderer.DisposeAsync();
+        var frozenInstanceGets = handler.InstanceGetCount;
+        var frozenInterruptGets = handler.InterruptFlowGetCount;
+        await Task.Delay(TimeSpan.FromSeconds(6));
+        Assert.Equal(frozenInstanceGets, handler.InstanceGetCount);
+        Assert.Equal(frozenInterruptGets, handler.InterruptFlowGetCount);
+    }
+
+    private static async Task WaitUntilAsync(Func<Task<bool>> condition, TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (!await condition())
+        {
+            if (DateTime.UtcNow > deadline)
+            {
+                throw new TimeoutException($"Condition was not met within {timeout.TotalSeconds:0}s.");
+            }
+            await Task.Delay(50);
+        }
+    }
+
     [Fact]
     public async Task NavigatingAwayDuringInitialLoadDoesNotStartPollingAfterDisposal()
     {
@@ -219,6 +346,36 @@ public sealed class InstanceVariableUpdateUiContractTests
         };
     }
 
+    private static InstanceDetailDto InstanceWithActiveMultiInstance()
+    {
+        var completed = InstanceWithAdministrativeUpdate();
+        var progress = new MultiInstanceProgressDto(
+            7,
+            "parallel",
+            "active",
+            3,
+            1,
+            2,
+            0,
+            0,
+            null,
+            null,
+            []);
+        return completed with
+        {
+            CurrentNodeId = 2,
+            CurrentNodeName = "Parallel review",
+            Status = "running",
+            FinishedAt = null,
+            MultiInstance = progress,
+            MultiInstances = [progress],
+            UserTasks = new UserTaskWorkSummaryDto(true, 2, 0, 0, 0, null, null)
+            {
+                MultiInstanceTaskCount = 2
+            }
+        };
+    }
+
     private sealed class InstanceHandler(
         InstanceDetailDto instance,
         bool flowsNotFound = false,
@@ -240,6 +397,120 @@ public sealed class InstanceVariableUpdateUiContractTests
                 _ => new HttpResponseMessage(HttpStatusCode.NotFound)
             };
             return Task.FromResult(response);
+        }
+    }
+
+    private sealed class PollCountingHandler(InstanceDetailDto instance) : HttpMessageHandler
+    {
+        private int instanceGets;
+        private int interruptGets;
+
+        public int InstanceGetCount => Volatile.Read(ref instanceGets);
+
+        public int InterruptFlowGetCount => Volatile.Read(ref interruptGets);
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var path = request.RequestUri?.PathAndQuery ?? string.Empty;
+            if (path == "/api/instances/42")
+            {
+                Interlocked.Increment(ref instanceGets);
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = JsonContent.Create(instance)
+                });
+            }
+
+            if (path == "/api/instances/42/flows")
+            {
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = JsonContent.Create(Array.Empty<SequenceFlowModel>())
+                });
+            }
+
+            if (path.StartsWith("/api/multi-instance-executions/7/flows", StringComparison.Ordinal))
+            {
+                Interlocked.Increment(ref interruptGets);
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = JsonContent.Create(Array.Empty<SequenceFlowModel>())
+                });
+            }
+
+            if (path.Contains("/versions", StringComparison.Ordinal))
+            {
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = JsonContent.Create(Array.Empty<WorkflowSummaryDto>())
+                });
+            }
+
+            if (path.Contains("administrative-actions", StringComparison.Ordinal))
+            {
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.Forbidden));
+            }
+
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
+        }
+    }
+
+    private sealed class InFlightFlowsHandler : HttpMessageHandler
+    {
+        public TaskCompletionSource FlowsRequestStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private TaskCompletionSource<HttpResponseMessage> FlowsResponse { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public int FlowsRequestCount => Volatile.Read(ref flowsRequestCount);
+        private int flowsRequestCount;
+        public TaskCompletionSource ReplacementRequestStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private TaskCompletionSource<HttpResponseMessage> ReplacementResponse { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public void ReleaseReplacement(bool fails) => ReplacementResponse.TrySetResult(fails
+            ? new HttpResponseMessage(HttpStatusCode.InternalServerError) { Content = new StringContent("Replacement failed") }
+            : new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(new[]
+                { new SequenceFlowModel { Id = 99, SourceRef = 7, TargetRef = 9, Name = "Ordinary approval" } }) });
+
+        public void ReleaseFlowsResponse(IReadOnlyList<SequenceFlowModel> flows) =>
+            FlowsResponse.TrySetResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = JsonContent.Create(flows)
+            });
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var path = request.RequestUri?.PathAndQuery ?? string.Empty;
+            if (path == "/api/instances/42")
+            {
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = JsonContent.Create(InstanceWithAdministrativeUpdate())
+                });
+            }
+
+            if (path == "/api/instances/42/flows")
+            {
+                Interlocked.Increment(ref flowsRequestCount);
+                if (FlowsRequestCount == 2)
+                {
+                    FlowsRequestStarted.TrySetResult();
+                    return FlowsResponse.Task;
+                }
+                if (FlowsRequestCount == 3)
+                {
+                    ReplacementRequestStarted.TrySetResult();
+                    return ReplacementResponse.Task;
+                }
+
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = JsonContent.Create(new[]
+                    { new SequenceFlowModel { Id = 77, SourceRef = 7, TargetRef = 9, Name = "Existing admin approval" } })
+                });
+            }
+
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
         }
     }
 
