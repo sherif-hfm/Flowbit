@@ -44,6 +44,9 @@ stage. Each stage records its implementation and acceptance status. The
 work; the [remaining-gaps implementation plan](refactoring/remaining-gaps-implementation-plan.md)
 selects the prioritized follow-up stages and records their boundaries. The
 follow-up roadmap is planned work, not implemented behavior.
+The [detailed Stage 7 plan](refactoring/stage-07-browser-smoke-and-stage-05-acceptance.md)
+specifies automated browser smoke coverage and the remaining Stage 5 acceptance
+checks; both remain planned work.
 
 ## Reference ownership
 

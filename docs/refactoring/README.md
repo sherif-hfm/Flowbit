@@ -4,7 +4,7 @@
 
 **Status: In progress.** Stages 1–4 are implemented; stage 5 is in progress
 (extraction and tests complete, browser verification pending); stage 6 is
-implemented.
+implemented; stage 7 has a detailed implementation plan and is not implemented.
 Each stage records its own implementation and acceptance status below. The
 architecture and API guides describe the current application.
 
@@ -18,8 +18,9 @@ architecture and API guides describe the current application.
 | [4 — Editor validation](stage-04-editor-validation.md) | Smaller validation phases and rule helpers inside the standalone HTML file. | Passing test baseline; independent of backend stages. | Implemented |
 | [5 — Instance detail components](stage-05-instance-detail-components.md) | Display components with refresh, identity, and mutation coordination retained by the page. | Passing test baseline; independent of stages 1–4. | In progress |
 | [6 — Definition validation](stage-06-definition-validation.md) | Separate authored/normalized validation from definition lifecycle and publication orchestration. | Passing test baseline; independent of stages 1–5. | Implemented |
+| [7 — Browser smoke suite and Stage 5 acceptance](stage-07-browser-smoke-and-stage-05-acceptance.md) | Isolated Chromium smoke coverage, a separate CI job, and completion of Stage 5's browser gate. | Passing baseline; extracted Stage 5 components available for verification. | Planned |
 
-The recommended sequence is the original stages 1 through 5, followed by Stage 6.
+The original recommended sequence is stages 1 through 5, followed by Stage 6.
 Stage 6 may move earlier if definition maintenance is the immediate priority.
 Each stage has its own acceptance gate and
 can be reviewed, merged, and released separately. Stages 4 and 5 may run alongside
@@ -115,9 +116,11 @@ stage planning.
 
 The [gap review decisions](gaps.md#decisions-for-the-stage-plans) explain why
 definition validation received Stage 6, why Stage 2 remains bounded, and which
-engine, editor, UI, and browser-test candidates still need separate planning.
-The existing stages include the relevant parser conformance and UI lifecycle
-regressions; a new browser automation harness is not an additional prerequisite.
+engine, editor, UI, and browser-test candidates were identified for follow-up
+planning.
+The original stages include the relevant parser conformance and UI lifecycle
+regressions; they did not require a new browser automation harness as an
+additional prerequisite. Stage 7 now plans that harness separately.
 
 ## Prioritized follow-up roadmap
 
@@ -128,3 +131,8 @@ extraction, editor node-type transitions, and administrative-action display
 components. It includes an explicitly accepted C# compatibility break and keeps
 the other candidates deferred. These follow-up stages are planned, not
 implemented; the existing stage statuses above remain unchanged.
+
+The [detailed Stage 7 plan](stage-07-browser-smoke-and-stage-05-acceptance.md)
+defines the isolated stack, fixtures, editor/runtime smoke matrix, CI artifacts,
+commands, and the complete Stage 5 acceptance checklist. Its no-Worker smoke
+suite and separate full-stack browser acceptance have distinct completion gates.

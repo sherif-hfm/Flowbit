@@ -31,6 +31,10 @@ Reviewed the code at commit `fbe0721` against [gaps.md](gaps.md) on
 
 ### Stage 7 — automated browser smoke suite and stage 5 acceptance
 
+[Detailed implementation plan](stage-07-browser-smoke-and-stage-05-acceptance.md)
+— harness ownership, test matrix, commands, CI evidence, and the complete
+Stage 5 acceptance checklist. Status remains planned.
+
 - Add a standalone `net10.0` browser-test project outside the existing solutions. Match existing xUnit/Testcontainers versions and pin [Microsoft.Playwright 1.62.0](https://www.nuget.org/packages/Microsoft.Playwright/1.62.0), using Chromium.
 - Start disposable PostgreSQL, actual API/UI processes on ephemeral localhost ports, and a test-only static editor host. Capture logs, bound startup timeouts, and clean up fixture-owned resources.
 - Configure matching development JWT settings, the isolated database connection, and the UI API URL. Disable durable publication and use synchronous fixtures without a Worker.

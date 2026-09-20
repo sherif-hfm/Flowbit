@@ -4,8 +4,10 @@
 
 **Status: Planning inventory — not implemented.** This page records work beyond
 the initial five-stage scope and where that work belongs. Definition validation
-now has a separate Stage 6 plan; other candidates remain deferred as described
-below. It contains targets and evidence, not implementation instructions. The
+has a separate Stage 6 plan, and browser coverage now has a detailed Stage 7
+plan. Other candidates retain the decisions described below and in the
+[remaining-gaps roadmap](remaining-gaps-implementation-plan.md). This inventory
+contains targets and evidence, not implementation instructions. The
 [shared implementation rules](README.md#shared-implementation-rules) apply to
 any future stage created from this list.
 
@@ -25,7 +27,7 @@ the named symbols before implementation; size alone does not justify extraction.
 | 4 | Remaining query assembly duplication | `WorkflowRuntimeRepository` has 7,289 lines; basic filters and instance/inbox sort parsing are already shared | [Stage 2](stage-02-repository-query-helpers.md) extracts ownership predicates and inbox visibility CTEs; further candidates need separate evidence |
 | 5 | Editor hotspots outside save validation | `renderNodeInspector` (~524 lines), `compileInboxVisibilityCondition` (~499 lines), `applyTypeInvariants` (~327 lines); flat script with no modules | [Stage 4](stage-04-editor-validation.md) covers `validateModelForSave` only |
 | 6 | Secondary oversized UI units | Four management pages with approximately 332–835-line `@code` blocks; `WorkflowApiClient` 1,857 lines | [Stage 5](stage-05-instance-detail-components.md) covers `InstanceDetail.razor` only |
-| 7 | No automated real-browser layout/interaction suite | Jint interaction tests and Blazor rendering tests exist; browser layout/focus/pointer verification remains manual | Affects Stages 4 and 5 and every future UI stage |
+| 7 | No automated real-browser layout/interaction suite | Jint interaction tests and Blazor rendering tests exist; browser layout/focus/pointer verification remains manual | [Stage 7](stage-07-browser-smoke-and-stage-05-acceptance.md) now plans an isolated smoke suite and Stage 5 acceptance; not implemented |
 
 ## Decisions for the stage plans
 
@@ -223,12 +225,15 @@ comparisons. No repository real-browser automation suite was found in the test
 project or CI workflow.
 
 The [real-browser gate](../../AGENTS.md#mandatory-real-browser-ui-verification)
-therefore remains required for Stages 4 and 5. A separate future test-infrastructure
-plan could add repeatable editor save/load/drag and instance navigation/identity
-smoke scenarios, with isolated fixtures and a CI command. Choose development-only
-tooling and deterministic scenarios before adding screenshot baselines. This
-investment is optional for the current extraction plans and does not replace
-manual checks for behavior outside its eventual coverage.
+remains required for UI changes. The
+[detailed Stage 7 plan](stage-07-browser-smoke-and-stage-05-acceptance.md) now
+selects repeatable editor save/load/drag and runtime navigation/identity smoke
+scenarios, with isolated fixtures and a separate CI job. It uses test-only
+dependencies and behavioral assertions without screenshot comparison baselines.
+It also carries the complete outstanding Stage 5 browser checklist, using a
+separate full stack where a Worker is needed. This gap remains open until the
+suite is implemented and verified; automation does not replace manual checks
+outside its coverage.
 
 ## Converting a gap into a stage
 
