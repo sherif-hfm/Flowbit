@@ -48,6 +48,65 @@ public sealed class OpenApiContractTests
     }
 
     [Fact]
+    public async Task RoleManagementRetainsItsProductionOpenApiContract()
+    {
+        await using var factory = new UserTaskRoleManagementEndpointTests.RoleApiFactory();
+        await using var scope = factory.Services.CreateAsyncScope();
+        var provider = scope.ServiceProvider.GetRequiredKeyedService<IOpenApiDocumentProvider>("v1");
+        var document = await provider.GetOpenApiDocumentAsync();
+
+        AssertRoleOperation(document, "/api/user-tasks/{taskId}/roles", HttpMethod.Get,
+            "getUserTasksByTaskIdRoles", "User Tasks", false, ["200", "401", "403", "404", "409"]);
+        AssertRoleOperation(document, "/api/user-tasks/{taskId}/roles", HttpMethod.Post,
+            "postUserTasksByTaskIdRoles", "User Tasks", true, ["200", "400", "401", "403", "404", "409"]);
+        AssertRoleOperation(document, "/api/multi-instance-executions/{executionId}/roles", HttpMethod.Get,
+            "getMultiInstanceExecutionsByExecutionIdRoles", "Multi-Instance Executions", false,
+            ["200", "401", "403", "404", "409"]);
+        AssertRoleOperation(document, "/api/multi-instance-executions/{executionId}/roles", HttpMethod.Post,
+            "postMultiInstanceExecutionsByExecutionIdRoles", "Multi-Instance Executions", true,
+            ["200", "400", "401", "403", "404", "409"]);
+        Assert.DoesNotContain(document.Components!.Schemas!.Keys,
+            name => name.Contains("IUserTaskRoleManagement", StringComparison.Ordinal)
+                || name.Contains("IWorkflow", StringComparison.Ordinal));
+    }
+
+    private static void AssertRoleOperation(
+        Microsoft.OpenApi.OpenApiDocument document,
+        string path,
+        HttpMethod method,
+        string operationId,
+        string tag,
+        bool hasBody,
+        string[] statuses)
+    {
+        var operation = document.Paths[path].Operations![method];
+        Assert.Equal(operationId, operation.OperationId);
+        Assert.Equal(tag, Assert.Single(operation.Tags!).Name);
+        var security = Assert.Single(operation.Security!);
+        Assert.Equal("Bearer", Assert.Single(security).Key.Reference.Id);
+        Assert.Equal(statuses, operation.Responses!.Keys.Order().ToArray());
+        var parameter = Assert.Single(operation.Parameters!);
+        Assert.Equal(path.Contains("user-tasks", StringComparison.Ordinal) ? "taskId" : "executionId", parameter.Name);
+        Assert.Equal(Microsoft.OpenApi.ParameterLocation.Path, parameter.In);
+        Assert.True(parameter.Required);
+        Assert.Equal(Microsoft.OpenApi.JsonSchemaType.Integer, parameter.Schema!.Type);
+        Assert.Equal("int64", parameter.Schema.Format);
+        var responseSchema = operation.Responses["200"].Content!["application/json"].Schema;
+        Assert.Equal(hasBody ? "UserTaskRolesChangeAckDto" : "UserTaskRolePolicyDto",
+            Assert.IsType<Microsoft.OpenApi.OpenApiSchemaReference>(responseSchema).Reference.Id);
+        if (hasBody)
+        {
+            var schema = operation.RequestBody!.Content!["application/json"].Schema;
+            Assert.Equal("ChangeUserTaskRolesRequest",
+                Assert.IsType<Microsoft.OpenApi.OpenApiSchemaReference>(schema).Reference.Id);
+        }
+        else
+        {
+            Assert.Null(operation.RequestBody);
+        }
+    }
+
+    [Fact]
     public async Task EveryEndpointHasGeneratorReadyDocumentation()
     {
         await using var app = await CreateDocumentationHostAsync();

@@ -43,8 +43,8 @@ stage. Each stage records its implementation and acceptance status. The
 [refactoring gap inventory](refactoring/gaps.md) records deferred and unplanned
 work; the [remaining-gaps implementation plan](refactoring/remaining-gaps-implementation-plan.md)
 selects the prioritized follow-up stages and records their boundaries. The
-follow-up roadmap is planned work except Stage 7, whose no-Worker smoke suite
-is implemented and passing locally.
+follow-up roadmap remains planned for Stages 10–11; Stage 7's no-Worker smoke
+suite and Stage 8's compatibility removal are implemented and passing locally.
 The [Stage 7 browser smoke suite](refactoring/stage-07-browser-smoke-and-stage-05-acceptance.md)
 is implemented and passing locally (`Flowbit/tests/Flowbit.BrowserTests/`); the
 remaining Stage 5 acceptance rows (headed manual inspection, native-picker
@@ -56,6 +56,13 @@ records the implemented C# caller migration, direct detail endpoint projection
 calls, and removal of three engine methods (40 → 37). HTTP and identity
 boundaries are unchanged. All local Stage 8 gates passed: 1,900 solution tests
 and 20 standalone Chromium tests, with no failures or skips.
+
+The [Stage 9 waiting-task role-management plan](refactoring/stage-09-waiting-task-role-management.md)
+records the implemented focused service, four endpoint migrations (37 → 33
+engine methods), preserved transaction and lock behavior, and C# caller
+migration. HTTP routes, DTOs, and role-policy runtime behavior are unchanged.
+All local Stage 9 gates passed: 1,930 solution tests and 20 standalone
+Chromium tests, with no failures or skips.
 
 ## Reference ownership
 

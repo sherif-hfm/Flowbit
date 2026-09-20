@@ -2108,6 +2108,14 @@ public sealed partial class WorkflowEngineService(
             actor.ActingFor, actor.DelegationId, actorClaims: actor.AuditClaims);
     }
 
+    private static string NormalizeManagedTaskStatus(string? status) => status?.Trim().ToLowerInvariant() switch
+    {
+        null or "" or "active" => "active",
+        "pending" => "pending",
+        "open" => "open",
+        _ => throw new WorkflowDomainException("Task status must be active, pending, or open.")
+    };
+
     public async Task<PagedResult<ManagedUserTaskDto>> ListManageableUserTasksAsync(
         ActorContext actor,
         long? taskId,

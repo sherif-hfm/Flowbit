@@ -6,7 +6,8 @@
 (extraction and tests complete; browser acceptance pending); stage 6 is
 implemented; stage 7 is in progress (the automated Chromium smoke suite and its
 CI job are implemented and passing locally; Stage 5's residual manual
-acceptance and the remote CI observation remain open). Each stage records its
+acceptance and the remote CI observation remain open); stage 8 is implemented;
+stage 9 is implemented. Each stage records its
 own implementation and acceptance status below. The architecture and API guides
 describe the current application.
 
@@ -22,6 +23,7 @@ describe the current application.
 | [6 — Definition validation](stage-06-definition-validation.md) | Separate authored/normalized validation from definition lifecycle and publication orchestration. | Passing test baseline; independent of stages 1–5. | Implemented |
 | [7 — Browser smoke suite and Stage 5 acceptance](stage-07-browser-smoke-and-stage-05-acceptance.md) | Isolated Chromium smoke coverage, a separate CI job, and completion of Stage 5's browser gate. | Passing baseline; extracted Stage 5 components available for verification. | In progress (suite implemented and passing; residual Stage 5 acceptance open) |
 | [8 — Remove query/detail compatibility methods](stage-08-remove-query-detail-compatibility.md) | Direct detail endpoint projection calls, removal of three engine forwards and the query dependency, and C# caller/test migration (40 → 37 methods). | Stages 1 and 3; passing baseline. Can proceed alongside Stage 7. | Implemented |
+| [9 — Waiting-task role management](stage-09-waiting-task-role-management.md) | Scoped role-management service, four direct endpoint consumers, and atomic policy/audit behavior preserved (37 → 33 engine methods). | Accepted Stage 8; passing baseline. Can proceed alongside Stage 7. | Implemented |
 
 The original recommended sequence is stages 1 through 5, followed by Stage 6.
 Stage 6 may move earlier if definition maintenance is the immediate priority.
@@ -134,8 +136,9 @@ extraction, editor node-type transitions, and administrative-action display
 components. It includes an explicitly accepted C# compatibility break and keeps
 the other candidates deferred. Stage 7 is in progress (smoke suite implemented
 locally; residual Stage 5 acceptance and remote CI observation remain open).
-Stage 8 is implemented and locally accepted; stages 9–11 remain
-planned. The other stage statuses above remain unchanged.
+Stage 8 is implemented and locally accepted; Stage 9 is implemented and
+locally accepted (37 → 33 engine methods). Stages 10–11 remain planned. The
+other stage statuses above remain unchanged.
 
 The [detailed Stage 7 plan](stage-07-browser-smoke-and-stage-05-acceptance.md)
 defines the isolated stack, fixtures, editor/runtime smoke matrix, CI artifacts,
@@ -150,3 +153,16 @@ compatibility methods are removed (40 → 37 interface methods). The 2026-09-20
 working tree is based on `6a14b1f` and remains uncommitted; baseline 1,892/1,892,
 focused 102/102, final solution 1,900/1,900, and standalone Chromium 20/20 passed
 with zero failures/skips. Documentation references and `git diff --check` passed.
+
+The [detailed Stage 9 plan](stage-09-waiting-task-role-management.md) defines
+the waiting-task role-management service boundary, helper ownership, four
+endpoint migrations, inherited lock hierarchy, internal-save rollback tests,
+scope and audit checks, C# migration, and acceptance commands. It is
+implemented and locally accepted: the engine exposes 33 methods, and the four
+role handlers inject `IUserTaskRoleManagementService` directly. The 2026-09-20
+working tree is based on `67945f7` and remains uncommitted; baseline 1,899/1,900
+(HTTP timeout flake passed on retry), focused 129/129, final solution
+1,930/1,930, and standalone Chromium 20/20 passed with zero failures/skips.
+The [review follow-up](stage-09-waiting-task-role-management.md#review-follow-up--2026-09-20)
+records the completed audit, endpoint/OpenAPI, MI rollback-cleanup, and coordinated
+PostgreSQL concurrency checks.

@@ -202,6 +202,94 @@ public sealed class TaskRoleManagementApiTests(PostgresApiFixture fixture)
         Assert.Equal(changed.Policy.RolePolicyId, reader.GetInt64(1));
     }
 
+    [Fact]
+    public async Task EmptyManagerRolesAndMissingScopesDoNotDiscloseOrMutateWork()
+    {
+        var disabled = CreateModel();
+        disabled.TaskRoleManagementRoles = [];
+        var hidden = await StartAsync(disabled);
+        var hiddenTask = Assert.Single((await ManagedAsync(hidden.Id, roles: [AssignmentManager])).Items);
+        using var disabledRead = await SendAsync(HttpMethod.Get, $"/api/user-tasks/{hiddenTask.UserTaskId}/roles");
+        Assert.Equal(HttpStatusCode.Forbidden, disabledRead.StatusCode);
+        using var disabledWrite = await SendAsync(HttpMethod.Post, $"/api/user-tasks/{hiddenTask.UserTaskId}/roles",
+            new ChangeUserTaskRolesRequest(1, ["Legal"], [new(201, [])], null));
+        Assert.Equal(HttpStatusCode.Forbidden, disabledWrite.StatusCode);
+        using var missingTask = await SendAsync(HttpMethod.Get, "/api/user-tasks/999999999/roles");
+        Assert.Equal(HttpStatusCode.NotFound, missingTask.StatusCode);
+        using var missingExecution = await SendAsync(HttpMethod.Get, "/api/multi-instance-executions/999999999/roles");
+        Assert.Equal(HttpStatusCode.NotFound, missingExecution.StatusCode);
+        using var history = fixture.DataSource.CreateCommand(
+            "SELECT COUNT(*) FROM flowbit.instance_history WHERE \"InstanceId\" = $1 AND \"Note\" = 'taskRolesChanged'");
+        history.Parameters.AddWithValue(hidden.Id);
+        Assert.Equal(0L, await history.ExecuteScalarAsync());
+    }
+
+    [Fact]
+    public async Task MultiInstanceRetryConflictAndFlowListValidationPreserveTheCurrentPolicy()
+    {
+        var model = CreateModel();
+        model.Variables = [new VariableModel { Id = 1, Name = "results", DataType = "json", DefaultValue = JsonSerializer.SerializeToElement(Array.Empty<object>()) }];
+        var node = model.FlowNodes.Single(item => item.Id == 2);
+        node.MultiInstance = new MultiInstanceModel
+        {
+            Mode = MultiInstanceModes.Sequential, Source = MultiInstanceSources.Cardinality,
+            CardinalityExpression = "2", CompletionEvaluation = MultiInstanceCompletionEvaluations.AfterAll,
+            ResultVariable = "results"
+        };
+        model.SequenceFlows.Single(flow => flow.Id == 201).CompletionCondition = "CountFlow(201) == 2";
+        model.SequenceFlows.Single(flow => flow.Id == 201).CompletionPriority = 1;
+        model.SequenceFlows.Add(new SequenceFlowModel { Id = 202, SourceRef = 2, TargetRef = 3, Name = "Fallback", IsDefault = true, IsSelectable = false });
+        var instance = await StartAsync(model);
+        var executionId = (await ManagedAsync(instance.Id, "open")).Items[0].MultiInstanceExecutionId!.Value;
+        var url = $"/api/multi-instance-executions/{executionId}/roles";
+        var original = await PolicyAsync(url);
+        var changed = await ChangeAsync(url, new ChangeUserTaskRolesRequest(original.RolePolicyId, ["Legal"], [new(201, ["LegalAction"])], null));
+        Assert.True(changed.Changed);
+        var retry = await ChangeAsync(url, new ChangeUserTaskRolesRequest(original.RolePolicyId, ["LEGAL"], [new(201, ["legalaction"])], null));
+        Assert.False(retry.Changed);
+        Assert.Equal(changed.Policy.RolePolicyId, retry.Policy.RolePolicyId);
+        using var stale = await SendAsync(HttpMethod.Post, url,
+            new ChangeUserTaskRolesRequest(original.RolePolicyId, ["Finance"], [new(201, [])], null));
+        Assert.Equal(HttpStatusCode.Conflict, stale.StatusCode);
+        using var extra = await SendAsync(HttpMethod.Post, url,
+            new ChangeUserTaskRolesRequest(changed.Policy.RolePolicyId, ["Legal"], [new(201, []), new(999, [])], null));
+        Assert.Equal(HttpStatusCode.BadRequest, extra.StatusCode);
+        using var duplicate = await SendAsync(HttpMethod.Post, url,
+            new ChangeUserTaskRolesRequest(changed.Policy.RolePolicyId, ["Legal"], [new(201, []), new(201, [])], null));
+        Assert.Equal(HttpStatusCode.BadRequest, duplicate.StatusCode);
+        using var fallback = await SendAsync(HttpMethod.Post, url,
+            new ChangeUserTaskRolesRequest(changed.Policy.RolePolicyId, ["Legal"], [new(202, [])], null));
+        Assert.Equal(HttpStatusCode.BadRequest, fallback.StatusCode);
+        var current = await PolicyAsync(url);
+        Assert.Equal(changed.Policy.RolePolicyId, current.RolePolicyId);
+        Assert.Equal(["Legal"], current.Roles);
+    }
+
+    [Fact]
+    public async Task SiblingInstanceOnTheSameDefinitionIsUnaffected()
+    {
+        var model = CreateModel();
+        using var created = await SendAsync(HttpMethod.Post, "/api/workflows", new CreateWorkflowRequest(model, true));
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        var workflowId = (await ReadAsync<WorkflowDetailDto>(created)).Id;
+        using var firstStart = await SendAsync(HttpMethod.Post, "/api/instances?detail=full", new StartInstanceRequest(workflowId, null, null, null));
+        using var secondStart = await SendAsync(HttpMethod.Post, "/api/instances?detail=full", new StartInstanceRequest(workflowId, null, null, null));
+        Assert.Equal(HttpStatusCode.Created, firstStart.StatusCode);
+        Assert.Equal(HttpStatusCode.Created, secondStart.StatusCode);
+        var first = await ReadAsync<InstanceDetailDto>(firstStart);
+        var second = await ReadAsync<InstanceDetailDto>(secondStart);
+        var firstTask = Assert.Single((await ManagedAsync(first.Id)).Items);
+        var secondTask = Assert.Single((await ManagedAsync(second.Id)).Items);
+        var firstUrl = $"/api/user-tasks/{firstTask.UserTaskId}/roles";
+        var secondUrl = $"/api/user-tasks/{secondTask.UserTaskId}/roles";
+        var firstPolicy = await PolicyAsync(firstUrl);
+        var secondPolicy = await PolicyAsync(secondUrl);
+        await ChangeAsync(firstUrl, new ChangeUserTaskRolesRequest(firstPolicy.RolePolicyId, ["Legal"], [new(201, ["LegalAction"])], null));
+        var untouched = await PolicyAsync(secondUrl);
+        Assert.Equal(secondPolicy.RolePolicyId, untouched.RolePolicyId);
+        Assert.Equal(["Worker"], untouched.Roles);
+    }
+
     private async Task<UserTaskRolePolicyDto> PolicyAsync(string url)
     {
         using var response = await SendAsync(HttpMethod.Get, url);

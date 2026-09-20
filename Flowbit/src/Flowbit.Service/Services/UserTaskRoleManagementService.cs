@@ -6,7 +6,10 @@ using Flowbit.Shared.Models;
 
 namespace Flowbit.Service.Services;
 
-public sealed partial class WorkflowEngineService
+internal sealed class UserTaskRoleManagementService(
+    IWorkflowDefinitionRepository definitions,
+    IWorkflowRuntimeRepository runtime,
+    IUnitOfWork unitOfWork) : IUserTaskRoleManagementService
 {
     private sealed record RoleManagementScope(
         WorkflowInstanceRecord Instance,
@@ -170,14 +173,6 @@ public sealed partial class WorkflowEngineService
     private static bool IsOpenRoleTask(string status) =>
         status is UserTaskRecordStatuses.Active or UserTaskRecordStatuses.Pending;
 
-    private static string NormalizeManagedTaskStatus(string? status) => status?.Trim().ToLowerInvariant() switch
-    {
-        null or "" or "active" => "active",
-        "pending" => "pending",
-        "open" => "open",
-        _ => throw new WorkflowDomainException("Task status must be active, pending, or open.")
-    };
-
     private static ResolvedUserTaskRolePolicy ValidateManagedRoleReplacement(
         RoleManagementScope scope, ChangeUserTaskRolesRequest request)
     {
@@ -216,4 +211,21 @@ public sealed partial class WorkflowEngineService
                 scope.Policy.OutgoingFlowRoles.GetValueOrDefault(flow.Id)
                     ?? throw new WorkflowConflictException($"The role policy for flow #{flow.Id} is unavailable.")))
             .ToArray(), scope.ActiveCount, scope.PendingCount);
+
+    private async Task<WorkflowDefinitionRecord> GetWorkflowAsync(long id, CancellationToken cancellationToken) =>
+        await definitions.GetAsync(id, cancellationToken)
+        ?? throw new WorkflowDomainException($"Workflow definition #{id} was not found.");
+
+    private static FlowNodeModel GetFlowNode(WorkflowModel definition, int nodeId) =>
+        definition.FlowNodes.SingleOrDefault(n => n.Id == nodeId)
+        ?? throw new WorkflowDomainException($"Flow node #{nodeId} was not found in workflow '{definition.Name}'.");
+
+    private static string NormalizeUser(string? user) =>
+        string.IsNullOrWhiteSpace(user) ? "anonymous" : user.Trim();
+
+    private static HashSet<string> NormalizeRoles(IReadOnlyCollection<string> roles) =>
+        roles
+            .Where(r => !string.IsNullOrWhiteSpace(r))
+            .Select(r => r.Trim())
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
 }

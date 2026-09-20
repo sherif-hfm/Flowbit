@@ -22,7 +22,7 @@ the named symbols before implementation; size alone does not justify extraction.
 | # | Gap | Current evidence (at `c654024`) | Existing stage coverage |
 | --- | --- | --- | --- |
 | 1 | Engine core responsibilities still interleaved in `WorkflowEngineService` | 18,468 lines across 9 partial files; 19 constructor parameters; 5 implemented interfaces | [Stage 1](stage-01-instance-queries.md) (implemented) and [Stage 3](stage-03-engine-responsibilities.md) extract two read-side slices only |
-| 2 | Engine interface breadth | `IWorkflowEngineService` declares 40 `Task`-returning members | Stage 1 (implemented) moves implementation and endpoint consumers, retaining both engine members as forwards; Stage 3 also retains `GetInstanceAsync` |
+| 2 | Engine interface breadth | `IWorkflowEngineService` declares 33 `Task`-returning members after Stages 8–9 | Stage 8 removed three query/detail forwards; Stage 9 moved four role operations to `IUserTaskRoleManagementService` |
 | 3 | `WorkflowDefinitionService` | 3,795 lines combining validation and lifecycle operations | Added [Stage 6](stage-06-definition-validation.md) for validation extraction |
 | 4 | Remaining query assembly duplication | `WorkflowRuntimeRepository` has 7,289 lines; basic filters and instance/inbox sort parsing are already shared | [Stage 2](stage-02-repository-query-helpers.md) extracts ownership predicates and inbox visibility CTEs; further candidates need separate evidence |
 | 5 | Editor hotspots outside save validation | `renderNodeInspector` (~524 lines), `compileInboxVisibilityCondition` (~499 lines), `applyTypeInvariants` (~327 lines); flat script with no modules | [Stage 4](stage-04-editor-validation.md) covers `validateModelForSave` only |
@@ -43,8 +43,11 @@ the named symbols before implementation; size alone does not justify extraction.
 ## 1. Engine core responsibilities
 
 [WorkflowEngineService.cs](../../Flowbit/src/Flowbit.Service/Services/WorkflowEngineService.cs)
-is a `sealed partial class` whose nine partial files total 17,636 physical
-lines (updated after Stage 3):
+is a `sealed partial class` whose remaining eight partial files exclude the
+former `WorkflowEngineService.RoleManagement.cs` (219 lines at the Stage 3
+measurement). Stage 9 (2026-09-20, working tree based on `67945f7`) moved
+those four operations into `UserTaskRoleManagementService` and deleted the
+partial. The other dated Stage 3 totals below are historical:
 
 | Partial file | Lines |
 | --- | --- |
@@ -53,7 +56,6 @@ lines (updated after Stage 3):
 | `WorkflowEngineService.AdministrativeActions.cs` | 1,050 |
 | `WorkflowEngineService.Reactivation.cs` | 874 |
 | `WorkflowEngineService.VersionChange.cs` | 408 |
-| `WorkflowEngineService.RoleManagement.cs` | 219 |
 | `WorkflowEngineService.VersionChangeBatch.cs` | 212 |
 | `WorkflowEngineService.InboxVisibility.cs` | 154 |
 | `WorkflowEngineService.RolePolicies.cs` | 60 |
@@ -117,13 +119,14 @@ method. Neither stage reduces the engine interface's member count.
 
 The [detailed Stage 8 plan](stage-08-remove-query-detail-compatibility.md)
 records the implemented removal of those three forwards and the unused
-engine query-service dependency. The 2026-09-20 working tree based on `6a14b1f`
-now declares **37 methods**, with all other interface members unchanged. Detail
-GET retains actor validation and its HTTP contract; the engine retains
-projections for command responses. The full solution (1,900 tests) and standalone
-Chromium regression (20 tests) passed with no failures or skips. Stage 9 in the
-[remaining-gaps roadmap](remaining-gaps-implementation-plan.md) separately
-extracts four waiting-task role operations, targeting 33 members. Broader
+engine query-service dependency (40 → 37). The
+[detailed Stage 9 plan](stage-09-waiting-task-role-management.md) records the
+implemented extraction of the four waiting-task role operations onto
+`IUserTaskRoleManagementService`. The working tree based on `67945f7` now
+declares **33 methods**, with all other interface members unchanged. Role
+GET/POST handlers inject the focused service directly; the engine neither
+implements nor depends on it. HTTP routes, DTOs, authorization, and lock order
+are unchanged. Broader
 interface removal remains deferred; segmentation should follow the responsibility
 extractions in gap 1, so each member group moves once.
 

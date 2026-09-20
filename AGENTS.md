@@ -178,11 +178,13 @@ preserve that policy. Inbox action checks batch-load exact policy IDs from the
 SQL page; do not evaluate role variables or query policies per task.
 
 `taskRoleManagementRoles` is independent of assignment, cancellation, and
-action authority, and empty disables it. GET/POST role endpoints on normal
-user tasks and multi-instance executions manage persisted active/pending work.
-Use the established lock order, replace the immutable policy with optimistic
-`expectedRolePolicyId`, preserve ownership and completed-item history, and emit
-one `taskRolesChanged` history event. A multi-instance edit updates its parent
+action authority, and empty disables it. `IUserTaskRoleManagementService`
+owns the four GET/POST role operations on normal user tasks and multi-instance
+executions; those handlers inject it directly. The engine no longer implements
+or forwards them. The service manages persisted active/pending work, uses the
+established lock order, replaces the immutable policy with optimistic
+`expectedRolePolicyId`, preserves ownership and completed-item history, and
+emits one `taskRolesChanged` history event. A multi-instance edit updates its parent
 and every unfinished child atomically. A stale identical retry is unchanged
 success; a stale different edit is 409. Runtime definition objects are cached:
 project effective roles with `WithResolvedRoles`, never mutate authored flows.
@@ -218,7 +220,12 @@ Projects:
   which owns detail assembly, execution-position projection, grouped
   multi-instance progress, and version-change/variable-update audit loading;
   detail GET injects it directly after actor validation, while the engine
-  retains it for command detail, slim-ack, and progress projections), shared
+  retains it for command detail, slim-ack, and progress projections), the
+  waiting-task role-management service (`UserTaskRoleManagementService` behind
+  `IUserTaskRoleManagementService`, which owns permission checking, waiting-scope
+  loading, replacement validation, policy comparison, DTO mapping, audit
+  assembly, and transaction ownership; the four role endpoints inject it
+  directly, and the engine neither implements nor depends on it), shared
   runtime response mapping helpers (`RuntimeProjectionMapper`), service
   interfaces, repository ports, and DI extension.
 - `src/Flowbit.Infrastructure` - Infrastructure layer: EF Core,

@@ -2,8 +2,9 @@
 
 [Plan index](README.md) · [Gap inventory](gaps.md)
 
-**Status: In progress — Stage 7's smoke suite and Stage 8's removal are implemented;
-Stage 8 is locally accepted, and stages 9–11 remain planned.** This roadmap
+**Status: In progress — Stage 7's smoke suite and Stages 8–9 are implemented;
+Stages 8–9 are locally accepted (37 → 33 engine methods after Stage 9), and
+stages 10–11 remain planned.** This roadmap
 records the selected follow-up work and the
 accepted C# compatibility break. Saving this document does not complete any
 implementation or acceptance gate.
@@ -16,7 +17,7 @@ Reviewed the code at commit `fbe0721` against [gaps.md](gaps.md) on
 | Gap | Current state | Decision |
 | --- | --- | --- |
 | 1. Engine responsibilities | Still interleaved across 17,636 lines | Extract waiting-task role management next. Defer routing, gateways, messages, and jobs. |
-| 2. Broad engine interface | Stage 8 reduces 40 methods to 37 | Stage 9 removes four waiting-task role operations, targeting 33. |
+| 2. Broad engine interface | Stage 9 reduces 37 methods to 33 | Waiting-task role operations now live on `IUserTaskRoleManagementService`. |
 | 3. Definition validation | Implemented in stage 6; lifecycle service is now 309 lines | Correct the inventory; no additional extraction needed. |
 | 4. Repository duplication | Stage 2 implemented; limited duplication remains | Defer further abstraction until a concrete maintenance need arises. |
 | 5. Editor hotspots | Node rendering contains substantial graph-mutation logic | Extract node-type transition handling; defer parser and normalization rewrites. |
@@ -72,6 +73,18 @@ implementation record for commands and artifacts.
 - Remove obsolete forwarding tests, migrate detail tests to the projection interface, and update direct engine construction sites.
 
 ### Stage 9 — extract waiting-task role management
+
+[Detailed implementation plan](stage-09-waiting-task-role-management.md)
+— service and helper ownership, direct endpoint migration, inherited lock order,
+transaction/save boundaries, PostgreSQL rollback and concurrency coverage,
+C# caller migration, validation, and documentation. **Status: implemented
+and locally accepted.** Baseline 1,899/1,900 (HTTP timeout flake passed on
+retry), focused 129/129, final solution 1,930/1,930, and Chromium 20/20
+passed with zero failures or skips. The working tree is based on `67945f7`
+and remains uncommitted; see the
+[implementation record](stage-09-waiting-task-role-management.md#implementation-record--2026-09-20)
+and [review follow-up](stage-09-waiting-task-role-management.md#review-follow-up--2026-09-20)
+for commands and artifacts.
 
 - Introduce scoped `IUserTaskRoleManagementService` and `UserTaskRoleManagementService`, owning the existing four task/MI role read/change operations.
 - Inject the service directly into the four endpoint handlers and remove those operations from the engine: **37 → 33 methods**. Add no engine forwarding dependency.

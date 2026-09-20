@@ -75,6 +75,42 @@ in-process consumers together; there is no compatibility constructor or facade.
 HTTP routes, DTOs, authorization, workflow JSON, and persisted data are unchanged.
 See the [Stage 8 implementation record](../docs/refactoring/stage-08-remove-query-detail-compatibility.md).
 
+### Waiting-task role-management ownership
+
+Waiting-task role-policy reads and replacements live in
+`UserTaskRoleManagementService` (`IUserTaskRoleManagementService`), a scoped
+service over `IWorkflowDefinitionRepository`, `IWorkflowRuntimeRepository`, and
+`IUnitOfWork`. It owns permission checking, waiting-scope loading, replacement
+validation, policy comparison, DTO mapping, audit assembly, and the mutation
+transaction. `GET`/`POST /api/user-tasks/{taskId}/roles` and
+`GET`/`POST /api/multi-instance-executions/{executionId}/roles` inject it
+directly. The engine has no role-management methods and does not depend on the
+new service.
+
+Reads remain unlocked lookups. Mutations keep the existing lock hierarchy
+(instance → gateway state/branches → token → MI → tasks), call
+`ReplaceUserTaskRolePolicyAsync` inside the still-uncommitted service
+transaction (that repository method flushes to obtain the replacement ID),
+append one `taskRolesChanged` history row, touch the instance, then
+`SaveChangesAsync` and commit. An exception before commit rolls back the
+internal flush; uncommitted disposal still clears EF tracking. Dynamic role
+capture and management-list status parsing stay with their previous owners.
+
+Stage 9 removes four C# members from `IWorkflowEngineService` and
+`WorkflowEngineService` (37 → 33 methods). In-process callers must migrate:
+
+| Former engine call | Focused service call |
+| --- | --- |
+| `GetUserTaskRolesAsync(taskId, actor, ct)` | `IUserTaskRoleManagementService.GetUserTaskRolesAsync(taskId, actor, ct)` |
+| `GetMultiInstanceRolesAsync(executionId, actor, ct)` | `IUserTaskRoleManagementService.GetMultiInstanceRolesAsync(executionId, actor, ct)` |
+| `ChangeUserTaskRolesAsync(taskId, request, actor, ct)` | `IUserTaskRoleManagementService.ChangeUserTaskRolesAsync(taskId, request, actor, ct)` |
+| `ChangeMultiInstanceRolesAsync(executionId, request, actor, ct)` | `IUserTaskRoleManagementService.ChangeMultiInstanceRolesAsync(executionId, request, actor, ct)` |
+
+Consumers of other engine methods can inject both interfaces. Direct engine
+construction is unchanged. HTTP routes, DTOs, authorization, workflow JSON, and
+persisted data are unchanged. See the
+[Stage 9 implementation record](../docs/refactoring/stage-09-waiting-task-role-management.md#implementation-record--2026-09-20).
+
 
 The repository's private SQL helpers live in partial class files beside the
 main implementation. `WorkflowRuntimeRepository.QuerySql.cs` owns

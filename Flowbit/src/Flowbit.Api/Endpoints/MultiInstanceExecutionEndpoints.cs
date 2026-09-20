@@ -45,7 +45,7 @@ public static class MultiInstanceExecutionEndpoints
     }
 
     private static async Task<IResult> GetRoles(long executionId, ClaimsPrincipal principal,
-        IActorContextResolver actorResolver, IWorkflowEngineService service, CancellationToken cancellationToken)
+        IActorContextResolver actorResolver, IUserTaskRoleManagementService service, CancellationToken cancellationToken)
     {
         var policy = await service.GetMultiInstanceRolesAsync(executionId, actorResolver.Resolve(principal), cancellationToken);
         return policy is null ? Results.NotFound() : Results.Ok(policy);
@@ -53,7 +53,7 @@ public static class MultiInstanceExecutionEndpoints
 
     private static async Task<IResult> ChangeRoles(long executionId, ChangeUserTaskRolesRequest request,
         ClaimsPrincipal principal, IActorContextResolver actorResolver,
-        IWorkflowEngineService service, CancellationToken cancellationToken)
+        IUserTaskRoleManagementService service, CancellationToken cancellationToken)
     {
         var result = await service.ChangeMultiInstanceRolesAsync(executionId, request, actorResolver.Resolve(principal), cancellationToken);
         return result is null ? Results.NotFound() : Results.Ok(result);
