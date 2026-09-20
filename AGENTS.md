@@ -212,12 +212,13 @@ Projects:
   checks, and DTO mapping), sequence-flow condition evaluation
   (`SequenceFlowConditionEvaluator`, NCalc), the focused instance list/search
   query service (`WorkflowInstanceQueryService` behind
-  `IWorkflowInstanceQueryService`, with the engine retaining the two members as
-  compatibility forwards), the instance detail/execution projection service
+  `IWorkflowInstanceQueryService`, injected directly by list/search endpoints),
+  the instance detail/execution projection service
   (`WorkflowInstanceProjectionService` behind `IWorkflowInstanceProjectionService`,
   which owns detail assembly, execution-position projection, grouped
-  multi-instance progress, and version-change/variable-update audit loading
-  while the engine forwards detail and slim-ack projections to it), shared
+  multi-instance progress, and version-change/variable-update audit loading;
+  detail GET injects it directly after actor validation, while the engine
+  retains it for command detail, slim-ack, and progress projections), shared
   runtime response mapping helpers (`RuntimeProjectionMapper`), service
   interfaces, repository ports, and DI extension.
 - `src/Flowbit.Infrastructure` - Infrastructure layer: EF Core,

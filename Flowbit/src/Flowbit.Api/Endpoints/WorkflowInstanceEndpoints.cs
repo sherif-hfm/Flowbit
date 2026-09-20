@@ -387,7 +387,7 @@ public static class WorkflowInstanceEndpoints
     /// <param name="id">The database ID of the workflow instance.</param>
     /// <param name="principal">The security principal containing the actor identity.</param>
     /// <param name="actorResolver">Validates the configured canonical actor identity.</param>
-    /// <param name="service">The workflow engine service.</param>
+    /// <param name="service">The instance projection service.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <remarks>
     /// Returns the full <see cref="InstanceDetailDto"/>: the embedded workflow definition,
@@ -398,11 +398,11 @@ public static class WorkflowInstanceEndpoints
         long id,
         ClaimsPrincipal principal,
         IActorContextResolver actorResolver,
-        IWorkflowEngineService service,
+        IWorkflowInstanceProjectionService service,
         CancellationToken cancellationToken)
     {
         _ = actorResolver.Resolve(principal);
-        var instance = await service.GetInstanceAsync(id, cancellationToken);
+        var instance = await service.GetDetailAsync(id, cancellationToken);
         return instance is null ? Results.NotFound() : Results.Ok(instance);
     }
 

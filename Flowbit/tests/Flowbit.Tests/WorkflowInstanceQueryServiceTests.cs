@@ -142,6 +142,8 @@ public sealed class WorkflowInstanceQueryServiceTests
         var firstQuery = VerifyScope(first.ServiceProvider);
         var secondQuery = VerifyScope(second.ServiceProvider);
         Assert.NotSame(firstQuery, secondQuery);
+        Assert.NotSame(first.ServiceProvider.GetRequiredService<IWorkflowInstanceProjectionService>(),
+            second.ServiceProvider.GetRequiredService<IWorkflowInstanceProjectionService>());
         Assert.NotSame(first.ServiceProvider.GetRequiredService<IWorkflowInstanceQueryRepository>(),
             second.ServiceProvider.GetRequiredService<IWorkflowInstanceQueryRepository>());
 

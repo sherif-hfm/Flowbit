@@ -2,8 +2,9 @@
 
 [Plan index](README.md) · [Gap inventory](gaps.md)
 
-**Status: In progress — Stage 7's smoke suite is implemented; stages 8–11
-remain planned.** This roadmap records the selected follow-up work and the
+**Status: In progress — Stage 7's smoke suite and Stage 8's removal are implemented;
+Stage 8 is locally accepted, and stages 9–11 remain planned.** This roadmap
+records the selected follow-up work and the
 accepted C# compatibility break. Saving this document does not complete any
 implementation or acceptance gate.
 
@@ -15,7 +16,7 @@ Reviewed the code at commit `fbe0721` against [gaps.md](gaps.md) on
 | Gap | Current state | Decision |
 | --- | --- | --- |
 | 1. Engine responsibilities | Still interleaved across 17,636 lines | Extract waiting-task role management next. Defer routing, gateways, messages, and jobs. |
-| 2. Broad engine interface | Still exposes 40 methods | Remove seven migrated methods, reducing it to 33. |
+| 2. Broad engine interface | Stage 8 reduces 40 methods to 37 | Stage 9 removes four waiting-task role operations, targeting 33. |
 | 3. Definition validation | Implemented in stage 6; lifecycle service is now 309 lines | Correct the inventory; no additional extraction needed. |
 | 4. Repository duplication | Stage 2 implemented; limited duplication remains | Defer further abstraction until a concrete maintenance need arises. |
 | 5. Editor hotspots | Node rendering contains substantial graph-mutation logic | Extract node-type transition handling; defer parser and normalization rewrites. |
@@ -55,6 +56,14 @@ and the per-row checklist status.
 - Complete every outstanding scenario in [stage 5's browser gate](stage-05-instance-detail-components.md#required-browser-verification), using the full isolated stack where necessary. Mark stage 5 implemented only after acceptance.
 
 ### Stage 8 — remove existing query/detail compatibility methods
+
+[Detailed implementation plan](stage-08-remove-query-detail-compatibility.md)
+— caller migration, detail endpoint identity and metadata checks, constructor
+and test-host updates, projection invariants, validation, and rollback.
+**Status: implemented and locally accepted.** Baseline 1,892/1,892, focused
+102/102, final solution 1,900/1,900, and Chromium 20/20 passed with zero failures
+or skips. The working tree is based on `6a14b1f` and remains uncommitted; see the
+implementation record for commands and artifacts.
 
 - Remove `ListInstancesAsync`, `SearchInstancesAsync`, and `GetInstanceAsync` from the engine interface and implementation: **40 → 37 methods**.
 - Keep list/search endpoints on `IWorkflowInstanceQueryService`; move detail GET to `IWorkflowInstanceProjectionService.GetDetailAsync`.

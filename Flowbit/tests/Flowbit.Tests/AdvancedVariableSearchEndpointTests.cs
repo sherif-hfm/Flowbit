@@ -555,6 +555,8 @@ public sealed class AdvancedVariableSearchEndpointTests
             RecordingInstanceQueryServiceProxy>();
         var instanceQueryRecorder = (RecordingInstanceQueryServiceProxy)(object)instanceQueryService;
         builder.Services.AddSingleton(instanceQueryService);
+        builder.Services.AddSingleton<IWorkflowInstanceProjectionService>(_ =>
+            throw new InvalidOperationException("Search tests must not resolve detail projections."));
 
         var app = builder.Build();
         app.UseAuthentication();

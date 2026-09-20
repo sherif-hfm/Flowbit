@@ -186,23 +186,6 @@ public interface IWorkflowEngineService
         IncomingMessage message,
         CancellationToken cancellationToken);
 
-    Task<PagedResult<InstanceSummaryDto>> ListInstancesAsync(
-        ActorContext actor,
-        string? status,
-        long? instanceId,
-        long? workflowId,
-        string? workflowKey,
-        string? businessKey,
-        int? nodeId,
-        string? nodeExternalId,
-        IReadOnlyList<string>? variables,
-        IReadOnlyList<string>? sort,
-        string? cursor,
-        bool includeVariables,
-        int page,
-        int pageSize,
-        CancellationToken cancellationToken);
-
     Task<PagedResult<InboxItemDto>> GetInboxAsync(
         ActorContext actor,
         long? instanceId,
@@ -222,13 +205,6 @@ public interface IWorkflowEngineService
         ActorContext actor,
         InboxSearchRequest request,
         CancellationToken cancellationToken);
-
-    Task<PagedResult<InstanceSummaryDto>> SearchInstancesAsync(
-        ActorContext actor,
-        InstanceSearchRequest request,
-        CancellationToken cancellationToken);
-
-    Task<InstanceDetailDto?> GetInstanceAsync(long id, CancellationToken cancellationToken);
 
     Task<InstanceReactivationPreviewDto?> PreviewInstanceReactivationAsync(
         long id,

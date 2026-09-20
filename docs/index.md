@@ -51,6 +51,12 @@ remaining Stage 5 acceptance rows (headed manual inspection, native-picker
 manual evidence, Worker-driven batch links, and the pre-extraction comparison)
 and the remote CI observation remain open.
 
+The [Stage 8 query/detail compatibility removal plan](refactoring/stage-08-remove-query-detail-compatibility.md)
+records the implemented C# caller migration, direct detail endpoint projection
+calls, and removal of three engine methods (40 → 37). HTTP and identity
+boundaries are unchanged. All local Stage 8 gates passed: 1,900 solution tests
+and 20 standalone Chromium tests, with no failures or skips.
+
 ## Reference ownership
 
 The [node and property reference](node-reference.md) owns the consolidated authoring tables for nodes and their nested configuration. The [example catalog](../examples/README.md) owns each sample's prerequisites, actors, inputs, and expected outcome. The [runtime README](../Flowbit/README.md) remains the detailed implementation reference for database behavior and individual features. These guides explain the developer and operator workflows and link to those sources for deeper details.

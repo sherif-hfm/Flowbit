@@ -457,7 +457,6 @@ public sealed class WorkflowInstanceVersionChangeServiceTests
                 settings,
                 Proxy<IEngineSettingsRepository>(Unexpected),
                 NullLogger<WorkflowEngineService>.Instance,
-                Proxy<IWorkflowInstanceQueryService>(Unexpected),
                 new WorkflowInstanceProjectionService(
                     runtimeRepository,
                     definitionRepository));

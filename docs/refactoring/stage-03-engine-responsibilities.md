@@ -10,6 +10,12 @@ remain in the engine. See the implementation record at the bottom of this
 document. Stage 1 is a prerequisite and was completed first; Stage 2 was also
 completed before this stage.
 
+**Superseded compatibility decision:** [Stage 8](stage-08-remove-query-detail-compatibility.md)
+removes the engine's public `GetInstanceAsync` forward and injects the projection
+interface directly into detail GET. Command detail, slim-ack, and progress
+projections still use the engine's retained projection dependency. The historical
+implementation and validation results below describe Stage 3.
+
 [Plan index](README.md) · [Next: editor validation](stage-04-editor-validation.md)
 
 ## Objective and boundary

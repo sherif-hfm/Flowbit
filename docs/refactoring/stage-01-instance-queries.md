@@ -4,8 +4,13 @@
 
 **Status: Implemented.** Instance list/search orchestration now lives in
 `WorkflowInstanceQueryService` behind `IWorkflowInstanceQueryService` with the
-narrow `IWorkflowInstanceQueryRepository` port. The two engine members remain
-as compatibility forwards. See [Implementation record](#implementation-record).
+narrow `IWorkflowInstanceQueryRepository` port. At this stage's completion the
+two engine members remained as compatibility forwards. See
+[Implementation record](#implementation-record).
+
+**Superseded compatibility decision:** [Stage 8](stage-08-remove-query-detail-compatibility.md)
+removes those forwards and the engine's query-service constructor dependency.
+The historical implementation and validation results below describe Stage 1.
 
 ## Objective and scope
 

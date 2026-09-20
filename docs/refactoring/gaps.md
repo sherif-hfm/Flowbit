@@ -107,15 +107,24 @@ attribution, as noted by
 
 `IWorkflowEngineService`, declared in
 [Services.cs](../../Flowbit/src/Flowbit.Service/Abstractions/Services.cs),
-exposes 40 `Task`-returning members spanning queries, workflow/task commands,
-and lifecycle operations. Job processing is exposed through a separate
+exposed 40 `Task`-returning members at the dated baseline above, spanning
+queries, workflow/task commands, and lifecycle operations. Job processing is exposed through a separate
 `IWorkflowJobProcessor` implemented by the same class. Stage 1 (implemented)
 added a focused instance-query port and moved the two endpoint consumers to it,
-while retaining both engine members as compatibility forwards. Stage 3 adds a
-projection port but keeps `GetInstanceAsync` as a forwarding compatibility
-method. Neither stage reduces the engine interface's member count. Broad
-interface removal remains
-outside the current plans. Interface segmentation should follow the responsibility
+while retaining both engine members as compatibility forwards. Stage 3 added a
+projection port but kept `GetInstanceAsync` as a forwarding compatibility
+method. Neither stage reduces the engine interface's member count.
+
+The [detailed Stage 8 plan](stage-08-remove-query-detail-compatibility.md)
+records the implemented removal of those three forwards and the unused
+engine query-service dependency. The 2026-09-20 working tree based on `6a14b1f`
+now declares **37 methods**, with all other interface members unchanged. Detail
+GET retains actor validation and its HTTP contract; the engine retains
+projections for command responses. The full solution (1,900 tests) and standalone
+Chromium regression (20 tests) passed with no failures or skips. Stage 9 in the
+[remaining-gaps roadmap](remaining-gaps-implementation-plan.md) separately
+extracts four waiting-task role operations, targeting 33 members. Broader
+interface removal remains deferred; segmentation should follow the responsibility
 extractions in gap 1, so each member group moves once.
 
 ## 3. WorkflowDefinitionService

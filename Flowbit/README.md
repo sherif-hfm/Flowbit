@@ -32,9 +32,8 @@ paths), resolves the dynamic `WorkflowInstances.RequiredRole` authorization,
 delegates membership/count/ordering/paging to the repository, and enriches the
 selected page with job summaries, variables, and shared-binding metadata. The
 `GET /api/instances` and `POST /api/instances/search` handlers inject it
-directly, and `WorkflowEngineService` retains `ListInstancesAsync` /
-`SearchInstancesAsync` as compatibility forwards for existing callers. The
-scoped `WorkflowRuntimeRepository` implements both the full runtime port and
+directly. The engine has no instance list/search methods or query-service dependency.
+The scoped `WorkflowRuntimeRepository` implements both the full runtime port and
 the query port as one instance per scope, so the engine and the query service
 share the same DbContext and per-scope bookkeeping.
 
@@ -50,13 +49,31 @@ version-change/variable-update audit loading. It returns the public
 progress, gateway executions, complex gateway states, completion) and shares
 the scoped `WorkflowRuntimeRepository` instance with the engine, so projection
 reads see flushed state inside an ambient transaction and create no rows.
-`WorkflowEngineService` forwards `GetInstanceAsync`, `BuildDetailAsync` call
-sites, slim-ack projections, and progress reads to it as thin delegations and
-retains routing, authorization, capability evaluation, and settings caching.
+`GET /api/instances/{id}` injects the projection interface directly, retaining
+actor validation before reads and the existing authenticated deployment-level
+read scope. The engine keeps its projection dependency for full-detail command
+responses, slim acknowledgements, and progress reads at their existing
+save/commit positions. It retains routing, authorization, capability evaluation,
+and settings caching.
 Task capability assembly stays in the engine; the pure response mappings
 (runtime workflow cloning/redaction, fault info, work summaries, multi-instance
 progress, version-change audit/summary/direction) live in the shared
 internal `RuntimeProjectionMapper`.
+
+Stage 8 removes three C# compatibility members from `IWorkflowEngineService`
+and `WorkflowEngineService` (40 → 37 methods). In-process callers must migrate:
+
+| Former engine call | Focused service call |
+| --- | --- |
+| `ListInstancesAsync(...)` | `IWorkflowInstanceQueryService.ListInstancesAsync(...)` |
+| `SearchInstancesAsync(actor, request, ct)` | `IWorkflowInstanceQueryService.SearchInstancesAsync(actor, request, ct)` |
+| `GetInstanceAsync(id, ct)` | `IWorkflowInstanceProjectionService.GetDetailAsync(id, ct)` |
+
+Direct constructor callers must remove the `instanceQueries` argument after
+`logger`, keeping `projections` and all remaining arguments in place. Rebuild
+in-process consumers together; there is no compatibility constructor or facade.
+HTTP routes, DTOs, authorization, workflow JSON, and persisted data are unchanged.
+See the [Stage 8 implementation record](../docs/refactoring/stage-08-remove-query-detail-compatibility.md).
 
 
 The repository's private SQL helpers live in partial class files beside the

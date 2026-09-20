@@ -1,9 +1,12 @@
+using System.Net;
+using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Flowbit.Infrastructure.Data;
 using Flowbit.Infrastructure.Entities;
 using Flowbit.Service.Abstractions;
+using Flowbit.Shared.Dtos;
 using Flowbit.Shared.Models;
 using Xunit;
 
@@ -44,6 +47,33 @@ public sealed class InstanceProjectionTests(PostgresApiFixture fixture)
     private const int ExpectedCurrentReaderCommands = 7;
 
     [Fact]
+    public async Task AuthenticatedDetailRemainsReadableWithoutListVisibility()
+    {
+        var seed = await SeedProjectionDatasetAsync(
+            workflowKey: $"projection-read-scope-{Guid.NewGuid():N}",
+            multiInstanceItemCount: 1, flowCountCount: 1,
+            versionChangeAuditCount: 1, versionChangeDefinitionCount: 1);
+        using var listRequest = ApiTestAuth.Authorize(new HttpRequestMessage(
+            HttpMethod.Get, $"/api/instances?instanceId={seed.InstanceId}"),
+            "unrelated-reader", "unrelated-role");
+        listRequest.Headers.Add("X-Test-Suppress-Admin", "true");
+        using var listResponse = await fixture.Client.SendAsync(listRequest);
+        Assert.Equal(HttpStatusCode.OK, listResponse.StatusCode);
+        var page = await listResponse.Content.ReadFromJsonAsync<PagedResult<InstanceSummaryDto>>();
+        Assert.Empty(page!.Items);
+
+        using var detailRequest = ApiTestAuth.Authorize(new HttpRequestMessage(
+            HttpMethod.Get, $"/api/instances/{seed.InstanceId}"),
+            "unrelated-reader", "unrelated-role");
+        detailRequest.Headers.Add("X-Test-Suppress-Admin", "true");
+        using var detailResponse = await fixture.Client.SendAsync(detailRequest);
+        Assert.Equal(HttpStatusCode.OK, detailResponse.StatusCode);
+        var detail = await detailResponse.Content.ReadFromJsonAsync<InstanceDetailDto>();
+        Assert.Equal(seed.InstanceId, detail!.Id);
+        Assert.Equal(seed.WorkflowKey, detail.Workflow.WorkflowKey);
+    }
+
+    [Fact]
     public async Task DetailProjectionKeepsTheRecordedReaderBaselineAndWritesNoRows()
     {
         var suffix = Guid.NewGuid().ToString("N");
@@ -55,15 +85,15 @@ public sealed class InstanceProjectionTests(PostgresApiFixture fixture)
             versionChangeDefinitionCount: 1);
 
         await using var scope = fixture.Factory.Services.CreateAsyncScope();
-        var engine = scope.ServiceProvider.GetRequiredService<IWorkflowEngineService>();
+        var projections = scope.ServiceProvider.GetRequiredService<IWorkflowInstanceProjectionService>();
 
         // Warm the workflow definition cache so the measured projection excludes
         // the one-time immutable definition lookup.
-        var warmup = await engine.GetInstanceAsync(seed.InstanceId, CancellationToken.None);
+        var warmup = await projections.GetDetailAsync(seed.InstanceId, CancellationToken.None);
         Assert.NotNull(warmup);
 
         fixture.CommandCounter.Reset();
-        var detail = await engine.GetInstanceAsync(seed.InstanceId, CancellationToken.None);
+        var detail = await projections.GetDetailAsync(seed.InstanceId, CancellationToken.None);
         var readerCommands = fixture.CommandCounter.ReaderCommands;
 
         Assert.NotNull(detail);
@@ -94,13 +124,13 @@ public sealed class InstanceProjectionTests(PostgresApiFixture fixture)
             versionChangeDefinitionCount: 1);
 
         await using var scope = fixture.Factory.Services.CreateAsyncScope();
-        var engine = scope.ServiceProvider.GetRequiredService<IWorkflowEngineService>();
+        var projections = scope.ServiceProvider.GetRequiredService<IWorkflowInstanceProjectionService>();
 
         // The workflow key is unique per run, so the process-wide definition
         // cache is cold: the first detail projection adds the immutable
         // definition lookup to the warm baseline.
         fixture.CommandCounter.Reset();
-        var detail = await engine.GetInstanceAsync(seed.InstanceId, CancellationToken.None);
+        var detail = await projections.GetDetailAsync(seed.InstanceId, CancellationToken.None);
         var coldCommands = fixture.CommandCounter.ReaderCommands;
 
         Assert.NotNull(detail);
@@ -108,7 +138,7 @@ public sealed class InstanceProjectionTests(PostgresApiFixture fixture)
 
         // The immediately-following projection is exactly the warm baseline.
         fixture.CommandCounter.Reset();
-        Assert.NotNull(await engine.GetInstanceAsync(seed.InstanceId, CancellationToken.None));
+        Assert.NotNull(await projections.GetDetailAsync(seed.InstanceId, CancellationToken.None));
         Assert.Equal(ExpectedDetailReaderCommands, fixture.CommandCounter.ReaderCommands);
     }
 
@@ -164,17 +194,17 @@ public sealed class InstanceProjectionTests(PostgresApiFixture fixture)
             versionChangeDefinitionCount: 3);
 
         await using var scope = fixture.Factory.Services.CreateAsyncScope();
-        var engine = scope.ServiceProvider.GetRequiredService<IWorkflowEngineService>();
+        var projections = scope.ServiceProvider.GetRequiredService<IWorkflowInstanceProjectionService>();
 
         // Warm the definition caches and take the first reading as the baseline.
-        _ = await engine.GetInstanceAsync(smallSeed.InstanceId, CancellationToken.None);
+        _ = await projections.GetDetailAsync(smallSeed.InstanceId, CancellationToken.None);
         fixture.CommandCounter.Reset();
-        var smallDetail = await engine.GetInstanceAsync(smallSeed.InstanceId, CancellationToken.None);
+        var smallDetail = await projections.GetDetailAsync(smallSeed.InstanceId, CancellationToken.None);
         var smallCommands = fixture.CommandCounter.ReaderCommands;
 
-        _ = await engine.GetInstanceAsync(largeSeed.InstanceId, CancellationToken.None);
+        _ = await projections.GetDetailAsync(largeSeed.InstanceId, CancellationToken.None);
         fixture.CommandCounter.Reset();
-        var largeDetail = await engine.GetInstanceAsync(largeSeed.InstanceId, CancellationToken.None);
+        var largeDetail = await projections.GetDetailAsync(largeSeed.InstanceId, CancellationToken.None);
         var largeCommands = fixture.CommandCounter.ReaderCommands;
 
         Assert.NotNull(smallDetail);

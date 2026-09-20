@@ -28,7 +28,6 @@ public sealed partial class WorkflowEngineService(
     IWorkflowSettingsRepository settings,
     IEngineSettingsRepository engineSettings,
     ILogger<WorkflowEngineService> logger,
-    IWorkflowInstanceQueryService instanceQueries,
     IWorkflowInstanceProjectionService projections,
     IInstanceVariableMutationTracker? variableMutationTracker = null,
     IConditionalEventDependencyPlanCache? conditionalEventPlans = null,
@@ -1420,37 +1419,6 @@ public sealed partial class WorkflowEngineService(
         };
     }
 
-    // Compatibility forwards: instance list/search orchestration lives in
-    // WorkflowInstanceQueryService, instance detail/execution projection in
-    // WorkflowInstanceProjectionService; the engine interface keeps its original
-    // members so existing callers continue to resolve the same behavior.
-    public Task<PagedResult<InstanceSummaryDto>> ListInstancesAsync(
-        ActorContext actor,
-        string? status,
-        long? instanceId,
-        long? workflowId,
-        string? workflowKey,
-        string? businessKey,
-        int? nodeId,
-        string? nodeExternalId,
-        IReadOnlyList<string>? variables,
-        IReadOnlyList<string>? sort,
-        string? cursor,
-        bool includeVariables,
-        int page,
-        int pageSize,
-        CancellationToken cancellationToken) =>
-        instanceQueries.ListInstancesAsync(
-            actor, status, instanceId, workflowId, workflowKey, businessKey,
-            nodeId, nodeExternalId, variables, sort, cursor, includeVariables,
-            page, pageSize, cancellationToken);
-
-    public Task<PagedResult<InstanceSummaryDto>> SearchInstancesAsync(
-        ActorContext actor,
-        InstanceSearchRequest request,
-        CancellationToken cancellationToken) =>
-        instanceQueries.SearchInstancesAsync(actor, request, cancellationToken);
-
     public Task<PagedResult<InboxItemDto>> GetInboxAsync(
         ActorContext actor,
         long? instanceId,
@@ -1733,9 +1701,6 @@ public sealed partial class WorkflowEngineService(
             Attributes = attributesByTask[authorizationKey]
         };
     }
-
-    public Task<InstanceDetailDto?> GetInstanceAsync(long id, CancellationToken cancellationToken) =>
-        projections.GetDetailAsync(id, cancellationToken);
 
     public async Task<IReadOnlyList<SequenceFlowModel>?> GetAvailableFlowsAsync(
         long id,

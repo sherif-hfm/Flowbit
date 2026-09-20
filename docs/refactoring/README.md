@@ -14,13 +14,14 @@ describe the current application.
 
 | Stage | Deliverable | Dependency | Status |
 | --- | --- | --- | --- |
-| [1 — Instance list and search](stage-01-instance-queries.md) | A focused query service and repository port, with compatible engine forwarding methods. | Passing test baseline. | Implemented |
+| [1 — Instance list and search](stage-01-instance-queries.md) | A focused query service and repository port; Stage 8 supersedes the original engine forwards. | Passing test baseline. | Implemented |
 | [2 — Repository query helpers](stage-02-repository-query-helpers.md) | Shared task ownership predicates and inbox visibility SQL fragments. | Stage 1 recommended; can proceed independently without conflicting edits. | Implemented |
 | [3 — Engine projections](stage-03-engine-responsibilities.md) | Instance detail and execution projection service, including existing redaction and audit mapping. | Stage 1; Stage 2 recommended. | Implemented |
 | [4 — Editor validation](stage-04-editor-validation.md) | Smaller validation phases and rule helpers inside the standalone HTML file. | Passing test baseline; independent of backend stages. | Implemented |
 | [5 — Instance detail components](stage-05-instance-detail-components.md) | Display components with refresh, identity, and mutation coordination retained by the page. | Passing test baseline; independent of stages 1–4. | In progress |
 | [6 — Definition validation](stage-06-definition-validation.md) | Separate authored/normalized validation from definition lifecycle and publication orchestration. | Passing test baseline; independent of stages 1–5. | Implemented |
 | [7 — Browser smoke suite and Stage 5 acceptance](stage-07-browser-smoke-and-stage-05-acceptance.md) | Isolated Chromium smoke coverage, a separate CI job, and completion of Stage 5's browser gate. | Passing baseline; extracted Stage 5 components available for verification. | In progress (suite implemented and passing; residual Stage 5 acceptance open) |
+| [8 — Remove query/detail compatibility methods](stage-08-remove-query-detail-compatibility.md) | Direct detail endpoint projection calls, removal of three engine forwards and the query dependency, and C# caller/test migration (40 → 37 methods). | Stages 1 and 3; passing baseline. Can proceed alongside Stage 7. | Implemented |
 
 The original recommended sequence is stages 1 through 5, followed by Stage 6.
 Stage 6 may move earlier if definition maintenance is the immediate priority.
@@ -133,9 +134,19 @@ extraction, editor node-type transitions, and administrative-action display
 components. It includes an explicitly accepted C# compatibility break and keeps
 the other candidates deferred. Stage 7 is in progress (smoke suite implemented
 locally; residual Stage 5 acceptance and remote CI observation remain open).
-Stages 8–11 remain planned. The existing stage statuses above remain unchanged.
+Stage 8 is implemented and locally accepted; stages 9–11 remain
+planned. The other stage statuses above remain unchanged.
 
 The [detailed Stage 7 plan](stage-07-browser-smoke-and-stage-05-acceptance.md)
 defines the isolated stack, fixtures, editor/runtime smoke matrix, CI artifacts,
 commands, and the complete Stage 5 acceptance checklist. Its no-Worker smoke
 suite and separate full-stack browser acceptance have distinct completion gates.
+
+The [detailed Stage 8 plan](stage-08-remove-query-detail-compatibility.md)
+defines the accepted C# interface/constructor break, the detail endpoint's
+unchanged identity and HTTP contract, caller and test-host migration, retained
+command projections, validation, documentation updates, and rollback. The three
+compatibility methods are removed (40 → 37 interface methods). The 2026-09-20
+working tree is based on `6a14b1f` and remains uncommitted; baseline 1,892/1,892,
+focused 102/102, final solution 1,900/1,900, and standalone Chromium 20/20 passed
+with zero failures/skips. Documentation references and `git diff --check` passed.

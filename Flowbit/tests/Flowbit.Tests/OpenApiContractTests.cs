@@ -13,10 +13,39 @@ using Xunit;
 
 namespace Flowbit.Tests;
 
+[Collection(InstanceDetailApiContractCollection.Name)]
 public sealed class OpenApiContractTests
 {
     private static readonly HashSet<string> HttpMethods =
         new(StringComparer.OrdinalIgnoreCase) { "get", "post", "put", "patch", "delete" };
+
+    [Fact]
+    public async Task InstanceDetailRetainsItsProductionOpenApiContract()
+    {
+        await using var factory = new WorkflowInstanceDetailEndpointTests.DetailApiFactory();
+        using var client = factory.CreateClient();
+        await using var scope = factory.Services.CreateAsyncScope();
+        // Generate with Program's actual transformers, including bearer security,
+        // even though the Testing environment does not expose the document route.
+        var provider = scope.ServiceProvider.GetRequiredKeyedService<IOpenApiDocumentProvider>("v1");
+        var document = await provider.GetOpenApiDocumentAsync();
+        var operation = document.Paths["/api/instances/{id}"].Operations![HttpMethod.Get];
+
+        Assert.Equal("getInstancesById", operation.OperationId);
+        Assert.Null(operation.RequestBody);
+        var parameter = Assert.Single(operation.Parameters!);
+        Assert.Equal("id", parameter.Name);
+        Assert.Equal(Microsoft.OpenApi.ParameterLocation.Path, parameter.In);
+        Assert.True(parameter.Required);
+        Assert.Equal(["200", "401", "404"], operation.Responses!.Keys.Order().ToArray());
+        var schema = operation.Responses["200"].Content!["application/json"].Schema;
+        Assert.Equal("InstanceDetailDto", Assert.IsType<Microsoft.OpenApi.OpenApiSchemaReference>(schema).Reference.Id);
+        var security = Assert.Single(operation.Security!);
+        Assert.Equal("Bearer", Assert.Single(security).Key.Reference.Id);
+        Assert.DoesNotContain(document.Components!.Schemas!.Keys,
+            name => name.Contains("IWorkflow", StringComparison.Ordinal));
+        Assert.Empty(factory.Projection.Reads);
+    }
 
     [Fact]
     public async Task EveryEndpointHasGeneratorReadyDocumentation()
