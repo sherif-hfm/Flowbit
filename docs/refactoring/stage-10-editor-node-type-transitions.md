@@ -614,9 +614,9 @@ gaps and closed two evidence gaps; two process limitations remain recorded:
 - Limitation: the **native** file-picker success/cancel paths for save remain
   a manual-only check (Stage 7's open item); the headed save/reload used the
   automated fallback path and does not close that residual.
-- Limitation: the implemented state is an uncommitted working tree on top of
-  `239a30e`; the record therefore cites the baseline commit and the final
-  working-tree state rather than a second commit hash.
+- Original verification limitation: the implemented state was an uncommitted
+  working tree on top of `239a30e`; that record cites the baseline commit and
+  working-tree state. The follow-up below is based on committed `a9bcf57`.
 - Remediation hygiene note: while recording the pre-change baseline above, a
   `git stash pop` rewrote `flowbit-editor.html` with CRLF endings, which broke
   one multi-line source-pattern assertion in
@@ -652,6 +652,61 @@ open item): the **native** file-picker success/cancel paths for save remain a
 manual-only check; the headed save/reload used the same fallback path as the
 automated suite and does not close that residual. Worker-dependent behaviors
 outside the editor were not exercised.
+
+### Review follow-up — coverage and visual evidence (2026-09-21)
+
+Based on `a9bcf57`, this follow-up closes the four remaining review findings.
+The production editor is unchanged; changes are limited to tests,
+documentation, and retained screenshots.
+
+- T10 now exercises a boundary-bearing timer-catch target and every async
+  automatic host target (`task`, `serviceTask`, `scriptTask`). It compares both
+  timer and conditional boundary contracts and their flows before/after the
+  transition. Boundary coordinates are excluded from contract comparisons
+  because the existing render pass positions them around the new host shape.
+- T12 now has two alternative ordinary starts in deliberately non-ID order
+  (4 before 3), asserting that the first array-ordered start wins.
+- E7 captures the populated workflow with host 7 selected immediately before
+  and after service-task → user-task conversion at both required viewports.
+  The assertions establish that the boundary exists before the first capture
+  and that the boundary and its flow are absent before the second capture.
+  Earlier `headed-*-before.png` files show startup only; use the retained
+  populated comparisons below for the stage's visual baseline.
+- The refactoring index now consistently marks Stage 10 implemented and only
+  Stage 11 planned.
+
+Validation against the follow-up:
+
+- The [focused editor/parser command](#commands-and-acceptance-evidence)
+  passed **321/321**, with no failures or skips.
+- Three temporary mutations of the **build-copied** editor each produced the
+  intended assertion failure: remove timer-catch host eligibility, remove
+  async-script host eligibility, or choose the lowest-ID replacement start.
+  The copied file was restored in a `finally` block and its SHA-256 matched the
+  production editor. The targeted command
+  `dotnet test Flowbit/tests/Flowbit.Tests/Flowbit.Tests.csproj --no-build --no-restore --filter FullyQualifiedName~TypeTransition_ --nologo --verbosity quiet`
+  then passed **20/20**. Expected-failure TRX files are under
+  `artifacts/browser/stage-10-mutation-results/`.
+- With `FLOWBIT_BROWSER_HEADED=1`, the rebuilt browser command
+  `dotnet test Flowbit/tests/Flowbit.BrowserTests/Flowbit.BrowserTests.csproj -c Release --filter "FullyQualifiedName~EditorSmokeTests|FullyQualifiedName~HarnessDiagnosticsTests" --nologo --verbosity quiet --logger "trx;LogFileName=stage-10-fixes.trx" --results-directory artifacts/browser/stage-10-fix-test-results`
+  passed **20/20**, with no failures, skips, or retries. Headed Chromium
+  **151.0.7922.34** served the copied editor at **http://127.0.0.1:52912/**.
+  E1–E8 exercised file loading, saves/reloads, dragging, validation, keyboard
+  focus, guarded changes, gateway Cancel/Accept, destructive conversion,
+  undo/redo, and start/settings conversion at **1440×900 and 1024×768**.
+  All 16 editor scenario diagnostics contain zero page errors, console errors,
+  warnings, and unexpected dialogs. Harness cases intentionally inject errors.
+  Raw evidence is under `artifacts/browser/runs/20260921-153850-475cd4d3/`.
+- All four screenshots below were visually inspected: the fixture and selected
+  host inspector are populated, the boundary/flow disappear after conversion,
+  and no unexpected layout change appears. Links/image references and
+  `git diff --check` passed. Native save-picker success/cancel remains the
+  previously documented Stage 7 limitation; E7 uses the download fallback.
+
+| Viewport | Before conversion | After conversion |
+| --- | --- | --- |
+| 1440×900 | [Selected service task and boundary](evidence/stage-10/boundary-1440x900-before.png) | [Selected user task, boundary removed](evidence/stage-10/boundary-1440x900-after.png) |
+| 1024×768 | [Selected service task and boundary](evidence/stage-10/boundary-1024x768-before.png) | [Selected user task, boundary removed](evidence/stage-10/boundary-1024x768-after.png) |
 
 ### Documentation updated with this stage
 

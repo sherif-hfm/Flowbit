@@ -3518,7 +3518,7 @@ public sealed class EditorRuntimeSmokeTests
         using var result = JsonDocument.Parse(engine.Evaluate(
             """
             (() => {
-              const loadFixture = (asyncBefore) => loadFromObject({
+              const loadFixture = () => loadFromObject({
                 id: 'type-transition-boundary',
                 name: 'Observable boundaries',
                 initialEventId: 1,
@@ -3530,7 +3530,7 @@ public sealed class EditorRuntimeSmokeTests
                   { id: 3, name: 'Done', type: 'endEvent', x: 400, y: 0 },
                   { id: 30, name: 'Reminder', type: 'timerBoundaryEvent', x: 260, y: 90, attachedToRef: 2, cancelActivity: false, timer: { timeDuration: 'PT30M' } },
                   { id: 31, name: 'Flag flip', type: 'conditionalBoundaryEvent', x: 340, y: 90, attachedToRef: 2, conditional: { condition: 'flag == true' } }
-                ].concat(asyncBefore === undefined ? [] : []),
+                ],
                 sequenceFlows: [
                   { id: 101, name: '', sourceRef: 1, targetRef: 2 },
                   { id: 201, name: '', sourceRef: 2, targetRef: 3 },
@@ -3572,6 +3572,27 @@ public sealed class EditorRuntimeSmokeTests
                 conditionalKept: getNode(31) != null
               };
 
+              // Timer catches are durable hosts too; preserve both boundary
+              // contracts and all their incident flows through conversion.
+              // Boundary coordinates follow the new host shape during render.
+              const boundaryContract = boundary => {
+                if (!boundary) return null;
+                const { x, y, ...contract } = boundary;
+                return contract;
+              };
+              loadFixture();
+              render();
+              const timerBoundaryBefore = JSON.stringify(boundaryContract(getNode(30)));
+              const conditionalBoundaryBefore = JSON.stringify(boundaryContract(getNode(31)));
+              const boundaryFlowsBefore = JSON.stringify(model.sequenceFlows.filter(f => f.sourceRef === 30 || f.sourceRef === 31));
+              captureTypeCallback(2)('intermediateTimerCatchEvent');
+              const toTimer = {
+                type: getNode(2).type,
+                timerUnchanged: JSON.stringify(boundaryContract(getNode(30))) === timerBoundaryBefore,
+                conditionalUnchanged: JSON.stringify(boundaryContract(getNode(31))) === conditionalBoundaryBefore,
+                flowsUnchanged: JSON.stringify(model.sequenceFlows.filter(f => f.sourceRef === 30 || f.sourceRef === 31)) === boundaryFlowsBefore
+              };
+
               // Conditional catch is not in the eligible host set.
               loadFixture();
               render();
@@ -3594,12 +3615,14 @@ public sealed class EditorRuntimeSmokeTests
                   { id: 1, name: 'Submitted', type: 'startEvent', x: 0, y: 0 },
                   { id: 40, name: 'Enrich', type: 'task', x: 200, y: 0, asyncBefore: asyncBefore },
                   { id: 42, name: 'Done', type: 'endEvent', x: 400, y: 0 },
-                  { id: 41, name: 'Timeout', type: 'timerBoundaryEvent', x: 260, y: 90, attachedToRef: 40, cancelActivity: true, timer: { timeDuration: 'PT1H' } }
+                  { id: 41, name: 'Timeout', type: 'timerBoundaryEvent', x: 260, y: 90, attachedToRef: 40, cancelActivity: true, timer: { timeDuration: 'PT1H' } },
+                  { id: 43, name: 'Ready', type: 'conditionalBoundaryEvent', x: 340, y: 90, attachedToRef: 40, cancelActivity: false, conditional: { condition: 'ready == true' } }
                 ],
                 sequenceFlows: [
                   { id: 101, name: '', sourceRef: 1, targetRef: 40 },
                   { id: 401, name: '', sourceRef: 40, targetRef: 42 },
-                  { id: 2003, name: '', sourceRef: 41, targetRef: 42 }
+                  { id: 2003, name: '', sourceRef: 41, targetRef: 42 },
+                  { id: 2004, name: '', sourceRef: 43, targetRef: 42 }
                 ]
               });
               loadAsyncFixture(true);
@@ -3622,7 +3645,22 @@ public sealed class EditorRuntimeSmokeTests
                 boundaryRemoved: getNode(41) == null,
                 flowRemoved: !model.sequenceFlows.some(f => f.id === 2003)
               };
-              return JSON.stringify({ sameType, toTask, toMessage, toConditional, asyncKept, asyncRemoved });
+              // Each automatic host family retains both observable boundaries
+              // when asyncBefore remains true after node normalization.
+              const asyncTargets = ['task', 'serviceTask', 'scriptTask'].map(target => {
+                loadAsyncFixture(true);
+                render();
+                const boundariesBefore = JSON.stringify(model.flowNodes.filter(n => n.attachedToRef === 40).map(boundaryContract));
+                const flowsBefore = JSON.stringify(model.sequenceFlows.filter(f => f.sourceRef === 41 || f.sourceRef === 43));
+                captureTypeCallback(40)(target);
+                return {
+                  type: getNode(40).type,
+                  asyncBefore: getNode(40).asyncBefore,
+                  boundariesUnchanged: JSON.stringify(model.flowNodes.filter(n => n.attachedToRef === 40).map(boundaryContract)) === boundariesBefore,
+                  flowsUnchanged: JSON.stringify(model.sequenceFlows.filter(f => f.sourceRef === 41 || f.sourceRef === 43)) === flowsBefore
+                };
+              });
+              return JSON.stringify({ sameType, toTask, toMessage, toTimer, toConditional, asyncKept, asyncRemoved, asyncTargets });
             })()
             """).AsString());
 
@@ -3643,6 +3681,12 @@ public sealed class EditorRuntimeSmokeTests
         Assert.True(toMessage.GetProperty("timerKept").GetBoolean());
         Assert.True(toMessage.GetProperty("conditionalKept").GetBoolean());
 
+        var toTimer = root.GetProperty("toTimer");
+        Assert.Equal("intermediateTimerCatchEvent", toTimer.GetProperty("type").GetString());
+        Assert.True(toTimer.GetProperty("timerUnchanged").GetBoolean());
+        Assert.True(toTimer.GetProperty("conditionalUnchanged").GetBoolean());
+        Assert.True(toTimer.GetProperty("flowsUnchanged").GetBoolean());
+
         var toConditional = root.GetProperty("toConditional");
         Assert.Equal("intermediateConditionalCatchEvent", toConditional.GetProperty("type").GetString());
         Assert.True(toConditional.GetProperty("timerRemoved").GetBoolean());
@@ -3659,6 +3703,16 @@ public sealed class EditorRuntimeSmokeTests
         Assert.False(asyncRemoved.GetProperty("asyncBefore").GetBoolean());
         Assert.True(asyncRemoved.GetProperty("boundaryRemoved").GetBoolean());
         Assert.True(asyncRemoved.GetProperty("flowRemoved").GetBoolean());
+
+        var asyncTargets = root.GetProperty("asyncTargets").EnumerateArray().ToArray();
+        Assert.Equal(new[] { "task", "serviceTask", "scriptTask" },
+            asyncTargets.Select(target => target.GetProperty("type").GetString()).ToArray());
+        Assert.All(asyncTargets, target =>
+        {
+            Assert.True(target.GetProperty("asyncBefore").GetBoolean());
+            Assert.True(target.GetProperty("boundariesUnchanged").GetBoolean());
+            Assert.True(target.GetProperty("flowsUnchanged").GetBoolean());
+        });
     }
 
     [Fact]
@@ -3792,7 +3846,8 @@ public sealed class EditorRuntimeSmokeTests
                 flowNodes: [
                   { id: 1, name: 'First start', type: 'startEvent', x: 0, y: 0 },
                   { id: 2, name: 'Review', type: 'userTask', x: 200, y: 0 },
-                  { id: 4, name: 'Second start', type: 'startEvent', x: 0, y: 200 }
+                  { id: 4, name: 'Second start', type: 'startEvent', x: 0, y: 200 },
+                  { id: 3, name: 'Lower ID, later start', type: 'startEvent', x: 0, y: 400 }
                 ],
                 sequenceFlows: [{ id: 101, name: '', sourceRef: 1, targetRef: 2 }]
               });

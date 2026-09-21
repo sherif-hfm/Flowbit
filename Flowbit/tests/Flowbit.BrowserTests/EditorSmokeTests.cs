@@ -527,11 +527,22 @@ public sealed class EditorSmokeTests(BrowserStackFixture stack)
             // Boundary cleanup: converting the service task removes its error
             // boundary and the boundary's incident flow; undo/redo round-trips.
             await EditorInteractions.SelectNodeAsync(page, 7);
+            await Assertions.Expect(EditorInteractions.TypeSelect(page)).ToHaveValueAsync("serviceTask");
+            await Assertions.Expect(page.Locator("#nodes .node[data-id='8']")).ToBeVisibleAsync();
+            await page.ScreenshotAsync(new PageScreenshotOptions
+            {
+                Path = Path.Combine(scenario.ArtifactDirectory, "boundary-conversion-before.png")
+            });
             await EditorInteractions.SelectTypeAsync(page, "userTask");
             await Assertions.Expect(
                 page.Locator("#nodes .node[data-id='8']")).ToHaveCountAsync(0);
             await Assertions.Expect(
                 page.Locator("#edges .edge-path-layer .edge[data-flow='801']")).ToHaveCountAsync(0);
+            await Assertions.Expect(EditorInteractions.TypeSelect(page)).ToHaveValueAsync("userTask");
+            await page.ScreenshotAsync(new PageScreenshotOptions
+            {
+                Path = Path.Combine(scenario.ArtifactDirectory, "boundary-conversion-after.png")
+            });
             await page.Keyboard.PressAsync("Control+z");
             await Assertions.Expect(
                 page.Locator("#nodes .node[data-id='8']")).ToHaveCountAsync(1);

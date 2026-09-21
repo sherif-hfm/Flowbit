@@ -125,6 +125,11 @@ Every run writes to `artifacts/browser/runs/<timestamp>-<id>/`:
   all observed page URLs/viewports, console errors/warnings, uncaught errors,
   HTTP failures, transport failures, and unexpected dialogs.
 - Selected successful editor-search and responsive-results screenshots.
+- E7 captures `boundary-conversion-before.png` and
+  `boundary-conversion-after.png` at both editor viewports, with the populated
+  workflow and host selected. These show the service-task inspector and attached
+  error boundary before conversion, then the user-task inspector and removed
+  boundary/flow afterward; they are suitable for visual comparison.
 
 Successful runs discard traces while keeping TRX results, the run manifest, and
 the run logs and diagnostics. A passing body still fails the scenario when uncaught page

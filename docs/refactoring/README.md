@@ -138,8 +138,8 @@ components. It includes an explicitly accepted C# compatibility break and keeps
 the other candidates deferred. Stage 7 is in progress (smoke suite implemented
 locally; residual Stage 5 acceptance and remote CI observation remain open).
 Stage 8 is implemented and locally accepted; Stage 9 is implemented and
-locally accepted (37 → 33 engine methods). Stages 10–11 remain planned. The
-other stage statuses above remain unchanged.
+locally accepted (37 → 33 engine methods). Stage 10 is implemented; Stage 11
+remains planned. The other stage statuses above remain unchanged.
 
 The [detailed Stage 7 plan](stage-07-browser-smoke-and-stage-05-acceptance.md)
 defines the isolated stack, fixtures, editor/runtime smoke matrix, CI artifacts,
