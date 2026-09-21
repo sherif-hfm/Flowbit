@@ -5166,6 +5166,109 @@ function addInitialSelector() {
   inspector.appendChild(f);
 }
 
+// Owns the graph-changing body of the inspector Type selector. Returns false
+// for a rejected transition (an end-event target that still has outgoing
+// flows, or a declined gateway-semantics confirmation); the caller then
+// redraws only the inspector so the visible Type value returns to its prior
+// value. Returns true once all accepted-transition work finishes, including
+// normalization, cleanup passes, and default-start repair; the caller then
+// performs the full redraw. Prompts stay synchronous with their existing
+// messages and order. History commits stay with the document change/click
+// handlers; this function never redraws or touches history itself.
+function changeNodeTypeFromInspector(node, nextType) {
+  if (isEndEventType(nextType) && outgoingFlows(node.id).length > 0) {
+    alert("Remove all outgoing sequence flows before changing this node to an end event.");
+    return false;
+  }
+  const businessKeysEnabled = model.flowNodes.some(n =>
+    (isStartEventType(n.type) || isMessageStartEventType(n.type)) && n.businessKey != null);
+  const previousType = node.type;
+  const changesGatewaySemantics = previousType !== nextType &&
+    (isGatewayType(previousType) || isGatewayType(nextType));
+  if (changesGatewaySemantics) {
+    const clearsRouting = outgoingFlows(node.id).some(flow =>
+      flow.isDefault || flow.condition != null || flow.conditionPriority != null ||
+      normalizeRoles(flow.roles).length > 0 || (flow.variables || []).length > 0);
+    if (clearsRouting && !confirm(
+        "Changing this node's gateway semantics clears outgoing defaults, conditions, priorities, roles, and variables. Continue?")) {
+      return false;
+    }
+  }
+  if (isMessageStartEventType(previousType) && isStartEventType(nextType)) {
+    node.variables = materializeMessageStartVariables(node);
+  }
+  node.type = nextType;
+  if (!isUserTaskType(nextType)) {
+    delete node.rolesVariable;
+    outgoingFlows(node.id).forEach(flow => { delete flow.rolesVariable; });
+  }
+  if (!isGatewayType(nextType)) {
+    delete node.joinCancellation;
+    model.flowNodes.forEach(candidate => {
+      if (joinCancellationGatewayRef(candidate.joinCancellation) === node.id) {
+        candidate.joinCancellation.gatewayRef = null;
+      }
+    });
+  }
+  if (isTimerEventType(nextType) && !isTimerEventType(previousType)) {
+    node.timer = { timeDate: null, timeDuration: "PT1H", timeCycle: null };
+  }
+  if (isConditionalCatchEventType(nextType) && !isConditionalCatchEventType(previousType)) {
+    node.conditional = { condition: "" };
+  }
+  if (changesGatewaySemantics) {
+    outgoingFlows(node.id).forEach(flow => {
+      flow.isDefault = false;
+      flow.condition = null;
+      flow.conditionPriority = null;
+      flow.roles = [];
+      flow.variables = [];
+    });
+  }
+  if (businessKeysEnabled && (isStartEventType(nextType) || isMessageStartEventType(nextType)) && node.businessKey == null) {
+    node.businessKey = { variable: "", uniqueness: "active" };
+  }
+  applyTypeInvariants(node);
+  outgoingFlows(node.id).forEach(applyFlowInvariants);
+  // If a node stops being a service/script task, any attached error
+  // boundary event is orphaned (its attachedToRef no longer points at a
+  // valid host). Cascade-delete it (and its error flow) to keep the model
+  // valid, mirroring the host-deletion cleanup in deleteNode.
+  if (!isServiceTaskType(nextType) && !isScriptTaskType(nextType)) {
+    const attached = model.flowNodes.filter(n => n.type === NODE_TYPE.ERROR_BOUNDARY_EVENT && n.attachedToRef === node.id);
+    const boundaryIds = new Set(attached.map(n => n.id));
+    if (boundaryIds.size > 0) {
+      model.flowNodes = model.flowNodes.filter(n => !boundaryIds.has(n.id));
+      model.sequenceFlows = model.sequenceFlows.filter(f =>
+        !boundaryIds.has(f.sourceRef) && !boundaryIds.has(f.targetRef));
+    }
+  }
+  const boundaryHostIsDurable = isUserTaskType(nextType) ||
+    isMessageCatchEventType(nextType) || isTimerCatchEventType(nextType);
+  const boundaryHostIsAsyncAutomatic = (isAutomaticType(nextType) ||
+    isServiceTaskType(nextType) || isScriptTaskType(nextType)) && node.asyncBefore === true;
+  if (!boundaryHostIsDurable && !boundaryHostIsAsyncAutomatic) {
+    const attachedObservableBoundaries = model.flowNodes.filter(candidate =>
+      (isTimerBoundaryEventType(candidate.type) ||
+        isConditionalBoundaryEventType(candidate.type)) &&
+      candidate.attachedToRef === node.id);
+    const boundaryIds = new Set(attachedObservableBoundaries.map(candidate => candidate.id));
+    if (boundaryIds.size > 0) {
+      model.flowNodes = model.flowNodes.filter(candidate => !boundaryIds.has(candidate.id));
+      model.sequenceFlows = model.sequenceFlows.filter(flow =>
+        !boundaryIds.has(flow.sourceRef) && !boundaryIds.has(flow.targetRef));
+    }
+  }
+  // If the node was the default start event but is no longer a valid
+  // startEvent (e.g. switched to a messageStartEvent), clear initialEventId
+  // so a message-only workflow can be saved without a user start event.
+  if (model.initialEventId === node.id && !isStartEventType(nextType)) {
+    const nextDefault = model.flowNodes.find(n => n.id !== node.id && isStartEventType(n.type));
+    model.initialEventId = nextDefault?.id ?? null;
+  }
+  return true;
+}
+
 function renderNodeInspector() {
   const node = getNode(selected.nodeId);
   if (!node) { selected = null; return renderInspector(); }
@@ -5188,98 +5291,10 @@ function renderNodeInspector() {
     typeField.appendChild(typeInput);
     inspector.appendChild(typeField);
   } else {
-    selectField("Type", NODE_TYPE_OPTIONS, node.type, v => {
-      if (isEndEventType(v) && outgoingFlows(node.id).length > 0) {
-        alert("Remove all outgoing sequence flows before changing this node to an end event.");
+    selectField("Type", NODE_TYPE_OPTIONS, node.type, nextType => {
+      if (!changeNodeTypeFromInspector(node, nextType)) {
         renderInspector();
         return;
-      }
-      const businessKeysEnabled = model.flowNodes.some(n =>
-        (isStartEventType(n.type) || isMessageStartEventType(n.type)) && n.businessKey != null);
-      const previousType = node.type;
-      const changesGatewaySemantics = previousType !== v &&
-        (isGatewayType(previousType) || isGatewayType(v));
-      if (changesGatewaySemantics) {
-        const clearsRouting = outgoingFlows(node.id).some(flow =>
-          flow.isDefault || flow.condition != null || flow.conditionPriority != null ||
-          normalizeRoles(flow.roles).length > 0 || (flow.variables || []).length > 0);
-        if (clearsRouting && !confirm(
-            "Changing this node's gateway semantics clears outgoing defaults, conditions, priorities, roles, and variables. Continue?")) {
-          renderInspector();
-          return;
-        }
-      }
-      if (isMessageStartEventType(previousType) && isStartEventType(v)) {
-        node.variables = materializeMessageStartVariables(node);
-      }
-      node.type = v;
-      if (!isUserTaskType(v)) {
-        delete node.rolesVariable;
-        outgoingFlows(node.id).forEach(flow => { delete flow.rolesVariable; });
-      }
-      if (!isGatewayType(v)) {
-        delete node.joinCancellation;
-        model.flowNodes.forEach(candidate => {
-          if (joinCancellationGatewayRef(candidate.joinCancellation) === node.id) {
-            candidate.joinCancellation.gatewayRef = null;
-          }
-        });
-      }
-      if (isTimerEventType(v) && !isTimerEventType(previousType)) {
-        node.timer = { timeDate: null, timeDuration: "PT1H", timeCycle: null };
-      }
-      if (isConditionalCatchEventType(v) && !isConditionalCatchEventType(previousType)) {
-        node.conditional = { condition: "" };
-      }
-      if (changesGatewaySemantics) {
-        outgoingFlows(node.id).forEach(flow => {
-          flow.isDefault = false;
-          flow.condition = null;
-          flow.conditionPriority = null;
-          flow.roles = [];
-          flow.variables = [];
-        });
-      }
-      if (businessKeysEnabled && (isStartEventType(v) || isMessageStartEventType(v)) && node.businessKey == null) {
-        node.businessKey = { variable: "", uniqueness: "active" };
-      }
-      applyTypeInvariants(node);
-      outgoingFlows(node.id).forEach(applyFlowInvariants);
-      // If a node stops being a service/script task, any attached error
-      // boundary event is orphaned (its attachedToRef no longer points at a
-      // valid host). Cascade-delete it (and its error flow) to keep the model
-      // valid, mirroring the host-deletion cleanup in deleteNode.
-      if (!isServiceTaskType(v) && !isScriptTaskType(v)) {
-        const attached = model.flowNodes.filter(n => n.type === NODE_TYPE.ERROR_BOUNDARY_EVENT && n.attachedToRef === node.id);
-        const boundaryIds = new Set(attached.map(n => n.id));
-        if (boundaryIds.size > 0) {
-          model.flowNodes = model.flowNodes.filter(n => !boundaryIds.has(n.id));
-          model.sequenceFlows = model.sequenceFlows.filter(f =>
-            !boundaryIds.has(f.sourceRef) && !boundaryIds.has(f.targetRef));
-        }
-      }
-      const boundaryHostIsDurable = isUserTaskType(v) ||
-        isMessageCatchEventType(v) || isTimerCatchEventType(v);
-      const boundaryHostIsAsyncAutomatic = (isAutomaticType(v) ||
-        isServiceTaskType(v) || isScriptTaskType(v)) && node.asyncBefore === true;
-      if (!boundaryHostIsDurable && !boundaryHostIsAsyncAutomatic) {
-        const attachedObservableBoundaries = model.flowNodes.filter(candidate =>
-          (isTimerBoundaryEventType(candidate.type) ||
-            isConditionalBoundaryEventType(candidate.type)) &&
-          candidate.attachedToRef === node.id);
-        const boundaryIds = new Set(attachedObservableBoundaries.map(candidate => candidate.id));
-        if (boundaryIds.size > 0) {
-          model.flowNodes = model.flowNodes.filter(candidate => !boundaryIds.has(candidate.id));
-          model.sequenceFlows = model.sequenceFlows.filter(flow =>
-            !boundaryIds.has(flow.sourceRef) && !boundaryIds.has(flow.targetRef));
-        }
-      }
-      // If the node was the default start event but is no longer a valid
-      // startEvent (e.g. switched to a messageStartEvent), clear initialEventId
-      // so a message-only workflow can be saved without a user start event.
-      if (model.initialEventId === node.id && !isStartEventType(v)) {
-        const nextDefault = model.flowNodes.find(n => n.id !== node.id && isStartEventType(n.type));
-        model.initialEventId = nextDefault?.id ?? null;
       }
       render();
     });

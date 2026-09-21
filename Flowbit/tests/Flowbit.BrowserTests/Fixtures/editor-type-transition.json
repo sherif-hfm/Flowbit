@@ -1,0 +1,79 @@
+﻿{
+  "id": "browser-editor-type-transition",
+  "name": "Browser editor type transitions",
+  "initialEventId": 1,
+  "variables": [
+    {
+      "id": 1,
+      "name": "amount",
+      "dataType": "number",
+      "isArray": false,
+      "nullable": false,
+      "required": false,
+      "defaultValue": 0,
+      "validation": null
+    }
+  ],
+  "lanes": [
+    { "id": 1, "name": "Intake", "x": 20, "y": 20, "w": 980, "h": 200 },
+    { "id": 2, "name": "Handle", "x": 20, "y": 240, "w": 980, "h": 220 }
+  ],
+  "flowNodes": [
+    { "id": 1, "name": "Submitted", "type": "startEvent", "laneId": 1, "x": 40, "y": 100 },
+    {
+      "id": 9,
+      "name": "Webhook start",
+      "type": "messageStartEvent",
+      "laneId": 1,
+      "x": 130,
+      "y": 100,
+      "externalId": "WEBHOOK_START",
+      "idempotency": { "headerName": "Idempotency-Key", "variable": "extra" },
+      "message": {
+        "clientId": "svc-orders",
+        "clientSecret": "svc-secret-123",
+        "headerName": "X-Token",
+        "headerValue": "tok-123",
+        "outputMappings": [
+          { "variable": "requestedAmount", "path": "amount", "dataType": "number", "isArray": false, "required": true, "defaultValue": null, "validation": null },
+          { "variable": "note", "path": "note", "dataType": "string", "isArray": false, "required": false, "defaultValue": null, "validation": null }
+        ]
+      }
+    },
+    { "id": 2, "name": "Review", "type": "userTask", "laneId": 1, "x": 260, "y": 90, "roles": ["Agent"], "requiresClaim": true },
+    { "id": 3, "name": "Route", "type": "exclusiveGateway", "laneId": 1, "x": 460, "y": 94 },
+    {
+      "id": 7,
+      "name": "Enrich",
+      "type": "serviceTask",
+      "laneId": 2,
+      "x": 180,
+      "y": 300,
+      "service": {
+        "type": "rest",
+        "method": "GET",
+        "url": "https://example.com/enrich",
+        "headers": [],
+        "body": "",
+        "timeoutSeconds": 10,
+        "outputMappings": []
+      }
+    },
+    { "id": 8, "name": "Enrich failed", "type": "errorBoundaryEvent", "laneId": 2, "x": 250, "y": 370, "attachedToRef": 7, "errorVariable": "enrichError" },
+    { "id": 4, "name": "Approve", "type": "userTask", "laneId": 2, "x": 480, "y": 290 },
+    { "id": 5, "name": "Reject", "type": "userTask", "laneId": 2, "x": 480, "y": 380 },
+    { "id": 6, "name": "Done", "type": "endEvent", "laneId": 2, "x": 720, "y": 330 }
+  ],
+  "sequenceFlows": [
+    { "id": 101, "name": "", "sourceRef": 1, "targetRef": 2 },
+    { "id": 102, "name": "To route", "sourceRef": 2, "targetRef": 3 },
+    { "id": 103, "name": "Skip", "sourceRef": 2, "targetRef": 6 },
+    { "id": 301, "name": "Large", "sourceRef": 3, "targetRef": 4, "condition": "amount > 100", "conditionPriority": 1 },
+    { "id": 302, "name": "Fallback", "sourceRef": 3, "targetRef": 5, "isDefault": true },
+    { "id": 401, "name": "", "sourceRef": 4, "targetRef": 6 },
+    { "id": 501, "name": "", "sourceRef": 5, "targetRef": 6 },
+    { "id": 701, "name": "", "sourceRef": 7, "targetRef": 6 },
+    { "id": 801, "name": "", "sourceRef": 8, "targetRef": 6 },
+    { "id": 901, "name": "", "sourceRef": 9, "targetRef": 6 }
+  ]
+}

@@ -971,7 +971,11 @@ public sealed class EditorValidatorTests
         Assert.Matches("icon-error-catch[^>]*>[\\s\\S]*?fill=\"none\"", html);
 
         Assert.Contains(
-            "isEndEventType(v) && outgoingFlows(node.id).length > 0",
+            "isEndEventType(nextType) && outgoingFlows(node.id).length > 0",
+            html,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "function changeNodeTypeFromInspector(node, nextType)",
             html,
             StringComparison.Ordinal);
         Assert.Contains(

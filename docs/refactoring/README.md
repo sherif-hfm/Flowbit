@@ -24,6 +24,7 @@ describe the current application.
 | [7 — Browser smoke suite and Stage 5 acceptance](stage-07-browser-smoke-and-stage-05-acceptance.md) | Isolated Chromium smoke coverage, a separate CI job, and completion of Stage 5's browser gate. | Passing baseline; extracted Stage 5 components available for verification. | In progress (suite implemented and passing; residual Stage 5 acceptance open) |
 | [8 — Remove query/detail compatibility methods](stage-08-remove-query-detail-compatibility.md) | Direct detail endpoint projection calls, removal of three engine forwards and the query dependency, and C# caller/test migration (40 → 37 methods). | Stages 1 and 3; passing baseline. Can proceed alongside Stage 7. | Implemented |
 | [9 — Waiting-task role management](stage-09-waiting-task-role-management.md) | Scoped role-management service, four direct endpoint consumers, and atomic policy/audit behavior preserved (37 → 33 engine methods). | Accepted Stage 8; passing baseline. Can proceed alongside Stage 7. | Implemented |
+| [10 — Editor node-type transitions](stage-10-editor-node-type-transitions.md) | Named transition helper with inspector-owned redraws, unchanged graph cleanup/history, and characterization plus browser coverage. | Stage 7 browser harness available; passing baseline. Does not require Stage 5 acceptance. | Implemented |
 
 The original recommended sequence is stages 1 through 5, followed by Stage 6.
 Stage 6 may move earlier if definition maintenance is the immediate priority.
@@ -166,3 +167,13 @@ working tree is based on `67945f7` and remains uncommitted; baseline 1,899/1,900
 The [review follow-up](stage-09-waiting-task-role-management.md#review-follow-up--2026-09-20)
 records the completed audit, endpoint/OpenAPI, MI rollback-cleanup, and coordinated
 PostgreSQL concurrency checks.
+
+The [detailed Stage 10 plan](stage-10-editor-node-type-transitions.md) defines
+the transition-helper return contract, exact mutation/normalization order,
+retained inspector redraw and history ownership, characterization cases,
+expected-dialog cancellation support, and browser acceptance. It is
+implemented; see the stage document's implementation record for the baseline
+characterization (20/20 before extraction), final suites (1,950 solution,
+321 focused, and a 27-case browser suite whose editor and harness cases all
+passed with one unrelated R6 scroll-timing flake passing on retry), headed
+inspection evidence, and dialog-queue harness support.

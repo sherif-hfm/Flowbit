@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using System.Text.RegularExpressions;
 using Jint;
 using Xunit;
@@ -2547,6 +2547,1917 @@ public sealed class EditorRuntimeSmokeTests
         Assert.True(valid.GetProperty("persisted").GetBoolean());
         Assert.True(root.GetProperty("blankIsNull").GetBoolean());
         Assert.True(root.GetProperty("clearedOnTypeChange").GetBoolean());
+    }
+
+    // BEGIN STAGE 10 â€” node-type transition characterization. These tests
+    // capture the live Type selector callback by temporarily wrapping
+    // selectField while the node inspector is built, then restore the original
+    // builder before invoking the captured callback. That exercises the same
+    // entry point before and after the transition-owner extraction. Dialog
+    // overrides only record/answer prompts; real invariants and the full
+    // redraw pipeline run for every model assertion. History checks replay the
+    // registered document change event, matching the browser commit path.
+    private const string TypeTransitionHarnessJs = """
+      function captureTypeCallback(nodeId) {
+        const originalSelectField = selectField;
+        let captured = null;
+        selectField = (label, options, value, onChange) => {
+          if (label === 'Type') { captured = onChange; return; }
+          return originalSelectField(label, options, value, onChange);
+        };
+        selected = { kind: 'node', nodeId };
+        selectedNodeIds = new Set([nodeId]);
+        renderInspector();
+        selectField = originalSelectField;
+        if (!captured) throw new Error('Type callback was not captured for node ' + nodeId);
+        return captured;
+      }
+      const typeDialogs = [];
+      let typeConfirmResponse = true;
+      const typeOriginalAlert = alert;
+      const typeOriginalConfirm = confirm;
+      alert = message => { typeDialogs.push({ kind: 'alert', message: String(message) }); };
+      confirm = message => { typeDialogs.push({ kind: 'confirm', message: String(message) }); return typeConfirmResponse; };
+      let typeInspectorRedraws = 0;
+      let typeFullRenders = 0;
+      const typeOriginalRenderInspector = renderInspector;
+      const typeOriginalRender = render;
+      renderInspector = () => { typeInspectorRedraws++; typeOriginalRenderInspector(); };
+      render = () => { typeFullRenders++; typeOriginalRender(); };
+      function resetTypeRedrawCounters() {
+        typeInspectorRedraws = 0;
+        typeFullRenders = 0;
+      }
+      function clearTypeDialogs() { typeDialogs.length = 0; }
+      function replayTypeChangeCommit() {
+        document.dispatchEvent({ type: 'change', target: fakeElement('select'), bubbles: false });
+      }
+      """;
+
+    [Theory]
+    [InlineData("endEvent")]
+    [InlineData("errorEndEvent")]
+    [InlineData("terminateEndEvent")]
+    public void TypeTransition_RejectedEndTargetsPreserveModelAndPromptOrder(string targetType)
+    {
+        var engine = CreateEditorEngine();
+        engine.Execute(TypeTransitionHarnessJs);
+        engine.SetValue("targetType", targetType);
+        using var result = JsonDocument.Parse(engine.Evaluate(
+            """
+            (() => {
+              loadFromObject({
+                id: 'type-transition-reject',
+                name: 'Type transition reject',
+                initialEventId: 1,
+                variables: [],
+                lanes: [],
+                flowNodes: [
+                  { id: 1, name: 'Submitted', type: 'startEvent', x: 0, y: 0 },
+                  { id: 2, name: 'Review', type: 'userTask', x: 200, y: 0, roles: ['Agent'] },
+                  { id: 3, name: 'Auto', type: 'task', x: 400, y: 0 },
+                  { id: 4, name: 'Route', type: 'exclusiveGateway', x: 600, y: 0 },
+                  { id: 5, name: 'Left', type: 'task', x: 800, y: -60 },
+                  { id: 6, name: 'Right', type: 'task', x: 800, y: 60 }
+                ],
+                sequenceFlows: [
+                  { id: 101, name: '', sourceRef: 1, targetRef: 2 },
+                  { id: 201, name: 'Finish', sourceRef: 2, targetRef: 3 },
+                  { id: 401, name: 'Left', sourceRef: 4, targetRef: 5, condition: 'a > 1', conditionPriority: 1 },
+                  { id: 402, name: 'Right', sourceRef: 4, targetRef: 6, isDefault: true }
+                ]
+              });
+              render();
+              const userTaskCallback = captureTypeCallback(2);
+              replayTypeChangeCommit();
+              const settledHistory = undoHistory.length;
+              const baseline = JSON.stringify(model);
+              resetTypeRedrawCounters();
+              clearTypeDialogs();
+              userTaskCallback(targetType);
+              const userTask = {
+                dialogs: typeDialogs.slice(),
+                typePreserved: getNode(2).type === 'userTask',
+                modelPreserved: JSON.stringify(model) === baseline,
+                renders: typeFullRenders,
+                inspectorRedraws: typeInspectorRedraws,
+                historyUnchanged: (replayTypeChangeCommit(), undoHistory.length) === settledHistory
+              };
+              clearTypeDialogs();
+              const gatewayCallback = captureTypeCallback(4);
+              resetTypeRedrawCounters();
+              gatewayCallback(targetType);
+              const gateway = {
+                dialogs: typeDialogs.slice(),
+                typePreserved: getNode(4).type === 'exclusiveGateway',
+                modelPreserved: JSON.stringify(model) === baseline,
+                renders: typeFullRenders,
+                inspectorRedraws: typeInspectorRedraws
+              };
+              return JSON.stringify({ userTask, gateway });
+            })()
+            """).AsString());
+
+        var root = result.RootElement;
+        const string endGuardMessage =
+            "Remove all outgoing sequence flows before changing this node to an end event.";
+        foreach (var sectionName in new[] { "userTask", "gateway" })
+        {
+            var section = root.GetProperty(sectionName);
+            var dialogs = section.GetProperty("dialogs");
+            Assert.Equal(1, dialogs.GetArrayLength());
+            Assert.Equal("alert", dialogs[0].GetProperty("kind").GetString());
+            Assert.Equal(endGuardMessage, dialogs[0].GetProperty("message").GetString());
+            Assert.True(section.GetProperty("typePreserved").GetBoolean());
+            Assert.True(section.GetProperty("modelPreserved").GetBoolean());
+            Assert.Equal(0, section.GetProperty("renders").GetInt32());
+            Assert.Equal(1, section.GetProperty("inspectorRedraws").GetInt32());
+        }
+        Assert.True(root.GetProperty("userTask").GetProperty("historyUnchanged").GetBoolean());
+    }
+
+    [Theory]
+    [InlineData("endEvent")]
+    [InlineData("errorEndEvent")]
+    [InlineData("terminateEndEvent")]
+    public void TypeTransition_AcceptedEndTargetsNormalizeNode(string targetType)
+    {
+        var engine = CreateEditorEngine();
+        engine.Execute(TypeTransitionHarnessJs);
+        engine.SetValue("targetType", targetType);
+        using var result = JsonDocument.Parse(engine.Evaluate(
+            """
+            (() => {
+              loadFromObject({
+                id: 'type-transition-end',
+                name: 'Type transition end',
+                initialEventId: 1,
+                variables: [],
+                lanes: [],
+                flowNodes: [
+                  { id: 1, name: 'Submitted', type: 'startEvent', x: 0, y: 0 },
+                  {
+                    id: 2,
+                    name: 'Review',
+                    type: 'userTask',
+                    x: 200,
+                    y: 0,
+                    roles: ['Agent'],
+                    requiresClaim: true,
+                    claimMode: 'previous',
+                    inheritClaimFromNodeId: 1,
+                    rolesVariable: 'reviewRoles'
+                  }
+                ],
+                sequenceFlows: [{ id: 101, name: '', sourceRef: 1, targetRef: 2 }]
+              });
+              render();
+              replayTypeChangeCommit();
+              const settledHistory = undoHistory.length;
+              const callback = captureTypeCallback(2);
+              resetTypeRedrawCounters();
+              clearTypeDialogs();
+              callback(targetType);
+              const node = getNode(2);
+              return JSON.stringify({
+                type: node.type,
+                dialogs: typeDialogs.slice(),
+                renders: typeFullRenders,
+                roles: node.roles,
+                rolesVariableAbsent: !Object.prototype.hasOwnProperty.call(node, 'rolesVariable'),
+                requiresClaim: node.requiresClaim,
+                claimMode: node.claimMode,
+                inheritClaimFromNodeId: node.inheritClaimFromNodeId,
+                variables: node.variables,
+                assignee: node.assignee,
+                errorCodePresent: Object.prototype.hasOwnProperty.call(node, 'errorCode'),
+                errorCode: node.errorCode,
+                errorDescription: node.errorDescription,
+                settledHistory,
+                historyCount: (replayTypeChangeCommit(), undoHistory.length)
+              });
+            })()
+            """).AsString());
+
+        var root = result.RootElement;
+        Assert.Equal(targetType, root.GetProperty("type").GetString());
+        Assert.Empty(root.GetProperty("dialogs").EnumerateArray());
+        Assert.Equal(1, root.GetProperty("renders").GetInt32());
+        Assert.Empty(root.GetProperty("roles").EnumerateArray());
+        Assert.True(root.GetProperty("rolesVariableAbsent").GetBoolean());
+        Assert.False(root.GetProperty("requiresClaim").GetBoolean());
+        Assert.Equal("fresh", root.GetProperty("claimMode").GetString());
+        Assert.Equal(JsonValueKind.Null, root.GetProperty("inheritClaimFromNodeId").ValueKind);
+        Assert.Empty(root.GetProperty("variables").EnumerateArray());
+        Assert.Equal(JsonValueKind.Null, root.GetProperty("assignee").ValueKind);
+        Assert.Equal(
+            root.GetProperty("settledHistory").GetInt32() + 1,
+            root.GetProperty("historyCount").GetInt32());
+
+        if (targetType == "errorEndEvent")
+        {
+            Assert.True(root.GetProperty("errorCodePresent").GetBoolean());
+            Assert.Equal(string.Empty, root.GetProperty("errorCode").GetString());
+            Assert.Equal(JsonValueKind.Null, root.GetProperty("errorDescription").ValueKind);
+        }
+        else
+        {
+            Assert.False(root.GetProperty("errorCodePresent").GetBoolean());
+        }
+    }
+
+    [Fact]
+    public void TypeTransition_GatewayDeclineKeepsModelHistoryAndRedo()
+    {
+        var engine = CreateEditorEngine();
+        engine.Execute(TypeTransitionHarnessJs);
+        using var result = JsonDocument.Parse(engine.Evaluate(
+            """
+            (() => {
+              const loadFixture = () => loadFromObject({
+                id: 'type-transition-gateway',
+                name: 'Gateway decline',
+                initialEventId: 1,
+                variables: [{ id: 1, name: 'amount', dataType: 'number', isArray: false }],
+                lanes: [],
+                flowNodes: [
+                  { id: 1, name: 'Submitted', type: 'startEvent', x: 0, y: 0 },
+                  { id: 2, name: 'Route', type: 'exclusiveGateway', x: 200, y: 0 },
+                  { id: 3, name: 'Big', type: 'userTask', x: 400, y: -60 },
+                  { id: 4, name: 'Small', type: 'userTask', x: 400, y: 60 },
+                  { id: 5, name: 'Done', type: 'endEvent', x: 600, y: 0 }
+                ],
+                sequenceFlows: [
+                  { id: 101, name: '', sourceRef: 1, targetRef: 2 },
+                  {
+                    id: 201,
+                    name: 'Large',
+                    sourceRef: 2,
+                    targetRef: 3,
+                    condition: 'amount > 100',
+                    conditionPriority: 1,
+                    roles: ['Manager'],
+                    variables: [{ id: 3, name: 'comment', dataType: 'string', isArray: false, required: false }]
+                  },
+                  { id: 202, name: 'Fallback', sourceRef: 2, targetRef: 4, isDefault: true },
+                  { id: 301, name: '', sourceRef: 3, targetRef: 5 },
+                  { id: 302, name: '', sourceRef: 4, targetRef: 5 }
+                ]
+              });
+
+              // Establish an already-normalized baseline, then create a redo entry.
+              loadFixture();
+              render();
+              model.flowNodes[1].name = 'Renamed route';
+              replayTypeChangeCommit();
+              undo();
+              const settledHistory = undoHistory.length;
+              const redoCount = redoHistory.length;
+              const baseline = JSON.stringify(model);
+
+              typeConfirmResponse = false;
+              const declineCallback = captureTypeCallback(2);
+              resetTypeRedrawCounters();
+              clearTypeDialogs();
+              declineCallback('task');
+              const decline = {
+                dialogs: typeDialogs.slice(),
+                typePreserved: getNode(2).type === 'exclusiveGateway',
+                modelPreserved: JSON.stringify(model) === baseline,
+                renders: typeFullRenders,
+                inspectorRedraws: typeInspectorRedraws,
+                historyUnchanged: (replayTypeChangeCommit(), undoHistory.length) === settledHistory,
+                redoPreserved: redoHistory.length === redoCount
+              };
+
+              // Accepted conversion of the same gateway to a single-outgoing task.
+              clearTypeDialogs();
+              loadFixture();
+              render();
+              replayTypeChangeCommit();
+              const acceptSettled = undoHistory.length;
+              const incomingBefore = JSON.stringify(model.sequenceFlows.find(f => f.id === 101));
+              const acceptCallback = captureTypeCallback(2);
+              resetTypeRedrawCounters();
+              typeConfirmResponse = true;
+              acceptCallback('task');
+              const flow201 = model.sequenceFlows.find(f => f.id === 201);
+              const accept = {
+                dialogs: typeDialogs.slice(),
+                type: getNode(2).type,
+                renders: typeFullRenders,
+                flow201PrunedIn: model.sequenceFlows.some(f => f.id === 201),
+                flow202Removed: !model.sequenceFlows.some(f => f.id === 202),
+                flow201: {
+                  isDefault: flow201.isDefault,
+                  condition: flow201.condition,
+                  conditionPriority: flow201.conditionPriority,
+                  roles: flow201.roles,
+                  variables: flow201.variables
+                },
+                incomingPreserved: JSON.stringify(model.sequenceFlows.find(f => f.id === 101)) === incomingBefore,
+                historyCount: (replayTypeChangeCommit(), undoHistory.length)
+              };
+              return JSON.stringify({ decline, accept, acceptSettled });
+            })()
+            """).AsString());
+
+        var root = result.RootElement;
+        const string gatewayPrompt =
+            "Changing this node's gateway semantics clears outgoing defaults, conditions, priorities, roles, and variables. Continue?";
+
+        var decline = root.GetProperty("decline");
+        var dialogs = decline.GetProperty("dialogs");
+        Assert.Equal(1, dialogs.GetArrayLength());
+        Assert.Equal("confirm", dialogs[0].GetProperty("kind").GetString());
+        Assert.Equal(gatewayPrompt, dialogs[0].GetProperty("message").GetString());
+        Assert.True(decline.GetProperty("typePreserved").GetBoolean());
+        Assert.True(decline.GetProperty("modelPreserved").GetBoolean());
+        Assert.Equal(0, decline.GetProperty("renders").GetInt32());
+        Assert.Equal(1, decline.GetProperty("inspectorRedraws").GetInt32());
+        Assert.True(decline.GetProperty("historyUnchanged").GetBoolean());
+        Assert.True(decline.GetProperty("redoPreserved").GetBoolean());
+
+        var accept = root.GetProperty("accept");
+        var acceptDialogs = accept.GetProperty("dialogs");
+        Assert.Equal(1, acceptDialogs.GetArrayLength());
+        Assert.Equal("confirm", acceptDialogs[0].GetProperty("kind").GetString());
+        Assert.Equal(gatewayPrompt, acceptDialogs[0].GetProperty("message").GetString());
+        Assert.Equal("task", accept.GetProperty("type").GetString());
+        Assert.Equal(1, accept.GetProperty("renders").GetInt32());
+        Assert.True(accept.GetProperty("flow201PrunedIn").GetBoolean());
+        Assert.True(accept.GetProperty("flow202Removed").GetBoolean());
+        var flow201 = accept.GetProperty("flow201");
+        Assert.False(flow201.GetProperty("isDefault").GetBoolean());
+        Assert.Equal(JsonValueKind.Null, flow201.GetProperty("condition").ValueKind);
+        Assert.Equal(JsonValueKind.Null, flow201.GetProperty("conditionPriority").ValueKind);
+        Assert.Empty(flow201.GetProperty("roles").EnumerateArray());
+        Assert.Empty(flow201.GetProperty("variables").EnumerateArray());
+        Assert.True(accept.GetProperty("incomingPreserved").GetBoolean());
+        Assert.Equal(
+            root.GetProperty("acceptSettled").GetInt32() + 1,
+            accept.GetProperty("historyCount").GetInt32());
+    }
+
+    [Fact]
+    public void TypeTransition_GatewayAcceptClearsRoutingAndKeepsReferences()
+    {
+        var engine = CreateEditorEngine();
+        engine.Execute(TypeTransitionHarnessJs);
+        using var result = JsonDocument.Parse(engine.Evaluate(
+            """
+            (() => {
+              // Leaving a gateway: routing metadata cleared, references preserved.
+              loadFromObject({
+                id: 'type-transition-gateway-leave',
+                name: 'Gateway leave',
+                initialEventId: 1,
+                variables: [],
+                lanes: [],
+                flowNodes: [
+                  { id: 1, name: 'Submitted', type: 'startEvent', x: 0, y: 0 },
+                  { id: 2, name: 'Route', type: 'exclusiveGateway', x: 200, y: 0 },
+                  { id: 3, name: 'Big', type: 'userTask', x: 400, y: -60 },
+                  { id: 4, name: 'Small', type: 'userTask', x: 400, y: 60 },
+                  { id: 5, name: 'Done', type: 'endEvent', x: 600, y: 0 }
+                ],
+                sequenceFlows: [
+                  { id: 101, name: '', sourceRef: 1, targetRef: 2 },
+                  { id: 201, name: 'Large', sourceRef: 2, targetRef: 3, condition: 'amount > 100', conditionPriority: 1, roles: ['Manager'], variables: [{ id: 3, name: 'comment', dataType: 'string', isArray: false, required: false }] },
+                  { id: 202, name: 'Fallback', sourceRef: 2, targetRef: 4, isDefault: true },
+                  { id: 301, name: '', sourceRef: 3, targetRef: 5 },
+                  { id: 302, name: '', sourceRef: 4, targetRef: 5 }
+                ]
+              });
+              render();
+              const leaveCallback = captureTypeCallback(2);
+              resetTypeRedrawCounters();
+              clearTypeDialogs();
+              typeConfirmResponse = true;
+              leaveCallback('userTask');
+              const flow201 = model.sequenceFlows.find(f => f.id === 201);
+              const flow202 = model.sequenceFlows.find(f => f.id === 202);
+              const leave = {
+                type: getNode(2).type,
+                flow201: { isDefault: flow201.isDefault, condition: flow201.condition, conditionPriority: flow201.conditionPriority, roles: flow201.roles, variables: flow201.variables },
+                flow202: { isDefault: flow202.isDefault, condition: flow202.condition, conditionPriority: flow202.conditionPriority, roles: flow202.roles, variables: flow202.variables }
+              };
+
+            // Entering a gateway with routing metadata exercises the
+            // target-gateway side of the semantics check: Cancel preserves the
+            // configured outgoing roles/variables; Accept clears them.
+            clearTypeDialogs();
+            loadFromObject({
+              id: 'type-transition-gateway-enter-metadata',
+              name: 'Gateway enter metadata',
+              initialEventId: 1,
+              variables: [],
+              lanes: [],
+              flowNodes: [
+                { id: 1, name: 'Submitted', type: 'startEvent', x: 0, y: 0 },
+                { id: 2, name: 'Review', type: 'userTask', x: 200, y: 0 },
+                { id: 3, name: 'Big', type: 'userTask', x: 400, y: -60 },
+                { id: 4, name: 'Small', type: 'userTask', x: 400, y: 60 },
+                { id: 5, name: 'Done', type: 'endEvent', x: 600, y: 0 }
+              ],
+              sequenceFlows: [
+                { id: 101, name: '', sourceRef: 1, targetRef: 2 },
+                { id: 201, name: 'Large', sourceRef: 2, targetRef: 3, roles: ['Manager'], variables: [{ id: 2, name: 'note', dataType: 'string', isArray: false, required: false, defaultValue: null, validation: null }] },
+                { id: 202, name: 'Small', sourceRef: 2, targetRef: 4 },
+                { id: 301, name: '', sourceRef: 3, targetRef: 5 },
+                { id: 302, name: '', sourceRef: 4, targetRef: 5 }
+              ]
+            });
+            render();
+            const enterMetadataBaseline = JSON.stringify(model);
+            typeConfirmResponse = false;
+            const enterDeclineCallback = captureTypeCallback(2);
+            resetTypeRedrawCounters();
+            clearTypeDialogs();
+            enterDeclineCallback('exclusiveGateway');
+            const enterDecline = {
+              dialogs: typeDialogs.slice(),
+              typePreserved: getNode(2).type === 'userTask',
+              modelPreserved: JSON.stringify(model) === enterMetadataBaseline,
+              renders: typeFullRenders
+            };
+            clearTypeDialogs();
+            typeConfirmResponse = true;
+            const enterAcceptCallback = captureTypeCallback(2);
+            enterAcceptCallback('exclusiveGateway');
+            const enteredFlow201 = model.sequenceFlows.find(f => f.id === 201);
+            const enterAccept = {
+              type: getNode(2).type,
+              flow201: {
+                roles: enteredFlow201.roles,
+                variables: enteredFlow201.variables,
+                condition: enteredFlow201.condition,
+                isDefault: enteredFlow201.isDefault
+              },
+              priorities: model.sequenceFlows.filter(f => f.sourceRef === 2).map(f => f.conditionPriority)
+            };
+
+              // Entering a gateway: clean flows skip the prompt and the full
+              // render repopulates exclusive priorities.
+              clearTypeDialogs();
+              loadFromObject({
+                id: 'type-transition-gateway-enter',
+                name: 'Gateway enter',
+                initialEventId: 1,
+                variables: [],
+                lanes: [],
+                flowNodes: [
+                  { id: 1, name: 'Submitted', type: 'startEvent', x: 0, y: 0 },
+                  { id: 2, name: 'Route', type: 'userTask', x: 200, y: 0 },
+                  { id: 3, name: 'Big', type: 'userTask', x: 400, y: -60 },
+                  { id: 4, name: 'Small', type: 'userTask', x: 400, y: 60 },
+                  { id: 5, name: 'Done', type: 'endEvent', x: 600, y: 0 }
+                ],
+                sequenceFlows: [
+                  { id: 101, name: '', sourceRef: 1, targetRef: 2 },
+                  { id: 201, name: 'Large', sourceRef: 2, targetRef: 3 },
+                  { id: 202, name: 'Small', sourceRef: 2, targetRef: 4 },
+                  { id: 301, name: '', sourceRef: 3, targetRef: 5 },
+                  { id: 302, name: '', sourceRef: 4, targetRef: 5 }
+                ]
+              });
+              render();
+              const enterCallback = captureTypeCallback(2);
+              resetTypeRedrawCounters();
+              clearTypeDialogs();
+              enterCallback('exclusiveGateway');
+              const priorities = model.sequenceFlows
+                .filter(f => f.sourceRef === 2)
+                .map(f => ({ id: f.id, conditionPriority: f.conditionPriority, condition: f.condition, isDefault: f.isDefault }));
+              const enter = {
+                dialogs: typeDialogs.slice(),
+                type: getNode(2).type,
+                priorities
+              };
+
+              // Gateway to gateway: joinCancellation retained.
+              clearTypeDialogs();
+              loadFromObject({
+                id: 'type-transition-gateway-switch',
+                name: 'Gateway switch',
+                initialEventId: 1,
+                variables: [],
+                lanes: [],
+                flowNodes: [
+                  { id: 1, name: 'Submitted', type: 'startEvent', x: 0, y: 0 },
+                  { id: 2, name: 'Fork', type: 'parallelGateway', x: 200, y: 0 },
+                  { id: 3, name: 'A', type: 'userTask', x: 400, y: -60 },
+                  { id: 4, name: 'B', type: 'userTask', x: 400, y: 60 },
+                  { id: 5, name: 'Join', type: 'parallelGateway', x: 600, y: 0, joinCancellation: { gatewayRef: 2 } },
+                  { id: 6, name: 'Done', type: 'endEvent', x: 800, y: 0 }
+                ],
+                sequenceFlows: [
+                  { id: 101, name: '', sourceRef: 1, targetRef: 2 },
+                  { id: 201, name: '', sourceRef: 2, targetRef: 3 },
+                  { id: 202, name: '', sourceRef: 2, targetRef: 4 },
+                  { id: 301, name: '', sourceRef: 3, targetRef: 5 },
+                  { id: 302, name: '', sourceRef: 4, targetRef: 5 },
+                  { id: 401, name: '', sourceRef: 5, targetRef: 6 }
+                ]
+              });
+              render();
+              const switchCallback = captureTypeCallback(5);
+              resetTypeRedrawCounters();
+              clearTypeDialogs();
+              switchCallback('inclusiveGateway');
+              const node5 = getNode(5);
+              const gatewaySwitch = {
+                type: node5.type,
+                joinCancellationKept: node5.joinCancellation != null && node5.joinCancellation.gatewayRef === 2
+              };
+              return JSON.stringify({ leave, enterDecline, enterAccept, enter, gatewaySwitch });
+            })()
+            """).AsString());
+
+        var root = result.RootElement;
+        var leave = root.GetProperty("leave");
+        Assert.Equal("userTask", leave.GetProperty("type").GetString());
+        foreach (var flowName in new[] { "flow201", "flow202" })
+        {
+            var flow = leave.GetProperty(flowName);
+            Assert.False(flow.GetProperty("isDefault").GetBoolean());
+            Assert.Equal(JsonValueKind.Null, flow.GetProperty("condition").ValueKind);
+            Assert.Equal(JsonValueKind.Null, flow.GetProperty("conditionPriority").ValueKind);
+            Assert.Empty(flow.GetProperty("roles").EnumerateArray());
+            Assert.Empty(flow.GetProperty("variables").EnumerateArray());
+        }
+
+        var enter = root.GetProperty("enter");
+        Assert.Empty(enter.GetProperty("dialogs").EnumerateArray());
+        Assert.Equal("exclusiveGateway", enter.GetProperty("type").GetString());
+        var priorities = enter.GetProperty("priorities").EnumerateArray().ToArray();
+        Assert.Equal(2, priorities.Length);
+        Assert.Equal((201, 1, false), (
+            priorities[0].GetProperty("id").GetInt32(),
+            priorities[0].GetProperty("conditionPriority").GetInt32(),
+            priorities[0].GetProperty("isDefault").GetBoolean()));
+        Assert.Equal((202, 2, false), (
+            priorities[1].GetProperty("id").GetInt32(),
+            priorities[1].GetProperty("conditionPriority").GetInt32(),
+            priorities[1].GetProperty("isDefault").GetBoolean()));
+        Assert.Equal(
+            JsonValueKind.Null,
+            priorities[0].GetProperty("condition").ValueKind);
+
+        var gatewaySwitch = root.GetProperty("gatewaySwitch");
+        Assert.Equal("inclusiveGateway", gatewaySwitch.GetProperty("type").GetString());
+        Assert.True(gatewaySwitch.GetProperty("joinCancellationKept").GetBoolean());
+
+        const string gatewayPrompt =
+            "Changing this node's gateway semantics clears outgoing defaults, conditions, priorities, roles, and variables. Continue?";
+        var enterDecline = root.GetProperty("enterDecline");
+        var declineDialogs = enterDecline.GetProperty("dialogs");
+        Assert.Equal(1, declineDialogs.GetArrayLength());
+        Assert.Equal("confirm", declineDialogs[0].GetProperty("kind").GetString());
+        Assert.Equal(gatewayPrompt, declineDialogs[0].GetProperty("message").GetString());
+        Assert.True(enterDecline.GetProperty("typePreserved").GetBoolean());
+        Assert.True(enterDecline.GetProperty("modelPreserved").GetBoolean());
+        Assert.Equal(0, enterDecline.GetProperty("renders").GetInt32());
+
+        var enterAccept = root.GetProperty("enterAccept");
+        Assert.Equal("exclusiveGateway", enterAccept.GetProperty("type").GetString());
+        var enteredFlow = enterAccept.GetProperty("flow201");
+        Assert.Empty(enteredFlow.GetProperty("roles").EnumerateArray());
+        Assert.Empty(enteredFlow.GetProperty("variables").EnumerateArray());
+        Assert.Equal(JsonValueKind.Null, enteredFlow.GetProperty("condition").ValueKind);
+        Assert.False(enteredFlow.GetProperty("isDefault").GetBoolean());
+        Assert.Equal(new[] { 1, 2 }, enterAccept.GetProperty("priorities")
+            .EnumerateArray().Select(value => value.GetInt32()).ToArray());
+    }
+
+    [Fact]
+    public void TypeTransition_GatewayPromptPredicateEdgeCases()
+    {
+        var engine = CreateEditorEngine();
+        engine.Execute(TypeTransitionHarnessJs);
+        using var result = JsonDocument.Parse(engine.Evaluate(
+            """
+            (() => {
+              const loadFixture = () => loadFromObject({
+                id: 'type-transition-predicate',
+                name: 'Gateway predicate',
+                initialEventId: 1,
+                variables: [],
+                lanes: [],
+                flowNodes: [
+                  { id: 1, name: 'Submitted', type: 'startEvent', x: 0, y: 0 },
+                  { id: 2, name: 'Fork', type: 'parallelGateway', x: 200, y: 0 },
+                  { id: 3, name: 'A', type: 'userTask', x: 400, y: -60 },
+                  { id: 4, name: 'B', type: 'userTask', x: 400, y: 60 }
+                ],
+                sequenceFlows: [
+                  { id: 101, name: '', sourceRef: 1, targetRef: 2 },
+                  { id: 301, name: 'First', sourceRef: 2, targetRef: 3 },
+                  { id: 302, name: 'Second', sourceRef: 2, targetRef: 4 }
+                ]
+              });
+              const cases = [
+                { key: 'isDefault', prompt: true, mutate: flow => { flow.isDefault = true; } },
+                { key: 'condition', prompt: true, mutate: flow => { flow.condition = 'amount > 10'; } },
+                { key: 'emptyCondition', prompt: true, mutate: flow => { flow.condition = ''; } },
+                { key: 'conditionPriority', prompt: true, mutate: flow => { flow.conditionPriority = 2; } },
+                { key: 'roles', prompt: true, mutate: flow => { flow.roles = ['Manager']; } },
+                {
+                  key: 'variables',
+                  prompt: true,
+                  mutate: flow => {
+                    flow.variables = [{ id: 9, name: 'note', dataType: 'string', isArray: false, required: false, defaultValue: null, validation: null }];
+                  }
+                },
+                { key: 'clean', prompt: false, mutate: () => {} },
+                { key: 'rolesVariable', prompt: false, mutate: flow => { flow.rolesVariable = 'approvalRoles'; } },
+                {
+                  key: 'claimBypass',
+                  prompt: false,
+                  mutate: flow => { flow.canActWithoutClaim = true; flow.canActWithoutClaimRoles = ['Helper']; }
+                },
+                {
+                  key: 'miMetadata',
+                  prompt: false,
+                  mutate: flow => {
+                    flow.completionCondition = 'CountFlow(302) > 0';
+                    flow.completionPriority = 1;
+                    flow.cancelRemainingInstances = true;
+                  }
+                }
+              ];
+              const results = {};
+              for (const item of cases) {
+                loadFixture();
+                render();
+                item.mutate(model.sequenceFlows.find(f => f.id === 301));
+                const baseline = JSON.stringify(model);
+                const callback = captureTypeCallback(2);
+                resetTypeRedrawCounters();
+                clearTypeDialogs();
+                typeConfirmResponse = false;
+                callback('task');
+                results[item.key] = {
+                  prompt: typeDialogs.some(dialog => dialog.kind === 'confirm'),
+                  type: getNode(2).type,
+                  modelPreserved: JSON.stringify(model) === baseline
+                };
+              }
+              return JSON.stringify(results);
+            })()
+            """).AsString());
+
+        var root = result.RootElement;
+        foreach (var property in root.EnumerateObject())
+        {
+            var expectedPrompt = property.Name is "isDefault" or "condition" or "emptyCondition" or
+                "conditionPriority" or "roles" or "variables";
+            Assert.Equal(expectedPrompt, property.Value.GetProperty("prompt").GetBoolean());
+            if (expectedPrompt)
+            {
+                // A declined prompt redraws only the inspector and leaves the model.
+                Assert.Equal("parallelGateway", property.Value.GetProperty("type").GetString());
+                Assert.True(property.Value.GetProperty("modelPreserved").GetBoolean());
+            }
+            else
+            {
+                // Without routing metadata the transition proceeds without prompting.
+                Assert.Equal("task", property.Value.GetProperty("type").GetString());
+            }
+        }
+    }
+
+    [Fact]
+    public void TypeTransition_RoleReferencesFollowUserTaskBoundary()
+    {
+        var engine = CreateEditorEngine();
+        engine.Execute(TypeTransitionHarnessJs);
+        using var result = JsonDocument.Parse(engine.Evaluate(
+            """
+            (() => {
+              const loadFixture = () => loadFromObject({
+                id: 'type-transition-roles',
+                name: 'Role references',
+                initialEventId: 1,
+                variables: [
+                  { id: 1, name: 'reviewRoles', dataType: 'string', isArray: true },
+                  { id: 2, name: 'otherRoles', dataType: 'string', isArray: true }
+                ],
+                lanes: [],
+                flowNodes: [
+                  { id: 1, name: 'Submitted', type: 'startEvent', x: 0, y: 0 },
+                  { id: 2, name: 'Review', type: 'userTask', x: 200, y: 0, rolesVariable: 'reviewRoles' },
+                  { id: 4, name: 'Other', type: 'userTask', x: 400, y: 0, rolesVariable: 'otherRoles' },
+                  { id: 6, name: 'Done', type: 'endEvent', x: 600, y: 0 }
+                ],
+                sequenceFlows: [
+                  { id: 101, name: '', sourceRef: 1, targetRef: 2 },
+                  { id: 201, name: 'Pass', sourceRef: 2, targetRef: 4, rolesVariable: 'approvalRoles' },
+                  { id: 401, name: 'Finish', sourceRef: 4, targetRef: 6, rolesVariable: 'outboundRoles' }
+                ]
+              });
+
+              loadFixture();
+              render();
+              const leavingCallback = captureTypeCallback(2);
+              resetTypeRedrawCounters();
+              leavingCallback('task');
+              const leaving = {
+                type: getNode(2).type,
+                nodeRolesVariableAbsent: !Object.prototype.hasOwnProperty.call(getNode(2), 'rolesVariable'),
+                otherNodeKept: getNode(4).rolesVariable === 'otherRoles',
+                flow201Absent: !Object.prototype.hasOwnProperty.call(
+                  model.sequenceFlows.find(f => f.id === 201), 'rolesVariable'),
+                flow401Kept: model.sequenceFlows.find(f => f.id === 401).rolesVariable === 'outboundRoles'
+              };
+
+              loadFixture();
+              render();
+              const sameTypeCallback = captureTypeCallback(2);
+              sameTypeCallback('userTask');
+              const sameType = {
+                nodeKept: getNode(2).rolesVariable === 'reviewRoles',
+                flowKept: model.sequenceFlows.find(f => f.id === 201).rolesVariable === 'approvalRoles'
+              };
+              return JSON.stringify({ leaving, sameType });
+            })()
+            """).AsString());
+
+        var root = result.RootElement;
+        var leaving = root.GetProperty("leaving");
+        Assert.Equal("task", leaving.GetProperty("type").GetString());
+        Assert.True(leaving.GetProperty("nodeRolesVariableAbsent").GetBoolean());
+        Assert.True(leaving.GetProperty("otherNodeKept").GetBoolean());
+        Assert.True(leaving.GetProperty("flow201Absent").GetBoolean());
+        Assert.True(leaving.GetProperty("flow401Kept").GetBoolean());
+
+        var sameType = root.GetProperty("sameType");
+        Assert.True(sameType.GetProperty("nodeKept").GetBoolean());
+        Assert.True(sameType.GetProperty("flowKept").GetBoolean());
+    }
+
+    [Fact]
+    public void TypeTransition_JoinCancellationReferencesFollowGatewayBoundary()
+    {
+        var engine = CreateEditorEngine();
+        engine.Execute(TypeTransitionHarnessJs);
+        using var result = JsonDocument.Parse(engine.Evaluate(
+            """
+            (() => {
+              const loadFixture = () => loadFromObject({
+                id: 'type-transition-join',
+                name: 'Join references',
+                initialEventId: 1,
+                variables: [],
+                lanes: [],
+                flowNodes: [
+                  { id: 1, name: 'Submitted', type: 'startEvent', x: 0, y: 0 },
+                  { id: 2, name: 'Fork', type: 'parallelGateway', x: 200, y: 0 },
+                  { id: 3, name: 'A', type: 'userTask', x: 400, y: -60 },
+                  { id: 4, name: 'B', type: 'userTask', x: 400, y: 60 },
+                  { id: 5, name: 'Join', type: 'parallelGateway', x: 600, y: 0, joinCancellation: { gatewayRef: 2 } },
+                  { id: 6, name: 'Done', type: 'endEvent', x: 800, y: 0 },
+                  { id: 8, name: 'Other join', type: 'parallelGateway', x: 800, y: 200, joinCancellation: { gatewayRef: 5 } },
+                  { id: 9, name: 'Unrelated join', type: 'parallelGateway', x: 800, y: 320, joinCancellation: { gatewayRef: 2 } },
+                  { id: 10, name: 'Interrupt', type: 'scopedInterruptEvent', x: 800, y: 440, gatewayRef: 2 }
+                ],
+                sequenceFlows: [
+                  { id: 101, name: '', sourceRef: 1, targetRef: 2 },
+                  { id: 201, name: '', sourceRef: 2, targetRef: 3 },
+                  { id: 202, name: '', sourceRef: 2, targetRef: 4 },
+                  { id: 301, name: '', sourceRef: 3, targetRef: 5 },
+                  { id: 302, name: '', sourceRef: 4, targetRef: 5 },
+                  { id: 401, name: '', sourceRef: 5, targetRef: 6 }
+                ]
+              });
+
+              loadFixture();
+              render();
+              const leavingCallback = captureTypeCallback(5);
+              resetTypeRedrawCounters();
+              leavingCallback('task');
+              const node8 = getNode(8);
+              const leaving = {
+                type: getNode(5).type,
+                ownJoinCancelledAbsent: !Object.prototype.hasOwnProperty.call(getNode(5), 'joinCancellation'),
+                referencingNulled: node8.joinCancellation != null && node8.joinCancellation.gatewayRef === null,
+                unrelatedKept: getNode(9).joinCancellation != null && getNode(9).joinCancellation.gatewayRef === 2,
+                scopedInterruptUntouched: getNode(10).gatewayRef === 2
+              };
+
+              loadFixture();
+              render();
+              const gatewayCallback = captureTypeCallback(5);
+              gatewayCallback('inclusiveGateway');
+              const node5 = getNode(5);
+              const gatewaySwitch = {
+                type: node5.type,
+                ownKept: node5.joinCancellation != null && node5.joinCancellation.gatewayRef === 2,
+                referencingUntouched: getNode(8).joinCancellation != null && getNode(8).joinCancellation.gatewayRef === 5
+              };
+              return JSON.stringify({ leaving, gatewaySwitch });
+            })()
+            """).AsString());
+
+        var root = result.RootElement;
+        var leaving = root.GetProperty("leaving");
+        Assert.Equal("task", leaving.GetProperty("type").GetString());
+        Assert.True(leaving.GetProperty("ownJoinCancelledAbsent").GetBoolean());
+        Assert.True(leaving.GetProperty("referencingNulled").GetBoolean());
+        Assert.True(leaving.GetProperty("unrelatedKept").GetBoolean());
+        Assert.True(leaving.GetProperty("scopedInterruptUntouched").GetBoolean());
+
+        var gatewaySwitch = root.GetProperty("gatewaySwitch");
+        Assert.Equal("inclusiveGateway", gatewaySwitch.GetProperty("type").GetString());
+        Assert.True(gatewaySwitch.GetProperty("ownKept").GetBoolean());
+        Assert.True(gatewaySwitch.GetProperty("referencingUntouched").GetBoolean());
+    }
+
+    [Fact]
+    public void TypeTransition_PrunesOutgoingFlowsKeepingFirstArrayOrder()
+    {
+        var engine = CreateEditorEngine();
+        engine.Execute(TypeTransitionHarnessJs);
+        using var result = JsonDocument.Parse(engine.Evaluate(
+            """
+            (() => {
+              loadFromObject({
+                id: 'type-transition-prune',
+                name: 'Outgoing pruning',
+                initialEventId: 1,
+                variables: [],
+                lanes: [],
+                flowNodes: [
+                  { id: 1, name: 'Submitted', type: 'startEvent', x: 0, y: 0 },
+                  { id: 2, name: 'Review', type: 'userTask', x: 200, y: 0 },
+                  { id: 3, name: 'A', type: 'userTask', x: 400, y: -60 },
+                  { id: 4, name: 'B', type: 'userTask', x: 400, y: 60 },
+                  { id: 6, name: 'First target', type: 'userTask', x: 400, y: 180 }
+                ],
+                sequenceFlows: [
+                  { id: 101, name: '', sourceRef: 1, targetRef: 2 },
+                  { id: 203, name: 'First', sourceRef: 2, targetRef: 6, attributes: [{ key: 'keep', value: 'yes' }] },
+                  { id: 201, name: 'Second', sourceRef: 2, targetRef: 3, condition: 'a > 1' },
+                  { id: 202, name: 'Third', sourceRef: 2, targetRef: 4 }
+                ]
+              });
+              render();
+              const callback = captureTypeCallback(2);
+              const flow203Before = JSON.stringify(model.sequenceFlows.find(f => f.id === 203));
+              resetTypeRedrawCounters();
+              callback('task');
+              const flow203 = model.sequenceFlows.find(f => f.id === 203);
+              return JSON.stringify({
+                type: getNode(2).type,
+                renders: typeFullRenders,
+                flowIds: model.sequenceFlows.map(f => f.id),
+                flow203Id: flow203.id,
+                flow203Name: flow203.name,
+                flow203Attributes: flow203.attributes,
+                flow203: { condition: flow203.condition, conditionPriority: flow203.conditionPriority, isDefault: flow203.isDefault, roles: flow203.roles, variables: flow203.variables }
+              });
+            })()
+            """).AsString());
+
+        var root = result.RootElement;
+        Assert.Equal("task", root.GetProperty("type").GetString());
+        Assert.Equal(1, root.GetProperty("renders").GetInt32());
+        Assert.Equal(new[] { 101, 203 }, root.GetProperty("flowIds").EnumerateArray()
+            .Select(value => value.GetInt32()).ToArray());
+        Assert.Equal(203, root.GetProperty("flow203Id").GetInt32());
+        Assert.Equal("First", root.GetProperty("flow203Name").GetString());
+        var attributes = root.GetProperty("flow203Attributes");
+        Assert.Equal(1, attributes.GetArrayLength());
+        Assert.Equal("keep", attributes[0].GetProperty("key").GetString());
+        Assert.Equal("yes", attributes[0].GetProperty("value").GetString());
+        var flow203 = root.GetProperty("flow203");
+        Assert.Equal(JsonValueKind.Null, flow203.GetProperty("condition").ValueKind);
+        Assert.Equal(JsonValueKind.Null, flow203.GetProperty("conditionPriority").ValueKind);
+        Assert.False(flow203.GetProperty("isDefault").GetBoolean());
+        Assert.Empty(flow203.GetProperty("roles").EnumerateArray());
+        Assert.Empty(flow203.GetProperty("variables").EnumerateArray());
+    }
+
+    [Fact]
+    public void TypeTransition_ErrorBoundaryCleanupFollowsHostType()
+    {
+        var engine = CreateEditorEngine();
+        engine.Execute(TypeTransitionHarnessJs);
+        using var result = JsonDocument.Parse(engine.Evaluate(
+            """
+            (() => {
+              const loadFixture = () => loadFromObject({
+                id: 'type-transition-error-boundary',
+                name: 'Error boundary cleanup',
+                initialEventId: 1,
+                variables: [],
+                lanes: [],
+                flowNodes: [
+                  { id: 1, name: 'Submitted', type: 'startEvent', x: 0, y: 0 },
+                  { id: 2, name: 'Call credit', type: 'serviceTask', x: 200, y: 0 },
+                  { id: 3, name: 'Review', type: 'userTask', x: 400, y: 0 },
+                  { id: 6, name: 'Done', type: 'endEvent', x: 600, y: 0 },
+                  { id: 9, name: 'Local calc', type: 'scriptTask', x: 200, y: 200 },
+                  { id: 10, name: 'Done too', type: 'endEvent', x: 400, y: 200 },
+                  { id: 20, name: 'Credit failure', type: 'errorBoundaryEvent', x: 260, y: 90, attachedToRef: 2, errorVariable: 'err' },
+                  { id: 21, name: 'Calc failure', type: 'errorBoundaryEvent', x: 260, y: 290, attachedToRef: 9, errorVariable: 'calcErr' }
+                ],
+                sequenceFlows: [
+                  { id: 101, name: '', sourceRef: 1, targetRef: 2 },
+                  { id: 201, name: '', sourceRef: 2, targetRef: 3 },
+                  { id: 301, name: '', sourceRef: 3, targetRef: 6 },
+                  { id: 901, name: '', sourceRef: 9, targetRef: 10 },
+                  { id: 2001, name: '', sourceRef: 20, targetRef: 6 },
+                  { id: 2002, name: '', sourceRef: 21, targetRef: 10 }
+                ]
+              });
+
+              loadFixture();
+              render();
+              const toScriptCallback = captureTypeCallback(2);
+              resetTypeRedrawCounters();
+              toScriptCallback('scriptTask');
+              const toScript = {
+                type: getNode(2).type,
+                boundaryKept: getNode(20) != null && getNode(20).errorVariable === 'err',
+                flowKept: model.sequenceFlows.some(f => f.id === 2001)
+              };
+
+              const toUserCallback = captureTypeCallback(2);
+              toUserCallback('userTask');
+              const toUser = {
+                type: getNode(2).type,
+                boundaryRemoved: getNode(20) == null,
+                flowRemoved: !model.sequenceFlows.some(f => f.id === 2001),
+                otherHostKept: getNode(21) != null && getNode(21).errorVariable === 'calcErr',
+                otherFlowKept: model.sequenceFlows.some(f => f.id === 2002)
+              };
+              return JSON.stringify({ toScript, toUser });
+            })()
+            """).AsString());
+
+        var root = result.RootElement;
+        var toScript = root.GetProperty("toScript");
+        Assert.Equal("scriptTask", toScript.GetProperty("type").GetString());
+        Assert.True(toScript.GetProperty("boundaryKept").GetBoolean());
+        Assert.True(toScript.GetProperty("flowKept").GetBoolean());
+
+        var toUser = root.GetProperty("toUser");
+        Assert.Equal("userTask", toUser.GetProperty("type").GetString());
+        Assert.True(toUser.GetProperty("boundaryRemoved").GetBoolean());
+        Assert.True(toUser.GetProperty("flowRemoved").GetBoolean());
+        Assert.True(toUser.GetProperty("otherHostKept").GetBoolean());
+        Assert.True(toUser.GetProperty("otherFlowKept").GetBoolean());
+    }
+
+    [Fact]
+    public void TypeTransition_ObservableBoundaryEligibilityUsesNormalizedHost()
+    {
+        var engine = CreateEditorEngine();
+        engine.Execute(TypeTransitionHarnessJs);
+        using var result = JsonDocument.Parse(engine.Evaluate(
+            """
+            (() => {
+              const loadFixture = (asyncBefore) => loadFromObject({
+                id: 'type-transition-boundary',
+                name: 'Observable boundaries',
+                initialEventId: 1,
+                variables: [],
+                lanes: [],
+                flowNodes: [
+                  { id: 1, name: 'Submitted', type: 'startEvent', x: 0, y: 0 },
+                  { id: 2, name: 'Wait', type: 'userTask', x: 200, y: 0 },
+                  { id: 3, name: 'Done', type: 'endEvent', x: 400, y: 0 },
+                  { id: 30, name: 'Reminder', type: 'timerBoundaryEvent', x: 260, y: 90, attachedToRef: 2, cancelActivity: false, timer: { timeDuration: 'PT30M' } },
+                  { id: 31, name: 'Flag flip', type: 'conditionalBoundaryEvent', x: 340, y: 90, attachedToRef: 2, conditional: { condition: 'flag == true' } }
+                ].concat(asyncBefore === undefined ? [] : []),
+                sequenceFlows: [
+                  { id: 101, name: '', sourceRef: 1, targetRef: 2 },
+                  { id: 201, name: '', sourceRef: 2, targetRef: 3 },
+                  { id: 2001, name: '', sourceRef: 30, targetRef: 3 },
+                  { id: 2002, name: '', sourceRef: 31, targetRef: 3 }
+                ]
+              });
+
+              // Durable user task keeps its boundaries; same-type keeps settings.
+              loadFixture();
+              render();
+              const sameTypeCallback = captureTypeCallback(2);
+              resetTypeRedrawCounters();
+              sameTypeCallback('userTask');
+              const sameType = {
+                timerKept: getNode(30) != null && getNode(30).cancelActivity === false,
+                conditionalKept: getNode(31) != null && getNode(31).conditional.condition === 'flag == true',
+                flowsKept: model.sequenceFlows.some(f => f.id === 2001) && model.sequenceFlows.some(f => f.id === 2002)
+              };
+
+              // Automatic target without asyncBefore removes both boundaries.
+              const toTaskCallback = captureTypeCallback(2);
+              toTaskCallback('task');
+              const toTask = {
+                type: getNode(2).type,
+                timerRemoved: getNode(30) == null,
+                conditionalRemoved: getNode(31) == null,
+                flowsRemoved: !model.sequenceFlows.some(f => f.id === 2001) && !model.sequenceFlows.some(f => f.id === 2002)
+              };
+
+              // Message catch stays durable and keeps the boundaries.
+              loadFixture();
+              render();
+              const toMessageCallback = captureTypeCallback(2);
+              toMessageCallback('intermediateMessageCatchEvent');
+              const toMessage = {
+                type: getNode(2).type,
+                timerKept: getNode(30) != null,
+                conditionalKept: getNode(31) != null
+              };
+
+              // Conditional catch is not in the eligible host set.
+              loadFixture();
+              render();
+              const toConditionalCallback = captureTypeCallback(2);
+              toConditionalCallback('intermediateConditionalCatchEvent');
+              const toConditional = {
+                type: getNode(2).type,
+                timerRemoved: getNode(30) == null,
+                conditionalRemoved: getNode(31) == null
+              };
+
+              // Async automatic hosts keep boundaries through normalization.
+              const loadAsyncFixture = (asyncBefore) => loadFromObject({
+                id: 'type-transition-async-boundary',
+                name: 'Async boundaries',
+                initialEventId: 1,
+                variables: [],
+                lanes: [],
+                flowNodes: [
+                  { id: 1, name: 'Submitted', type: 'startEvent', x: 0, y: 0 },
+                  { id: 40, name: 'Enrich', type: 'task', x: 200, y: 0, asyncBefore: asyncBefore },
+                  { id: 42, name: 'Done', type: 'endEvent', x: 400, y: 0 },
+                  { id: 41, name: 'Timeout', type: 'timerBoundaryEvent', x: 260, y: 90, attachedToRef: 40, cancelActivity: true, timer: { timeDuration: 'PT1H' } }
+                ],
+                sequenceFlows: [
+                  { id: 101, name: '', sourceRef: 1, targetRef: 40 },
+                  { id: 401, name: '', sourceRef: 40, targetRef: 42 },
+                  { id: 2003, name: '', sourceRef: 41, targetRef: 42 }
+                ]
+              });
+              loadAsyncFixture(true);
+              render();
+              const asyncKeptCallback = captureTypeCallback(40);
+              asyncKeptCallback('serviceTask');
+              const asyncKept = {
+                type: getNode(40).type,
+                asyncBefore: getNode(40).asyncBefore,
+                boundaryKept: getNode(41) != null && getNode(41).cancelActivity === true,
+                flowKept: model.sequenceFlows.some(f => f.id === 2003)
+              };
+              loadAsyncFixture(false);
+              render();
+              const asyncRemovedCallback = captureTypeCallback(40);
+              asyncRemovedCallback('serviceTask');
+              const asyncRemoved = {
+                type: getNode(40).type,
+                asyncBefore: getNode(40).asyncBefore,
+                boundaryRemoved: getNode(41) == null,
+                flowRemoved: !model.sequenceFlows.some(f => f.id === 2003)
+              };
+              return JSON.stringify({ sameType, toTask, toMessage, toConditional, asyncKept, asyncRemoved });
+            })()
+            """).AsString());
+
+        var root = result.RootElement;
+        var sameType = root.GetProperty("sameType");
+        Assert.True(sameType.GetProperty("timerKept").GetBoolean());
+        Assert.True(sameType.GetProperty("conditionalKept").GetBoolean());
+        Assert.True(sameType.GetProperty("flowsKept").GetBoolean());
+
+        var toTask = root.GetProperty("toTask");
+        Assert.Equal("task", toTask.GetProperty("type").GetString());
+        Assert.True(toTask.GetProperty("timerRemoved").GetBoolean());
+        Assert.True(toTask.GetProperty("conditionalRemoved").GetBoolean());
+        Assert.True(toTask.GetProperty("flowsRemoved").GetBoolean());
+
+        var toMessage = root.GetProperty("toMessage");
+        Assert.Equal("intermediateMessageCatchEvent", toMessage.GetProperty("type").GetString());
+        Assert.True(toMessage.GetProperty("timerKept").GetBoolean());
+        Assert.True(toMessage.GetProperty("conditionalKept").GetBoolean());
+
+        var toConditional = root.GetProperty("toConditional");
+        Assert.Equal("intermediateConditionalCatchEvent", toConditional.GetProperty("type").GetString());
+        Assert.True(toConditional.GetProperty("timerRemoved").GetBoolean());
+        Assert.True(toConditional.GetProperty("conditionalRemoved").GetBoolean());
+
+        var asyncKept = root.GetProperty("asyncKept");
+        Assert.Equal("serviceTask", asyncKept.GetProperty("type").GetString());
+        Assert.True(asyncKept.GetProperty("asyncBefore").GetBoolean());
+        Assert.True(asyncKept.GetProperty("boundaryKept").GetBoolean());
+        Assert.True(asyncKept.GetProperty("flowKept").GetBoolean());
+
+        var asyncRemoved = root.GetProperty("asyncRemoved");
+        Assert.Equal("serviceTask", asyncRemoved.GetProperty("type").GetString());
+        Assert.False(asyncRemoved.GetProperty("asyncBefore").GetBoolean());
+        Assert.True(asyncRemoved.GetProperty("boundaryRemoved").GetBoolean());
+        Assert.True(asyncRemoved.GetProperty("flowRemoved").GetBoolean());
+    }
+
+    [Fact]
+    public void TypeTransition_MessageStartConversionMaterializesAndRebuilds()
+    {
+        var engine = CreateEditorEngine();
+        engine.Execute(TypeTransitionHarnessJs);
+        using var result = JsonDocument.Parse(engine.Evaluate(
+            """
+            (() => {
+              loadFromObject({
+                id: 'type-transition-message-start',
+                name: 'Message start conversion',
+                initialEventId: null,
+                variables: [],
+                lanes: [],
+                flowNodes: [
+                  {
+                    id: 1,
+                    name: 'Webhook start',
+                    type: 'messageStartEvent',
+                    x: 0,
+                    y: 0,
+                    // The idempotency variable names a mapping that also has a
+                    // configured default, so the reverse conversion would
+                    // rebuild it if the idempotency exclusion broke; 'extra'
+                    // separately pins the optional-no-default omission rule.
+                    idempotency: { headerName: 'Idempotency-Key', variable: 'tag' },
+                    message: {
+                      clientId: 'svc-orders',
+                      clientSecret: 'topsecret',
+                      headerName: 'X-Token',
+                      headerValue: 'v1',
+                      outputMappings: [
+                        { variable: 'amount', path: 'a', dataType: 'number', isArray: false, required: true, defaultValue: null, validation: 'amount > 0' },
+                        { variable: 'tag', path: 't', dataType: 'string', isArray: false, required: false, defaultValue: 'x', validation: null },
+                        { variable: 'extra', path: 'e', dataType: 'json', isArray: false, required: false, defaultValue: null, validation: null }
+                      ]
+                    }
+                  },
+                  { id: 2, name: 'Work', type: 'task', x: 200, y: 0 },
+                  { id: 3, name: 'Done', type: 'endEvent', x: 400, y: 0 }
+                ],
+                sequenceFlows: [
+                  { id: 101, name: '', sourceRef: 1, targetRef: 2 },
+                  { id: 201, name: '', sourceRef: 2, targetRef: 3 }
+                ]
+              });
+              render();
+              const callback = captureTypeCallback(1);
+              resetTypeRedrawCounters();
+              callback('startEvent');
+              const forwardNode = getNode(1);
+              const forward = {
+                type: forwardNode.type,
+                variables: forwardNode.variables,
+                messageAbsent: !Object.prototype.hasOwnProperty.call(forwardNode, 'message'),
+                idempotencyKept: forwardNode.idempotency != null && forwardNode.idempotency.variable === 'tag'
+              };
+              callback('messageStartEvent');
+              const reverseNode = getNode(1);
+              const reverse = {
+                type: reverseNode.type,
+                variables: reverseNode.variables,
+                outputMappings: reverseNode.message.outputMappings,
+                clientId: reverseNode.message.clientId,
+                headerName: reverseNode.message.headerName,
+                idempotencyKept: reverseNode.idempotency != null && reverseNode.idempotency.variable === 'tag'
+              };
+              return JSON.stringify({ forward, reverse });
+            })()
+            """).AsString());
+
+        var root = result.RootElement;
+        var forward = root.GetProperty("forward");
+        Assert.Equal("startEvent", forward.GetProperty("type").GetString());
+        var variables = forward.GetProperty("variables").EnumerateArray().ToArray();
+        Assert.Equal(3, variables.Length);
+        Assert.Equal((1, "amount", "number", true), (
+            variables[0].GetProperty("id").GetInt32(),
+            variables[0].GetProperty("name").GetString(),
+            variables[0].GetProperty("dataType").GetString(),
+            variables[0].GetProperty("required").GetBoolean()));
+        Assert.Equal((2, "tag", "string", false), (
+            variables[1].GetProperty("id").GetInt32(),
+            variables[1].GetProperty("name").GetString(),
+            variables[1].GetProperty("dataType").GetString(),
+            variables[1].GetProperty("required").GetBoolean()));
+        Assert.Equal("x", variables[1].GetProperty("defaultValue").GetString());
+        Assert.Equal((3, "extra", "json", false), (
+            variables[2].GetProperty("id").GetInt32(),
+            variables[2].GetProperty("name").GetString(),
+            variables[2].GetProperty("dataType").GetString(),
+            variables[2].GetProperty("required").GetBoolean()));
+        Assert.True(forward.GetProperty("messageAbsent").GetBoolean());
+        Assert.True(forward.GetProperty("idempotencyKept").GetBoolean());
+
+        var reverse = root.GetProperty("reverse");
+        Assert.Equal("messageStartEvent", reverse.GetProperty("type").GetString());
+        Assert.Empty(reverse.GetProperty("variables").EnumerateArray());
+        // 'tag' is excluded because it is the entry's idempotency variable (it
+        // carries a configured default, so only the idempotency rule omits it);
+        // 'extra' is excluded by the optional-no-default rule.
+        var mappings = reverse.GetProperty("outputMappings").EnumerateArray().ToArray();
+        Assert.Single(mappings);
+        Assert.Equal(("amount", string.Empty, "number", true), (
+            mappings[0].GetProperty("variable").GetString(),
+            mappings[0].GetProperty("path").GetString(),
+            mappings[0].GetProperty("dataType").GetString(),
+            mappings[0].GetProperty("required").GetBoolean()));
+        Assert.Equal(string.Empty, reverse.GetProperty("clientId").GetString());
+        Assert.Equal(string.Empty, reverse.GetProperty("headerName").GetString());
+        Assert.True(reverse.GetProperty("idempotencyKept").GetBoolean());
+    }
+
+    [Fact]
+    public void TypeTransition_EntryIdentityAndBusinessKeyDefaults()
+    {
+        var engine = CreateEditorEngine();
+        engine.Execute(TypeTransitionHarnessJs);
+        using var result = JsonDocument.Parse(engine.Evaluate(
+            """
+            (() => {
+              // Default start repair: first remaining ordinary start in array order.
+              loadFromObject({
+                id: 'type-transition-default-start',
+                name: 'Default start repair',
+                initialEventId: 1,
+                variables: [],
+                lanes: [],
+                flowNodes: [
+                  { id: 1, name: 'First start', type: 'startEvent', x: 0, y: 0 },
+                  { id: 2, name: 'Review', type: 'userTask', x: 200, y: 0 },
+                  { id: 4, name: 'Second start', type: 'startEvent', x: 0, y: 200 }
+                ],
+                sequenceFlows: [{ id: 101, name: '', sourceRef: 1, targetRef: 2 }]
+              });
+              render();
+              const repairCallback = captureTypeCallback(1);
+              resetTypeRedrawCounters();
+              repairCallback('userTask');
+              const repaired = {
+                type: getNode(1).type,
+                initialEventId: model.initialEventId
+              };
+
+              // No alternative ordinary start: default becomes null.
+              loadFromObject({
+                id: 'type-transition-default-null',
+                name: 'Default start null',
+                initialEventId: 1,
+                variables: [],
+                lanes: [],
+                flowNodes: [
+                  { id: 1, name: 'First start', type: 'startEvent', x: 0, y: 0 },
+                  { id: 2, name: 'Work', type: 'task', x: 200, y: 0 }
+                ],
+                sequenceFlows: [{ id: 101, name: '', sourceRef: 1, targetRef: 2 }]
+              });
+              render();
+              const nullCallback = captureTypeCallback(1);
+              nullCallback('task');
+              const nulled = { initialEventId: model.initialEventId };
+
+              // Timer starts never substitute as the default.
+              loadFromObject({
+                id: 'type-transition-default-timer',
+                name: 'Default start timer',
+                initialEventId: 1,
+                variables: [],
+                lanes: [],
+                flowNodes: [
+                  { id: 1, name: 'First start', type: 'startEvent', x: 0, y: 0 },
+                  { id: 5, name: 'Scheduled', type: 'timerStartEvent', x: 0, y: 200, timer: { timeDuration: 'PT1H' } },
+                  { id: 2, name: 'Work', type: 'task', x: 200, y: 0 }
+                ],
+                sequenceFlows: [{ id: 101, name: '', sourceRef: 1, targetRef: 2 }]
+              });
+              render();
+              const timerCallback = captureTypeCallback(1);
+              timerCallback('task');
+              const timerSkipped = { initialEventId: model.initialEventId };
+
+              // Business keys: initialization only when already enabled.
+              loadFromObject({
+                id: 'type-transition-business-keys',
+                name: 'Business keys',
+                initialEventId: 1,
+                variables: [],
+                lanes: [],
+                flowNodes: [
+                  { id: 1, name: 'Keyed start', type: 'startEvent', x: 0, y: 0, businessKey: { variable: 'caseId', uniqueness: 'active' } },
+                  { id: 5, name: 'Plain start', type: 'startEvent', x: 0, y: 200 },
+                  { id: 3, name: 'Work', type: 'task', x: 200, y: 0 }
+                ],
+                sequenceFlows: []
+              });
+              render();
+              const initCallback = captureTypeCallback(5);
+              initCallback('messageStartEvent');
+              const node5 = getNode(5);
+              const initialized = {
+                type: node5.type,
+                businessKey: node5.businessKey
+              };
+              const returnCallback = captureTypeCallback(5);
+              returnCallback('startEvent');
+              const roundTripped = {
+                type: getNode(5).type,
+                businessKey: getNode(5).businessKey
+              };
+
+              // Existing key settings survive conversion to a message start.
+              const preservedCallback = captureTypeCallback(1);
+              preservedCallback('messageStartEvent');
+              const preserved = {
+                type: getNode(1).type,
+                businessKey: getNode(1).businessKey
+              };
+
+              // Timer starts do not participate in business keys.
+              const timerKeyCallback = captureTypeCallback(3);
+              timerKeyCallback('timerStartEvent');
+              const timerKey = {
+                type: getNode(3).type,
+                businessKeyUnset: getNode(3).businessKey == null
+              };
+
+              // No keys enabled anywhere: message start stays unkeyed.
+              loadFromObject({
+                id: 'type-transition-no-keys',
+                name: 'No keys',
+                initialEventId: 1,
+                variables: [],
+                lanes: [],
+                flowNodes: [
+                  { id: 1, name: 'First start', type: 'startEvent', x: 0, y: 0 },
+                  { id: 5, name: 'Second start', type: 'startEvent', x: 0, y: 200 }
+                ],
+                sequenceFlows: []
+              });
+              render();
+              const unkeyedCallback = captureTypeCallback(5);
+              unkeyedCallback('messageStartEvent');
+              const unkeyed = {
+                type: getNode(5).type,
+                businessKeyUnset: getNode(5).businessKey == null
+              };
+              return JSON.stringify({ repaired, nulled, timerSkipped, initialized, roundTripped, preserved, timerKey, unkeyed });
+            })()
+            """).AsString());
+
+        var root = result.RootElement;
+        Assert.Equal("userTask", root.GetProperty("repaired").GetProperty("type").GetString());
+        Assert.Equal(4, root.GetProperty("repaired").GetProperty("initialEventId").GetInt32());
+        Assert.Equal(JsonValueKind.Null, root.GetProperty("nulled").GetProperty("initialEventId").ValueKind);
+        Assert.Equal(JsonValueKind.Null, root.GetProperty("timerSkipped").GetProperty("initialEventId").ValueKind);
+
+        var initialized = root.GetProperty("initialized");
+        Assert.Equal("messageStartEvent", initialized.GetProperty("type").GetString());
+        Assert.Equal(string.Empty, initialized.GetProperty("businessKey").GetProperty("variable").GetString());
+        Assert.Equal("active", initialized.GetProperty("businessKey").GetProperty("uniqueness").GetString());
+
+        var roundTripped = root.GetProperty("roundTripped");
+        Assert.Equal("startEvent", roundTripped.GetProperty("type").GetString());
+        Assert.Equal(
+            initialized.GetProperty("businessKey").GetRawText(),
+            roundTripped.GetProperty("businessKey").GetRawText());
+
+        var preserved = root.GetProperty("preserved");
+        Assert.Equal("messageStartEvent", preserved.GetProperty("type").GetString());
+        Assert.Equal("caseId", preserved.GetProperty("businessKey").GetProperty("variable").GetString());
+        Assert.Equal("active", preserved.GetProperty("businessKey").GetProperty("uniqueness").GetString());
+
+        Assert.Equal("timerStartEvent", root.GetProperty("timerKey").GetProperty("type").GetString());
+        Assert.True(root.GetProperty("timerKey").GetProperty("businessKeyUnset").GetBoolean());
+        Assert.Equal("messageStartEvent", root.GetProperty("unkeyed").GetProperty("type").GetString());
+        Assert.True(root.GetProperty("unkeyed").GetProperty("businessKeyUnset").GetBoolean());
+    }
+
+    [Fact]
+    public void TypeTransition_TimerAndConditionalDefaults()
+    {
+        var engine = CreateEditorEngine();
+        engine.Execute(TypeTransitionHarnessJs);
+        using var result = JsonDocument.Parse(engine.Evaluate(
+            """
+            (() => {
+              const loadFixture = (node) => loadFromObject({
+                id: 'type-transition-defaults',
+                name: 'Type defaults',
+                initialEventId: 1,
+                variables: [],
+                lanes: [],
+                flowNodes: [
+                  { id: 1, name: 'Submitted', type: 'startEvent', x: 0, y: 0 },
+                  node,
+                  { id: 3, name: 'Done', type: 'endEvent', x: 400, y: 0 }
+                ],
+                sequenceFlows: [
+                  { id: 101, name: '', sourceRef: 1, targetRef: 2 },
+                  { id: 201, name: '', sourceRef: 2, targetRef: 3 }
+                ]
+              });
+
+              loadFixture({ id: 2, name: 'Work', type: 'task', x: 200, y: 0 });
+              render();
+              const toTimerCallback = captureTypeCallback(2);
+              resetTypeRedrawCounters();
+              toTimerCallback('intermediateTimerCatchEvent');
+              const toTimer = {
+                type: getNode(2).type,
+                timer: getNode(2).timer,
+                renders: typeFullRenders
+              };
+
+              loadFixture({ id: 2, name: 'Wait', type: 'intermediateTimerCatchEvent', x: 200, y: 0, timer: { timeDuration: 'PT5M' } });
+              render();
+              const timerKeptCallback = captureTypeCallback(2);
+              timerKeptCallback('timerStartEvent');
+              const timerKept = {
+                type: getNode(2).type,
+                timer: getNode(2).timer
+              };
+
+              loadFixture({ id: 2, name: 'Wait', type: 'intermediateTimerCatchEvent', x: 200, y: 0, timer: { timeDuration: 'PT5M' } });
+              render();
+              const timerGoneCallback = captureTypeCallback(2);
+              timerGoneCallback('task');
+              const timerGone = {
+                type: getNode(2).type,
+                timerAbsent: !Object.prototype.hasOwnProperty.call(getNode(2), 'timer')
+              };
+
+              loadFixture({ id: 2, name: 'Observe', type: 'task', x: 200, y: 0 });
+              render();
+              const toConditionalCallback = captureTypeCallback(2);
+              toConditionalCallback('intermediateConditionalCatchEvent');
+              const toConditional = {
+                type: getNode(2).type,
+                conditional: getNode(2).conditional
+              };
+
+              loadFixture({ id: 2, name: 'Observe', type: 'intermediateConditionalCatchEvent', x: 200, y: 0, conditional: { condition: 'ready == true' } });
+              render();
+              const conditionalKeptCallback = captureTypeCallback(2);
+              conditionalKeptCallback('intermediateConditionalCatchEvent');
+              const conditionalKept = {
+                type: getNode(2).type,
+                conditional: getNode(2).conditional
+              };
+
+              loadFixture({ id: 2, name: 'Observe', type: 'intermediateConditionalCatchEvent', x: 200, y: 0, conditional: { condition: 'ready == true' } });
+              render();
+              const conditionalGoneCallback = captureTypeCallback(2);
+              conditionalGoneCallback('task');
+              const conditionalGone = {
+                type: getNode(2).type,
+                conditionalAbsent: !Object.prototype.hasOwnProperty.call(getNode(2), 'conditional')
+              };
+              return JSON.stringify({ toTimer, timerKept, timerGone, toConditional, conditionalKept, conditionalGone });
+            })()
+            """).AsString());
+
+        var root = result.RootElement;
+        var toTimer = root.GetProperty("toTimer");
+        Assert.Equal("intermediateTimerCatchEvent", toTimer.GetProperty("type").GetString());
+        Assert.Equal(JsonValueKind.Null, toTimer.GetProperty("timer").GetProperty("timeDate").ValueKind);
+        Assert.Equal("PT1H", toTimer.GetProperty("timer").GetProperty("timeDuration").GetString());
+        Assert.Equal(JsonValueKind.Null, toTimer.GetProperty("timer").GetProperty("timeCycle").ValueKind);
+        Assert.Equal(1, toTimer.GetProperty("renders").GetInt32());
+
+        var timerKept = root.GetProperty("timerKept");
+        Assert.Equal("timerStartEvent", timerKept.GetProperty("type").GetString());
+        Assert.Equal("PT5M", timerKept.GetProperty("timer").GetProperty("timeDuration").GetString());
+        Assert.Equal(JsonValueKind.Null, timerKept.GetProperty("timer").GetProperty("timeDate").ValueKind);
+
+        Assert.Equal("task", root.GetProperty("timerGone").GetProperty("type").GetString());
+        Assert.True(root.GetProperty("timerGone").GetProperty("timerAbsent").GetBoolean());
+
+        var toConditional = root.GetProperty("toConditional");
+        Assert.Equal("intermediateConditionalCatchEvent", toConditional.GetProperty("type").GetString());
+        Assert.Equal(string.Empty, toConditional.GetProperty("conditional").GetProperty("condition").GetString());
+        Assert.False(toConditional.GetProperty("conditional").TryGetProperty("deliveryMode", out _));
+
+        var conditionalKept = root.GetProperty("conditionalKept");
+        Assert.Equal("intermediateConditionalCatchEvent", conditionalKept.GetProperty("type").GetString());
+        Assert.Equal("ready == true", conditionalKept.GetProperty("conditional").GetProperty("condition").GetString());
+
+        Assert.Equal("task", root.GetProperty("conditionalGone").GetProperty("type").GetString());
+        Assert.True(root.GetProperty("conditionalGone").GetProperty("conditionalAbsent").GetBoolean());
+    }
+
+    [Fact]
+    public void TypeTransition_UserTaskMetadataCleanupAndReturn()
+    {
+        var engine = CreateEditorEngine();
+        engine.Execute(TypeTransitionHarnessJs);
+        using var result = JsonDocument.Parse(engine.Evaluate(
+            """
+            (() => {
+              const loadFixture = (node) => loadFromObject({
+                id: 'type-transition-user-metadata',
+                name: 'User task metadata',
+                initialEventId: 1,
+                variables: [{ id: 1, name: 'reviewers', dataType: 'string', isArray: true }],
+                lanes: [],
+                flowNodes: [
+                  { id: 1, name: 'Submitted', type: 'startEvent', x: 0, y: 0 },
+                  node,
+                  { id: 5, name: 'Other', type: 'userTask', x: 400, y: 0 }
+                ],
+                sequenceFlows: [
+                  { id: 101, name: '', sourceRef: 1, targetRef: 2 },
+                  { id: 201, name: 'Pass', sourceRef: 2, targetRef: 5 }
+                ]
+              });
+
+              // Claim/assignment metadata is cleared by node normalization.
+              loadFixture({
+                id: 2,
+                name: 'Review',
+                type: 'userTask',
+                x: 200,
+                y: 0,
+                requiresClaim: true,
+                claimMode: 'previous',
+                roles: ['Manager'],
+                assignee: 'alice'
+              });
+              render();
+              const claimCallback = captureTypeCallback(2);
+              resetTypeRedrawCounters();
+              claimCallback('task');
+              const claimNode = getNode(2);
+              const flow201 = model.sequenceFlows.find(f => f.id === 201);
+              const claim = {
+                type: claimNode.type,
+                requiresClaim: claimNode.requiresClaim,
+                claimMode: claimNode.claimMode,
+                roles: claimNode.roles,
+                assignee: claimNode.assignee,
+                flow: { roles: flow201.roles, canActWithoutClaim: flow201.canActWithoutClaim, canActWithoutClaimRoles: flow201.canActWithoutClaimRoles }
+              };
+
+              // Required assignment and inbox visibility clear with the type.
+              loadFixture({
+                id: 2,
+                name: 'Review',
+                type: 'userTask',
+                x: 200,
+                y: 0,
+                requiresAssignment: true,
+                assignmentMode: 'fromNode',
+                inheritAssignmentFromNodeId: 5,
+                inboxVisibilityCondition: '[sys.user] == \'alice\''
+              });
+              render();
+              const assignmentCallback = captureTypeCallback(2);
+              assignmentCallback('task');
+              const assignmentNode = getNode(2);
+              const assignment = {
+                type: assignmentNode.type,
+                requiresAssignment: assignmentNode.requiresAssignment,
+                assignmentMode: assignmentNode.assignmentMode,
+                inheritAssignmentFromNodeId: assignmentNode.inheritAssignmentFromNodeId,
+                inboxVisibilityAbsent: !Object.prototype.hasOwnProperty.call(assignmentNode, 'inboxVisibilityCondition')
+              };
+
+              // Engine-only outcomes and claim-bypass values reset on the flows.
+              loadFixture({
+                id: 2,
+                name: 'Review',
+                type: 'userTask',
+                x: 200,
+                y: 0,
+                multiInstance: { mode: 'parallel', source: 'collection', collectionVariable: 'reviewers', resultVariable: '' }
+              });
+              render();
+              model.sequenceFlows.find(f => f.id === 201).canActWithoutClaim = true;
+              model.sequenceFlows.find(f => f.id === 201).canActWithoutClaimRoles = ['Helper'];
+              model.sequenceFlows.find(f => f.id === 201).isSelectable = false;
+              const engineOnlyCallback = captureTypeCallback(2);
+              engineOnlyCallback('task');
+              const engineOnlyFlow = model.sequenceFlows.find(f => f.id === 201);
+              const engineOnly = {
+                type: getNode(2).type,
+                multiInstanceAbsent: !Object.prototype.hasOwnProperty.call(getNode(2), 'multiInstance'),
+                flow: {
+                  isSelectable: engineOnlyFlow.isSelectable,
+                  roles: engineOnlyFlow.roles,
+                  canActWithoutClaim: engineOnlyFlow.canActWithoutClaim,
+                  canActWithoutClaimRoles: engineOnlyFlow.canActWithoutClaimRoles
+                }
+              };
+
+              // Returning to a user task initializes fresh metadata.
+              const returnCallback = captureTypeCallback(2);
+              returnCallback('userTask');
+              const returnNode = getNode(2);
+              const returned = {
+                type: returnNode.type,
+                requiresClaim: returnNode.requiresClaim,
+                claimMode: returnNode.claimMode,
+                requiresAssignment: returnNode.requiresAssignment,
+                assignmentMode: returnNode.assignmentMode,
+                multiInstanceUnset: returnNode.multiInstance == null
+              };
+              return JSON.stringify({ claim, assignment, engineOnly, returned });
+            })()
+            """).AsString());
+
+        var root = result.RootElement;
+        var claim = root.GetProperty("claim");
+        Assert.Equal("task", claim.GetProperty("type").GetString());
+        Assert.False(claim.GetProperty("requiresClaim").GetBoolean());
+        Assert.Equal("fresh", claim.GetProperty("claimMode").GetString());
+        Assert.Empty(claim.GetProperty("roles").EnumerateArray());
+        Assert.Equal(JsonValueKind.Null, claim.GetProperty("assignee").ValueKind);
+        Assert.Empty(claim.GetProperty("flow").GetProperty("roles").EnumerateArray());
+        Assert.False(claim.GetProperty("flow").GetProperty("canActWithoutClaim").GetBoolean());
+        Assert.Empty(claim.GetProperty("flow").GetProperty("canActWithoutClaimRoles").EnumerateArray());
+
+        var assignment = root.GetProperty("assignment");
+        Assert.Equal("task", assignment.GetProperty("type").GetString());
+        Assert.False(assignment.GetProperty("requiresAssignment").GetBoolean());
+        Assert.Equal("fresh", assignment.GetProperty("assignmentMode").GetString());
+        Assert.Equal(JsonValueKind.Null, assignment.GetProperty("inheritAssignmentFromNodeId").ValueKind);
+        Assert.True(assignment.GetProperty("inboxVisibilityAbsent").GetBoolean());
+
+        var engineOnly = root.GetProperty("engineOnly");
+        Assert.Equal("task", engineOnly.GetProperty("type").GetString());
+        Assert.True(engineOnly.GetProperty("multiInstanceAbsent").GetBoolean());
+        Assert.True(engineOnly.GetProperty("flow").GetProperty("isSelectable").GetBoolean());
+        Assert.Empty(engineOnly.GetProperty("flow").GetProperty("roles").EnumerateArray());
+        Assert.False(engineOnly.GetProperty("flow").GetProperty("canActWithoutClaim").GetBoolean());
+        Assert.Empty(engineOnly.GetProperty("flow").GetProperty("canActWithoutClaimRoles").EnumerateArray());
+
+        var returned = root.GetProperty("returned");
+        Assert.Equal("userTask", returned.GetProperty("type").GetString());
+        Assert.False(returned.GetProperty("requiresClaim").GetBoolean());
+        Assert.Equal("fresh", returned.GetProperty("claimMode").GetString());
+        Assert.False(returned.GetProperty("requiresAssignment").GetBoolean());
+        Assert.Equal("fresh", returned.GetProperty("assignmentMode").GetString());
+        Assert.True(returned.GetProperty("multiInstanceUnset").GetBoolean());
+    }
+
+    [Fact]
+    public void TypeTransition_SameTypeAndSequentialActionsFollowBaseline()
+    {
+        var engine = CreateEditorEngine();
+        engine.Execute(TypeTransitionHarnessJs);
+        using var result = JsonDocument.Parse(engine.Evaluate(
+            """
+            (() => {
+              const loadFixture = () => loadFromObject({
+                id: 'type-transition-sequence',
+                name: 'Same type sequence',
+                initialEventId: 1,
+                variables: [],
+                lanes: [],
+                flowNodes: [
+                  { id: 1, name: 'Submitted', type: 'startEvent', x: 0, y: 0 },
+                  { id: 2, name: 'Review', type: 'userTask', x: 200, y: 0, roles: ['Agent'] },
+                  { id: 3, name: 'Done', type: 'endEvent', x: 400, y: 0 }
+                ],
+                sequenceFlows: [
+                  { id: 101, name: '', sourceRef: 1, targetRef: 2 },
+                  { id: 201, name: 'Finish', sourceRef: 2, targetRef: 3 }
+                ]
+              });
+
+              loadFixture();
+              render();
+              replayTypeChangeCommit();
+              const settledHistory = undoHistory.length;
+              const baseline = JSON.stringify(model);
+              const sameTypeCallback = captureTypeCallback(2);
+              resetTypeRedrawCounters();
+              clearTypeDialogs();
+              sameTypeCallback('userTask');
+              const sameType = {
+                renders: typeFullRenders,
+                dialogs: typeDialogs.length,
+                modelPreserved: JSON.stringify(model) === baseline,
+                historyUnchanged: (replayTypeChangeCommit(), undoHistory.length) === settledHistory
+              };
+
+              clearTypeDialogs();
+              const toTaskCallback = captureTypeCallback(2);
+              toTaskCallback('task');
+              replayTypeChangeCommit();
+              const afterConvert = JSON.stringify(model);
+              const converted = {
+                type: getNode(2).type,
+                historyCount: undoHistory.length
+              };
+              undo();
+              const afterUndo = {
+                type: getNode(2).type,
+                modelRestored: JSON.stringify(model) === baseline
+              };
+              const againCallback = captureTypeCallback(2);
+              againCallback('task');
+              replayTypeChangeCommit();
+              const afterAgain = {
+                type: getNode(2).type,
+                modelSame: JSON.stringify(model) === afterConvert,
+                historyCount: undoHistory.length
+              };
+              return JSON.stringify({ sameType, converted, afterUndo, afterAgain, settledHistory });
+            })()
+            """).AsString());
+
+        var root = result.RootElement;
+        var sameType = root.GetProperty("sameType");
+        Assert.Equal(1, sameType.GetProperty("renders").GetInt32());
+        Assert.Equal(0, sameType.GetProperty("dialogs").GetInt32());
+        Assert.True(sameType.GetProperty("modelPreserved").GetBoolean());
+        Assert.True(sameType.GetProperty("historyUnchanged").GetBoolean());
+
+        var converted = root.GetProperty("converted");
+        Assert.Equal("task", converted.GetProperty("type").GetString());
+        Assert.Equal(root.GetProperty("settledHistory").GetInt32() + 1, converted.GetProperty("historyCount").GetInt32());
+
+        var afterUndo = root.GetProperty("afterUndo");
+        Assert.Equal("userTask", afterUndo.GetProperty("type").GetString());
+        Assert.True(afterUndo.GetProperty("modelRestored").GetBoolean());
+
+        var afterAgain = root.GetProperty("afterAgain");
+        Assert.Equal("task", afterAgain.GetProperty("type").GetString());
+        Assert.True(afterAgain.GetProperty("modelSame").GetBoolean());
+        Assert.Equal(converted.GetProperty("historyCount").GetInt32(), afterAgain.GetProperty("historyCount").GetInt32());
+    }
+
+    [Fact]
+    public void TypeTransition_SaveRoundTripAndValidationFeedback()
+    {
+        var engine = CreateEditorEngine();
+        engine.Execute(TypeTransitionHarnessJs);
+        using var result = JsonDocument.Parse(engine.Evaluate(
+            """
+            (() => {
+              // Destructive conversion then save/reload stability.
+              loadFromObject({
+                id: 'type-transition-roundtrip',
+                name: 'Round trip',
+                initialEventId: 1,
+                variables: [],
+                lanes: [],
+                flowNodes: [
+                  { id: 1, name: 'Submitted', type: 'startEvent', x: 0, y: 0 },
+                  { id: 2, name: 'Review', type: 'userTask', x: 200, y: 0, roles: ['Agent'], requiresClaim: true },
+                  { id: 3, name: 'A', type: 'userTask', x: 400, y: -60 },
+                  { id: 4, name: 'B', type: 'userTask', x: 400, y: 60 },
+                  { id: 6, name: 'Done', type: 'endEvent', x: 600, y: 0 }
+                ],
+                sequenceFlows: [
+                  { id: 101, name: '', sourceRef: 1, targetRef: 2 },
+                  { id: 203, name: 'First', sourceRef: 2, targetRef: 6 },
+                  { id: 201, name: 'Second', sourceRef: 2, targetRef: 3 },
+                  { id: 202, name: 'Third', sourceRef: 2, targetRef: 4 },
+                  { id: 601, name: '', sourceRef: 3, targetRef: 6 },
+                  { id: 602, name: '', sourceRef: 4, targetRef: 6 }
+                ]
+              });
+              render();
+              const callback = captureTypeCallback(2);
+              resetTypeRedrawCounters();
+              callback('task');
+              const saved = JSON.stringify(model);
+              loadFromObject(JSON.parse(saved));
+              render();
+              const reloaded = JSON.stringify(model);
+              loadFromObject(JSON.parse(reloaded));
+              render();
+              const twice = JSON.stringify(model);
+              const roundTrip = {
+                savedOmitsPruned: !saved.includes('"id":201') && !saved.includes('"id":202'),
+                stable: reloaded === twice
+              };
+
+              // Valid final fixture saves without validation feedback.
+              loadFromObject({
+                id: 'type-transition-valid',
+                name: 'Valid conversion',
+                initialEventId: 1,
+                variables: [],
+                lanes: [],
+                flowNodes: [
+                  { id: 1, name: 'Submitted', type: 'startEvent', x: 0, y: 0 },
+                  { id: 2, name: 'Route', type: 'exclusiveGateway', x: 200, y: 0 },
+                  { id: 3, name: 'Big', type: 'userTask', x: 400, y: -60 },
+                  { id: 4, name: 'Small', type: 'userTask', x: 400, y: 60 },
+                  { id: 5, name: 'Done', type: 'endEvent', x: 600, y: 0 }
+                ],
+                sequenceFlows: [
+                  { id: 101, name: '', sourceRef: 1, targetRef: 2 },
+                  { id: 201, name: 'Large', sourceRef: 2, targetRef: 3, condition: 'amount > 100', conditionPriority: 1 },
+                  { id: 202, name: 'Fallback', sourceRef: 2, targetRef: 4, isDefault: true },
+                  { id: 301, name: '', sourceRef: 3, targetRef: 5 },
+                  { id: 302, name: '', sourceRef: 4, targetRef: 5 }
+                ]
+              });
+              render();
+              const validCallback = captureTypeCallback(2);
+              typeConfirmResponse = true;
+              validCallback('userTask');
+              const valid = {
+                errors: validateModelForSave(model),
+                type: getNode(2).type
+              };
+
+              // Cleared gateway conditions leave intentionally invalid feedback.
+              loadFromObject({
+                id: 'type-transition-invalid',
+                name: 'Invalid intermediate',
+                initialEventId: 1,
+                variables: [],
+                lanes: [],
+                flowNodes: [
+                  { id: 1, name: 'Submitted', type: 'startEvent', x: 0, y: 0 },
+                  { id: 2, name: 'Route', type: 'exclusiveGateway', x: 200, y: 0 },
+                  { id: 3, name: 'Big', type: 'userTask', x: 400, y: -60 },
+                  { id: 4, name: 'Small', type: 'userTask', x: 400, y: 60 },
+                  { id: 5, name: 'Done', type: 'endEvent', x: 600, y: 0 }
+                ],
+                sequenceFlows: [
+                  { id: 101, name: '', sourceRef: 1, targetRef: 2 },
+                  { id: 201, name: 'Large', sourceRef: 2, targetRef: 3, condition: 'amount > 100', conditionPriority: 1 },
+                  { id: 202, name: 'Fallback', sourceRef: 2, targetRef: 4, isDefault: true },
+                  { id: 301, name: '', sourceRef: 3, targetRef: 5 },
+                  { id: 302, name: '', sourceRef: 4, targetRef: 5 }
+                ]
+              });
+              render();
+              const invalidCallback = captureTypeCallback(2);
+              typeConfirmResponse = true;
+              invalidCallback('inclusiveGateway');
+              const invalid = {
+                errors: validateModelForSave(model),
+                type: getNode(2).type
+              };
+
+              // Blank conditional expression is reported by save validation.
+              loadFromObject({
+                id: 'type-transition-blank-conditional',
+                name: 'Blank conditional',
+                initialEventId: 1,
+                variables: [],
+                lanes: [],
+                flowNodes: [
+                  { id: 1, name: 'Submitted', type: 'startEvent', x: 0, y: 0 },
+                  { id: 2, name: 'Observe', type: 'task', x: 200, y: 0 },
+                  { id: 3, name: 'Done', type: 'endEvent', x: 400, y: 0 }
+                ],
+                sequenceFlows: [
+                  { id: 101, name: '', sourceRef: 1, targetRef: 2 },
+                  { id: 201, name: '', sourceRef: 2, targetRef: 3 }
+                ]
+              });
+              render();
+              const blankCallback = captureTypeCallback(2);
+              blankCallback('intermediateConditionalCatchEvent');
+              const blank = {
+                errors: validateModelForSave(model),
+                type: getNode(2).type
+              };
+              return JSON.stringify({ roundTrip, valid, invalid, blank });
+            })()
+            """).AsString());
+
+        var root = result.RootElement;
+        var roundTrip = root.GetProperty("roundTrip");
+        Assert.True(roundTrip.GetProperty("savedOmitsPruned").GetBoolean());
+        Assert.True(roundTrip.GetProperty("stable").GetBoolean());
+
+        var valid = root.GetProperty("valid");
+        Assert.Equal("userTask", valid.GetProperty("type").GetString());
+        Assert.Empty(valid.GetProperty("errors").EnumerateArray());
+
+        var invalid = root.GetProperty("invalid");
+        Assert.Equal("inclusiveGateway", invalid.GetProperty("type").GetString());
+        var invalidErrors = invalid.GetProperty("errors").EnumerateArray()
+            .Select(error => error.GetString() ?? string.Empty)
+            .ToArray();
+        Assert.NotEmpty(invalidErrors);
+        Assert.Contains(invalidErrors, error =>
+            error.Contains("default outgoing sequence flow", StringComparison.Ordinal));
+        Assert.Contains(invalidErrors, error =>
+            error.Contains("must define a condition", StringComparison.Ordinal));
+
+        var blank = root.GetProperty("blank");
+        Assert.Equal("intermediateConditionalCatchEvent", blank.GetProperty("type").GetString());
+        var blankErrors = blank.GetProperty("errors").EnumerateArray()
+            .Select(error => error.GetString() ?? string.Empty)
+            .ToArray();
+        Assert.Contains(blankErrors, error =>
+            error.Contains("condition must not be blank", StringComparison.Ordinal));
     }
 
     private static Engine CreateEditorEngine(string? beforeMainScript = null)

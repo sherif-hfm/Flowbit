@@ -7,8 +7,8 @@ using Xunit;
 namespace Flowbit.BrowserTests;
 
 /// <summary>
-/// Automated editor matrix (E1-E5) against the real copied editor served over
-/// localhost. E1-E5 run at 1440x900 and 1024x768; every scenario keeps fresh
+/// Automated editor matrix (E1-E8) against the real copied editor served over
+/// localhost. E1-E8 run at 1440x900 and 1024x768; every scenario keeps fresh
 /// state so a failed edit cannot invalidate later assertions. Editor open and
 /// inspector pin run inside RunAsync so setup failures still capture traces.
 /// </summary>
@@ -20,6 +20,14 @@ public sealed class EditorSmokeTests(BrowserStackFixture stack)
         { 1440, 900 },
         { 1024, 768 },
     };
+
+    private const string EndGuardAlert =
+        "Remove all outgoing sequence flows before changing this node to an end event.";
+
+    private const string GatewayClearsPrompt =
+        "Changing this node's gateway semantics clears outgoing defaults, conditions, priorities, roles, and variables. Continue?";
+
+    private const string TypeTransitionFixture = "editor-type-transition.json";
 
     private async Task<BrowserScenario> CreateEditorScenarioAsync(
         string name, int width, int height)
@@ -407,6 +415,273 @@ public sealed class EditorSmokeTests(BrowserStackFixture stack)
             await page.Keyboard.PressAsync("Control+y");
             await Assertions.Expect(renamed).ToHaveTextAsync(
                 titleBeforeUndo ?? string.Empty);
+        });
+    }
+
+    [Theory]
+    [MemberData(nameof(EditorViewports))]
+    public async Task E6_GuardedTypeChangesPromptRestoreAndConvert(int viewportWidth, int viewportHeight)
+    {
+        await using var scenario = await CreateEditorScenarioAsync(
+            $"e6-guarded-type-{viewportWidth}x{viewportHeight}", viewportWidth, viewportHeight);
+        scenario.ExpectDialogOnce("alert", EndGuardAlert, accept: false);
+        scenario.ExpectDialogOnce("confirm", GatewayClearsPrompt, accept: false);
+        scenario.ExpectDialogOnce("confirm", GatewayClearsPrompt, accept: true);
+        await scenario.RunAsync("guarded-type-changes", async () =>
+        {
+            await OpenEditorAsync(scenario);
+            var page = scenario.Page;
+            await EditorInteractions.LoadWorkflowAsync(
+                page, EditorInteractions.FixturePath(TypeTransitionFixture));
+
+            // 1) An end conversion on a node with outgoing flows is rejected by
+            // an alert; the rebuilt inspector restores the prior Type value.
+            await EditorInteractions.SelectNodeAsync(page, 2);
+            await EditorInteractions.SelectTypeAsync(page, "endEvent");
+            await Assertions.Expect(EditorInteractions.TypeSelect(page)).ToHaveValueAsync("userTask");
+            await Assertions.Expect(
+                page.Locator("#nodes .node[data-id='2'] > rect")).ToBeVisibleAsync();
+
+            // 2) Gateway conversion with routing metadata: Cancel restores the
+            // selector and keeps the gateway shape and edge metadata.
+            await EditorInteractions.SelectNodeAsync(page, 3);
+            await EditorInteractions.SelectTypeAsync(page, "userTask");
+            await Assertions.Expect(EditorInteractions.TypeSelect(page)).ToHaveValueAsync("exclusiveGateway");
+            await Assertions.Expect(
+                page.Locator("#nodes .node[data-id='3'] > polygon")).ToBeVisibleAsync();
+            var badgesBeforeAccept = await page.Locator("#inspector .inspector-card .badge").AllTextContentsAsync();
+            Assert.Contains(badgesBeforeAccept, badge =>
+                badge.Contains("[amount > 100]", StringComparison.Ordinal));
+            Assert.Contains(badgesBeforeAccept, badge =>
+                badge.Contains("default", StringComparison.Ordinal));
+
+            // 3) Accepting the same conversion converts the node and clears
+            // the outgoing routing metadata.
+            await EditorInteractions.SelectTypeAsync(page, "userTask");
+            await Assertions.Expect(EditorInteractions.TypeSelect(page)).ToHaveValueAsync("userTask");
+            await Assertions.Expect(
+                page.Locator("#nodes .node[data-id='3'] > rect")).ToBeVisibleAsync();
+            var badgesAfterAccept = await page.Locator("#inspector .inspector-card .badge").AllTextContentsAsync();
+            Assert.DoesNotContain(badgesAfterAccept, badge =>
+                badge.Contains("[amount > 100]", StringComparison.Ordinal));
+            Assert.DoesNotContain(badgesAfterAccept, badge =>
+                badge.Contains("default", StringComparison.Ordinal));
+            Assert.Equal(2, badgesAfterAccept.Count);
+
+            // 4) An accepted change driven purely through the keyboard: focus
+            // the Type select and press ArrowDown (user task -> task).
+            var keyboardSelect = EditorInteractions.TypeSelect(page);
+            await keyboardSelect.FocusAsync();
+            await page.Keyboard.PressAsync("ArrowDown");
+            await Assertions.Expect(keyboardSelect).ToHaveValueAsync("task");
+            await EditorInteractions.SelectNodeAsync(page, 3);
+            await Assertions.Expect(EditorInteractions.TypeSelect(page)).ToHaveValueAsync("task");
+        });
+    }
+
+    [Theory]
+    [MemberData(nameof(EditorViewports))]
+    public async Task E7_DestructiveConversionUndoRedoAndReload(int viewportWidth, int viewportHeight)
+    {
+        await using var scenario = await CreateEditorScenarioAsync(
+            $"e7-destructive-{viewportWidth}x{viewportHeight}", viewportWidth, viewportHeight);
+        await scenario.RunAsync("destructive-conversion-history", async () =>
+        {
+            await OpenEditorAsync(scenario);
+            var page = scenario.Page;
+            await EditorInteractions.LoadWorkflowAsync(
+                page, EditorInteractions.FixturePath(TypeTransitionFixture));
+
+            // Prune: the user task with two outgoing flows becomes a task and
+            // keeps only the first array-ordered outgoing flow.
+            await EditorInteractions.SelectNodeAsync(page, 2);
+            await EditorInteractions.SelectTypeAsync(page, "task");
+            await Assertions.Expect(EditorInteractions.TypeSelect(page)).ToHaveValueAsync("task");
+            await Assertions.Expect(
+                page.Locator("#edges .edge-path-layer .edge[data-flow='103']")).ToHaveCountAsync(0);
+            await Assertions.Expect(
+                page.Locator("#edges .edge-path-layer .edge[data-flow='102']")).ToHaveCountAsync(1);
+
+            // Ctrl+Z restores the whole graph; Ctrl+Y re-applies the conversion.
+            await page.Keyboard.PressAsync("Control+z");
+            await Assertions.Expect(
+                page.Locator("#edges .edge-path-layer .edge[data-flow='103']")).ToHaveCountAsync(1);
+
+            // With the redo entry present, a rejected edit must consume no
+            // history and must not lose the redo: the end guard alert fires
+            // (node 2 still has outgoing flows), the selector is restored, and
+            // Ctrl+Y re-applies the queued conversion.
+            scenario.ExpectDialogOnce("alert", EndGuardAlert, accept: false);
+            await EditorInteractions.SelectTypeAsync(page, "endEvent");
+            await Assertions.Expect(EditorInteractions.TypeSelect(page)).ToHaveValueAsync("userTask");
+            await page.Keyboard.PressAsync("Control+y");
+            await Assertions.Expect(
+                page.Locator("#edges .edge-path-layer .edge[data-flow='103']")).ToHaveCountAsync(0);
+            await page.Keyboard.PressAsync("Control+z");
+            await Assertions.Expect(
+                page.Locator("#edges .edge-path-layer .edge[data-flow='103']")).ToHaveCountAsync(1);
+            await page.Keyboard.PressAsync("Control+y");
+            await Assertions.Expect(
+                page.Locator("#edges .edge-path-layer .edge[data-flow='103']")).ToHaveCountAsync(0);
+
+            // Boundary cleanup: converting the service task removes its error
+            // boundary and the boundary's incident flow; undo/redo round-trips.
+            await EditorInteractions.SelectNodeAsync(page, 7);
+            await EditorInteractions.SelectTypeAsync(page, "userTask");
+            await Assertions.Expect(
+                page.Locator("#nodes .node[data-id='8']")).ToHaveCountAsync(0);
+            await Assertions.Expect(
+                page.Locator("#edges .edge-path-layer .edge[data-flow='801']")).ToHaveCountAsync(0);
+            await page.Keyboard.PressAsync("Control+z");
+            await Assertions.Expect(
+                page.Locator("#nodes .node[data-id='8']")).ToHaveCountAsync(1);
+            await page.Keyboard.PressAsync("Control+y");
+            await Assertions.Expect(
+                page.Locator("#nodes .node[data-id='8']")).ToHaveCountAsync(0);
+
+            // The boundary node's disabled Type field stays read-only before
+            // the destructive conversion; after it, the boundary is gone.
+            await page.Keyboard.PressAsync("Control+z");
+            await Assertions.Expect(
+                page.Locator("#nodes .node[data-id='8']")).ToHaveCountAsync(1);
+            await EditorInteractions.SelectNodeAsync(page, 8);
+            var boundaryTypeInput = EditorInteractions.TypeDisabledValue(page);
+            await Assertions.Expect(boundaryTypeInput).ToBeDisabledAsync();
+            await Assertions.Expect(boundaryTypeInput).ToHaveValueAsync("Error Boundary Event");
+
+            // Save the pruned, boundary-free result and reload it in a fresh page.
+            await page.Keyboard.PressAsync("Control+y");
+            await Assertions.Expect(
+                page.Locator("#nodes .node[data-id='8']")).ToHaveCountAsync(0);
+            var saved = await EditorInteractions.SaveAndCaptureDownloadAsync(
+                page, scenario, scenario.ArtifactDirectory);
+            var nodes = saved.RootElement.GetProperty("flowNodes");
+            Assert.Equal(
+                "task",
+                nodes.EnumerateArray().First(node => node.GetProperty("id").GetInt32() == 2)
+                    .GetProperty("type").GetString());
+            Assert.Equal(
+                "userTask",
+                nodes.EnumerateArray().First(node => node.GetProperty("id").GetInt32() == 7)
+                    .GetProperty("type").GetString());
+            Assert.DoesNotContain(nodes.EnumerateArray(), node => node.GetProperty("id").GetInt32() == 8);
+            var flows = saved.RootElement.GetProperty("sequenceFlows");
+            Assert.DoesNotContain(flows.EnumerateArray(), flow =>
+                flow.GetProperty("id").GetInt32() is 103 or 801);
+
+            var freshPage = await scenario.Context.NewPageAsync();
+            try
+            {
+                await freshPage.GotoAsync($"{stack.EditorBaseAddress}/",
+                    new PageGotoOptions { WaitUntil = WaitUntilState.Load });
+                await freshPage.WaitForSelectorAsync("#svg");
+                await EditorInteractions.LoadSavedFileAsync(freshPage, scenario.LastSavedFile!);
+                await Assertions.Expect(
+                    freshPage.Locator("#nodes .node[data-id='8']")).ToHaveCountAsync(0);
+                await Assertions.Expect(
+                    freshPage.Locator("#edges .edge-path-layer .edge[data-flow='103']")).ToHaveCountAsync(0);
+                await Assertions.Expect(
+                    freshPage.Locator("#edges .edge-path-layer .edge[data-flow='801']")).ToHaveCountAsync(0);
+                await Assertions.Expect(
+                    freshPage.Locator("#nodes .node[data-id='2'] > rect")).ToBeVisibleAsync();
+            }
+            finally
+            {
+                await freshPage.CloseAsync();
+            }
+        });
+    }
+
+    [Theory]
+    [MemberData(nameof(EditorViewports))]
+    public async Task E8_StartConversionSettingsAndDefaults(int viewportWidth, int viewportHeight)
+    {
+        await using var scenario = await CreateEditorScenarioAsync(
+            $"e8-start-conversion-{viewportWidth}x{viewportHeight}", viewportWidth, viewportHeight);
+        await scenario.RunAsync("start-and-settings-conversion", async () =>
+        {
+            await OpenEditorAsync(scenario);
+            var page = scenario.Page;
+            await EditorInteractions.LoadWorkflowAsync(
+                page, EditorInteractions.FixturePath(TypeTransitionFixture));
+
+            // Message start → ordinary start materializes the typed variables.
+            await EditorInteractions.SelectNodeAsync(page, 9);
+            await Assertions.Expect(page.Locator("#inspector")).ToContainTextAsync("Message (start)");
+            await EditorInteractions.SelectTypeAsync(page, "startEvent");
+            await Assertions.Expect(EditorInteractions.TypeSelect(page)).ToHaveValueAsync("startEvent");
+            await Assertions.Expect(page.Locator("#inspector")).ToContainTextAsync("Variables");
+
+            // Back to a message start: the message configuration is rebuilt
+            // with defaults, so the required settings must be completed again.
+            await EditorInteractions.SelectTypeAsync(page, "messageStartEvent");
+            await Assertions.Expect(EditorInteractions.TypeSelect(page)).ToHaveValueAsync("messageStartEvent");
+            var inspectorField = (string label) => page.Locator("#inspector .field")
+                .Filter(new LocatorFilterOptions { HasText = label }).First.Locator("input").First;
+            await Assertions.Expect(inspectorField("Client id")).ToHaveValueAsync(string.Empty);
+            await inspectorField("Client id").FillAsync("svc-orders");
+            await inspectorField("Client secret").FillAsync("svc-secret-123");
+            await inspectorField("Header name").FillAsync("X-Token");
+            await inspectorField("Header value").FillAsync("tok-123");
+            var pathFields = page.Locator("#inspector .inspector-card .field")
+                .Filter(new LocatorFilterOptions { HasText = "Body path" });
+            // The optional no-default mapping is omitted by the reverse
+            // conversion; only the required mapping remains and needs its path.
+            await Assertions.Expect(pathFields).ToHaveCountAsync(1);
+            await pathFields.Nth(0).Locator("input").FillAsync("amount");
+            // Entering a timer type seeds the PT1H default in the inspector.
+            await EditorInteractions.SelectNodeAsync(page, 5);
+            await EditorInteractions.SelectTypeAsync(page, "intermediateTimerCatchEvent");
+            await Assertions.Expect(EditorInteractions.TypeSelect(page)).ToHaveValueAsync("intermediateTimerCatchEvent");
+            await Assertions.Expect(
+                page.Locator("#inspector [data-duration-amount]")).ToHaveValueAsync("1");
+            await Assertions.Expect(
+                page.Locator("#inspector [data-duration-unit]")).ToHaveValueAsync("hours");
+
+            // A conditional catch seeds a blank condition; complete it before saving.
+            await EditorInteractions.SelectNodeAsync(page, 4);
+            await EditorInteractions.SelectTypeAsync(page, "intermediateConditionalCatchEvent");
+            await Assertions.Expect(EditorInteractions.TypeSelect(page)).ToHaveValueAsync("intermediateConditionalCatchEvent");
+            var conditionInput = page.Locator("#inspector textarea").First;
+            await Assertions.Expect(conditionInput).ToHaveValueAsync(string.Empty);
+            await conditionInput.FillAsync("amount > 10");
+
+            // Converting the default start to a task leaves the message start
+            // as the only entry; the saved default becomes null.
+            await EditorInteractions.SelectNodeAsync(page, 1);
+            await EditorInteractions.SelectTypeAsync(page, "task");
+            await Assertions.Expect(EditorInteractions.TypeSelect(page)).ToHaveValueAsync("task");
+
+            var saved = await EditorInteractions.SaveAndCaptureDownloadAsync(
+                page, scenario, scenario.ArtifactDirectory);
+            var savedRoot = saved.RootElement;
+            Assert.Equal(JsonValueKind.Null, savedRoot.GetProperty("initialEventId").ValueKind);
+            var nodes = savedRoot.GetProperty("flowNodes");
+            var node9 = nodes.EnumerateArray().First(node => node.GetProperty("id").GetInt32() == 9);
+            Assert.Equal("messageStartEvent", node9.GetProperty("type").GetString());
+            Assert.Equal(
+                "svc-orders",
+                node9.GetProperty("message").GetProperty("clientId").GetString());
+            var mappings = node9.GetProperty("message").GetProperty("outputMappings").EnumerateArray().ToArray();
+            Assert.Single(mappings);
+            Assert.Equal(("requestedAmount", "amount", true), (
+                mappings[0].GetProperty("variable").GetString(),
+                mappings[0].GetProperty("path").GetString(),
+                mappings[0].GetProperty("required").GetBoolean()));
+            var node5 = nodes.EnumerateArray().First(node => node.GetProperty("id").GetInt32() == 5);
+            Assert.Equal("intermediateTimerCatchEvent", node5.GetProperty("type").GetString());
+            Assert.Equal(
+                "PT1H",
+                node5.GetProperty("timer").GetProperty("timeDuration").GetString());
+            var node4 = nodes.EnumerateArray().First(node => node.GetProperty("id").GetInt32() == 4);
+            Assert.Equal("intermediateConditionalCatchEvent", node4.GetProperty("type").GetString());
+            Assert.Equal(
+                "amount > 10",
+                node4.GetProperty("conditional").GetProperty("condition").GetString());
+            Assert.Equal(
+                "task",
+                nodes.EnumerateArray().First(node => node.GetProperty("id").GetInt32() == 1)
+                    .GetProperty("type").GetString());
         });
     }
 }

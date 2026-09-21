@@ -2,9 +2,9 @@
 
 [Plan index](README.md) · [Gap inventory](gaps.md)
 
-**Status: In progress — Stage 7's smoke suite and Stages 8–9 are implemented;
-Stages 8–9 are locally accepted (37 → 33 engine methods after Stage 9), and
-stages 10–11 remain planned.** This roadmap
+**Status: In progress — Stage 7's smoke suite and Stages 8–10 are implemented;
+Stages 8–10 are locally accepted (37 → 33 engine methods after Stage 9), and
+stage 11 remains planned.** This roadmap
 records the selected follow-up work and the
 accepted C# compatibility break. Saving this document does not complete any
 implementation or acceptance gate.
@@ -94,6 +94,17 @@ for commands and artifacts.
 - Keep management-list status parsing and dynamic role capture with their existing owners.
 
 ### Stage 10 — isolate editor node-type transitions
+
+[Detailed implementation plan](stage-10-editor-node-type-transitions.md)
+- transition-helper contract, retained inspector redraws, ordered graph cleanup,
+characterization matrix, dialog cancellation coverage, real-browser acceptance,
+documentation, and rollback. **Status: implemented and locally accepted.** The
+transition body lives in `changeNodeTypeFromInspector(node, nextType)` with the
+selector adapter owning both redraw paths; 20 characterization tests passed
+before the extraction, the final suites passed (1,950 solution, 321 focused,
+and a 27-case browser suite whose editor and harness cases all passed with one
+unrelated R6 scroll-timing flake passing on retry), and headed inspection
+evidence is recorded in the stage document's implementation record.
 
 - Move the Type selector's transition callback into a named `changeNodeTypeFromInspector(node, nextType)` function. Keep rendering orchestration in the inspector.
 - Preserve confirmation/rejection behavior, gateway metadata cleanup, role references, boundary deletion, message-start conversion, default-start reassignment, normalization order, redraws, and undo/redo.

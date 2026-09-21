@@ -25,7 +25,7 @@ the named symbols before implementation; size alone does not justify extraction.
 | 2 | Engine interface breadth | `IWorkflowEngineService` declares 33 `Task`-returning members after Stages 8–9 | Stage 8 removed three query/detail forwards; Stage 9 moved four role operations to `IUserTaskRoleManagementService` |
 | 3 | `WorkflowDefinitionService` | 3,795 lines combining validation and lifecycle operations | Added [Stage 6](stage-06-definition-validation.md) for validation extraction |
 | 4 | Remaining query assembly duplication | `WorkflowRuntimeRepository` has 7,289 lines; basic filters and instance/inbox sort parsing are already shared | [Stage 2](stage-02-repository-query-helpers.md) extracts ownership predicates and inbox visibility CTEs; further candidates need separate evidence |
-| 5 | Editor hotspots outside save validation | `renderNodeInspector` (~524 lines), `compileInboxVisibilityCondition` (~499 lines), `applyTypeInvariants` (~327 lines); flat script with no modules | [Stage 4](stage-04-editor-validation.md) covers `validateModelForSave` only |
+| 5 | Editor hotspots outside save validation | `renderNodeInspector` (~524 lines), `compileInboxVisibilityCondition` (~499 lines), `applyTypeInvariants` (~327 lines); flat script with no modules | [Stage 4](stage-04-editor-validation.md) covers `validateModelForSave`; [Stage 10](stage-10-editor-node-type-transitions.md) implemented the Type-selector transition extraction; the remaining hotspots stay deferred |
 | 6 | Secondary oversized UI units | Four management pages with approximately 332–835-line `@code` blocks; `WorkflowApiClient` 1,857 lines | [Stage 5](stage-05-instance-detail-components.md) covers `InstanceDetail.razor` only |
 | 7 | Automated Chromium smoke suite exists; residual Stage 5 acceptance remains | Repeatable E1–E5/R1–R6 coverage plus a `browser-smoke` CI job; native-picker, Worker-driven batch links, and remote CI observation are still open | [Stage 7](stage-07-browser-smoke-and-stage-05-acceptance.md) implemented for the no-Worker smoke suite; Stage 5 acceptance still open |
 
@@ -180,6 +180,15 @@ bound parameters, ordering, paging, and transaction semantics. A generic query
 framework is not presently justified.
 
 ## 5. Editor hotspots outside save validation
+
+[Stage 10's detailed plan](stage-10-editor-node-type-transitions.md), prepared
+against `239a30e`, isolated the Type selector's graph mutations into the named
+`changeNodeTypeFromInspector` helper while retaining inspector redraws and
+existing history behavior. It is implemented and locally accepted; the
+transition body now sits outside `renderNodeInspector()` with the selector
+adapter owning both redraw decisions. Parser decomposition,
+`applyTypeInvariants` changes, and other inspector extractions remain
+deferred.
 
 Stage 4 addressed `validateModelForSave` (now a dispatcher that builds a fresh
 context with `createSaveValidationContext` and runs named `validateSave*`

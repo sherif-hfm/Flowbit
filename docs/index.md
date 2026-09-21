@@ -43,8 +43,9 @@ stage. Each stage records its implementation and acceptance status. The
 [refactoring gap inventory](refactoring/gaps.md) records deferred and unplanned
 work; the [remaining-gaps implementation plan](refactoring/remaining-gaps-implementation-plan.md)
 selects the prioritized follow-up stages and records their boundaries. The
-follow-up roadmap remains planned for Stages 10–11; Stage 7's no-Worker smoke
-suite and Stage 8's compatibility removal are implemented and passing locally.
+follow-up roadmap's Stage 10 is implemented and locally accepted; Stage 11
+remains planned. Stage 7's no-Worker smoke suite and Stage 8's compatibility
+removal are implemented and passing locally.
 The [Stage 7 browser smoke suite](refactoring/stage-07-browser-smoke-and-stage-05-acceptance.md)
 is implemented and passing locally (`Flowbit/tests/Flowbit.BrowserTests/`); the
 remaining Stage 5 acceptance rows (headed manual inspection, native-picker
@@ -63,6 +64,16 @@ engine methods), preserved transaction and lock behavior, and C# caller
 migration. HTTP routes, DTOs, and role-policy runtime behavior are unchanged.
 All local Stage 9 gates passed: 1,930 solution tests and 20 standalone
 Chromium tests, with no failures or skips.
+
+The [Stage 10 editor node-type transition plan](refactoring/stage-10-editor-node-type-transitions.md)
+details the implemented `changeNodeTypeFromInspector` helper, the preserved
+graph cleanup and undo/redo behavior, characterization coverage, and browser
+acceptance. Stage 10 is implemented and locally accepted: 20 characterization
+tests passed against the previous inline callback before extraction, and the
+final gates passed 1,950 solution tests with all editor and harness cases of
+the standalone Chromium suite passing (E1-E8 plus regressions; one unrelated
+R6 scroll-timing flake passed on retry) and headed inspection evidence recorded
+in the stage document.
 
 ## Reference ownership
 

@@ -250,6 +250,40 @@ public static class EditorInteractions
     public static async Task<string> ReadWorkflowNameAsync(IPage page) =>
         await page.Locator("#wfName").InputValueAsync();
 
+    /// <summary>The inspector "Type" select for the currently selected node.</summary>
+    public static ILocator TypeSelect(IPage page) =>
+        page.Locator("#inspector .field").Filter(new LocatorFilterOptions
+        {
+            HasText = "Type",
+        }).First.Locator("select").First;
+
+    /// <summary>
+    /// The read-only "Type" text input shown for boundary events (no select).
+    /// </summary>
+    public static ILocator TypeDisabledValue(IPage page) =>
+        page.Locator("#inspector .field").Filter(new LocatorFilterOptions
+        {
+            HasText = "Type",
+        }).First.Locator("input").First;
+
+    /// <summary>
+    /// Selects a node with a stationary pan-tool click on its center so the
+    /// inspector shows it (the editor's pan mode inspects without moving).
+    /// </summary>
+    public static async Task SelectNodeAsync(IPage page, int nodeId)
+    {
+        var box = await GetNodeBoxAsync(page, nodeId);
+        await ClickCenterAsync(page, box);
+        await Assertions.Expect(page.Locator("#inspector")).ToContainTextAsync($"Node #{nodeId}");
+    }
+
+    /// <summary>
+    /// Changes the selected node's Type through the real select control. Any
+    /// guard dialog is answered by the scenario's registered dialog handlers.
+    /// </summary>
+    public static async Task SelectTypeAsync(IPage page, string value) =>
+        await TypeSelect(page).SelectOptionAsync(value);
+
     public static async Task SetWorkflowNameAsync(IPage page, string value) =>
         await page.Locator("#wfName").FillAsync(value);
 

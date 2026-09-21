@@ -71,6 +71,9 @@ the run — it never silently connects to a developer's running stack.
 | E3 lane drag | 1440x900, 1024x768 | Lane header drag moves the lane with its children; other lanes fixed; persisted positions verified. |
 | E4 validation feedback | 1440x900, 1024x768 | Save of a deliberately invalid fixture shows the "Workflow cannot be saved" dialog with the gateway topology error, focus enters the close control, no download is emitted, Escape recovers, and a later valid save succeeds. |
 | E5 keyboard/focus | 1440x900, 1024x768 | Tab reaches the toolbar menus and workflow name, Enter opens the File menu, Escape closes it and restores trigger focus, `/` opens diagram search with result selection, typing tool-shortcut letters inside inputs never switches tools, and undo/redo round-trips outside a text input while native input editing stays native. |
+| E6 guarded type changes | 1440x900, 1024x768 | Rejected end conversion (guard alert dismissed, selector restored, node shape unchanged), gateway Cancel (confirmation dismissed, gateway shape and edge condition/default metadata kept) and Accept (node converted, routing metadata cleared from the outgoing-flow cards), plus an accepted conversion driven purely through keyboard operation of the Type select. Dialogs are answered through the queued exact expectations. |
+| E7 destructive conversion and history | 1440x900, 1024x768 | User task with two outgoing flows converts to an automatic task (first array-ordered flow kept, extra flow removed); with a redo entry present, a rejected end conversion consumes no history and preserves the redo, which then re-applies; service task converts to a user task (error boundary and its incident flow removed); keyboard Ctrl+Z/Ctrl+Y round-trips the conversions; the boundary's disabled Type field is read-only before removal; the pruned model saves and reloads in a fresh page without the removed boundary/flows. |
+| E8 start conversion, settings, and defaults | 1440x900, 1024x768 | Message start → ordinary start materializes the typed start variables; converting back rebuilds the message configuration with defaults (optional no-default mapping omitted), the settings are retyped through the inspector; timer catch seeds PT1H; conditional catch seeds a blank condition that is completed before saving; converting the default start leaves the message start as the only entry (`initialEventId: null` in the saved JSON). |
 | R1 normal task lifecycle | 1440x900 | Inbox → claim → action with a declared variable → instance completes; detail shows state/history/value; HTTP read-back confirms one persisted action and an emptied inbox. |
 | R2 instance navigation and terminal states | 1440x900 | Open from the list, follow real section links (scroll positions asserted), navigate to a completed instance and back without stale rows. |
 | R3 identity replacement | 1440x900 | A second page changes the identity while detail is open; actions follow the current identity; reload does not revive prior-actor actions; clearing and re-applying the identity behaves. |
@@ -78,11 +81,20 @@ the run — it never silently connects to a developer's running stack.
 | R5 real polling and disposal | 1440x900 | An open poll-eligible MI detail updates after an out-of-band HTTP completion within the five-second polling window; navigate away/back shows current data; host logs record no error-level circuit issues. |
 | R6 responsive controls and focus | 1024x768, 390x844 | Real responsive navigation, section links preserving the instance path/query, keyboard focus, wheel scrolling to clipped table columns, and parsed submitted JSON. |
 
-The 17 product scenarios are accompanied by three harness regression tests:
+The 23 product scenarios are accompanied by four harness regression tests:
 auxiliary-page errors/dialogs must fail, successful diagnostics must retain
-warnings/transport failures, and timed-out work must stop before returning.
-Their `harness-expected-*` artifacts intentionally contain injected failures.
-The suite therefore runs 20 cases in total.
+warnings/transport failures, timed-out work must stop before returning, and
+queued one-shot dialog expectations must accept, dismiss, fail on unconsumed
+entries, and fail on unmatched dialogs. The `harness-expected-*` artifacts
+intentionally contain injected failures. The suite therefore runs 27 cases in
+total (E1-E8 at both viewports plus the runtime scenarios).
+
+Scenarios register exact one-shot dialog expectations through
+`ExpectDialogOnce(dialogType, message, accept)` (checked before the
+fallback-prefix handling; unconsumed or unmatched dialogs fail the scenario and
+consumed responses are recorded in `diagnostics.json`), while
+`ExpectDialogStartingWith` keeps the fallback-save alert accepted across
+repeated saves.
 
 Runtime tests wait for `data-interactive="true"` on the UI shell and instance
 summary before acting on freshly navigated pages. These nonvisual markers use

@@ -72,4 +72,58 @@ public sealed class HarnessDiagnosticsTests(BrowserStackFixture stack)
         Assert.True(stopped);
         Assert.Empty(scenario.Context.Pages);
     }
+
+    [Fact]
+    public async Task QueuedDialogExpectationsAcceptDismissAndFailCorrectly()
+    {
+        // An expected dialog answered with OK is consumed and returns true.
+        await using var acceptScenario = await stack.CreateScenario("harness-dialog-accept");
+        acceptScenario.ExpectDialogOnce("confirm", "injected accept confirm", accept: true);
+        await acceptScenario.RunAsync("dialog-accept", async () =>
+        {
+            var page = await acceptScenario.Context.NewPageAsync();
+            Assert.True(await page.EvaluateAsync<bool>("confirm('injected accept confirm')"));
+        });
+        Assert.Contains(
+            acceptScenario.DialogResponses,
+            response => response.Contains("accepted", StringComparison.Ordinal) &&
+                response.Contains("injected accept confirm", StringComparison.Ordinal));
+
+        // An expected dialog answered with Cancel is consumed and returns false.
+        await using var dismissScenario = await stack.CreateScenario("harness-dialog-dismiss");
+        dismissScenario.ExpectDialogOnce("confirm", "injected dismiss confirm", accept: false);
+        await dismissScenario.RunAsync("dialog-dismiss", async () =>
+        {
+            var page = await dismissScenario.Context.NewPageAsync();
+            Assert.False(await page.EvaluateAsync<bool>("confirm('injected dismiss confirm')"));
+        });
+        Assert.Contains(
+            dismissScenario.DialogResponses,
+            response => response.Contains("dismissed", StringComparison.Ordinal) &&
+                response.Contains("injected dismiss confirm", StringComparison.Ordinal));
+
+        // An unconsumed one-shot expectation fails the scenario body.
+        await using var unconsumedScenario = await stack.CreateScenario("harness-dialog-unconsumed");
+        unconsumedScenario.ExpectDialogOnce("confirm", "never shown", accept: true);
+        var unconsumedFailure = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => unconsumedScenario.RunAsync("dialog-unconsumed", async () =>
+            {
+                var page = await unconsumedScenario.Context.NewPageAsync();
+                await page.EvaluateAsync("() => 1");
+            }));
+        Assert.Contains("Unconsumed dialog expectations", unconsumedFailure.Message);
+        Assert.Contains("never shown", unconsumedFailure.Message);
+
+        // A dialog that matches neither the queue head nor a prefix fails.
+        await using var unexpectedScenario = await stack.CreateScenario("harness-dialog-unexpected");
+        unexpectedScenario.ExpectDialogOnce("confirm", "a different message", accept: true);
+        var unexpectedFailure = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => unexpectedScenario.RunAsync("dialog-unexpected", async () =>
+            {
+                var page = await unexpectedScenario.Context.NewPageAsync();
+                await page.EvaluateAsync("confirm('injected unexpected confirm')");
+            }));
+        Assert.Contains("Unexpected dialogs", unexpectedFailure.Message);
+        Assert.Contains("injected unexpected confirm", unexpectedFailure.Message);
+    }
 }

@@ -103,7 +103,15 @@ Everything lives in `flowbit-editor.html`. The key pieces:
 - **Inspector**: The right-hand `<aside id="inspector">` is a context panel that
   edits whatever is selected (a flow node, a sequence flow, or a lane). Built
   dynamically via `field()`, `selectField()`, `variableRow()`, and
-  `variableCheckbox()` helpers.
+  `variableCheckbox()` helpers. The Type selector's graph-changing body lives in
+  the named helper `changeNodeTypeFromInspector(node, nextType)` (before
+  `renderNodeInspector()`); it returns `false` for a rejected transition (end
+  target with outgoing flows, or declined gateway-semantics confirmation) and
+  `true` after all accepted-transition work. The selector adapter inside
+  `renderNodeInspector()` owns both redraw decisions (`renderInspector()` on
+  rejection, full `render()` on acceptance); the helper never redraws or
+  touches history — history commits stay with the document change/click
+  handlers.
 - **Interaction**: Pointer events on the SVG drive dragging nodes, dragging lanes
   (which moves their contained nodes), and resizing lanes. "Connect mode" lets
   the user click a source node then a target node to create a `sequenceFlow`

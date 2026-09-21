@@ -36,6 +36,8 @@ public sealed class BrowserScenario : IAsyncDisposable
     private EventHandler<string> pageErrorListener = null!;
     private EventHandler<IDownload> downloadListener = null!;
     private List<string> expectedDialogPrefixes = [];
+    private readonly Queue<ExpectedDialogResponse> expectedDialogQueue = new();
+    private readonly List<string> dialogResponses = [];
     private Func<Task>? cleanupHook;
     private Exception? cleanupFailure;
     private bool bodySucceeded;
@@ -101,10 +103,16 @@ public sealed class BrowserScenario : IAsyncDisposable
         get { lock (pageErrors) return [.. pageErrors]; }
     }
 
-    /// <summary>Unexpected dialog texts (dialogs not matching an expected handler).</summary>
+    /// <summary>Dialog texts (dialogs not matching an expected handler).</summary>
     public IReadOnlyList<string> UnexpectedDialogs
     {
         get { lock (unexpectedDialogs) return [.. unexpectedDialogs]; }
+    }
+
+    /// <summary>Consumed and dismissed dialog responses recorded so far.</summary>
+    public IReadOnlyList<string> DialogResponses
+    {
+        get { lock (dialogResponses) return [.. dialogResponses]; }
     }
 
     /// <summary>Warnings recorded during the scenario (for diagnosis).</summary>
@@ -129,16 +137,69 @@ public sealed class BrowserScenario : IAsyncDisposable
         expectedDialogPrefixes = [.. prefixes];
     }
 
+    /// <summary>
+    /// Queues a one-shot exact dialog expectation. The next dialog must match
+    /// the exact dialog type and message; it is then accepted or dismissed per
+    /// the flag. Queued expectations are checked before the fallback-prefix
+    /// handling, and any unconsumed expectation fails the scenario after its
+    /// body completes. Responses are recorded in the diagnostics.
+    /// </summary>
+    public void ExpectDialogOnce(string dialogType, string message, bool accept)
+    {
+        lock (expectedDialogQueue)
+            expectedDialogQueue.Enqueue(new ExpectedDialogResponse(dialogType, message, accept));
+    }
+
     private async Task HandleDialogAsync(IDialog dialog)
     {
         var text = dialog.Message ?? string.Empty;
+        ExpectedDialogResponse? expected = null;
+        lock (expectedDialogQueue)
+        {
+            if (expectedDialogQueue.Count > 0)
+            {
+                var head = expectedDialogQueue.Peek();
+                if (head.Matches(dialog.Type, text))
+                {
+                    expected = head;
+                    expectedDialogQueue.Dequeue();
+                }
+            }
+        }
+        if (expected is not null)
+        {
+            RecordDialogResponse(dialog.Type, expected.Accept ? "accepted" : "dismissed", text);
+            if (expected.Accept)
+            {
+                await dialog.AcceptAsync();
+            }
+            else
+            {
+                await dialog.DismissAsync();
+            }
+            return;
+        }
         if (expectedDialogPrefixes.Any(prefix => text.StartsWith(prefix, StringComparison.Ordinal)))
         {
+            RecordDialogResponse(dialog.Type, "prefix accepted", text);
             await dialog.AcceptAsync();
             return;
         }
         lock (unexpectedDialogs) unexpectedDialogs.Add(text);
+        RecordDialogResponse(dialog.Type, "dismissed unexpected", text);
         await dialog.DismissAsync();
+    }
+
+    private void RecordDialogResponse(string dialogType, string response, string text)
+    {
+        lock (dialogResponses) dialogResponses.Add($"{dialogType} {response}: {text}");
+    }
+
+    private sealed record ExpectedDialogResponse(string DialogType, string Message, bool Accept)
+    {
+        public bool Matches(string dialogType, string message) =>
+            StringComparer.Ordinal.Equals(DialogType, dialogType) &&
+            StringComparer.Ordinal.Equals(Message, message);
     }
 
     internal async Task PrepareAsync()
@@ -384,7 +445,8 @@ public sealed class BrowserScenario : IAsyncDisposable
             consoleErrors = ConsoleIssues,
             warnings = Warnings,
             failedRequests = FailedRequests,
-            unexpectedDialogs = UnexpectedDialogs
+            unexpectedDialogs = UnexpectedDialogs,
+            dialogResponses = DialogResponses
         }, new JsonSerializerOptions { WriteIndented = true }));
     }
 
@@ -469,7 +531,12 @@ public sealed class BrowserScenario : IAsyncDisposable
         var errors = PageErrors;
         var console = ConsoleIssues;
         var dialogs = UnexpectedDialogs;
-        if (errors.Count == 0 && console.Count == 0 && dialogs.Count == 0)
+        List<string> unconsumed;
+        lock (expectedDialogQueue)
+            unconsumed = expectedDialogQueue
+                .Select(expected => $"{expected.DialogType}: {expected.Message}")
+                .ToList();
+        if (errors.Count == 0 && console.Count == 0 && dialogs.Count == 0 && unconsumed.Count == 0)
         {
             return;
         }
@@ -486,6 +553,10 @@ public sealed class BrowserScenario : IAsyncDisposable
         if (dialogs.Count > 0)
         {
             detail.AppendLine().Append("Unexpected dialogs: ").Append(string.Join("; ", dialogs));
+        }
+        if (unconsumed.Count > 0)
+        {
+            detail.AppendLine().Append("Unconsumed dialog expectations: ").Append(string.Join("; ", unconsumed));
         }
         throw new InvalidOperationException(detail.ToString());
     }
