@@ -1,0 +1,14 @@
+.admin-json {
+    max-width: 34rem;
+    max-height: 14rem;
+    margin-bottom: 0;
+    padding: .65rem;
+    overflow: auto;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    color: var(--fb-text);
+    background: var(--fb-surface-soft);
+    border: 1px solid var(--fb-border);
+    border-radius: var(--fb-radius-sm);
+    font-size: .7rem;
+}

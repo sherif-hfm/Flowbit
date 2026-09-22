@@ -7,7 +7,9 @@
 implemented; stage 7 is in progress (the automated Chromium smoke suite and its
 CI job are implemented and passing locally; Stage 5's residual manual
 acceptance and the remote CI observation remain open); stage 8 is implemented;
-stage 9 is implemented. Each stage records its
+stage 9 is implemented; stage 11 is in progress (the extraction, tests, and
+no-Worker smoke scenario are implemented; the Worker-driven full-stack
+acceptance and Stage 5's residual acceptance stay open). Each stage records its
 own implementation and acceptance status below. The architecture and API guides
 describe the current application.
 
@@ -25,6 +27,7 @@ describe the current application.
 | [8 — Remove query/detail compatibility methods](stage-08-remove-query-detail-compatibility.md) | Direct detail endpoint projection calls, removal of three engine forwards and the query dependency, and C# caller/test migration (40 → 37 methods). | Stages 1 and 3; passing baseline. Can proceed alongside Stage 7. | Implemented |
 | [9 — Waiting-task role management](stage-09-waiting-task-role-management.md) | Scoped role-management service, four direct endpoint consumers, and atomic policy/audit behavior preserved (37 → 33 engine methods). | Accepted Stage 8; passing baseline. Can proceed alongside Stage 7. | Implemented |
 | [10 — Editor node-type transitions](stage-10-editor-node-type-transitions.md) | Named transition helper with inspector-owned redraws, unchanged graph cleanup/history, and characterization plus browser coverage. | Stage 7 browser harness available; passing baseline. Does not require Stage 5 acceptance. | Implemented |
+| [11 — Administrative-action display components](stage-11-administrative-action-display-components.md) | Batch audit, items and recent-history display components with page-owned requests, controls, identity and polling. | Stage 7 browser harness available; completed Stage 5 acceptance; passing baseline. | In progress |
 
 The original recommended sequence is stages 1 through 5, followed by Stage 6.
 Stage 6 may move earlier if definition maintenance is the immediate priority.
@@ -139,7 +142,8 @@ the other candidates deferred. Stage 7 is in progress (smoke suite implemented
 locally; residual Stage 5 acceptance and remote CI observation remain open).
 Stage 8 is implemented and locally accepted; Stage 9 is implemented and
 locally accepted (37 → 33 engine methods). Stage 10 is implemented; Stage 11
-remains planned. The other stage statuses above remain unchanged.
+is in progress (extraction implemented, browser acceptance gates open). The
+other stage statuses above remain unchanged.
 
 The [detailed Stage 7 plan](stage-07-browser-smoke-and-stage-05-acceptance.md)
 defines the isolated stack, fixtures, editor/runtime smoke matrix, CI artifacts,
@@ -177,3 +181,23 @@ characterization (20/20 before extraction), final suites (1,950 solution,
 321 focused, and a 27-case browser suite whose editor and harness cases all
 passed with one unrelated R6 scroll-timing flake passing on retry), headed
 inspection evidence, and dialog-queue harness support.
+
+The [detailed Stage 11 plan](stage-11-administrative-action-display-components.md)
+defines the three administrative-batch display contracts, exact markup and CSS
+ownership, retained page lifecycle, characterization tests, and separate
+no-Worker smoke and Worker-enabled browser acceptance. The extraction is
+implemented (2026-09-21 working tree, on top of `5403136`): the page is
+1,273 physical lines (from 1,379) with audit/items/history display moved to
+`Components/Shared/AdministrativeBatches/`, 14 assembled-page characterizations
+and 37 component-rendering cases added, the focused gate passed 108/108, the
+full solution passed 2,001/2,001, and the 30-case browser suite passed with one
+pre-existing R6 scroll-timing flake passing on retry; the R7 before/after
+screenshots are visually identical. The
+[2026-09-22 review follow-up](stage-11-administrative-action-display-components.md#review-follow-up--2026-09-22)
+fixes timer-driven rendering and strengthens the race/formatting tests:
+73/73 Stage 11 cases pass on Windows and Linux, 2,023/2,023 solution tests and
+30/30 no-Worker browser tests pass, and separate Worker-enabled evidence covers
+ordinary/MI/timer batches, pagination, cancellation and identity changes.
+The page now has 1,280 lines. The stage stays **in progress** for Stage 5's
+prerequisite and the residual visual/timing evidence in that record; the other
+management pages and the API-client split stay deferred.

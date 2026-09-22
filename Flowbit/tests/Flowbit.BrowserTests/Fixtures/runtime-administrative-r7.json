@@ -1,0 +1,34 @@
+{
+  "id": "browser-administrative-r7",
+  "name": "Browser administrative audit",
+  "initialEventId": 1,
+  "variables": [],
+  "lanes": [],
+  "flowNodes": [
+    { "id": 1, "name": "Start", "type": "startEvent", "laneId": null, "x": 60, "y": 90 },
+    { "id": 2, "name": "Manual review", "externalId": "TASK_MANUAL_REVIEW", "type": "userTask", "laneId": null, "x": 240, "y": 80, "roles": ["Reviewer"] },
+    { "id": 3, "name": "End", "type": "endEvent", "laneId": null, "x": 480, "y": 90 }
+  ],
+  "sequenceFlows": [
+    { "id": 101, "name": "", "sourceRef": 1, "targetRef": 2 },
+    {
+      "id": 102,
+      "name": "Approve",
+      "externalId": "FLOW_ADMIN_APPROVE",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": ["Reviewer"],
+      "variables": [
+        {
+          "id": 1,
+          "name": "approvalNote",
+          "dataType": "string",
+          "isArray": false,
+          "required": false,
+          "defaultValue": null,
+          "validation": null
+        }
+      ]
+    }
+  ]
+}

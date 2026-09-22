@@ -22,6 +22,7 @@ editor load flow; runtime fixtures are created and published through
 | `runtime-navigation.json` | `browser-navigation-r2` | R2, R6 | start → `approval1` → `approval2` → end; open role-less tasks, two steps so one instance can be driven to `Completed` over HTTP while another rests. |
 | `runtime-gateway.json` | `browser-gateway-r4` | R4, R6 | start → parallel split (`Fork reviews`) → `Reviewer A` / `Reviewer B` → complex merge (`TotalIncomingCount() >= 2`, joinCancellation referencing the split) → `Finalize` → end. |
 | `runtime-mi.json` | `browser-mi-r5` | R4, R5, R6 | start → parallel collection multi-instance `userTask` over `reviewers` (default `alpha`, `beta`, `gamma`) → end; action flow `Complete review` requires `reviewComment`; hidden engine fallback flow 202. |
+| `runtime-administrative-r7.json` | `browser-administrative-r7` | R7 | start → `userTask` `Manual review` (node 2, external id `TASK_MANUAL_REVIEW`) → end; single action flow `Approve` (flow 102) with one optional string `approvalNote`. One batch execution completes the instance synchronously and leaves a completed one-item audit batch, so R7 exercises real batch display without a Worker. |
 
 ## Actors and expected states
 
@@ -44,6 +45,9 @@ editor load flow; runtime fixtures are created and published through
   detail page shows via five-second polling.
 - R6: `worker` (roles `User` + `admin`) navigates the list and detail pages at
   the narrower viewports; `beta` (role `Reviewer`) submits one MI result first so the narrow table includes real JSON.
+- R7: `supervisor` (role `admin`) executes immediate instance administrative
+  actions through the instance-detail panel and inspects the resulting audit
+  batches on `/administrative-actions`.
 
 ## Prerequisites and boundaries
 

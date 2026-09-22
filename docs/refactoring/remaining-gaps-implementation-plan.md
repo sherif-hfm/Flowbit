@@ -4,7 +4,8 @@
 
 **Status: In progress — Stage 7's smoke suite and Stages 8–10 are implemented;
 Stages 8–10 are locally accepted (37 → 33 engine methods after Stage 9), and
-stage 11 remains planned.** This roadmap
+Stage 11's extraction is implemented with its full-stack browser acceptance
+and Stage 5's acceptance still open.** This roadmap
 records the selected follow-up work and the
 accepted C# compatibility break. Saving this document does not complete any
 implementation or acceptance gate.
@@ -112,6 +113,16 @@ evidence is recorded in the stage document's implementation record.
 - Preserve the single-file, dependency-free editor.
 
 ### Stage 11 — administrative-action display components
+
+[Detailed implementation plan](stage-11-administrative-action-display-components.md)
+— component contracts, retained page coordination, scoped CSS ownership,
+characterization and identity/disposal coverage, no-Worker smoke and full-stack
+browser acceptance, documentation, and rollback. **Status: in progress.** The
+extraction, tests, and no-Worker smoke scenario are implemented (2026-09-21,
+with Stage 5's acceptance explicitly recorded as still open); the
+2026-09-22 review follow-up adds the polling-render fix, passing Windows/Linux
+regressions and Worker-enabled browser scenarios. Stage 5's prerequisite and
+the remaining transient visual/timing evidence in that record keep the gate open.
 
 - Extract `AdministrativeBatchAudit`, `AdministrativeBatchItems`, and `AdministrativeBatchHistory`.
 - Pass existing DTOs and presentation values; expose a typed batch-open callback.

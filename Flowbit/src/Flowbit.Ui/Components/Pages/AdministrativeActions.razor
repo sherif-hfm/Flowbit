@@ -4,6 +4,7 @@
 @using System.Text.Json
 @using System.Net
 @using Flowbit.Ui.Auth
+@using static Flowbit.Ui.Components.Shared.AdministrativeBatches.AdministrativeBatchFormatting
 @inject WorkflowApiClient Api
 @inject TokenState Token
 
@@ -387,36 +388,7 @@ else
                     <button class="btn btn-sm btn-outline-secondary" @onclick="RefreshCurrentBatchAsync" disabled="@refreshingBatch"><AppIcon Name="refresh" /> Refresh</button>
                 </div>
             </div>
-            <div class="summary-grid px-3 pb-3">
-                <div class="summary-item"><span>Positions</span><strong>@summary.TotalItemCount.ToString("N0")</strong></div>
-                <div class="summary-item"><span>Affected tasks</span><strong>@summary.TotalAffectedTaskCount.ToString("N0")</strong></div>
-                <div class="summary-item"><span>Eligible</span><strong>@summary.EligibleItemCount.ToString("N0")</strong></div>
-                <div class="summary-item"><span>Ineligible</span><strong>@summary.IneligibleItemCount.ToString("N0")</strong></div>
-                <div class="summary-item"><span>Succeeded</span><strong>@summary.SucceededItemCount.ToString("N0")</strong></div>
-                <div class="summary-item"><span>Queued</span><strong>@summary.QueuedItemCount.ToString("N0")</strong></div>
-                <div class="summary-item"><span>Skipped</span><strong>@summary.SkippedItemCount.ToString("N0")</strong></div>
-                <div class="summary-item"><span>Failed</span><strong>@summary.FailedItemCount.ToString("N0")</strong></div>
-                <div class="summary-item"><span>Cancelled</span><strong>@summary.CancelledItemCount.ToString("N0")</strong></div>
-            </div>
-            <div class="border-top px-3 py-3">
-                <h3 class="h6">Frozen request</h3>
-                <dl class="row mb-2">
-                    <dt class="col-md-2">Source</dt><dd class="col-md-10">@summary.SourceNodeName · node #@summary.SourceNodeId</dd>
-                    <dt class="col-md-2">Action</dt><dd class="col-md-10">@ActionLabel(currentBatch.Action)</dd>
-                    <dt class="col-md-2">MI mode</dt><dd class="col-md-10">@(summary.MultiInstanceMode is null ? "Not applicable" : MultiInstanceModeLabel(summary.MultiInstanceMode))</dd>
-                    <dt class="col-md-2">Reason</dt><dd class="col-md-10">@(string.IsNullOrWhiteSpace(summary.Reason) ? "Not provided" : summary.Reason)</dd>
-                    <dt class="col-md-2">Prepared by</dt><dd class="col-md-10">@summary.PreparedBy (@RoleSnapshot(currentBatch.PreparedByRoles))</dd>
-                    <dt class="col-md-2">Confirmed by</dt><dd class="col-md-10">@(summary.ConfirmedBy is null ? "Not confirmed" : $"{summary.ConfirmedBy} ({RoleSnapshot(currentBatch.ConfirmedByRoles)})")</dd>
-                </dl>
-                <div class="d-flex flex-wrap gap-3">
-                    <details><summary class="section-link">Common variables</summary><pre class="admin-json mt-2">@FormatJson(JsonSerializer.SerializeToElement(currentBatch.CommonVariables))</pre></details>
-                    <details><summary class="section-link">Selection snapshot</summary><pre class="admin-json mt-2">@FormatJson(currentBatch.Selection)</pre></details>
-                </div>
-            </div>
-            @if (currentBatch.Issues is not null)
-            {
-                <div class="px-3 pb-3"><details><summary class="section-link">Batch preparation issues</summary><pre class="admin-json mt-2">@FormatJson(currentBatch.Issues)</pre></details></div>
-            }
+            <AdministrativeBatchAudit Batch="currentBatch" />
             <div class="d-flex flex-wrap gap-2 px-3 pb-3">
                 @if (CanConfirmCurrentBatch)
                 {
@@ -437,52 +409,9 @@ else
                     </select>
                 </div>
             </div>
-            @if (batchItems is null)
+            <AdministrativeBatchItems Items="@(batchItems?.Items)" />
+            @if (batchItems is not null && batchItems.Items.Count > 0)
             {
-                <div class="p-3"><div class="skeleton"></div></div>
-            }
-            else if (batchItems.Items.Count == 0)
-            {
-                <div class="px-3 pb-3"><EmptyState Icon="inbox" Title="No items in this view" Description="Preparation may still be running, or no item has the selected status." /></div>
-            }
-            else
-            {
-                <div class="table-responsive">
-                    <table class="table align-middle">
-                        <thead><tr><th>Item</th><th>Position / instance</th><th>Action fence</th><th>Affected</th><th>Status</th><th>Result / issue</th><th>Updated</th></tr></thead>
-                        <tbody>
-                            @foreach (var item in batchItems.Items)
-                            {
-                                <tr>
-                                    <td>#@item.Id</td>
-                                    <td><a href="@($"instances/{item.InstanceId}")">Instance #@item.InstanceId</a><span class="data-subtitle">@PositionKindLabel(item.PositionKind) #@item.PositionId · token #@item.TokenId</span></td>
-                                    <td>Definition #@item.WorkflowDefinitionId · node #@item.SourceNodeId<span class="data-subtitle">Flow #@item.FlowId@(item.TimerSubscriptionId is long timerId ? $" · timer subscription #{timerId}" : string.Empty)</span></td>
-                                    <td>@item.AffectedTaskCount.ToString("N0") task(s)</td>
-                                    <td><StatusBadge Status="@item.Status" /></td>
-                                    <td class="admin-result-cell">
-                                        @if (!string.IsNullOrWhiteSpace(item.ErrorDescription))
-                                        {
-                                            <span class="text-danger">@item.ErrorDescription</span>
-                                        }
-                                        else if (item.Issues is not null)
-                                        {
-                                            <details><summary class="section-link">Issues</summary><pre class="admin-json mt-1">@FormatJson(item.Issues)</pre></details>
-                                        }
-                                        else if (item.Result is not null)
-                                        {
-                                            <details><summary class="section-link">Result</summary><pre class="admin-json mt-1">@FormatJson(item.Result)</pre></details>
-                                        }
-                                        else
-                                        {
-                                            <span class="text-muted">—</span>
-                                        }
-                                    </td>
-                                    <td>@item.UpdatedAt.ToLocalTime().ToString("g")</td>
-                                </tr>
-                            }
-                        </tbody>
-                    </table>
-                </div>
                 <div class="pagination-bar">
                     <span class="pagination-copy">Page @batchItemPage of @BatchItemTotalPages</span>
                     <div class="d-flex gap-2">
@@ -501,36 +430,11 @@ else
                 @foreach (var option in BatchStatusOptions) { <option value="@option.Value">@option.Label</option> }
             </select>
         </div>
-        @if (batchList is null)
+        <AdministrativeBatchHistory Batches="@(batchList?.Items)"
+                                    CurrentBatchId="@(currentBatch?.Summary.Id)"
+                                    OnOpenBatch="OpenBatchAsync" />
+        @if (batchList is not null && batchList.Items.Count > 0)
         {
-            <div class="p-3"><div class="skeleton" role="status"></div></div>
-        }
-        else if (batchList.Items.Count == 0)
-        {
-            <div class="px-3 pb-3"><EmptyState Icon="jobs" Title="No administrative batches" Description="No batch matches the selected status." /></div>
-        }
-        else
-        {
-            <div class="table-responsive">
-                <table class="table align-middle">
-                    <thead><tr><th>Batch</th><th>Workflow position</th><th>Action</th><th>Prepared by</th><th>Progress</th><th>Status</th><th>Updated</th><th></th></tr></thead>
-                    <tbody>
-                        @foreach (var item in batchList.Items)
-                        {
-                            <tr class="@(currentBatch?.Summary.Id == item.Id ? "table-active" : null)">
-                                <td>#@item.Id</td>
-                                <td>@item.WorkflowKey · v@(item.WorkflowVersion)<span class="data-subtitle">Definition #@item.WorkflowDefinitionId · @item.SourceNodeName (#@item.SourceNodeId)</span></td>
-                                <td>@ActionKindLabel(item.ActionKind) · flow #@item.FlowId<span class="data-subtitle">@(item.MultiInstanceMode is null ? "Standard position" : MultiInstanceModeLabel(item.MultiInstanceMode))</span></td>
-                                <td>@item.PreparedBy</td>
-                                <td>@item.SucceededItemCount.ToString("N0") / @item.TotalItemCount.ToString("N0")<span class="data-subtitle">@item.TotalAffectedTaskCount.ToString("N0") affected · @item.FailedItemCount.ToString("N0") failed</span></td>
-                                <td><StatusBadge Status="@item.Status" /></td>
-                                <td>@item.UpdatedAt.ToLocalTime().ToString("g")</td>
-                                <td class="text-end"><button class="btn btn-sm btn-outline-primary" @onclick="() => OpenBatchAsync(item.Id)">Open</button></td>
-                            </tr>
-                        }
-                    </tbody>
-                </table>
-            </div>
             <div class="pagination-bar">
                 <span class="pagination-copy">Page @batchListPage of @BatchListTotalPages · @batchList.TotalCount.ToString("N0") batches</span>
                 <div class="d-flex gap-2">
@@ -549,7 +453,6 @@ else
     private const int CandidatePageSize = 50;
     private const int BatchListPageSize = 25;
     private const int BatchItemPageSize = 50;
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { WriteIndented = true };
     private static readonly (string Value, string Label)[] BatchStatusOptions =
     [
         ("", "All statuses"), ("preparing", "Preparing"), ("ready", "Ready"), ("queued", "Queued"),
@@ -1135,8 +1038,15 @@ else
             using var timer = new PeriodicTimer(TimeSpan.FromSeconds(3));
             while (await timer.WaitForNextTickAsync(cancellationToken))
             {
-                if (currentBatch is null || !IsLive(currentBatch.Summary) || refreshingBatch) continue;
-                await InvokeAsync(RefreshCurrentBatchAsync);
+                await InvokeAsync(async () =>
+                {
+                    if (disposed || cancellationToken.IsCancellationRequested || currentBatch is null
+                        || !IsLive(currentBatch.Summary) || refreshingBatch) return;
+                    await RefreshCurrentBatchAsync();
+                    // Timer callbacks do not receive Blazor's event-handler render.
+                    // Render current state (including permission loss), unless disposed.
+                    if (!disposed) StateHasChanged();
+                });
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
@@ -1323,14 +1233,6 @@ else
     }
 
     private static string ActionKey(AdministrativeActionSummaryDto action) => $"{action.ActionKind}:{action.BoundaryNodeId ?? 0}:{action.FlowId}";
-    private static string ActionTitle(AdministrativeActionSummaryDto action) => string.IsNullOrWhiteSpace(action.Name)
-        ? action.ActionKind == AdministrativeActionKinds.TimerBoundary ? action.BoundaryNodeName ?? $"Timer boundary #{action.BoundaryNodeId}" : $"Flow #{action.FlowId}"
-        : action.Name;
-    private static string ActionLabel(AdministrativeActionSummaryDto action) => $"{ActionTitle(action)} · {ActionKindLabel(action.ActionKind)} · {action.SourceNodeName} → {action.TargetNodeName} · flow #{action.FlowId}";
-    private static string ActionKindLabel(string value) => value == AdministrativeActionKinds.TimerBoundary ? "Timer boundary" : "Task action";
-    private static string PositionKindLabel(string value) => value == AdministrativeActionPositionKinds.MultiInstanceExecution ? "MI execution" : "User task";
-    private static string MultiInstanceModeLabel(string value) => value == AdministrativeActionMultiInstanceModes.CompleteAllChildren ? "Complete all unfinished children" : "Force parent";
-    private static string RoleSnapshot(IReadOnlyList<string>? roles) => roles is null || roles.Count == 0 ? "no roles" : string.Join(", ", roles);
     private static string ShortActivation(Guid activationId) => activationId.ToString("N")[..8];
     private static PositionSelectionKey PositionKey(AdministrativeActionCandidateDto candidate) => new(candidate.PositionKind, candidate.PositionId);
     private static AdministrativeActionPositionReferenceDto PositionReference(PositionSelectionKey key) => new(key.Kind, key.Id);
@@ -1349,7 +1251,6 @@ else
         var occurrence = timer.Occurrence is null ? string.Empty : $" · occurrence {timer.Occurrence}";
         return $"{due}{occurrence}";
     }
-    private static string FormatJson(JsonElement? value) => value is null ? string.Empty : JsonSerializer.Serialize(value.Value, JsonOptions);
     private static int TotalPages(long totalCount, int pageSize) => totalCount == 0 ? 1 : (int)Math.Ceiling(totalCount / (double)pageSize);
     private static bool IsCancellable(string status) => status.Equals("preparing", StringComparison.OrdinalIgnoreCase)
         || status.Equals("ready", StringComparison.OrdinalIgnoreCase)

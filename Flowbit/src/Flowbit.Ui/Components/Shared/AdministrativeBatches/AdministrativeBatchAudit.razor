@@ -1,0 +1,36 @@
+@using System.Text.Json
+@using static Flowbit.Ui.Components.Shared.AdministrativeBatches.AdministrativeBatchFormatting
+<div class="summary-grid px-3 pb-3">
+    <div class="summary-item"><span>Positions</span><strong>@Batch.Summary.TotalItemCount.ToString("N0")</strong></div>
+    <div class="summary-item"><span>Affected tasks</span><strong>@Batch.Summary.TotalAffectedTaskCount.ToString("N0")</strong></div>
+    <div class="summary-item"><span>Eligible</span><strong>@Batch.Summary.EligibleItemCount.ToString("N0")</strong></div>
+    <div class="summary-item"><span>Ineligible</span><strong>@Batch.Summary.IneligibleItemCount.ToString("N0")</strong></div>
+    <div class="summary-item"><span>Succeeded</span><strong>@Batch.Summary.SucceededItemCount.ToString("N0")</strong></div>
+    <div class="summary-item"><span>Queued</span><strong>@Batch.Summary.QueuedItemCount.ToString("N0")</strong></div>
+    <div class="summary-item"><span>Skipped</span><strong>@Batch.Summary.SkippedItemCount.ToString("N0")</strong></div>
+    <div class="summary-item"><span>Failed</span><strong>@Batch.Summary.FailedItemCount.ToString("N0")</strong></div>
+    <div class="summary-item"><span>Cancelled</span><strong>@Batch.Summary.CancelledItemCount.ToString("N0")</strong></div>
+</div>
+<div class="border-top px-3 py-3">
+    <h3 class="h6">Frozen request</h3>
+    <dl class="row mb-2">
+        <dt class="col-md-2">Source</dt><dd class="col-md-10">@Batch.Summary.SourceNodeName · node #@Batch.Summary.SourceNodeId</dd>
+        <dt class="col-md-2">Action</dt><dd class="col-md-10">@ActionLabel(Batch.Action)</dd>
+        <dt class="col-md-2">MI mode</dt><dd class="col-md-10">@(Batch.Summary.MultiInstanceMode is null ? "Not applicable" : MultiInstanceModeLabel(Batch.Summary.MultiInstanceMode))</dd>
+        <dt class="col-md-2">Reason</dt><dd class="col-md-10">@(string.IsNullOrWhiteSpace(Batch.Summary.Reason) ? "Not provided" : Batch.Summary.Reason)</dd>
+        <dt class="col-md-2">Prepared by</dt><dd class="col-md-10">@Batch.Summary.PreparedBy (@RoleSnapshot(Batch.PreparedByRoles))</dd>
+        <dt class="col-md-2">Confirmed by</dt><dd class="col-md-10">@(Batch.Summary.ConfirmedBy is null ? "Not confirmed" : $"{Batch.Summary.ConfirmedBy} ({RoleSnapshot(Batch.ConfirmedByRoles)})")</dd>
+    </dl>
+    <div class="d-flex flex-wrap gap-3">
+        <details><summary class="section-link">Common variables</summary><pre class="admin-json mt-2">@FormatJson(JsonSerializer.SerializeToElement(Batch.CommonVariables))</pre></details>
+        <details><summary class="section-link">Selection snapshot</summary><pre class="admin-json mt-2">@FormatJson(Batch.Selection)</pre></details>
+    </div>
+</div>
+@if (Batch.Issues is not null)
+{
+    <div class="px-3 pb-3"><details><summary class="section-link">Batch preparation issues</summary><pre class="admin-json mt-2">@FormatJson(Batch.Issues)</pre></details></div>
+}
+
+@code {
+    [Parameter, EditorRequired] public AdministrativeActionBatchDetailDto Batch { get; set; } = null!;
+}

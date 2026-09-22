@@ -10,7 +10,17 @@ Start with the [developer documentation](../docs/index.md) for HTTP onboarding, 
 - `src/Flowbit.Service` - engine logic, service interfaces, repository ports.
 - `src/Flowbit.Infrastructure` - EF Core, PostgreSQL, migrations, repositories.
 - `src/Flowbit.Shared` - DTOs and C# workflow definition model.
-- `src/Flowbit.Ui` - Blazor Server UI that calls the API.
+- `src/Flowbit.Ui` - Blazor Server UI that calls the API. Display sections
+  live in shared child components so pages keep their own coordination: the
+  instance detail sections under `Components/Shared/InstanceDetails/` (with
+  the pure `InstanceDetailFormatting` helper) and the administrative batch
+  audit/items/history sections under
+  `Components/Shared/AdministrativeBatches/` (with
+  `AdministrativeBatchFormatting`; the history child reports a clicked batch
+  through a typed `EventCallback<long> OnOpenBatch`). These children are
+  display-only and inject no API client, identity, timers, or request
+  lifecycle; pages keep fetching, filters, pagination, mutations, identity
+  checks, polling, and disposal.
 - `src/Flowbit.Worker` - durable PostgreSQL job/timer dispatcher, lease
   heartbeats, timer-start reconciliation, metrics, and retention cleanup.
 - `tests/Flowbit.Tests` - xUnit definition/editor tests plus an in-process

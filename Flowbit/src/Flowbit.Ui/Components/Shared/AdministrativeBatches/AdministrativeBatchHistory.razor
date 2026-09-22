@@ -1,0 +1,38 @@
+@using static Flowbit.Ui.Components.Shared.AdministrativeBatches.AdministrativeBatchFormatting
+@if (Batches is null)
+{
+    <div class="p-3"><div class="skeleton" role="status"></div></div>
+}
+else if (Batches.Count == 0)
+{
+    <div class="px-3 pb-3"><EmptyState Icon="jobs" Title="No administrative batches" Description="No batch matches the selected status." /></div>
+}
+else
+{
+    <div class="table-responsive">
+        <table class="table align-middle">
+            <thead><tr><th>Batch</th><th>Workflow position</th><th>Action</th><th>Prepared by</th><th>Progress</th><th>Status</th><th>Updated</th><th></th></tr></thead>
+            <tbody>
+                @foreach (var item in Batches)
+                {
+                    <tr class="@(CurrentBatchId == item.Id ? "table-active" : null)">
+                        <td>#@item.Id</td>
+                        <td>@item.WorkflowKey · v@(item.WorkflowVersion)<span class="data-subtitle">Definition #@item.WorkflowDefinitionId · @item.SourceNodeName (#@item.SourceNodeId)</span></td>
+                        <td>@ActionKindLabel(item.ActionKind) · flow #@item.FlowId<span class="data-subtitle">@(item.MultiInstanceMode is null ? "Standard position" : MultiInstanceModeLabel(item.MultiInstanceMode))</span></td>
+                        <td>@item.PreparedBy</td>
+                        <td>@item.SucceededItemCount.ToString("N0") / @item.TotalItemCount.ToString("N0")<span class="data-subtitle">@item.TotalAffectedTaskCount.ToString("N0") affected · @item.FailedItemCount.ToString("N0") failed</span></td>
+                        <td><StatusBadge Status="@item.Status" /></td>
+                        <td>@item.UpdatedAt.ToLocalTime().ToString("g")</td>
+                        <td class="text-end"><button class="btn btn-sm btn-outline-primary" @onclick="@(() => OnOpenBatch.InvokeAsync(item.Id))">Open</button></td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+@code {
+    [Parameter] public IReadOnlyList<AdministrativeActionBatchSummaryDto>? Batches { get; set; }
+    [Parameter] public long? CurrentBatchId { get; set; }
+    [Parameter] public EventCallback<long> OnOpenBatch { get; set; }
+}

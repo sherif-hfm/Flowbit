@@ -75,6 +75,14 @@ the standalone Chromium suite passing (E1-E8 plus regressions; one unrelated
 R6 scroll-timing flake passed on retry) and headed inspection evidence recorded
 in the stage document.
 
+The [Stage 11 administrative-action display plan](refactoring/stage-11-administrative-action-display-components.md)
+is implemented as three display components under
+`Flowbit.Ui/Components/Shared/AdministrativeBatches/` with the page retaining
+all requests, filters, mutations, identity checks, polling, and disposal; the
+stage's review follow-up records passing Windows/Linux tests and separate
+Worker-enabled browser scenarios. Stage 5's prerequisite and the recorded
+residual visual/timing evidence remain open gates.
+
 ## Reference ownership
 
 The [node and property reference](node-reference.md) owns the consolidated authoring tables for nodes and their nested configuration. The [example catalog](../examples/README.md) owns each sample's prerequisites, actors, inputs, and expected outcome. The [runtime README](../Flowbit/README.md) remains the detailed implementation reference for database behavior and individual features. These guides explain the developer and operator workflows and link to those sources for deeper details.

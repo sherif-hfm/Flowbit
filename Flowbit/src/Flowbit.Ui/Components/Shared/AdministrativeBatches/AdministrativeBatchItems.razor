@@ -1,0 +1,52 @@
+@using static Flowbit.Ui.Components.Shared.AdministrativeBatches.AdministrativeBatchFormatting
+@if (Items is null)
+{
+    <div class="p-3"><div class="skeleton"></div></div>
+}
+else if (Items.Count == 0)
+{
+    <div class="px-3 pb-3"><EmptyState Icon="inbox" Title="No items in this view" Description="Preparation may still be running, or no item has the selected status." /></div>
+}
+else
+{
+    <div class="table-responsive">
+        <table class="table align-middle">
+            <thead><tr><th>Item</th><th>Position / instance</th><th>Action fence</th><th>Affected</th><th>Status</th><th>Result / issue</th><th>Updated</th></tr></thead>
+            <tbody>
+                @foreach (var item in Items)
+                {
+                    <tr>
+                        <td>#@item.Id</td>
+                        <td><a href="@($"instances/{item.InstanceId}")">Instance #@item.InstanceId</a><span class="data-subtitle">@PositionKindLabel(item.PositionKind) #@item.PositionId · token #@item.TokenId</span></td>
+                        <td>Definition #@item.WorkflowDefinitionId · node #@item.SourceNodeId<span class="data-subtitle">Flow #@item.FlowId@(item.TimerSubscriptionId is long timerId ? $" · timer subscription #{timerId}" : string.Empty)</span></td>
+                        <td>@item.AffectedTaskCount.ToString("N0") task(s)</td>
+                        <td><StatusBadge Status="@item.Status" /></td>
+                        <td class="admin-result-cell">
+                            @if (!string.IsNullOrWhiteSpace(item.ErrorDescription))
+                            {
+                                <span class="text-danger">@item.ErrorDescription</span>
+                            }
+                            else if (item.Issues is not null)
+                            {
+                                <details><summary class="section-link">Issues</summary><pre class="admin-json mt-1">@FormatJson(item.Issues)</pre></details>
+                            }
+                            else if (item.Result is not null)
+                            {
+                                <details><summary class="section-link">Result</summary><pre class="admin-json mt-1">@FormatJson(item.Result)</pre></details>
+                            }
+                            else
+                            {
+                                <span class="text-muted">—</span>
+                            }
+                        </td>
+                        <td>@item.UpdatedAt.ToLocalTime().ToString("g")</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+@code {
+    [Parameter] public IReadOnlyList<AdministrativeActionBatchItemDto>? Items { get; set; }
+}

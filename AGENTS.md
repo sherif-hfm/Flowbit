@@ -1445,6 +1445,23 @@ what the cross-version `workflowKey` instance search matches.
   details), and, for authorized administrators, preview and confirm safe
   completed/cancelled instance reactivation.
 
+Display sections live in shared child components so pages keep their own
+coordination. The instance detail sections are under
+`Components/Shared/InstanceDetails/` (namespace
+`Flowbit.Ui.Components.Shared.InstanceDetails`) with the pure
+`InstanceDetailFormatting` helper. The `/administrative-actions` page renders
+its batch audit, item results, and recent-batch history through
+`Components/Shared/AdministrativeBatches/` (`AdministrativeBatchAudit`,
+`AdministrativeBatchItems`, and `AdministrativeBatchHistory`; the history child
+reports a clicked batch through a typed `EventCallback<long> OnOpenBatch`, and
+`AdministrativeBatchFormatting` owns the shared pure presentation rules). These
+children are display-only: they inject no API client, identity, timers, or
+request lifecycle, never sort or mutate the supplied DTOs, and never initiate
+mutations. The page keeps fetching, filters, pagination, population selection,
+input validation, mutation handlers, identity checks, the three-second poll,
+and disposal. Its timer dispatches both the guarded refresh and a render of
+the current state (including permission loss); it never renders after disposal.
+
 The UI talks to the API through `WorkflowApiClient` (a typed `HttpClient`). Its
 legacy GET methods remain for dashboard/compatibility reads; all five interactive
 search surfaces use endpoint-specific POST request DTOs and the shared

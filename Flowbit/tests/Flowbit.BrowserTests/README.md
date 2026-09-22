@@ -80,14 +80,16 @@ the run — it never silently connects to a developer's running stack.
 | R4 gateway/complex/MI detail | 1440x900 | Parallel split and complex merge rows with ordering, complex state values, MI progress and submitted result JSON, section navigation. |
 | R5 real polling and disposal | 1440x900 | An open poll-eligible MI detail updates after an out-of-band HTTP completion within the five-second polling window; navigate away/back shows current data; host logs record no error-level circuit issues. |
 | R6 responsive controls and focus | 1024x768, 390x844 | Real responsive navigation, section links preserving the instance path/query, keyboard focus, wheel scrolling to clipped table columns, and parsed submitted JSON. |
+| R7 administrative batch display | 1440x900, 1024x768, 390x844 | Executes immediate administrative actions through the real instance-detail panel, follows the real audit batch link, verifies the frozen request, count order/values, item row, highlight, JSON details, and recent history against HTTP reads, switches batches with real clicks and keyboard-activated Open buttons, exercises zero-match item and recent-batch status filters with restore, checks narrow-table scrolling and document overflow, and records before/after audit screenshots at all three viewports. |
 
-The 23 product scenarios are accompanied by four harness regression tests:
+The 26 product scenarios are accompanied by four harness regression tests:
 auxiliary-page errors/dialogs must fail, successful diagnostics must retain
 warnings/transport failures, timed-out work must stop before returning, and
 queued one-shot dialog expectations must accept, dismiss, fail on unconsumed
 entries, and fail on unmatched dialogs. The `harness-expected-*` artifacts
-intentionally contain injected failures. The suite therefore runs 27 cases in
-total (E1-E8 at both viewports plus the runtime scenarios).
+intentionally contain injected failures. The suite therefore runs 30 cases in
+total (E1-E8 at both viewports, the runtime scenarios, and the R7 administrative
+display scenarios).
 
 Scenarios register exact one-shot dialog expectations through
 `ExpectDialogOnce(dialogType, message, accept)` (checked before the
@@ -149,9 +151,9 @@ next runtime scenario explicitly establishes its identity again.
 ## Fixture boundaries
 
 Fixtures live in `Fixtures/` and are documented in
-[Fixtures/README.md](Fixtures/README.md): minimal editor definitions plus four
+[Fixtures/README.md](Fixtures/README.md): minimal editor definitions plus five
 synchronous runtime definitions (`browser-lifecycle-r1`, `browser-navigation-r2`,
-`browser-gateway-r4`, `browser-mi-r5`) with their actors, inputs, and expected
+`browser-gateway-r4`, `browser-mi-r5`, `browser-administrative-r7`) with their actors, inputs, and expected
 states. Checked-in fixture JSON is unchanged; at POST
 `WorkflowFixtureClient` suffixes the authored `id` with a unique token so
 repeated runs cannot collide. Nothing in the checked-in `examples/` catalog is

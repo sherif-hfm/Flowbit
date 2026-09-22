@@ -265,6 +265,10 @@ These screens prepare and execute persisted batches through the Worker. The norm
 
 All administrative-action discovery, audit, and mutation APIs enforce the current workflow-administrator permission. The batch screen clears restricted data and reports access denial when authorization fails. Changing the development identity clears the previous selection and reloads permitted workflows; late responses from the previous identity cannot clear the new identity's selections or re-enable controls while its requests are pending. Queued preparation/execution also rechecks the setting against stored preparer/confirmer roles per item: unauthorized preparation is **ineligible**, and execution is **skipped** with `authentication_changed`. Completed items and committed asynchronous continuations remain intact. See [administrative action contracts](api-guide.md#administrative-action-batches) and [deployment changes](deployment.md#upgrade-and-compatibility-rules).
 
+The open **Administrative actions** batch refreshes every three seconds while preparing, queued, running, or cancelled with unfinished cleanup. Each completed refresh updates the visible status, counters, item results, and recent history without another click. Ready and terminal batches stop polling; use **Refresh** to check them again. Permission loss during a poll clears the restricted display, and navigating away stops polling.
+
+Cancellation can wait for an already-running action to release its database transaction. A long-running synchronous action can cause the cancellation request to time out; refresh the batch before retrying. Completed actions are preserved, and cancellation does not interrupt an action already in progress.
+
 ## Manage settings and shared variables
 
 ### Engine and workflow settings

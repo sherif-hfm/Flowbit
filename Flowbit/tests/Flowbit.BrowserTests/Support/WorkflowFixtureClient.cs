@@ -194,6 +194,32 @@ public sealed class WorkflowFixtureClient : IAsyncDisposable
         return SendAsync<PagedResult<InstanceSummaryDto>>(HttpMethod.Get, path);
     }
 
+    /// <summary>Reads one administrative batch audit for rendered-content verification.</summary>
+    public Task<AdministrativeActionBatchDetailDto> GetAdministrativeActionBatchAsync(long batchId) =>
+        SendAsync<AdministrativeActionBatchDetailDto>(HttpMethod.Get, $"/api/administrative-action-batches/{batchId}");
+
+    /// <summary>Reads one administrative batch's item page for rendered-content verification.</summary>
+    public Task<PagedResult<AdministrativeActionBatchItemDto>> GetAdministrativeActionBatchItemsAsync(
+        long batchId, string? status = null, int page = 1, int pageSize = 50)
+    {
+        var query = new List<string> { $"page={page}", $"pageSize={pageSize}" };
+        if (!string.IsNullOrWhiteSpace(status)) query.Add($"status={Uri.EscapeDataString(status)}");
+        return SendAsync<PagedResult<AdministrativeActionBatchItemDto>>(
+            HttpMethod.Get,
+            $"/api/administrative-action-batches/{batchId}/items?{string.Join("&", query)}");
+    }
+
+    /// <summary>Reads the recent administrative batch list for rendered-content verification.</summary>
+    public Task<PagedResult<AdministrativeActionBatchSummaryDto>> GetAdministrativeActionBatchesAsync(
+        string? status = null, int page = 1, int pageSize = 25)
+    {
+        var query = new List<string> { $"page={page}", $"pageSize={pageSize}" };
+        if (!string.IsNullOrWhiteSpace(status)) query.Add($"status={Uri.EscapeDataString(status)}");
+        return SendAsync<PagedResult<AdministrativeActionBatchSummaryDto>>(
+            HttpMethod.Get,
+            $"/api/administrative-action-batches?{string.Join("&", query)}");
+    }
+
     /// <summary>
     /// Finds the active user-task work item for a given collection item index
     /// through the actor's inbox (used to drive child completion over HTTP).

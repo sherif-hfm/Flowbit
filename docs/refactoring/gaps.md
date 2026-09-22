@@ -26,7 +26,7 @@ the named symbols before implementation; size alone does not justify extraction.
 | 3 | `WorkflowDefinitionService` | 3,795 lines combining validation and lifecycle operations | Added [Stage 6](stage-06-definition-validation.md) for validation extraction |
 | 4 | Remaining query assembly duplication | `WorkflowRuntimeRepository` has 7,289 lines; basic filters and instance/inbox sort parsing are already shared | [Stage 2](stage-02-repository-query-helpers.md) extracts ownership predicates and inbox visibility CTEs; further candidates need separate evidence |
 | 5 | Editor hotspots outside save validation | `renderNodeInspector` (~524 lines), `compileInboxVisibilityCondition` (~499 lines), `applyTypeInvariants` (~327 lines); flat script with no modules | [Stage 4](stage-04-editor-validation.md) covers `validateModelForSave`; [Stage 10](stage-10-editor-node-type-transitions.md) implemented the Type-selector transition extraction; the remaining hotspots stay deferred |
-| 6 | Secondary oversized UI units | Four management pages with approximately 332–835-line `@code` blocks; `WorkflowApiClient` 1,857 lines | [Stage 5](stage-05-instance-detail-components.md) covers `InstanceDetail.razor` only |
+| 6 | Secondary oversized UI units | Four management pages with approximately 332–835-line `@code` blocks; `WorkflowApiClient` 1,857 lines | [Stage 5](stage-05-instance-detail-components.md) covers `InstanceDetail.razor`; [Stage 11](stage-11-administrative-action-display-components.md) implemented three administrative-batch display components (page 1,273 physical lines, down from 1,379) |
 | 7 | Automated Chromium smoke suite exists; residual Stage 5 acceptance remains | Repeatable E1–E5/R1–R6 coverage plus a `browser-smoke` CI job; native-picker, Worker-driven batch links, and remote CI observation are still open | [Stage 7](stage-07-browser-smoke-and-stage-05-acceptance.md) implemented for the no-Worker smoke suite; Stage 5 acceptance still open |
 
 ## Decisions for the stage plans
@@ -221,7 +221,21 @@ explicitly abandons it.
 
 ## 6. Secondary oversized UI units
 
-Stage 5 decomposes `InstanceDetail.razor` only. Comparable units with no plan:
+Stage 5 decomposes `InstanceDetail.razor` only. The
+[Stage 11 plan](stage-11-administrative-action-display-components.md), prepared
+against `5403136`, selects `AdministrativeBatchAudit`, `AdministrativeBatchItems`
+and `AdministrativeBatchHistory` from `AdministrativeActions.razor`. It retains
+requests, filters, pagination, selection, confirmation/cancellation, identity
+checks, polling and disposal in the page. That extraction is implemented
+(2026-09-21 working tree; the page measured 1,273 physical lines with the display moved to
+`Components/Shared/AdministrativeBatches/`), while the stage's Worker-driven
+browser evidence is extended in its 2026-09-22 review follow-up. The polling-render
+fix brings the page to 1,280 lines. Stage 5's prerequisite and the recorded
+residual visual/timing evidence keep acceptance open.
+The other pages and API-client split remain deferred. The historical
+measurements below identify the broader candidates; Stage 11 reconfirmed the
+administrative page's original 1,379 lines and `@code` start at line 545
+before its extraction.
 
 | File | Total lines | `@code` block |
 | --- | --- | --- |
