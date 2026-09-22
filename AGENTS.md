@@ -166,10 +166,19 @@ A repeatable Chromium smoke suite exists at
 real copied editor and the real published API/UI over localhost with a
 disposable PostgreSQL container; see its
 [README](Flowbit/tests/Flowbit.BrowserTests/README.md) for setup and the
-E1–E5/R1–R6 coverage matrix. It is the baseline for editor/runtime UI changes,
+E1–E8/R1–R7 coverage matrix. It is the baseline for editor/runtime UI changes,
 but it does not replace scenario-specific manual verification: the native
 file-picker success/cancel path, visual comparisons, and behaviors outside the
 matrix still need the manual steps above.
+
+The separate local Worker-enabled acceptance suite at
+`Flowbit/tests/Flowbit.BrowserAcceptanceTests/` also stays outside both solution
+files and the existing GitHub CI jobs. Its
+[README](Flowbit/tests/Flowbit.BrowserAcceptanceTests/README.md) documents the
+explicit durable stack, fixture-owned Worker lifecycle, real API response gates,
+historical-host overrides and evidence. The ordinary smoke fixture remains
+Worker-free. Test-only gates must forward real API responses unchanged and must
+not inject application state or edit database rows to manufacture acceptance.
 
 ---
 

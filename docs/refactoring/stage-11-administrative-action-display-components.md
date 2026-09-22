@@ -2,11 +2,13 @@
 
 [Plan index](README.md) · [Remaining-gaps roadmap](remaining-gaps-implementation-plan.md) · [Gap inventory](gaps.md)
 
-**Status: In progress — the extraction and review fixes are implemented;
-Windows/Linux tests, the no-Worker suite, and the Worker-enabled scenarios in
-the [review follow-up](#review-follow-up--2026-09-22) passed locally.
-Stage 5's browser acceptance and the residual visual/timing evidence listed
-there remain open.** The initial plan was prepared on 2026-09-21
+**Status: Implemented and locally accepted (2026-09-22).** Stage 5's
+prerequisite is complete. The solution (2,023), smoke (30), and maintained
+acceptance (24) suites passed; the final administrative follow-up passed all
+11 cases after expanded screenshot and loading-request checks. Historical
+comparison, final visual review and clean browser diagnostics are recorded
+below. Stage 7's separate native editor-dialog limitation remains open.
+The initial plan was prepared on 2026-09-21
 against commit `5403136`, with a clean working tree before this documentation
 change. This plan is based on the current page, DTOs, CSS, tests, and Stage 5/7
 acceptance records. No application tests or browser checks were run while
@@ -37,8 +39,9 @@ target page length.
 
 ## Prerequisites and implementation gate
 
-Planning and read-only inspection can proceed now. Begin production extraction
-only after both conditions from the remaining-gaps roadmap are satisfied:
+These are the original prerequisites prepared on 2026-09-21. Their outcomes are
+updated in the dated implementation and acceptance records below. The plan
+required both conditions before production extraction:
 
 1. The Stage 7 real-browser harness is available and its baseline passes on the
    implementation checkout. It currently exists as the standalone
@@ -56,7 +59,7 @@ only after both conditions from the remaining-gaps roadmap are satisfied:
    its exact requirements. Do not equate a smoke-suite pass with completion.
 
 Record the prerequisite evidence before changing the page. Keep Stage 7's
-unobserved remote CI result separate from Stage 5 acceptance; do not silently
+remote CI observation separate from Stage 5 acceptance; do not silently
 mark either complete as part of this plan. If a required gate cannot run,
 record what is unavailable and leave Stage 11 planned or in progress.
 
@@ -485,14 +488,14 @@ if fixtures introduce JSON files, parse them and verify their actual API use.
 
 Stage 11 is accepted only when all of these are true:
 
-- [ ] Stage 5 acceptance and a current passing Stage 7 harness baseline are recorded.
+- [x] Stage 5 acceptance and a current passing Stage 7 harness baseline are recorded.
 - [x] All three components use the documented DTO/scalar/callback contracts and
   contain no API, identity, selection, mutation, polling or disposal ownership.
 - [x] The page retains all operational state, request order/counts and control
   placement, including conditional pagers and confirmation concurrency values.
 - [x] Baseline characterizations, new component/page tests, required existing
   regressions, full solution tests, UI build and standalone browser tests pass.
-- [ ] Scoped CSS applies to the actual child markup, and all specified viewport,
+- [x] Scoped CSS applies to the actual child markup, and all specified viewport,
   keyboard, callback, JSON, empty-state and queued-batch checks are complete.
 - [x] Identity replacement and disposal cannot revive stale batch data; no
   additional API calls, mutations or timers originate from children.
@@ -808,6 +811,12 @@ documented in the UI guide; the extraction does not change transaction locks.
 
 ### Remaining acceptance evidence
 
+This is the historical remainder after the 2026-09-22 review run. Later
+acceptance follow-up results supersede individual items without erasing that
+record. In particular, remote `test` and `browser-smoke` jobs were subsequently
+verified successful for `3e70130` in
+[run 35713256658](https://github.com/sherif-hfm/Flowbit/actions/runs/35713256658).
+
 - Stage 5's prerequisite browser checklist remains open; this follow-up does
   not claim to complete that separate acceptance effort.
 - A durable Cancelled state with null `CompletedAt` was not held visibly in
@@ -828,3 +837,126 @@ were checked. `git diff --check` passed; new untracked source/test files also
 passed a separate trailing-whitespace check. The no-Worker R7 diagnostics in
 `artifacts/browser/runs/20260922-082440-a42d6537/` contain no console warnings,
 page/console errors or failed requests at any of the three viewports.
+
+## Maintained local acceptance and historical comparison (2026-09-22)
+
+The ignored 11-group runner is now represented by 11 maintained administrative
+cases in [Flowbit.BrowserAcceptanceTests](../../Flowbit/tests/Flowbit.BrowserAcceptanceTests/README.md),
+with four focused proxy/harness checks and separate Stage 5 cases. It reuses
+the smoke infrastructure through explicit acceptance options; the no-Worker
+smoke configuration, both solution files, and the GitHub CI workflow are
+unchanged. The suite covers ordinary batch polling and paging, independent
+recent-history paging, keyboard Open, both multi-instance modes, timer fences,
+skipped/ineligible/failed results, identity replacement, cancellation, and real
+response-gated loading states.
+
+The cancellation case completes one position, holds the next at its harmless
+HTTP destination, and stops only its owned Worker before cancelling through
+the UI. It observes `Cancelled` with null `CompletedAt` and retained success,
+counts continuing detail reads, releases the service, and restarts the Worker.
+Normal lease expiry and recovery settle the remaining work; the test checks
+that completed actions were not duplicated and that polling stops afterwards.
+The external request can be retried after the interrupted transaction rolls
+back; this is distinct from duplicate committed workflow actions. No database
+rows or production timeout/lease configuration are rewritten.
+
+The initial maintained run at
+`artifacts/acceptance/runs/20260922-105132-cbfd34fe/` passed all 11 administrative
+and the three harness cases present at that point. Its combined 20/23 result
+included two overly broad Stage 5 audit locators and one instance-summary
+readiness timeout, recorded separately rather than hidden as retries.
+All administrative browser diagnostics retained zero console/page errors,
+warnings and failed requests. Subsequent final validation belongs to the
+[Stage 7 acceptance follow-up](stage-07-browser-smoke-and-stage-05-acceptance.md#local-worker-acceptance-follow-up-2026-09-22).
+
+### Final administrative acceptance (2026-09-22)
+
+The complete maintained suite subsequently passed **24/24**, including all
+11 administrative cases, in
+`artifacts/acceptance/complete/acceptance-complete.trx`. A capture-helper-only
+headed rerun then passed **11/11, 0 failures or skips**, in 4m 3s
+(`artifacts/acceptance/admin-visual/acceptance-admin-visual.trx`). Its artifacts
+are under `artifacts/acceptance/runs/20260922-165548-512c7bac/`, using Chromium
+**151.0.7922.34**, UI `http://127.0.0.1:62241`, API
+`http://127.0.0.1:62238`, and proxy `http://127.0.0.1:62240`. All 11
+administrative diagnostics were clean. The run disposed its owned resources;
+inspection covered cancellation/recovery, loading, multi-instance and error
+captures, including fixed-header placement and responsive sidebar transitions.
+The final coverage follow-up adds retained Preparing/Queued, empty-filter,
+skipped/ineligible and denied/cleared-identity states, plus exact loading-recovery
+request counts and instance-link assertions.
+
+That final administrative run passed **11/11, 0 failures or skips**, in
+4m 26s with the following command (PowerShell or Bash):
+
+```text
+dotnet test Flowbit/tests/Flowbit.BrowserAcceptanceTests/Flowbit.BrowserAcceptanceTests.csproj -c Release --no-build --no-restore --environment FLOWBIT_BROWSER_HEADED=1 --filter FullyQualifiedName~AdministrativeBatchAcceptanceTests --nologo --verbosity quiet --logger "trx;LogFileName=acceptance-admin-complete.trx" --results-directory artifacts/acceptance/admin-complete
+```
+
+TRX: `artifacts/acceptance/admin-complete/acceptance-admin-complete.trx`.
+Evidence: `artifacts/acceptance/runs/20260922-170156-acff771f/`.
+Headed Chromium **151.0.7922.34** used UI `http://127.0.0.1:62798`, API
+`http://127.0.0.1:62795`, and proxy `http://127.0.0.1:62797`. All 12 diagnostic
+files (11 administrative scenarios and setup) contain zero page errors,
+console errors/warnings, failed requests or unexpected dialogs. The run
+retains **126 PNGs** covering full pages and section viewports at **1440×900,
+1024×768 and 390×844**, plus fixture/batch evidence and API/UI/Worker logs.
+It disposed its owned resources cleanly.
+
+Final visual review included Preparing and Queued states, empty item/history
+filters, skipped results, expanded ineligible JSON, and denied/cleared identity
+states across the required widths. Headings, controls, focus, scoped styling,
+table overflow, header/sidebar placement and restricted-data clearing remained
+correct. Cancellation/recovery, loading, MI and error captures also passed
+inspection in the preceding visual run. Request records independently confirm
+exactly one history request and one items request in each of the three A8 cases;
+recovered rows point to the actual created instance, with no stale row or extra
+request. These final additions change tests and evidence only, not production
+behavior or CSS.
+
+Together with the accepted Stage 5 prerequisite and the historical comparison
+below, these results close Stage 11's residual evidence items. The native editor
+dialog remains a separate open Stage 7 requirement.
+
+### Historical appearance comparison
+
+For the pre-extraction visual comparison, unchanged API/UI/Worker hosts from
+`5403136` were published under `artifacts/acceptance/baselines/5403136/hosts/`.
+The identical A8 loading/recovery scenarios ran in independent empty databases
+with Chromium **151.0.7922.34**, headed, at **1440×900**, **1024×768** and
+**390×844**:
+
+| Version | Result | UI / API | Evidence root under `artifacts/acceptance/` |
+| --- | --- | --- | --- |
+| Historical `5403136` | 3 passed, 0 failed/skipped | `http://127.0.0.1:53980` / `http://127.0.0.1:53976` | `comparison-stage11-baseline/20260922-110125-9eb62fd5/` |
+| Current extraction | 3 passed, 0 failed/skipped | `http://127.0.0.1:53867` / `http://127.0.0.1:53864` | `comparison-stage11-current/20260922-110043-950a4bbc/` |
+
+Each root retains history-loading, items-loading and recovered screenshots at
+all three sizes. All nine paired full-page dimensions agree. Visual inspection
+of the 1440 history skeleton, 1024 item skeleton, and 390 recovered-table pairs
+found matching heading hierarchy, card and count spacing, scoped styles,
+focused inputs, controls and responsive overflow. Fixture IDs, unique workflow
+suffixes and timestamps differ as expected. These are review images, not
+permanent pixel-test baselines. Those earlier comparison full-page captures
+retain the browser's fixed header at the scroll position used for capture.
+The final maintained capture helper waits for finite CSS transitions, uses
+real wheel input to reset full-page captures to the top, and separately scrolls
+the section heading into view for viewport captures. This is a test-only
+capture correction; the product layout and CSS are unchanged.
+
+Representative original PNG pairs from those successful comparison runs are
+retained with this record. Full screenshot sets and raw host/browser evidence
+remain under the artifact roots above.
+
+| State and viewport | Before extraction (`5403136`) | Current extraction |
+| --- | --- | --- |
+| Item-response loading state, 1024×768 | [Before](evidence/acceptance/stage11-before-items-loading-1024x768.png) | [After](evidence/acceptance/stage11-after-items-loading-1024x768.png) |
+| Recovered tables, 390×844 | [Before](evidence/acceptance/stage11-before-recovered-390x844.png) | [After](evidence/acceptance/stage11-after-recovered-390x844.png) |
+
+The historical application is not required to pass the newer autonomous
+polling-render assertions: the review follow-up's timer-render fix is an
+intentional behavior correction, assessed separately from appearance. Both
+comparison runs had clean browser diagnostics. Host logs retain the expected
+fresh-database migration-table probe, HTTP-only HTTPS-redirection warnings and
+Worker readiness failures before its first durable-queue query; they are not
+reported as universally error-free host logs.

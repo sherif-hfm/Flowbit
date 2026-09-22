@@ -1,0 +1,21 @@
+{
+  "id": "acceptance-instance-detail",
+  "name": "Instance detail acceptance v1",
+  "initialEventId": 1,
+  "variables": [
+    { "id": 1, "name": "reviewNote", "dataType": "string", "defaultValue": "Initial review" },
+    { "id": 2, "name": "catalogLabel", "dataType": "string", "nullable": false, "scope": "shared", "sharedKey": "acceptance.catalog.placeholder", "access": "read" }
+  ],
+  "lanes": [],
+  "flowNodes": [
+    { "id": 1, "name": "Start", "externalId": "START_DETAIL", "type": "startEvent" },
+    { "id": 2, "name": "Review request", "externalId": "TASK_DETAIL_REVIEW", "type": "userTask", "roles": ["Reviewer"], "requiresClaim": true },
+    { "id": 3, "name": "Done", "externalId": "END_DETAIL", "type": "endEvent" }
+  ],
+  "sequenceFlows": [
+    { "id": 101, "name": "Begin review", "sourceRef": 1, "targetRef": 2 },
+    { "id": 102, "name": "Approve", "externalId": "FLOW_DETAIL_APPROVE", "sourceRef": 2, "targetRef": 3, "roles": ["Reviewer"], "variables": [
+      { "id": 3, "name": "decisionNote", "dataType": "string", "required": true }
+    ] }
+  ]
+}

@@ -2,10 +2,10 @@
 
 [Plan index](README.md) · [Remaining-gaps roadmap](remaining-gaps-implementation-plan.md#stage-7--automated-browser-smoke-suite-and-stage-5-acceptance) · [Browser coverage gap](gaps.md#7-automated-visual-and-interaction-coverage)
 
-**Status: In progress — the automated smoke suite is implemented and passing;
-Stage 5's residual manual acceptance remains open.** The suite
-`Flowbit/tests/Flowbit.BrowserTests/` (20 tests: 17 product scenarios, E1–E5 at
-both editor viewports and R1–R6, plus three harness regression tests) runs the
+**Status: In progress — automated smoke and local Worker acceptance pass;
+Stage 5 is accepted, and the native editor save-dialog check remains open.** The suite
+`Flowbit/tests/Flowbit.BrowserTests/` (30 tests: 26 product cases, E1–E8 at
+both editor viewports and R1–R7, plus four harness regression tests) runs the
 real copied editor and the real published API/UI over localhost with a
 disposable PostgreSQL Testcontainer, outside both solutions and outside the
 normal solution test command. The `browser-smoke` CI job runs it on Ubuntu 24.04
@@ -15,11 +15,17 @@ with TRX and artifact uploads. What is still open for this stage:
   (the automated suite covers the forced download fallback only). The headed
   mode (`FLOWBIT_BROWSER_HEADED=1`) was verified working; the recorded
   native-picker manual evidence is not yet collected.
-- The full Stage 5 acceptance rows that need a separate Worker-driven stack:
-  batch links for real version-change and variable-update batches, plus the
-  pre-extraction visual comparison. See the checklist below for per-row status.
-- Observing the new remote `browser-smoke` job pass on a real CI run; the
-  workflow YAML is committed but a remote run has not been observed yet.
+
+Stage 5's runtime acceptance is complete, including real Worker-driven batch
+links, claims/delegation, headed screenshots and historical comparison. The
+current evidence below supersedes the dated original checklist.
+
+The remote CI observation is complete: both `test` and `browser-smoke` passed
+for commit `3e70130621b584c0e1026559dc47be9e369063c7` in
+[run 35713256658](https://github.com/sherif-hfm/Flowbit/actions/runs/35713256658).
+The GitHub run was checked on 2026-09-22. The dated records below retain the
+earlier state before that observation; the existing CI workflow is unchanged
+by the local Worker acceptance work.
 
 Prepared against commit `7c67ac2` on 2026-09-20. Historical test results in
 earlier stage records are not this stage's results.
@@ -308,7 +314,9 @@ where required; do not claim existing test names alone prove these properties.
 Maintain the following evidence checklist alongside the Stage 5 browser section.
 All rows must have actual results before Stage 5 is marked implemented. A
 passing CI smoke run satisfies only the scenarios it actually exercises.
-Status after the Stage 7 smoke implementation (2026-09-20):
+Historical status after the Stage 7 smoke implementation (2026-09-20).
+Later evidence in the acceptance follow-up supersedes individual open items;
+this table preserves the original checkpoint:
 
 | Stage 5 requirement | Evidence to collect | Execution surface | Status |
 | --- | --- | --- | --- |
@@ -318,7 +326,7 @@ Status after the Stage 7 smoke implementation (2026-09-20):
 | Variables and shared bindings | Variable values and empty states; variable-to-update-audit navigation; value-free shared-binding table with a real catalog-backed definition. | Full acceptance fixtures; create prerequisites through HTTP. | Empty/normal variable states covered (R1/R2/R6); a real catalog-backed shared-binding walkthrough and variable-to-update-audit navigation still open. |
 | Version-change and variable-update histories | Real actor/roles, reasons, JSON values, ordering, and links to the correct completed batch screens. | Separate full isolated stack with Worker-driven batches. Direct version/variable changes alone do not supply every required batch link. | Open — requires the separate Worker-driven stack. |
 | Ordinary history attribution | Selected claims and delegation badges from actual authorized actions, with readable escaped values. | Configure test claim capture and delegation through existing contracts; perform the action, then inspect history. | Open — requires configured claim capture and a delegation grant in the acceptance stack. |
-| Administrative action refresh | Exercise an existing administrative action in instance detail and confirm refreshed state/audit; follow its real administrative batch link. | Use a small synchronous example and authorized administrator. The immediate action atomically creates a completed one-item audit batch; that path needs no Worker. | Open — the smoke fixtures do not exercise administrative actions yet. |
+| Administrative action refresh | Exercise an existing administrative action in instance detail and confirm refreshed state/audit; follow its real administrative batch link. | Use a small synchronous example and authorized administrator. The immediate action atomically creates a completed one-item audit batch; that path needs no Worker. | At the original checkpoint, open. R7 was subsequently added by Stage 11; see the current follow-up for the pre-navigation refresh assertions. |
 | Identity and disposal during refresh | Change identity while refresh is occurring; navigate away and return; no revived prior-actor actions, stale display, duplicate polling, or disposal failures. | R3/R5, retained identity/disposal tests, and the new deterministic in-flight identity-response and relevant request-count characterization. | Passed — R3/R5 plus the new deterministic in-flight regression and request-count characterization. |
 | Layout and navigation | All required states at 1440 × 900, 1024 × 768, and 390 × 844; real clicks, typing, keyboard traversal, scrolling, and link destinations. | Headed browser inspection and screenshots. | Automated viewport coverage passed (R6 at 1024/390; E matrix at 1440/1024); headed manual inspection with screenshots remains open. |
 | Console/network and comparison evidence | Browser/version, exact localhost URLs, console warnings/errors, failed requests, relevant host logs, and before/after screenshots. | Automated artifacts plus acceptance record. | Partially collected (Chromium 151.0.7922.34, run artifacts include console/error/request capture and host logs); before/after pre-extraction comparison still open. |
@@ -600,6 +608,126 @@ Validation of the review fixes:
 The native picker, complete Stage 5 manual acceptance (including Worker-driven
 batches and visual comparisons), and remote CI observation remain open.
 
+## Local Worker acceptance follow-up (2026-09-22)
+
+The maintained local
+[Flowbit.BrowserAcceptanceTests](../../Flowbit/tests/Flowbit.BrowserAcceptanceTests/README.md)
+project complements the no-Worker smoke suite. It stays outside both solution
+files and does not change the existing GitHub CI workflow or package versions.
+It reuses the smoke diagnostics, process host, real token form, and HTTP fixture
+client with an explicit acceptance configuration. That configuration enables
+durable publication, owns a disposable PostgreSQL container and Worker lifecycle,
+allows all three published host directories to be overridden for historical
+comparisons, captures selected synthetic claims, and separates acceptance artifacts.
+
+A test-only loopback proxy forwards real UI-to-API responses unchanged. One-shot
+response gates expose genuine loading and identity/disposal timing; request
+records retain methods/paths/statuses rather than JWTs or body values. Workflow
+versions, shared catalogs, delegations, and batch setup use authenticated HTTP.
+No test rewrites runtime database rows or changes production lease timing.
+The native editor save dialog remains a separate manual surface; launching a
+headed Playwright test does not itself exercise that operating-system dialog.
+
+Historical hosts were exported without source edits from `0d23c7a` (Stage 5)
+and `5403136` (Stage 11), then API/UI/Worker were published separately beneath
+`artifacts/acceptance/baselines/<commit>/hosts/`. Their publish logs are retained
+alongside the source archives. The Stage 5 parent predates renderer markers;
+the opt-in legacy readiness mode proves interactive handling with actual
+navigation-menu clicks instead of modifying the baseline application.
+
+### Validation and retained attempts
+
+The full solution and existing smoke suite were run separately after the
+acceptance harness changes. These are new measured results, not the earlier
+2,023/30 historical baselines:
+
+```text
+dotnet test Flowbit/Flowbit.slnx --no-restore --nologo --verbosity quiet --logger "trx;LogFileName=roadmap-full.trx" --results-directory artifacts/acceptance/full
+dotnet test Flowbit/tests/Flowbit.BrowserTests/Flowbit.BrowserTests.csproj -c Release --no-build --no-restore --nologo --verbosity quiet --logger "trx;LogFileName=roadmap-smoke.trx" --results-directory artifacts/acceptance/smoke
+```
+
+- Full solution: **2,023 passed, 0 failed, 0 skipped**. TRX:
+  `artifacts/acceptance/full/roadmap-full.trx`.
+- Existing smoke suite: **30 passed, 0 failed, 0 skipped** (26 product cases
+  and four harness regressions). TRX:
+  `artifacts/acceptance/smoke/roadmap-smoke.trx`. Run evidence:
+  `artifacts/browser/runs/20260922-164016-01f8a52c/`.
+- The smoke browser was Chromium **151.0.7922.34**, headless on Windows,
+  UI `http://127.0.0.1:60004`, API `http://127.0.0.1:59997`, and editor
+  `http://127.0.0.1:60006`. All 26 product diagnostics retained zero page
+  errors, console errors/warnings, failed requests and unexpected dialogs.
+  Its manifest confirms zero Worker starts and no acceptance proxy. R7 now
+  verifies refreshed instance status, submitted variables and action history
+  before following the exact batch link at all three runtime viewports.
+
+The maintained acceptance suite now has **24 cases**: nine Stage 5 cases,
+11 administrative cases and four harness regressions. Earlier attempts remain
+available alongside final results. The initial current run was **20/23**
+(`artifacts/acceptance/current/acceptance-current.trx`): two audit selectors
+matched multiple valid variable links, and one instance-summary readiness
+assertion timed out while the page was loading. A later headed run was
+**22/23** (`artifacts/acceptance/final/acceptance-final.trx`): the 1024×768
+representative-state case completed section navigation, but its capture helper
+failed to reach the top after `Control+Home`. The helper now uses real upward
+wheel input and verifies the observed scroll position. The subsequent 24-case
+headed attempt was **23/24**
+(`artifacts/acceptance/verified/acceptance-verified.trx`): the 1440×900 audit
+case queried shared bindings while browser Back was still loading the instance.
+Its Back helper now waits for the real instance-summary readiness marker before
+checking restored data. These harness failures
+are not silently converted to passing outcomes or attributed to product defects.
+The corrected full headed suite subsequently passed **24/24, 0 failures or
+skips**, in 5m 24s:
+
+```text
+dotnet test Flowbit/tests/Flowbit.BrowserAcceptanceTests/Flowbit.BrowserAcceptanceTests.csproj -c Release --no-build --no-restore --environment FLOWBIT_BROWSER_HEADED=1 --nologo --verbosity quiet --logger "trx;LogFileName=acceptance-complete.trx" --results-directory artifacts/acceptance/complete
+```
+
+TRX: `artifacts/acceptance/complete/acceptance-complete.trx`. Browser artifacts:
+`artifacts/acceptance/runs/20260922-164938-a06d4770/`. Headed Chromium
+**151.0.7922.34** used UI `http://127.0.0.1:61525`, API
+`http://127.0.0.1:61522`, and proxy `http://127.0.0.1:61524`. The final run
+disposed its fixture-owned hosts and database. Per-scenario evidence records
+real fixture/batch IDs, browser diagnostics, screenshots and request counts;
+all 21 diagnostics files (20 product scenarios and fixture setup) retain zero
+page errors, console errors/warnings, failed requests or unexpected dialogs.
+API/UI/Worker logs remain separate from browser diagnostics.
+
+After that full run, final administrative screenshot and loading-request
+assertions were verified by a focused **11/11** headed run with no failures or
+skips. Its **126 screenshots**, clean diagnostics, exact request counts and
+visual review are recorded in
+[Stage 11's final acceptance](stage-11-administrative-action-display-components.md#final-administrative-acceptance-2026-09-22).
+The unchanged nine Stage 5 and four harness cases retain the full-run result
+above. Stage 5 and Stage 11 are accepted; only this stage's native editor-dialog
+requirement remains open.
+
+### Current Stage 5 checklist
+
+This completed runtime checklist supersedes the 2026-09-20 checkpoint above.
+The native editor dialog is a separate Stage 7 gate.
+
+| Requirement | Completed evidence |
+| --- | --- |
+| Newly started, normal and terminal states | Three viewport cases verify summaries, section visibility, empty states, action controls and ordered sections; final per-state screenshots retained. |
+| Gateway/complex and multi-instance states | Status/phase values, active and completed items, early-quorum cancelled children, submitted JSON, section navigation and real table scrolling pass. |
+| Variables and shared bindings | Actual HTTP-created catalog binding; shared value absent from detail; latest values and variable-to-update-audit navigation pass. |
+| Version/variable batch history | Worker-driven upgrade/downgrade and two updates verify actors, roles, reasons, values, order, exact completed-batch destinations and browser Back. |
+| Claims and delegation | Real owner claim, grant and delegated UI completion verify attribution, badges, selected claims, escaping and omitted unselected claims. |
+| Administrative refresh | R7 passes status, variables and history assertions before following its real batch link at all three runtime sizes. |
+| Identity, requests and disposal | Smoke R3/R5 plus retained deterministic identity, polling/request-count and disposal regressions pass in the separate suites. |
+| Layout and historical comparison | 27 final Stage 5 screenshots at 1440×900, 1024×768 and 390×844; 15 inspected across all state types and widths; unchanged `0d23c7a` reference hosts and reviewed pairs recorded in Stage 5. |
+| Console/network and ownership | All nine Stage 5 diagnostic files contain zero browser errors, warnings, failed requests or unexpected dialogs; host logs retained; page-owned coordination remains unchanged. |
+
+The editor native-picker attempt on this Windows host was stopped by computer
+control policy before native input: it could not determine the current browser
+URL with enough confidence to enforce policy. Neither native save success nor
+native cancel is claimed. The automated download fallback remains covered, and
+the native-picker acceptance row stays open until both real dialog paths can be
+recorded at 1440×900 and 1024×768. This is a Stage 7 editor limitation, separate
+from the Stage 5 runtime checklist. The explicit unavailable result is retained
+at `artifacts/acceptance/native-picker/unavailable.json`.
+
 ## Acceptance criteria
 
 - [x] A fresh checkout can build/publish/install/run the documented commands;
@@ -612,13 +740,14 @@ batches and visual comparisons), and remote CI observation remain open.
   assertions. No UI interaction is replaced by directly invoking app internals.
 - [ ] Native-picker manual success/cancel checks are recorded; fallback download
   is automated. Unavailable checks are explicit and remain open.
-- [ ] The existing focused/full suites pass with actual counts recorded and no
+- [x] The existing focused/full suites pass with actual counts recorded and no
   unexplained new skips; the separate browser suite passes locally. The
-  `browser-smoke` CI job YAML is configured; a remote CI pass has not been
-  observed yet.
+  `browser-smoke` CI job and `test` job passed for `3e70130` in
+  [run 35713256658](https://github.com/sherif-hfm/Flowbit/actions/runs/35713256658).
+  New local acceptance changes retain their own validation records.
 - [x] The browser job produces TRX and usable failure traces/screenshots/logs,
   including setup-failure diagnostics; normal tests require no browser install.
-- [ ] Every Stage 5 checklist row is completed, including genuine batch links,
+- [x] Every Stage 5 checklist row is completed, including genuine batch links,
   claims/delegation, all three viewports, before/after references, and unchanged
   page ownership/request behavior. Console/network results are recorded.
 - [x] Documentation, links, commands, and fixture JSON match the implemented

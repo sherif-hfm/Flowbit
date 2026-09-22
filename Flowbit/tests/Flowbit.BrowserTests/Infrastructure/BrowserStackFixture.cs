@@ -17,6 +17,13 @@ namespace Flowbit.BrowserTests.Infrastructure;
 /// </summary>
 public sealed class BrowserStackFixture : IAsyncLifetime
 {
+    private readonly BrowserAcceptanceOptions? acceptance;
+    public BrowserStackFixture() { }
+    private BrowserStackFixture(BrowserAcceptanceOptions options) => acceptance = options;
+    public static BrowserStackFixture CreateForAcceptance(BrowserAcceptanceOptions options) => new(options);
+    public bool IsAcceptance => acceptance is not null;
+    public bool RequiresInteractiveMarkers => acceptance?.LegacyUiWithoutInteractiveMarkers != true;
+
     /// <summary>Set to 1 to launch Chromium headed for local diagnosis.</summary>
     public const string HeadedEnv = "FLOWBIT_BROWSER_HEADED";
 
@@ -33,6 +40,10 @@ public sealed class BrowserStackFixture : IAsyncLifetime
     private PostgreSqlContainer? postgres;
     private HostedProcess? api;
     private HostedProcess? ui;
+    private HostedProcess? worker;
+    private int workerNumber;
+    private RecordingApiProxy? apiProxy;
+    public RecordingApiProxy ApiProxy => apiProxy ?? throw new InvalidOperationException("The response proxy is available only in an initialized acceptance stack.");
     private EditorStaticHost? editorHost;
     private IPlaywright? playwright;
     private IBrowser? browser;
@@ -65,7 +76,7 @@ public sealed class BrowserStackFixture : IAsyncLifetime
     public IReadOnlyList<string> UiOutputLines => ui?.OutputLines ?? [];
 
     /// <summary>Seconds budget for one full scenario (read by tests).</summary>
-    public TimeSpan ScenarioBudget => ScenarioTimeout;
+    public TimeSpan ScenarioBudget => acceptance?.ScenarioTimeout ?? ScenarioTimeout;
 
     /// <summary>Default Playwright timeout for ordinary assertions.</summary>
     public TimeSpan AssertionBudget => AssertionTimeout;
@@ -78,13 +89,13 @@ public sealed class BrowserStackFixture : IAsyncLifetime
         var startTimestamp = Stopwatch.StartNew();
         try
         {
-            RepositoryRoot = DiscoverRepositoryRoot();
-            Headless = !string.Equals(
+            RepositoryRoot = acceptance?.RepositoryRoot is { } root ? Path.GetFullPath(root) : DiscoverRepositoryRoot();
+            Headless = acceptance?.Headed is { } headed ? !headed : !string.Equals(
                 Environment.GetEnvironmentVariable(HeadedEnv),
                 "1",
                 StringComparison.OrdinalIgnoreCase);
             var runName = $"{DateTime.UtcNow:yyyyMMdd-HHmmss}-{Guid.NewGuid().ToString("N")[..8]}";
-            RunDirectory = Path.Combine(RepositoryRoot, "artifacts", "browser", "runs", runName);
+            RunDirectory = Path.Combine(acceptance?.ArtifactRoot ?? Path.Combine(RepositoryRoot, "artifacts", IsAcceptance ? "acceptance" : "browser", "runs"), runName);
             Directory.CreateDirectory(RunDirectory);
             JwtKey = $"bk-{Guid.NewGuid():N}-{Guid.NewGuid():N}";
             if (JwtKey.Length < 64)
@@ -97,8 +108,13 @@ public sealed class BrowserStackFixture : IAsyncLifetime
 
             await StartDatabaseAsync();
             await StartApiAsync();
+            if (IsAcceptance)
+            {
+                apiProxy = new RecordingApiProxy();
+                await apiProxy.StartAsync(ApiBaseAddress, Path.Combine(RunDirectory, "api-requests.json"));
+            }
             await StartUiAsync();
-            await StartEditorHostAsync();
+            if (acceptance is null || acceptance.StartEditorHost) await StartEditorHostAsync();
             await StartBrowserAsync();
 
             // Verify the real interactive token action and use its generated
@@ -173,6 +189,8 @@ public sealed class BrowserStackFixture : IAsyncLifetime
             ViewportSize = new ViewportSize { Width = viewportWidth, Height = viewportHeight },
             AcceptDownloads = true,
             BaseURL = UiBaseAddress,
+            Locale = IsAcceptance ? "en-US" : null,
+            TimezoneId = IsAcceptance ? "UTC" : null,
         };
         lock (manifestGate)
         {
@@ -198,7 +216,7 @@ public sealed class BrowserStackFixture : IAsyncLifetime
             Path.Combine(RunDirectory, SanitizeFileName(name)),
             NavigationTimeout,
             AssertionTimeout,
-            scenarioTimeout ?? ScenarioTimeout,
+            scenarioTimeout ?? ScenarioBudget,
             TeardownPerProcessTimeout);
         await scenario.PrepareAsync();
         return scenario;
@@ -206,6 +224,7 @@ public sealed class BrowserStackFixture : IAsyncLifetime
 
     public async Task DisposeAsync()
     {
+        apiProxy?.ReleaseAllGates();
         var failures = new List<Exception>();
 
         async Task RunStepAsync(string step, Func<Task> action)
@@ -247,6 +266,12 @@ public sealed class BrowserStackFixture : IAsyncLifetime
         {
             await RunStepAsync("stop ui", () => ui.DisposeAsync().AsTask());
             ui = null;
+        }
+        await RunStepAsync("stop worker", StopWorkerAsync);
+        if (apiProxy is not null)
+        {
+            await RunStepAsync("stop API recording proxy", () => apiProxy.DisposeAsync().AsTask());
+            apiProxy = null;
         }
         if (api is not null)
         {
@@ -297,21 +322,15 @@ public sealed class BrowserStackFixture : IAsyncLifetime
 
     private async Task StartApiAsync()
     {
+        var directory = acceptance?.ApiHostDirectory ?? Path.Combine(RepositoryRoot, "artifacts", "browser", "hosts", "api");
+        var environment = CreateRuntimeEnvironment();
+        environment["WorkflowContext__AllowedClaims__0"] = "depId";
         api = HostedProcess.Start(
             "api",
-            Path.Combine(RepositoryRoot, "artifacts", "browser", "hosts", "api", "Flowbit.Api.dll"),
-            Path.Combine(RepositoryRoot, "artifacts", "browser", "hosts", "api"),
+            Path.Combine(directory, "Flowbit.Api.dll"),
+            directory,
             RunDirectory,
-            new Dictionary<string, string?>
-            {
-                ["ConnectionStrings__Flowbit"] = postgres!.GetConnectionString(),
-                ["Jwt__Issuer"] = JwtIssuer,
-                ["Jwt__Audience"] = JwtAudience,
-                ["Jwt__Key"] = JwtKey,
-                ["WorkflowDurableProcessing__PublicationEnabled"] = "false",
-                ["WorkflowContext__AllowedClaims__0"] = "depId",
-                ["Serilog__MinimumLevel__Override__Microsoft.Hosting.Lifetime"] = "Information",
-            },
+            environment,
             CreateProbeClient(),
             readyTimeout: ApplicationReadyTimeout);
         ApiBaseAddress = await api.WaitForReadyAsync("/openapi/v1.json", CancellationToken.None);
@@ -320,17 +339,18 @@ public sealed class BrowserStackFixture : IAsyncLifetime
 
     private async Task StartUiAsync()
     {
+        var directory = acceptance?.UiHostDirectory ?? Path.Combine(RepositoryRoot, "artifacts", "browser", "hosts", "ui");
         ui = HostedProcess.Start(
             "ui",
-            Path.Combine(RepositoryRoot, "artifacts", "browser", "hosts", "ui", "Flowbit.Ui.dll"),
-            Path.Combine(RepositoryRoot, "artifacts", "browser", "hosts", "ui"),
+            Path.Combine(directory, "Flowbit.Ui.dll"),
+            directory,
             RunDirectory,
             new Dictionary<string, string?>
             {
                 ["Jwt__Issuer"] = JwtIssuer,
                 ["Jwt__Audience"] = JwtAudience,
                 ["Jwt__Key"] = JwtKey,
-                ["WorkflowApi__BaseUrl"] = api!.BaseAddress,
+                ["WorkflowApi__BaseUrl"] = apiProxy?.BaseAddress ?? api!.BaseAddress,
                 ["Serilog__MinimumLevel__Override__Microsoft.Hosting.Lifetime"] = "Information",
             },
             CreateProbeClient(),
@@ -338,6 +358,49 @@ public sealed class BrowserStackFixture : IAsyncLifetime
         UiBaseAddress = await ui.WaitForReadyAsync("/token", CancellationToken.None);
         await ui.WaitForReadyAsync("/_framework/blazor.web.js", CancellationToken.None);
         await WriteSetupLogAsync($"UI ready at {UiBaseAddress} (prerender and blazor.web.js probed; identity is applied interactively in scenarios).");
+    }
+
+    private Dictionary<string, string?> CreateRuntimeEnvironment()
+    {
+        var environment = new Dictionary<string, string?>
+        {
+            ["ConnectionStrings__Flowbit"] = postgres!.GetConnectionString(),
+            ["Jwt__Issuer"] = JwtIssuer,
+            ["Jwt__Audience"] = JwtAudience,
+            ["Jwt__Key"] = JwtKey,
+            ["WorkflowDurableProcessing__PublicationEnabled"] = IsAcceptance ? "true" : "false",
+            ["Serilog__MinimumLevel__Override__Microsoft.Hosting.Lifetime"] = "Information",
+        };
+        if (acceptance is not null)
+            for (var i = 0; i < acceptance.AuditClaims.Count; i++)
+                environment[$"WorkflowAudit__AllowedClaims__{i}"] = acceptance.AuditClaims[i];
+        return environment;
+    }
+
+    public async Task StartWorkerAsync()
+    {
+        if (acceptance is null) throw new InvalidOperationException("A smoke stack cannot start a Worker; use CreateForAcceptance.");
+        if (worker is { HasExited: false }) return;
+        if (worker is not null) await StopWorkerAsync();
+        var directory = acceptance.WorkerHostDirectory ?? Path.Combine(RepositoryRoot, "artifacts", "browser", "hosts", "worker");
+        var environment = CreateRuntimeEnvironment();
+        environment["FlowbitWorker__HealthListenUrl"] = "http://127.0.0.1:0";
+        // Keep production lease/retry durations. Only idle discovery is faster in the fixture.
+        environment["FlowbitWorker__PollMilliseconds"] = "100";
+        environment["FlowbitWorker__IdleBackoffMilliseconds"] = "500";
+        worker = HostedProcess.Start($"worker-{++workerNumber}", Path.Combine(directory, "Flowbit.Worker.dll"),
+            directory, RunDirectory, environment, CreateProbeClient(), readyTimeout: ApplicationReadyTimeout);
+        var address = await worker.WaitForReadyAsync("/health/ready", CancellationToken.None);
+        await WriteSetupLogAsync($"Owned Worker {workerNumber} ready at {address}.");
+    }
+
+    public async Task StopWorkerAsync()
+    {
+        if (worker is null) return;
+        var ownedWorker = worker;
+        worker = null;
+        await ownedWorker.DisposeAsync();
+        await WriteSetupLogAsync($"Owned Worker {workerNumber} stopped.");
     }
 
     private async Task StartEditorHostAsync()
@@ -397,6 +460,12 @@ public sealed class BrowserStackFixture : IAsyncLifetime
             uiBaseAddress = string.IsNullOrEmpty(UiBaseAddress) ? null : UiBaseAddress,
             editorBaseAddress = string.IsNullOrEmpty(EditorBaseAddress) ? null : EditorBaseAddress,
             initialized,
+            acceptance = IsAcceptance,
+            workerStarts = workerNumber,
+            apiProxyBaseAddress = apiProxy?.BaseAddress,
+            apiHostDirectory = acceptance?.ApiHostDirectory,
+            uiHostDirectory = acceptance?.UiHostDirectory,
+            workerHostDirectory = acceptance?.WorkerHostDirectory,
             scenarios,
         };
         try

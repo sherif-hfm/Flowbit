@@ -218,7 +218,26 @@ public sealed class AdministrativeActionsSmokeTests(BrowserStackFixture stack)
             .GetAttributeAsync("href");
         var match = Regex.Match(href ?? string.Empty, @"batchId=(\d+)");
         Assert.True(match.Success, $"The audit batch link was missing or malformed: {href}");
-        return long.Parse(match.Groups[1].Value);
+        var batchId = long.Parse(match.Groups[1].Value);
+        // The command callback must refresh the assembled instance page before
+        // navigation, including the extracted variables and ordinary history.
+        await Assertions.Expect(page.Locator("#instance-summary-heading")
+            .Locator("xpath=ancestor::section").Locator(".section-heading .status-badge"))
+            .ToContainTextAsync("Completed");
+        await Assertions.Expect(page.Locator("#variables")).ToContainTextAsync(approvalNote);
+        await Assertions.Expect(page.Locator("#history")).ToContainTextAsync("supervisor");
+        await Assertions.Expect(page.Locator($"#history a[href='administrative-actions?batchId={batchId}']"))
+            .ToBeVisibleAsync();
+        await page.Locator("h1").HoverAsync();
+        await page.Mouse.WheelAsync(0, -await page.EvaluateAsync<int>(
+            "() => document.documentElement.scrollHeight"));
+        await page.WaitForFunctionAsync("() => window.scrollY <= 1");
+        await page.ScreenshotAsync(new PageScreenshotOptions
+        {
+            Path = Path.Combine(scenario.ArtifactDirectory, $"administrative-instance-refreshed-{instanceId}.png"),
+            FullPage = true,
+        });
+        return batchId;
     }
 
     /// <summary>

@@ -2,14 +2,11 @@
 
 [Documentation home](../index.md)
 
-**Status: In progress.** Stages 1–4 are implemented; stage 5 is in progress
-(extraction and tests complete; browser acceptance pending); stage 6 is
-implemented; stage 7 is in progress (the automated Chromium smoke suite and its
-CI job are implemented and passing locally; Stage 5's residual manual
-acceptance and the remote CI observation remain open); stage 8 is implemented;
-stage 9 is implemented; stage 11 is in progress (the extraction, tests, and
-no-Worker smoke scenario are implemented; the Worker-driven full-stack
-acceptance and Stage 5's residual acceptance stay open). Each stage records its
+**Status: In progress.** Stages 1–6 and 8–11 are implemented and locally
+accepted. Stage 7's smoke suite passes locally and in remote CI, and its local
+Worker acceptance suite passes; the native editor save-dialog gate remains
+open. Stage 11's final administrative follow-up and visual review passed after
+the complete 24-case runtime acceptance run. Each stage records its
 own implementation and acceptance status below. The architecture and API guides
 describe the current application.
 
@@ -21,13 +18,13 @@ describe the current application.
 | [2 — Repository query helpers](stage-02-repository-query-helpers.md) | Shared task ownership predicates and inbox visibility SQL fragments. | Stage 1 recommended; can proceed independently without conflicting edits. | Implemented |
 | [3 — Engine projections](stage-03-engine-responsibilities.md) | Instance detail and execution projection service, including existing redaction and audit mapping. | Stage 1; Stage 2 recommended. | Implemented |
 | [4 — Editor validation](stage-04-editor-validation.md) | Smaller validation phases and rule helpers inside the standalone HTML file. | Passing test baseline; independent of backend stages. | Implemented |
-| [5 — Instance detail components](stage-05-instance-detail-components.md) | Display components with refresh, identity, and mutation coordination retained by the page. | Passing test baseline; independent of stages 1–4. | In progress |
+| [5 — Instance detail components](stage-05-instance-detail-components.md) | Display components with refresh, identity, and mutation coordination retained by the page. | Passing test baseline; independent of stages 1–4. | Implemented and locally accepted |
 | [6 — Definition validation](stage-06-definition-validation.md) | Separate authored/normalized validation from definition lifecycle and publication orchestration. | Passing test baseline; independent of stages 1–5. | Implemented |
-| [7 — Browser smoke suite and Stage 5 acceptance](stage-07-browser-smoke-and-stage-05-acceptance.md) | Isolated Chromium smoke coverage, a separate CI job, and completion of Stage 5's browser gate. | Passing baseline; extracted Stage 5 components available for verification. | In progress (suite implemented and passing; residual Stage 5 acceptance open) |
+| [7 — Browser smoke suite and Stage 5 acceptance](stage-07-browser-smoke-and-stage-05-acceptance.md) | Isolated Chromium smoke coverage, a separate CI job, and completion of Stage 5's browser gate. | Passing baseline; extracted Stage 5 components available for verification. | In progress (Stage 5 accepted; native editor dialog open) |
 | [8 — Remove query/detail compatibility methods](stage-08-remove-query-detail-compatibility.md) | Direct detail endpoint projection calls, removal of three engine forwards and the query dependency, and C# caller/test migration (40 → 37 methods). | Stages 1 and 3; passing baseline. Can proceed alongside Stage 7. | Implemented |
 | [9 — Waiting-task role management](stage-09-waiting-task-role-management.md) | Scoped role-management service, four direct endpoint consumers, and atomic policy/audit behavior preserved (37 → 33 engine methods). | Accepted Stage 8; passing baseline. Can proceed alongside Stage 7. | Implemented |
 | [10 — Editor node-type transitions](stage-10-editor-node-type-transitions.md) | Named transition helper with inspector-owned redraws, unchanged graph cleanup/history, and characterization plus browser coverage. | Stage 7 browser harness available; passing baseline. Does not require Stage 5 acceptance. | Implemented |
-| [11 — Administrative-action display components](stage-11-administrative-action-display-components.md) | Batch audit, items and recent-history display components with page-owned requests, controls, identity and polling. | Stage 7 browser harness available; completed Stage 5 acceptance; passing baseline. | In progress |
+| [11 — Administrative-action display components](stage-11-administrative-action-display-components.md) | Batch audit, items and recent-history display components with page-owned requests, controls, identity and polling. | Stage 7 browser harness available; completed Stage 5 acceptance; passing baseline. | Implemented and locally accepted |
 
 The original recommended sequence is stages 1 through 5, followed by Stage 6.
 Stage 6 may move earlier if definition maintenance is the immediate priority.
@@ -47,7 +44,10 @@ baseline before beginning each stage.
 The existing test-host isolation and
 [CI workflow](../../.github/workflows/tests.yml) provide the starting point.
 The remote CI workflow had not been observed running when these plans were
-prepared. Use the [runtime test instructions](../../Flowbit/README.md) for
+prepared. On 2026-09-22 both `test` and `browser-smoke` were verified successful
+for `3e70130` in [run 35713256658](https://github.com/sherif-hfm/Flowbit/actions/runs/35713256658).
+This is evidence for that commit, not for subsequent local edits.
+Use the [runtime test instructions](../../Flowbit/README.md) for
 environment requirements. A test count is not a coverage measure.
 
 ## Shared implementation rules
@@ -129,7 +129,7 @@ engine, editor, UI, and browser-test candidates were identified for follow-up
 planning.
 The original stages include the relevant parser conformance and UI lifecycle
 regressions; they did not require a new browser automation harness as an
-additional prerequisite. Stage 7 now plans that harness separately.
+additional prerequisite. Stage 7 implemented that harness separately.
 
 ## Prioritized follow-up roadmap
 
@@ -138,11 +138,11 @@ records the review at `fbe0721` and planned stages 7–11: browser smoke coverag
 removal of seven migrated engine-interface methods, waiting-task role-management
 extraction, editor node-type transitions, and administrative-action display
 components. It includes an explicitly accepted C# compatibility break and keeps
-the other candidates deferred. Stage 7 is in progress (smoke suite implemented
-locally; residual Stage 5 acceptance and remote CI observation remain open).
+the other candidates deferred. Stage 7 is in progress (smoke and local Worker
+suites pass; Stage 5 accepted; native editor dialog remains open).
 Stage 8 is implemented and locally accepted; Stage 9 is implemented and
-locally accepted (37 → 33 engine methods). Stage 10 is implemented; Stage 11
-is in progress (extraction implemented, browser acceptance gates open). The
+locally accepted (37 → 33 engine methods). Stages 10 and 11 are implemented
+and locally accepted. The
 other stage statuses above remain unchanged.
 
 The [detailed Stage 7 plan](stage-07-browser-smoke-and-stage-05-acceptance.md)
@@ -198,6 +198,8 @@ fixes timer-driven rendering and strengthens the race/formatting tests:
 73/73 Stage 11 cases pass on Windows and Linux, 2,023/2,023 solution tests and
 30/30 no-Worker browser tests pass, and separate Worker-enabled evidence covers
 ordinary/MI/timer batches, pagination, cancellation and identity changes.
-The page now has 1,280 lines. The stage stays **in progress** for Stage 5's
-prerequisite and the residual visual/timing evidence in that record; the other
+The page now has 1,280 lines. Stage 5's prerequisite is now complete, and the
+24-case maintained acceptance suite passes. Stage 11 is **implemented and
+locally accepted** after its final administrative 11/11 run and visual review;
+the other
 management pages and the API-client split stay deferred.

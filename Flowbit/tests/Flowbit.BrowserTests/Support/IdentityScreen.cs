@@ -16,7 +16,8 @@ public sealed class IdentityScreen(IPage page, string uiBaseAddress)
 
     public IPage Page => page;
 
-    public async Task<string> GenerateAndApplyIdentityAsync(string user, string[] roles)
+    public async Task<string> GenerateAndApplyIdentityAsync(
+        string user, string[] roles, IReadOnlyDictionary<string, string>? claims = null)
     {
         await page.GotoAsync(new Uri(new Uri(uiBaseAddress), "/token").ToString(),
             new PageGotoOptions { WaitUntil = WaitUntilState.Load });
@@ -33,6 +34,31 @@ public sealed class IdentityScreen(IPage page, string uiBaseAddress)
 
         await page.Locator("#token-user").FillAsync(user);
         await page.Locator("#token-roles").FillAsync(string.Join(", ", roles));
+
+        // Clear the draft as well as the applied identity: repeated visits can
+        // retain the component's claim rows in the existing Blazor circuit.
+        var claimRows = page.Locator(".token-claim-row");
+        while (await claimRows.CountAsync() > 1)
+        {
+            await claimRows.Last.GetByRole(AriaRole.Button,
+                new LocatorGetByRoleOptions { Name = "Remove custom claim" }).ClickAsync();
+        }
+        await claimRows.First.Locator("input").Nth(0).FillAsync(string.Empty);
+        await claimRows.First.Locator("input").Nth(1).FillAsync(string.Empty);
+        if (claims is not null)
+        {
+            var index = 0;
+            foreach (var claim in claims)
+            {
+                if (index > 0)
+                    await page.GetByRole(AriaRole.Button,
+                        new PageGetByRoleOptions { Name = "Add claim", Exact = true }).ClickAsync();
+                await Assertions.Expect(claimRows).ToHaveCountAsync(index + 1);
+                await claimRows.Nth(index).Locator("input").Nth(0).FillAsync(claim.Key);
+                await claimRows.Nth(index).Locator("input").Nth(1).FillAsync(claim.Value);
+                index++;
+            }
+        }
 
         // Generate and apply; the identity panel must confirm the user.
         var generate = page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Generate and apply" });
@@ -97,7 +123,11 @@ public sealed class IdentityScreen(IPage page, string uiBaseAddress)
 
     private async Task WaitUntilInteractiveAsync()
     {
-        await RuntimeSupport.WaitUntilInteractiveAsync(page);
+        // The pre-extraction Stage 5 reference predates the optional shell
+        // marker. The real suggestion-chip round trip below remains the
+        // readiness check on that historical UI; do not modify its markup.
+        if (await page.Locator(".app-shell").GetAttributeAsync("data-interactive") is not null)
+            await RuntimeSupport.WaitUntilInteractiveAsync(page);
         // Blazor Server re-renders from server state once the circuit is
         // interactive, wiping DOM changes made earlier. Probe interactivity by
         // clicking a suggestion chip and waiting for the server-driven value.

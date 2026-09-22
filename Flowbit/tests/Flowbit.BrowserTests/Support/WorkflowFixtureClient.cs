@@ -136,6 +136,38 @@ public sealed class WorkflowFixtureClient : IAsyncDisposable
     public Task<WorkflowDetailDto> GetWorkflowAsync(long id) =>
         SendAsync<WorkflowDetailDto>(HttpMethod.Get, $"/api/workflows/{id}");
 
+    /// <summary>Publishes an explicit model without changing its stable family key.</summary>
+    public Task<WorkflowSummaryDto> CreateAndPublishAsync(WorkflowModel definition) =>
+        SendAsync<WorkflowSummaryDto>(HttpMethod.Post, "/api/workflows/",
+            new CreateWorkflowRequest(definition, true));
+
+    public Task<SharedVariableMetadataDto> CreateSharedVariableAsync(CreateSharedVariableRequest request) =>
+        SendAsync<SharedVariableMetadataDto>(HttpMethod.Post, "/api/shared-variables", request);
+
+    public Task<IReadOnlyList<UserDelegationDto>> CreateDelegationAsync(CreateUserDelegationRequest request) =>
+        SendAsync<IReadOnlyList<UserDelegationDto>>(HttpMethod.Post, "/api/user-delegations", request);
+
+    public Task<UserDelegationDto> AcceptDelegationAsync(long id, UserDelegationLifecycleRequest request) =>
+        SendAsync<UserDelegationDto>(HttpMethod.Post, $"/api/user-delegations/{id}/accept", request);
+
+    public Task<InstanceVersionChangeBatchDetailDto> CreateVersionChangeBatchAsync(CreateInstanceVersionChangeBatchRequest request) =>
+        SendAsync<InstanceVersionChangeBatchDetailDto>(HttpMethod.Post, "/api/instance-version-change-batches", request);
+
+    public Task<InstanceVersionChangeBatchDetailDto> GetVersionChangeBatchAsync(long id) =>
+        SendAsync<InstanceVersionChangeBatchDetailDto>(HttpMethod.Get, $"/api/instance-version-change-batches/{id}");
+
+    public Task<InstanceVersionChangeBatchDetailDto> ConfirmVersionChangeBatchAsync(long id, ConfirmInstanceVersionChangeBatchRequest request) =>
+        SendAsync<InstanceVersionChangeBatchDetailDto>(HttpMethod.Post, $"/api/instance-version-change-batches/{id}/confirm", request);
+
+    public Task<InstanceVariableUpdateBatchDetailDto> CreateVariableUpdateBatchAsync(CreateInstanceVariableUpdateBatchRequest request) =>
+        SendAsync<InstanceVariableUpdateBatchDetailDto>(HttpMethod.Post, "/api/instance-variable-update-batches", request);
+
+    public Task<InstanceVariableUpdateBatchDetailDto> GetVariableUpdateBatchAsync(long id) =>
+        SendAsync<InstanceVariableUpdateBatchDetailDto>(HttpMethod.Get, $"/api/instance-variable-update-batches/{id}");
+
+    public Task<InstanceVariableUpdateBatchDetailDto> ConfirmVariableUpdateBatchAsync(long id, ConfirmInstanceVariableUpdateBatchRequest request) =>
+        SendAsync<InstanceVariableUpdateBatchDetailDto>(HttpMethod.Post, $"/api/instance-variable-update-batches/{id}/confirm", request);
+
     public Task<StartInstanceResultDto> StartInstanceAsync(
         long workflowId, Dictionary<string, JsonElement>? variables = null, int? startEventId = null) =>
         SendAsync<StartInstanceResultDto>(HttpMethod.Post, "/api/instances/", new

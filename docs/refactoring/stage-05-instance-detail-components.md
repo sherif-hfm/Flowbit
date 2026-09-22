@@ -2,14 +2,14 @@
 
 [Plan index](README.md)
 
-[Next planned stage: definition validation](stage-06-definition-validation.md)
+[Next stage: definition validation (implemented)](stage-06-definition-validation.md)
 
-**Status: In progress — extraction implemented; real-browser verification
-pending.** The seven display components are extracted and the automated suite
-passes, but the required localhost browser checks
-([below](#required-browser-verification)) have not been completed, so the
-acceptance gate remains open. This stage is independent of backend
-extractions and Stage 4 after a passing baseline.
+**Status: Implemented and locally accepted (2026-09-22).** The seven display
+components are extracted and the complete runtime browser gate passed. The
+final local checks passed 2,023 solution tests, 30 smoke tests and 24 maintained
+acceptance tests, including all nine Stage 5 cases. Current headed evidence and
+historical comparisons are recorded below. The dated pending notes preserve
+the earlier checkpoints; Stage 7's separate native editor picker remains open.
 
 **Stage 7 browser automation (2026-09-20).** The new
 [Flowbit.BrowserTests](../../Flowbit/tests/Flowbit.BrowserTests/README.md)
@@ -30,6 +30,103 @@ strengthen this evidence with real in-app navigation, separately gated identity
 responses (including a failed replacement), complete-refresh polling counts,
 gateway state values, and wheel-accessible submitted JSON. Those fixes do not
 close the remaining manual acceptance rows.
+
+The dated Stage 7 note above included the editor's native save picker in its
+combined remainder. That picker is a Stage 7 editor gate, separate from this
+stage's runtime instance-detail checklist. Its unavailable verification does
+not substitute for, or block acceptance of, a completed runtime checklist.
+
+## Runtime acceptance completed (2026-09-22)
+
+The final headed run passed **24/24**, including **all nine Stage 5 cases**,
+with no failures or skips. Its 27 Stage 5 screenshots cover newly started,
+normal, terminal, gateway/complex, empty and populated multi-instance results,
+completed/cancelled multi-instance children, shared bindings and batch audits,
+and claims/delegation at **1440×900, 1024×768 and 390×844**. Visual inspection
+of 15 final captures spanning all state types and widths found coherent
+headings, cards, focus, controls and responsive table overflow. Real clicks,
+typing, keyboard navigation and horizontal wheel checks exercise those states.
+
+The run used headed Chromium **151.0.7922.34**, UI
+`http://127.0.0.1:61525`, API `http://127.0.0.1:61522`, and the test-only API
+proxy `http://127.0.0.1:61524`. Evidence is under
+`artifacts/acceptance/runs/20260922-164938-a06d4770/`; each Stage 5 scenario has
+its actual HTTP-created IDs in `scenario-evidence.json`. All nine diagnostics
+files retain zero page errors, console errors/warnings, failed requests or
+unexpected dialogs. TRX: `artifacts/acceptance/complete/acceptance-complete.trx`.
+
+R7 separately passed at all three widths, asserting refreshed status, variables
+and history before following its actual administrative batch link. Retained
+identity, stale-response, request-count, polling and disposal regressions passed
+with the full solution and smoke suites. Page coordination and component
+ownership remain unchanged. The
+[Stage 7 validation record](stage-07-browser-smoke-and-stage-05-acceptance.md#validation-and-retained-attempts)
+contains the exact commands, counts and earlier test-only failures; its current
+checklist supersedes the original pending checkpoint.
+
+## Historical visual evidence (2026-09-22)
+
+The maintained local
+[acceptance suite](../../Flowbit/tests/Flowbit.BrowserAcceptanceTests/README.md)
+adds real catalog-backed shared bindings, two completed version-change batches
+(upgrade and downgrade), two completed variable-update batches, owner claims,
+selected custom claims, a real delegation grant, and a delegate-completed task.
+It also captures newly started, normal, terminal, gateway/complex, empty and
+populated multi-instance results, and completed multi-instance executions with
+cancelled children. Setup uses HTTP; identities and actions use the real token
+form and task UI. The [Stage 7 follow-up](stage-07-browser-smoke-and-stage-05-acceptance.md#local-worker-acceptance-follow-up-2026-09-22)
+owns final test counts and the current acceptance checklist.
+
+The unmodified pre-extraction application from `0d23c7a` was exported and all
+three hosts published under `artifacts/acceptance/baselines/0d23c7a/hosts/`.
+An explicit legacy mode proves readiness with real navigation-menu clicks and
+keyboard close before restoring the requested viewport; no renderer marker was
+patched into the historical app. The headed reference run used Chromium
+**151.0.7922.34**, UI `http://127.0.0.1:54759`, API
+`http://127.0.0.1:54756`, and **1440×900**, **1024×768**, **390×844**.
+Evidence is retained in
+`artifacts/acceptance/comparison-stage05-baseline-final/20260922-111217-c5ce8c39/`.
+
+That historical run finished **6 passed, 3 failed, 0 skipped**. All three
+failures reproduce the already-recorded Stage 7 section-navigation bug: the
+original application replaces `/instances/{id}` with `/#history`. The audit
+screens were fully captured before the route assertion failed. The reference
+is therefore usable for all nine visual states at all three widths, but is not
+reported as a passing current-behavior suite. The current application preserves
+`/instances/{id}#history`; its Back check must preserve the full originating URL,
+including the fragment.
+
+The current headed comparison captures are under
+`artifacts/acceptance/comparison-stage05-current/20260922-110356-1cc03cbb/`
+(UI `http://127.0.0.1:54131`, API `http://127.0.0.1:54128`). Its six
+claim/state cases passed; the three audit cases initially exposed an overly
+strict test expectation that omitted the valid restored fragment, corrected
+before final validation. They are not claimed as passing from that earlier run.
+Paired inspection of the shared/audit tables, mobile claims/history screens and
+desktop multi-instance completion with cancelled children
+found preserved card hierarchy, headings, row structure, escaped values,
+navigation controls and horizontal overflow. Different generated catalog keys,
+fixture IDs and timestamps are expected. Current screenshots and required
+historical references remain review evidence, without committed pixel baselines.
+
+The following original PNG pairs are retained with the record for review. The
+claims cases passed at both revisions. The shared/audit captures precede the
+later route assertions described above; they establish appearance evidence,
+not a passing result for those historical navigation checks.
+
+| State and viewport | Before extraction (`0d23c7a`) | Current extraction |
+| --- | --- | --- |
+| Claims and delegated completion, 390×844 | [Before](evidence/acceptance/stage05-before-claims-390x844.png) | [After](evidence/acceptance/stage05-after-claims-390x844.png) |
+| Shared bindings and ordered batch audits, 1024×768 | [Before](evidence/acceptance/stage05-before-audits-1024x768.png) | [After](evidence/acceptance/stage05-after-audits-1024x768.png) |
+
+Every historical scenario retained zero browser page/console errors, warnings,
+failed requests and unexpected dialogs, including the three route-assertion
+failures. API/UI/Worker logs are retained separately; initial migration-table
+probes, HTTP-only redirect warnings and pre-readiness Worker health responses
+are not hidden by the browser result. Earlier attempts remain available and
+record test-only issues (a broad variable-audit locator, prerender input timing,
+and a pointer target beneath the open mobile sidebar); they do not represent
+product acceptance.
 
 ## Implemented component boundaries
 

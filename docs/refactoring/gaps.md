@@ -2,43 +2,45 @@
 
 [Plan index](README.md)
 
-**Status: Planning inventory — not implemented.** This page records work beyond
-the initial five-stage scope and where that work belongs. Definition validation
-has a separate Stage 6 plan, and browser coverage now has a detailed Stage 7
-plan. Other candidates retain the decisions described below and in the
+**Status: Maintained inventory — completed extractions and deferred work.**
+Stages 1–6 and 8–11 are implemented and locally accepted. Stage 11's final
+administrative acceptance and visual review are complete.
+Stage 7's native editor-dialog check remains open. Other candidates retain
+the decisions described below and in the
 [remaining-gaps roadmap](remaining-gaps-implementation-plan.md). This inventory
 contains targets and evidence, not implementation instructions. The
 [shared implementation rules](README.md#shared-implementation-rules) apply to
 any future stage created from this list.
 
-Measurements were checked at commit `c654024`, the same baseline as the stage
-plans. All file totals below count physical lines, including blank lines. The
+Historical measurements were checked at commit `c654024`, the same baseline as
+the original stage plans. Later stage results are identified explicitly; these
+older totals are not current measurements. All file totals below count physical lines, including blank lines. The
 earlier inventory mixed nonblank totals with physical source locations, which
 understated sizes and produced incorrect `@code` lengths. Re-measure and inspect
 the named symbols before implementation; size alone does not justify extraction.
 
 ## Summary
 
-| # | Gap | Current evidence (at `c654024`) | Existing stage coverage |
+| # | Gap | Evidence (historical baseline unless identified) | Existing stage coverage |
 | --- | --- | --- | --- |
 | 1 | Engine core responsibilities still interleaved in `WorkflowEngineService` | 18,468 lines across 9 partial files; 19 constructor parameters; 5 implemented interfaces | [Stage 1](stage-01-instance-queries.md) (implemented) and [Stage 3](stage-03-engine-responsibilities.md) extract two read-side slices only |
 | 2 | Engine interface breadth | `IWorkflowEngineService` declares 33 `Task`-returning members after Stages 8–9 | Stage 8 removed three query/detail forwards; Stage 9 moved four role operations to `IUserTaskRoleManagementService` |
-| 3 | `WorkflowDefinitionService` | 3,795 lines combining validation and lifecycle operations | Added [Stage 6](stage-06-definition-validation.md) for validation extraction |
+| 3 | `WorkflowDefinitionService` | Stage 6 reduced the lifecycle service to 309 lines; definition rules live in `WorkflowDefinitionValidator` | [Stage 6](stage-06-definition-validation.md) implemented and accepted; no further extraction is selected |
 | 4 | Remaining query assembly duplication | `WorkflowRuntimeRepository` has 7,289 lines; basic filters and instance/inbox sort parsing are already shared | [Stage 2](stage-02-repository-query-helpers.md) extracts ownership predicates and inbox visibility CTEs; further candidates need separate evidence |
 | 5 | Editor hotspots outside save validation | `renderNodeInspector` (~524 lines), `compileInboxVisibilityCondition` (~499 lines), `applyTypeInvariants` (~327 lines); flat script with no modules | [Stage 4](stage-04-editor-validation.md) covers `validateModelForSave`; [Stage 10](stage-10-editor-node-type-transitions.md) implemented the Type-selector transition extraction; the remaining hotspots stay deferred |
 | 6 | Secondary oversized UI units | Four management pages with approximately 332–835-line `@code` blocks; `WorkflowApiClient` 1,857 lines | [Stage 5](stage-05-instance-detail-components.md) covers `InstanceDetail.razor`; [Stage 11](stage-11-administrative-action-display-components.md) implemented three administrative-batch display components (page 1,273 physical lines, down from 1,379) |
-| 7 | Automated Chromium smoke suite exists; residual Stage 5 acceptance remains | Repeatable E1–E5/R1–R6 coverage plus a `browser-smoke` CI job; native-picker, Worker-driven batch links, and remote CI observation are still open | [Stage 7](stage-07-browser-smoke-and-stage-05-acceptance.md) implemented for the no-Worker smoke suite; Stage 5 acceptance still open |
+| 7 | Smoke and local Worker acceptance pass; native editor-dialog check remains | 30 smoke and 24 acceptance cases; both existing jobs passed in remote run 35713256658 for `3e70130` | [Stage 7](stage-07-browser-smoke-and-stage-05-acceptance.md) owns the completed Stage 5 checklist and the unavailable native check |
 
 ## Decisions for the stage plans
 
 | Area | Decision | Reason |
 | --- | --- | --- |
-| Definition validation | Add Stage 6, independently implementable after a passing baseline. | Authored checks and normalized validation have a concrete extraction boundary; lifecycle behavior stays in the existing service. |
+| Definition validation | Stage 6 is implemented; retain its focused validator boundary. | Authored and normalized validation are separated from lifecycle orchestration. |
 | Remaining engine and interface work | Record remaining consumers and shared invariants when Stage 3 finishes; plan one command responsibility at a time afterward. | A single extra "split the engine" stage would conceal transaction, authorization, and lock-order decisions. |
 | Repository assembly | Keep Stage 2 bounded; retain the specific remaining candidates in this inventory. | Much of the claimed duplication already has shared implementations, and query surfaces have different semantics. |
 | Editor parser and other functions | Make existing grammar conformance checks explicit in Stage 4; defer inspector/type-invariant/parser decomposition. | The parser is an existing validator dependency, while the other functions have different mutation and rendering responsibilities. |
 | Other UI pages/client | Reassess one page at a time after Stage 5 establishes a verified component pattern. | Size is evidence to inspect; it is not an automatic requirement to split every file. |
-| Browser automation | Keep real-browser verification required; consider a separate test-infrastructure plan for a small repeatable smoke suite. | A new browser harness is useful but is not required to implement the bounded extractions with the existing verification gate. |
+| Browser automation | Smoke and local Worker acceptance pass; retain the native editor-dialog check as open. | The automated suites and completed historical comparisons cannot replace actual native save/cancel input. |
 
 ## 1. Engine core responsibilities
 
@@ -133,17 +135,18 @@ extractions in gap 1, so each member group moves once.
 ## 3. WorkflowDefinitionService
 
 [WorkflowDefinitionService.cs](../../Flowbit/src/Flowbit.Service/Services/WorkflowDefinitionService.cs)
-is 3,795 physical lines. It mixes definition
-validation (`ValidateDefinition` and its per-node-type rule groups),
-create/version/publish/delete orchestration, and DTO assembly. The
+is 309 physical lines after the implemented [Stage 6](stage-06-definition-validation.md)
+extraction. `IWorkflowDefinitionValidator` / `WorkflowDefinitionValidator`
+own authored and normalized definition rules. The lifecycle service retains
+create/version/publish/delete orchestration, catalog/publication gates,
+durability and lock-order checks, cache warming, and DTO assembly. The
 compatibility evaluator is already separate
 ([WorkflowVersionCompatibilityEvaluator.cs](../../Flowbit/src/Flowbit.Service/Services/WorkflowVersionCompatibilityEvaluator.cs),
-1,362 lines). [Stage 6](stage-06-definition-validation.md) now plans separation of
-authored and normalized validation from lifecycle orchestration. It must preserve
-the checks before and after normalization, first-error order/text, catalog and
-publication gates, and cache warming. Version switching uses the separate
-compatibility evaluator; do not conflate its runtime compatibility rules with
-the definition validation pipeline or change either during extraction.
+1,362 lines at the historical baseline). The Stage 6 tests preserve the checks
+before and after normalization and first-error order/text. Version switching
+still uses the separate compatibility evaluator; its runtime compatibility
+rules are independent of definition validation. The former 3,795-line figure
+describes the pre-extraction service, not remaining work.
 
 ## 4. Repository filter/sort/paging duplication
 
@@ -230,8 +233,9 @@ checks, polling and disposal in the page. That extraction is implemented
 (2026-09-21 working tree; the page measured 1,273 physical lines with the display moved to
 `Components/Shared/AdministrativeBatches/`), while the stage's Worker-driven
 browser evidence is extended in its 2026-09-22 review follow-up. The polling-render
-fix brings the page to 1,280 lines. Stage 5's prerequisite and the recorded
-residual visual/timing evidence keep acceptance open.
+fix brings the page to 1,280 lines. Stage 5's prerequisite is complete and the
+24-case acceptance suite passes. Stage 11's final administrative 11/11 run and
+visual review complete its acceptance.
 The other pages and API-client split remain deferred. The historical
 measurements below identify the broader candidates; Stage 11 reconfirmed the
 administrative page's original 1,379 lines and `@code` start at line 545
@@ -253,10 +257,10 @@ should follow endpoint groups.
 
 The standalone
 [Flowbit.BrowserTests](../../Flowbit/tests/Flowbit.BrowserTests/README.md)
-suite now provides repeatable Chromium coverage: E1–E5 drive the real copied
+suite now provides repeatable Chromium coverage: E1–E8 drive the real copied
 editor (load/save via the file chooser and forced download fallback, node and
 lane drags with persisted-JSON assertions, validation dialog recovery, keyboard
-menus/search/undo) and R1–R6 drive the real published API/UI (inbox claim and
+menus/search/undo/type transitions) and R1–R7 drive the real published API/UI (inbox claim and
 action lifecycle, instance navigation, identity replacement, gateway/complex/
 multi-instance detail sections, genuine five-second polling with an out-of-band
 HTTP completion, and responsive/keyboard coverage at the narrower viewports).
@@ -266,11 +270,19 @@ contexts, and the `browser-smoke` CI job uploads TRX, traces, screenshots, and
 host logs. The Jint and `HtmlRenderer` tests remain in place, including the new
 deterministic in-flight identity-response regression.
 
-What remains open: the manual native-file-picker success/cancel check on a
-headed desktop Chromium; Stage 5's real version/variable batch links using a
-separate Worker-driven stack; selected-claim and delegation attribution;
-administrative action refresh (the immediate action needs no Worker); the pre-extraction visual
-comparison, and observing the remote `browser-smoke` job pass. The
+The separate local
+[Worker acceptance suite](../../Flowbit/tests/Flowbit.BrowserAcceptanceTests/README.md)
+now exercises Stage 5's real version/variable batch links, selected claims and
+delegation, plus administrative batches, loading and recovery. R7 verifies the
+instance status, variables and history before navigating to its batch. Headed
+historical-host comparisons are recorded in Stages 5 and 11. The complete
+24-case runtime suite passed; the manual native editor file-picker
+success/cancel check remains unavailable. The remote CI
+observation is complete: both `test` and
+`browser-smoke` passed for `3e70130` in
+[run 35713256658](https://github.com/sherif-hfm/Flowbit/actions/runs/35713256658).
+The [Stage 7 evidence record](stage-07-browser-smoke-and-stage-05-acceptance.md)
+tracks later local acceptance results and remaining limitations. The
 [real-browser gate](../../AGENTS.md#mandatory-real-browser-ui-verification)
 remains required for UI changes beyond this suite's coverage.
 

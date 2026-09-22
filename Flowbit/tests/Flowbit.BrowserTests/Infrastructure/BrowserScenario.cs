@@ -296,11 +296,44 @@ public sealed class BrowserScenario : IAsyncDisposable
     {
         await Page.GotoAsync(new Uri(new Uri(fixture.UiBaseAddress), path).ToString(),
             new PageGotoOptions { WaitUntil = WaitUntilState.Load });
-        await RuntimeSupport.WaitUntilInteractiveAsync(Page);
-        if (System.Text.RegularExpressions.Regex.IsMatch(path, @"^/?instances/\d+(?:[?#].*)?$"))
+        if (fixture.RequiresInteractiveMarkers) await RuntimeSupport.WaitUntilInteractiveAsync(Page);
+        else await WaitForLegacyInteractivityAsync();
+        if (fixture.RequiresInteractiveMarkers && System.Text.RegularExpressions.Regex.IsMatch(path, @"^/?instances/\d+(?:[?#].*)?$"))
             await Assertions.Expect(Page.Locator("section[aria-labelledby='instance-summary-heading']"))
-                .ToHaveAttributeAsync("data-interactive", "true");
+                .ToHaveAttributeAsync("data-interactive", "true", new() { Timeout = 30_000 });
         return Page;
+    }
+
+    private async Task WaitForLegacyInteractivityAsync()
+    {
+        // Historical visual references predate the explicit readiness markers.
+        // Prove a real server-side event round trip without modifying old HTML
+        // or typing into an input that prerender hydration could overwrite.
+        await Assertions.Expect(Page.Locator(".app-shell")).ToBeVisibleAsync();
+        var viewport = Page.ViewportSize;
+        try
+        {
+            if (viewport is null || viewport.Width > 390)
+                await Page.SetViewportSizeAsync(390, viewport?.Height ?? 844);
+            var toggle = Page.GetByRole(AriaRole.Button,
+                new PageGetByRoleOptions { Name = "Open navigation", Exact = true });
+            await RuntimeSupport.ClickUntilAsync(
+                () => toggle.ClickAsync(),
+                async () => await toggle.GetAttributeAsync("aria-expanded") == "true",
+                TimeSpan.FromSeconds(30));
+            var close = Page.GetByRole(AriaRole.Button,
+                new PageGetByRoleOptions { Name = "Close navigation", Exact = true });
+            // The full-screen scrim's center can sit behind the sidebar at
+            // narrow widths. Keyboard activation targets its real button.
+            await close.FocusAsync();
+            await close.PressAsync("Enter");
+            await Assertions.Expect(toggle).ToHaveAttributeAsync("aria-expanded", "false", new() { Timeout = 10_000 });
+        }
+        finally
+        {
+            if (viewport is not null)
+                await Page.SetViewportSizeAsync(viewport.Width, viewport.Height);
+        }
     }
 
     /// <summary>Persists failure artifacts (screenshot, URL, logs, trace).</summary>

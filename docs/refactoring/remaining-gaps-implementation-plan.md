@@ -2,10 +2,10 @@
 
 [Plan index](README.md) · [Gap inventory](gaps.md)
 
-**Status: In progress — Stage 7's smoke suite and Stages 8–10 are implemented;
-Stages 8–10 are locally accepted (37 → 33 engine methods after Stage 9), and
-Stage 11's extraction is implemented with its full-stack browser acceptance
-and Stage 5's acceptance still open.** This roadmap
+**Status: In progress — Stage 5 and Stages 8–11 are locally accepted;
+Stage 7's smoke and local Worker suites pass, with native editor-dialog
+verification still open. Stage 11's final administrative acceptance and visual
+review are complete. Explicitly deferred refactors remain open.** This roadmap
 records the selected follow-up work and the
 accepted C# compatibility break. Saving this document does not complete any
 implementation or acceptance gate.
@@ -14,16 +14,18 @@ implementation or acceptance gate.
 
 Reviewed the code at commit `fbe0721` against [gaps.md](gaps.md) on
 2026-09-19. The review was read-only; tests were not run during that review.
+The table below is maintained with subsequent stage outcomes; the dated stage
+records preserve the original measurements and validation results.
 
 | Gap | Current state | Decision |
 | --- | --- | --- |
-| 1. Engine responsibilities | Still interleaved across 17,636 lines | Extract waiting-task role management next. Defer routing, gateways, messages, and jobs. |
+| 1. Engine responsibilities | Broader command responsibilities remain interleaved; Stage 9 extracted waiting-task role management | Keep routing, gateways, messages, and jobs deferred. |
 | 2. Broad engine interface | Stage 9 reduces 37 methods to 33 | Waiting-task role operations now live on `IUserTaskRoleManagementService`. |
 | 3. Definition validation | Implemented in stage 6; lifecycle service is now 309 lines | Correct the inventory; no additional extraction needed. |
 | 4. Repository duplication | Stage 2 implemented; limited duplication remains | Defer further abstraction until a concrete maintenance need arises. |
-| 5. Editor hotspots | Node rendering contains substantial graph-mutation logic | Extract node-type transition handling; defer parser and normalization rewrites. |
-| 6. Oversized UI units | Candidates remain; stage 5 browser acceptance is pending | Verify stage 5, then extract three administrative-action display sections. |
-| 7. Browser automation | Automated Chromium smoke suite implemented | Stage 5's residual manual acceptance and remote CI observation remain. |
+| 5. Editor hotspots | Stage 10 extracted node-type transition handling | Keep parser and normalization rewrites deferred. |
+| 6. Oversized UI units | Stage 5 and Stage 11 display extractions accepted | Keep other UI pages and the API-client split deferred. |
+| 7. Browser automation | 30 smoke and 24 local Worker acceptance cases pass; existing CI observed passing | Native editor save-dialog success/cancel remains unavailable and open. |
 
 ## Implementation stages
 
@@ -38,13 +40,16 @@ Reviewed the code at commit `fbe0721` against [gaps.md](gaps.md) on
 [Detailed implementation plan](stage-07-browser-smoke-and-stage-05-acceptance.md)
 — harness ownership, test matrix, commands, CI evidence, and the complete
 Stage 5 acceptance checklist. **Status: in progress.** The suite
-(`Flowbit/tests/Flowbit.BrowserTests/`, 17 scenarios E1–E5 and R1–R6 plus three
+(`Flowbit/tests/Flowbit.BrowserTests/`, 26 product cases E1–E8 and R1–R7 plus four
 harness regression tests) is
-implemented and passing locally; the `browser-smoke` CI job is committed but a
-remote run has not been observed yet; Stage 5's residual manual acceptance
-(native-picker manual evidence, Worker-driven batch links, delegation/claim
-attribution, administrative action refresh, headed screenshots, and the
-pre-extraction visual comparison) remains open. See the plan's
+implemented and passing locally. Both `test` and `browser-smoke` passed for
+`3e70130` in [run 35713256658](https://github.com/sherif-hfm/Flowbit/actions/runs/35713256658);
+that is the remote observation for the existing CI requirement. Stage 5's
+runtime acceptance (Worker-driven batch links, delegation/claim attribution,
+administrative action refresh, headed screenshots, and the pre-extraction
+visual comparison) passed in the local acceptance follow-up. The
+editor's native-picker success/cancel evidence is a separate Stage 7 gate and
+remains unavailable. See the plan's
 [implementation results](stage-07-browser-smoke-and-stage-05-acceptance.md#implementation-results-2026-09-20)
 and the per-row checklist status.
 
@@ -117,12 +122,16 @@ evidence is recorded in the stage document's implementation record.
 [Detailed implementation plan](stage-11-administrative-action-display-components.md)
 — component contracts, retained page coordination, scoped CSS ownership,
 characterization and identity/disposal coverage, no-Worker smoke and full-stack
-browser acceptance, documentation, and rollback. **Status: in progress.** The
+browser acceptance, documentation, and rollback. **Status: implemented and
+locally accepted.** The
 extraction, tests, and no-Worker smoke scenario are implemented (2026-09-21,
 with Stage 5's acceptance explicitly recorded as still open); the
 2026-09-22 review follow-up adds the polling-render fix, passing Windows/Linux
-regressions and Worker-enabled browser scenarios. Stage 5's prerequisite and
-the remaining transient visual/timing evidence in that record keep the gate open.
+regressions and Worker-enabled browser scenarios. The maintained 24-case suite
+now passes, including cancelled-without-completion recovery and gated loading;
+Stage 5's prerequisite is complete. The final focused administrative run passed
+11/11 with expanded screenshots, exact loading-request counts and visual
+review; Stage 11's remaining evidence is closed.
 
 - Extract `AdministrativeBatchAudit`, `AdministrativeBatchItems`, and `AdministrativeBatchHistory`.
 - Pass existing DTOs and presentation values; expose a typed batch-open callback.

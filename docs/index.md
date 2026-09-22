@@ -43,14 +43,17 @@ stage. Each stage records its implementation and acceptance status. The
 [refactoring gap inventory](refactoring/gaps.md) records deferred and unplanned
 work; the [remaining-gaps implementation plan](refactoring/remaining-gaps-implementation-plan.md)
 selects the prioritized follow-up stages and records their boundaries. The
-follow-up roadmap's Stage 10 is implemented and locally accepted; Stage 11
-remains planned. Stage 7's no-Worker smoke suite and Stage 8's compatibility
-removal are implemented and passing locally.
+follow-up roadmap's Stages 8–11 and Stage 5 are implemented and locally accepted.
+Stage 11's display extraction, runtime acceptance and final visual review are
+complete. Stage 7's no-Worker smoke suite passes locally and in CI.
 The [Stage 7 browser smoke suite](refactoring/stage-07-browser-smoke-and-stage-05-acceptance.md)
 is implemented and passing locally (`Flowbit/tests/Flowbit.BrowserTests/`); the
-remaining Stage 5 acceptance rows (headed manual inspection, native-picker
-manual evidence, Worker-driven batch links, and the pre-extraction comparison)
-and the remote CI observation remain open.
+Stage 5 runtime acceptance rows (headed inspection, Worker-driven batch links,
+and the pre-extraction comparison) passed with the separate 24-case local
+acceptance suite. The editor's native-picker success/cancel check
+is a separate Stage 7 gate and remains unavailable. Remote `test` and
+`browser-smoke` jobs passed for `3e70130` in
+[run 35713256658](https://github.com/sherif-hfm/Flowbit/actions/runs/35713256658).
 
 The [Stage 8 query/detail compatibility removal plan](refactoring/stage-08-remove-query-detail-compatibility.md)
 records the implemented C# caller migration, direct detail endpoint projection
@@ -80,8 +83,15 @@ is implemented as three display components under
 `Flowbit.Ui/Components/Shared/AdministrativeBatches/` with the page retaining
 all requests, filters, mutations, identity checks, polling, and disposal; the
 stage's review follow-up records passing Windows/Linux tests and separate
-Worker-enabled browser scenarios. Stage 5's prerequisite and the recorded
-residual visual/timing evidence remain open gates.
+Worker-enabled browser scenarios. Stage 5's prerequisite is complete, and the
+maintained runtime acceptance suite passes; the final administrative 11/11 run
+and visual review close Stage 11's remaining evidence.
+
+Contributor browser commands are documented separately for the
+[no-Worker smoke suite](../Flowbit/tests/Flowbit.BrowserTests/README.md) and the
+[local Worker acceptance suite](../Flowbit/tests/Flowbit.BrowserAcceptanceTests/README.md).
+Both use disposable databases and localhost hosts; the acceptance suite is
+run explicitly and does not add or change a GitHub CI job.
 
 ## Reference ownership
 

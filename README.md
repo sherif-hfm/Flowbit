@@ -215,7 +215,7 @@ dotnet test ./Flowbit/tests/Flowbit.Tests/Flowbit.Tests.csproj
 
 Docker is required for the isolated PostgreSQL integration tests. The same full suite runs in [GitHub Actions](.github/workflows/tests.yml) on pushes and pull requests. The suite covers engine behavior, persistence, authorization, API contracts, definition validation, selected editor helpers, and the example catalog. Browser layout and pointer interactions require real-browser verification in addition to automated tests.
 
-See the [verification guide](Flowbit/README.md#verification) for the multi-instance verification tools, and [AGENTS.md](AGENTS.md) for architecture conventions and contribution checks.
+See the [verification guide](Flowbit/README.md#verification) for the multi-instance verification tools, the [browser smoke suite](Flowbit/tests/Flowbit.BrowserTests/README.md) and separate local [Worker acceptance suite](Flowbit/tests/Flowbit.BrowserAcceptanceTests/README.md) for localhost UI verification, and [AGENTS.md](AGENTS.md) for architecture conventions and contribution checks.
 
 ## Explore further
 
