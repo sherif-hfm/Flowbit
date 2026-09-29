@@ -14,8 +14,8 @@
     margin: .6rem 0 0;
     padding: .75rem;
     overflow: auto;
-    color: #1e293b;
-    background: #f8fafc;
+    color: var(--fb-ink);
+    background: var(--fb-surface-soft);
     border: 1px solid var(--fb-border);
     border-radius: .65rem;
     font-size: .72rem;

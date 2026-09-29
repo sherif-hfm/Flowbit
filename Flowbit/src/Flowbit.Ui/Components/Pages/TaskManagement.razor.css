@@ -2,7 +2,7 @@
     position: fixed;
     inset: 0;
     z-index: 1040;
-    background: rgba(15, 23, 42, .55);
+    background: var(--fb-modal-backdrop);
 }
 
 .assignment-dialog-shell {
@@ -19,5 +19,5 @@
     width: min(620px, 100%);
     max-height: calc(100vh - 2rem);
     overflow-y: auto;
-    box-shadow: 0 24px 80px rgba(15, 23, 42, .28);
+    box-shadow: var(--fb-shadow-lg);
 }

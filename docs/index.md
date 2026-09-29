@@ -12,6 +12,8 @@ Flowbit is a **BPMN-aligned JSON workflow engine** with a visual editor, an HTTP
 6. [Node and property reference](node-reference.md) — look up every task, event, and gateway, including properties, defaults, validation rules, and JSON fragments.
 7. [Deployment and operations](deployment.md) — configure, publish, migrate, monitor, and recover the runtime.
 
+[Branding reference](branding.md) — shared logo assets, palette, themes, and contributor maintenance.
+
 ## Choose your path
 
 | Your goal | Recommended path |

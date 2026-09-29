@@ -3,8 +3,10 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<meta id="themeColorMeta" name="theme-color" content="#09111f" />
+<meta id="themeColorMeta" name="theme-color" content="#0f172a" />
 <title>Flowbit — Workflow Editor</title>
+<!-- Brand source: Flowbit/src/Flowbit.Ui/wwwroot/branding/flowbit-mark.svg -->
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2048%2048%22%3E%3Crect%20width%3D%2248%22%20height%3D%2248%22%20rx%3D%2212%22%20fill%3D%22%232563eb%22%2F%3E%3Cpath%20d%3D%22M14%2035V13H35M14%2024H29%22%20fill%3D%22none%22%20stroke%3D%22%23fff%22%20stroke-width%3D%223.5%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%2F%3E%3Cg%20fill%3D%22%23fff%22%3E%3Crect%20x%3D%2210%22%20y%3D%229%22%20width%3D%228%22%20height%3D%228%22%20rx%3D%222.5%22%2F%3E%3Crect%20x%3D%2210%22%20y%3D%2231%22%20width%3D%228%22%20height%3D%228%22%20rx%3D%222.5%22%2F%3E%3C%2Fg%3E%3Cg%20fill%3D%22%23bfdbfe%22%3E%3Crect%20x%3D%2231%22%20y%3D%229%22%20width%3D%228%22%20height%3D%228%22%20rx%3D%222.5%22%2F%3E%3Crect%20x%3D%2225%22%20y%3D%2220%22%20width%3D%228%22%20height%3D%228%22%20rx%3D%222.5%22%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E" />
 <script>
   (() => {
     const storageKey = "flowbit.theme";
@@ -20,17 +22,17 @@
     }
     document.documentElement.dataset.theme = theme;
     document.getElementById("themeColorMeta")
-      ?.setAttribute("content", theme === "dark" ? "#09111f" : "#eef2f7");
+      ?.setAttribute("content", theme === "dark" ? "#0f172a" : "#f4f7fb");
   })();
 </script>
 <style>
   :root {
     color-scheme: dark;
-    --bg: #09111f;
-    --canvas: #0b1425;
-    --panel: #111d30;
-    --panel-2: #18273d;
-    --panel-3: #20314a;
+    --bg: #0f172a;
+    --canvas: #0b1220;
+    --panel: #111e33;
+    --panel-2: #182840;
+    --panel-3: #233651;
     --border: #30445f;
     --border-strong: #48617f;
     --control-border: #60738d;
@@ -42,24 +44,20 @@
     --green: #22c55e;
     --red: #ef4444;
     --amber: #f59e0b;
-    --shadow: 0 16px 36px rgba(2, 8, 23, .28);
-    --header-shadow: 0 8px 20px rgba(2, 8, 23, .16);
-    --toolbar-group-bg: rgba(9, 17, 31, .35);
-    --toolbar-group-border: rgba(72, 97, 127, .55);
-    --brand-text: #bfdbfe;
-    --brand-gradient-start: rgba(59,130,246,.32);
-    --brand-gradient-end: rgba(37,99,235,.12);
-    --brand-border: rgba(96,165,250,.48);
+    --shadow: 0 8px 24px rgba(2, 8, 23, .24);
+    --header-shadow: 0 1px 3px rgba(2, 8, 23, .16);
+    --toolbar-group-bg: #182840;
+    --toolbar-group-border: #30445f;
     --primary-bg: #2563eb;
     --primary-border: #3b82f6;
     --primary-hover-bg: #1d4ed8;
     --primary-hover-border: #60a5fa;
     --danger-bg: #dc2626;
     --danger-border: #dc2626;
-    --active-bg: #15803d;
-    --active-border: #16a34a;
+    --active-bg: #2563eb;
+    --active-border: #60a5fa;
     --on-strong: #fff;
-    --focus-ring: rgba(96,165,250,.70);
+    --focus-ring: rgba(96,165,250,.28);
     --glass-soft: rgba(17,29,48,.92);
     --glass-control: rgba(17,29,48,.94);
     --glass: rgba(17,29,48,.96);
@@ -75,8 +73,8 @@
     --accent-label: #93c5fd;
     --sidebar-shadow: rgba(2,8,23,.2);
     --sidebar-border: rgba(72, 97, 127, .2);
-    --sidebar-gradient-start: rgba(24,39,61,.98);
-    --sidebar-gradient-end: rgba(12,24,42,.98);
+    --sidebar-gradient-start: #111e33;
+    --sidebar-gradient-end: #111e33;
     --sidebar-accent-border: rgba(96,165,250,.46);
     --resizer-accent: rgba(96,165,250,.58);
     --card-bg: rgba(24,39,61,.82);
@@ -156,15 +154,15 @@
   }
   :root[data-theme="light"] {
     color-scheme: light;
-    --bg: #eef2f7;
+    --bg: #f4f7fb;
     --canvas: #f8fafc;
     --panel: #ffffff;
     --panel-2: #f1f5f9;
     --panel-3: #e2e8f0;
-    --border: #cbd5e1;
-    --border-strong: #94a3b8;
-    --control-border: #60738d;
-    --control-border-strong: #475569;
+    --border: #dbe3ee;
+    --border-strong: #b8c6d8;
+    --control-border: #7b8a9f;
+    --control-border-strong: #526277;
     --text: #0f172a;
     --muted: #526277;
     --accent: #2563eb;
@@ -172,24 +170,20 @@
     --green: #15803d;
     --red: #dc2626;
     --amber: #b45309;
-    --shadow: 0 16px 36px rgba(15, 23, 42, .14);
-    --header-shadow: 0 8px 20px rgba(15, 23, 42, .08);
-    --toolbar-group-bg: rgba(241, 245, 249, .9);
-    --toolbar-group-border: rgba(148, 163, 184, .65);
-    --brand-text: #1d4ed8;
-    --brand-gradient-start: rgba(147,197,253,.58);
-    --brand-gradient-end: rgba(219,234,254,.72);
-    --brand-border: rgba(37,99,235,.38);
+    --shadow: 0 6px 20px rgba(15,23,42,.10);
+    --header-shadow: 0 1px 3px rgba(15,23,42,.04);
+    --toolbar-group-bg: #f8fafc;
+    --toolbar-group-border: #dbe3ee;
     --primary-bg: #2563eb;
     --primary-border: #1d4ed8;
     --primary-hover-bg: #1d4ed8;
     --primary-hover-border: #1e40af;
     --danger-bg: #dc2626;
     --danger-border: #b91c1c;
-    --active-bg: #15803d;
-    --active-border: #15803d;
+    --active-bg: #2563eb;
+    --active-border: #1d4ed8;
     --on-strong: #fff;
-    --focus-ring: rgba(29,78,216,.70);
+    --focus-ring: rgba(37,99,235,.24);
     --glass-soft: rgba(255,255,255,.92);
     --glass-control: rgba(255,255,255,.94);
     --glass: rgba(255,255,255,.96);
@@ -205,11 +199,11 @@
     --accent-label: #1d4ed8;
     --sidebar-shadow: rgba(15,23,42,.14);
     --sidebar-border: rgba(148,163,184,.32);
-    --sidebar-gradient-start: rgba(239,246,255,.99);
-    --sidebar-gradient-end: rgba(219,234,254,.99);
+    --sidebar-gradient-start: #ffffff;
+    --sidebar-gradient-end: #ffffff;
     --sidebar-accent-border: rgba(37,99,235,.5);
     --resizer-accent: rgba(37,99,235,.65);
-    --card-bg: rgba(241,245,249,.88);
+    --card-bg: #f8fafc;
     --chip-bg: rgba(37,99,235,.1);
     --chip-border: rgba(37,99,235,.32);
     --chip-text: #1d4ed8;
@@ -286,6 +280,7 @@
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
+  button, input, select, textarea { font-family: inherit; }
   body {
     font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
     background: var(--bg);
@@ -318,7 +313,7 @@
   .toolbar-group {
     padding: 4px;
     border: 1px solid var(--toolbar-group-border);
-    border-radius: 10px;
+    border-radius: 12px;
     background: var(--toolbar-group-bg);
   }
   .toolbar-menu-group { flex: 0 0 auto; gap: 4px; }
@@ -371,7 +366,7 @@
     padding: 6px;
     background: var(--panel);
     border: 1px solid var(--control-border-strong);
-    border-radius: 10px;
+    border-radius: 12px;
     box-shadow: var(--floating-shadow);
   }
   .toolbar-menu:not([open]) > .toolbar-menu-popover { display: none; }
@@ -416,25 +411,11 @@
   .tool-menu-summary[data-active-tool="select"] .tool-summary-select,
   .tool-menu-summary[data-active-tool="rectangle"] .tool-summary-rectangle,
   .tool-menu-summary[data-active-tool="pan"] .tool-summary-pan { display: block; }
-  .app-mark {
-    width: 34px;
-    height: 34px;
-    display: grid;
-    place-items: center;
-    flex: 0 0 auto;
-    color: var(--brand-text);
-    background: linear-gradient(145deg, var(--brand-gradient-start), var(--brand-gradient-end));
-    border: 1px solid var(--brand-border);
-    border-radius: 10px;
-  }
-  .app-mark svg { width: 20px; height: 20px; }
-  header h1 {
-    font-size: 14px;
-    margin: 0 4px 0 0;
-    font-weight: 700;
-    letter-spacing: .01em;
-    white-space: nowrap;
-  }
+  .app-brand { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; margin-right: 8px; }
+  .app-mark { width: 36px; height: 36px; display: block; flex: 0 0 auto; }
+  .app-mark svg { display: block; width: 100%; height: 100%; }
+  header h1 { margin: 0; font-size: 20px; font-weight: 700; letter-spacing: -.045em; line-height: 1.05; white-space: nowrap; }
+  header h1 small { display: block; margin-top: 4px; color: var(--muted); font-size: 10px; font-weight: 500; letter-spacing: .02em; }
   .wf-name {
     background: var(--panel-2);
     border: 1px solid var(--control-border);
@@ -565,6 +546,7 @@
     display: flex;
     min-height: 0;
     position: relative;
+    overflow: clip;
   }
 
   .canvas-wrap { flex: 1; position: relative; overflow: hidden; background: var(--canvas); min-width: 0; }
@@ -610,7 +592,7 @@
     padding: 5px;
     background: var(--glass-control);
     border: 1px solid var(--border);
-    border-radius: 10px;
+    border-radius: 12px;
     box-shadow: var(--shadow);
     backdrop-filter: blur(8px);
   }
@@ -640,7 +622,7 @@
     color: var(--text);
     background: var(--glass);
     border: 1px solid var(--border);
-    border-radius: 10px;
+    border-radius: 12px;
     box-shadow: var(--shadow);
     backdrop-filter: blur(8px);
     opacity: 0;
@@ -674,7 +656,7 @@
     color: var(--soft-blue-text);
     background: var(--glass);
     border-color: var(--control-border);
-    border-radius: 10px;
+    border-radius: 12px;
     box-shadow: var(--shadow);
     backdrop-filter: blur(8px);
     pointer-events: auto;
@@ -793,7 +775,7 @@
     color: var(--soft-blue-text);
     background: var(--glass);
     border-color: var(--control-border);
-    border-radius: 10px;
+    border-radius: 12px;
     box-shadow: var(--shadow);
     backdrop-filter: blur(8px);
     pointer-events: auto;
@@ -831,7 +813,7 @@
     padding: 5px;
     background: var(--glass);
     border: 1px solid var(--border);
-    border-radius: 10px;
+    border-radius: 12px;
     box-shadow: var(--shadow);
     backdrop-filter: blur(8px);
   }
@@ -873,7 +855,7 @@
     padding: 5px;
     background: var(--glass-strong);
     border: 1px solid var(--border);
-    border-radius: 10px;
+    border-radius: 12px;
     box-shadow: var(--shadow);
   }
   .diagram-search-results[hidden] { display: none; }
@@ -918,7 +900,7 @@
     padding: 5px;
     background: var(--glass);
     border: 1px solid var(--border);
-    border-radius: 10px;
+    border-radius: 12px;
     box-shadow: var(--shadow);
     backdrop-filter: blur(8px);
   }
@@ -1147,7 +1129,7 @@
     padding: 11px;
     background: var(--card-bg);
     border: 1px solid var(--border);
-    border-radius: 10px;
+    border-radius: 12px;
   }
   .inspector-card.clickable { cursor: pointer; transition: border-color .15s, background .15s; }
   .inspector-card.clickable:hover { background: var(--panel-2); border-color: var(--accent); }
@@ -1607,10 +1589,10 @@
 <body>
 <header class="app-toolbar">
   <div class="toolbar-identity">
-    <div class="app-mark" aria-hidden="true">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="5" cy="12" r="2.5"/><rect x="16.5" y="4" width="5" height="5" rx="1"/><rect x="16.5" y="15" width="5" height="5" rx="1"/><path d="M7.5 12h4.5c2.5 0 2-5.5 4.5-5.5M12 12c2.5 0 2 5.5 4.5 5.5"/></svg>
+    <div class="app-brand">
+      <div class="app-mark" aria-hidden="true"><svg viewBox="0 0 48 48"><rect width="48" height="48" rx="12" fill="#2563eb"/><path d="M14 35V13H35M14 24H29" fill="none" stroke="#fff" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/><g fill="#fff"><rect x="10" y="9" width="8" height="8" rx="2.5"/><rect x="10" y="31" width="8" height="8" rx="2.5"/></g><g fill="#bfdbfe"><rect x="31" y="9" width="8" height="8" rx="2.5"/><rect x="25" y="20" width="8" height="8" rx="2.5"/></g></svg></div>
+      <h1 aria-label="Flowbit — Workflow Editor">Flowbit<small>Workflow Editor</small></h1>
     </div>
-    <h1>Flowbit — Workflow Editor</h1>
     <div class="toolbar-group toolbar-menu-group" role="group" aria-label="Editor menus">
     <details id="fileMenu" class="toolbar-menu">
       <summary id="fileMenuSummary" title="File actions" aria-label="File actions">
@@ -12998,7 +12980,7 @@ function setTheme(value, persist = false) {
   const theme = normalizeTheme(value) || systemTheme();
   document.documentElement.dataset.theme = theme;
   document.getElementById("themeColorMeta")
-    ?.setAttribute("content", theme === "dark" ? "#09111f" : "#eef2f7");
+    ?.setAttribute("content", theme === "dark" ? "#0f172a" : "#f4f7fb");
   updateThemeToggle(theme);
   if (persist) {
     themeWasExplicitlyChosen = true;

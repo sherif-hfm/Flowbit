@@ -1,5 +1,7 @@
 # Flowbit
 
+![Flowbit — Turn business processes into visual, executable workflows.](Flowbit/src/Flowbit.Ui/wwwroot/branding/flowbit-banner.svg)
+
 **Turn business processes into visual, executable workflows.**
 
 Flowbit brings human approvals, business rules, external systems, and long-running work into one workflow model. Design a process in the browser, save it as readable JSON, and execute it with a .NET 10 runtime backed by PostgreSQL.

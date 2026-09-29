@@ -30,7 +30,7 @@
     grid-template-columns: minmax(4.5rem, 35%) minmax(0, 1fr);
     min-width: 0;
     overflow: hidden;
-    background: #f8fafc;
+    background: var(--fb-surface-soft);
     border: 1px solid var(--fb-border);
     border-radius: .5rem;
 }
@@ -44,14 +44,14 @@
 }
 
 .attribute-pair dt {
-    color: #334155;
+    color: var(--fb-text);
     border-inline-end: 1px solid var(--fb-border);
     font-weight: 700;
 }
 
 .attribute-pair dd {
     margin: 0;
-    color: #1e293b;
+    color: var(--fb-ink);
     unicode-bidi: plaintext;
 }
 

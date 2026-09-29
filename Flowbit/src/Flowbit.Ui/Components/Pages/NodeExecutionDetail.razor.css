@@ -7,8 +7,8 @@
     margin: 0;
     padding: .85rem;
     overflow: auto;
-    color: #1e293b;
-    background: #f8fafc;
+    color: var(--fb-ink);
+    background: var(--fb-surface-soft);
     border: 1px solid var(--fb-border);
     border-radius: .65rem;
     font-size: .72rem;
@@ -19,7 +19,7 @@
 .execution-inline-json {
     display: inline-block;
     max-width: 32rem;
-    color: #4338ca;
+    color: var(--fb-primary-hover);
     font-size: .7rem;
     white-space: pre-wrap;
     overflow-wrap: anywhere;

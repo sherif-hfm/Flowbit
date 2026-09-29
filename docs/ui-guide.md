@@ -6,6 +6,8 @@ Flowbit.Ui is the browser interface for importing workflow definitions, starting
 
 The standalone [Flowbit editor](../flowbit-editor.html) designs workflows and exports JSON. **Flowbit.Ui operates the runtime** through Flowbit.Api; it does not replace the visual authoring editor.
 
+Both applications use the connected F mark and blue [Flowbit identity](branding.md). The editor supports light and dark themes; Flowbit.Ui uses a light workspace with navy navigation. On narrow screens, the Flowbit home link remains visible beside the navigation button.
+
 ![Flowbit.Ui operations overview with instance metrics, recent workflows, and human work](images/flowbit-ui.jpg)
 
 *Operations overview with sample data. Your dashboard depends on the current identity, permissions, and database contents.*

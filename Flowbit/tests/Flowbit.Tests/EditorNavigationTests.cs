@@ -483,10 +483,10 @@ public sealed class EditorNavigationTests
             html,
             @"<div(?=[^>]*\bclass=""[^""]*\btoolbar-menu-group\b[^""]*"")(?=[^>]*\baria-label=""Editor menus"")[^>]*>");
         Assert.True(menuGroup.Success, "The compact editor menu group was not found.");
-        var headingIndex = html.IndexOf("<h1>", StringComparison.Ordinal);
+        var heading = Regex.Match(html, @"<h1\b[^>]*>");
         var workflowNameIndex = html.IndexOf("id=\"wfName\"", StringComparison.Ordinal);
         Assert.True(
-            headingIndex >= 0 && headingIndex < menuGroup.Index && menuGroup.Index < workflowNameIndex,
+            heading.Success && heading.Index < menuGroup.Index && menuGroup.Index < workflowNameIndex,
             "The editor menus must appear between the brand heading and workflow name.");
         var headerMarkup = Regex.Match(
             html,
@@ -695,10 +695,10 @@ public sealed class EditorNavigationTests
     }
 
     [Theory]
-    [InlineData("light", false, true, true, "light", "#eef2f7")]
-    [InlineData(null, false, true, true, "dark", "#09111f")]
-    [InlineData("sepia", false, true, false, "light", "#eef2f7")]
-    [InlineData(null, true, false, false, "dark", "#09111f")]
+    [InlineData("light", false, true, true, "light", "#f4f7fb")]
+    [InlineData(null, false, true, true, "dark", "#0f172a")]
+    [InlineData("sepia", false, true, false, "light", "#f4f7fb")]
+    [InlineData(null, true, false, false, "dark", "#0f172a")]
     public void ThemeBootstrap_AppliesStoredOrSystemPreferenceBeforePaint(
         string? storedTheme,
         bool storageThrows,
@@ -812,7 +812,7 @@ public sealed class EditorNavigationTests
         Assert.True(engine.Evaluate("themeWasExplicitlyChosen").AsBoolean());
         Assert.Equal("flowbit.theme", engine.Evaluate("persistedKey").AsString());
         Assert.Equal("dark", engine.Evaluate("persistedValue").AsString());
-        Assert.Equal("#09111f", engine.Evaluate("themeColorMeta.content").AsString());
+        Assert.Equal("#0f172a", engine.Evaluate("themeColorMeta.content").AsString());
 
         Assert.Equal("light", engine.Evaluate("setTheme('light', false)").AsString());
         Assert.Equal(
@@ -823,7 +823,7 @@ public sealed class EditorNavigationTests
             "Switch to dark theme",
             engine.Evaluate("themeToggleBtn.title").AsString());
         Assert.Equal("dark", engine.Evaluate("persistedValue").AsString());
-        Assert.Equal("#eef2f7", engine.Evaluate("themeColorMeta.content").AsString());
+        Assert.Equal("#f4f7fb", engine.Evaluate("themeColorMeta.content").AsString());
 
         Assert.Equal(
             "dark",

@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="320" viewBox="0 0 1200 320" role="img" aria-labelledby="title desc">
+  <title id="title">Flowbit</title>
+  <desc id="desc">Turn business processes into visual, executable workflows.</desc>
+  <rect width="1200" height="320" rx="20" fill="#0f172a"/>
+  <g fill="none" stroke="#273b5c" stroke-width="2">
+    <path d="M850 72h98a16 16 0 0 1 16 16v144a16 16 0 0 0 16 16h140M850 160h270M964 88h156"/>
+    <rect x="812" y="52" width="40" height="40" rx="10"/><rect x="812" y="140" width="40" height="40" rx="10"/>
+    <rect x="1120" y="68" width="40" height="40" rx="10"/><rect x="1120" y="140" width="40" height="40" rx="10"/>
+    <rect x="1120" y="228" width="40" height="40" rx="10"/>
+  </g>
+  <g transform="translate(60 72) scale(1.75)"><rect width="48" height="48" rx="12" fill="#2563eb"/><path d="M14 35V13H35M14 24H29" fill="none" stroke="#fff" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/><g fill="#fff"><rect x="10" y="9" width="8" height="8" rx="2.5"/><rect x="10" y="31" width="8" height="8" rx="2.5"/></g><g fill="#bfdbfe"><rect x="31" y="9" width="8" height="8" rx="2.5"/><rect x="25" y="20" width="8" height="8" rx="2.5"/></g></g>
+  <text x="168" y="140" fill="#f8fafc" font-family="Segoe UI,system-ui,sans-serif" font-size="72" font-weight="700" letter-spacing="-2.4">Flowbit</text>
+  <text x="62" y="207" fill="#cbd5e1" font-family="Segoe UI,system-ui,sans-serif" font-size="25">Turn business processes into visual, executable workflows.</text>
+  <text x="62" y="258" fill="#93c5fd" font-family="Segoe UI,system-ui,sans-serif" font-size="13" font-weight="600" letter-spacing="2">VISUAL EDITOR · WORKFLOW RUNTIME</text>
+</svg>

@@ -11,8 +11,8 @@
     flex-direction: column;
     width: var(--fb-sidebar-width);
     padding: 1.25rem 1rem;
-    color: #dbe4ff;
-    background: linear-gradient(180deg, #11182d 0%, #18213b 55%, #11182d 100%);
+    color: var(--fb-nav-text);
+    background: var(--fb-nav-bg);
     border-right: 1px solid rgba(255, 255, 255, .07);
     transition: transform .22s ease;
 }
@@ -28,35 +28,22 @@
 }
 
 .brand:hover { color: #fff; }
-.brand strong { display: block; font-size: 1.06rem; letter-spacing: -.01em; }
-.brand small { display: block; margin-top: .08rem; color: #93a1c4; font-size: .7rem; }
+.brand strong { display: block; font-size: 1.4rem; font-weight: 700; letter-spacing: -.045em; line-height: 1.15; }
+.brand small { display: block; margin-top: .08rem; color: var(--fb-nav-muted); font-size: .7rem; }
 
-.brand-mark {
-    display: grid;
-    grid-template-columns: repeat(3, 5px);
-    align-items: end;
-    gap: 3px;
-    width: 2.25rem;
-    height: 2.25rem;
-    padding: .55rem;
-    border-radius: .7rem;
-    background: linear-gradient(145deg, #6366f1, #4338ca);
-    box-shadow: 0 8px 20px rgba(79, 70, 229, .35);
-}
-
-.brand-mark span { display: block; width: 5px; border-radius: 4px; background: #fff; }
-.brand-mark span:nth-child(1) { height: 8px; opacity: .72; }
-.brand-mark span:nth-child(2) { height: 14px; }
-.brand-mark span:nth-child(3) { height: 11px; opacity: .86; }
+.brand-mark { display: block; flex: 0 0 auto; width: 2.5rem; height: 2.5rem; }
+.mobile-brand { display: none; align-items: center; gap: .5rem; color: var(--fb-ink); text-decoration: none; font-size: 1.12rem; font-weight: 700; letter-spacing: -.035em; }
+.mobile-brand img { display: block; flex: 0 0 auto; }
+.mobile-brand:hover { color: var(--fb-primary); }
 
 .sidebar-footer { margin-top: auto; padding-top: 1rem; border-top: 1px solid rgba(255, 255, 255, .08); }
-.sidebar-identity { display: flex; align-items: center; gap: .65rem; padding: .65rem; color: #dbe4ff; text-decoration: none; border-radius: .75rem; }
+.sidebar-identity { display: flex; align-items: center; gap: .65rem; padding: .65rem; color: var(--fb-nav-text); text-decoration: none; border-radius: .75rem; }
 .sidebar-identity:hover { color: #fff; background: rgba(255, 255, 255, .06); }
 .identity-copy { min-width: 0; flex: 1; }
 .identity-copy strong, .identity-copy small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .identity-copy strong { font-size: .8rem; }
-.identity-copy small { margin-top: .12rem; color: #93a1c4; font-size: .68rem; }
-.sidebar-identity ::deep .app-icon { width: .9rem; height: .9rem; color: #7180a5; }
+.identity-copy small { margin-top: .12rem; color: var(--fb-nav-muted); font-size: .68rem; }
+.sidebar-identity ::deep .app-icon { width: .9rem; height: .9rem; color: var(--fb-nav-muted); }
 
 .avatar {
     display: inline-grid;
@@ -65,8 +52,8 @@
     height: 2.1rem;
     place-items: center;
     border-radius: 50%;
-    color: #3730a3;
-    background: #e0e7ff;
+    color: var(--fb-primary-active);
+    background: var(--fb-primary-soft);
     font-size: .78rem;
     font-weight: 800;
 }
@@ -104,7 +91,7 @@
 .content-shell { width: min(100%, 1540px); margin: 0 auto; padding: clamp(1.25rem, 3vw, 2.25rem); }
 .sidebar-scrim { display: none; }
 
-.skip-link { position: fixed; z-index: 2000; top: .5rem; left: .5rem; padding: .65rem 1rem; transform: translateY(-150%); color: #fff; background: #111827; border-radius: .5rem; }
+.skip-link { position: fixed; z-index: 2000; top: .5rem; left: .5rem; padding: .65rem 1rem; transform: translateY(-150%); color: #fff; background: var(--fb-ink); border-radius: .5rem; }
 .skip-link:focus { transform: translateY(0); }
 
 #blazor-error-ui {
@@ -125,10 +112,12 @@
 #blazor-error-ui .dismiss { position: absolute; top: .55rem; right: .75rem; cursor: pointer; }
 
 @media (max-width: 991.98px) {
-    .sidebar { transform: translateX(-105%); box-shadow: 20px 0 50px rgba(15, 23, 42, .3); }
+    .sidebar { transform: translateX(-105%); box-shadow: var(--fb-shadow-lg); }
     .sidebar.is-open { transform: translateX(0); }
     .workspace { margin-left: 0; }
     .mobile-menu { display: block; }
+    .mobile-brand { display: inline-flex; }
+    .topbar-leading > div { display: none; }
     .sidebar-scrim { position: fixed; inset: 0; z-index: 1030; display: block; border: 0; background: rgba(15, 23, 42, .5); }
 }
 
