@@ -20,7 +20,7 @@ Flowbit is a **BPMN-aligned JSON workflow engine** with a visual editor, an HTTP
 | --- | --- |
 | Embed workflow behavior in an application | Getting started → Developer guide → API reference. Your application calls HTTP endpoints; Flowbit.Ui is optional. |
 | Use the operations UI | Getting started setup → [Flowbit.Ui guide](ui-guide.md) → Deployment for operational requirements. |
-| Model a business process | BPMN support → [node and property reference](node-reference.md) → [example catalog](../examples/README.md) → load a JSON definition in the [editor](../flowbit-editor.html). |
+| Model a business process | BPMN support → [node and property reference](node-reference.md) → [example catalog](../examples/README.md) → use the [standalone editor](../flowbit-editor.html) or [visual authoring in Flowbit.Ui](ui-guide.md#design-workflows-in-the-ui). |
 | Deploy or operate Flowbit | Deployment → API operational sections → [detailed runtime reference](../Flowbit/README.md). |
 | Contribute to the engine | Developer guide → runtime reference → [repository architecture and contributor instructions](../AGENTS.md). |
 

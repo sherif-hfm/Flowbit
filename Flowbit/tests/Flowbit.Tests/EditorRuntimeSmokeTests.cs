@@ -8,6 +8,55 @@ namespace Flowbit.Tests;
 public sealed class EditorRuntimeSmokeTests
 {
     [Fact]
+    public void ExportPreparationPreservesTheLiveDocumentAndValidationOrder()
+    {
+        var engine = CreateEditorEngine();
+        engine.SetValue("workflowJson", ExampleWorkflowData.Read("examples/user-tasks/01-roles-claim-and-bypass.json"));
+        using var result = JsonDocument.Parse(engine.Evaluate("""
+            (() => {
+              loadFromObject(JSON.parse(workflowJson));
+              const original = JSON.stringify(model);
+              const exported = prepareWorkflowExport();
+              const sameOutput = exported.json === prepareWorkflowExport(JSON.parse(original)).json;
+              const validUnchanged = original === JSON.stringify(model);
+              model.id = '';
+              const invalidOriginal = JSON.stringify(model);
+              const failed = prepareWorkflowExport();
+              return JSON.stringify({ validUnchanged, sameOutput, errors: exported.errors,
+                invalidUnchanged: invalidOriginal === JSON.stringify(model),
+                orderedErrors: JSON.stringify(failed.errors) === JSON.stringify(validateModelForSave(model)),
+                rejected: failed.json === null });
+            })()
+            """).AsString());
+        Assert.Empty(result.RootElement.GetProperty("errors").EnumerateArray());
+        foreach (var name in new[] { "validUnchanged", "sameOutput", "invalidUnchanged", "orderedErrors", "rejected" })
+            Assert.True(result.RootElement.GetProperty(name).GetBoolean(), name);
+    }
+
+    [Fact]
+    public void UnsupportedAndMalformedImportsPreserveCurrentDocumentAndHistory()
+    {
+        var engine = CreateEditorEngine();
+        using var result = JsonDocument.Parse(engine.Evaluate("""
+            (() => {
+              model.name = 'Keep this work';
+              commitHistory();
+              const before = JSON.stringify({ model, undoHistory, redoHistory, historySnapshot });
+              const rejected = [{}, null, {flowNodes:[null]}, {flowNodes:[], variables:{}},
+                {flowNodes:[{id:1, variables:{}}]}].map(value => {
+                  try { loadFromObject(value); return false; } catch { return true; }
+                });
+              const after = JSON.stringify({ model, undoHistory, redoHistory, historySnapshot });
+              loadFromObject({id:'legacy', steps:[], phases:[]});
+              return JSON.stringify({ rejected, preserved: before === after, legacyKey: model.id });
+            })()
+            """).AsString());
+        Assert.All(result.RootElement.GetProperty("rejected").EnumerateArray(), value => Assert.True(value.GetBoolean()));
+        Assert.True(result.RootElement.GetProperty("preserved").GetBoolean());
+        Assert.Equal("legacy", result.RootElement.GetProperty("legacyKey").GetString());
+    }
+
+    [Fact]
     public void VariableRoleReferencesRoundTripAndRenderAsReferences()
     {
         var engine = CreateEditorEngine();
@@ -4750,12 +4799,5 @@ public sealed class EditorRuntimeSmokeTests
         window.requestAnimationFrame = requestAnimationFrame;
         """;
 
-    private static string ReadEditorSource()
-    {
-        var editorPath = Path.Combine(
-            AppContext.BaseDirectory,
-            "Fixtures",
-            "flowbit-editor.html");
-        return File.ReadAllText(editorPath);
-    }
+    private static string ReadEditorSource() => EditorSource.Read();
 }

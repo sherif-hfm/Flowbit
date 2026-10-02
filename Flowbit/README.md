@@ -1,6 +1,6 @@
 # Flowbit
 
-.NET 10 workflow runtime for definitions exported by `flowbit-editor.html`.
+.NET 10 workflow runtime for definitions authored in the standalone editor or the shared editor mounted inline in Flowbit.Ui. The canonical template, scoped CSS, and `FlowbitEditor.mount` factory live in `src/Flowbit.Ui/wwwroot/editor/`; the repository-root `flowbit-editor.html` is a compatibility launcher. The standalone bootstrap and Blazor adapter each mount that implementation. The adapter disposes its event handlers and observers on navigation. Blazor owns API calls and saved-version metadata. See [visual authoring](../docs/ui-guide.md#design-workflows-in-the-ui) for version saves and permissions.
 
 Start with the [developer documentation](../docs/index.md) for HTTP onboarding, the complete API reference, BPMN support, and deployment. This README retains the detailed runtime implementation reference.
 

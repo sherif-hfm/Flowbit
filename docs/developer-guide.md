@@ -41,11 +41,11 @@ flowchart LR
 
 | Component | Responsibility in an integration |
 | --- | --- |
-| Editor | Author and export JSON. The single HTML file can run independently of the engine. |
+| Editor | Author and export JSON. The shared HTML/CSS/JavaScript asset folder runs independently of the engine and is also mounted inline in Flowbit.Ui. |
 | API | Validate/version/publish definitions; start, inspect, and advance runtime work over HTTP. |
 | PostgreSQL | Store immutable definition snapshots and transactional runtime state in the `flowbit` schema. |
 | Worker | Execute durable jobs, timer events, and durable conditional wakes. It shares the API's database and required workflow context configuration. |
-| Flowbit.Ui | Optional Blazor client for exploration, task handling, and operations. Your own application can use the API without running it. |
+| Flowbit.Ui | Optional Blazor client for visual authoring, exploration, task handling, and operations. Your own application can use the API without running it. |
 
 Keep application business records in your application's store and retain the returned Flowbit instance ID as the link. Use a configured business key when the engine must also enforce domain uniqueness. Update engine state through its APIs and authored activities; direct writes to runtime tables bypass transactions, authorization, subscriptions, and audit.
 

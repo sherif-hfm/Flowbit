@@ -52,7 +52,7 @@ The root [Compose file](../compose.yaml) builds the .NET applications and starts
 
 Defaults run without a `.env` file. Optional [.env.example](../.env.example) overrides are documented with storage, image builds, startup ordering, and shutdown in [the Docker deployment guide](deployment.md#local-docker-compose-stack). This is a development stack with a shared UI test identity and public local credentials.
 
-Once startup succeeds, skip the host database/API/UI startup commands below and continue at [Generate the token](#generate-the-token), then complete either HTTP walkthrough. Compose already runs the Worker for the later timer exercise. Keep the default API and UI ports to use the walkthrough unchanged, and run either this stack or the host setup at one time to avoid port conflicts. The standalone [editor](../flowbit-editor.html) still opens directly in your browser.
+Once startup succeeds, skip the host database/API/UI startup commands below and continue at [Generate the token](#generate-the-token), then complete either HTTP walkthrough. Compose already runs the Worker for the later timer exercise. Keep the default API and UI ports to use the walkthrough unchanged, and run either this stack or the host setup at one time to avoid port conflicts. The standalone [editor](../flowbit-editor.html) still opens directly in your browser; keep its adjacent JS/CSS assets together when copying it. Flowbit.Ui also offers **Create workflow** and per-version **Edit**; see [visual authoring](ui-guide.md#design-workflows-in-the-ui).
 
 ## Host setup alternative
 

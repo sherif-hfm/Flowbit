@@ -1427,7 +1427,7 @@ public sealed class EditorValidatorTests
         var html = ReadEditorSource();
         var match = Regex.Match(
             html,
-            @"function loadFromObject\(obj\) \{[\s\S]*?(?=/\* ---------- DOM helper ---------- \*/)");
+            @"function normalizeLoadedModel\(obj\) \{[\s\S]*?(?=function loadFromObject)");
         Assert.True(match.Success, "The editor workflow loader was not found.");
 
         var engine = new Engine();
@@ -1505,7 +1505,7 @@ public sealed class EditorValidatorTests
             }
             """);
         using var loaded = JsonDocument.Parse(engine.Evaluate(
-            "loadFromObject(JSON.parse(candidateJson)); JSON.stringify(model.flowNodes);").AsString());
+            "model = normalizeLoadedModel(JSON.parse(candidateJson)); JSON.stringify(model.flowNodes);").AsString());
 
         var complex = loaded.RootElement[1];
         Assert.Equal("IncomingCount(101) > 0", complex.GetProperty("activationCondition").GetString());
@@ -2666,11 +2666,7 @@ public sealed class EditorValidatorTests
         return JsonSerializer.Deserialize<List<string>>(resultJson) ?? [];
     }
 
-    private static string ReadEditorSource()
-    {
-        var editorPath = Path.Combine(AppContext.BaseDirectory, "Fixtures", "flowbit-editor.html");
-        return File.ReadAllText(editorPath);
-    }
+    private static string ReadEditorSource() => EditorSource.Read();
 
     private static T Clone<T>(T value) =>
         JsonSerializer.Deserialize<T>(JsonSerializer.Serialize(value))

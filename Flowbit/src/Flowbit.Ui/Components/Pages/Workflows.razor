@@ -10,6 +10,7 @@
             Description="Import editor JSON, control published versions, and start new process instances.">
     <Actions>
         <button class="btn btn-outline-secondary" @onclick="LoadAsync"><AppIcon Name="refresh" /> Refresh</button>
+        <a class="btn btn-primary" href="workflows/new"><AppIcon Name="plus" /> Create workflow</a>
         <a class="btn btn-primary" href="#import-workflow"><AppIcon Name="plus" /> Import definition</a>
     </Actions>
 </PageHeader>
@@ -125,6 +126,7 @@
                                                 </td>
                                                 <td class="small text-muted">@v.CreatedAt.ToLocalTime().ToString("g")</td>
                                                 <td><div class="d-flex flex-wrap justify-content-end gap-1">
+                                                    <a class="btn btn-sm btn-outline-primary" href="@($"workflows/{v.Id}/edit")">Edit</a>
                                                     @if (v.IsPublished)
                                                     {
                                                         <a class="btn btn-sm btn-outline-primary" href="@($"workflows/{v.Id}/start")">Start</a>

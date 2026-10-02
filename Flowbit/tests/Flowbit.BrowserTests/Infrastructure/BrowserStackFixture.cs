@@ -407,7 +407,7 @@ public sealed class BrowserStackFixture : IAsyncLifetime
     {
         editorHost = new EditorStaticHost();
         await editorHost.StartAsync(
-            Path.Combine(AppContext.BaseDirectory, "Fixtures", "flowbit-editor.html"),
+            Path.Combine(AppContext.BaseDirectory, "Fixtures", "editor", "flowbit-editor.html"),
             CancellationToken.None);
         EditorBaseAddress = editorHost.BaseAddress;
         await WriteSetupLogAsync($"Editor host ready at {EditorBaseAddress}.");

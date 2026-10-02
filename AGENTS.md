@@ -1,6 +1,6 @@
 # Flowbit — Workflow Editor
 
-A single-file, dependency-free visual editor for designing business process
+A dependency-free visual editor with shared HTML, CSS, and JavaScript assets for designing business process
 workflows in the browser. Users lay out **flow nodes** inside **lanes**
 (swimlane-style containers), connect them with **sequence flows** (directed
 edges), attach typed **variables**, and save/load the whole model as JSON.
@@ -26,7 +26,8 @@ client-side using plain HTML, CSS, and vanilla JavaScript with inline SVG.
 
 | File | Purpose |
 | --- | --- |
-| `flowbit-editor.html` | The entire application: markup, CSS, and JS in one file. |
+| `flowbit-editor.html` | Compatibility launcher for the canonical editor. |
+| `Flowbit/src/Flowbit.Ui/wwwroot/editor/` | Shared editor template, scoped CSS, JavaScript factory, and standalone HTML/bootstrap. |
 | [`docs/`](docs/index.md) | Developer onboarding, HTTP API contracts, BPMN support, and deployment guides. |
 | [`examples/`](examples/README.md) | Curated, categorized workflow JSON definitions with inputs, expected behavior, and runtime prerequisites in the canonical catalog. |
 | `Flowbit/` | .NET 10 Web API + Blazor Server workflow runtime using PostgreSQL. |
@@ -91,11 +92,27 @@ background updater or a CI guarantee of documentation accuracy.
 
 ## How it works (architecture)
 
-Everything lives in `flowbit-editor.html`. The key pieces:
+The canonical editor lives under `Flowbit/src/Flowbit.Ui/wwwroot/editor/`.
+`editor-template.js` owns shared markup, `flowbit-editor.css` owns scoped styling,
+and `flowbit-editor.js` exposes `FlowbitEditor.mount(container, options)` for model,
+rendering, validation, and interactions. `flowbit-editor.html` and `standalone.js`
+mount the same editor without a server; `theme-init.js` applies its initial theme.
+The root HTML is a compatibility launcher. Keep the complete asset folder together.
+Flowbit.Ui uses `workflow-editor-host.js` for direct Blazor interop and mounts
+into an empty element owned by `WorkflowEditor.razor`; no iframe is used.
+The key pieces:
 
-- **State**: A single global `model` object holds the whole workflow. Interaction
-  state lives in globals like `selected`, `connectMode`, `drag`, `laneDrag`,
-  and `laneResize`.
+- **State and lifecycle**: Each mount privately owns `model`, history, selection,
+  dragging, and DOM references. The controller exposes `load`, `prepareExport`,
+  `acknowledgeSaved`, `getState`, `setHostState`, and `dispose`. Callbacks report
+  dirty state, document replacement, and hosted save requests. Disposal cancels
+  listeners, timers, animation frames, readers, and observers before clearing
+  the root. The supported hosts each mount one editor per page.
+- **Isolation**: CSS, DOM queries, theme, and keyboard handling belong to the
+  mounting root. Responsive layout and inspector sizing use that container.
+  Hosted mode uses the app's light appearance and a compact command bar;
+  standalone mode retains its branding and theme toggle. Blazor owns API/auth,
+  route, and saved-version metadata; JavaScript owns the editor subtree.
 - **Rendering**: `render()` is the top-level redraw. It calls `renderLanes()`,
   `renderEdges()`, `renderNodes()`, `renderInspector()`, and `renderHint()`.
   The canvas is an `<svg>` with three layer groups: `#lanes`, `#edges`, `#nodes`
@@ -110,16 +127,18 @@ Everything lives in `flowbit-editor.html`. The key pieces:
   `true` after all accepted-transition work. The selector adapter inside
   `renderNodeInspector()` owns both redraw decisions (`renderInspector()` on
   rejection, full `render()` on acceptance); the helper never redraws or
-  touches history — history commits stay with the document change/click
+  touches history — history commits stay with the editor-root change/click
   handlers.
 - **Interaction**: Pointer events on the SVG drive dragging nodes, dragging lanes
   (which moves their contained nodes), and resizing lanes. "Connect mode" lets
   the user click a source node then a target node to create a `sequenceFlow`
   between them.
-- **Persistence**: `save()` serializes `model` to pretty-printed JSON (uses the
-  File System Access API `showSaveFilePicker` when available, otherwise falls
-  back to a download). Loading reads a JSON file and normalizes it through
-  `loadFromObject()`, which detects the schema and migrates legacy documents.
+- **Persistence**: `prepareWorkflowExport()` canonicalizes a copy, validates it,
+  and returns the shared pretty-printed JSON used by both file and API saves.
+  `save()` uses the File System Access API `showSaveFilePicker` when available,
+  otherwise falling back to a download. `normalizeLoadedModel()` detects the
+  schema and migrates supported legacy documents before `loadFromObject()`
+  installs the result; malformed/unsupported input preserves the current document.
 - **Seed data**: `seedSample()` builds the "Parallel Purchase Review" example.
 - **Save validator**: `validateModelForSave(candidate)` is a thin entry point.
   Each call builds a fresh context with `createSaveValidationContext(candidate)`
@@ -1408,7 +1427,13 @@ what the cross-version `workflowKey` instance search matches.
 
 ### Blazor UI pages
 
-- `/workflows` (`Workflows.razor`) - list definitions.
+- `/workflows` (`Workflows.razor`) - list definitions, create workflows, and open
+  an exact version for editing.
+- `/workflows/new` and `/workflows/{id}/edit` (`WorkflowEditor.razor`) - host the
+  canonical editor inline in the available workspace. API saves create unpublished versions
+  through the existing typed client; saved-version keys are read-only. JSON uses
+  bounded streaming interop (2 MiB for hosted saves), while the server owns
+  authentication. Unsaved-state guards include pending JavaScript modal drafts.
 - `/workflows/{id}/start` (`StartInstance.razor`) - pick a start event, fill its
   variables, and launch an instance.
 - `/instances` (`Instances.razor`) - list instances, filterable by status, by
@@ -2454,9 +2479,13 @@ when extending the model so new features stay close to BPMN terminology.
   for new shapes, and update `BpmnFlowNodeTypes` in the .NET shared model.
 - **Add a new variable data type**: append to the `VARIABLE_DATA_TYPES` array and
   `WorkflowVariableTypes` (.NET).
-- **Change canvas visuals**: edit the `<style>` block (CSS variables live in
+- **Change canvas visuals**: edit `flowbit-editor.css` (CSS variables live in
   `:root`; node/lane/edge styling is grouped by class).
 
-Keep editor changes in the single HTML file unless there is a strong reason to
-split it. Preserve the editor's no-dependency, no-build nature. Runtime engine
-changes belong under `Flowbit/`.
+Keep editor changes in the canonical shared assets under
+`Flowbit/src/Flowbit.Ui/wwwroot/editor/`; never duplicate editor markup, styles,
+validation, or model logic in Razor or the root launcher. Preserve direct-file
+opening with relative classic scripts and styles and the no-dependency, no-build
+nature. The Blazor page owns API orchestration through `workflow-editor-host.js`;
+editor tests expand the canonical assets in memory through `EditorSource`.
+Runtime engine changes belong under `Flowbit/`.

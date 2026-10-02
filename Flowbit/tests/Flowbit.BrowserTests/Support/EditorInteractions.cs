@@ -106,7 +106,7 @@ public static class EditorInteractions
         catch (TimeoutException failure)
         {
             var validation = await page.EvaluateAsync<JsonElement>(
-                "() => window.validateModelForSave ? validateModelForSave(model) : ['validateModelForSave unavailable']");
+                "() => [...document.querySelectorAll('#validation-errors li')].map(item => item.textContent)");
             throw new TimeoutException(
                 $"No download appeared after Save. Validation errors: {JsonSerializer.Serialize(validation)}", failure);
         }
@@ -163,7 +163,7 @@ public static class EditorInteractions
                 await page.Mouse.MoveAsync(pointerX, viewport.Height / 2f);
             }
             await page.WaitForFunctionAsync(
-                "document.querySelector('main').classList.contains('inspector-revealed')");
+                "document.querySelector('.editor-workspace').classList.contains('inspector-revealed')");
             await pin.ClickAsync();
         }
         await Assertions.Expect(pin).ToHaveAttributeAsync("aria-pressed", "true");
@@ -201,9 +201,9 @@ public static class EditorInteractions
             """,
             new[] { screenX, screenY });
 
-    /// <summary>Current diagram zoom factor (viewState.zoom).</summary>
+    /// <summary>Current diagram zoom factor read from its rendered SVG transform.</summary>
     public static Task<double> GetZoomAsync(IPage page) =>
-        page.EvaluateAsync<double>("viewState.zoom");
+        page.EvaluateAsync<double>("document.getElementById('svg').getScreenCTM().a");
 
     /// <summary>Performs a real pointer drag with intermediate movement steps.</summary>
     public static async Task DragAsync(

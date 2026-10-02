@@ -395,13 +395,11 @@ public sealed class EditorSmokeTests(BrowserStackFixture stack)
             // Native input editing: Ctrl+Z inside the input is the browser's
             // text undo (it re-fires the input event, so the model follows the
             // reverted text) and never touches editor history.
-            var historyBefore = await page.EvaluateAsync<int>("undoHistory.length");
+            await Assertions.Expect(page.Locator("#redoBtn")).ToBeDisabledAsync();
             await page.Keyboard.PressAsync("Control+z");
             var afterNativeUndo = await nameInput.InputValueAsync();
             Assert.NotEqual("rvhpan", afterNativeUndo);
-            Assert.Equal(
-                historyBefore,
-                await page.EvaluateAsync<int>("undoHistory.length"));
+            await Assertions.Expect(page.Locator("#redoBtn")).ToBeDisabledAsync();
 
             // Outside a text input, Ctrl+Z steps editor history back and
             // Ctrl+Y re-applies it (the round trip returns to the same name).

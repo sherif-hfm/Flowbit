@@ -41,7 +41,7 @@ The [example catalog](examples/README.md) includes start values, actor roles, ex
 
 ## Design visually
 
-The [workflow editor](flowbit-editor.html) is a single HTML file built with vanilla JavaScript, CSS, and inline SVG. Open it in a modern browser: no installation, build step, or server is required for authoring.
+The [workflow editor](flowbit-editor.html) uses shared HTML, CSS, vanilla JavaScript, and inline SVG under `Flowbit/src/Flowbit.Ui/wwwroot/editor/`. The root HTML opens that canonical document. Open it in a modern browser with its adjacent assets: no installation, build step, or server is required for local authoring. When distributing the standalone editor, copy the entire editor folder.
 
 - **Build the diagram:** drag nodes into lanes, resize containers, connect sequence flows, move multiple selections, snap to a grid, and undo or redo changes.
 - **Navigate larger workflows:** search by name, ID, external ID, or node type; trace upstream, downstream, local, and connecting routes; use zoom and fit controls.
@@ -49,7 +49,7 @@ The [workflow editor](flowbit-editor.html) is a single HTML file built with vani
 - **Work comfortably:** use light or dark themes, smart diagram labels, and a resizable, pinnable inspector.
 - **Keep definitions portable:** validate before saving, export readable JSON, and load existing definitions for further editing.
 
-The editor produces the same definition format the runtime consumes. Diagram layout and executable configuration travel together in one document.
+The editor produces the same definition format the runtime consumes. Diagram layout and executable configuration travel together in one document. Flowbit.Ui embeds the same editor: choose **Create workflow** or **Edit** on a version, then **Save new version** to create an unpublished version. See [visual authoring in the UI](docs/ui-guide.md#design-workflows-in-the-ui).
 
 Press `/` while working on the canvas to reveal the diagram search
 dock and focus its search field, even when the dock is hidden.
@@ -125,7 +125,7 @@ Inbox and advanced search authorization, membership, counting, sorting, and pagi
 
 | Project | Responsibility |
 | --- | --- |
-| [`flowbit-editor.html`](flowbit-editor.html) | Standalone visual authoring and JSON validation/export. |
+| [`flowbit-editor.html`](flowbit-editor.html) | Launcher for shared visual authoring and JSON validation/export, also mounted inline in Flowbit.Ui. |
 | [`Flowbit.Api`](Flowbit/src/Flowbit.Api) | HTTP endpoints, JWT authentication, OpenAPI, and startup composition. |
 | [`Flowbit.Service`](Flowbit/src/Flowbit.Service) | Workflow execution, definition validation, expression evaluation, and service contracts. |
 | [`Flowbit.Infrastructure`](Flowbit/src/Flowbit.Infrastructure) | EF Core/Npgsql persistence, migrations, REST invocation, and Jint scripting. |

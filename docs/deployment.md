@@ -27,7 +27,7 @@ For a disposable development database and your first working instance, follow [G
 | API | .NET 10 / ASP.NET Core runtime for the framework-dependent publish below. | Authenticated HTTP APIs, validation, synchronous transitions, and durable work creation. |
 | Worker | Same runtime and database; needed for features listed above. | Leases and executes durable work, timer schedules, batches, metrics, and cleanup. |
 | UI | Optional ASP.NET Core / Blazor Server application. | Management and demo client for the API; browser circuits use the server-side API client. |
-| Editor | Static `flowbit-editor.html`. | Authors JSON locally. It needs neither the database nor a Worker. |
+| Editor | Shared static document and adjacent assets under `Flowbit.Ui/wwwroot/editor/`. | Authors JSON locally or inside Flowbit.Ui. Local file authoring needs neither the database nor a Worker; API saves require API/database access. |
 
 Run replicas against the same authoritative database, with matching runtime configuration and compatible binaries. In-memory definition caches are rebuildable. PostgreSQL locking and durable fences coordinate mutations; extra API/Worker replicas do not replace a database availability and recovery strategy.
 
@@ -80,7 +80,7 @@ The PostgreSQL service stores data in the Compose-managed `postgres-data` named 
 docker compose down
 ```
 
-Run `docker compose up --build -d --wait` again to resume. For an intentional reset of this local stack, `docker compose down --volumes` **deletes its database volume and all saved workflows, instances, and history**. API/UI file logs and UI circuit state are container-local; use Compose logs while investigating failures. Workflow definitions are imported explicitly; startup does not load examples. The standalone [editor](../flowbit-editor.html) still opens directly in a browser.
+Run `docker compose up --build -d --wait` again to resume. For an intentional reset of this local stack, `docker compose down --volumes` **deletes its database volume and all saved workflows, instances, and history**. API/UI file logs and UI circuit state are container-local; use Compose logs while investigating failures. Workflow definitions are imported explicitly; startup does not load examples. The standalone [editor](../flowbit-editor.html) still opens directly in a browser with its complete asset folder. UI publishing and Docker builds include that folder automatically. Keep the editor document and adjacent CSS/JS from the same release; hosted integration mounts the shared editor directly into the UI and uses streamed JSON interop, with API requests made by the UI server. Restart a running development UI after adding assets so its static-asset manifest includes them; asset-load errors identify the failed URL.
 
 Each application has a Dockerfile under its project directory. All three require the repository root as build context:
 

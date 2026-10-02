@@ -16,7 +16,7 @@ Tests never call the REST or message endpoints described below.
 
 New to the runtime? Follow the [HTTP getting-started guide](../docs/getting-started.md) for isolated PostgreSQL setup, authentication, import, publication, and a complete approval.
 
-1. Open `flowbit-editor.html` and choose **Load JSON**.
+1. Open `flowbit-editor.html` (the launcher for the shared editor assets) and choose **Load JSON**, or use **Workflow editor → File → Load JSON** in Flowbit.Ui.
 2. Select a definition below, inspect it, and save it without validation errors.
 3. Publish the definition through the API or Blazor UI and start an instance.
 4. Use an authenticated actor with the documented roles to complete its work.

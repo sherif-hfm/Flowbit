@@ -2,10 +2,11 @@
 @implements IDisposable
 @using Flowbit.Ui.Auth
 @inject TokenState Token
+@inject NavigationManager Navigation
 
 <a class="skip-link" href="#main-content">Skip to main content</a>
 
-<div class="app-shell" data-interactive="@(RendererInfo.IsInteractive ? "true" : "false")">
+<div class="app-shell @(IsEditorRoute ? "editor-layout" : null)" data-interactive="@(RendererInfo.IsInteractive ? "true" : "false")">
     <aside id="primary-navigation" class="sidebar @(mobileNavOpen ? "is-open" : null)" aria-label="Primary navigation">
         <a class="brand" href="" @onclick="CloseNavigation">
             <img class="brand-mark" src="@Assets["branding/flowbit-mark.svg"]" width="40" height="40" alt="" />
@@ -83,6 +84,14 @@
 
 @code {
     private bool mobileNavOpen;
+    private bool IsEditorRoute
+    {
+        get
+        {
+            var path = Navigation.ToBaseRelativePath(Navigation.Uri).Split('?', '#')[0].TrimEnd('/');
+            return path == "workflows/new" || System.Text.RegularExpressions.Regex.IsMatch(path, @"^workflows/\d+/edit$");
+        }
+    }
 
     private string IdentityName => Token.HasToken ? Token.CurrentUser ?? "Anonymous" : "No identity";
     private string IdentityInitial => IdentityName[..1].ToUpperInvariant();
@@ -90,11 +99,20 @@
         ? Token.CurrentRoles.Count == 0 ? "No roles" : string.Join(", ", Token.CurrentRoles.Take(2))
         : "Configure test token";
 
-    protected override void OnInitialized() => Token.Changed += OnTokenChanged;
+    protected override void OnInitialized()
+    {
+        Token.Changed += OnTokenChanged;
+        Navigation.LocationChanged += OnLocationChanged;
+    }
+    private void OnLocationChanged(object? sender, LocationChangedEventArgs args) => _ = InvokeAsync(StateHasChanged);
 
     private void ToggleNavigation() => mobileNavOpen = !mobileNavOpen;
     private void CloseNavigation() => mobileNavOpen = false;
     private void OnTokenChanged() => _ = InvokeAsync(StateHasChanged);
 
-    public void Dispose() => Token.Changed -= OnTokenChanged;
+    public void Dispose()
+    {
+        Token.Changed -= OnTokenChanged;
+        Navigation.LocationChanged -= OnLocationChanged;
+    }
 }

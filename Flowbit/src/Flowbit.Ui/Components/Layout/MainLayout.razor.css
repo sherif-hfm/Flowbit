@@ -127,3 +127,10 @@
     .topbar-start { width: 2.35rem; height: 2.35rem; padding: 0; justify-content: center; font-size: 0; }
     .content-shell { padding: 1rem; }
 }
+
+/* Editor routes fill the workspace while retaining the shared navigation. */
+.editor-layout { height: 100dvh; min-height: 0; overflow: hidden; }
+.editor-layout .workspace { height: 100%; min-height: 0; display: flex; flex-direction: column; }
+.editor-layout .topbar { flex: 0 0 auto; }
+.editor-layout #main-content { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.editor-layout .content-shell { flex: 1; width: 100%; min-height: 0; padding: 0; margin: 0; }

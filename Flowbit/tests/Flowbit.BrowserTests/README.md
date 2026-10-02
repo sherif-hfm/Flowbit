@@ -9,8 +9,8 @@ solution test command stays free of Chromium requirements.
 - Real hosts: the published API and UI run as child processes on ephemeral
   loopback ports with a disposable PostgreSQL Testcontainer.
 - Real editor: the in-process Kestrel static host serves the build copy of
-  the repository `flowbit-editor.html` next to the test assembly. There is no
-  second edited HTML fixture. Its configuration ignores ambient Kestrel endpoints.
+  canonical HTML/CSS/JavaScript assets from `Flowbit.Ui/wwwroot/editor/` next to
+  the test assembly. There is no second edited editor fixture. Its configuration ignores ambient Kestrel endpoints.
 - Real identity: every runtime scenario mints its token through the UI's
   `/token` screen and uses that exact JWT for HTTP setup clients.
 - Synchronous only: the API runs with
@@ -71,6 +71,8 @@ the run — it never silently connects to a developer's running stack.
 
 ## What is covered
 
+Hosted editor scenarios H1 (1440x900 and 1024x768) and H2 exercise exact-version editing, locked keys (including undo after a first save), undo/redo dirty state, immutable unpublished saves, navigation guards, route re-entry, 70 KiB JSON streaming, authorization rejection retaining edits, local import detaching the source, and the 2 MiB save limit. H3 covers pending JavaScript drafts, dialog focus and Escape handling, validation errors, missing versions, and the 390x844 layout. H4 opens the root launcher through `file://`, loads the adjacent shared assets, and imports/exports JSON. H5 checks inline node dragging, connector geometry, inspector resizing, shortcut isolation from app navigation, and clean disposal/remount after navigation. They use real UI controls and HTTP read-back, with screenshots and console diagnostics. Native picker success/cancel still requires manual verification.
+
 | Scenario | Viewports | Behavior under test |
 | --- | --- | --- |
 | E1 load/edit/save/reload | 1440x900, 1024x768 | File menu load via the real file chooser, node rename in the inspector, workflow name edit, forced download-fallback save, JSON round-trip into a fresh page. |
@@ -89,12 +91,12 @@ the run — it never silently connects to a developer's running stack.
 | R6 responsive controls and focus | 1024x768, 390x844 | Real responsive navigation, section links preserving the instance path/query, keyboard focus, wheel scrolling to clipped table columns, and parsed submitted JSON. |
 | R7 administrative batch display | 1440x900, 1024x768, 390x844 | Executes immediate administrative actions through the real instance-detail panel, verifies refreshed instance status, variables and history before following the real audit batch link, verifies the frozen request, count order/values, item row, highlight, JSON details, and recent history against HTTP reads, switches batches with real clicks and keyboard-activated Open buttons, exercises zero-match item and recent-batch status filters with restore, checks narrow-table scrolling and document overflow, and records before/after audit screenshots at all three viewports. |
 
-The 26 product scenarios are accompanied by four harness regression tests:
+The original 26 product scenarios plus five shared/hosted-editor cases are accompanied by four harness regression tests:
 auxiliary-page errors/dialogs must fail, successful diagnostics must retain
 warnings/transport failures, timed-out work must stop before returning, and
 queued one-shot dialog expectations must accept, dismiss, fail on unconsumed
 entries, and fail on unmatched dialogs. The `harness-expected-*` artifacts
-intentionally contain injected failures. The suite therefore runs 30 cases in
+intentionally contain injected failures. The suite therefore runs 35 cases in
 total (E1-E8 at both viewports, the runtime scenarios, and the R7 administrative
 display scenarios).
 

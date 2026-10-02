@@ -1,0 +1,1632 @@
+  .flowbit-editor {
+    color-scheme: dark;
+    --bg: #0f172a;
+    --canvas: #0b1220;
+    --panel: #111e33;
+    --panel-2: #182840;
+    --panel-3: #233651;
+    --border: #30445f;
+    --border-strong: #48617f;
+    --control-border: #60738d;
+    --control-border-strong: #8aa0ba;
+    --text: #f1f5f9;
+    --muted: #a9b7ca;
+    --accent: #3b82f6;
+    --accent-2: #60a5fa;
+    --green: #22c55e;
+    --red: #ef4444;
+    --amber: #f59e0b;
+    --shadow: 0 8px 24px rgba(2, 8, 23, .24);
+    --header-shadow: 0 1px 3px rgba(2, 8, 23, .16);
+    --toolbar-group-bg: #182840;
+    --toolbar-group-border: #30445f;
+    --primary-bg: #2563eb;
+    --primary-border: #3b82f6;
+    --primary-hover-bg: #1d4ed8;
+    --primary-hover-border: #60a5fa;
+    --danger-bg: #dc2626;
+    --danger-border: #dc2626;
+    --active-bg: #2563eb;
+    --active-border: #60a5fa;
+    --on-strong: #fff;
+    --focus-ring: rgba(96,165,250,.28);
+    --glass-soft: rgba(17,29,48,.92);
+    --glass-control: rgba(17,29,48,.94);
+    --glass: rgba(17,29,48,.96);
+    --glass-strong: rgba(17,29,48,.98);
+    --floating-shadow: 0 8px 24px rgba(2,8,23,.22);
+    --floating-shadow-small: 0 8px 16px rgba(2,8,23,.14);
+    --soft-blue-text: #bfdbfe;
+    --placeholder: #8292a8;
+    --active-control-text: #dbeafe;
+    --active-control-bg: rgba(37,99,235,.72);
+    --active-control-border: #60a5fa;
+    --accent-soft: rgba(59,130,246,.18);
+    --accent-label: #93c5fd;
+    --sidebar-shadow: rgba(2,8,23,.2);
+    --sidebar-border: rgba(72, 97, 127, .2);
+    --sidebar-gradient-start: #111e33;
+    --sidebar-gradient-end: #111e33;
+    --sidebar-accent-border: rgba(96,165,250,.46);
+    --resizer-accent: rgba(96,165,250,.58);
+    --card-bg: rgba(24,39,61,.82);
+    --chip-bg: rgba(59, 130, 246, .16);
+    --chip-border: rgba(59, 130, 246, .45);
+    --chip-text: #bfdbfe;
+    --chip-hover: rgba(191, 219, 254, .16);
+    --grid-dot: #263b59;
+    --node-start-fill: #14532d;
+    --node-end-fill: #450a0a;
+    --node-user-fill: #17385f;
+    --node-user-stroke: #60a5fa;
+    --node-task-fill: #1b2b42;
+    --node-task-stroke: #8aa0ba;
+    --node-service-fill: #104c49;
+    --node-service-stroke: #2dd4bf;
+    --node-script-fill: #28205d;
+    --node-script-stroke: #a78bfa;
+    --node-gateway-fill: #422006;
+    --node-interrupt-fill: #3f0b16;
+    --node-interrupt-stroke: #fb7185;
+    --node-boundary-fill: #1f0a0a;
+    --node-message-fill: #0c4a6e;
+    --node-message-stroke: #38bdf8;
+    --node-selection-stroke: #fff;
+    --node-text: #fff;
+    --node-id-text: #d6e0ed;
+    --node-role-text: #b7c5d7;
+    --node-icon: #dbeafe;
+    --node-separator: rgba(203, 213, 225, .18);
+    --node-start-icon: #86efac;
+    --node-message-icon: #7dd3fc;
+    --node-error-icon: #fca5a5;
+    --node-gateway-icon: #fbbf24;
+    --node-task-icon: #d6e0ed;
+    --node-service-icon: #99f6e4;
+    --node-script-icon: #ddd6fe;
+    --node-status: #bfdbfe;
+    --node-hover-shadow: rgba(2,8,23,.38);
+    --node-selection-shadow: rgba(255,255,255,.24);
+    --connect-handle-fill: #0b1728;
+    --connect-stroke: #60a5fa;
+    --connect-hover-fill: #2563eb;
+    --connect-hover-stroke: #dbeafe;
+    --connect-valid-stroke: #34d399;
+    --connect-valid-hover-stroke: #a7f3d0;
+    --connect-valid-shadow: rgba(52,211,153,.72);
+    --connect-invalid-stroke: #f87171;
+    --lane-fill: rgba(59, 130, 246, .08);
+    --lane-stroke: #64748b;
+    --lane-selection-stroke: #fff;
+    --lane-text: #cbd5e1;
+    --lane-resize-stroke: #bfdbfe;
+    --edge-stroke: #93a8c2;
+    --edge-hover: #60a5fa;
+    --edge-selected: #f59e0b;
+    --edge-error: #f87171;
+    --edge-label: #f1f5f9;
+    --edge-label-outline: #07111f;
+    --edge-label-hover: #bfdbfe;
+    --edge-label-selected: #fde68a;
+    --flow-condition: #fbbf24;
+    --flow-default: #67e8f9;
+    --flow-interrupt: #fb7185;
+    --trace-context-shadow: rgba(251,113,133,.32);
+    --modal-overlay: rgba(15, 23, 42, 0.75);
+    --modal-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+    --modal-footer: rgba(15, 23, 42, 0.2);
+    --modal-chip-hover: rgba(59, 130, 246, 0.25);
+    --modal-chip-border: rgba(59, 130, 246, 0.7);
+    --validation-error: #fecaca;
+    --warning-text: #fbbf24;
+    --type-badge-blue-bg: rgba(59, 130, 246, 0.15);
+    --type-badge-blue-text: #bfdbfe;
+    --type-badge-purple-bg: rgba(167, 139, 250, 0.15);
+    --type-badge-purple-text: #ddd6fe;
+  }
+  .flowbit-editor[data-theme="light"] {
+    color-scheme: light;
+    --bg: #f4f7fb;
+    --canvas: #f8fafc;
+    --panel: #ffffff;
+    --panel-2: #f1f5f9;
+    --panel-3: #e2e8f0;
+    --border: #dbe3ee;
+    --border-strong: #b8c6d8;
+    --control-border: #7b8a9f;
+    --control-border-strong: #526277;
+    --text: #0f172a;
+    --muted: #526277;
+    --accent: #2563eb;
+    --accent-2: #1d4ed8;
+    --green: #15803d;
+    --red: #dc2626;
+    --amber: #b45309;
+    --shadow: 0 6px 20px rgba(15,23,42,.10);
+    --header-shadow: 0 1px 3px rgba(15,23,42,.04);
+    --toolbar-group-bg: #f8fafc;
+    --toolbar-group-border: #dbe3ee;
+    --primary-bg: #2563eb;
+    --primary-border: #1d4ed8;
+    --primary-hover-bg: #1d4ed8;
+    --primary-hover-border: #1e40af;
+    --danger-bg: #dc2626;
+    --danger-border: #b91c1c;
+    --active-bg: #2563eb;
+    --active-border: #1d4ed8;
+    --on-strong: #fff;
+    --focus-ring: rgba(37,99,235,.24);
+    --glass-soft: rgba(255,255,255,.92);
+    --glass-control: rgba(255,255,255,.94);
+    --glass: rgba(255,255,255,.96);
+    --glass-strong: rgba(255,255,255,.98);
+    --floating-shadow: 0 8px 24px rgba(15,23,42,.12);
+    --floating-shadow-small: 0 8px 16px rgba(15,23,42,.08);
+    --soft-blue-text: #1d4ed8;
+    --placeholder: #526277;
+    --active-control-text: #eff6ff;
+    --active-control-bg: #2563eb;
+    --active-control-border: #1d4ed8;
+    --accent-soft: rgba(37,99,235,.1);
+    --accent-label: #1d4ed8;
+    --sidebar-shadow: rgba(15,23,42,.14);
+    --sidebar-border: rgba(148,163,184,.32);
+    --sidebar-gradient-start: #ffffff;
+    --sidebar-gradient-end: #ffffff;
+    --sidebar-accent-border: rgba(37,99,235,.5);
+    --resizer-accent: rgba(37,99,235,.65);
+    --card-bg: #f8fafc;
+    --chip-bg: rgba(37,99,235,.1);
+    --chip-border: rgba(37,99,235,.32);
+    --chip-text: #1d4ed8;
+    --chip-hover: rgba(37,99,235,.12);
+    --grid-dot: #cbd5e1;
+    --node-start-fill: #dcfce7;
+    --node-end-fill: #fee2e2;
+    --node-user-fill: #dbeafe;
+    --node-user-stroke: #2563eb;
+    --node-task-fill: #f1f5f9;
+    --node-task-stroke: #64748b;
+    --node-service-fill: #ccfbf1;
+    --node-service-stroke: #0f766e;
+    --node-script-fill: #ede9fe;
+    --node-script-stroke: #7c3aed;
+    --node-gateway-fill: #fef3c7;
+    --node-interrupt-fill: #ffe4e6;
+    --node-interrupt-stroke: #be123c;
+    --node-boundary-fill: #fff1f2;
+    --node-message-fill: #e0f2fe;
+    --node-message-stroke: #0369a1;
+    --node-selection-stroke: #0f172a;
+    --node-text: #0f172a;
+    --node-id-text: #334155;
+    --node-role-text: #475569;
+    --node-icon: #1e3a5f;
+    --node-separator: rgba(71, 85, 105, .24);
+    --node-start-icon: #15803d;
+    --node-message-icon: #0369a1;
+    --node-error-icon: #b91c1c;
+    --node-gateway-icon: #92400e;
+    --node-task-icon: #334155;
+    --node-service-icon: #0f766e;
+    --node-script-icon: #6d28d9;
+    --node-status: #1d4ed8;
+    --node-hover-shadow: rgba(15,23,42,.24);
+    --node-selection-shadow: rgba(15,23,42,.22);
+    --connect-handle-fill: #ffffff;
+    --connect-stroke: #2563eb;
+    --connect-hover-fill: #2563eb;
+    --connect-hover-stroke: #dbeafe;
+    --connect-valid-stroke: #15803d;
+    --connect-valid-hover-stroke: #166534;
+    --connect-valid-shadow: rgba(21,128,61,.42);
+    --connect-invalid-stroke: #dc2626;
+    --lane-fill: rgba(37, 99, 235, .05);
+    --lane-stroke: #64748b;
+    --lane-selection-stroke: #0f172a;
+    --lane-text: #334155;
+    --lane-resize-stroke: #dbeafe;
+    --edge-stroke: #64748b;
+    --edge-hover: #1d4ed8;
+    --edge-selected: #b45309;
+    --edge-error: #dc2626;
+    --edge-label: #334155;
+    --edge-label-outline: #f8fafc;
+    --edge-label-hover: #1d4ed8;
+    --edge-label-selected: #92400e;
+    --flow-condition: #b45309;
+    --flow-default: #0e7490;
+    --flow-interrupt: #be123c;
+    --trace-context-shadow: rgba(190,18,60,.25);
+    --modal-overlay: rgba(15, 23, 42, 0.45);
+    --modal-shadow: 0 25px 50px -12px rgba(15, 23, 42, 0.28);
+    --modal-footer: rgba(241, 245, 249, .78);
+    --modal-chip-hover: rgba(37, 99, 235, .14);
+    --modal-chip-border: rgba(37, 99, 235, .48);
+    --validation-error: #b91c1c;
+    --warning-text: #92400e;
+    --type-badge-blue-bg: rgba(37, 99, 235, .1);
+    --type-badge-blue-text: #1d4ed8;
+    --type-badge-purple-bg: rgba(124, 58, 237, .1);
+    --type-badge-purple-text: #6d28d9;
+  }
+  .flowbit-editor * { box-sizing: border-box; }
+  .flowbit-editor,
+  .flowbit-editor { height: 100%; margin: 0; }
+  .flowbit-editor button,
+  .flowbit-editor input,
+  .flowbit-editor select,
+  .flowbit-editor textarea { font-family: inherit; }
+  .flowbit-editor {
+    font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    overflow: hidden;
+  }
+
+  .flowbit-editor header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-height: 60px;
+    padding: 10px 16px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    flex-wrap: wrap;
+    box-shadow: var(--header-shadow);
+    position: relative;
+    z-index: 100;
+  }
+  .flowbit-editor .toolbar-identity,
+  .flowbit-editor .toolbar-group { display: flex; align-items: center; gap: 8px; }
+  .flowbit-editor .toolbar-identity {
+    min-width: min(360px, 100%);
+    flex: 1 1 420px;
+    flex-wrap: wrap;
+  }
+  .flowbit-editor .toolbar-group {
+    padding: 4px;
+    border: 1px solid var(--toolbar-group-border);
+    border-radius: 12px;
+    background: var(--toolbar-group-bg);
+  }
+  .flowbit-editor .toolbar-menu-group { flex: 0 0 auto; gap: 4px; }
+  .flowbit-editor .toolbar-menu { position: relative; }
+  .flowbit-editor .toolbar-menu > summary {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 34px;
+    padding: 7px 10px;
+    color: var(--text);
+    background: var(--panel-2);
+    border: 1px solid var(--control-border);
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+    list-style: none;
+    user-select: none;
+    white-space: nowrap;
+    transition: background .15s, border-color .15s, color .15s;
+  }
+  .flowbit-editor .toolbar-menu > summary::-webkit-details-marker { display: none; }
+  .flowbit-editor .toolbar-menu > summary::marker { content: ""; }
+  .flowbit-editor .toolbar-menu > summary:hover,
+  .flowbit-editor .toolbar-menu[open] > summary {
+    background: var(--panel-3);
+    border-color: var(--control-border-strong);
+  }
+  .flowbit-editor .toolbar-menu-caret {
+    width: 10px;
+    height: 10px;
+    margin-left: 1px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    transition: transform .15s;
+  }
+  .flowbit-editor .toolbar-menu[open] .toolbar-menu-caret { transform: rotate(180deg); }
+  .flowbit-editor .toolbar-menu-popover {
+    position: absolute;
+    top: calc(100% + 7px);
+    left: 0;
+    z-index: 60;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    min-width: 190px;
+    max-width: calc(100cqw - 32px);
+    padding: 6px;
+    background: var(--panel);
+    border: 1px solid var(--control-border-strong);
+    border-radius: 12px;
+    box-shadow: var(--floating-shadow);
+  }
+  .flowbit-editor .toolbar-menu:not([open]) > .toolbar-menu-popover { display: none; }
+  .flowbit-editor .toolbar-menu-popover button {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    justify-content: flex-start;
+    text-align: left;
+    white-space: nowrap;
+  }
+  .flowbit-editor .toolbar-menu-popover .button-label { display: inline; }
+  .flowbit-editor .toolbar-menu-popover .button-icon { margin-right: 5px; }
+  .flowbit-editor .toolbar-menu > summary.active {
+    color: var(--on-strong);
+    background: var(--active-bg);
+    border-color: var(--active-border);
+  }
+  .flowbit-editor .toolbar-menu-end .toolbar-menu-popover { right: 0; left: auto; }
+  .flowbit-editor .view-menu-popover {
+    width: min(270px, calc(100cqw - 32px));
+    min-width: 0;
+  }
+  .flowbit-editor .toolbar-menu-field {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    padding: 5px 6px;
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .flowbit-editor .toolbar-menu-field .toolbar-select { width: 100%; }
+  .flowbit-editor .toolbar-menu-divider {
+    height: 1px;
+    margin: 3px 4px;
+    background: var(--border);
+  }
+  .flowbit-editor .tool-menu-summary .tool-summary-select,
+  .flowbit-editor .tool-menu-summary .tool-summary-rectangle,
+  .flowbit-editor .tool-menu-summary .tool-summary-pan { display: none; }
+  .flowbit-editor .tool-menu-summary[data-active-tool="select"] .tool-summary-select,
+  .flowbit-editor .tool-menu-summary[data-active-tool="rectangle"] .tool-summary-rectangle,
+  .flowbit-editor .tool-menu-summary[data-active-tool="pan"] .tool-summary-pan { display: block; }
+  .flowbit-editor .app-brand { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; margin-right: 8px; }
+  .flowbit-editor .app-mark { width: 36px; height: 36px; display: block; flex: 0 0 auto; }
+  .flowbit-editor .app-mark svg { display: block; width: 100%; height: 100%; }
+  .flowbit-editor header h1 { margin: 0; font-size: 20px; font-weight: 700; letter-spacing: -.045em; line-height: 1.05; white-space: nowrap; }
+  .flowbit-editor header h1 small { display: block; margin-top: 4px; color: var(--muted); font-size: 10px; font-weight: 500; letter-spacing: .02em; }
+  .flowbit-editor .wf-name {
+    background: var(--panel-2);
+    border: 1px solid var(--control-border);
+    color: var(--text);
+    padding: 6px 10px;
+    border-radius: 8px;
+    font-size: 13px;
+    min-width: 0;
+    flex: 1 1 220px;
+    height: 36px;
+  }
+  .flowbit-editor button {
+    background: var(--panel-2);
+    color: var(--text);
+    border: 1px solid var(--control-border);
+    min-height: 34px;
+    padding: 7px 11px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+    transition: background .15s, border-color .15s, color .15s, transform .15s;
+  }
+  .flowbit-editor button:hover { background: var(--panel-3); border-color: var(--control-border-strong); }
+  .flowbit-editor button:active { transform: translateY(1px); }
+  .flowbit-editor button:disabled { opacity: .45; cursor: not-allowed; transform: none; }
+  .flowbit-editor button.primary { background: var(--primary-bg); border-color: var(--primary-border); color: var(--on-strong); }
+  .flowbit-editor button.primary:hover { background: var(--primary-hover-bg); border-color: var(--primary-hover-border); }
+  .flowbit-editor button.danger { color: var(--on-strong); background: var(--danger-bg); border-color: var(--danger-border); }
+  .flowbit-editor button.active { background: var(--active-bg); border-color: var(--active-border); color: var(--on-strong); }
+  .flowbit-editor button:focus-visible,
+  .flowbit-editor input:focus-visible,
+  .flowbit-editor select:focus-visible,
+  .flowbit-editor textarea:focus-visible,
+  .flowbit-editor .toolbar-menu > summary:focus-visible,
+  .flowbit-editor .resizer:focus-visible {
+    outline: 2px solid var(--accent-2);
+    outline-offset: 2px;
+  }
+  .flowbit-editor .button-icon { width: 15px; height: 15px; margin-right: 5px; vertical-align: -2px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  .flowbit-editor .theme-toggle {
+    min-width: 78px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+  }
+  .flowbit-editor .theme-toggle .button-icon { margin-right: 0; }
+  .flowbit-editor:not([data-theme]) .theme-icon-moon,
+  .flowbit-editor[data-theme="dark"] .theme-icon-moon,
+  .flowbit-editor[data-theme="light"] .theme-icon-sun { display: none; }
+  .flowbit-editor .toolbar-select {
+    height: 34px;
+    padding: 5px 30px 5px 10px;
+    color: var(--text);
+    background: var(--panel-2);
+    border: 1px solid var(--control-border);
+    border-radius: 8px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .flowbit-editor .toolbar-opacity {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 34px;
+    padding: 0 6px;
+    color: var(--muted);
+    font-size: 11px;
+    white-space: nowrap;
+  }
+  .flowbit-editor .toolbar-opacity input {
+    width: 88px;
+    accent-color: var(--accent-2);
+    cursor: pointer;
+  }
+  .flowbit-editor .toolbar-opacity output {
+    min-width: 34px;
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+  }
+  .flowbit-editor .toolbar-grid-toggle,
+  .flowbit-editor .toolbar-grid-size {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 34px;
+    padding: 0 6px;
+    color: var(--muted);
+    font-size: 11px;
+    white-space: nowrap;
+  }
+  .flowbit-editor .toolbar-grid-toggle { cursor: pointer; }
+  .flowbit-editor .toolbar-grid-toggle input {
+    width: 15px;
+    height: 15px;
+    margin: 0;
+    accent-color: var(--accent-2);
+    cursor: pointer;
+  }
+  .flowbit-editor .toolbar-grid-size input {
+    width: 58px;
+    height: 28px;
+    padding: 4px 5px;
+    color: var(--text);
+    background: var(--panel-2);
+    border: 1px solid var(--control-border);
+    border-radius: 7px;
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+  }
+  .flowbit-editor .view-menu-popover .toolbar-grid-toggle,
+  .flowbit-editor .view-menu-popover .toolbar-grid-size,
+  .flowbit-editor .view-menu-popover .toolbar-opacity {
+    width: 100%;
+    min-height: 36px;
+    padding: 5px 6px;
+  }
+  .flowbit-editor .view-menu-popover .toolbar-grid-size input { margin-left: auto; }
+  .flowbit-editor .view-menu-popover .toolbar-opacity input { flex: 1; min-width: 70px; }
+  .flowbit-editor .view-menu-popover .theme-toggle { justify-content: flex-start; }
+  .flowbit-editor .spacer { flex: 1; }
+  .flowbit-editor input::placeholder,
+  .flowbit-editor textarea::placeholder {
+    color: var(--placeholder);
+    opacity: 1;
+  }
+
+  .flowbit-editor .editor-workspace {
+    --sidebar-width: 340px;
+    flex: 1;
+    display: flex;
+    min-height: 0;
+    position: relative;
+    overflow: clip;
+  }
+
+  .flowbit-editor .canvas-wrap { flex: 1; position: relative; overflow: hidden; background: var(--canvas); min-width: 0; }
+  .flowbit-editor #svg { width: 100%; height: 100%; display: block; background: var(--canvas); cursor: default; touch-action: none; }
+  .flowbit-editor #svg[data-active-tool="rectangle"] { cursor: crosshair; }
+  .flowbit-editor #svg[data-active-tool="pan"],
+  .flowbit-editor #svg[data-active-tool="pan"] * { cursor: grab !important; }
+  .flowbit-editor #svg.canvas-panning,
+  .flowbit-editor #svg.canvas-panning *,
+  .flowbit-editor.is-space-panning #svg,
+  .flowbit-editor.is-space-panning #svg * { cursor: grabbing !important; }
+  .flowbit-editor .selection-marquee {
+    fill: color-mix(in srgb, var(--accent) 14%, transparent);
+    stroke: var(--accent);
+    stroke-width: 1.5;
+    stroke-dasharray: 7 5;
+    vector-effect: non-scaling-stroke;
+    pointer-events: none;
+  }
+
+  .flowbit-editor .hint {
+    position: absolute;
+    top: 10px; left: 10px;
+    background: var(--glass-soft);
+    border: 1px solid var(--border);
+    padding: 8px 12px;
+    border-radius: 8px;
+    font-size: 12px;
+    color: var(--muted);
+    max-width: min(420px, calc(100% - 150px));
+    pointer-events: none;
+    box-shadow: var(--floating-shadow);
+    backdrop-filter: blur(8px);
+  }
+  .flowbit-editor .hint b { color: var(--text); }
+  .flowbit-editor .canvas-controls {
+    position: absolute;
+    left: 12px;
+    bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 5px;
+    background: var(--glass-control);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: var(--shadow);
+    backdrop-filter: blur(8px);
+  }
+  .flowbit-editor .canvas-controls button { min-width: 34px; min-height: 32px; padding: 5px 9px; }
+  .flowbit-editor .canvas-controls .zoom-readout { min-width: 62px; color: var(--soft-blue-text); font-variant-numeric: tabular-nums; }
+  .flowbit-editor .canvas-controls .fit-view { min-width: 48px; }
+  .flowbit-editor .authoring-palette {
+    position: absolute;
+    top: 12px;
+    bottom: 12px;
+    left: 12px;
+    z-index: 16;
+    width: min(228px, calc(100% - 24px));
+    display: flex;
+    align-items: flex-start;
+    pointer-events: none;
+  }
+  .flowbit-editor .authoring-palette-content {
+    box-sizing: border-box;
+    width: min(184px, calc(100% - 44px));
+    max-height: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 6px;
+    overflow-y: auto;
+    color: var(--text);
+    background: var(--glass);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: var(--shadow);
+    backdrop-filter: blur(8px);
+    opacity: 0;
+    visibility: hidden;
+    transform: translateX(-8px) scale(.985);
+    transform-origin: center left;
+    pointer-events: none;
+    transition: opacity .16s ease, transform .16s ease, visibility 0s linear .16s;
+  }
+  .flowbit-editor .authoring-palette:not(.is-pinned) .authoring-palette-content { margin-left: 44px; }
+  .flowbit-editor .authoring-palette:hover .authoring-palette-content,
+  .flowbit-editor .authoring-palette-content:focus-within,
+  .flowbit-editor .authoring-palette.is-open .authoring-palette-content,
+  .flowbit-editor .authoring-palette.is-pinned .authoring-palette-content {
+    opacity: 1;
+    visibility: visible;
+    transform: none;
+    pointer-events: auto;
+    transition-delay: 0s;
+  }
+  .flowbit-editor .authoring-palette-handle {
+    position: absolute;
+    top: 0;
+    left: 0;
+    z-index: 2;
+    width: 38px;
+    min-width: 38px;
+    height: 38px;
+    min-height: 38px;
+    padding: 9px;
+    color: var(--soft-blue-text);
+    background: var(--glass);
+    border-color: var(--control-border);
+    border-radius: 12px;
+    box-shadow: var(--shadow);
+    backdrop-filter: blur(8px);
+    pointer-events: auto;
+    transition: opacity .12s ease, visibility 0s;
+  }
+  .flowbit-editor .authoring-palette-handle:active { transform: translateY(1px); }
+  .flowbit-editor .authoring-palette-handle .button-icon {
+    width: 18px;
+    height: 18px;
+    margin: 0;
+  }
+  .flowbit-editor .authoring-palette.is-pinned .authoring-palette-handle {
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+  }
+  .flowbit-editor .authoring-palette-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    padding: 0 1px 5px 5px;
+    border-bottom: 1px solid var(--border);
+  }
+  .flowbit-editor .authoring-palette-copy {
+    min-width: 0;
+  }
+  .flowbit-editor .authoring-palette-title {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: .07em;
+    text-transform: uppercase;
+  }
+  .flowbit-editor .authoring-palette-section {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .flowbit-editor .authoring-palette-section-label {
+    padding: 1px 5px;
+    color: var(--muted);
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: .07em;
+    text-transform: uppercase;
+  }
+  .flowbit-editor .authoring-palette-content button:not(.dock-pin) {
+    width: 100%;
+    min-height: 34px;
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    padding: 6px 8px;
+    text-align: left;
+  }
+  .flowbit-editor .authoring-palette-content .button-label { display: inline; }
+  .flowbit-editor .authoring-palette-content .button-icon { flex: 0 0 auto; margin-right: 7px; }
+  .flowbit-editor .authoring-palette-divider {
+    height: 1px;
+    margin: 0 3px;
+    background: var(--border);
+  }
+  .flowbit-editor .diagram-tools {
+    position: absolute;
+    top: 10px;
+    right: 12px;
+    z-index: 15;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 6px;
+    width: min(620px, calc(100% - 24px));
+    pointer-events: none;
+    transition: right .2s ease, width .2s ease;
+  }
+  .flowbit-editor.inspector-auto-hide .diagram-tools {
+    right: 50px;
+    width: min(620px, calc(100% - 62px));
+  }
+  .flowbit-editor .editor-workspace.inspector-revealed .diagram-tools {
+    right: calc(var(--sidebar-width) + 19px);
+    width: min(620px, calc(100% - var(--sidebar-width) - 31px));
+  }
+  .flowbit-editor .diagram-tools-content {
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 6px;
+    opacity: 0;
+    visibility: hidden;
+    transform: translateY(-8px) scale(.985);
+    transform-origin: top right;
+    pointer-events: none;
+    transition: opacity .16s ease, transform .16s ease, visibility 0s linear .16s;
+  }
+  .flowbit-editor .diagram-tools:hover .diagram-tools-content,
+  .flowbit-editor .diagram-tools:focus-within .diagram-tools-content,
+  .flowbit-editor .diagram-tools.is-pinned .diagram-tools-content {
+    opacity: 1;
+    visibility: visible;
+    transform: none;
+    pointer-events: auto;
+    transition-delay: 0s;
+  }
+  .flowbit-editor .diagram-tools-handle {
+    position: absolute;
+    top: 0;
+    right: 0;
+    z-index: 2;
+    width: 38px;
+    min-width: 38px;
+    height: 38px;
+    min-height: 38px;
+    padding: 9px;
+    color: var(--soft-blue-text);
+    background: var(--glass);
+    border-color: var(--control-border);
+    border-radius: 12px;
+    box-shadow: var(--shadow);
+    backdrop-filter: blur(8px);
+    pointer-events: auto;
+    transition: opacity .12s ease, visibility 0s;
+  }
+  .flowbit-editor .authoring-palette-handle svg,
+  .flowbit-editor .diagram-tools-handle svg,
+  .flowbit-editor .dock-pin svg {
+    width: 18px;
+    height: 18px;
+    display: block;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .flowbit-editor .diagram-tools.is-pinned .diagram-tools-handle {
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+  }
+  .flowbit-editor .diagram-search {
+    position: relative;
+    width: min(330px, 100%);
+  }
+  .flowbit-editor .diagram-tools:not(.is-pinned) .diagram-search {
+    width: min(330px, calc(100% - 44px));
+    margin-right: 44px;
+  }
+  .flowbit-editor .diagram-search-row {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 5px;
+    background: var(--glass);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: var(--shadow);
+    backdrop-filter: blur(8px);
+  }
+  .flowbit-editor .diagram-search input {
+    width: 100%;
+    min-width: 0;
+    height: 32px;
+    padding: 6px 9px;
+    color: var(--text);
+    background: var(--panel-2);
+    border: 1px solid var(--control-border);
+    border-radius: 7px;
+    font-size: 12px;
+  }
+  .flowbit-editor .diagram-search-clear {
+    min-width: 30px;
+    min-height: 30px;
+    padding: 4px 8px;
+    color: var(--muted);
+  }
+  .flowbit-editor .dock-pin {
+    min-width: 30px;
+    min-height: 30px;
+    padding: 5px;
+    color: var(--muted);
+  }
+  .flowbit-editor .dock-pin[aria-pressed="true"] {
+    color: var(--active-control-text);
+    background: var(--active-control-bg);
+    border-color: var(--active-control-border);
+  }
+  .flowbit-editor .diagram-search-results {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    width: 100%;
+    max-height: min(360px, calc(100cqh - 180px));
+    overflow-y: auto;
+    padding: 5px;
+    background: var(--glass-strong);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: var(--shadow);
+  }
+  .flowbit-editor .diagram-search-results[hidden] { display: none; }
+  .flowbit-editor .diagram-search-result {
+    width: 100%;
+    display: grid;
+    grid-template-columns: 48px minmax(0, 1fr);
+    gap: 8px;
+    min-height: 0;
+    padding: 7px 9px;
+    border: 0;
+    background: transparent;
+    text-align: left;
+  }
+  .flowbit-editor .diagram-search-result.active,
+  .flowbit-editor .diagram-search-result:hover {
+    background: var(--accent-soft);
+  }
+  .flowbit-editor .diagram-search-kind {
+    color: var(--accent-label);
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+  }
+  .flowbit-editor .diagram-search-copy { min-width: 0; }
+  .flowbit-editor .diagram-search-name,
+  .flowbit-editor .diagram-search-detail {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .flowbit-editor .diagram-search-name { color: var(--text); font-size: 12px; }
+  .flowbit-editor .diagram-search-detail { margin-top: 2px; color: var(--muted); font-size: 10px; font-weight: 400; }
+  .flowbit-editor .diagram-nav {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: 5px;
+    padding: 5px;
+    background: var(--glass);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: var(--shadow);
+    backdrop-filter: blur(8px);
+  }
+  .flowbit-editor .diagram-nav button,
+  .flowbit-editor .diagram-nav select {
+    min-height: 30px;
+    height: 30px;
+    padding: 4px 8px;
+    font-size: 11px;
+  }
+  .flowbit-editor .diagram-nav select {
+    color: var(--text);
+    background: var(--panel-2);
+    border: 1px solid var(--control-border);
+    border-radius: 7px;
+  }
+  .flowbit-editor .trace-modes {
+    display: inline-flex;
+    gap: 2px;
+    padding: 2px;
+    border: 1px solid var(--toolbar-group-border);
+    border-radius: 8px;
+    background: var(--toolbar-group-bg);
+  }
+  .flowbit-editor .trace-modes button {
+    border-color: transparent;
+    background: transparent;
+  }
+  .flowbit-editor .trace-modes button[aria-pressed="true"] {
+    color: var(--active-control-text);
+    background: var(--active-control-bg);
+    border-color: var(--active-control-border);
+  }
+  .flowbit-editor .sr-only {
+    position: absolute !important;
+    width: 1px !important;
+    height: 1px !important;
+    padding: 0 !important;
+    margin: -1px !important;
+    overflow: hidden !important;
+    clip: rect(0, 0, 0, 0) !important;
+    white-space: nowrap !important;
+    border: 0 !important;
+  }
+
+  /* Sidebar */
+  .flowbit-editor .inspector-dock {
+    position: relative;
+    width: calc(var(--sidebar-width) + 7px);
+    min-width: 287px;
+    max-width: calc(55cqw + 7px);
+    flex: 0 0 auto;
+    align-self: stretch;
+    display: flex;
+    z-index: 20;
+    transition: transform .2s ease;
+  }
+  .flowbit-editor .inspector-dock:not(.is-pinned) {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    min-width: 0;
+    max-width: none;
+    transform: translateX(calc(100% - 38px));
+    filter: drop-shadow(-12px 0 20px var(--sidebar-shadow));
+  }
+  .flowbit-editor .inspector-dock:not(.is-pinned):hover,
+  .flowbit-editor .inspector-dock:not(.is-pinned):focus-within,
+  .flowbit-editor .inspector-dock:not(.is-pinned).is-resizing {
+    transform: translateX(0);
+  }
+  .flowbit-editor aside {
+    width: var(--sidebar-width);
+    min-width: 280px;
+    max-width: 55cqw;
+    flex: 1 0 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    background: var(--panel);
+    border-left: 1px solid var(--sidebar-border);
+    scrollbar-color: var(--border-strong) transparent;
+    transition: background .16s ease, border-color .16s ease;
+  }
+  .flowbit-editor .inspector-header {
+    min-height: 46px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    flex: 0 0 auto;
+    padding: 8px 8px 8px 16px;
+    color: var(--text);
+    background: var(--glass-strong);
+    border-bottom: 1px solid var(--border);
+    box-shadow: var(--floating-shadow-small);
+    backdrop-filter: blur(8px);
+    transition: padding .16s ease, background .16s ease;
+  }
+  .flowbit-editor .inspector-header-label {
+    overflow: hidden;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: .08em;
+    text-overflow: ellipsis;
+    text-transform: uppercase;
+    white-space: nowrap;
+    transition: opacity .1s ease;
+  }
+  .flowbit-editor .inspector-content {
+    flex: 1;
+    min-height: 0;
+    padding: 16px;
+    overflow-y: auto;
+    transition: opacity .12s ease;
+  }
+  .flowbit-editor .inspector-peek-label {
+    position: absolute;
+    top: 50%;
+    left: 22px;
+    width: max-content;
+    color: var(--accent-label);
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    transform: translate(-50%, -50%) rotate(90deg);
+    transform-origin: center;
+    pointer-events: none;
+    opacity: 1;
+    transition: opacity .1s ease, visibility 0s;
+  }
+  .flowbit-editor .inspector-dock.is-pinned .inspector-peek-label,
+  .flowbit-editor .editor-workspace.inspector-revealed .inspector-peek-label {
+    opacity: 0;
+    visibility: hidden;
+  }
+  .flowbit-editor .editor-workspace:not(.inspector-revealed) .inspector-dock:not(.is-pinned) aside {
+    background:
+      linear-gradient(180deg, var(--sidebar-gradient-start), var(--sidebar-gradient-end));
+    border-left-color: var(--sidebar-accent-border);
+  }
+  .flowbit-editor .editor-workspace:not(.inspector-revealed) .inspector-dock:not(.is-pinned) .inspector-header {
+    gap: 0;
+    padding: 8px 0;
+    background: var(--glass-strong);
+    border-bottom-color: var(--toolbar-group-border);
+    box-shadow: none;
+  }
+  .flowbit-editor .editor-workspace:not(.inspector-revealed) .inspector-dock:not(.is-pinned) .inspector-header-label,
+  .flowbit-editor .editor-workspace:not(.inspector-revealed) .inspector-dock:not(.is-pinned) .inspector-content,
+  .flowbit-editor .editor-workspace:not(.inspector-revealed) .inspector-dock:not(.is-pinned) #inspectorPin {
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+  }
+  .flowbit-editor .editor-workspace:not(.inspector-revealed) .inspector-dock:not(.is-pinned) .inspector-content {
+    overflow: hidden;
+  }
+  .flowbit-editor .resizer {
+    width: 7px;
+    margin: 0;
+    background: transparent;
+    cursor: col-resize;
+    position: relative;
+    z-index: 10;
+    flex-shrink: 0;
+    user-select: none;
+  }
+  .flowbit-editor .resizer::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 1px;
+    width: 1px;
+    background: var(--control-border);
+    transition: background 0.15s, width 0.15s, left 0.15s;
+  }
+  .flowbit-editor .resizer:hover::before,
+  .flowbit-editor .resizer.dragging::before {
+    background: var(--accent);
+    width: 3px;
+    left: 0px;
+  }
+  .flowbit-editor .editor-workspace:not(.inspector-revealed) .inspector-dock:not(.is-pinned) .resizer::before {
+    left: 4px;
+    width: 2px;
+    background: var(--resizer-accent);
+  }
+  .flowbit-editor .inspector-content > h2:first-child {
+    position: sticky;
+    top: -16px;
+    z-index: 5;
+    margin: -16px -16px 14px;
+    padding: 16px;
+    color: var(--text);
+    background: var(--glass);
+    border-bottom: 1px solid var(--border);
+    box-shadow: var(--floating-shadow-small);
+    backdrop-filter: blur(8px);
+  }
+  .flowbit-editor .inspector-content h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 10px; }
+  .flowbit-editor .inspector-content h3 { font-size: 12px; color: var(--text); margin: 18px 0 9px; }
+  .flowbit-editor .field { margin-bottom: 13px; }
+  .flowbit-editor .field label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  .flowbit-editor .field input,
+  .flowbit-editor .field select,
+  .flowbit-editor .field textarea {
+    width: 100%;
+    background: var(--panel-2);
+    border: 1px solid var(--control-border);
+    color: var(--text);
+    padding: 8px 10px;
+    border-radius: 8px;
+    font-size: 13px;
+    transition: border-color .15s, box-shadow .15s, background .15s;
+  }
+  .flowbit-editor .field input:hover,
+  .flowbit-editor .field select:hover,
+  .flowbit-editor .field textarea:hover { border-color: var(--control-border-strong); }
+  .flowbit-editor .field input:focus,
+  .flowbit-editor .field select:focus,
+  .flowbit-editor .field textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus-ring); outline: none; }
+  .flowbit-editor .field textarea[aria-invalid="true"] { border-color: var(--validation-error); }
+  .flowbit-editor .field textarea[aria-invalid="true"]:focus { box-shadow: 0 0 0 3px color-mix(in srgb, var(--validation-error) 24%, transparent); }
+  .flowbit-editor .expression-validation { margin: 6px 0 0; color: var(--validation-error); font-size: 12px; line-height: 1.4; }
+  .flowbit-editor .expression-help { margin-top: -5px; overflow-wrap: anywhere; }
+  .flowbit-editor .expression-help code { color: var(--text); }
+  .flowbit-editor .inspector-card {
+    padding: 11px;
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+  }
+  .flowbit-editor .inspector-card.clickable { cursor: pointer; transition: border-color .15s, background .15s; }
+  .flowbit-editor .inspector-card.clickable:hover { background: var(--panel-2); border-color: var(--accent); }
+  .flowbit-editor .duration-builder { padding: 10px; background: color-mix(in srgb, var(--panel-2) 72%, transparent); border: 1px solid var(--border); border-radius: 9px; }
+  .flowbit-editor .duration-builder > label { font-weight: 650; color: var(--text); }
+  .flowbit-editor .duration-input-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
+  .flowbit-editor .duration-input-row .field { margin-bottom: 6px; }
+  .flowbit-editor .duration-preview { margin: 3px 0 0; color: var(--muted); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
+  .flowbit-editor .duration-preview strong { color: var(--text); font-weight: 650; }
+  .flowbit-editor .duration-preview.is-error { color: var(--warning-text); }
+  .flowbit-editor .duration-advanced { margin-top: 9px; border-top: 1px solid var(--border); padding-top: 8px; }
+  .flowbit-editor .duration-advanced summary { color: var(--muted); cursor: pointer; font-size: 12px; user-select: none; }
+  .flowbit-editor .duration-advanced .field { margin: 9px 0 5px; }
+  .flowbit-editor .retry-delay-list { display: grid; gap: 9px; margin: 8px 0 10px; }
+  .flowbit-editor .retry-delay-card { margin: 0; }
+  .flowbit-editor .retry-delay-card .duration-builder { margin-top: 8px; }
+  .flowbit-editor .retry-delay-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin-top: 8px; }
+  .flowbit-editor .retry-delay-actions button { padding: 7px 6px; font-size: 12px; }
+  .flowbit-editor .timer-cycle-controls { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
+  .flowbit-editor .timer-cycle-controls .field { margin-bottom: 8px; }
+  .flowbit-editor .timer-local-zone { margin-top: -5px; }
+  .flowbit-editor .empty-note { color: var(--muted); font-size: 13px; line-height: 1.5; }
+  .flowbit-editor .row { display: flex; gap: 8px; }
+  .flowbit-editor .row > * { flex: 1; }
+  .flowbit-editor .badge { font-size: 11px; color: var(--muted); }
+  .flowbit-editor .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+  .flowbit-editor .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    background: var(--chip-bg);
+    border: 1px solid var(--chip-border);
+    color: var(--chip-text);
+    border-radius: 999px;
+    padding: 3px 7px;
+    font-size: 12px;
+  }
+  .flowbit-editor .chip button {
+    width: auto;
+    padding: 0 4px;
+    border: 0;
+    background: transparent;
+    color: var(--chip-text);
+    font-size: 12px;
+    line-height: 1;
+  }
+  .flowbit-editor .chip button:hover { background: var(--chip-hover); }
+
+  /* SVG node styling */
+  .flowbit-editor .node rect,
+  .flowbit-editor .node circle.body {
+    cursor: grab;
+  }
+  .flowbit-editor .node rect {
+    rx: 12; ry: 12;
+    stroke-width: 2;
+  }
+  .flowbit-editor .node circle.body { stroke-width: 2; }
+  .flowbit-editor .node polygon.body { stroke-width: 2; cursor: grab; }
+  .flowbit-editor .node.startEvent circle.body { fill: var(--node-start-fill); stroke: var(--green); }
+  .flowbit-editor .node.timerStartEvent circle.body { fill: var(--node-start-fill); stroke: var(--node-message-stroke); }
+  .flowbit-editor .node.endEvent circle.body { fill: var(--node-end-fill); stroke: var(--red); stroke-width: 5; }
+  .flowbit-editor .node.userTask rect { fill: var(--node-user-fill); stroke: var(--node-user-stroke); }
+  .flowbit-editor .node.task rect { fill: var(--node-task-fill); stroke: var(--node-task-stroke); }
+  .flowbit-editor .node.serviceTask rect { fill: var(--node-service-fill); stroke: var(--node-service-stroke); }
+  .flowbit-editor .node.scriptTask rect { fill: var(--node-script-fill); stroke: var(--node-script-stroke); }
+  .flowbit-editor .node.exclusiveGateway polygon.body { fill: var(--node-gateway-fill); stroke: var(--amber); }
+  .flowbit-editor .node.parallelGateway polygon.body { fill: var(--node-gateway-fill); stroke: var(--amber); }
+  .flowbit-editor .node.inclusiveGateway polygon.body { fill: var(--node-gateway-fill); stroke: var(--amber); }
+  .flowbit-editor .node.complexGateway polygon.body { fill: var(--node-gateway-fill); stroke: var(--amber); }
+  .flowbit-editor .node.errorEndEvent circle.body { fill: var(--node-end-fill); stroke: var(--red); stroke-width: 5; }
+  .flowbit-editor .node.terminateEndEvent circle.body { fill: var(--node-end-fill); stroke: var(--red); stroke-width: 5; }
+  .flowbit-editor .node.scopedInterruptEvent circle.body { fill: var(--node-interrupt-fill); stroke: var(--node-interrupt-stroke); stroke-width: 3; }
+  .flowbit-editor .node.scopedInterruptEvent circle.ring { fill: none; stroke: var(--node-interrupt-stroke); stroke-width: 1.5; }
+  .flowbit-editor .node.errorBoundaryEvent circle.body { fill: var(--node-boundary-fill); stroke: var(--red); stroke-width: 3; }
+  .flowbit-editor .node.errorBoundaryEvent circle.ring { fill: none; stroke: var(--red); stroke-width: 1.5; }
+  .flowbit-editor .node.timerBoundaryEvent circle.body { fill: var(--node-boundary-fill); stroke: var(--node-message-stroke); stroke-width: 3; }
+  .flowbit-editor .node.timerBoundaryEvent circle.ring { fill: none; stroke: var(--node-message-stroke); stroke-width: 1.5; }
+  .flowbit-editor .node.conditionalBoundaryEvent circle.body { fill: var(--node-boundary-fill); stroke: var(--node-message-stroke); stroke-width: 3; }
+  .flowbit-editor .node.conditionalBoundaryEvent circle.ring { fill: none; stroke: var(--node-message-stroke); stroke-width: 1.5; }
+  .flowbit-editor .node.conditionalBoundaryEvent.non-interrupting circle.body,
+  .flowbit-editor .node.conditionalBoundaryEvent.non-interrupting circle.ring { stroke-dasharray: 3 2; }
+  .flowbit-editor .node.intermediateMessageCatchEvent circle.body { fill: var(--node-message-fill); stroke: var(--node-message-stroke); stroke-width: 2; }
+  .flowbit-editor .node.intermediateMessageCatchEvent circle.ring { fill: none; stroke: var(--node-message-stroke); stroke-width: 1.5; }
+  .flowbit-editor .node.intermediateTimerCatchEvent circle.body { fill: var(--node-message-fill); stroke: var(--node-message-stroke); stroke-width: 2; }
+  .flowbit-editor .node.intermediateTimerCatchEvent circle.ring { fill: none; stroke: var(--node-message-stroke); stroke-width: 1.5; }
+  .flowbit-editor .node.intermediateConditionalCatchEvent circle.body { fill: var(--node-message-fill); stroke: var(--node-message-stroke); stroke-width: 2; }
+  .flowbit-editor .node.intermediateConditionalCatchEvent circle.ring { fill: none; stroke: var(--node-message-stroke); stroke-width: 1.5; }
+  .flowbit-editor .node.messageStartEvent circle.body { fill: var(--node-start-fill); stroke: var(--node-message-stroke); stroke-width: 2; }
+  .flowbit-editor .node { transition: filter .15s, opacity .15s; }
+  .flowbit-editor .node:hover { filter: drop-shadow(0 6px 10px var(--node-hover-shadow)); }
+  .flowbit-editor .node.selected { filter: drop-shadow(0 0 8px var(--node-selection-shadow)); }
+  .flowbit-editor .node.selected rect,
+  .flowbit-editor .node.selected circle.body,
+  .flowbit-editor .node.selected polygon.body { stroke: var(--node-selection-stroke); stroke-width: 3; }
+  .flowbit-editor .node.selected.endEvent circle.body,
+  .flowbit-editor .node.selected.errorEndEvent circle.body,
+  .flowbit-editor .node.selected.terminateEndEvent circle.body { stroke: var(--node-selection-stroke); stroke-width: 5; }
+  .flowbit-editor .node.selected.scopedInterruptEvent circle.body { stroke: var(--node-selection-stroke); stroke-width: 3; }
+  .flowbit-editor .node.selected.errorBoundaryEvent circle.body { stroke: var(--node-selection-stroke); stroke-width: 3; }
+  .flowbit-editor .node.selected.timerBoundaryEvent circle.body { stroke: var(--node-selection-stroke); stroke-width: 3; }
+  .flowbit-editor .node.selected.conditionalBoundaryEvent circle.body { stroke: var(--node-selection-stroke); stroke-width: 3; }
+  .flowbit-editor .node text { fill: var(--node-text); font-size: 13px; pointer-events: none; user-select: none; }
+  .flowbit-editor .node .nid { fill: var(--node-id-text); font-size: 10.5px; }
+  .flowbit-editor .node .roles { fill: var(--node-role-text); font-size: 10px; }
+  .flowbit-editor .node .node-title { font-size: 13.5px; font-weight: 650; }
+  .flowbit-editor .node .event-name { font-size: 12px; }
+  .flowbit-editor .node .node-icon { color: var(--node-icon); pointer-events: none; }
+  .flowbit-editor .node .node-separator { stroke: var(--node-separator); stroke-width: 1; pointer-events: none; }
+  .flowbit-editor .node.startEvent .node-icon { color: var(--node-start-icon); }
+  .flowbit-editor .node.messageStartEvent .node-icon,
+  .flowbit-editor .node.intermediateMessageCatchEvent .node-icon,
+  .flowbit-editor .node.timerStartEvent .node-icon,
+  .flowbit-editor .node.intermediateTimerCatchEvent .node-icon,
+  .flowbit-editor .node.intermediateConditionalCatchEvent .node-icon,
+  .flowbit-editor .node.timerBoundaryEvent .node-icon,
+  .flowbit-editor .node.conditionalBoundaryEvent .node-icon { color: var(--node-message-icon); }
+  .flowbit-editor .node.endEvent .node-icon,
+  .flowbit-editor .node.errorEndEvent .node-icon,
+  .flowbit-editor .node.terminateEndEvent .node-icon,
+  .flowbit-editor .node.scopedInterruptEvent .node-icon,
+  .flowbit-editor .node.errorBoundaryEvent .node-icon { color: var(--node-error-icon); }
+  .flowbit-editor .node.exclusiveGateway .node-icon,
+  .flowbit-editor .node.parallelGateway .node-icon,
+  .flowbit-editor .node.inclusiveGateway .node-icon,
+  .flowbit-editor .node.complexGateway .node-icon { color: var(--node-gateway-icon); }
+  .flowbit-editor .node.task .node-icon { color: var(--node-task-icon); }
+  .flowbit-editor .node.serviceTask .node-icon { color: var(--node-service-icon); }
+  .flowbit-editor .node.scriptTask .node-icon { color: var(--node-script-icon); }
+  .flowbit-editor .node .status-icon { color: var(--node-status); pointer-events: none; }
+  .flowbit-editor .node .mi-marker line { stroke: var(--node-status); stroke-width: 1.6; }
+  .flowbit-editor .node .connect-handle { opacity: 0; pointer-events: none; transition: opacity .12s, transform .12s; }
+  .flowbit-editor .node:hover .connect-handle,
+  .flowbit-editor .node.primary-selected .connect-handle,
+  .flowbit-editor .node.connect-source .connect-handle { opacity: 1; pointer-events: all; }
+  .flowbit-editor #svg[data-active-tool="rectangle"] .node .connect-handle {
+    opacity: 0;
+    pointer-events: none;
+  }
+  .flowbit-editor .node .connect-handle .handle-hit { fill: transparent; stroke: none; cursor: crosshair; }
+  .flowbit-editor .node .connect-handle .handle-dot {
+    fill: var(--connect-handle-fill);
+    stroke: var(--connect-stroke);
+    stroke-width: 2;
+    vector-effect: non-scaling-stroke;
+    cursor: crosshair;
+  }
+  .flowbit-editor .node .connect-handle:hover .handle-dot { fill: var(--connect-hover-fill); stroke: var(--connect-hover-stroke); }
+  .flowbit-editor .node.connect-source rect,
+  .flowbit-editor .node.connect-source circle.body,
+  .flowbit-editor .node.connect-source polygon.body { stroke: var(--connect-stroke); stroke-width: 3; }
+  .flowbit-editor .node.connect-target-available rect,
+  .flowbit-editor .node.connect-target-available circle.body,
+  .flowbit-editor .node.connect-target-available polygon.body { stroke: var(--connect-valid-stroke); stroke-width: 3; }
+  .flowbit-editor .node.connect-target-hover { filter: drop-shadow(0 0 10px var(--connect-valid-shadow)); }
+  .flowbit-editor .node.connect-target-hover rect,
+  .flowbit-editor .node.connect-target-hover circle.body,
+  .flowbit-editor .node.connect-target-hover polygon.body { stroke: var(--connect-valid-hover-stroke); stroke-width: 4; }
+  .flowbit-editor .node.connect-target-invalid rect,
+  .flowbit-editor .node.connect-target-invalid circle.body,
+  .flowbit-editor .node.connect-target-invalid polygon.body { stroke: var(--connect-invalid-stroke); stroke-width: 3; }
+
+  .flowbit-editor .lane rect.body {
+    fill: var(--lane-fill);
+    stroke: var(--lane-stroke);
+    stroke-width: 2;
+    stroke-dasharray: 8 5;
+    cursor: grab;
+  }
+  .flowbit-editor .lane.selected rect.body { stroke: var(--lane-selection-stroke); stroke-width: 3; }
+  .flowbit-editor .lane text { fill: var(--lane-text); font-size: 13px; pointer-events: none; user-select: none; }
+  .flowbit-editor .lane .pid { fill: var(--muted); font-size: 11px; }
+  .flowbit-editor .lane .resize {
+    fill: var(--accent);
+    stroke: var(--lane-resize-stroke);
+    stroke-width: 1;
+    cursor: nwse-resize;
+  }
+  .flowbit-editor .edge { transition: opacity .15s; }
+  .flowbit-editor .edge .edge-line { fill: none; stroke: var(--edge-stroke); stroke-width: 2.2; pointer-events: none; transition: stroke .15s, stroke-width .15s, opacity .15s; }
+  .flowbit-editor .edge .edge-hit { fill: none; stroke: transparent; stroke-width: 16; cursor: pointer; pointer-events: stroke; vector-effect: non-scaling-stroke; }
+  .flowbit-editor .edge.auto .edge-line { stroke-dasharray: 7 5; }
+  .flowbit-editor .edge:hover .edge-line,
+  .flowbit-editor .edge.hovered .edge-line { stroke: var(--edge-hover); stroke-width: 3; }
+  .flowbit-editor .edge.selected .edge-line { stroke: var(--edge-selected); stroke-width: 3.2; }
+  .flowbit-editor .edge.error .edge-line { stroke: var(--edge-error); stroke-dasharray: 6 5; }
+  .flowbit-editor .node.trace-muted,
+  .flowbit-editor .edge.trace-muted {
+    opacity: var(--trace-muted-opacity, 1);
+  }
+  .flowbit-editor .node.trace-muted:hover,
+  .flowbit-editor .edge.trace-muted:hover,
+  .flowbit-editor .edge.trace-muted.hovered {
+    opacity: 1;
+  }
+  .flowbit-editor .node.trace-context { filter: drop-shadow(0 0 8px var(--trace-context-shadow)); }
+  .flowbit-editor .edge.trace-active:not(.selected) .edge-line { stroke: var(--edge-hover); stroke-width: 2.8; }
+  .flowbit-editor .edge-label { cursor: pointer; pointer-events: visiblePainted; }
+  .flowbit-editor .edge-label-guide { fill: none; stroke: none; pointer-events: none; }
+  .flowbit-editor .edge-label-text {
+    fill: var(--edge-label);
+    stroke: var(--edge-label-outline);
+    stroke-width: 3.2px;
+    paint-order: stroke fill;
+    stroke-linejoin: round;
+    font-size: 11px;
+    font-weight: 400;
+    letter-spacing: .01em;
+    pointer-events: visiblePainted;
+    transition: opacity .15s, fill .15s;
+  }
+  .flowbit-editor .edge.hovered .edge-label-text { fill: var(--edge-label-hover); }
+  .flowbit-editor .edge.selected .edge-label-text { fill: var(--edge-label-selected); }
+  .flowbit-editor .flow-marker-condition { fill: var(--flow-condition); }
+  .flowbit-editor .flow-marker-default { fill: var(--flow-default); }
+  .flowbit-editor .flow-marker-interrupt { fill: var(--flow-interrupt); }
+  .flowbit-editor #svg[data-label-mode="off"] .edge:not(.selected):not(.hovered) .flow-label-name { display: none; }
+  .flowbit-editor #svg[data-label-mode="smart"][data-zoom-level="medium"]
+    .edge:not(.trace-active):not(.selected):not(.hovered) .flow-label-name { display: none; }
+  .flowbit-editor #svg[data-label-mode="smart"][data-zoom-level="overview"]
+    .edge:not(.selected):not(.hovered) .flow-label-name { display: none; }
+  .flowbit-editor #svg[data-label-mode="off"]
+    .node:not(.selected):not(:hover) .shape-caption {
+      display: none;
+    }
+  .flowbit-editor #svg[data-label-mode="smart"][data-zoom-level="medium"]
+    .node:not(.selected):not(:hover) .shape-caption {
+      display: none;
+    }
+  .flowbit-editor #svg[data-label-mode="smart"][data-zoom-level="overview"]
+    .node:not(.selected):not(:hover) .shape-caption {
+      display: none;
+    }
+  .flowbit-editor #svg[data-zoom-level="medium"] .node .nid:not(.shape-caption),
+  .flowbit-editor #svg[data-zoom-level="medium"] .node .roles,
+  .flowbit-editor #svg[data-zoom-level="medium"] .node .node-separator,
+  .flowbit-editor #svg[data-zoom-level="overview"] .node .nid:not(.shape-caption),
+  .flowbit-editor #svg[data-zoom-level="overview"] .node .roles,
+  .flowbit-editor #svg[data-zoom-level="overview"] .node .node-separator,
+  .flowbit-editor #svg[data-zoom-level="overview"] .node .status-icon,
+  .flowbit-editor #svg[data-zoom-level="overview"] .node .mi-marker { display: none; }
+  .flowbit-editor #connectionPreview { pointer-events: none; }
+  .flowbit-editor #connectionPreview .preview-line {
+    fill: none;
+    stroke: var(--connect-stroke);
+    stroke-width: 2.5;
+    stroke-dasharray: 7 5;
+    vector-effect: non-scaling-stroke;
+  }
+  .flowbit-editor #connectionPreview.invalid .preview-line { stroke: var(--connect-invalid-stroke); }
+  .flowbit-editor #connectionPreview .preview-end { fill: var(--connect-stroke); stroke: var(--connect-hover-stroke); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+  .flowbit-editor #connectionPreview.invalid .preview-end { fill: var(--connect-invalid-stroke); }
+
+  /* JS Editor Modal Overlay */
+  .flowbit-editor .modal-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: var(--modal-overlay);
+    backdrop-filter: blur(4px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 2000;
+  }
+  
+  /* Modal Container */
+  .flowbit-editor .modal-container {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    width: 85cqw;
+    height: 85cqh;
+    max-width: 960px;
+    max-height: 750px;
+    display: flex;
+    flex-direction: column;
+    box-shadow: var(--modal-shadow);
+    animation: flowbitModalFadeIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  
+  @keyframes flowbitModalFadeIn {
+    from { opacity: 0; transform: scale(0.96); }
+    to { opacity: 1; transform: scale(1); }
+  }
+  
+  /* Modal Header */
+  .flowbit-editor .modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+  }
+  
+  .flowbit-editor .modal-header h3 {
+    margin: 0;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text);
+    text-transform: uppercase;
+    letter-spacing: .05em;
+  }
+  
+  .flowbit-editor .modal-header .close-btn {
+    background: transparent;
+    border: none;
+    color: var(--muted);
+    font-size: 20px;
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: 4px;
+    line-height: 1;
+  }
+  
+  .flowbit-editor .modal-header .close-btn:hover {
+    color: var(--text);
+    background: var(--panel-2);
+  }
+  
+  /* Modal Body */
+  .flowbit-editor .modal-body {
+    flex: 1;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+  
+  /* Modal Textarea */
+  .flowbit-editor .modal-textarea {
+    flex: 1;
+    width: 100%;
+    background: var(--panel-2);
+    border: 1px solid var(--control-border);
+    border-radius: 8px;
+    color: var(--text);
+    font-family: monospace;
+    font-size: 14px;
+    padding: 16px;
+    resize: none;
+    outline: none;
+    line-height: 1.5;
+  }
+  
+  .flowbit-editor .modal-textarea:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px var(--focus-ring);
+  }
+  
+  /* Modal Footer */
+  .flowbit-editor .modal-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 12px;
+    padding: 16px 20px;
+    border-top: 1px solid var(--border);
+    background: var(--modal-footer);
+    border-bottom-left-radius: 12px;
+    border-bottom-right-radius: 12px;
+  }
+
+  .flowbit-editor .modal-body .chip {
+    cursor: pointer;
+    transition: background-color 0.15s, border-color 0.15s;
+  }
+  .flowbit-editor .modal-body .chip:hover {
+    background: var(--modal-chip-hover);
+    border-color: var(--modal-chip-border);
+  }
+  .flowbit-editor .validation-list {
+    margin: 0;
+    padding-left: 22px;
+    overflow-y: auto;
+    line-height: 1.5;
+  }
+  .flowbit-editor .validation-list li { margin-bottom: 8px; color: var(--validation-error); }
+  .flowbit-editor .js-editor-layout { display: flex; flex-direction: row; gap: 20px; }
+  .flowbit-editor .js-code-column { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .flowbit-editor .js-variables-panel { width: 280px; display: flex; flex-direction: column; background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 16px; min-height: 0; }
+  .flowbit-editor .js-variables-scroll { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; min-height: 0; padding-right: 4px; }
+  .flowbit-editor .validation-modal-container { max-width: 720px; max-height: 75cqh; }
+
+  @container flowbit-editor (max-width: 1050px) {
+    .flowbit-editor header { gap: 8px; }
+    .flowbit-editor .toolbar-identity { flex-basis: 100%; }
+    .flowbit-editor .toolbar-group { flex: 1 1 auto; }
+    .flowbit-editor .toolbar-menu-group { flex: 0 0 auto; }
+    .flowbit-editor .editor-workspace { --sidebar-width: 310px; }
+    .flowbit-editor .diagram-tools { width: min(520px, calc(100% - 24px)); }
+    .flowbit-editor .duration-input-row,
+  .flowbit-editor .timer-cycle-controls { grid-template-columns: 1fr; }
+  }
+  @container flowbit-editor (max-width: 820px) {
+    .flowbit-editor .js-editor-layout { flex-direction: column; overflow-y: auto; }
+    .flowbit-editor .js-code-column { min-height: 320px; }
+    .flowbit-editor .js-variables-panel { width: 100%; max-height: 280px; }
+    .flowbit-editor .modal-container { width: 94cqw; height: 92cqh; }
+    .flowbit-editor .button-label { display: none; }
+    .flowbit-editor .button-icon { margin-right: 0; }
+    .flowbit-editor .theme-toggle { min-width: 34px; }
+    .flowbit-editor .diagram-tools { top: 8px; right: 8px; width: calc(100% - 16px); }
+    .flowbit-editor .diagram-search { width: min(290px, 100%); }
+    .flowbit-editor .diagram-nav { max-width: 100%; }
+    .flowbit-editor .diagram-nav .compact-hide { display: none; }
+    .flowbit-editor .authoring-palette {
+      top: 8px;
+      bottom: 8px;
+      left: 8px;
+      width: min(90px, calc(100% - 8px));
+    }
+    .flowbit-editor .authoring-palette-content {
+      width: min(52px, calc(100% - 38px));
+      gap: 4px;
+      padding: 3px;
+    }
+    .flowbit-editor .authoring-palette:not(.is-pinned) .authoring-palette-content { margin-left: 38px; }
+    .flowbit-editor .authoring-palette-header { justify-content: center; padding: 1px 0 4px; }
+    .flowbit-editor .authoring-palette-copy,
+  .flowbit-editor .authoring-palette-section-label,
+  .flowbit-editor .authoring-palette-content .button-label { display: none; }
+    .flowbit-editor .authoring-palette-content button:not(.dock-pin) {
+      width: 44px;
+      min-width: 44px;
+      min-height: 44px;
+      justify-content: center;
+      padding: 7px;
+    }
+    .flowbit-editor .authoring-palette-content .button-icon { width: 18px; height: 18px; margin: 0; }
+    .flowbit-editor .toolbar-opacity input { width: 68px; }
+    .flowbit-editor .toolbar-menu-group { max-width: 100%; flex-wrap: wrap; }
+    .flowbit-editor .toolbar-menu > summary { padding-inline: 9px; }
+  }
+  @container flowbit-editor (max-width: 480px) {
+    .flowbit-editor .hint {
+      width: 1px;
+      height: 1px;
+      max-width: 1px;
+      padding: 0;
+      border: 0;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+      clip-path: inset(50%);
+      white-space: nowrap;
+      box-shadow: none;
+    }
+  }
+  @container flowbit-editor (max-width: 300px) {
+    .flowbit-editor .toolbar-menu-group { flex-wrap: nowrap; }
+    .flowbit-editor .toolbar-menu-caret { display: none; }
+    .flowbit-editor .toolbar-menu .toolbar-menu-popover {
+      position: absolute;
+      top: 100px;
+      right: 16px;
+      left: 16px;
+      width: auto;
+      min-width: 0;
+      max-width: none;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .flowbit-editor *,
+  .flowbit-editor *::before,
+  .flowbit-editor *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; }
+  }
+
+/* The mounting root contains all editor styling and layout. */
+.flowbit-editor {
+  position: relative;
+  isolation: isolate;
+  container: flowbit-editor / size;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  line-height: normal;
+  font-size: 16px;
+  text-align: left;
+}
+.flowbit-editor [hidden] { display: none !important; }
+.flowbit-editor:not([data-mode="hosted"]) .hosted-only { display: none; }
+.flowbit-editor[data-mode="hosted"] .app-brand,
+.flowbit-editor[data-mode="hosted"] #themeToggleBtn { display: none; }
+.flowbit-editor[data-mode="hosted"] .app-toolbar { gap: 12px; padding: 10px 16px; box-shadow: none; }
+.flowbit-editor[data-mode="hosted"] .toolbar-identity { flex: 1 1 360px; min-width: 0; gap: 12px; }
+.flowbit-editor[data-mode="hosted"] .wf-name { flex: 1 1 160px; min-width: 120px; max-width: 480px; font-weight: 600; }
+.flowbit-editor .editor-back { display: inline-flex; align-items: center; gap: 8px; text-decoration: none; font-size: 13px; color: var(--muted); padding: 8px 0; white-space: nowrap; }
+.flowbit-editor .editor-back:hover { color: var(--primary-bg); }
+.flowbit-editor .editor-host-actions { display: flex; align-items: center; gap: 16px; margin-left: auto; }
+.flowbit-editor .editor-save-context { display: flex; flex-direction: column; gap: 3px; text-align: right; font-size: 11px; color: var(--muted); white-space: nowrap; }
+.flowbit-editor #editor-version { color: var(--text); font-weight: 600; }
+.flowbit-editor .editor-save { display: flex; align-items: center; gap: 7px; min-height: 36px; white-space: nowrap; }
+.flowbit-editor .editor-save .button-icon { display: block; margin: 0; }
+.flowbit-editor .editor-feedback { flex: 0 0 auto; padding: 8px 16px; border-bottom: 1px solid var(--border); font-size: 12px; background: var(--panel); }
+.flowbit-editor #editor-error { color: var(--validation-error); }
+.flowbit-editor #editor-notice { color: var(--muted); }
+.flowbit-editor[data-loading="true"] .editor-workspace { pointer-events: none; opacity: .5; }
+@container flowbit-editor (max-width: 900px) {
+  .flowbit-editor[data-mode="hosted"] .toolbar-identity { flex-basis: calc(100% - 100px); }
+  .flowbit-editor[data-mode="hosted"] .editor-host-actions { width: 100%; justify-content: flex-end; }
+  .flowbit-editor .editor-save-context { flex-direction: row; gap: 10px; }
+}
+@container flowbit-editor (max-width: 480px) {
+  .flowbit-editor[data-mode="hosted"] .app-toolbar { padding: 8px; gap: 8px; }
+  .flowbit-editor .back-label { display: none; }
+  .flowbit-editor[data-mode="hosted"] .toolbar-identity { flex-basis: calc(100% - 30px); gap: 6px; }
+  .flowbit-editor[data-mode="hosted"] .wf-name { max-width: none; flex-basis: 100%; order: -1; }
+  .flowbit-editor[data-mode="hosted"] .editor-host-actions { gap: 8px; justify-content: space-between; }
+  .flowbit-editor .editor-save-context { flex-direction: column; text-align: left; gap: 2px; }
+}

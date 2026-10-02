@@ -27,7 +27,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <None Include="..\..\..\flowbit-editor.html" Link="Fixtures\flowbit-editor.html" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\src\Flowbit.Ui\wwwroot\editor\*" Link="Fixtures\editor\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <None Include="Fixtures\inbox-visibility-conformance.json" CopyToOutputDirectory="PreserveNewest" />
     <None Update="Fixtures\workflow-message-start.json" CopyToOutputDirectory="PreserveNewest" />
     <None Update="Fixtures\parallel-gateway-simple.json" CopyToOutputDirectory="PreserveNewest" />

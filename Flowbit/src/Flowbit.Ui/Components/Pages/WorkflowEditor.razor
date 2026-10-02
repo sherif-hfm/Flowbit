@@ -1,0 +1,248 @@
+@page "/workflows/new"
+@page "/workflows/{Id:long}/edit"
+@using System.Net
+@using System.Text
+@using System.Text.Json
+@implements IAsyncDisposable
+@inject WorkflowApiClient Api
+@inject IJSRuntime JS
+@inject NavigationManager Navigation
+
+<PageTitle>Workflow editor · Flowbit</PageTitle>
+
+<NavigationLock OnBeforeInternalNavigation="BeforeNavigationAsync" />
+
+<div class="workflow-editor-page" data-editor-ready="@(loaded ? "true" : "false")">
+    @if (host is null && !string.IsNullOrWhiteSpace(error))
+    {
+        <div class="editor-startup-error alert alert-danger" role="alert">@error</div>
+    }
+    <div @ref="editorRoot" id="workflow-editor-root" class="flowbit-editor" aria-label="Workflow editor"></div>
+</div>
+
+@code {
+    [Parameter] public long? Id { get; set; }
+
+    private const long MaxDocumentBytes = 2 * 1024 * 1024;
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { WriteIndented = true };
+    private ElementReference editorRoot;
+    private IJSObjectReference? module;
+    private IJSObjectReference? host;
+    private DotNetObjectReference<WorkflowEditor>? callback;
+    private WorkflowDetailDto? source;
+    private CancellationTokenSource lifetime = new();
+    private long loadRevision;
+    private long editorLoadRevision = -1;
+    private long documentGeneration;
+    private long? retainedRouteId;
+    private bool retainingDocument;
+    private bool allowNavigation;
+    private bool loaded;
+    private bool definitionLoaded;
+    private bool dirty;
+    private bool saving;
+    private bool disposed;
+    private string? error;
+    private string? notice;
+    private EditorHostState? lastHostState;
+    private sealed record EditorHostState(bool Loaded, bool Saving, string Version, string Source, string? Error, string? Notice);
+
+    private async Task UpdateHostStateAsync()
+    {
+        if (host is null || disposed) return;
+        var value = new EditorHostState(loaded, saving, source is null ? "New workflow" : $"Version {source.Version}",
+            source is null ? "" : $"{source.Name} · {source.WorkflowKey}", error, notice);
+        if (value == lastHostState) return;
+        await host.InvokeVoidAsync("setHostState", lifetime.Token, value);
+        lastHostState = value;
+    }
+
+    private static string DisplayError(Exception exception) => exception.Message.Split('\n', 2)[0].Trim();
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (retainingDocument && retainedRouteId == Id)
+        {
+            retainingDocument = false;
+            return;
+        }
+        loaded = false;
+        definitionLoaded = false;
+        source = null;
+        error = null;
+        notice = null;
+        var revision = ++loadRevision;
+        var requestedId = Id;
+        try
+        {
+            var definition = requestedId.HasValue ? await Api.GetWorkflowAsync(requestedId.Value, lifetime.Token) : null;
+            if (disposed || revision != loadRevision) return;
+            source = definition;
+            if (requestedId.HasValue && definition is null) throw new InvalidOperationException("Workflow version was not found.");
+            definitionLoaded = true;
+            if (host is not null) await LoadEditorAsync(revision);
+        }
+        catch (OperationCanceledException) when (disposed) { }
+        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+        {
+            if (revision == loadRevision) error = "Workflow version was not found. Return to Workflows and select an existing version.";
+        }
+        catch (Exception ex)
+        {
+            if (!disposed && revision == loadRevision) error = DisplayError(ex);
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        try
+        {
+            if (firstRender)
+            {
+                module = await JS.InvokeAsync<IJSObjectReference>("import", lifetime.Token, "./workflow-editor-host.js");
+                callback = DotNetObjectReference.Create(this);
+                host = await module.InvokeAsync<IJSObjectReference>("create", lifetime.Token, editorRoot, callback, new
+                {
+                    stylesheet = Assets["editor/flowbit-editor.css"],
+                    template = Assets["editor/editor-template.js"],
+                    script = Assets["editor/flowbit-editor.js"]
+                });
+                if (error is null && definitionLoaded) await LoadEditorAsync(loadRevision);
+            }
+            await UpdateHostStateAsync();
+        }
+        catch (OperationCanceledException) when (disposed) { }
+        catch (JSDisconnectedException) when (disposed) { }
+        catch (Exception ex) when (!disposed) { error = DisplayError(ex); }
+        if (firstRender && !disposed) await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task LoadEditorAsync(long revision)
+    {
+        if (host is null || disposed || !definitionLoaded || revision != loadRevision || revision == editorLoadRevision) return;
+        editorLoadRevision = revision;
+        // New documents use the editor's defaults; hosted mode supplies a fresh key.
+        var json = source is null
+            ? "null"
+            : JsonSerializer.Serialize(source.Definition, JsonOptions);
+        await using var stream = new MemoryStream(Encoding.UTF8.GetBytes(json));
+        using var reference = new DotNetStreamReference(stream);
+        await host.InvokeVoidAsync("load", lifetime.Token, reference, source?.WorkflowKey, source is null);
+        if (disposed || revision != loadRevision) return;
+        loaded = true;
+        dirty = source is null;
+        documentGeneration++;
+    }
+
+    [JSInvokable]
+    public async Task SaveEditor()
+    {
+        if (!loaded || saving || host is null) return;
+        saving = true;
+        error = null;
+        notice = null;
+        var generation = documentGeneration;
+        var sourceId = source?.Id;
+        try
+        {
+            await UpdateHostStateAsync();
+            await using var jsonReference = await host.InvokeAsync<IJSStreamReference>("exportStream", lifetime.Token);
+            await using var jsonStream = await jsonReference.OpenReadStreamAsync(MaxDocumentBytes, lifetime.Token);
+            var definition = await JsonSerializer.DeserializeAsync<WorkflowModel>(jsonStream, JsonOptions, lifetime.Token)
+                ?? throw new InvalidOperationException("Workflow JSON could not be parsed.");
+            if (generation != documentGeneration)
+                throw new InvalidOperationException("The document was replaced before submission. Save the replacement document again.");
+            var saved = sourceId.HasValue
+                ? await Api.CreateNewVersionAsync(sourceId.Value, new UpdateWorkflowRequest(definition, Publish: false), lifetime.Token)
+                : await Api.CreateWorkflowAsync(new CreateWorkflowRequest(definition, Publish: false), lifetime.Token);
+            if (saved is null) throw new InvalidOperationException("The API returned no saved workflow version. Check Workflows before saving again.");
+            if (disposed) return;
+            if (generation != documentGeneration)
+            {
+                notice = $"Saved {saved.WorkflowKey} version {saved.Version}. The replacement document remains unsaved.";
+                return;
+            }
+            await host.InvokeVoidAsync("saved", lifetime.Token, saved.WorkflowKey);
+            source = saved;
+            notice = $"Saved unpublished version {saved.Version}. Publish it from Workflows when ready.";
+            RetainDocumentAt($"workflows/{saved.Id}/edit", saved.Id);
+        }
+        catch (OperationCanceledException) when (disposed) { }
+        catch (JSDisconnectedException) when (disposed) { }
+        catch (Exception ex) when (!disposed)
+        {
+            error = DisplayError(ex);
+            if (ex is HttpRequestException)
+                error += " If the connection failed after submission, check Workflows before retrying; a version may have been created.";
+        }
+        finally
+        {
+            saving = false;
+            if (!disposed) await UpdateHostStateAsync();
+        }
+    }
+
+    [JSInvokable]
+    public Task EditorChanged(bool hasChanges)
+    {
+        if (disposed) return Task.CompletedTask;
+        dirty = hasChanges;
+        return InvokeAsync(StateHasChanged);
+    }
+
+    [JSInvokable]
+    public Task EditorReplaced()
+    {
+        if (disposed) return Task.CompletedTask;
+        source = null;
+        dirty = true;
+        loaded = true;
+        definitionLoaded = true;
+        loadRevision++;
+        documentGeneration++;
+        notice = null;
+        RetainDocumentAt("workflows/new", null);
+        return InvokeAsync(StateHasChanged);
+    }
+
+    private void RetainDocumentAt(string route, long? routeId)
+    {
+        if (Navigation.Uri == Navigation.ToAbsoluteUri(route).AbsoluteUri) return;
+        retainedRouteId = routeId;
+        retainingDocument = true;
+        allowNavigation = true;
+        Navigation.NavigateTo(route, replace: true);
+    }
+
+    private async Task BeforeNavigationAsync(LocationChangingContext context)
+    {
+        if (allowNavigation) { allowNavigation = false; return; }
+        if (host is null || !loaded) return;
+        try
+        {
+            if (!await host.InvokeAsync<bool>("confirmLeave")) context.PreventNavigation();
+        }
+        catch (JSException) { context.PreventNavigation(); }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (disposed) return;
+        disposed = true;
+        loadRevision++;
+        await lifetime.CancelAsync();
+        if (host is not null)
+        {
+            try { await host.InvokeVoidAsync("dispose"); await host.DisposeAsync(); }
+            catch (JSDisconnectedException) { }
+            catch (TaskCanceledException) { }
+        }
+        if (module is not null)
+        {
+            try { await module.DisposeAsync(); }
+            catch (JSDisconnectedException) { }
+        }
+        callback?.Dispose();
+        lifetime.Dispose();
+    }
+}

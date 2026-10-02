@@ -7,8 +7,8 @@ namespace Flowbit.BrowserTests.Infrastructure;
 
 /// <summary>
 /// Serves the real copied editor through in-process Kestrel on an ephemeral
-/// loopback port. Only the editor document (plus a harmless favicon response)
-/// is exposed: no directory browsing, no repository root.
+/// loopback port. Only the canonical editor document and its adjacent assets
+/// are exposed: no directory browsing, no repository root.
 /// </summary>
 public sealed class EditorStaticHost : IAsyncDisposable
 {
@@ -21,7 +21,7 @@ public sealed class EditorStaticHost : IAsyncDisposable
         if (!File.Exists(editorHtmlPath))
         {
             throw new InvalidOperationException(
-                $"The editor fixture is missing: {editorHtmlPath}. The project copies it from the repository root at build time.");
+                $"The editor fixture is missing: {editorHtmlPath}. The project copies the canonical editor assets at build time.");
         }
 
         var html = await File.ReadAllTextAsync(editorHtmlPath, cancellationToken);
@@ -40,6 +40,12 @@ public sealed class EditorStaticHost : IAsyncDisposable
 
         app.MapGet("/", () => Results.Text(html, "text/html; charset=utf-8"));
         app.MapGet("/flowbit-editor.html", () => Results.Text(html, "text/html; charset=utf-8"));
+        foreach (var asset in new[] { "flowbit-editor.css", "flowbit-editor.js", "theme-init.js", "editor-template.js", "standalone.js" })
+        {
+            var assetPath = Path.Combine(Path.GetDirectoryName(editorHtmlPath)!, asset);
+            var mime = asset.EndsWith(".css", StringComparison.Ordinal) ? "text/css" : "text/javascript";
+            app.MapGet("/" + asset, () => Results.File(assetPath, mime));
+        }
         app.MapGet("/favicon.ico", () => Results.StatusCode(StatusCodes.Status204NoContent));
         app.MapGet("/robots.txt", () => Results.Text("User-agent: *\nDisallow: /\n", "text/plain"));
         app.MapGet("/{*path}", () => Results.StatusCode(StatusCodes.Status404NotFound));

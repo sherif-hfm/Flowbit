@@ -404,7 +404,7 @@ public sealed class EditorNavigationTests
         var html = ReadEditorSource();
 
         Assert.Contains(
-            "const canonical = JSON.parse(JSON.stringify(model));",
+            "const canonical = JSON.parse(JSON.stringify(exportModel));",
             html,
             StringComparison.Ordinal);
         Assert.DoesNotContain("model.traceMode", html, StringComparison.Ordinal);
@@ -620,10 +620,10 @@ public sealed class EditorNavigationTests
             html,
             StringComparison.Ordinal);
         Assert.Matches(
-            @"\.view-menu-popover\s*\{[^}]*width:\s*min\(270px,\s*calc\(100vw\s*-\s*32px\)\);[^}]*min-width:\s*0;",
+            @"\.view-menu-popover\s*\{[^}]*width:\s*min\(270px,\s*calc\(100cqw\s*-\s*32px\)\);[^}]*min-width:\s*0;",
             html);
         Assert.Matches(
-            @"@media\s*\(max-width:\s*300px\)\s*\{[\s\S]*?\.toolbar-menu\s+\.toolbar-menu-popover\s*\{[^}]*position:\s*fixed;[^}]*right:\s*16px;[^}]*left:\s*16px;",
+            @"@container\s+flowbit-editor\s*\(max-width:\s*300px\)\s*\{[\s\S]*?\.toolbar-menu\s+\.toolbar-menu-popover\s*\{[^}]*position:\s*absolute;[^}]*right:\s*16px;[^}]*left:\s*16px;",
             html);
         Assert.Matches(
             @"<div(?=[^>]*\bid=""hint"")(?=[^>]*\brole=""status"")(?=[^>]*\baria-live=""polite"")[^>]*>",
@@ -661,7 +661,7 @@ public sealed class EditorNavigationTests
             "aria-label=\"Switch to light theme\"",
             html,
             StringComparison.Ordinal);
-        Assert.Contains(":root[data-theme=\"light\"]", html, StringComparison.Ordinal);
+        Assert.Contains(".flowbit-editor[data-theme=\"light\"]", html, StringComparison.Ordinal);
         Assert.Contains("color-scheme: dark;", html, StringComparison.Ordinal);
         Assert.Contains("color-scheme: light;", html, StringComparison.Ordinal);
         Assert.Contains(
@@ -681,7 +681,7 @@ public sealed class EditorNavigationTests
             html,
             StringComparison.Ordinal);
         Assert.Contains(
-            "themeMediaQuery.addEventListener(\"change\", followSystemTheme);",
+            "listen(themeMediaQuery, \"change\", followSystemTheme);",
             html,
             StringComparison.Ordinal);
         Assert.Contains("fill=\"var(--grid-dot)\"", html, StringComparison.Ordinal);
@@ -790,6 +790,8 @@ public sealed class EditorNavigationTests
               persistedValue = value;
             }
             const THEME_STORAGE_KEY = "flowbit.theme";
+            const options = { mode: "standalone" };
+            const root = document.documentElement;
             """);
         engine.Execute(match.Groups["code"].Value);
 
@@ -869,12 +871,12 @@ public sealed class EditorNavigationTests
             html,
             StringComparison.Ordinal);
         Assert.Contains(".inspector-dock:not(.is-pinned):hover", html, StringComparison.Ordinal);
-        Assert.Contains("main.inspector-revealed .diagram-tools", html, StringComparison.Ordinal);
+        Assert.Contains(".editor-workspace.inspector-revealed .diagram-tools", html, StringComparison.Ordinal);
         Assert.Contains("transform: translateX(calc(100% - 38px));", html, StringComparison.Ordinal);
         Assert.Contains("class=\"inspector-peek-label\"", html, StringComparison.Ordinal);
         Assert.Contains("transform: translate(-50%, -50%) rotate(90deg);", html, StringComparison.Ordinal);
         Assert.Contains(
-            "main:not(.inspector-revealed) .inspector-dock:not(.is-pinned) #inspectorPin",
+            ".editor-workspace:not(.inspector-revealed) .inspector-dock:not(.is-pinned) #inspectorPin",
             html,
             StringComparison.Ordinal);
         Assert.Contains("\"flowbit.diagramToolsPinned\"", html, StringComparison.Ordinal);
@@ -1049,9 +1051,5 @@ public sealed class EditorNavigationTests
         return engine;
     }
 
-    private static string ReadEditorSource()
-    {
-        var editorPath = Path.Combine(AppContext.BaseDirectory, "Fixtures", "flowbit-editor.html");
-        return File.ReadAllText(editorPath);
-    }
+    private static string ReadEditorSource() => EditorSource.Read();
 }

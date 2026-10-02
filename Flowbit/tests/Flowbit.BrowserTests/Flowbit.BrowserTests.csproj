@@ -44,7 +44,7 @@
       fixture is maintained. Fixtures are minimal definitions with their
       prerequisites documented in Fixtures/README.md.
     -->
-    <None Include="..\..\..\flowbit-editor.html" Link="Fixtures\flowbit-editor.html" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\src\Flowbit.Ui\wwwroot\editor\*" Link="Fixtures\editor\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <None Include="Fixtures\**\*.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="Fixtures\README.md" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>

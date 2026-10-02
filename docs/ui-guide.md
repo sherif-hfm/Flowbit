@@ -4,7 +4,7 @@
 
 Flowbit.Ui is the browser interface for importing workflow definitions, starting instances, completing human work, and inspecting runtime activity. This guide takes you through an approval using the UI, then explains the management and operations screens in the current checkout.
 
-The standalone [Flowbit editor](../flowbit-editor.html) designs workflows and exports JSON. **Flowbit.Ui operates the runtime** through Flowbit.Api; it does not replace the visual authoring editor.
+Flowbit.Ui embeds the same [Flowbit editor](../flowbit-editor.html) used for standalone authoring. It can create workflows, load an exact stored version, and save an unpublished version through Flowbit.Api. Local JSON import/export also remains available.
 
 Both applications use the connected F mark and blue [Flowbit identity](branding.md). The editor supports light and dark themes; Flowbit.Ui uses a light workspace with navy navigation. On narrow screens, the Flowbit home link remains visible beside the navigation button.
 
@@ -18,6 +18,7 @@ Both applications use the connected F mark and blue [Flowbit identity](branding.
 - [Set your development identity](#set-your-development-identity)
 - [Complete your first approval](#complete-your-first-approval)
 - [Find your way around](#find-your-way-around)
+- [Design workflows in the UI](#design-workflows-in-the-ui)
 - [Manage workflow versions](#manage-workflow-versions)
 - [Use My work and task forms](#use-my-work-and-task-forms)
 - [Inspect instances and activity](#inspect-instances-and-activity)
@@ -128,7 +129,8 @@ Paths below are relative to the UI origin, not API endpoints. Most data screens 
 | **Jobs & incidents** | `/operations` | Durable queue metrics, failures, and retry operations. |
 | **Task management** | `/task-management` | Assign waiting work and manage captured task/action roles. |
 | **User delegations** | `/delegation-management` | Administer delegation grants and family acceptance policies. |
-| **Workflows** | `/workflows` | Import, publish, download, and manage definition versions. |
+| **Workflows** | `/workflows` | Create, edit, import, publish, download, and manage definition versions. |
+| **Workflow editor** | `/workflows/new` | Create a workflow using the shared visual editor. |
 | **Batch version changes** | `/instance-version-changes` | Prepare compatible version switches for multiple instances. |
 | **Instance variables** | `/instance-variable-updates` | Prepare administrative raw-JSON variable updates. |
 | **Administrative actions** | `/administrative-actions` | Prepare explicit overrides of waiting task or timer-boundary positions. |
@@ -142,6 +144,18 @@ Paths below are relative to the UI origin, not API endpoints. Most data screens 
 
 Overview totals and lists reflect the API's visibility rules; a restricted panel can report an authorization error while another panel works. Treat **My work** as the personal inbox rather than interpreting every displayed instance as actionable by you.
 
+## Design workflows in the UI
+
+Choose **Create workflow** on Workflows, or **Workflow editor** in the sidebar, to start an empty document with a fresh editable workflow key. To change an existing definition, expand its family and choose **Edit** on the exact version. The editor fills the workspace beside the normal navigation. Its compact toolbar contains File/Edit/View, the workflow name, version and save status, and **Save new version**. The version's tooltip identifies the source name/key; its workflow key in the inspector is read-only because changes stay in that family.
+
+Use the editor's normal canvas, inspector, variables, and File menu. **Save new version** validates the same JSON as **File → Save JSON**, then creates an **unpublished** immutable version. Editing a stored version uses the existing new-version API; creating or importing locally uses the existing create API. A create request using an existing key appends a version to that family. After success, the toolbar and URL identify the saved version. Publish it separately from Workflows. Existing instances continue using their selected version.
+
+Hosted saves are limited to **2 MiB of UTF-8 JSON**. Larger local imports remain editable and can be exported to a file. API load/save requires the configured definition-administration permission (`Workflow.RequiredRole`, default `admin`); validation and authorization errors leave the diagram open. If a connection fails after submission, check Workflows before retrying because the API may already have created a version.
+
+**Unsaved changes** includes diagram and property edits and uncommitted JavaScript-dialog text. Use **Save & Close** in that dialog before saving the workflow. Leaving, reloading, New, or local import warns before discarding changes. New/local import clears the stored-version association and starts a new unsaved document; the existing key in imported JSON is editable. Downloading JSON does not mark the hosted document saved to the API. Edits made while an API save is running remain unsaved after that save completes. Undoing back to the last API-saved state clears the unsaved indicator.
+
+The editor mounts directly into the page using the same template, CSS, and JavaScript as the standalone editor. Its light appearance matches the app; the standalone page retains its theme toggle. Editor shortcuts apply while focus is inside the editor, and modal keyboard navigation stays in the active dialog. Blazor performs API operations using its existing server-side client; the editor does not receive its bearer token. The current process-wide Test identity boundary still applies. The standalone editor runs without the runtime when its complete asset folder is present.
+
 ## Manage workflow versions
 
 Expand a family in **Workflows** to see its version rows. Importing another document with the same authored workflow key creates a new immutable version; running instances retain their existing version until an explicit compatible switch.
@@ -151,7 +165,8 @@ Expand a family in **Workflows** to see its version rows. Importing another docu
 | **Publish** / **Unpublish** | Controls whether a version can start new instances. It does not cancel existing runs. The default version cannot be unpublished; select another published default first. |
 | **Set default** | Makes that published version the family default for starts by workflow key and relevant system entry mechanisms. The row's **Start** link still selects that exact version. |
 | **Start** | Opens the manual start form for the selected published version. |
-| **Download JSON** | Downloads the stored definition. Open it in the standalone editor to author changes, then import the edited JSON as a new version. |
+| **Edit** | Opens that exact version in the visual editor. **Save new version** creates an unpublished successor with the same workflow key. |
+| **Download JSON** | Downloads the stored definition. Open it in the standalone editor, or use **File → Load JSON** in the UI editor. |
 | **Delete** | Requests deletion of that version. Runtime or retained audit references can block it; deletion is not a way to detach existing instances. |
 
 Timer-start schedules follow the published default version. Before changing defaults for those workflows, read [timer semantics](bpmn-support.md#timers) and [upgrade guidance](deployment.md#upgrade-and-compatibility-rules).

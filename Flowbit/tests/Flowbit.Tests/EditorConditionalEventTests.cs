@@ -473,12 +473,5 @@ public sealed class EditorConditionalEventTests
         return engine;
     }
 
-    private static string ReadEditorSource()
-    {
-        var editorPath = Path.Combine(
-            AppContext.BaseDirectory,
-            "Fixtures",
-            "flowbit-editor.html");
-        return File.ReadAllText(editorPath);
-    }
+    private static string ReadEditorSource() => EditorSource.Read();
 }
