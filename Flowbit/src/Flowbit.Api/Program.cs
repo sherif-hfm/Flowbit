@@ -10,8 +10,11 @@ using Flowbit.Api.Auth;
 using Flowbit.Api.Endpoints;
 using Flowbit.Api.OpenApi;
 using Flowbit.Infrastructure.Data;
+using Flowbit.Infrastructure.Ai;
 using Flowbit.Infrastructure.DependencyInjection;
 using Flowbit.Service.Abstractions;
+using Flowbit.Service.Ai;
+using Flowbit.Service.Authoring;
 using Flowbit.Service.DependencyInjection;
 using Flowbit.Service.Services;
 using Flowbit.Shared.Dtos;
@@ -344,7 +347,17 @@ try
         .AddServiceLayer()
         .AddInfrastructure(builder.Configuration);
 
+    var aiOptions = builder.Configuration.GetSection(WorkflowAiOptions.SectionName).Get<WorkflowAiOptions>() ?? new();
+    builder.Services.AddWorkflowAiAuthoring(aiOptions);
+    builder.Services.AddSingleton<IAuthoringKnowledge, AuthoringKnowledge>();
+    var documentOptions = builder.Configuration.GetSection(AiDocumentOptions.SectionName).Get<AiDocumentOptions>() ?? new();
+    documentOptions.Validate();
+    builder.Services.AddSingleton(documentOptions);
+    builder.Services.AddSingleton<IAiDocumentExtractor, PdfDocumentExtractor>();
+
     var app = builder.Build();
+    // Verify/cache the exact exported knowledge package before accepting authoring requests.
+    _ = app.Services.GetRequiredService<IAuthoringKnowledge>();
 
     app.Use(async (context, next) =>
     {

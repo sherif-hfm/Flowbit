@@ -12,6 +12,7 @@ Start with the [runnable getting-started guide](getting-started.md). This guide 
 - [Generate clients and AI-assisted integrations](#generate-clients-and-ai-assisted-integrations)
 - [Authenticate the actual actor](#authenticate-the-actual-actor)
 - [Understand a workflow definition](#understand-a-workflow-definition)
+- [Generate and validate workflow drafts](#generate-and-validate-workflow-drafts)
 - [Keep identifiers distinct](#keep-identifiers-distinct)
 - [Collect and validate variables](#collect-and-validate-variables)
 - [Build an inbox and action form](#build-an-inbox-and-action-form)
@@ -87,6 +88,14 @@ Example response for an identity created with these roles:
 Workflow-definition and all administrative-action endpoints use `Workflow.RequiredRole`: any role in its comma-separated list matches case-insensitively, missing/blank defaults to `admin`, and a custom value replaces the default. Administrative actions also require a nonblank actor. This permission does not automatically satisfy authored `Requester`, `Reviewer`, or other roles on ordinary task APIs. Other administrative and operational endpoint families have their own policies, documented in the API reference.
 
 Access scopes differ by resource. The inbox and personal task routes enforce task visibility, ownership, and actor roles. **The current `GET /api/instances/{id}` endpoint requires authentication but does not apply those personal task-visibility checks.** Do not expose it as a per-tenant or per-owner data boundary without implementing that boundary in your integration. Instance lists, activity searches, management routes, and message routes each have their own authorization contract.
+
+## Generate and validate workflow drafts
+
+The [portable authoring skill](ai-authoring.md) contains a model-derived schema, supported-capability index, behavior references, and canonical examples. External agents can generate canonical JSON without a repository checkout or running server. The packaged version/hash identifies the contract; schema conformance alone does not prove execution semantics or deployment readiness.
+
+For an authoritative read-only check, send the raw definition JSON to `POST /api/workflows/validate` using a workflow-author JWT. No AI key is required. The response separates `isValid`/`errors` from `canSave`/`saveBlockers`, `canPublish`/`publicationBlockers`, and `warnings`. Validation never creates a version, warms definition caches, calls authored REST integrations, or executes scripts. A successful check does not guarantee Worker availability, external credentials, or business correctness. Existing create/version/publish operations perform their normal checks again when the user saves or publishes.
+
+Flowbit.Ui's assistant supplies the same packaged knowledge to its selected provider, then validates the proposed full definition. Its explanation and source-page references remain outside the canonical JSON. Explicit application to the editor preserves undo and workflow-family identity; source revisions prevent delayed proposals from replacing later edits. See [authoring API operations](api-guide.md#ai-authoring-and-read-only-validation).
 
 ## Understand a workflow definition
 

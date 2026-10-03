@@ -1,0 +1,33 @@
+.workflow-ai-panel { display: flex; flex-direction: column; width: 100%; height: 100%; min-height: 0; background: #fff; color: #172433; border-left: 1px solid #d8e2e8; }
+.ai-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: .75rem; padding: 1rem; border-bottom: 1px solid #e2e8ec; }
+.ai-heading h2 { font-size: 1rem; margin: 0 0 .25rem; }
+.ai-heading p, .ai-help { color: #5c6b78; font-size: .8rem; line-height: 1.45; margin-bottom: .75rem; }
+.ai-heading p { margin: 0; }
+.ai-content { padding: 1rem; overflow: auto; min-height: 0; }
+.ai-content label { display: block; font-size: .8rem; font-weight: 600; margin: .6rem 0 .3rem; }
+.ai-content details { border: 1px solid #dce5eb; border-radius: .4rem; padding: .6rem .75rem; margin-bottom: .8rem; }
+.ai-content summary { font-size: .85rem; font-weight: 600; cursor: pointer; }
+.ai-settings .form-select, .ai-settings .form-control, .ai-document .form-select { font-size: .85rem; }
+.ai-content ::deep input[type=file] { width: 100%; font-size: .8rem; }
+.ai-document-actions, .ai-compose-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin: .75rem 0; }
+.ai-document-actions span { font-size: .8rem; overflow-wrap: anywhere; width: 100%; }
+.ai-page textarea { font-size: .82rem; }
+.ai-message { padding: .75rem; border-radius: .4rem; background: #f1f5f8; margin-bottom: .7rem; overflow-wrap: anywhere; }
+.ai-message[data-role=user] { background: #eaf4f3; }
+.ai-message strong { font-size: .75rem; }
+.ai-message p { white-space: pre-wrap; margin: .3rem 0 0; font-size: .85rem; }
+.ai-review { padding: .8rem; border: 1px solid #c7dcd8; border-radius: .4rem; margin: .75rem 0; }
+.ai-review h3 { font-size: .95rem; }
+.ai-review h4 { font-size: .8rem; margin: .85rem 0 .25rem; }
+.ai-review ul { padding-left: 1.1rem; font-size: .82rem; }
+.ai-warning { font-size: .8rem; color: #7c4d11; overflow-wrap: anywhere; }
+.ai-readiness { font-size: .8rem; color: #365957; }
+.ai-review pre { font-size: .7rem; max-height: 20rem; overflow: auto; margin: .5rem 0 0; white-space: pre; }
+.ai-compose { margin-top: 1rem; border-top: 1px solid #e2e8ec; }
+.ai-compose textarea { font-size: .85rem; }
+.ai-content .alert { font-size: .82rem; overflow-wrap: anywhere; }
+.ai-catalog-option { display: flex !important; align-items: flex-start; gap: .5rem; overflow-wrap: anywhere; }
+.ai-catalog-option small { display: block; color: #5c6b78; font-weight: normal; }
+.ai-catalog-option input { margin-top: .2rem; flex-shrink: 0; }
+.ai-catalog .ai-help { overflow-wrap: anywhere; }
+#ai-catalog-load { margin-top: .5rem; }

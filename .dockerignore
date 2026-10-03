@@ -1,8 +1,18 @@
-# Only runtime source is needed by the three Dockerfiles.
+# Runtime source plus the API's portable authoring export inputs.
 **
 !Flowbit/
 !Flowbit/src/
 !Flowbit/src/**
+!Flowbit/tools/
+!Flowbit/tools/AuthoringExport/
+!Flowbit/tools/AuthoringExport/**
+!Flowbit/README.md
+!authoring/
+!authoring/**
+!docs/
+!docs/**
+!examples/
+!examples/**
 
 # Never copy host build output or local credentials into an image.
 **/bin

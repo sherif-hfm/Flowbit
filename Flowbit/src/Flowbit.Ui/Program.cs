@@ -31,7 +31,9 @@ try
         var baseUrl = builder.Configuration["WorkflowApi:BaseUrl"]
             ?? "http://localhost:5017";
         client.BaseAddress = new Uri(baseUrl);
+        client.Timeout = TimeSpan.FromMinutes(6);
     })
+    .RedactLoggedHeaders(_ => true)
     .AddHttpMessageHandler<AuthTokenHandler>();
 
     var app = builder.Build();

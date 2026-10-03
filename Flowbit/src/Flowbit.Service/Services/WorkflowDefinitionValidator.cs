@@ -11,9 +11,9 @@ namespace Flowbit.Service.Services;
 /// <summary>
 /// Validates authored and normalized workflow definitions. Owns the definition
 /// validation rules extracted from WorkflowDefinitionService; lifecycle
-/// operations (create/version/publish/unpublish/default/delete), shared-catalog
-/// binding checks, service durability, lock-order, and publication gates remain
-/// in WorkflowDefinitionService. A successful validation does not establish
+/// operations (create/version/publish/unpublish/default/delete) remain in
+/// WorkflowDefinitionService; shared-catalog, durability, lock-order, and publication
+/// checks belong to WorkflowDefinitionReadinessChecker. A successful validation does not establish
 /// catalog existence, publication readiness, or version-switch compatibility,
 /// and never normalizes, persists, or warms caches.
 /// </summary>

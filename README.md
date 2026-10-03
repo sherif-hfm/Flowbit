@@ -51,6 +51,8 @@ The [workflow editor](flowbit-editor.html) uses shared HTML, CSS, vanilla JavaSc
 
 The editor produces the same definition format the runtime consumes. Diagram layout and executable configuration travel together in one document. Flowbit.Ui embeds the same editor: choose **Create workflow** or **Edit** on a version, then **Save new version** to create an unpublished version. See [visual authoring in the UI](docs/ui-guide.md#design-workflows-in-the-ui).
 
+Flowbit.Ui also includes an **AI workflow assistant** for creating and modifying definitions from requirements or PDF documents. It uses a temporary user-supplied provider key, local English/Arabic PDF OCR, validation, and explicit undoable application of proposals. OpenCode Go is the initial provider behind an extensible adapter. The same versioned [portable authoring skill](docs/ai-authoring.md) can be shared with external agents; all currently supported node types remain available. Generated proposals require review and are saved as unpublished versions. Live provider compatibility must be verified with the intended account.
+
 Press `/` while working on the canvas to reveal the diagram search
 dock and focus its search field, even when the dock is hidden.
 

@@ -1000,6 +1000,66 @@ let redoHistory = [];
 let historySnapshot = "";
 let historyCommitTimer = null;
 let historyRestoring = false;
+let authoringRevision = 0;
+let authoringObservedModel = "";
+
+// AI proposals address an exact editable document, including incomplete drafts.
+// A dirty flag alone cannot distinguish two successive unsaved edits.
+function currentAuthoringSnapshotId() {
+  const current = JSON.stringify(model);
+  if (current !== authoringObservedModel) {
+    authoringObservedModel = current;
+    authoringRevision++;
+  }
+  return String(authoringRevision);
+}
+
+function readAuthoringSnapshot() {
+  if (hasUnsavedScriptDraft())
+    throw new Error("Use Save & Close or cancel the JavaScript draft before asking AI to edit this workflow.");
+  commitHistory();
+  return { snapshotId: currentAuthoringSnapshotId(), definition: JSON.parse(JSON.stringify(model)) };
+}
+
+function applyAuthoringProposal(definition, expectedSnapshotId) {
+  if (hasUnsavedScriptDraft())
+    throw new Error("Use Save & Close or cancel the JavaScript draft before applying the proposal.");
+  if (currentAuthoringSnapshotId() !== expectedSnapshotId)
+    throw new Error("The workflow changed after this proposal was requested. Ask AI to update the proposal using the current workflow.");
+  const candidate = normalizeLoadedModel(definition);
+  candidate.id = hostBridge?.lockedKey || model.id;
+  // Keep authored positions for existing objects. New objects use the proposal layout.
+  const oldNodes = new Map(model.flowNodes.map(node => [node.id, node]));
+  const oldLanes = new Map(model.lanes.map(lane => [lane.id, lane]));
+  for (const node of candidate.flowNodes) {
+    const previous = oldNodes.get(node.id);
+    if (previous && previous.laneId === node.laneId) { node.x = previous.x; node.y = previous.y; }
+  }
+  for (const lane of candidate.lanes) {
+    const previous = oldLanes.get(lane.id);
+    // Server layout can grow a lane to contain newly added nodes.
+    if (previous) {
+      lane.x = previous.x; lane.y = previous.y;
+      lane.w = Math.max(previous.w, lane.w); lane.h = Math.max(previous.h, lane.h);
+    }
+  }
+  const prepared = prepareWorkflowExport(candidate);
+  if (prepared.errors.length)
+    throw new Error("The proposal cannot be applied: " + prepared.errors.join("\n"));
+  commitHistory();
+  const previousView = { ...viewState };
+  const wasEmpty = model.flowNodes.length === 0;
+  resetDocumentInteraction();
+  model = candidate;
+  selected = null;
+  selectedNodeIds.clear();
+  if (!wasEmpty) viewState = previousView;
+  render();
+  commitHistory();
+  if (wasEmpty) fitView();
+  hostBridge?.changed();
+  return currentAuthoringSnapshotId();
+}
 
 function serializeHistoryModel() {
   return JSON.stringify(model);
@@ -11049,6 +11109,8 @@ function normalizeLoadedModel(obj) {
 
 function loadFromObject(obj) {
   const loaded = normalizeLoadedModel(obj);
+  authoringRevision++;
+  authoringObservedModel = "";
   resetDocumentInteraction();
   model = loaded;
   clearSelection();
@@ -11691,7 +11753,7 @@ for (const button of root.querySelectorAll("[data-editor-action]")) {
   let requestingSave = false;
   let hostState = { loaded: options.mode !== "hosted", saving: false, version: "New workflow", source: "", error: null, notice: null };
   const state = () => ({ dirty: unsavedDocument || JSON.stringify(model) !== baseline || hasUnsavedScriptDraft(),
-    hasScriptDraft: hasUnsavedScriptDraft(), generation });
+    hasScriptDraft: hasUnsavedScriptDraft(), generation, revision: currentAuthoringSnapshotId() });
   const ensureOpen = () => { if (disposed) throw new Error("Editor is closed."); };
   function updateHostPresentation() {
     if (disposed || options.mode !== "hosted") return;
@@ -11729,6 +11791,8 @@ for (const button of root.querySelectorAll("[data-editor-action]")) {
       lockedKey: null, changed, isDirty: () => state().dirty,
       replaced(fresh) {
         generation++;
+        authoringRevision++;
+        authoringObservedModel = "";
         snapshot = null;
         this.lockedKey = null;
         if (fresh) model.id = "workflow-" + crypto.randomUUID();
@@ -11800,6 +11864,14 @@ for (const button of root.querySelectorAll("[data-editor-action]")) {
       return state();
     },
     getState() { ensureOpen(); return state(); },
+    getAuthoringSnapshot() { ensureOpen(); return readAuthoringSnapshot(); },
+    applyProposal(definition, snapshotId) {
+      ensureOpen();
+      if (hostState.saving || requestingSave) throw new Error("Wait for the current save before applying the proposal.");
+      applyAuthoringProposal(definition, snapshotId);
+      changed();
+      return state();
+    },
     setHostState(value) { ensureOpen(); hostState = { ...hostState, ...value }; updateHostPresentation(); },
     dispose
   };

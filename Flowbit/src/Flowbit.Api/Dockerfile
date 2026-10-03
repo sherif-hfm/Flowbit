@@ -5,17 +5,23 @@ COPY Flowbit/src/Flowbit.Shared/Flowbit.Shared.csproj Flowbit/src/Flowbit.Shared
 COPY Flowbit/src/Flowbit.Service/Flowbit.Service.csproj Flowbit/src/Flowbit.Service/
 COPY Flowbit/src/Flowbit.Infrastructure/Flowbit.Infrastructure.csproj Flowbit/src/Flowbit.Infrastructure/
 COPY Flowbit/src/Flowbit.Api/Flowbit.Api.csproj Flowbit/src/Flowbit.Api/
+COPY Flowbit/tools/AuthoringExport/AuthoringExport.csproj Flowbit/tools/AuthoringExport/
 RUN dotnet restore Flowbit/src/Flowbit.Api/Flowbit.Api.csproj
 COPY Flowbit/src/Flowbit.Shared/ Flowbit/src/Flowbit.Shared/
 COPY Flowbit/src/Flowbit.Service/ Flowbit/src/Flowbit.Service/
 COPY Flowbit/src/Flowbit.Infrastructure/ Flowbit/src/Flowbit.Infrastructure/
 COPY Flowbit/src/Flowbit.Api/ Flowbit/src/Flowbit.Api/
+COPY Flowbit/tools/AuthoringExport/ Flowbit/tools/AuthoringExport/
+COPY authoring/ authoring/
+COPY docs/ docs/
+COPY examples/ examples/
+COPY Flowbit/README.md Flowbit/README.md
 RUN dotnet publish Flowbit/src/Flowbit.Api/Flowbit.Api.csproj -c Release --no-restore -o /app/publish /p:UseAppHost=false
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0-noble AS final
 WORKDIR /app
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl \
+    && apt-get install -y --no-install-recommends curl poppler-utils tesseract-ocr tesseract-ocr-eng tesseract-ocr-ara \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /app/Logs \
     && chown app:app /app/Logs

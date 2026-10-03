@@ -18,6 +18,10 @@ solution test command stays free of Chromium requirements.
 - Serial and isolated: xUnit parallelization is disabled assembly-wide; each
   scenario gets a fresh browser context, its own viewport, and its own
   workflow/instance data inside the run's disposable database.
+- AI scenarios use a fixture-owned loopback OpenCode-compatible provider with
+  synthetic keys. Requests still pass through the real API authoring, PDF
+  extraction, validation, and save paths. No billed provider call is made and
+  no application state or database rows are injected.
 
 Worker-driven audit and administrative-batch acceptance is maintained in the
 separate local [Flowbit.BrowserAcceptanceTests suite](../Flowbit.BrowserAcceptanceTests/README.md).
@@ -75,6 +79,8 @@ Hosted editor scenarios H1 (1440x900 and 1024x768) and H2 exercise exact-version
 
 | Scenario | Viewports | Behavior under test |
 | --- | --- | --- |
+| H6 AI creation and editing | 1440x900, 1024x768, 390x844 | Clarification, explicit value-free catalog selection plus PDF upload/corrected extraction (1440 only), generated proposal review, apply, undo/redo, new unpublished save, conversational modification, preserved workflow family/positions/saved baseline, skill archive download, narrow drawer keyboard focus/Escape, and responsive screenshots. |
+| H7 AI session lifecycle | 1440x900 | Manual edits invalidate proposals; cancellation reaches the upstream provider; separate panels keep separate keys; identity change, reset, disposal and navigation clear transient keys and conversation state. |
 | E1 load/edit/save/reload | 1440x900, 1024x768 | File menu load via the real file chooser, node rename in the inspector, workflow name edit, forced download-fallback save, JSON round-trip into a fresh page. |
 | E2 node drag | 1440x900, 1024x768 | Real mouse drag with intermediate steps; screen/diagram deltas, unrelated nodes fixed, connectors intact, persisted positions in the downloaded JSON. |
 | E3 lane drag | 1440x900, 1024x768 | Lane header drag moves the lane with its children; other lanes fixed; persisted positions verified. |
@@ -91,14 +97,13 @@ Hosted editor scenarios H1 (1440x900 and 1024x768) and H2 exercise exact-version
 | R6 responsive controls and focus | 1024x768, 390x844 | Real responsive navigation, section links preserving the instance path/query, keyboard focus, wheel scrolling to clipped table columns, and parsed submitted JSON. |
 | R7 administrative batch display | 1440x900, 1024x768, 390x844 | Executes immediate administrative actions through the real instance-detail panel, verifies refreshed instance status, variables and history before following the real audit batch link, verifies the frozen request, count order/values, item row, highlight, JSON details, and recent history against HTTP reads, switches batches with real clicks and keyboard-activated Open buttons, exercises zero-match item and recent-batch status filters with restore, checks narrow-table scrolling and document overflow, and records before/after audit screenshots at all three viewports. |
 
-The original 26 product scenarios plus five shared/hosted-editor cases are accompanied by four harness regression tests:
+The editor and runtime product scenarios are accompanied by four harness regression tests:
 auxiliary-page errors/dialogs must fail, successful diagnostics must retain
 warnings/transport failures, timed-out work must stop before returning, and
 queued one-shot dialog expectations must accept, dismiss, fail on unconsumed
 entries, and fail on unmatched dialogs. The `harness-expected-*` artifacts
-intentionally contain injected failures. The suite therefore runs 35 cases in
-total (E1-E8 at both viewports, the runtime scenarios, and the R7 administrative
-display scenarios).
+intentionally contain injected failures. H6 adds three responsive cases and H7
+adds one lifecycle case to the existing editor/runtime coverage.
 
 Scenarios register exact one-shot dialog expectations through
 `ExpectDialogOnce(dialogType, message, accept)` (checked before the
@@ -136,6 +141,8 @@ Every run writes to `artifacts/browser/runs/<timestamp>-<id>/`:
   all observed page URLs/viewports, console errors/warnings, uncaught errors,
   HTTP failures, transport failures, and unexpected dialogs.
 - Selected successful editor-search and responsive-results screenshots.
+- H6 retains `ai-proposal.png` and `ai-applied-diagram.png` at all three
+  viewports, the downloaded skill archive, and its generated text PDF fixture.
 - E7 captures `boundary-conversion-before.png` and
   `boundary-conversion-after.png` at both editor viewports, with the populated
   workflow and host selected. These show the service-task inspector and attached

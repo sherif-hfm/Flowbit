@@ -1,0 +1,437 @@
+@using System.Text.Json
+@using Flowbit.Ui.Auth
+@implements IAsyncDisposable
+@inject WorkflowApiClient Api
+@inject IJSRuntime JS
+@inject TokenState Token
+
+<aside @ref="panelRoot" tabindex="-1" class="workflow-ai-panel" aria-labelledby="ai-heading" data-ai-busy="@busy.ToString().ToLowerInvariant()">
+    <div class="ai-heading">
+        <div><h2 id="ai-heading">AI workflow assistant</h2><p>Describe a process or review a requirements document.</p></div>
+        <button type="button" class="btn btn-sm btn-outline-secondary" aria-label="Close AI assistant" @onclick="Close">Close</button>
+    </div>
+    <div class="ai-content">
+        <p class="ai-help">Requirements, document text, and the current workflow are sent to your selected AI provider. Your key is kept only in this panel's session and is cleared when you close it or change identity.</p>
+        @if (!string.IsNullOrWhiteSpace(error))
+        {
+            <div class="alert alert-danger" role="alert" id="ai-error">@error</div>
+        }
+        @if (!string.IsNullOrWhiteSpace(notice))
+        {
+            <div class="alert alert-info" role="status" id="ai-notice">@notice</div>
+        }
+        <details class="ai-settings" open>
+            <summary>Connection</summary>
+            <label for="ai-provider">Provider</label>
+            <select id="ai-provider" class="form-select" value="@providerId" @onchange="ChangeProvider" disabled="@busy">
+                @foreach (var provider in providers) { <option value="@provider.Id">@provider.Name</option> }
+            </select>
+            <label for="ai-model">Model</label>
+            <select id="ai-model" class="form-select" @bind="modelId" disabled="@busy">
+                @foreach (var model in SelectedProvider?.Models ?? []) { <option value="@model.Id">@model.Name</option> }
+            </select>
+            <label for="ai-key">Your provider API key</label>
+            <input id="ai-key" class="form-control" type="password" autocomplete="off" spellcheck="false" @bind="apiKey" @bind:event="oninput" disabled="@busy" />
+            <button type="button" class="btn btn-sm btn-link" @onclick="ClearKey" disabled="@busy">Clear key</button>
+        </details>
+
+        <details class="ai-catalog">
+            <summary>Include shared-variable metadata (optional)</summary>
+            <p class="ai-help">Select existing catalog keys that the workflow may use. Only selected keys and type contracts are sent; catalog values are never sent to the model. This requires shared-variable read permission.</p>
+            <label for="ai-catalog-search">Find catalog keys</label>
+            <input id="ai-catalog-search" class="form-control" maxlength="300" @bind="catalogSearch" @bind:event="oninput" disabled="@busy" />
+            <button type="button" id="ai-catalog-load" class="btn btn-sm btn-outline-secondary" disabled="@busy" @onclick="() => LoadCatalogAsync(1)">Load metadata</button>
+            @foreach (var item in catalog)
+            {
+                <label class="ai-catalog-option"><input type="checkbox" checked="@selectedKeys.Contains(item.Key)" disabled="@(busy || selectedKeys.Count >= 50 && !selectedKeys.Contains(item.Key))" @onchange="args => SelectCatalogKey(item.Key, args.Value is true)" /> <span>@item.Key <small>@item.DataType@(item.IsArray ? "[]" : "")@(item.Nullable ? " · nullable" : "")</small></span></label>
+            }
+            @if (catalogPage > 0)
+            {
+                <div class="ai-compose-actions">
+                    <button type="button" class="btn btn-sm btn-outline-secondary" disabled="@(busy || catalogPage <= 1)" @onclick="() => LoadCatalogAsync(catalogPage - 1)">Previous</button>
+                    <span class="ai-help">Page @catalogPage</span>
+                    <button type="button" class="btn btn-sm btn-outline-secondary" disabled="@(busy || catalogPage * 50 >= catalogCount)" @onclick="() => LoadCatalogAsync(catalogPage + 1)">Next</button>
+                </div>
+            }
+            @if (selectedKeys.Count > 0)
+            {
+                <p class="ai-help">Selected (@selectedKeys.Count/50): @string.Join(", ", selectedKeys.Order(StringComparer.Ordinal))</p>
+                <button type="button" class="btn btn-sm btn-link" disabled="@busy" @onclick="() => selectedKeys.Clear()">Clear selection</button>
+            }
+        </details>
+
+        <details class="ai-document">
+            <summary>Attach a BRD or SRS PDF</summary>
+            <label for="ai-pdf">PDF document (up to 20 MiB)</label>
+            <InputFile id="ai-pdf" accept="application/pdf,.pdf" OnChange="SelectDocumentAsync" disabled="@busy" />
+            <label for="ai-languages">OCR language</label>
+            <select id="ai-languages" class="form-select" @bind="languages" disabled="@busy">
+                <option value="eng+ara">English and Arabic</option><option value="eng">English</option><option value="ara">Arabic</option>
+            </select>
+            @if (documentFile is not null)
+            {
+                <div class="ai-document-actions">
+                    <span>@documentFile.Name</span>
+                    <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="() => ExtractDocumentAsync(true)" disabled="@busy">Retry with OCR</button>
+                    <button type="button" class="btn btn-sm btn-link" @onclick="ClearDocument" disabled="@busy">Remove</button>
+                </div>
+            }
+            @foreach (var warning in documentWarnings) { <p class="ai-warning">@warning</p> }
+            @if (sourcePages.Count > 0)
+            {
+                <p class="ai-help">Review and correct extracted text before sending. Page references are kept with the proposal.</p>
+                @foreach (var sourcePage in sourcePages)
+                {
+                    <details class="ai-page" @key="sourcePage.Number">
+                        <summary>Page @sourcePage.Number @(sourcePage.UsedOcr ? " · OCR" : "")</summary>
+                        @foreach (var warning in sourcePage.Warnings) { <p class="ai-warning">@warning</p> }
+                        <label class="visually-hidden" for="@($"ai-page-{sourcePage.Number}")">Page @sourcePage.Number extracted text</label>
+                        <textarea id="@($"ai-page-{sourcePage.Number}")" class="form-control" dir="auto" rows="8" @bind="sourcePage.Text" @bind:event="oninput" disabled="@busy"></textarea>
+                    </details>
+                }
+            }
+        </details>
+
+        @if (messages.Count > 0)
+        {
+            <div class="ai-chat" aria-label="Conversation" aria-live="polite">
+                @foreach (var message in messages)
+                {
+                    <article class="ai-message" data-role="@message.Role"><strong>@(message.Role == "user" ? "You" : "Assistant")</strong><p dir="auto">@message.Content</p></article>
+                }
+            </div>
+        }
+        @if (result is not null)
+        {
+            @if (result.Questions.Count > 0)
+            {
+                <section class="ai-review"><h3>Details to clarify</h3><ul>@foreach (var question in result.Questions) { <li dir="auto">@question</li> }</ul></section>
+            }
+            @if (result.Definition is not null)
+            {
+                <section class="ai-review" aria-labelledby="ai-proposal-heading">
+                    <h3 id="ai-proposal-heading">Review proposal</h3>
+                    @if (result.ChangeSummary.Count > 0) { <h4>Changes</h4><ul>@foreach (var item in result.ChangeSummary) { <li dir="auto">@item</li> }</ul> }
+                    @if (result.Assumptions.Count > 0) { <h4>Assumptions</h4><ul>@foreach (var item in result.Assumptions) { <li dir="auto">@item</li> }</ul> }
+                    @if (result.Dependencies.Count > 0) { <h4>Setup needed</h4><ul>@foreach (var item in result.Dependencies) { <li dir="auto">@item</li> }</ul> }
+                    @if (result.SourceReferences.Count > 0)
+                    {
+                        <details><summary>Requirement references</summary><ul>@foreach (var item in result.SourceReferences) { <li dir="auto">@item.SourceName · page @item.PageNumber: @item.Requirement</li> }</ul></details>
+                    }
+                    <p class="ai-readiness">@(result.Validation.IsValid ? "Definition rules passed." : "Definition needs correction.") @(result.Validation.CanSave ? "Ready to save as a draft." : "Save readiness needs attention.") @(result.Validation.CanPublish ? "Publication checks passed." : "Publication needs review.")</p>
+                    @foreach (var item in result.Validation.Errors.Concat(result.Validation.Warnings).Concat(result.Validation.SaveBlockers).Concat(result.Validation.PublicationBlockers).Distinct()) { <p class="ai-warning">@item</p> }
+                    <details><summary>Workflow JSON</summary><pre id="ai-proposal-json">@ProposalJson</pre></details>
+                    @if (IsStale) { <p class="ai-warning" role="status">The editor changed. Send another message to update this proposal before applying it.</p> }
+                    <button type="button" id="ai-apply" class="btn btn-primary" disabled="@(busy || IsStale || !result.Validation.IsValid || result.Kind != "proposal")" @onclick="ApplyAsync">Apply to editor</button>
+                    <p class="ai-help">Applying is one undoable edit. Use Save new version, then publish separately when ready.</p>
+                </section>
+            }
+            else
+            {
+                @foreach (var item in result.Validation.Errors) { <p class="ai-warning">@item</p> }
+            }
+        }
+        <div class="ai-compose">
+            <label for="ai-message">Requirements or follow-up</label>
+            <textarea id="ai-message" class="form-control" rows="5" dir="auto" placeholder="For example: employees submit a purchase request; their manager approves or rejects it…" @bind="messageText" @bind:event="oninput" disabled="@busy"></textarea>
+            <div class="ai-compose-actions">
+                <button type="button" id="ai-send" class="btn btn-primary" disabled="@(busy || string.IsNullOrWhiteSpace(messageText) || string.IsNullOrWhiteSpace(apiKey) || SelectedProvider is null)" @onclick="SendAsync">@(busy ? "Working…" : "Send")</button>
+                @if (busy) { <button type="button" class="btn btn-outline-secondary" @onclick="Cancel">Cancel</button> }
+                <button type="button" class="btn btn-sm btn-link" disabled="@busy" @onclick="NewConversation">New conversation</button>
+            </div>
+        </div>
+        <button type="button" class="btn btn-sm btn-outline-secondary" disabled="@busy" @onclick="DownloadSkillAsync">Download Flowbit AI skill</button>
+    </div>
+</aside>
+
+@code {
+    [Parameter, EditorRequired] public Func<Task<EditorAuthoringSnapshot>> CaptureSnapshot { get; set; } = default!;
+    [Parameter, EditorRequired] public EventCallback<EditorAiProposal> ApplyProposal { get; set; }
+    [Parameter, EditorRequired] public EventCallback<string> InvalidateOperation { get; set; }
+    [Parameter] public EventCallback Close { get; set; }
+    [Parameter] public string? EditorRevision { get; set; }
+    private const long MaxPdfBytes = 20 * 1024 * 1024;
+    private readonly CancellationTokenSource lifetime = new();
+    private ElementReference panelRoot;
+    private IJSObjectReference? keyboardModule, keyboard;
+    private DotNetObjectReference<WorkflowAiPanel>? keyboardCallback;
+    private CancellationTokenSource? operation;
+    private IReadOnlyList<AiProviderDto> providers = [];
+    private readonly List<AiChatMessageDto> messages = [];
+    private readonly List<AiChatMessageDto> history = [];
+    private readonly List<SourcePage> sourcePages = [];
+    private IReadOnlyList<SharedVariableMetadataDto> catalog = [];
+    private readonly HashSet<string> selectedKeys = new(StringComparer.Ordinal);
+    private string catalogSearch = "";
+    private int catalogPage;
+    private long catalogCount;
+    private IReadOnlyList<string> documentWarnings = [];
+    private IBrowserFile? documentFile;
+    private AiTurnResultDto? result;
+    private string providerId = "opencode-go", modelId = "kimi-k2.7-code", apiKey = "", messageText = "", languages = "eng+ara";
+    private string conversationId = Guid.NewGuid().ToString("N");
+    private string? error, notice;
+    private bool busy, disposed;
+    private long identityRevision;
+    private long operationIdentityRevision;
+    private string operationId = "";
+    private AiProviderDto? SelectedProvider => providers.FirstOrDefault(item => item.Id == providerId);
+    private bool IsStale => result is not null && EditorRevision is not null && result.SnapshotId != EditorRevision;
+    private string ProposalJson => result?.Definition is { } definition ? JsonSerializer.Serialize(definition, new JsonSerializerOptions { WriteIndented = true }) : "";
+
+    protected override async Task OnInitializedAsync()
+    {
+        Token.Changed += IdentityChanged;
+        await LoadProvidersAsync();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender || disposed) return;
+        try
+        {
+            keyboardModule = await JS.InvokeAsync<IJSObjectReference>("import", lifetime.Token, "./workflow-ai-panel.js");
+            if (disposed) { await keyboardModule.DisposeAsync(); return; }
+            keyboardCallback = DotNetObjectReference.Create(this);
+            keyboard = await keyboardModule.InvokeAsync<IJSObjectReference>("attach", lifetime.Token, panelRoot, keyboardCallback);
+        }
+        catch (OperationCanceledException) when (disposed) { }
+        catch (JSDisconnectedException) when (disposed) { }
+    }
+
+    [JSInvokable]
+    public Task CloseFromKeyboard() => disposed ? Task.CompletedTask : Close.InvokeAsync();
+
+    private async Task LoadProvidersAsync()
+    {
+        var revision = identityRevision;
+        try
+        {
+            var available = await Api.GetAiProvidersAsync(lifetime.Token);
+            if (disposed || revision != identityRevision) return;
+            providers = available;
+            if (SelectedProvider is null) providerId = providers.FirstOrDefault()?.Id ?? "";
+            modelId = SelectedProvider?.DefaultModelId ?? "";
+            if (providers.Count == 0) error = "AI authoring is not configured. Ask your Flowbit administrator to enable a provider.";
+        }
+        catch (OperationCanceledException) when (disposed) { }
+        catch (Exception exception) { if (!disposed && revision == identityRevision) error = SafeError(exception); }
+    }
+
+    private void ChangeProvider(ChangeEventArgs args)
+    {
+        providerId = args.Value?.ToString() ?? "";
+        modelId = SelectedProvider?.DefaultModelId ?? "";
+        apiKey = "";
+        NewConversation();
+    }
+
+    private void ClearKey() => apiKey = "";
+    private void ClearDocument() { documentFile = null; sourcePages.Clear(); documentWarnings = []; }
+    private void NewConversation()
+    {
+        messages.Clear(); history.Clear(); result = null; messageText = ""; apiKey = "";
+        catalog = []; selectedKeys.Clear(); catalogSearch = ""; catalogPage = 0; catalogCount = 0;
+        ClearDocument(); error = notice = null; conversationId = Guid.NewGuid().ToString("N");
+    }
+
+    private void SelectCatalogKey(string key, bool selected)
+    {
+        if (selected && selectedKeys.Count < 50) selectedKeys.Add(key);
+        if (!selected) selectedKeys.Remove(key);
+    }
+
+    private async Task LoadCatalogAsync(int page)
+    {
+        if (busy) return;
+        var cancellationToken = BeginOperation();
+        var revision = identityRevision;
+        try
+        {
+            var found = await Api.GetSharedVariablesAsync(new(Search: catalogSearch, Status: "active", Page: page, PageSize: 50), cancellationToken);
+            if (disposed || cancellationToken.IsCancellationRequested || revision != identityRevision) return;
+            catalog = found.Items; catalogPage = found.Page; catalogCount = found.TotalCount;
+            if (catalog.Count == 0) notice = "No active shared-variable metadata matches this search.";
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception exception) { if (!disposed && revision == identityRevision) error = SafeError(exception); }
+        finally { if (!disposed && revision == identityRevision) busy = false; }
+    }
+
+    private async Task SelectDocumentAsync(InputFileChangeEventArgs args)
+    {
+        ClearDocument();
+        var file = args.File;
+        if (file.Size > MaxPdfBytes) { error = "Select a PDF no larger than 20 MiB."; return; }
+        if (!file.Name.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase)) { error = "Select a PDF document."; return; }
+        documentFile = file;
+        await ExtractDocumentAsync(false);
+    }
+
+    private CancellationToken BeginOperation()
+    {
+        operation?.Dispose();
+        operation = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+        operationId = Guid.NewGuid().ToString("N");
+        operationIdentityRevision = Interlocked.Read(ref identityRevision);
+        busy = true;
+        error = notice = null;
+        return operation.Token;
+    }
+
+    private async Task ExtractDocumentAsync(bool forceOcr)
+    {
+        if (busy || documentFile is null) return;
+        var cancellationToken = BeginOperation();
+        var revision = identityRevision;
+        try
+        {
+            await using var stream = documentFile.OpenReadStream(MaxPdfBytes, cancellationToken);
+            var extracted = await Api.ExtractAiDocumentAsync(stream, documentFile.Name, forceOcr, languages, cancellationToken);
+            if (disposed || cancellationToken.IsCancellationRequested || revision != identityRevision) return;
+            sourcePages.Clear();
+            sourcePages.AddRange(extracted.Pages.Select(page => new SourcePage(page.Page, page.Text, page.UsedOcr, page.Warnings)));
+            documentWarnings = extracted.Warnings;
+            notice = $"Extracted {sourcePages.Count} page(s). Review the text before sending it to AI.";
+        }
+        catch (OperationCanceledException) { if (!disposed && revision == identityRevision) notice = "Document extraction cancelled."; }
+        catch (Exception exception) { if (!disposed && revision == identityRevision) error = SafeError(exception); }
+        finally { if (!disposed && revision == identityRevision) busy = false; }
+    }
+
+    private async Task SendAsync()
+    {
+        if (busy || string.IsNullOrWhiteSpace(apiKey) || string.IsNullOrWhiteSpace(messageText)) return;
+        var cancellationToken = BeginOperation();
+        var revision = identityRevision;
+        var submitted = messageText.Trim();
+        try
+        {
+            var snapshot = await CaptureSnapshot();
+            if (disposed || cancellationToken.IsCancellationRequested || revision != identityRevision) return;
+            var context = result?.Definition is { } proposal && result.SnapshotId == snapshot.SnapshotId ? proposal : snapshot.Definition;
+            var request = new AiTurnRequestDto
+            {
+                ProviderId = providerId, ModelId = modelId, ConversationId = conversationId,
+                Message = submitted, History = history.ToArray(), CurrentWorkflow = context,
+                SnapshotId = snapshot.SnapshotId,
+                SharedVariableKeys = selectedKeys.Order(StringComparer.Ordinal).ToArray(),
+                Sources = sourcePages.Select(page => new AiSourcePageDto(documentFile?.Name ?? "Document", page.Number, page.Text)).ToArray()
+            };
+            var response = await Api.SendAiTurnAsync(request, apiKey.Trim(), cancellationToken);
+            if (disposed || cancellationToken.IsCancellationRequested || revision != identityRevision) return;
+            messages.Add(new("user", submitted));
+            messages.Add(new("assistant", response.Message));
+            history.Add(new("user", submitted));
+            history.Add(new("assistant", JsonSerializer.Serialize(new { response.Message, response.Questions, response.Assumptions, response.Dependencies, response.ChangeSummary })));
+            while (history.Count > 12) history.RemoveRange(0, 2);
+            result = response;
+            messageText = "";
+        }
+        catch (OperationCanceledException) { if (!disposed && revision == identityRevision) notice = "AI request cancelled. Your workflow is unchanged."; }
+        catch (Exception exception) { if (!disposed && revision == identityRevision) error = SafeError(exception); }
+        finally { if (!disposed && revision == identityRevision) busy = false; }
+    }
+
+    private async Task ApplyAsync()
+    {
+        if (busy || result?.Definition is not { } definition || IsStale || !result.Validation.IsValid) return;
+        var cancellationToken = BeginOperation();
+        var revision = identityRevision;
+        try
+        {
+            var validation = await Api.ValidateAiWorkflowAsync(definition, cancellationToken);
+            if (disposed || cancellationToken.IsCancellationRequested || revision != identityRevision) return;
+            result = result with { Validation = validation };
+            if (!validation.IsValid) { error = "This proposal no longer passes validation. Review the reported errors and ask AI to correct it."; return; }
+            await ApplyProposal.InvokeAsync(new EditorAiProposal(definition, result.SnapshotId, operationId));
+            if (disposed || revision != identityRevision) return;
+            result = null;
+            notice = "Applied to the editor. Review the diagram, use Undo if needed, and save a new version when ready.";
+        }
+        catch (OperationCanceledException) { if (!disposed && revision == identityRevision) notice = "Apply cancelled."; }
+        catch (Exception exception) { if (!disposed && revision == identityRevision) error = SafeError(exception); }
+        finally { if (!disposed && revision == identityRevision) busy = false; }
+    }
+
+    private async Task DownloadSkillAsync()
+    {
+        if (busy) return;
+        var cancellationToken = BeginOperation();
+        var revision = identityRevision;
+        try
+        {
+            var content = await Api.DownloadAiSkillAsync(cancellationToken);
+            if (disposed || cancellationToken.IsCancellationRequested || revision != identityRevision) return;
+            await using var stream = new MemoryStream(content);
+            using var reference = new DotNetStreamReference(stream);
+            await JS.InvokeVoidAsync("flowbit.downloadFileFromStream", cancellationToken, "flowbit-authoring.zip", reference);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception exception) { if (!disposed && revision == identityRevision) error = SafeError(exception); }
+        finally { if (!disposed && revision == identityRevision) busy = false; }
+    }
+
+    private string SafeError(Exception exception)
+    {
+        var message = exception.Message.Split('\n', 2)[0].Trim();
+        return string.IsNullOrEmpty(apiKey) ? message : message.Replace(apiKey, "[redacted]", StringComparison.Ordinal);
+    }
+    public bool CanApplyAuthoringProposal(string expectedOperationId) => !disposed && busy
+        && expectedOperationId == operationId && operation is { IsCancellationRequested: false }
+        && operationIdentityRevision == Interlocked.Read(ref identityRevision);
+
+    private async Task Cancel()
+    {
+        operation?.Cancel();
+        await InvalidateOperation.InvokeAsync(operationId);
+    }
+    private void IdentityChanged()
+    {
+        // Invalidate the final apply guard immediately, even before this circuit processes the notification.
+        Interlocked.Increment(ref identityRevision);
+        _ = InvokeAsync(async () =>
+        {
+            if (disposed) return;
+            operation?.Cancel();
+            await InvalidateOperation.InvokeAsync(operationId);
+            if (disposed) return;
+            busy = false;
+            apiKey = "";
+            ClearDocument();
+            NewConversation();
+            providers = [];
+            notice = "Identity changed. The AI key and conversation were cleared.";
+            await LoadProvidersAsync();
+            StateHasChanged();
+        });
+    }
+    public async ValueTask DisposeAsync()
+    {
+        if (disposed) return;
+        disposed = true;
+        Token.Changed -= IdentityChanged;
+        apiKey = "";
+        operation?.Cancel();
+        lifetime.Cancel();
+        await InvalidateOperation.InvokeAsync(operationId);
+        operation?.Dispose();
+        lifetime.Dispose();
+        history.Clear(); messages.Clear(); sourcePages.Clear(); catalog = []; selectedKeys.Clear();
+        try
+        {
+            if (keyboard is not null) { await keyboard.InvokeVoidAsync("dispose"); await keyboard.DisposeAsync(); }
+            if (keyboardModule is not null) await keyboardModule.DisposeAsync();
+        }
+        catch (JSDisconnectedException) { }
+        catch (TaskCanceledException) { }
+        keyboardCallback?.Dispose();
+    }
+    private sealed class SourcePage(int number, string text, bool usedOcr, IReadOnlyList<string> warnings)
+    {
+        public int Number { get; } = number;
+        public string Text { get; set; } = text;
+        public bool UsedOcr { get; } = usedOcr;
+        public IReadOnlyList<string> Warnings { get; } = warnings;
+    }
+}

@@ -140,6 +140,17 @@ The key pieces:
   schema and migrates supported legacy documents before `loadFromObject()`
   installs the result; malformed/unsupported input preserves the current document.
 - **Seed data**: `seedSample()` builds the "Parallel Purchase Review" example.
+- **AI authoring**: The hosted Blazor assistant owns temporary provider keys, requirements,
+  PDF extraction review, and proposal requests. Dedicated editor snapshot/apply operations
+  preserve undo history, the saved baseline, and locked workflow-family identity, rejecting
+  stale proposals after document changes. Do not use `load()` or file import for AI edits.
+  The API uses a provider registry behind `IAiWorkflowProvider`; OpenCode Go is the initial
+  adapter. `IAuthoringKnowledge` verifies and caches the deterministic portable skill package
+  exported by `Flowbit/tools/AuthoringExport`. Schema and references come from the canonical
+  model, owning guides, and examples; generation never executes scripts, persists versions,
+  or publishes. `WorkflowDefinitionReadinessChecker` owns the reusable catalog, shared-service
+  durability, lock-order, and publication checks called by both definition lifecycle operations
+  and read-only authoring validation. See [AI authoring](docs/ai-authoring.md).
 - **Save validator**: `validateModelForSave(candidate)` is a thin entry point.
   Each call builds a fresh context with `createSaveValidationContext(candidate)`
   (error accumulator, candidate arrays, lookup maps, structural adjacency, and
@@ -245,9 +256,10 @@ Projects:
 - `src/Flowbit.Service` - Service layer: workflow engine behavior,
   definition validation (`WorkflowDefinitionValidator` behind
   `IWorkflowDefinitionValidator` owns the authored/normalized definition rules,
-  while `WorkflowDefinitionService` keeps definition lifecycle orchestration,
-  publication gates, shared-catalog binding checks, durability/lock-order
-  checks, and DTO mapping), sequence-flow condition evaluation
+  while `WorkflowDefinitionService` keeps definition lifecycle orchestration
+  and DTO mapping, delegating publication gates, shared-catalog binding checks,
+  and durability/lock-order checks to `WorkflowDefinitionReadinessChecker`,
+  also used by read-only AI authoring), sequence-flow condition evaluation
   (`SequenceFlowConditionEvaluator`, NCalc), the focused instance list/search
   query service (`WorkflowInstanceQueryService` behind
   `IWorkflowInstanceQueryService`, injected directly by list/search endpoints),

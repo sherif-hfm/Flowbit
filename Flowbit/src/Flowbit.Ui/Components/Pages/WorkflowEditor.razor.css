@@ -5,5 +5,14 @@
     flex-direction: column;
 }
 
-.flowbit-editor { flex: 1; min-height: 0; }
+.editor-assistant-bar { display: flex; align-items: center; justify-content: space-between; gap: .75rem; padding: .4rem .8rem; border-bottom: 1px solid #dce5eb; background: #fff; }
+.editor-assistant-bar span { color: #657581; font-size: .8rem; }
+.editor-ai-layout { position: relative; display: flex; flex: 1; min-height: 0; min-width: 0; }
+.flowbit-editor { flex: 1; min-height: 0; min-width: 0; }
+.editor-ai-sidebar { flex: 0 0 min(400px, 38vw); width: min(400px, 38vw); min-height: 0; }
 .editor-startup-error { margin: 1rem; }
+@media (max-width: 767px) {
+    .editor-ai-sidebar { position: absolute; inset: 0; width: 100%; z-index: 20; }
+    .editor-assistant-bar span { display: none; }
+    .editor-assistant-bar { justify-content: flex-end; }
+}

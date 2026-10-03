@@ -28,6 +28,7 @@
 
   <ItemGroup>
     <None Include="..\..\src\Flowbit.Ui\wwwroot\editor\*" Link="Fixtures\editor\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\src\Flowbit.Ui\wwwroot\workflow-editor-host.js" Link="Fixtures\workflow-editor-host.js" CopyToOutputDirectory="PreserveNewest" />
     <None Include="Fixtures\inbox-visibility-conformance.json" CopyToOutputDirectory="PreserveNewest" />
     <None Update="Fixtures\workflow-message-start.json" CopyToOutputDirectory="PreserveNewest" />
     <None Update="Fixtures\parallel-gateway-simple.json" CopyToOutputDirectory="PreserveNewest" />

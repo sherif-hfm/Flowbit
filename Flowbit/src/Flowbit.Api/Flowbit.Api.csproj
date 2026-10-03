@@ -28,6 +28,23 @@
     <ProjectReference Include="..\Flowbit.Service\Flowbit.Service.csproj" />
     <ProjectReference Include="..\Flowbit.Infrastructure\Flowbit.Infrastructure.csproj" />
     <ProjectReference Include="..\Flowbit.Shared\Flowbit.Shared.csproj" />
+    <ProjectReference Include="..\..\tools\AuthoringExport\AuthoringExport.csproj" ReferenceOutputAssembly="false" PrivateAssets="all" />
   </ItemGroup>
+
+  <PropertyGroup>
+    <AuthoringPackageOutput>$(MSBuildProjectDirectory)/obj/$(Configuration)/$(TargetFramework)/authoring</AuthoringPackageOutput>
+  </PropertyGroup>
+  <Target Name="ExportFlowbitAuthoringPackage" BeforeTargets="GetCopyToOutputDirectoryItems;ComputeFilesToPublish" DependsOnTargets="ResolveProjectReferences" Condition="'$(DesignTimeBuild)' != 'true'">
+    <Exec Command="dotnet &quot;$(MSBuildProjectDirectory)/../../tools/AuthoringExport/bin/$(Configuration)/$(TargetFramework)/Flowbit.AuthoringExport.dll&quot; &quot;$(MSBuildProjectDirectory)/../../..&quot; &quot;$(AuthoringPackageOutput)&quot;" />
+    <ItemGroup>
+      <_FlowbitAuthoringResource Include="$(AuthoringPackageOutput)/**/*" />
+      <_FlowbitAuthoringResource>
+        <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+        <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+        <TargetPath>authoring/%(_FlowbitAuthoringResource.RecursiveDir)%(_FlowbitAuthoringResource.Filename)%(_FlowbitAuthoringResource.Extension)</TargetPath>
+      </_FlowbitAuthoringResource>
+      <ContentWithTargetPath Include="@(_FlowbitAuthoringResource)" />
+    </ItemGroup>
+  </Target>
 
 </Project>

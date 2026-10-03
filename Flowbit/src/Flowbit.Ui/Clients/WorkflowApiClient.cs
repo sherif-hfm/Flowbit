@@ -7,7 +7,7 @@ using Flowbit.Shared.Models;
 
 namespace Flowbit.Ui.Clients;
 
-public sealed class WorkflowApiClient(HttpClient httpClient)
+public sealed partial class WorkflowApiClient(HttpClient httpClient)
 {
     public async Task<PagedResult<InstanceAdministrativeActionPositionDto>> GetInstanceAdministrativeActionsAsync(
         long instanceId, int page = 1, int pageSize = 25, CancellationToken cancellationToken = default)

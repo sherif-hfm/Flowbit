@@ -11,6 +11,7 @@ For a disposable development database and your first working instance, follow [G
 - [Deployment layout](#deployment-layout)
 - [Local Docker Compose stack](#local-docker-compose-stack)
 - [Configuration](#configuration)
+- [AI authoring and local OCR](#ai-authoring-and-local-ocr)
 - [Authentication boundaries](#authentication-boundaries)
 - [Build and publish](#build-and-publish)
 - [Database migrations](#database-migrations)
@@ -148,6 +149,108 @@ Select claims with their read audience in mind: instance history is available th
 Apply the additive claim-audit migration before upgrading writers, then deploy matching API, Worker, and UI versions together. Existing rows and older queued jobs remain without a snapshot; there is no historical backfill. Avoid mixed old/new writers when complete claim-event coverage is required. Verify a controlled claim/unclaim and a durable action before enabling capture for general use. `null` means not recorded, and `{}` means capture was enabled but no selected name was present.
 
 Workflow-history retention deletes a row's actor claims with that history row; node-activity retention independently deletes visit snapshots. Database backups include captured claims. Existing retention protections and reactivation restrictions still apply; see [retention and backup](#retention-and-backup).
+
+## AI authoring and local OCR
+
+The API build exports and ships the portable [authoring package](ai-authoring.md).
+Startup loads it once and verifies its manifest/resource hashes against the current
+model. Keep the published `authoring` directory with the API binaries; a missing or
+incompatible package fails startup. Export requires the repository's documentation
+and example catalog at build time; deployed generation uses only the packaged files.
+No database migration or persistent conversation store is introduced.
+
+| API setting (`__` separates environment keys) | Default | Purpose |
+| --- | --- | --- |
+| `WorkflowAi:Enabled` | `true` | Enable provider discovery/generation. |
+| `WorkflowAi:OpenCodeBaseUrl` | `https://opencode.ai/zen/go/v1/` | Server-owned OpenCode Go endpoint. HTTPS required except loopback test servers; callers cannot supply a URL. |
+| `WorkflowAi:OpenCodeModels` | `kimi-k2.7-code`, `glm-5.3`, `glm-5.3-flash` | Chat-completions models offered by the adapter; the first is the default. Verify live account/model compatibility separately. |
+| `WorkflowAi:OpenCodeReasoningEfforts` | `{}` | Optional model-id-to-effort mapping. A configured selected model sends `reasoning_effort` as exactly `low`, `high`, or `max`; any other value rejects the request with `provider_configuration` (503) before provider transport. Unmapped models omit the field and retain provider defaults. |
+| `WorkflowAi:MaxInputCharacters` / `MaxHistoryMessages` | `200000` / `30` | Combined input/history bounds. |
+| `WorkflowAi:MaxContextCharacters` | `750000` | Entire prompt including packaged knowledge, selected catalog metadata, workflow, history, and repairs; reject excess rather than truncate. Provider token windows remain independent. |
+| `WorkflowAi:MaxWorkflowCharacters` / `MaxOutputBytes` | `2097152` / `2097152` | Workflow/context and provider response bounds. |
+| `WorkflowAi:MaxRepairAttempts` / `RequestTimeoutSeconds` / `MaxConcurrentRequests` | `2` / `180` / `4` | Repair budget, total deadline, process-local concurrency. |
+| `WorkflowAiDocuments:MaxBytes` / `MaxPages` / `MaxCharacters` | `20971520` / `100` / `200000` | PDF limits; excess input is rejected. |
+| `WorkflowAiDocuments:TimeoutSeconds` / `ProcessTimeoutSeconds` | `300` / `45` | Total extraction and individual raster/OCR process deadlines. |
+| `WorkflowAiDocuments:MaxRasterDimension` / `MaxConcurrentExtractions` | `4096` / `2` | Maximum raster dimension in pixels and process-local extraction concurrency. |
+| `WorkflowAiDocuments:PdfToPpmPath` / `TesseractPath` | `pdftoppm` / `tesseract` | Executable paths; arguments are passed without a shell. |
+
+For example, merge this optional mapping into the API's deployment configuration
+to request a lower reasoning effort only for `glm-5.3-flash`:
+
+```json
+{
+  "WorkflowAi": {
+    "OpenCodeReasoningEfforts": {
+      "glm-5.3-flash": "low"
+    }
+  }
+}
+```
+
+This mapping does not enable models or change the default model, output-token
+limit, or request deadline. It is server-owned configuration, not a caller-supplied
+request option. Configure an effort only after verifying that the selected model
+and OpenCode Go endpoint support it; accepted values in Flowbit do not establish
+live provider compatibility. Record an authorized live check for each configured
+model/provider combination. With the default empty mapping, requests for every
+model, including Kimi, omit `reasoning_effort`.
+
+The provider adapter sends `Flowbit/1.0` as its user-agent and a stable
+`x-opencode-session` for the temporary conversation. It receives the key only for
+the current request. Application HTTP-client header logging is redacted. Do not
+enable proxy/APM request-body or sensitive-header capture for these routes; the
+application does not persist provider keys or conversations. Selected workflow
+credential fields are masked in model context and unchanged values restored on
+edits. Review the provider's data handling before sending requirements or PDFs.
+The hosted UI retains the existing shared test identity boundary; its AI keys and
+conversation are panel-local and cleared on close, reset, disposal, and identity
+replacement. Production per-user authentication remains separate work.
+
+The API container installs Poppler, Tesseract, and English/Arabic language data.
+Text extraction uses PdfPig locally. OCR uses bounded raster sizes, process
+timeouts, two concurrent extractions by default, and a private temporary folder
+removed on completion, failure, or cancellation. PdfPig's synchronous parsing observes cancellation between
+parser calls; native raster/OCR processes are killed on cancellation or deadline.
+Allow sufficient ephemeral disk
+and restrict container memory/CPU at the deployment boundary. Configure reverse
+proxy request limits to permit the PDF allowance plus multipart overhead, or
+document any lower deployment limit. An unavailable OCR executable returns a
+clear error; text-only extraction remains available. Handwriting and embedded
+diagrams are not reliably interpreted.
+
+For Windows development, install a Windows Poppler distribution and Tesseract
+with both `eng.traineddata` and `ara.traineddata` in its `tessdata` folder. Add both
+executables to PATH or set explicit paths. From the repository root, adapt these
+PowerShell paths to your installation:
+
+```powershell
+$env:WorkflowAiDocuments__PdfToPpmPath = 'C:\tools\poppler\Library\bin\pdftoppm.exe'
+$env:WorkflowAiDocuments__TesseractPath = 'C:\Program Files\Tesseract-OCR\tesseract.exe'
+& $env:WorkflowAiDocuments__PdfToPpmPath -v
+& $env:WorkflowAiDocuments__TesseractPath --list-langs
+dotnet run --project Flowbit/src/Flowbit.Api
+```
+
+On Ubuntu (outside the supplied container), install the native dependencies and
+check the same programs before starting the API. Bash:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y poppler-utils tesseract-ocr tesseract-ocr-eng tesseract-ocr-ara
+export WorkflowAiDocuments__PdfToPpmPath=/usr/bin/pdftoppm
+export WorkflowAiDocuments__TesseractPath=/usr/bin/tesseract
+"$WorkflowAiDocuments__PdfToPpmPath" -v
+"$WorkflowAiDocuments__TesseractPath" --list-langs
+dotnet run --project Flowbit/src/Flowbit.Api
+```
+
+The package's provider-neutral rules are independent of live provider availability.
+Automated tests use a local provider server and do not require billed requests.
+A successful test-server run does not establish live OpenCode Go compatibility;
+perform and record that check using an authorized account before making that claim.
+
+The separate [native document verification](../Flowbit/tests/Flowbit.DocumentTests/README.md)
+checks the container's real English/Arabic OCR and mixed-page extraction using synthetic PDFs.
 
 ## Authentication boundaries
 

@@ -72,6 +72,8 @@ public static class WorkflowDefinitionEndpoints
             return await next(invocationContext);
         });
 
+        group.MapWorkflowAiEndpoints();
+
         group.MapGet("/", GetLatestWorkflows)
             .Produces<IReadOnlyList<WorkflowSummaryDto>>(StatusCodes.Status200OK)
             .Produces(StatusCodes.Status401Unauthorized)

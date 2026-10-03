@@ -25,12 +25,13 @@ export async function create(root, dotnet, urls) {
     if (!root.isConnected) throw new Error("Editor is closed.");
     let disposed = false;
     let snapshot = null;
+    let authoringOperation = null;
     const notify = (method, ...args) => {
         if (!disposed) dotnet.invokeMethodAsync(method, ...args).catch(() => {});
     };
     const editor = window.FlowbitEditor.mount(root, {
         mode: "hosted",
-        onChange: state => notify("EditorChanged", state.dirty),
+        onChange: state => notify("EditorChanged", state.dirty, state.revision),
         onReplace: () => { snapshot = null; notify("EditorReplaced"); },
         onSaveRequested: () => disposed ? Promise.resolve() : dotnet.invokeMethodAsync("SaveEditor")
     });
@@ -56,6 +57,27 @@ export async function create(root, dotnet, urls) {
             snapshot = result;
             // InvokeAsync<IJSStreamReference> wraps the Blob in the framework.
             return new Blob([result.json], { type: "application/json" });
+        },
+        authoringSnapshotStream() {
+            const json = JSON.stringify(editor.getAuthoringSnapshot());
+            if (new TextEncoder().encode(json).byteLength > 2 * 1024 * 1024)
+                throw new Error("Workflow exceeds the 2 MiB limit for AI authoring.");
+            return new Blob([json], { type: "application/json" });
+        },
+        beginAuthoringApply(operationId) { authoringOperation = operationId; },
+        invalidateAuthoringApply(operationId) {
+            if (authoringOperation === operationId) authoringOperation = null;
+        },
+        async applyProposal(stream, snapshotId, operationId) {
+            const json = new TextDecoder().decode(await stream.arrayBuffer());
+            if (disposed) throw new Error("Editor is closed.");
+            if (authoringOperation !== operationId || !await dotnet.invokeMethodAsync("CanApplyAiProposal", operationId))
+                throw new Error("This AI operation was cancelled or its session changed. Request another proposal before applying.");
+            // No asynchronous work may separate this final session check from document mutation.
+            if (disposed || authoringOperation !== operationId)
+                throw new Error("This AI operation is no longer active.");
+            authoringOperation = null;
+            return editor.applyProposal(JSON.parse(json), snapshotId);
         },
         saved(key) {
             if (!snapshot) throw new Error("The document was replaced while the save was in progress.");

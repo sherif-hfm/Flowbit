@@ -45,6 +45,8 @@ public sealed class BrowserStackFixture : IAsyncLifetime
     private RecordingApiProxy? apiProxy;
     public RecordingApiProxy ApiProxy => apiProxy ?? throw new InvalidOperationException("The response proxy is available only in an initialized acceptance stack.");
     private EditorStaticHost? editorHost;
+    private AiProviderTestHost? aiProvider;
+    public AiProviderTestHost AiProvider => aiProvider ?? throw new InvalidOperationException("The AI provider fixture is only available in the smoke stack.");
     private IPlaywright? playwright;
     private IBrowser? browser;
     private bool initialized;
@@ -107,6 +109,11 @@ public sealed class BrowserStackFixture : IAsyncLifetime
                 $"Browser smoke stack initializing. Repository root: {RepositoryRoot}. Headless: {Headless}.");
 
             await StartDatabaseAsync();
+            if (!IsAcceptance)
+            {
+                aiProvider = new AiProviderTestHost();
+                await aiProvider.StartAsync();
+            }
             await StartApiAsync();
             if (IsAcceptance)
             {
@@ -278,6 +285,11 @@ public sealed class BrowserStackFixture : IAsyncLifetime
             await RunStepAsync("stop api", () => api.DisposeAsync().AsTask());
             api = null;
         }
+        if (aiProvider is not null)
+        {
+            await RunStepAsync("stop AI provider", () => aiProvider.DisposeAsync().AsTask());
+            aiProvider = null;
+        }
         if (SetupClient is not null)
         {
             await RunStepAsync("dispose setup http client", () => SetupClient.DisposeAsync().AsTask());
@@ -325,6 +337,11 @@ public sealed class BrowserStackFixture : IAsyncLifetime
         var directory = acceptance?.ApiHostDirectory ?? Path.Combine(RepositoryRoot, "artifacts", "browser", "hosts", "api");
         var environment = CreateRuntimeEnvironment();
         environment["WorkflowContext__AllowedClaims__0"] = "depId";
+        if (aiProvider is not null)
+        {
+            environment["WorkflowAi__Enabled"] = "true";
+            environment["WorkflowAi__OpenCodeBaseUrl"] = aiProvider.BaseAddress;
+        }
         api = HostedProcess.Start(
             "api",
             Path.Combine(directory, "Flowbit.Api.dll"),

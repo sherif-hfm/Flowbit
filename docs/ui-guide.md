@@ -146,6 +146,22 @@ Overview totals and lists reflect the API's visibility rules; a restricted panel
 
 ## Design workflows in the UI
 
+### AI workflow assistant
+
+Open **AI assistant** in the editor to describe a new workflow or request changes to the current one. Select OpenCode Go and an available model, then enter your provider API key. Requirements, reviewed document text, and the current workflow are sent to that provider. Keys and conversation state live only in the open assistant panel; closing it, leaving the editor, resetting it, or changing the selected test identity clears them. Provider keys are separate from the Flowbit JWT and are not saved in workflow definitions.
+
+Optionally expand **Include shared-variable metadata**, load or search active catalog keys, and select the contracts the workflow may use. This requires your existing shared-variable read permission. Only selected contracts and descriptions are included in model context; catalog values are excluded. Clear the selection to remove this context from later requests.
+
+**Attach a BRD or SRS PDF** accepts text, scanned, and mixed PDFs. Extraction runs locally on the API host, with English, Arabic, or both OCR languages. Expand each extracted page to review or correct its text before sending. **Retry with OCR** forces OCR on the selected document; **Remove** removes its source text. Limits are 20 MiB, 100 pages, and 200,000 extracted characters by default. Scans, tables, diagrams, and handwriting can produce incomplete text; correct the extraction before relying on it.
+
+Answer clarification questions in the conversation. Review the proposal's changes, assumptions, setup dependencies, source references, and validation results, then select **Apply to editor**. Application is one undoable editor change; it retains the existing workflow family and saved baseline. Editing the diagram while generation is pending makes the proposal stale, so request a fresh proposal instead of overwriting later edits. Save or cancel pending script-dialog edits before capturing or applying a proposal.
+
+Generation and application do not save, publish, or run workflows. **Save new version** retains its existing unpublished-version behavior. Structurally valid proposals may still have catalog or publication blockers and need operational setup. **Download Flowbit AI skill** provides the same self-contained knowledge package for external agents. See [AI authoring and portable skill](ai-authoring.md) and [AI deployment settings](deployment.md#ai-authoring-and-local-ocr).
+
+The current process-wide development identity boundary remains unchanged. Separate assistant panels do not share their provider keys, but this is not production per-user authentication.
+
+### Visual editing and saving
+
 Choose **Create workflow** on Workflows, or **Workflow editor** in the sidebar, to start an empty document with a fresh editable workflow key. To change an existing definition, expand its family and choose **Edit** on the exact version. The editor fills the workspace beside the normal navigation. Its compact toolbar contains File/Edit/View, the workflow name, version and save status, and **Save new version**. The version's tooltip identifies the source name/key; its workflow key in the inspector is read-only because changes stay in that family.
 
 Use the editor's normal canvas, inspector, variables, and File menu. **Save new version** validates the same JSON as **File → Save JSON**, then creates an **unpublished** immutable version. Editing a stored version uses the existing new-version API; creating or importing locally uses the existing create API. A create request using an existing key appends a version to that family. After success, the toolbar and URL identify the saved version. Publish it separately from Workflows. Existing instances continue using their selected version.

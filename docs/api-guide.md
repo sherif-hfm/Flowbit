@@ -13,6 +13,7 @@ All JSON property names below are the wire names. Database identifiers are integ
 - [Filtering and pagination](#filtering-and-pagination)
 - [Authentication context](#authentication-context)
 - [Workflow definitions](#workflow-definitions)
+- [AI authoring and read-only validation](#ai-authoring-and-read-only-validation)
 - [Instances and messages](#instances-and-messages)
 - [User tasks](#user-tasks)
 - [Multi-instance executions](#multi-instance-executions)
@@ -506,6 +507,80 @@ Content-Type: application/json
   "createdAt": "2026-09-09T10:00:00Z"
 }
 ```
+
+## AI authoring and read-only validation
+
+These operations use the same **workflow administrator** authorization as definition saves.
+They do not save, publish, start instances, run scripts, or call authored service URLs.
+Provider credentials are separate from the Flowbit bearer token. Only `/ai/turn` needs
+the single `X-Flowbit-AI-Key` header; never place it in a workflow or request history.
+See [AI authoring](ai-authoring.md) for the portable skill and [deployment](deployment.md#ai-authoring-and-local-ocr)
+for limits and provider configuration.
+
+| Method and route | Request | Response |
+| --- | --- | --- |
+| `GET /api/workflows/ai/providers` | No body or provider key. | Array of `{id,name,defaultModelId,models:[{id,name}]}` from configured adapters. Discovery does not verify an account or make a billed call. |
+| `GET /api/workflows/ai/skill` | No body or provider key. | `application/zip`, attachment `flowbit-authoring.zip`, containing the startup-verified package used by the assistant. |
+| `POST /api/workflows/ai/extract` | `multipart/form-data`: exactly one `file`; optional `forceOcr=true` and `languages=eng`, `ara`, or `eng+ara` (default). | `{fileName,pages:[{page,text,usedOcr,warnings}],warnings}`. Pages are one-based and text remains editable before generation. |
+| `POST /api/workflows/ai/turn` | JSON described below, plus `X-Flowbit-AI-Key`. | Clarification, validated proposal, or unsuccessful generation result. |
+| `POST /api/workflows/validate` | Raw canonical workflow JSON, with no wrapper. | Structural validity and separate save/publication readiness, described below. No provider key or provider request. |
+
+The turn JSON has `providerId` (initially `opencode-go`), `modelId` (default
+`kimi-k2.7-code`), `conversationId`, `message`, `history`, `currentWorkflow`,
+`snapshotId`, and `sources`. Use a stable, non-secret UUID conversation identifier per
+temporary session. `history` contains `{role,content}` messages; `sources` contains
+`{sourceName,pageNumber,text}`. Omit `currentWorkflow` to create a new definition;
+pass the editor snapshot to edit, including incomplete drafts needing repair.
+Optional `sharedVariableKeys` selects up to 50 active catalog keys. This additionally
+requires the existing shared-variable read permission (`SharedVariables.RequiredRole`
+for JWT callers). Only the selected entries' contracts and descriptions enter the
+prompt; current values are excluded. Unknown or inactive selections are rejected.
+`snapshotId` is opaque client correlation; the hosted editor compares its current
+snapshot before accepting an apply. Clients must enforce their own equivalent stale-edit check.
+
+The response has `kind` (`clarification`, `proposal`, or `invalid`), `message`,
+`questions`, nullable `definition`, `assumptions`, `dependencies`, `changeSummary`,
+`validation`, echoed `snapshotId`, `contractHash`, and `sourceReferences`
+(`{sourceName,pageNumber,requirement}`). A proposal is canonical `WorkflowModel`
+JSON. Keep explanations outside the definition. Applying it is a separate user action;
+generation itself never changes the editor or saved definition. The service allows
+at most two repair attempts within the same request deadline.
+
+Validation returns `{isValid,errors,warnings,canSave,canPublish,saveBlockers,publicationBlockers}`.
+The service strictly parses, validates authored configuration, normalizes, validates
+the normalized definition, and checks read-only prerequisites. `isValid` concerns
+structure and authored rules. A structurally valid draft can still have missing
+shared-catalog entries, durability configuration, or other setup blockers. Save and
+publication operations re-check their authoritative gates at the time of mutation;
+a successful validation is not a reservation or permission to bypass them.
+
+```http
+POST /api/workflows/validate HTTP/1.1
+Host: localhost:5017
+Authorization: Bearer TOKEN
+Content-Type: application/json
+
+{"id":"draft-review","name":"Review","lanes":[],"flowNodes":[],"sequenceFlows":[],"variables":[]}
+```
+
+This deliberately incomplete definition returns validation errors without creating a
+version. Transport-invalid JSON returns `400`. The validation body limit is 2 MiB;
+the turn body limit is 4 MiB. Extract defaults are 20 MiB, 100 pages, and 200,000
+characters; exceeding a limit rejects the input rather than silently truncating it.
+Scanned pages require the configured local OCR executables; mixed PDFs retain text
+extraction on readable pages. OCR warnings must be reviewed, especially Arabic,
+handwriting, and diagrams. `forceOcr` retries the whole document using OCR.
+
+Generation/extraction failures use `{code,error}` with sanitized diagnostics.
+Clients should distinguish invalid input (`400`), authentication (`401`), authorization
+(`403`), size (`413`), media type (`415`), quota/concurrency (`429`), upstream or
+generation transport (`502`), disabled/unavailable service (`503`), and deadline
+(`504`). Provider failures do not include raw upstream response bodies. A response
+with `code: "provider_auth"` uses `400` to distinguish a rejected provider key
+from missing/expired Flowbit bearer authorization (`401`). A response
+with `kind: "invalid"` can use HTTP `200`; inspect `kind` and `validation` before
+offering apply. Cancelling the HTTP request cancels provider/process work. Turn,
+validation, and extraction responses set `Cache-Control: no-store`.
 
 ## Instances and messages
 

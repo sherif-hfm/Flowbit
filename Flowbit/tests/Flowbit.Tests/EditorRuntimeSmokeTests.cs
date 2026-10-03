@@ -8,6 +8,108 @@ namespace Flowbit.Tests;
 public sealed class EditorRuntimeSmokeTests
 {
     [Fact]
+    public void AuthoringSnapshotAcceptsIncompleteDraftsAndRejectsPendingScriptEdits()
+    {
+        var engine = CreateEditorEngine();
+        using var result = JsonDocument.Parse(engine.Evaluate("""
+            (() => {
+              const empty = readAuthoringSnapshot();
+              model.flowNodes.push({ id: 2, type: 'scriptTask', name: 'Script', script: '// saved', x: 10, y: 10 });
+              editingScriptNodeId = 2;
+              document.getElementById('js-editor-modal').style.display = 'flex';
+              document.getElementById('js-editor-textarea').value = '// unsaved';
+              let rejected = false;
+              try { readAuthoringSnapshot(); } catch (error) { rejected = error.message.includes('Save & Close'); }
+              return JSON.stringify({ empty: empty.definition.flowNodes.length === 0, snapshot: empty.snapshotId, rejected });
+            })()
+            """).AsString());
+        Assert.True(result.RootElement.GetProperty("empty").GetBoolean());
+        Assert.NotEmpty(result.RootElement.GetProperty("snapshot").GetString()!);
+        Assert.True(result.RootElement.GetProperty("rejected").GetBoolean());
+    }
+
+    [Fact]
+    public void AuthoringApplyIsOneUndoableEditAndPreservesIdentityAndLaneGrowth()
+    {
+        var engine = CreateEditorEngine();
+        engine.SetValue("workflowJson", ExampleWorkflowData.Read("examples/user-tasks/01-roles-claim-and-bypass.json"));
+        using var result = JsonDocument.Parse(engine.Evaluate("""
+            (() => {
+              loadFromObject(JSON.parse(workflowJson)); resetHistory();
+              const before = JSON.stringify(model);
+              const snapshot = readAuthoringSnapshot();
+              const candidate = JSON.parse(before);
+              candidate.name = 'AI edited'; candidate.id = 'wrong-provider-key';
+              const laneId = candidate.lanes[0].id;
+              const oldWidth = candidate.lanes[0].w;
+              candidate.lanes[0].w += 400;
+              candidate.flowNodes[0].x = 0;
+              applyAuthoringProposal(candidate, snapshot.snapshotId);
+              const applied = JSON.stringify(model);
+              const keyPreserved = model.id === snapshot.definition.id;
+              const positionPreserved = model.flowNodes[0].x === snapshot.definition.flowNodes[0].x;
+              const laneGrew = model.lanes.find(lane => lane.id === laneId).w >= oldWidth + 400;
+              const singleUndo = undoHistory.length === 1;
+              undo(); const restored = JSON.stringify(model) === before;
+              redo(); const replayed = JSON.stringify(model) === applied;
+              return JSON.stringify({ keyPreserved, positionPreserved, laneGrew, singleUndo, restored, replayed });
+            })()
+            """).AsString());
+        foreach (var property in result.RootElement.EnumerateObject()) Assert.True(property.Value.GetBoolean(), property.Name);
+    }
+
+    [Fact]
+    public void AuthoringApplyRejectsStaleAndInvalidProposalsWithoutChangingHistory()
+    {
+        var engine = CreateEditorEngine();
+        engine.SetValue("workflowJson", ExampleWorkflowData.Read("examples/user-tasks/01-roles-claim-and-bypass.json"));
+        using var result = JsonDocument.Parse(engine.Evaluate("""
+            (() => {
+              loadFromObject(JSON.parse(workflowJson)); resetHistory();
+              const snapshot = readAuthoringSnapshot();
+              model.name = 'Manual edit'; commitHistory();
+              const before = JSON.stringify({ model, undoHistory, redoHistory });
+              let staleRejected = false;
+              try { applyAuthoringProposal(snapshot.definition, snapshot.snapshotId); }
+              catch (error) { staleRejected = error.message.includes('changed'); }
+              const preserved = before === JSON.stringify({ model, undoHistory, redoHistory });
+              const current = readAuthoringSnapshot();
+              current.definition.flowNodes = [];
+              let invalidRejected = false;
+              try { applyAuthoringProposal(current.definition, current.snapshotId); } catch { invalidRejected = true; }
+              const invalidPreserved = before === JSON.stringify({ model, undoHistory, redoHistory });
+              undo();
+              let undoStale = false;
+              try { applyAuthoringProposal(snapshot.definition, snapshot.snapshotId); } catch { undoStale = true; }
+              return JSON.stringify({ staleRejected, preserved, invalidRejected, invalidPreserved, undoStale });
+            })()
+            """).AsString());
+        foreach (var property in result.RootElement.EnumerateObject()) Assert.True(property.Value.GetBoolean(), property.Name);
+    }
+
+    [Fact]
+    public void AuthoringApplyRetainsServerLayoutWhenAnExistingNodeChangesLanes()
+    {
+        var engine = CreateEditorEngine();
+        engine.SetValue("workflowJson", ExampleWorkflowData.Read("examples/user-tasks/01-roles-claim-and-bypass.json"));
+        using var result = JsonDocument.Parse(engine.Evaluate("""
+            (() => {
+              loadFromObject(JSON.parse(workflowJson)); resetHistory();
+              const snapshot = readAuthoringSnapshot();
+              const candidate = snapshot.definition;
+              candidate.lanes.push({ id: 999, name: 'New team', x: 50, y: 2000, w: 1600, h: 400 });
+              candidate.flowNodes[0].laneId = 999;
+              candidate.flowNodes[0].x = 250; candidate.flowNodes[0].y = 2150;
+              applyAuthoringProposal(candidate, snapshot.snapshotId);
+              return JSON.stringify({ lane: model.flowNodes[0].laneId, x: model.flowNodes[0].x, y: model.flowNodes[0].y });
+            })()
+            """).AsString());
+        Assert.Equal(999, result.RootElement.GetProperty("lane").GetInt32());
+        Assert.Equal(250, result.RootElement.GetProperty("x").GetDouble());
+        Assert.Equal(2150, result.RootElement.GetProperty("y").GetDouble());
+    }
+
+    [Fact]
     public void ExportPreparationPreservesTheLiveDocumentAndValidationOrder()
     {
         var engine = CreateEditorEngine();

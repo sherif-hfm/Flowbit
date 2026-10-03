@@ -17,7 +17,19 @@
     {
         <div class="editor-startup-error alert alert-danger" role="alert">@error</div>
     }
-    <div @ref="editorRoot" id="workflow-editor-root" class="flowbit-editor" aria-label="Workflow editor"></div>
+    <div class="editor-assistant-bar">
+        <span>Build and refine your workflow</span>
+        <button type="button" id="open-ai-assistant" class="btn btn-sm btn-outline-primary" disabled="@(!loaded)" aria-expanded="@aiOpen.ToString().ToLowerInvariant()" @onclick="ToggleAi">AI assistant</button>
+    </div>
+    <div class="editor-ai-layout @(aiOpen ? "ai-open" : "")">
+        <div @ref="editorRoot" id="workflow-editor-root" class="flowbit-editor" aria-label="Workflow editor"></div>
+        @if (aiOpen)
+        {
+            <div class="editor-ai-sidebar">
+                <WorkflowAiPanel @ref="aiPanel" @key="documentGeneration" CaptureSnapshot="CaptureAiSnapshotAsync" ApplyProposal="ApplyAiProposalAsync" InvalidateOperation="InvalidateAiOperationAsync" Close="CloseAi" EditorRevision="@editorRevision" />
+            </div>
+        }
+    </div>
 </div>
 
 @code {
@@ -42,6 +54,9 @@
     private bool dirty;
     private bool saving;
     private bool disposed;
+    private bool aiOpen;
+    private WorkflowAiPanel? aiPanel;
+    private string? editorRevision;
     private string? error;
     private string? notice;
     private EditorHostState? lastHostState;
@@ -183,11 +198,53 @@
     }
 
     [JSInvokable]
-    public Task EditorChanged(bool hasChanges)
+    public Task EditorChanged(bool hasChanges, string revision)
     {
         if (disposed) return Task.CompletedTask;
         dirty = hasChanges;
+        editorRevision = revision;
         return InvokeAsync(StateHasChanged);
+    }
+
+    private void ToggleAi() => aiOpen = !aiOpen;
+    private void CloseAi() => aiOpen = false;
+
+    private async Task<EditorAuthoringSnapshot> CaptureAiSnapshotAsync()
+    {
+        if (!loaded || host is null || saving) throw new InvalidOperationException("Wait for the editor to finish loading or saving.");
+        await using var reference = await host.InvokeAsync<IJSStreamReference>("authoringSnapshotStream", lifetime.Token);
+        await using var stream = await reference.OpenReadStreamAsync(MaxDocumentBytes, lifetime.Token);
+        var snapshot = await JsonSerializer.DeserializeAsync<EditorAuthoringSnapshot>(stream, JsonOptions, lifetime.Token)
+            ?? throw new InvalidOperationException("The editor snapshot could not be read.");
+        editorRevision = snapshot.SnapshotId;
+        return snapshot;
+    }
+
+    private async Task ApplyAiProposalAsync(EditorAiProposal proposal)
+    {
+        if (!loaded || host is null || saving) throw new InvalidOperationException("Wait for the editor to finish loading or saving.");
+        if (!CanApplyAiProposal(proposal.OperationId)) throw new InvalidOperationException("This AI operation is no longer active.");
+        await host.InvokeVoidAsync("beginAuthoringApply", lifetime.Token, proposal.OperationId);
+        var json = proposal.Definition.GetRawText();
+        if (Encoding.UTF8.GetByteCount(json) > MaxDocumentBytes) throw new InvalidOperationException("The AI proposal exceeds the 2 MiB workflow limit.");
+        await using var stream = new MemoryStream(Encoding.UTF8.GetBytes(json));
+        using var reference = new DotNetStreamReference(stream);
+        await host.InvokeVoidAsync("applyProposal", lifetime.Token, reference, proposal.SnapshotId, proposal.OperationId);
+        notice = "AI proposal applied. Review the diagram and save a new version when ready.";
+        error = null;
+        await UpdateHostStateAsync();
+    }
+
+    [JSInvokable]
+    public bool CanApplyAiProposal(string operationId) => !disposed && loaded && !saving && aiOpen
+        && aiPanel?.CanApplyAuthoringProposal(operationId) == true;
+
+    private async Task InvalidateAiOperationAsync(string operationId)
+    {
+        if (host is null || disposed) return;
+        try { await host.InvokeVoidAsync("invalidateAuthoringApply", lifetime.Token, operationId); }
+        catch (JSDisconnectedException) { }
+        catch (OperationCanceledException) { }
     }
 
     [JSInvokable]

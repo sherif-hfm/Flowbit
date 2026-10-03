@@ -31,6 +31,23 @@ Start with the [developer documentation](../docs/index.md) for HTTP onboarding, 
 - `tools/*` - the existing definition verifier, live API regression runner, and
   instance load runner.
 
+### AI authoring ownership
+
+The hosted editor's optional assistant calls authenticated, non-persisting authoring operations.
+`IAiWorkflowProvider` isolates model transport/authentication; OpenCode Go is the first adapter.
+`WorkflowAiAuthoringService` assembles the versioned skill context, redacts recognized credential
+fields, parses and validates canonical output, and allows up to two repairs. `IAuthoringKnowledge`
+loads/verifies the exact portable package produced by `tools/AuthoringExport`; the download is the
+same deterministic archive. PDF extraction is local and bounded (PdfPig plus Poppler/Tesseract).
+
+`WorkflowDefinitionReadinessChecker` shares catalog, service durability, lock-order, and publication
+checks with `WorkflowDefinitionService`; existing lifecycle operations retain their check order.
+Read-only authoring never persists definitions, warms definition caches, calls generated REST
+endpoints, or executes generated JavaScript. The UI owns temporary credentials and proposals;
+the editor owns atomic application, undo, identity preservation, and snapshot guards. No database
+migration is needed. See [AI authoring](../docs/ai-authoring.md), [HTTP contracts](../docs/api-guide.md#ai-authoring-and-read-only-validation),
+and [OCR deployment](../docs/deployment.md#ai-authoring-and-local-ocr).
+
 ### Instance query ownership
 
 Instance list and advanced-search orchestration lives in
@@ -150,9 +167,10 @@ the full normalized rule set and ends with
 analysis. The validator performs no database access, never normalizes, and
 never persists or warms caches. `WorkflowDefinitionService` keeps the
 lifecycle operations (create/new version/publish/unpublish/default/delete),
-shared-catalog binding checks, service-task durability, transaction
-lock-order proofs, the durable publication gate, cache warming, logging, and
-DTO mapping; create and new-version calls run authored validation around
+cache warming, logging, and DTO mapping. It delegates shared-catalog binding,
+service-task durability, transaction lock-order proofs, and durable publication
+gates to `WorkflowDefinitionReadinessChecker`, shared with read-only authoring.
+Create and new-version calls run authored validation around
 normalization in the validator, then their shared and publication checks.
 Publication and set-default re-run conditional analysis plus the
 shared/durability/lock-order/publication checks but deliberately not full
