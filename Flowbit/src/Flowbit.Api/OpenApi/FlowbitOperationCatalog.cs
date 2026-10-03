@@ -18,6 +18,7 @@ internal static partial class FlowbitOperationCatalog
             ["GET /api/workflows/ai/skill"] = "Download the self-contained authoring skill used by this Flowbit API build.",
             ["POST /api/workflows/ai/extract"] = "Extract editable page-labelled PDF text with optional local English and Arabic OCR. No AI provider is called.",
             ["POST /api/workflows/ai/turn"] = "Propose a workflow or ask clarification questions using a session-supplied AI key. Does not save, publish, or execute a workflow.",
+            ["POST /api/workflows/ai/turn/stream"] = "Stream bounded AI authoring progress, private continuation checkpoints, and a final result as NDJSON. Requires a request-scoped provider key and never saves, publishes, or executes a workflow.",
             ["POST /api/workflows/validate"] = "Validate canonical workflow JSON and report save and publication prerequisites without changing application state or calling an AI provider.",
             ["POST /api/workflows"] = "Create the next immutable version in a workflow-key family.",
             ["GET /api/workflows/{workflowKey}/versions"] = "List every version of the workflow identified by its stable workflow key.",

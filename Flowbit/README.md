@@ -35,17 +35,25 @@ Start with the [developer documentation](../docs/index.md) for HTTP onboarding, 
 
 The hosted editor's optional assistant calls authenticated, non-persisting authoring operations.
 `IAiWorkflowProvider` isolates model transport/authentication; OpenCode Go is the first adapter.
-`WorkflowAiAuthoringService` assembles the versioned skill context, redacts recognized credential
-fields, parses and validates canonical output, and allows up to two repairs. `IAuthoringKnowledge`
-loads/verifies the exact portable package produced by `tools/AuthoringExport`; the download is the
-same deterministic archive. PDF extraction is local and bounded (PdfPig plus Poppler/Tesseract).
+`WorkflowAiAuthoringService` runs a bounded private-draft loop through `WorkflowAiRunner`,
+`WorkflowAiContext`, and `WorkflowAiDraft`: read packaged references/source excerpts, apply typed
+atomic edits, validate, and produce the complete canonical proposal. Transport retries, output-limit
+recovery, and consecutive validation repairs have separate caps under a shared run deadline/call/token
+budget. `IAiWorkflowProvider` returns completion/usage metadata; it makes one request without hidden
+retries. The model stays fixed for a run and its continuations. `IAuthoringKnowledge` loads/verifies
+the exact portable package produced by `tools/AuthoringExport`; the download is the same deterministic
+archive, while the internal prompt reads applicable resources on demand. PDF extraction is local and bounded (PdfPig plus Poppler/Tesseract).
 
 `WorkflowDefinitionReadinessChecker` shares catalog, service durability, lock-order, and publication
 checks with `WorkflowDefinitionService`; existing lifecycle operations retain their check order.
 Read-only authoring never persists definitions, warms definition caches, calls generated REST
 endpoints, or executes generated JavaScript. The UI owns temporary credentials and proposals;
-the editor owns atomic application, undo, identity preservation, and snapshot guards. No database
-migration is needed. See [AI authoring](../docs/ai-authoring.md), [HTTP contracts](../docs/api-guide.md#ai-authoring-and-read-only-validation),
+the editor owns atomic application, undo, identity preservation, and snapshot guards. The streamed
+HTTP adapter emits versioned NDJSON progress, complete draft checkpoints, and one terminal outcome;
+the buffered route uses the same runner. Checkpoints remain untrusted and live only in the open
+Blazor Server circuit. Continuation rechecks original-input/catalog and contract hashes, reparses the
+draft, and recreates request-local redaction from both baseline and checkpoint. API replicas need no
+shared session store; a lost UI circuit loses its checkpoint. No database migration is needed. See [AI authoring](../docs/ai-authoring.md), [HTTP contracts](../docs/api-guide.md#ai-authoring-and-read-only-validation),
 and [OCR deployment](../docs/deployment.md#ai-authoring-and-local-ocr).
 
 ### Instance query ownership

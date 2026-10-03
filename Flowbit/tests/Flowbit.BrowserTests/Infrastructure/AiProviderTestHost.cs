@@ -19,7 +19,8 @@ public sealed class AiProviderTestHost : IAsyncDisposable
     public string BaseAddress { get; private set; } = "";
     public ConcurrentQueue<Request> Requests { get; } = new();
 
-    public sealed record Request(string KeyHash, string Conversation, string Model, string Requirement, string WorkflowKey, string[] SourceTexts, string[] CatalogKeys, bool IncludesCatalogValue);
+    public sealed record Request(string KeyHash, string Conversation, string Model, string Requirement, string WorkflowKey, string[] SourceTexts, string[] CatalogKeys, bool IncludesCatalogValue,
+        long Revision, int MaxOperations, int MaxTokens);
     public sealed class Reply(string kind, string workflowName, bool delayed)
     {
         internal string Kind { get; } = kind;
@@ -28,12 +29,64 @@ public sealed class AiProviderTestHost : IAsyncDisposable
         public TaskCompletionSource Arrived { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource Cancelled { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal bool Delayed { get; } = delayed;
+        internal Func<JsonNode, string>? Content { get; init; }
+        internal string FinishReason { get; init; } = "stop";
+        internal int StatusCode { get; init; } = StatusCodes.Status200OK;
         public void Complete() => Release.TrySetResult();
     }
 
     public Reply Enqueue(string workflowName, bool clarification = false, bool delayed = false)
     {
         var reply = new Reply(clarification ? "clarification" : "proposal", workflowName, delayed);
+        replies.Enqueue(reply);
+        return reply;
+    }
+
+    public Reply EnqueueTruncation()
+    {
+        var reply = new Reply("edit", "", false)
+        {
+            FinishReason = "length",
+            Content = _ => "{\"kind\":\"edit\",\"operations\":[{\"op\":\"set\",\"target\":\"workflow\",\"path\":\"/name\",\"value\":\"Truncated name must never apply"
+        };
+        replies.Enqueue(reply);
+        return reply;
+    }
+
+    public Reply EnqueueNameEdit(string name)
+    {
+        var batchId = Guid.NewGuid().ToString("N");
+        var reply = new Reply("edit", name, false)
+        {
+            Content = input => JsonSerializer.Serialize(new
+            {
+                kind = "edit", baseRevision = input["revision"]!.GetValue<long>(), batchId,
+                plan = "Rename the workflow, then validate the completed draft.",
+                operations = new[] { new { op = "set", target = "workflow", path = "/name", value = name } }
+            })
+        };
+        replies.Enqueue(reply);
+        return reply;
+    }
+
+    public Reply EnqueueFinish(bool delayed = false)
+    {
+        var reply = new Reply("finish", "", delayed)
+        {
+            Content = _ => JsonSerializer.Serialize(new
+            {
+                kind = "finish", message = "The workflow is ready for review.",
+                assumptions = Array.Empty<string>(), dependencies = Array.Empty<string>(),
+                changeSummary = new[] { "Updated the workflow name." }, sourceReferences = Array.Empty<object>()
+            })
+        };
+        replies.Enqueue(reply);
+        return reply;
+    }
+
+    public Reply EnqueueFailure(HttpStatusCode status)
+    {
+        var reply = new Reply("failure", "", false) { StatusCode = (int)status };
         replies.Enqueue(reply);
         return reply;
     }
@@ -66,12 +119,28 @@ public sealed class AiProviderTestHost : IAsyncDisposable
                 input["request"]!.GetValue<string>(), workflowKey,
                 input["sourcePages"]!.AsArray().Select(page => page!["text"]!.GetValue<string>()).ToArray(),
                 input["selectedSharedVariables"]!.AsArray().Select(item => item!["key"]!.GetValue<string>()).ToArray(),
-                input["selectedSharedVariables"]!.AsArray().Any(item => item!.AsObject().ContainsKey("value"))));
+                input["selectedSharedVariables"]!.AsArray().Any(item => item!.AsObject().ContainsKey("value")),
+                input["revision"]?.GetValue<long>() ?? 0, input["maxOperations"]?.GetValue<int>() ?? 0,
+                envelope.TryGetProperty("max_tokens", out var maxTokens) ? maxTokens.GetInt32() : 0));
             reply.Arrived.TrySetResult();
             if (reply.Delayed)
             {
                 try { await reply.Release.Task.WaitAsync(context.RequestAborted); }
                 catch (OperationCanceledException) { reply.Cancelled.TrySetResult(); return; }
+            }
+            if (reply.StatusCode != StatusCodes.Status200OK)
+            {
+                context.Response.StatusCode = reply.StatusCode;
+                await context.Response.WriteAsJsonAsync(new { error = new { type = "test_provider_failure", message = "Synthetic provider failure." } }, context.RequestAborted);
+                return;
+            }
+            if (reply.Content is not null)
+            {
+                await context.Response.WriteAsJsonAsync(new
+                {
+                    choices = new[] { new { finish_reason = reply.FinishReason, message = new { role = "assistant", content = reply.Content(input) } } }
+                }, context.RequestAborted);
+                return;
             }
             var definition = current?["flowNodes"] is JsonArray { Count: > 0 }
                 ? current.DeepClone()

@@ -24,7 +24,10 @@ public static class WorkflowAiEndpoints
             .Produces<AiDocumentExtractionDto>().Produces(400).Produces(401).Produces(403).Produces(413)
             .Produces(415).Produces(429).Produces(503).Produces(504);
         group.MapPost("/ai/turn", Turn).Accepts<AiTurnRequestDto>("application/json")
-            .Produces<AiTurnResultDto>().Produces(400).Produces(401).Produces(403).Produces(413)
+            .Produces<AiTurnResultDto>().Produces(400).Produces(401).Produces(403).Produces(409).Produces(413)
+            .Produces(415).Produces(429).Produces(502).Produces(503).Produces(504);
+        group.MapPost("/ai/turn/stream", TurnStream).Accepts<AiTurnRequestDto>("application/json")
+            .Produces<AiRunEventDto>(200, contentType: "application/x-ndjson").Produces(400).Produces(401).Produces(403).Produces(409).Produces(413)
             .Produces(415).Produces(429).Produces(502).Produces(503).Produces(504);
         group.MapPost("/validate", Validate).Accepts<JsonElement>("application/json")
             .Produces<AiValidationResultDto>().Produces(400).Produces(401).Produces(403).Produces(413).Produces(415);
@@ -52,7 +55,7 @@ public static class WorkflowAiEndpoints
         {
             if (string.IsNullOrWhiteSpace(apiKey) || apiKey.Length > 4096 || http.Request.Headers["X-Flowbit-AI-Key"].Count != 1)
                 return Results.Json(new { code = "invalid_api_key", error = "Supply one AI provider key for this request." }, statusCode: 400);
-            var request = await ReadJsonAsync<AiTurnRequestDto>(http.Request, 4 * 1024 * 1024, ct);
+            var request = await ReadJsonAsync<AiTurnRequestDto>(http.Request, 8 * 1024 * 1024, ct);
             if (request.SharedVariableKeys is { Count: > 0 } &&
                 !(await authorization.AuthorizeAsync(http.User, http, SharedVariableAuthorizationPolicies.Read)).Succeeded)
                 return Results.Forbid();
@@ -61,6 +64,72 @@ public static class WorkflowAiEndpoints
         catch (WorkflowAiException ex) { return Failure(ex); }
         catch (BadHttpRequestException ex) { return BodyFailure(ex); }
         catch (JsonException) { return InvalidJson(); }
+    }
+
+    public static async Task<IResult> TurnStream(HttpContext http, [FromServices] IWorkflowAiAuthoringService service,
+        [FromServices] IAuthorizationService authorization,
+        [FromHeader(Name = "X-Flowbit-AI-Key")] string? apiKey, CancellationToken ct)
+    {
+        http.Response.Headers.CacheControl = "no-store";
+        string? runId = null;
+        long sequence = 0;
+        var eventCount = 0;
+        var terminal = false;
+        async Task Emit(AiRunEventDto frame, CancellationToken cancellationToken)
+        {
+            if (terminal) throw new InvalidOperationException("An AI run already ended.");
+            // Use the runner's identity and sequence for normal and endpoint-generated terminal frames.
+            runId ??= frame.RunId;
+            if (string.IsNullOrWhiteSpace(runId) || frame.RunId != runId || frame.Sequence <= sequence)
+                throw new InvalidOperationException("Invalid AI event sequence.");
+            if (eventCount >= 255 && frame.Type is not ("result" or "paused" or "error"))
+                throw new WorkflowAiException("event_limit", "The AI run exceeded its event limit. Continue from the last received checkpoint.", 502);
+            var bytes = JsonSerializer.SerializeToUtf8Bytes(frame, JsonOptions);
+            if (bytes.Length > 4 * 1024 * 1024)
+                throw new WorkflowAiException("response_too_large", "The AI response exceeds its supported size.", 502);
+            if (!http.Response.HasStarted)
+            {
+                http.Response.ContentType = "application/x-ndjson; charset=utf-8";
+                http.Response.Headers["X-Accel-Buffering"] = "no";
+                http.Features.Get<IHttpResponseBodyFeature>()?.DisableBuffering();
+                await http.Response.StartAsync(cancellationToken);
+            }
+            sequence = frame.Sequence;
+            eventCount++;
+            await http.Response.Body.WriteAsync(bytes, cancellationToken);
+            await http.Response.Body.WriteAsync("\n"u8.ToArray(), cancellationToken);
+            await http.Response.Body.FlushAsync(cancellationToken);
+            terminal = frame.Type is "result" or "paused" or "error";
+        }
+        async Task<IResult> StreamFailure(string code, string message)
+        {
+            if (!terminal)
+                await Emit(new() { RunId = runId!, Sequence = sequence + 1, Type = "error", Code = code, Message = message }, ct);
+            return Results.Empty;
+        }
+        try
+        {
+            if (string.IsNullOrWhiteSpace(apiKey) || apiKey.Length > 4096 || http.Request.Headers["X-Flowbit-AI-Key"].Count != 1)
+                return Results.Json(new { code = "invalid_api_key", error = "Supply one AI provider key for this request." }, statusCode: 400);
+            var request = await ReadJsonAsync<AiTurnRequestDto>(http.Request, 8 * 1024 * 1024, ct);
+            if (request.SharedVariableKeys is { Count: > 0 } &&
+                !(await authorization.AuthorizeAsync(http.User, http, SharedVariableAuthorizationPolicies.Read)).Succeeded)
+                return Results.Forbid();
+            var result = await service.RunAsync(request, apiKey, Emit, ct);
+            if (!terminal)
+                await Emit(new() { RunId = runId ?? Guid.NewGuid().ToString("N"), Sequence = sequence + 1, Type = "result", Result = result }, ct);
+            return Results.Empty;
+        }
+        catch (WorkflowAiException ex)
+        {
+            return http.Response.HasStarted ? await StreamFailure(ex.Code, ex.Message) : Failure(ex);
+        }
+        catch (BadHttpRequestException ex) when (!http.Response.HasStarted) { return BodyFailure(ex); }
+        catch (JsonException) when (!http.Response.HasStarted) { return InvalidJson(); }
+        catch (Exception) when (http.Response.HasStarted && !ct.IsCancellationRequested)
+        {
+            return await StreamFailure("authoring_interrupted", "AI authoring was interrupted. Continue from the last received checkpoint.");
+        }
     }
 
     public static async Task<IResult> Validate(HttpContext http, [FromServices] IWorkflowAiAuthoringService service, CancellationToken ct)

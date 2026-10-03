@@ -512,7 +512,7 @@ Content-Type: application/json
 
 These operations use the same **workflow administrator** authorization as definition saves.
 They do not save, publish, start instances, run scripts, or call authored service URLs.
-Provider credentials are separate from the Flowbit bearer token. Only `/ai/turn` needs
+Provider credentials are separate from the Flowbit bearer token. Both `/ai/turn` and `/ai/turn/stream` need
 the single `X-Flowbit-AI-Key` header; never place it in a workflow or request history.
 See [AI authoring](ai-authoring.md) for the portable skill and [deployment](deployment.md#ai-authoring-and-local-ocr)
 for limits and provider configuration.
@@ -522,7 +522,8 @@ for limits and provider configuration.
 | `GET /api/workflows/ai/providers` | No body or provider key. | Array of `{id,name,defaultModelId,models:[{id,name}]}` from configured adapters. Discovery does not verify an account or make a billed call. |
 | `GET /api/workflows/ai/skill` | No body or provider key. | `application/zip`, attachment `flowbit-authoring.zip`, containing the startup-verified package used by the assistant. |
 | `POST /api/workflows/ai/extract` | `multipart/form-data`: exactly one `file`; optional `forceOcr=true` and `languages=eng`, `ara`, or `eng+ara` (default). | `{fileName,pages:[{page,text,usedOcr,warnings}],warnings}`. Pages are one-based and text remains editable before generation. |
-| `POST /api/workflows/ai/turn` | JSON described below, plus `X-Flowbit-AI-Key`. | Clarification, validated proposal, or unsuccessful generation result. |
+| `POST /api/workflows/ai/turn` | JSON described below, plus `X-Flowbit-AI-Key`. | Buffered clarification, validated proposal, invalid draft, or paused run result. |
+| `POST /api/workflows/ai/turn/stream` | Same JSON and header as `/ai/turn`. | `application/x-ndjson` progress/checkpoint frames followed by one result, pause, or error frame. |
 | `POST /api/workflows/validate` | Raw canonical workflow JSON, with no wrapper. | Structural validity and separate save/publication readiness, described below. No provider key or provider request. |
 
 The turn JSON has `providerId` (initially `opencode-go`), `modelId` (default
@@ -538,13 +539,54 @@ prompt; current values are excluded. Unknown or inactive selections are rejected
 `snapshotId` is opaque client correlation; the hosted editor compares its current
 snapshot before accepting an apply. Clients must enforce their own equivalent stale-edit check.
 
-The response has `kind` (`clarification`, `proposal`, or `invalid`), `message`,
+The response has `kind` (`clarification`, `proposal`, `invalid`, or `paused`), `message`,
 `questions`, nullable `definition`, `assumptions`, `dependencies`, `changeSummary`,
 `validation`, echoed `snapshotId`, `contractHash`, and `sourceReferences`
 (`{sourceName,pageNumber,requirement}`). A proposal is canonical `WorkflowModel`
 JSON. Keep explanations outside the definition. Applying it is a separate user action;
-generation itself never changes the editor or saved definition. The service allows
-at most two repair attempts within the same request deadline.
+generation itself never changes the editor or saved definition. Optional `run` has
+`providerCalls`, `outputTokens`, `usageEstimated`, and `elapsedSeconds`. Output accounting
+uses reported completion usage when available and conservatively charges the requested
+allowance when missing or a retryable attempt fails; it is not a billing receipt.
+
+The runner keeps the selected model and applies complete bounded edits to a private
+draft. It can read packaged references/source excerpts, validate the draft, recover
+from output limits by shrinking edit batches, and retry transient provider failures.
+By default each run has five minutes, 20 provider calls, and 65,536 output tokens;
+each provider request has 90 seconds. Up to two consecutive validation repairs and
+two transient retries are permitted, subject to all run limits. Exhausted transient
+retries pause with the last completed checkpoint, so callers can continue later.
+A paused/invalid
+result has no applicable definition. Only `kind: "proposal"` with a valid definition
+may be offered for application.
+
+Optional `checkpoint` in a result or stream frame contains `version` (currently 1),
+`inputHash`, `contractHash`, `draft`, `revision`, `plan`, and `batches` (bounded
+`{id,hash}` receipts). Optional `outputAllowance` and `maxOperations` retain the
+output-recovery strategy; the server validates and clamps them to its current model
+profile and batch limit. Read-plan or recovery checkpoints can retain the same draft
+revision. Older checkpoints without these hints use current server defaults.
+This is private continuation data, not an applicable workflow
+proposal or a saved version. Resume by submitting the **exact original turn request**
+with its `checkpoint` property set to the returned checkpoint, and supply the provider
+key again in the header. Preserve provider/model, conversation, message/history, source
+pages, catalog selection, original workflow, and snapshot; never replace `currentWorkflow`
+with the checkpoint draft. Resume receives a new bounded run budget. The service checks
+input/catalog and package hashes, reparses the bounded draft, and recreates redaction;
+hashes do not make checkpoint content trusted. Stale inputs/catalog/contracts return
+`stale_checkpoint` (409). There is no server-side checkpoint lookup or persistence.
+
+Every stream frame has `version`, `runId`, monotonically increasing `sequence`, and
+`type`. Optional fields are `stage`, `message`, `code`, `checkpoint`, `result`, and
+`run`. Types are `progress`, `checkpoint`, `result`, `paused`, and `error`. Retain only
+the latest fully received checkpoint; incomplete frames/batches are discarded. A
+terminal `result` carries the normal turn response, `paused` carries an incomplete
+response and checkpoint, and `error` carries sanitized `code`/`message`. Once response
+headers have started, errors use terminal frames instead of changing HTTP status.
+Before streaming starts, ordinary JSON HTTP failures still apply. Frames are bounded
+to 4 MiB and a run to 256 frames. Stream termination without a terminal frame is an
+interruption, never success. A client can resume its last complete checkpoint after
+cancellation/disconnect, but must recheck its original editor snapshot first.
 
 Validation returns `{isValid,errors,warnings,canSave,canPublish,saveBlockers,publicationBlockers}`.
 The service strictly parses, validates authored configuration, normalizes, validates
@@ -565,7 +607,8 @@ Content-Type: application/json
 
 This deliberately incomplete definition returns validation errors without creating a
 version. Transport-invalid JSON returns `400`. The validation body limit is 2 MiB;
-the turn body limit is 4 MiB. Extract defaults are 20 MiB, 100 pages, and 200,000
+both turn body limits are 8 MiB. Individual workflow/draft bounds remain 2 MiB by
+default. Extract defaults are 20 MiB, 100 pages, and 200,000
 characters; exceeding a limit rejects the input rather than silently truncating it.
 Scanned pages require the configured local OCR executables; mixed PDFs retain text
 extraction on readable pages. OCR warnings must be reviewed, especially Arabic,
@@ -578,8 +621,11 @@ generation transport (`502`), disabled/unavailable service (`503`), and deadline
 (`504`). Provider failures do not include raw upstream response bodies. A response
 with `code: "provider_auth"` uses `400` to distinguish a rejected provider key
 from missing/expired Flowbit bearer authorization (`401`). A response
-with `kind: "invalid"` can use HTTP `200`; inspect `kind` and `validation` before
-offering apply. Cancelling the HTTP request cancels provider/process work. Turn,
+with `kind: "invalid"` or `kind: "paused"` uses HTTP `200`; inspect `kind` and `validation` before
+offering apply. `provider_throttled` and `provider_unavailable` are transient categories;
+`provider_auth`, `provider_quota`, `provider_refusal`, and `provider_output_too_large`
+are terminal provider failures. `provider_context` permits one compact-context retry;
+it does not permit deleting original requirements or switching models. Cancelling the HTTP request cancels provider/process work. Turn,
 validation, and extraction responses set `Cache-Control: no-store`.
 
 ## Instances and messages

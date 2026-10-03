@@ -27,7 +27,7 @@
                 @foreach (var provider in providers) { <option value="@provider.Id">@provider.Name</option> }
             </select>
             <label for="ai-model">Model</label>
-            <select id="ai-model" class="form-select" @bind="modelId" disabled="@busy">
+            <select id="ai-model" class="form-select" value="@modelId" @onchange="ChangeModel" disabled="@busy">
                 @foreach (var model in SelectedProvider?.Models ?? []) { <option value="@model.Id">@model.Name</option> }
             </select>
             <label for="ai-key">Your provider API key</label>
@@ -101,6 +101,20 @@
                 }
             </div>
         }
+        @if (authoringRunning || checkpoint is not null)
+        {
+            <section class="ai-progress" aria-labelledby="ai-progress-heading">
+                <h3 id="ai-progress-heading">@(authoringRunning ? "Building your workflow" : "Draft kept in this session")</h3>
+                <p id="ai-progress-stage" role="status">@progressStage</p>
+                <p id="ai-progress-metrics" class="ai-help">@ElapsedSeconds s elapsed · @(runSummary?.ProviderCalls ?? 0) model calls</p>
+                @if (checkpoint is not null)
+                {
+                    <p class="ai-help">Completed draft edits are kept while this assistant stays open. Continue uses the original requirements and selected model.</p>
+                    @if (IsCheckpointStale) { <p class="ai-warning" role="status">The editor changed. Send a new request to work from the current workflow.</p> }
+                    <button type="button" id="ai-continue" class="btn btn-outline-primary" disabled="@(busy || IsCheckpointStale || string.IsNullOrWhiteSpace(apiKey))" @onclick="ContinueAsync">Continue</button>
+                }
+            </section>
+        }
         @if (result is not null)
         {
             @if (result.Questions.Count > 0)
@@ -168,6 +182,12 @@
     private IReadOnlyList<string> documentWarnings = [];
     private IBrowserFile? documentFile;
     private AiTurnResultDto? result;
+    private AiTurnRequestDto? frozenRequest;
+    private AiCheckpointDto? checkpoint;
+    private AiRunSummaryDto? runSummary;
+    private bool authoringRunning;
+    private string progressStage = "";
+    private DateTimeOffset runStarted;
     private string providerId = "opencode-go", modelId = "kimi-k2.7-code", apiKey = "", messageText = "", languages = "eng+ara";
     private string conversationId = Guid.NewGuid().ToString("N");
     private string? error, notice;
@@ -177,6 +197,8 @@
     private string operationId = "";
     private AiProviderDto? SelectedProvider => providers.FirstOrDefault(item => item.Id == providerId);
     private bool IsStale => result is not null && EditorRevision is not null && result.SnapshotId != EditorRevision;
+    private bool IsCheckpointStale => frozenRequest is null || EditorRevision is not null && frozenRequest.SnapshotId != EditorRevision;
+    private int ElapsedSeconds => authoringRunning ? (int)(DateTimeOffset.UtcNow - runStarted).TotalSeconds : (int)(runSummary?.ElapsedSeconds ?? 0);
     private string ProposalJson => result?.Definition is { } definition ? JsonSerializer.Serialize(definition, new JsonSerializerOptions { WriteIndented = true }) : "";
 
     protected override async Task OnInitializedAsync()
@@ -227,10 +249,21 @@
     }
 
     private void ClearKey() => apiKey = "";
+    private void ChangeModel(ChangeEventArgs args)
+    {
+        modelId = args.Value?.ToString() ?? "";
+        ClearContinuation();
+        result = null;
+    }
+    private void ClearContinuation()
+    {
+        frozenRequest = null; checkpoint = null; runSummary = null; progressStage = ""; authoringRunning = false;
+    }
     private void ClearDocument() { documentFile = null; sourcePages.Clear(); documentWarnings = []; }
     private void NewConversation()
     {
         messages.Clear(); history.Clear(); result = null; messageText = ""; apiKey = "";
+        ClearContinuation();
         catalog = []; selectedKeys.Clear(); catalogSearch = ""; catalogPage = 0; catalogCount = 0;
         ClearDocument(); error = notice = null; conversationId = Guid.NewGuid().ToString("N");
     }
@@ -304,6 +337,7 @@
         if (busy || string.IsNullOrWhiteSpace(apiKey) || string.IsNullOrWhiteSpace(messageText)) return;
         var cancellationToken = BeginOperation();
         var revision = identityRevision;
+        var activeOperationId = operationId;
         var submitted = messageText.Trim();
         try
         {
@@ -318,24 +352,110 @@
                 SharedVariableKeys = selectedKeys.Order(StringComparer.Ordinal).ToArray(),
                 Sources = sourcePages.Select(page => new AiSourcePageDto(documentFile?.Name ?? "Document", page.Number, page.Text)).ToArray()
             };
-            var response = await Api.SendAiTurnAsync(request, apiKey.Trim(), cancellationToken);
-            if (disposed || cancellationToken.IsCancellationRequested || revision != identityRevision) return;
+            ClearContinuation();
+            frozenRequest = request;
+            result = null;
             messages.Add(new("user", submitted));
-            messages.Add(new("assistant", response.Message));
-            history.Add(new("user", submitted));
-            history.Add(new("assistant", JsonSerializer.Serialize(new { response.Message, response.Questions, response.Assumptions, response.Dependencies, response.ChangeSummary })));
-            while (history.Count > 12) history.RemoveRange(0, 2);
-            result = response;
             messageText = "";
+            await RunFrozenRequestAsync(request, revision, activeOperationId, cancellationToken);
         }
-        catch (OperationCanceledException) { if (!disposed && revision == identityRevision) notice = "AI request cancelled. Your workflow is unchanged."; }
-        catch (Exception exception) { if (!disposed && revision == identityRevision) error = SafeError(exception); }
-        finally { if (!disposed && revision == identityRevision) busy = false; }
+        catch (OperationCanceledException) { if (IsCurrentOperation(revision, activeOperationId)) ShowAuthoringCancellation(); }
+        catch (Exception exception) { if (IsCurrentOperation(revision, activeOperationId)) error = SafeError(exception); }
+        finally { if (IsCurrentOperation(revision, activeOperationId)) EndAuthoringOperation(); }
+    }
+
+    private bool IsCurrentOperation(long revision, string id) => !disposed && revision == identityRevision && id == operationId;
+
+    private async Task ContinueAsync()
+    {
+        if (busy || checkpoint is null || frozenRequest is null || IsCheckpointStale || string.IsNullOrWhiteSpace(apiKey)) return;
+        var request = frozenRequest with { Checkpoint = checkpoint };
+        var cancellationToken = BeginOperation();
+        var revision = identityRevision;
+        var activeOperationId = operationId;
+        try
+        {
+            var snapshot = await CaptureSnapshot();
+            if (!IsCurrentOperation(revision, activeOperationId) || cancellationToken.IsCancellationRequested) return;
+            if (snapshot.SnapshotId != request.SnapshotId)
+            {
+                error = "The editor changed. Send a new request to work from the current workflow.";
+                return;
+            }
+            result = null;
+            await RunFrozenRequestAsync(request, revision, activeOperationId, cancellationToken);
+        }
+        catch (OperationCanceledException) { if (IsCurrentOperation(revision, activeOperationId)) ShowAuthoringCancellation(); }
+        catch (Exception exception) { if (IsCurrentOperation(revision, activeOperationId)) error = SafeError(exception); }
+        finally { if (IsCurrentOperation(revision, activeOperationId)) EndAuthoringOperation(); }
+    }
+
+    private void EndAuthoringOperation()
+    {
+        if (authoringRunning && result is null)
+            runSummary = (runSummary ?? new AiRunSummaryDto(0, 0, true, 0)) with
+            { ElapsedSeconds = (DateTimeOffset.UtcNow - runStarted).TotalSeconds };
+        busy = false;
+        authoringRunning = false;
+    }
+
+    private void ShowAuthoringCancellation()
+    {
+        notice = checkpoint is null ? "AI request cancelled." : "AI request cancelled. Continue can resume the completed draft edits.";
+        progressStage = notice;
+    }
+
+    private async Task RunFrozenRequestAsync(AiTurnRequestDto request, long revision, string activeOperationId, CancellationToken cancellationToken)
+    {
+        authoringRunning = true;
+        progressStage = "Reading requirements";
+        runSummary = null;
+        runStarted = DateTimeOffset.UtcNow;
+        _ = UpdateElapsedAsync(revision, activeOperationId, cancellationToken);
+        var response = await Api.SendAiTurnStreamingAsync(request, apiKey.Trim(), async frame =>
+        {
+            if (!IsCurrentOperation(revision, activeOperationId) || cancellationToken.IsCancellationRequested) return;
+            if (frame.Type == "checkpoint" && frame.Checkpoint is not null) checkpoint = frame.Checkpoint;
+            if (frame.Result?.Checkpoint is not null) checkpoint = frame.Result.Checkpoint;
+            if (frame.Run is not null) runSummary = frame.Run;
+            if (!string.IsNullOrWhiteSpace(frame.Message)) progressStage = frame.Message;
+            else if (!string.IsNullOrWhiteSpace(frame.Stage)) progressStage = frame.Stage;
+            await InvokeAsync(StateHasChanged);
+        }, cancellationToken);
+        if (!IsCurrentOperation(revision, activeOperationId) || cancellationToken.IsCancellationRequested) return;
+        result = response;
+        runSummary = response.Run ?? runSummary;
+        progressStage = response.Message;
+        if (response.Kind == "paused" || response.Kind == "invalid" && response.Checkpoint is not null)
+        {
+            checkpoint = response.Checkpoint ?? checkpoint;
+            notice = response.Message;
+            return;
+        }
+        checkpoint = null;
+        frozenRequest = null;
+        messages.Add(new("assistant", response.Message));
+        history.Add(new("user", request.Message));
+        history.Add(new("assistant", JsonSerializer.Serialize(new { response.Message, response.Questions, response.Assumptions, response.Dependencies, response.ChangeSummary })));
+        while (history.Count > 12) history.RemoveRange(0, 2);
+    }
+
+    private async Task UpdateElapsedAsync(long revision, string activeOperationId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            while (authoringRunning && IsCurrentOperation(revision, activeOperationId) && !cancellationToken.IsCancellationRequested)
+            {
+                await Task.Delay(1000, cancellationToken);
+                if (authoringRunning && IsCurrentOperation(revision, activeOperationId)) await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch (OperationCanceledException) { }
     }
 
     private async Task ApplyAsync()
     {
-        if (busy || result?.Definition is not { } definition || IsStale || !result.Validation.IsValid) return;
+        if (busy || result?.Definition is not { } definition || IsStale || !result.Validation.IsValid || result.Kind != "proposal") return;
         var cancellationToken = BeginOperation();
         var revision = identityRevision;
         try
@@ -347,6 +467,7 @@
             await ApplyProposal.InvokeAsync(new EditorAiProposal(definition, result.SnapshotId, operationId));
             if (disposed || revision != identityRevision) return;
             result = null;
+            ClearContinuation();
             notice = "Applied to the editor. Review the diagram, use Undo if needed, and save a new version when ready.";
         }
         catch (OperationCanceledException) { if (!disposed && revision == identityRevision) notice = "Apply cancelled."; }
@@ -412,6 +533,7 @@
         disposed = true;
         Token.Changed -= IdentityChanged;
         apiKey = "";
+        ClearContinuation();
         operation?.Cancel();
         lifetime.Cancel();
         await InvalidateOperation.InvokeAsync(operationId);

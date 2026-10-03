@@ -194,6 +194,117 @@ public sealed class AiAuthoringSmokeTests(BrowserStackFixture stack)
         });
     }
 
+    [Theory]
+    [InlineData(1440, 900)]
+    [InlineData(1024, 768)]
+    [InlineData(390, 844)]
+    public async Task H8_TruncationRetryCheckpointCancellationAndContinue(int width, int height)
+    {
+        await using var scenario = await stack.CreateScenario($"h8-ai-recovery-{width}", width, height);
+        await scenario.RunAsync("ai-recovery", async () =>
+        {
+            var original = await RuntimeSupport.PublishAsync(stack, "editor-basic.json");
+            await RuntimeSupport.ApplyIdentityAsync(scenario, "ai-recovery-author", ["admin"]);
+            var page = await scenario.OpenUiAsync($"workflows/{original.Id}/edit");
+            await ReadyAsync(page);
+            await OpenAssistantAsync(page);
+            const string key = "synthetic-recovery-key";
+            const string requirement = "Rename this workflow Incremental recovery, keeping every review rule unchanged.";
+            await page.Locator("#ai-key").FillAsync(key);
+            var requestStart = stack.AiProvider.Requests.Count;
+            stack.AiProvider.EnqueueTruncation();
+            stack.AiProvider.EnqueueFailure(System.Net.HttpStatusCode.ServiceUnavailable);
+            stack.AiProvider.EnqueueNameEdit("Incremental recovery");
+            var waiting = stack.AiProvider.EnqueueFinish(delayed: true);
+            await SendAsync(page, requirement);
+            await waiting.Arrived.Task.WaitAsync(TimeSpan.FromSeconds(30));
+            await Assertions.Expect(page.Locator("#ai-progress-stage")).ToBeVisibleAsync();
+            await Assertions.Expect(page.Locator("#ai-continue")).ToBeDisabledAsync();
+            await Assertions.Expect(page.Locator("#ai-apply")).ToHaveCountAsync(0);
+            await Assertions.Expect(page.Locator("#wfName")).ToHaveValueAsync(original.Name);
+            await Assertions.Expect(page.Locator("#ai-progress-metrics")).ToContainTextAsync(new Regex(@"^(?:[3-9]|\d{2,}) s elapsed"));
+            var elapsedBeforeCancel = int.Parse(Regex.Match(await page.Locator("#ai-progress-metrics").InnerTextAsync(), @"\d+").Value);
+            Assert.True(await page.EvaluateAsync<bool>("document.documentElement.scrollWidth <= innerWidth + 2"));
+            await page.Locator(".ai-progress").ScrollIntoViewIfNeededAsync();
+            await page.ScreenshotAsync(new() { Path = Path.Combine(scenario.ArtifactDirectory, "ai-incremental-progress.png"), FullPage = true });
+            await page.GetByRole(AriaRole.Button, new() { Name = "Cancel", Exact = true }).ClickAsync();
+            await waiting.Cancelled.Task.WaitAsync(TimeSpan.FromSeconds(15));
+            waiting.Complete();
+            await Assertions.Expect(page.Locator("#ai-continue")).ToBeEnabledAsync();
+            await Assertions.Expect(page.Locator("#ai-notice")).ToContainTextAsync("cancelled");
+            await Assertions.Expect(page.Locator("#ai-progress-stage")).ToContainTextAsync("cancelled");
+            var elapsedAfterCancel = int.Parse(Regex.Match(await page.Locator("#ai-progress-metrics").InnerTextAsync(), @"\d+").Value);
+            Assert.True(elapsedAfterCancel >= elapsedBeforeCancel);
+            await page.Locator(".ai-progress").ScrollIntoViewIfNeededAsync();
+            await page.ScreenshotAsync(new() { Path = Path.Combine(scenario.ArtifactDirectory, "ai-continuation.png"), FullPage = true });
+            var initial = stack.AiProvider.Requests.Skip(requestStart).ToArray();
+            Assert.Equal(4, initial.Length);
+            Assert.True(initial[1].MaxOperations < initial[0].MaxOperations);
+            Assert.Equal(0, initial[2].Revision);
+            Assert.Equal(1, initial[3].Revision);
+            Assert.All(initial, request => Assert.Equal("kimi-k2.7-code", request.Model));
+
+            // Changing the composer does not replace the frozen requirements of Continue.
+            await page.Locator("#ai-message").FillAsync("This unsent text must not change the continuation.");
+            stack.AiProvider.EnqueueFinish();
+            await page.Locator("#ai-continue").ClickAsync();
+            await Assertions.Expect(page.Locator("#ai-apply")).ToBeEnabledAsync();
+            var resumed = stack.AiProvider.Requests.Last();
+            Assert.Equal(requirement, resumed.Requirement);
+            Assert.Equal(1, resumed.Revision);
+            Assert.Equal(AiProviderTestHost.HashKey(key), resumed.KeyHash);
+            await Assertions.Expect(page.Locator("#ai-continue")).ToHaveCountAsync(0);
+            await page.Locator("#ai-apply").ClickAsync();
+            await Assertions.Expect(page.Locator("#ai-notice")).ToContainTextAsync("Applied to the editor");
+            await CloseAssistantAsync(page);
+            await Assertions.Expect(page.Locator("#wfName")).ToHaveValueAsync("Incremental recovery");
+            await HistoryAsync(page, "undoBtn");
+            await Assertions.Expect(page.Locator("#wfName")).ToHaveValueAsync(original.Name);
+            await Assertions.Expect(page.Locator("#editor-status")).ToHaveTextAsync("Saved");
+        });
+    }
+
+    [Fact]
+    public async Task H9_CheckpointSurvivesProviderFailureButEditorChangeDisablesContinue()
+    {
+        await using var scenario = await stack.CreateScenario("h9-ai-checkpoint-stale");
+        await scenario.RunAsync("ai-checkpoint-stale", async () =>
+        {
+            var original = await RuntimeSupport.PublishAsync(stack, "editor-basic.json");
+            await RuntimeSupport.ApplyIdentityAsync(scenario, "ai-checkpoint-author", ["admin"]);
+            var page = await scenario.OpenUiAsync($"workflows/{original.Id}/edit");
+            await ReadyAsync(page);
+            await OpenAssistantAsync(page);
+            await page.Locator("#ai-key").FillAsync("synthetic-checkpoint-key");
+            stack.AiProvider.EnqueueNameEdit("Private draft only");
+            stack.AiProvider.EnqueueFailure(System.Net.HttpStatusCode.Unauthorized);
+            await SendAsync(page, "Rename this workflow Private draft only.");
+            await Assertions.Expect(page.Locator("#ai-error")).ToBeVisibleAsync();
+            await Assertions.Expect(page.Locator("#ai-continue")).ToBeEnabledAsync();
+            await Assertions.Expect(page.Locator("#ai-apply")).ToHaveCountAsync(0);
+            await Assertions.Expect(page.Locator("#wfName")).ToHaveValueAsync(original.Name);
+            await page.Locator("#ai-model").SelectOptionAsync("glm-5.3");
+            await Assertions.Expect(page.Locator("#ai-continue")).ToHaveCountAsync(0);
+            await Assertions.Expect(page.Locator("#ai-model")).ToHaveValueAsync("glm-5.3");
+            await page.Locator("#ai-model").SelectOptionAsync("kimi-k2.7-code");
+            stack.AiProvider.EnqueueNameEdit("Fresh private draft");
+            stack.AiProvider.EnqueueFailure(System.Net.HttpStatusCode.Unauthorized);
+            await SendAsync(page, "Rename this workflow Fresh private draft.");
+            await Assertions.Expect(page.Locator("#ai-error")).ToBeVisibleAsync();
+            await Assertions.Expect(page.Locator("#ai-continue")).ToBeEnabledAsync();
+            await page.Locator("#wfName").FillAsync("Manual edit after failure");
+            await Assertions.Expect(page.Locator("#ai-continue")).ToBeDisabledAsync();
+            await Assertions.Expect(page.GetByText("The editor changed. Send a new request", new() { Exact = false })).ToBeVisibleAsync();
+            await page.GetByRole(AriaRole.Button, new() { Name = "New conversation", Exact = true }).ClickAsync();
+            await Assertions.Expect(page.Locator("#ai-continue")).ToHaveCountAsync(0);
+            await Assertions.Expect(page.Locator("#ai-key")).ToHaveValueAsync("");
+            await CloseAssistantAsync(page);
+            await HistoryAsync(page, "undoBtn");
+            await Assertions.Expect(page.Locator("#wfName")).ToHaveValueAsync(original.Name);
+            await Assertions.Expect(page.Locator("#editor-status")).ToHaveTextAsync("Saved");
+        });
+    }
+
     private static long CurrentId(IPage page) => long.Parse(Regex.Match(page.Url, @"/workflows/(\d+)/edit").Groups[1].Value);
     private static byte[] TextPdf()
     {

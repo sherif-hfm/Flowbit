@@ -401,7 +401,7 @@ public sealed class WorkflowAiAuthoringTests
     {
         var handler = new CaptureHandler(HttpStatusCode.OK, "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":\"{}\"}}]}");
         var provider = new OpenCodeGoProvider(new HttpClient(handler), new WorkflowAiOptions());
-        Assert.Equal("{}", await provider.CompleteAsync("kimi-k2.7-code", "session-one", [new("user", "Generate workflow")], "key-one", CancellationToken.None));
+        Assert.Equal("{}", (await provider.CompleteAsync("kimi-k2.7-code", "session-one", [new("user", "Generate workflow")], "key-one", 32_768, CancellationToken.None)).Content);
         Assert.Equal("https://opencode.ai/zen/go/v1/chat/completions", handler.Url);
         Assert.Equal("Bearer key-one", handler.Authorization);
         Assert.Equal("Flowbit/1.0", handler.UserAgent);
@@ -422,8 +422,8 @@ public sealed class WorkflowAiAuthoringTests
             OpenCodeReasoningEfforts = new() { ["glm-5.3-flash"] = effort }
         });
 
-        Assert.Equal("{}", await provider.CompleteAsync("glm-5.3-flash", "session-one",
-            [new("user", "Generate workflow")], "key-one", CancellationToken.None));
+        Assert.Equal("{}", (await provider.CompleteAsync("glm-5.3-flash", "session-one",
+            [new("user", "Generate workflow")], "key-one", 32_768, CancellationToken.None)).Content);
 
         using var body = JsonDocument.Parse(handler.Body);
         Assert.Equal(effort, body.RootElement.GetProperty("reasoning_effort").GetString());
@@ -441,13 +441,13 @@ public sealed class WorkflowAiAuthoringTests
     [InlineData("kimi-k2.7-code")]
     [InlineData("glm-5.3")]
     [InlineData("glm-5.3-flash")]
-    public async Task OpenCodeAdapter_DefaultConfigurationOmitsReasoningEffort(string modelId)
+    public async Task OpenCodeAdapter_DefaultConfigurationRetainsProviderReasoningDefaults(string modelId)
     {
         var handler = new CaptureHandler(HttpStatusCode.OK, "{\"choices\":[{\"message\":{\"content\":\"{}\"}}]}");
         using var client = new HttpClient(handler);
         var options = new WorkflowAiOptions();
         Assert.Empty(options.OpenCodeReasoningEfforts);
-        await new OpenCodeGoProvider(client, options).CompleteAsync(modelId, "session-one", [], "key-one", CancellationToken.None);
+        await new OpenCodeGoProvider(client, options).CompleteAsync(modelId, "session-one", [], "key-one", 32_768, CancellationToken.None);
 
         using var body = JsonDocument.Parse(handler.Body);
         Assert.False(body.RootElement.TryGetProperty("reasoning_effort", out _));
@@ -465,7 +465,7 @@ public sealed class WorkflowAiAuthoringTests
         {
             OpenCodeReasoningEfforts = new() { ["glm-5.3-flash"] = "low" }
         });
-        await provider.CompleteAsync(modelId, "session-one", [], "key-one", CancellationToken.None);
+        await provider.CompleteAsync(modelId, "session-one", [], "key-one", 32_768, CancellationToken.None);
 
         using var body = JsonDocument.Parse(handler.Body);
         Assert.False(body.RootElement.TryGetProperty("reasoning_effort", out _));
@@ -486,7 +486,7 @@ public sealed class WorkflowAiAuthoringTests
             OpenCodeReasoningEfforts = new() { ["glm-5.3-flash"] = effort! }
         });
         var error = await Assert.ThrowsAsync<WorkflowAiException>(() => provider.CompleteAsync(
-            "glm-5.3-flash", "session-one", [], "key-one", CancellationToken.None));
+            "glm-5.3-flash", "session-one", [], "key-one", 32_768, CancellationToken.None));
 
         Assert.Equal("provider_configuration", error.Code);
         Assert.Equal(503, error.StatusCode);
@@ -498,23 +498,24 @@ public sealed class WorkflowAiAuthoringTests
 
     [Theory]
     [InlineData(HttpStatusCode.Unauthorized, "provider_auth")]
-    [InlineData(HttpStatusCode.TooManyRequests, "provider_limit")]
+    [InlineData(HttpStatusCode.TooManyRequests, "provider_throttled")]
     [InlineData(HttpStatusCode.BadGateway, "provider_unavailable")]
     public async Task OpenCodeAdapter_DoesNotExposeProviderErrorBody(HttpStatusCode status, string code)
     {
         var provider = new OpenCodeGoProvider(new HttpClient(new CaptureHandler(status, "secret-provider-response")), new WorkflowAiOptions());
-        var error = await Assert.ThrowsAsync<WorkflowAiException>(() => provider.CompleteAsync("kimi-k2.7-code", "session-one", [], "key-one", CancellationToken.None));
+        var error = await Assert.ThrowsAsync<WorkflowAiException>(() => provider.CompleteAsync("kimi-k2.7-code", "session-one", [], "key-one", 32_768, CancellationToken.None));
         Assert.Equal(code, error.Code);
         Assert.DoesNotContain("secret-provider-response", error.Message);
     }
 
     [Fact]
-    public async Task OpenCodeAdapter_RejectsTruncatedOutput()
+    public async Task OpenCodeAdapter_ReturnsTruncationMetadataForRunnerRecovery()
     {
         var provider = new OpenCodeGoProvider(new HttpClient(new CaptureHandler(HttpStatusCode.OK,
             "{\"choices\":[{\"finish_reason\":\"length\",\"message\":{\"content\":\"{}\"}}]}")), new WorkflowAiOptions());
-        var error = await Assert.ThrowsAsync<WorkflowAiException>(() => provider.CompleteAsync("kimi-k2.7-code", "session-one", [], "key-one", CancellationToken.None));
-        Assert.Equal("provider_truncated", error.Code);
+        var completion = await provider.CompleteAsync("kimi-k2.7-code", "session-one", [], "key-one", 32_768, CancellationToken.None);
+        Assert.Equal("length", completion.FinishReason);
+        Assert.Equal("{}", completion.Content);
     }
 
     [Theory]
@@ -526,7 +527,7 @@ public sealed class WorkflowAiAuthoringTests
     public async Task OpenCodeAdapter_HandlesMalformedEnvelopeWithoutLeakingResponse(string response)
     {
         var provider = new OpenCodeGoProvider(new HttpClient(new CaptureHandler(HttpStatusCode.OK, response)), new WorkflowAiOptions());
-        var error = await Assert.ThrowsAsync<WorkflowAiException>(() => provider.CompleteAsync("kimi-k2.7-code", "session-one", [], "key-one", CancellationToken.None));
+        var error = await Assert.ThrowsAsync<WorkflowAiException>(() => provider.CompleteAsync("kimi-k2.7-code", "session-one", [], "key-one", 32_768, CancellationToken.None));
         Assert.Equal("provider_invalid_response", error.Code);
     }
 
@@ -538,7 +539,7 @@ public sealed class WorkflowAiAuthoringTests
     {
         var handler = new CaptureHandler(HttpStatusCode.OK, "{}");
         var provider = new OpenCodeGoProvider(new HttpClient(handler), new WorkflowAiOptions { OpenCodeBaseUrl = baseUrl });
-        var error = await Assert.ThrowsAsync<WorkflowAiException>(() => provider.CompleteAsync("kimi-k2.7-code", "session-one", [], "key-one", CancellationToken.None));
+        var error = await Assert.ThrowsAsync<WorkflowAiException>(() => provider.CompleteAsync("kimi-k2.7-code", "session-one", [], "key-one", 32_768, CancellationToken.None));
         Assert.Equal("provider_configuration", error.Code);
         Assert.Null(handler.Url);
     }
@@ -549,9 +550,9 @@ public sealed class WorkflowAiAuthoringTests
         var handler = new CaptureHandler(HttpStatusCode.OK, "{\"choices\":[{\"message\":{\"content\":\"{}\"}}]}");
         using var client = new HttpClient(handler);
         var provider = new OpenCodeGoProvider(client, new WorkflowAiOptions { OpenCodeBaseUrl = "http://127.0.0.1:18990/v1/" });
-        await provider.CompleteAsync("kimi-k2.7-code", "session-one", [], "first-key", CancellationToken.None);
+        await provider.CompleteAsync("kimi-k2.7-code", "session-one", [], "first-key", 32_768, CancellationToken.None);
         Assert.Equal("Bearer first-key", handler.Authorization);
-        await provider.CompleteAsync("kimi-k2.7-code", "session-two", [], "second-key", CancellationToken.None);
+        await provider.CompleteAsync("kimi-k2.7-code", "session-two", [], "second-key", 32_768, CancellationToken.None);
         Assert.Equal("Bearer second-key", handler.Authorization);
         Assert.Equal("session-two", handler.Session);
         Assert.Null(client.DefaultRequestHeaders.Authorization);
@@ -579,11 +580,11 @@ public sealed class WorkflowAiAuthoringTests
         public AiProviderDto Descriptor => new(id, id, "kimi-k2.7-code", [new("kimi-k2.7-code", "Kimi")]);
         public List<AiChatMessageDto[]> Calls { get; } = [];
         public Func<IReadOnlyList<AiChatMessageDto>, string>? Respond { get; init; }
-        public Task<string> CompleteAsync(string modelId, string conversationId, IReadOnlyList<AiChatMessageDto> messages, string apiKey, CancellationToken cancellationToken)
+        public Task<AiCompletion> CompleteAsync(string modelId, string conversationId, IReadOnlyList<AiChatMessageDto> messages, string apiKey, int maxOutputTokens, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
             Calls.Add(messages.ToArray());
-            return Task.FromResult(Respond?.Invoke(messages) ?? response);
+            return Task.FromResult(new AiCompletion(Respond?.Invoke(messages) ?? response, "stop"));
         }
     }
 

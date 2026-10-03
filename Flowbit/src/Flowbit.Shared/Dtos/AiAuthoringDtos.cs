@@ -20,6 +20,7 @@ public sealed record AiTurnRequestDto
     public IReadOnlyList<AiSourcePageDto> Sources { get; init; } = [];
     /// <summary>Explicitly selected catalog keys. The API additionally requires shared-catalog read permission.</summary>
     public IReadOnlyList<string> SharedVariableKeys { get; init; } = [];
+    public AiCheckpointDto? Checkpoint { get; init; }
 }
 
 public sealed record AiValidationResultDto(bool IsValid, IReadOnlyList<string> Errors, IReadOnlyList<string> Warnings)
@@ -45,4 +46,38 @@ public sealed record AiTurnResultDto(
     string ContractHash)
 {
     public IReadOnlyList<AiSourceReferenceDto> SourceReferences { get; init; } = [];
+    public AiCheckpointDto? Checkpoint { get; init; }
+    public AiRunSummaryDto? Run { get; init; }
+}
+
+/// <summary>Untrusted, bounded continuation state, retained only in the open assistant circuit.</summary>
+public sealed record AiCheckpointDto
+{
+    public int Version { get; init; } = 1;
+    public string InputHash { get; init; } = "";
+    public string ContractHash { get; init; } = "";
+    public JsonElement Draft { get; init; }
+    public long Revision { get; init; }
+    public string Plan { get; init; } = "";
+    public IReadOnlyList<AiBatchReceiptDto> Batches { get; init; } = [];
+    public int? OutputAllowance { get; init; }
+    public int? MaxOperations { get; init; }
+}
+
+public sealed record AiBatchReceiptDto(string Id, string Hash);
+public sealed record AiRunSummaryDto(int ProviderCalls, long OutputTokens, bool UsageEstimated, double ElapsedSeconds);
+
+/// <summary>Versioned NDJSON frame. Draft checkpoints are private state, never applicable proposals.</summary>
+public sealed record AiRunEventDto
+{
+    public int Version { get; init; } = 1;
+    public string RunId { get; init; } = "";
+    public long Sequence { get; init; }
+    public string Type { get; init; } = "progress";
+    public string? Stage { get; init; }
+    public string? Message { get; init; }
+    public string? Code { get; init; }
+    public AiCheckpointDto? Checkpoint { get; init; }
+    public AiTurnResultDto? Result { get; init; }
+    public AiRunSummaryDto? Run { get; init; }
 }

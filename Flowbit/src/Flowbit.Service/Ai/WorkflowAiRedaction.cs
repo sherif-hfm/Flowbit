@@ -69,7 +69,9 @@ public sealed class WorkflowAiRedaction
                 if (restore && child is JsonValue value && value.TryGetValue<string>(out var text)
                     && text.Contains("FLOWBIT_REDACTED_", StringComparison.Ordinal))
                     throw new JsonException("A protected credential placeholder moved into an array value.");
-                var identity = child is JsonObject item && item["id"] is { } id ? "id=" + id.ToJsonString() : index.ToString();
+                // Only canonical entity collections have stable identity. Opaque JSON may repeat arbitrary id values.
+                var identity = IsEntityCollection(path) && child is JsonObject item && item["id"] is { } id
+                    ? "id=" + id.ToJsonString() : index.ToString(System.Globalization.CultureInfo.InvariantCulture);
                 Visit(child, path + "/" + identity, restore);
             }
             return;
@@ -111,6 +113,10 @@ public sealed class WorkflowAiRedaction
             else if (pair.Value is { } nested) Visit(nested, childPath, restore);
         }
     }
+
+    private static bool IsEntityCollection(string path) => path is "/lanes" or "/flowNodes" or "/sequenceFlows" or "/variables"
+        || System.Text.RegularExpressions.Regex.IsMatch(path, @"^/(?:flowNodes|sequenceFlows)/id=-?\d+/variables$",
+            System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
     private static bool IsTrustedReference(string value) =>
         (value.StartsWith("${config.", StringComparison.Ordinal) || value.StartsWith("${setting.", StringComparison.Ordinal))

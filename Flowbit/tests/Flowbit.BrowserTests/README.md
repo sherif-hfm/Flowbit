@@ -81,6 +81,8 @@ Hosted editor scenarios H1 (1440x900 and 1024x768) and H2 exercise exact-version
 | --- | --- | --- |
 | H6 AI creation and editing | 1440x900, 1024x768, 390x844 | Clarification, explicit value-free catalog selection plus PDF upload/corrected extraction (1440 only), generated proposal review, apply, undo/redo, new unpublished save, conversational modification, preserved workflow family/positions/saved baseline, skill archive download, narrow drawer keyboard focus/Escape, and responsive screenshots. |
 | H7 AI session lifecycle | 1440x900 | Manual edits invalidate proposals; cancellation reaches the upstream provider; separate panels keep separate keys; identity change, reset, disposal and navigation clear transient keys and conversation state. |
+| H8 AI incremental recovery | 1440x900, 1024x768, 390x844 | The real provider adapter receives truncated output and a temporary server failure, reduces the edit batch size, retains an accepted draft edit, cancels an in-flight call, continues from the session checkpoint with frozen requirements, and applies the completed proposal in one undoable edit. Progress screenshots and console diagnostics are captured. |
+| H9 AI checkpoint invalidation | 1440x900 | A provider authentication failure preserves the last complete private checkpoint; changing the selected model clears it, editor edits disable Continue, and New conversation clears the checkpoint and key. |
 | E1 load/edit/save/reload | 1440x900, 1024x768 | File menu load via the real file chooser, node rename in the inspector, workflow name edit, forced download-fallback save, JSON round-trip into a fresh page. |
 | E2 node drag | 1440x900, 1024x768 | Real mouse drag with intermediate steps; screen/diagram deltas, unrelated nodes fixed, connectors intact, persisted positions in the downloaded JSON. |
 | E3 lane drag | 1440x900, 1024x768 | Lane header drag moves the lane with its children; other lanes fixed; persisted positions verified. |
@@ -102,8 +104,8 @@ auxiliary-page errors/dialogs must fail, successful diagnostics must retain
 warnings/transport failures, timed-out work must stop before returning, and
 queued one-shot dialog expectations must accept, dismiss, fail on unconsumed
 entries, and fail on unmatched dialogs. The `harness-expected-*` artifacts
-intentionally contain injected failures. H6 adds three responsive cases and H7
-adds one lifecycle case to the existing editor/runtime coverage.
+intentionally contain injected failures. H6 and H8 each add three responsive AI
+cases; H7 and H9 add one lifecycle case each to the editor/runtime coverage.
 
 Scenarios register exact one-shot dialog expectations through
 `ExpectDialogOnce(dialogType, message, accept)` (checked before the
@@ -143,6 +145,9 @@ Every run writes to `artifacts/browser/runs/<timestamp>-<id>/`:
 - Selected successful editor-search and responsive-results screenshots.
 - H6 retains `ai-proposal.png` and `ai-applied-diagram.png` at all three
   viewports, the downloaded skill archive, and its generated text PDF fixture.
+- H8 retains `ai-incremental-progress.png` at all three viewports while a
+  recovered edit is checkpointed and the next model call is in flight, plus
+  `ai-continuation.png` showing the retained checkpoint after cancellation.
 - E7 captures `boundary-conversion-before.png` and
   `boundary-conversion-after.png` at both editor viewports, with the populated
   workflow and host selected. These show the service-task inspector and attached

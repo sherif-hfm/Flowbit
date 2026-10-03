@@ -145,7 +145,16 @@ The key pieces:
   preserve undo history, the saved baseline, and locked workflow-family identity, rejecting
   stale proposals after document changes. Do not use `load()` or file import for AI edits.
   The API uses a provider registry behind `IAiWorkflowProvider`; OpenCode Go is the initial
-  adapter. `IAuthoringKnowledge` verifies and caches the deterministic portable skill package
+  adapter. Providers return finish/usage metadata for one bounded call; `WorkflowAiRunner` owns
+  separate transport retries, output-limit recovery, validation repairs, and total run budgets.
+  `WorkflowAiContext` exposes bounded reads of immutable packaged references and request-local
+  source/draft data; `WorkflowAiDraft` applies typed edits atomically to a private candidate.
+  Partial model responses never mutate that candidate. Streamed NDJSON checkpoints remain
+  untrusted temporary state in the open Blazor Server circuit, tied to the original request,
+  catalog contracts, selected model, and editor snapshot. Continuation revalidates state and
+  seeds fresh redaction from baseline and checkpoint. Only a fully validated final proposal
+  may reach the editor apply operation; generation and checkpoints never save the workflow.
+  `IAuthoringKnowledge` verifies and caches the deterministic portable skill package
   exported by `Flowbit/tools/AuthoringExport`. Schema and references come from the canonical
   model, owning guides, and examples; generation never executes scripts, persists versions,
   or publishes. `WorkflowDefinitionReadinessChecker` owns the reusable catalog, shared-service

@@ -25,6 +25,71 @@ public sealed partial class WorkflowApiClient
             ?? throw new InvalidOperationException("The AI service returned an empty response.");
     }
 
+    public async Task<AiTurnResultDto> SendAiTurnStreamingAsync(AiTurnRequestDto request, string apiKey,
+        Func<AiRunEventDto, Task> onEvent, CancellationToken cancellationToken = default)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromMinutes(6));
+        var ct = timeout.Token;
+        using var message = new HttpRequestMessage(HttpMethod.Post, "/api/workflows/ai/turn/stream");
+        message.Headers.Add("X-Flowbit-AI-Key", apiKey);
+        message.Content = JsonContent.Create(request);
+        using var response = await httpClient.SendAsync(message, HttpCompletionOption.ResponseHeadersRead, ct);
+        await EnsureSuccessAsync(response, ct);
+        if (response.Content.Headers.ContentType?.MediaType != "application/x-ndjson")
+            throw new InvalidOperationException("The AI service returned an unsupported stream format.");
+        await using var stream = await response.Content.ReadAsStreamAsync(ct);
+        using var frameBytes = new MemoryStream();
+        var buffer = new byte[16 * 1024];
+        var jsonOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web) { MaxDepth = 64 };
+        string? runId = null;
+        long sequence = 0;
+        var frameCount = 0;
+        int count;
+        while ((count = await stream.ReadAsync(buffer, ct)) > 0)
+        {
+            var start = 0;
+            for (var i = 0; i < count; i++)
+            {
+                if (buffer[i] != (byte)'\n') continue;
+                Append(start, i - start);
+                if (++frameCount > 256) throw new InvalidOperationException("The AI stream exceeded its event limit.");
+                AiRunEventDto frame;
+                try
+                {
+                    frame = JsonSerializer.Deserialize<AiRunEventDto>(frameBytes.GetBuffer().AsSpan(0, checked((int)frameBytes.Length)), jsonOptions)
+                        ?? throw new JsonException();
+                }
+                catch (JsonException) { throw new InvalidOperationException("The AI stream contains an invalid event."); }
+                frameBytes.SetLength(0);
+                start = i + 1;
+                runId ??= frame.RunId;
+                if (frame.Version != 1 || string.IsNullOrWhiteSpace(frame.RunId) || frame.RunId.Length > 128 ||
+                    frame.RunId != runId || frame.Sequence <= sequence ||
+                    frame.Type is not ("progress" or "checkpoint" or "result" or "paused" or "error") ||
+                    frame.Type == "checkpoint" && frame.Checkpoint is null ||
+                    frame.Type is "result" or "paused" && frame.Result is null)
+                    throw new InvalidOperationException("The AI stream contains an invalid event sequence.");
+                sequence = frame.Sequence;
+                ct.ThrowIfCancellationRequested();
+                await onEvent(frame);
+                ct.ThrowIfCancellationRequested();
+                if (frame.Type == "error")
+                    throw new WorkflowApiException(System.Net.HttpStatusCode.BadGateway, frame.Message ?? "AI authoring was interrupted.");
+                if (frame.Type is "result" or "paused") return frame.Result!;
+            }
+            Append(start, count - start);
+        }
+        throw new InvalidOperationException("The AI connection ended before a final result. Continue from the last received checkpoint.");
+
+        void Append(int offset, int length)
+        {
+            if (frameBytes.Length + length > 4 * 1024 * 1024)
+                throw new InvalidOperationException("The AI stream event exceeds its size limit.");
+            frameBytes.Write(buffer, offset, length);
+        }
+    }
+
     public async Task<AiDocumentExtractionDto> ExtractAiDocumentAsync(Stream stream, string fileName, bool forceOcr, string languages,
         CancellationToken cancellationToken = default)
     {
