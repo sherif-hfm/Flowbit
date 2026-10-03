@@ -2,29 +2,50 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Flowbit.Service.Ai;
 using Flowbit.Shared.Dtos;
 
 namespace Flowbit.Infrastructure.Ai;
 
-/// <summary>One bounded OpenCode Go chat-completion attempt. The authoring runner owns recovery and retry budgets.</summary>
+/// <summary>One bounded OpenCode chat-completion attempt, using Zen by default. The authoring runner owns recovery and retry budgets.</summary>
 public sealed class OpenCodeGoProvider(HttpClient httpClient, WorkflowAiOptions options) : IAiWorkflowProvider
 {
     private const int MaxErrorBytes = 65_536;
 
-    public AiProviderDto Descriptor => new("opencode-go", "OpenCode Go", options.OpenCodeModels.FirstOrDefault() ?? "kimi-k2.7-code",
+    // Retain the original provider id so existing API callers and continuation requests remain compatible.
+    private string ProviderName => Uri.TryCreate(options.OpenCodeBaseUrl, UriKind.Absolute, out var endpoint)
+        && endpoint.AbsolutePath.TrimEnd('/').Equals("/zen/go/v1", StringComparison.OrdinalIgnoreCase)
+            ? "OpenCode Go" : "OpenCode Zen";
+
+    public AiProviderDto Descriptor => new("opencode-go", ProviderName, options.OpenCodeModels.FirstOrDefault() ?? "kimi-k2.7-code",
         options.OpenCodeModels.Distinct(StringComparer.Ordinal).Select(id => new AiModelDto(id, id)).ToArray());
 
-    public async Task<AiCompletion> CompleteAsync(string modelId, string conversationId,
+    public bool SupportsExecution(string variant) => variant is "current" or "optimized" or "agent-framework";
+
+    public Task<AiCompletion> CompleteAsync(string modelId, string conversationId,
         IReadOnlyList<AiChatMessageDto> messages, string apiKey, int maxOutputTokens, CancellationToken cancellationToken)
+        => CompleteCoreAsync(modelId, conversationId, messages, apiKey, maxOutputTokens,
+            new("current", options.OpenCodeReasoningEfforts.GetValueOrDefault(modelId)), null, cancellationToken);
+
+    public Task<AiCompletion> CompleteAsync(string modelId, string conversationId,
+        IReadOnlyList<AiChatMessageDto> messages, string apiKey, int maxOutputTokens, AiExecutionSettings execution, CancellationToken cancellationToken)
+        => execution.Variant == "agent-framework"
+            ? OpenCodeAgentStep.CompleteAsync(this, modelId, conversationId, messages, apiKey, maxOutputTokens, execution, cancellationToken)
+            : CompleteCoreAsync(modelId, conversationId, messages, apiKey, maxOutputTokens, execution, null, cancellationToken);
+
+    internal async Task<AiCompletion> CompleteCoreAsync(string modelId, string conversationId,
+        IReadOnlyList<AiChatMessageDto> messages, string apiKey, int maxOutputTokens, AiExecutionSettings execution,
+        object[]? tools, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var profile = options.GetModelProfile(modelId);
         if (!options.OpenCodeModels.Contains(modelId, StringComparer.Ordinal))
-            throw new WorkflowAiException("unsupported_model", "Select an enabled OpenCode Go chat model.");
+            throw new WorkflowAiException("unsupported_model", "Select an enabled OpenCode chat model.");
         if (maxOutputTokens < 1 || maxOutputTokens > profile.MaxOutputTokens)
             throw new WorkflowAiException("provider_configuration", "The requested AI output budget exceeds the configured model limits.", 503);
-        var hasReasoningEffort = options.OpenCodeReasoningEfforts.TryGetValue(modelId, out var reasoningEffort);
+        var reasoningEffort = execution.ReasoningEffort;
+        var hasReasoningEffort = reasoningEffort is not null;
         if (hasReasoningEffort && reasoningEffort is not ("low" or "high" or "max"))
             throw new WorkflowAiException("provider_configuration", "The configured model reasoning effort must be low, high, or max.", 503);
         if (string.IsNullOrWhiteSpace(apiKey) || apiKey.Length > 8192 || apiKey.Any(char.IsControl)
@@ -50,6 +71,12 @@ public sealed class OpenCodeGoProvider(HttpClient httpClient, WorkflowAiOptions 
             ["stream"] = false
         };
         if (hasReasoningEffort) payload["reasoning_effort"] = reasoningEffort!;
+        if (tools is not null)
+        {
+            payload["tools"] = tools;
+            payload["tool_choice"] = "required";
+            payload["parallel_tool_calls"] = false;
+        }
         request.Content = JsonContent.Create(payload);
 
         try
@@ -69,7 +96,7 @@ public sealed class OpenCodeGoProvider(HttpClient httpClient, WorkflowAiOptions 
             if (root.ValueKind != JsonValueKind.Object
                 || !root.TryGetProperty("choices", out var choices)
                 || choices.ValueKind != JsonValueKind.Array || choices.GetArrayLength() == 0)
-                throw InvalidResponse();
+                throw InvalidResponse(retryable: true);
             var choice = choices[0];
             if (choice.ValueKind != JsonValueKind.Object) throw InvalidResponse();
             var finishReason = "stop";
@@ -79,21 +106,22 @@ public sealed class OpenCodeGoProvider(HttpClient httpClient, WorkflowAiOptions 
                 finishReason = finish.GetString()!;
             }
             if (finishReason is "content_filter" or "refusal") throw Refusal();
-            if (finishReason is not ("stop" or "length")) throw InvalidResponse();
+            if (finishReason is not ("stop" or "length") && !(tools is not null && finishReason == "tool_calls")) throw InvalidResponse();
             if (!choice.TryGetProperty("message", out var message) || message.ValueKind != JsonValueKind.Object)
                 throw InvalidResponse();
             if (message.TryGetProperty("refusal", out var refusal) && refusal.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined)
                 && (refusal.ValueKind != JsonValueKind.String || !string.IsNullOrEmpty(refusal.GetString())))
                 throw Refusal();
-            if (message.TryGetProperty("tool_calls", out var toolCalls) && toolCalls.ValueKind != JsonValueKind.Null
+            if (tools is null && message.TryGetProperty("tool_calls", out var toolCalls) && toolCalls.ValueKind != JsonValueKind.Null
                 && (toolCalls.ValueKind != JsonValueKind.Array || toolCalls.GetArrayLength() > 0))
                 throw InvalidResponse();
             var hasContent = message.TryGetProperty("content", out var content);
-            if ((!hasContent && finishReason != "length") || (hasContent && content.ValueKind is not (JsonValueKind.String or JsonValueKind.Null)))
+            if (tools is null && ((!hasContent && finishReason != "length") || (hasContent && content.ValueKind is not (JsonValueKind.String or JsonValueKind.Null))))
                 throw InvalidResponse();
-            var text = content.ValueKind == JsonValueKind.String ? content.GetString()! : "";
+            var text = tools is null ? content.ValueKind == JsonValueKind.String ? content.GetString()! : ""
+                : finishReason == "length" ? "" : NativeCommand(message, finishReason);
             // Reasoning models may exhaust their output allowance before producing visible content.
-            if (finishReason != "length" && string.IsNullOrWhiteSpace(text)) throw InvalidResponse();
+            if (finishReason != "length" && string.IsNullOrWhiteSpace(text)) throw InvalidResponse(retryable: true);
             int? inputTokens = null, outputTokens = null;
             if (root.TryGetProperty("usage", out var usage) && usage.ValueKind == JsonValueKind.Object)
             {
@@ -108,7 +136,7 @@ public sealed class OpenCodeGoProvider(HttpClient httpClient, WorkflowAiOptions 
         }
         catch (HttpRequestException)
         {
-            throw new WorkflowAiException("provider_unavailable", "Unable to connect to OpenCode Go. Your editor has not changed.", 502) { Retryable = true };
+            throw new WorkflowAiException("provider_unavailable", "Unable to connect to OpenCode. Your editor has not changed.", 502) { Retryable = true };
         }
         catch (IOException)
         {
@@ -116,7 +144,38 @@ public sealed class OpenCodeGoProvider(HttpClient httpClient, WorkflowAiOptions 
         }
         catch (Exception error) when (error is JsonException or InvalidOperationException or KeyNotFoundException)
         {
-            throw InvalidResponse();
+            throw InvalidResponse(retryable: true);
+        }
+    }
+
+    private static string NativeCommand(JsonElement message, string finishReason)
+    {
+        // Complete and validate the entire tool envelope before the shared kernel can see it.
+        if (finishReason != "tool_calls" || !message.TryGetProperty("tool_calls", out var calls)
+            || calls.ValueKind != JsonValueKind.Array || calls.GetArrayLength() != 1)
+            throw new WorkflowAiException("provider_tools_unsupported", "The selected model must return exactly one native authoring tool call.", 502);
+        var call = calls[0];
+        if (call.GetProperty("type").GetString() != "function") throw InvalidResponse();
+        var function = call.GetProperty("function");
+        var kind = OpenCodeAgentStep.Kind(function.GetProperty("name").GetString()!);
+        if (!function.TryGetProperty("arguments", out var argumentText) || argumentText.ValueKind != JsonValueKind.String
+            || string.IsNullOrWhiteSpace(argumentText.GetString())) throw InvalidResponse();
+        using var arguments = JsonDocument.Parse(argumentText.GetString()!, new JsonDocumentOptions { MaxDepth = 64 });
+        CheckDuplicates(arguments.RootElement);
+        if (arguments.RootElement.ValueKind != JsonValueKind.Object || arguments.RootElement.TryGetProperty("kind", out _)) throw InvalidResponse();
+        var command = JsonNode.Parse(arguments.RootElement.GetRawText())!.AsObject();
+        command["kind"] = kind;
+        return command.ToJsonString();
+
+        static void CheckDuplicates(JsonElement item)
+        {
+            if (item.ValueKind == JsonValueKind.Object)
+            {
+                var names = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var property in item.EnumerateObject())
+                { if (!names.Add(property.Name)) throw InvalidResponse(); CheckDuplicates(property.Value); }
+            }
+            else if (item.ValueKind == JsonValueKind.Array) foreach (var child in item.EnumerateArray()) CheckDuplicates(child);
         }
     }
 
@@ -144,20 +203,20 @@ public sealed class OpenCodeGoProvider(HttpClient httpClient, WorkflowAiOptions 
     {
         var (code, type, message) = ReadError(bytes);
         if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
-            return new("provider_auth", "OpenCode Go rejected the key or account access. Check your key and subscription.", 400);
+            return new("provider_auth", "OpenCode rejected the key or account access. Check your key and account.", 400);
         if (response.StatusCode == HttpStatusCode.PaymentRequired
             || IsOneOf(code, type, "insufficient_quota", "quota_exceeded", "billing_hard_limit_reached", "credit_balance_too_low", "insufficient_credits")
             || ContainsAny(message, "insufficient credits", "insufficient balance", "credit balance is too low", "quota exceeded", "billing limit"))
-            return new("provider_quota", "OpenCode Go account quota or credit is exhausted. Check your provider account before continuing.", 429);
+            return new("provider_quota", "OpenCode account quota or credit is exhausted. Check your provider account before continuing.", 429);
         if (IsOneOf(code, type, "context_length_exceeded", "context_window_exceeded", "prompt_too_long", "input_too_long")
             || ContainsAny(message, "maximum context length", "context window", "context length exceeded", "too many tokens", "prompt is too long", "input is too long"))
             return new("provider_context", "The request exceeds the selected model's context window.", 413);
         if (IsOneOf(code, type, "content_filter", "content_policy_violation", "safety_violation", "refusal")) return Refusal();
         if (response.StatusCode == HttpStatusCode.TooManyRequests)
-            return new("provider_throttled", "OpenCode Go is temporarily rate limited.", 429) { Retryable = true, RetryAfter = ReadRetryAfter(response) };
+            return new("provider_throttled", "OpenCode is temporarily rate limited.", 429) { Retryable = true, RetryAfter = ReadRetryAfter(response) };
         if (response.StatusCode == HttpStatusCode.RequestTimeout || (int)response.StatusCode >= 500)
-            return new("provider_unavailable", "OpenCode Go is temporarily unavailable.", 502) { Retryable = true, RetryAfter = ReadRetryAfter(response) };
-        return new("provider_invalid_response", "OpenCode Go rejected this request. Check the selected model and provider configuration.", 502);
+            return new("provider_unavailable", "OpenCode is temporarily unavailable.", 502) { Retryable = true, RetryAfter = ReadRetryAfter(response) };
+        return new("provider_invalid_response", "OpenCode rejected this request. Check the selected model and provider configuration.", 502);
     }
 
     private static (string Code, string Type, string Message) ReadError(byte[] bytes)
@@ -189,7 +248,7 @@ public sealed class OpenCodeGoProvider(HttpClient httpClient, WorkflowAiOptions 
         if (text is null || text.Length > 128 || !RetryConditionHeaderValue.TryParse(text, out var parsed)) return null;
         var delay = parsed.Delta ?? (parsed.Date is { } date ? date - DateTimeOffset.UtcNow : (TimeSpan?)null);
         // Keep hints at least as large as any permitted run, so oversized waits pause instead of retrying early.
-        return delay is { } value ? TimeSpan.FromSeconds(Math.Clamp(value.TotalSeconds, 0, 600)) : null;
+        return delay is { } value ? TimeSpan.FromSeconds(Math.Clamp(value.TotalSeconds, 0, AiAuthoringLimits.MaxRunTimeoutSeconds)) : null;
     }
 
     private static string? ReadRequestId(HttpResponseMessage response, string apiKey)
@@ -204,7 +263,8 @@ public sealed class OpenCodeGoProvider(HttpClient httpClient, WorkflowAiOptions 
         return null;
     }
 
-    private static WorkflowAiException InvalidResponse() => new("provider_invalid_response", "The provider returned an unreadable authoring response.", 502);
+    private static WorkflowAiException InvalidResponse(bool retryable = false) =>
+        new("provider_invalid_response", "The provider returned an unreadable authoring response.", 502) { Retryable = retryable };
     private static WorkflowAiException OutputTooLarge() => new("provider_output_too_large", "The provider response exceeded the authoring size limit.", 502);
     private static WorkflowAiException Refusal() => new("provider_refusal", "The selected model declined this request. Review the requirements before trying again.", 400);
 }

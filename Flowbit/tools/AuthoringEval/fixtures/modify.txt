@@ -1,0 +1,1 @@
+Extend the supplied Existing approval workflow with a Reject action from Review to a new normal end event named Rejected. Keep the workflow key, existing IDs, initial event, manager role, Approve route and all unrelated configuration unchanged. There are no missing decisions or external dependencies. Finish a validated proposal.

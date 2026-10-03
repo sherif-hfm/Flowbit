@@ -526,9 +526,13 @@ for limits and provider configuration.
 | `POST /api/workflows/ai/turn/stream` | Same JSON and header as `/ai/turn`. | `application/x-ndjson` progress/checkpoint frames followed by one result, pause, or error frame. |
 | `POST /api/workflows/validate` | Raw canonical workflow JSON, with no wrapper. | Structural validity and separate save/publication readiness, described below. No provider key or provider request. |
 
-The turn JSON has `providerId` (initially `opencode-go`), `modelId` (default
+The turn JSON has `providerId` (`opencode-go`, retained for compatibility even though
+the adapter now defaults to OpenCode Zen), `modelId` (fallback default
 `kimi-k2.7-code`), `conversationId`, `message`, `history`, `currentWorkflow`,
-`snapshotId`, and `sources`. Use a stable, non-secret UUID conversation identifier per
+`snapshotId`, and `sources`. Integrations should always send an enabled `modelId`
+from provider discovery; its `defaultModelId` reflects the configured list (shipped
+configuration selects `glm-5.3-flash`). The DTO fallback is rejected when that model
+is not enabled. Use a stable, non-secret UUID conversation identifier per
 temporary session. `history` contains `{role,content}` messages; `sources` contains
 `{sourceName,pageNumber,text}`. Omit `currentWorkflow` to create a new definition;
 pass the editor snapshot to edit, including incomplete drafts needing repair.
@@ -552,20 +556,42 @@ allowance when missing or a retryable attempt fails; it is not a billing receipt
 The runner keeps the selected model and applies complete bounded edits to a private
 draft. It can read packaged references/source excerpts, validate the draft, recover
 from output limits by shrinking edit batches, and retry transient provider failures.
-By default each run has five minutes, 20 provider calls, and 65,536 output tokens;
-each provider request has 90 seconds. Up to two consecutive validation repairs and
+By default each run has 30 minutes, 50 provider calls, and 262,144 output tokens;
+each provider request has 180 seconds, further bounded by remaining run time. Up to two consecutive validation repairs and
 two transient retries are permitted, subject to all run limits. Exhausted transient
 retries pause with the last completed checkpoint, so callers can continue later.
+An exhausted individual timeout reports `provider_timeout`; exhausted temporary
+server/connectivity retries report `provider_unavailable`.
+Empty or unreadable successful provider responses are retried within the same
+transport budget; exhaustion pauses with `provider_invalid_response` and retains
+the draft. Rejected requests and unsupported completion formats are not retried.
 A paused/invalid
 result has no applicable definition. Only `kind: "proposal"` with a valid definition
 may be offered for application.
 
-Optional `checkpoint` in a result or stream frame contains `version` (currently 1),
+Optional `checkpoint` in a result or stream frame contains `version` (currently 2),
 `inputHash`, `contractHash`, `draft`, `revision`, `plan`, and `batches` (bounded
 `{id,hash}` receipts). Optional `outputAllowance` and `maxOperations` retain the
 output-recovery strategy; the server validates and clamps them to its current model
 profile and batch limit. Read-plan or recovery checkpoints can retain the same draft
 revision. Older checkpoints without these hints use current server defaults.
+Optional `contextReads` retains up to 18 `{kind,resource,offset,count}` positions,
+with at most 12,000 characters per read and 32,000 combined. Only `reference` and
+`source` reads are retained; mutable draft reads are excluded. Resume validates
+these positions and rebuilds excerpts from the verified package and original
+request, applying fresh redaction. Checkpoints contain no cached excerpt text.
+Older checkpoints without read positions resume with an empty working context.
+Version 2 additionally contains `executionVariant`, nullable `reasoningEffort`,
+and `modelProfileHash` (binding the model profile and provider endpoint). These
+are server-selected continuation bindings, not options for choosing an engine
+in an HTTP request. A mismatch with server configuration returns
+`checkpoint_configuration_changed` (409) before a provider call. Version 1 remains
+accepted and uses the `current` execution variant. An unavailable provider/engine
+combination returns `execution_unavailable` (503). Native-tool execution rejects
+unsupported or multiple tool calls with `provider_tools_unsupported` (502), without
+a text fallback. Existing request authorization, routes, and NDJSON frame types
+are unchanged.
+
 This is private continuation data, not an applicable workflow
 proposal or a saved version. Resume by submitting the **exact original turn request**
 with its `checkpoint` property set to the returned checkpoint, and supply the provider
@@ -575,6 +601,13 @@ with the checkpoint draft. Resume receives a new bounded run budget. The service
 input/catalog and package hashes, reparses the bounded draft, and recreates redaction;
 hashes do not make checkpoint content trusted. Stale inputs/catalog/contracts return
 `stale_checkpoint` (409). There is no server-side checkpoint lookup or persistence.
+
+The optional `run` summary also reports `executionVariant`, `reasoningEffort`,
+`firstEditSeconds` (nullable), `lastCallSeconds`, `contextReads`, `duplicateReads`,
+`retries`, `acceptedBatches`, and reported `inputTokens`. Counters are per run;
+checkpoint `revision` remains the retained draft-step count. These metrics contain
+no prompts, provider keys, or private reasoning; missing input usage is not a
+billing estimate.
 
 Every stream frame has `version`, `runId`, monotonically increasing `sequence`, and
 `type`. Optional fields are `stage`, `message`, `code`, `checkpoint`, `result`, and

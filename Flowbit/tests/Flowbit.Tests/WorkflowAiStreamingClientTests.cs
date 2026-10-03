@@ -13,6 +13,32 @@ public sealed class WorkflowAiStreamingClientTests
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AuthoringUsesDedicatedLongRunningTransport(bool streaming)
+    {
+        using var normal = new HttpClient(new Handler(_ => throw new InvalidOperationException("Ordinary API transport must not handle authoring.")));
+        using var handler = new Handler(request =>
+        {
+            Assert.Equal(streaming ? "/api/workflows/ai/turn/stream" : "/api/workflows/ai/turn", request.RequestUri!.AbsolutePath);
+            Assert.Equal("session-key", Assert.Single(request.Headers.GetValues("X-Flowbit-AI-Key")));
+            return Task.FromResult(streaming ? StreamResponse(Lines(new AiRunEventDto { RunId = "run", Sequence = 1, Type = "result", Result = Result() }))
+                : new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(JsonSerializer.Serialize(Result(), JsonOptions), Encoding.UTF8, "application/json") });
+        });
+        var factory = new Factory(name =>
+        {
+            Assert.Equal(WorkflowApiClient.AiClientName, name);
+            return new HttpClient(handler, disposeHandler: false) { BaseAddress = new("https://flowbit.test"), Timeout = WorkflowApiClient.AiRequestTimeout };
+        });
+        Assert.True(WorkflowApiClient.AiRequestTimeout.TotalSeconds > AiAuthoringLimits.MaxRunTimeoutSeconds);
+        var client = new WorkflowApiClient(normal, factory);
+        var response = streaming ? await client.SendAiTurnStreamingAsync(new(), "session-key", _ => Task.CompletedTask)
+            : await client.SendAiTurnAsync(new(), "session-key");
+        Assert.Equal("clarification", response.Kind);
+        Assert.False(normal.DefaultRequestHeaders.Contains("X-Flowbit-AI-Key"));
+    }
+
     [Fact]
     public async Task StreamsCheckpointsAndResultWithRequestLocalCredentialsAndFrozenInputs()
     {
@@ -136,5 +162,9 @@ public sealed class WorkflowAiStreamingClientTests
     private sealed class Handler(Func<HttpRequestMessage, Task<HttpResponseMessage>> respond) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) => respond(request);
+    }
+    private sealed class Factory(Func<string, HttpClient> create) : IHttpClientFactory
+    {
+        public HttpClient CreateClient(string name) => create(name);
     }
 }

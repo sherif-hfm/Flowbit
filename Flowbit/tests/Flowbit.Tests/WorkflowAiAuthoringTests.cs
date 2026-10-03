@@ -401,12 +401,27 @@ public sealed class WorkflowAiAuthoringTests
     {
         var handler = new CaptureHandler(HttpStatusCode.OK, "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":\"{}\"}}]}");
         var provider = new OpenCodeGoProvider(new HttpClient(handler), new WorkflowAiOptions());
+        Assert.Equal("opencode-go", provider.Descriptor.Id);
+        Assert.Equal("OpenCode Zen", provider.Descriptor.Name);
         Assert.Equal("{}", (await provider.CompleteAsync("kimi-k2.7-code", "session-one", [new("user", "Generate workflow")], "key-one", 32_768, CancellationToken.None)).Content);
-        Assert.Equal("https://opencode.ai/zen/go/v1/chat/completions", handler.Url);
+        Assert.Equal("https://opencode.ai/zen/v1/chat/completions", handler.Url);
         Assert.Equal("Bearer key-one", handler.Authorization);
         Assert.Equal("Flowbit/1.0", handler.UserAgent);
         Assert.Equal("session-one", handler.Session);
         Assert.DoesNotContain("key-one", handler.Body);
+    }
+
+    [Fact]
+    public async Task OpenCodeAdapter_ExplicitGoEndpointRetainsItsLabelAndRoute()
+    {
+        var handler = new CaptureHandler(HttpStatusCode.OK, "{\"choices\":[{\"message\":{\"content\":\"{}\"}}]}");
+        using var client = new HttpClient(handler);
+        var provider = new OpenCodeGoProvider(client, new WorkflowAiOptions { OpenCodeBaseUrl = "https://opencode.ai/zen/go/v1/" });
+
+        Assert.Equal("opencode-go", provider.Descriptor.Id);
+        Assert.Equal("OpenCode Go", provider.Descriptor.Name);
+        await provider.CompleteAsync("kimi-k2.7-code", "session-one", [], "key-one", 8192, CancellationToken.None);
+        Assert.Equal("https://opencode.ai/zen/go/v1/chat/completions", handler.Url);
     }
 
     [Theory]

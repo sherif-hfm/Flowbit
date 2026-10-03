@@ -23,6 +23,10 @@ public sealed class BrowserStackFixture : IAsyncLifetime
     public static BrowserStackFixture CreateForAcceptance(BrowserAcceptanceOptions options) => new(options);
     public bool IsAcceptance => acceptance is not null;
     public bool RequiresInteractiveMarkers => acceptance?.LegacyUiWithoutInteractiveMarkers != true;
+    public bool UsesShippedAiExecution => Environment.GetEnvironmentVariable("FLOWBIT_BROWSER_AI_VARIANT") == "shipped";
+    public bool UsesFrameworkCandidate => Environment.GetEnvironmentVariable("FLOWBIT_BROWSER_AI_VARIANT") == "agent-framework";
+    public string ShippedAiExecutionVariant { get; private set; } = "current";
+    public string? ShippedFlashReasoning { get; private set; }
 
     /// <summary>Set to 1 to launch Chromium headed for local diagnosis.</summary>
     public const string HeadedEnv = "FLOWBIT_BROWSER_HEADED";
@@ -339,8 +343,18 @@ public sealed class BrowserStackFixture : IAsyncLifetime
         environment["WorkflowContext__AllowedClaims__0"] = "depId";
         if (aiProvider is not null)
         {
+            using var settings = JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(directory, "appsettings.json")));
+            var ai = settings.RootElement.GetProperty("WorkflowAi");
+            ShippedAiExecutionVariant = ai.TryGetProperty("ExecutionVariant", out var configuredVariant) ? configuredVariant.GetString()! : "current";
+            ShippedFlashReasoning = ai.GetProperty("OpenCodeReasoningEfforts").GetProperty("glm-5.3-flash").GetString();
             environment["WorkflowAi__Enabled"] = "true";
+            if (!UsesShippedAiExecution)
+                environment["WorkflowAi__ExecutionVariant"] = Environment.GetEnvironmentVariable("FLOWBIT_BROWSER_AI_VARIANT") ?? "current";
+            if (UsesFrameworkCandidate) environment["WorkflowAi__OpenCodeReasoningEfforts__glm-5.3-flash"] = "high";
             environment["WorkflowAi__OpenCodeBaseUrl"] = aiProvider.BaseAddress;
+            environment["WorkflowAi__OpenCodeModels__0"] = "glm-5.3-flash";
+            environment["WorkflowAi__OpenCodeModels__1"] = "glm-5.3";
+            environment["WorkflowAi__OpenCodeModels__2"] = "kimi-k2.7-code";
         }
         api = HostedProcess.Start(
             "api",
@@ -477,6 +491,9 @@ public sealed class BrowserStackFixture : IAsyncLifetime
             uiBaseAddress = string.IsNullOrEmpty(UiBaseAddress) ? null : UiBaseAddress,
             editorBaseAddress = string.IsNullOrEmpty(EditorBaseAddress) ? null : EditorBaseAddress,
             initialized,
+            aiExecution = Environment.GetEnvironmentVariable("FLOWBIT_BROWSER_AI_VARIANT") ?? "current",
+            shippedAiExecution = ShippedAiExecutionVariant,
+            shippedFlashReasoning = ShippedFlashReasoning,
             acceptance = IsAcceptance,
             workerStarts = workerNumber,
             apiProxyBaseAddress = apiProxy?.BaseAddress,

@@ -148,19 +148,32 @@ Overview totals and lists reflect the API's visibility rules; a restricted panel
 
 ### AI workflow assistant
 
-Open **AI assistant** in the editor to describe a new workflow or request changes to the current one. Select OpenCode Go and an available model, then enter your provider API key. Requirements, reviewed document text, and the current workflow are sent to that provider. Keys and conversation state live only in the open assistant panel; closing it, leaving the editor, resetting it, or changing the selected test identity clears them. Provider keys are separate from the Flowbit JWT and are not saved in workflow definitions.
+Open **AI assistant** in the editor to describe a new workflow or request changes to the current one. Select OpenCode Zen and an available model, then enter your provider API key. Zen is the default server endpoint; an administrator can explicitly configure the Go endpoint, which displays OpenCode Go instead. The shipped configuration selects GLM-5.3-Flash by default; an explicit configured model list replaces fallback choices. Requirements, reviewed document text, and the current workflow are sent to that provider. Keys and conversation state live only in the open assistant panel; closing it, leaving the editor, resetting it, or changing the selected test identity clears them. Provider keys are separate from the Flowbit JWT and are not saved in workflow definitions.
 
 Optionally expand **Include shared-variable metadata**, load or search active catalog keys, and select the contracts the workflow may use. This requires your existing shared-variable read permission. Only selected contracts and descriptions are included in model context; catalog values are excluded. Clear the selection to remove this context from later requests.
 
 **Attach a BRD or SRS PDF** accepts text, scanned, and mixed PDFs. Extraction runs locally on the API host, with English, Arabic, or both OCR languages. Expand each extracted page to review or correct its text before sending. **Retry with OCR** forces OCR on the selected document; **Remove** removes its source text. Limits are 20 MiB, 100 pages, and 200,000 extracted characters by default. Scans, tables, diagrams, and handwriting can produce incomplete text; correct the extraction before relying on it.
 
-The progress area shows the current stage, elapsed time, and model-call count. The assistant works in complete draft steps and retries temporary provider failures within a five-minute run by default. It keeps the selected model. **Cancel** stops work; **Continue** resumes the most recent complete checkpoint using the original requirements, source pages, workflow snapshot, catalog selection, and model. To change those inputs, send a new request. Changing the diagram disables continuation against its old snapshot. Incomplete steps are discarded and cannot be applied.
+The progress area shows the current stage, elapsed time and model-call count for this run, plus retained draft steps, nodes and connections. The assistant works in complete draft steps and retries temporary provider failures within a 30-minute run by default. It keeps the selected model. **Cancel** stops work; **Continue** resumes the most recent complete checkpoint using the original requirements, source pages, workflow snapshot, catalog selection, model and retained reference context. The timer and call counter reset for the new run; the completed draft steps remain. To change those inputs, send a new request. Changing the diagram disables continuation against its old snapshot. Incomplete steps are discarded and cannot be applied.
 
 Checkpoints live only in this open Blazor Server panel circuit. They are cleared when you close/reset the assistant, change provider/model or identity, leave the editor, or lose the circuit; page reload and server restart do not restore them. No workflow is saved by reaching a checkpoint.
+
+While a model call is in progress, **Waiting for the model** shows the seconds
+spent on that call. This resets on the next call and disappears after cancellation
+or completion; the retained draft counts remain separate. New checkpoints also
+bind the server's execution variant and reasoning/profile settings. If an
+administrator changes those settings, Continue asks you to start a new request
+before any provider call is made. See [execution variants](ai-authoring.md#execution-variants-and-evaluation).
 
 Answer clarification questions in the conversation by sending a new message. Review the proposal's changes, assumptions, setup dependencies, source references, and validation results, then select **Apply to editor**. Application is one undoable editor change; it retains the existing workflow family and saved baseline. Editing the diagram while generation is pending makes the proposal stale, so request a fresh proposal instead of overwriting later edits. Save or cancel pending script-dialog edits before capturing or applying a proposal.
 
 Generation and application do not save, publish, or run workflows. **Save new version** retains its existing unpublished-version behavior. Structurally valid proposals may still have catalog or publication blockers and need operational setup. **Download Flowbit AI skill** provides the same self-contained knowledge package for external agents. See [AI authoring and portable skill](ai-authoring.md) and [AI deployment settings](deployment.md#ai-authoring-and-local-ocr).
+
+Finish or discard an open assistant draft before an administrator switches its
+execution mode or reasoning setting. Existing version 2 checkpoints are bound
+to those settings and require a new request after a change. The framework-backed
+mode remains opt-in; the [targeted acceptance round](../Flowbit/tools/AuthoringEval/RESULTS.md#targeted-adoption-follow-up)
+did not qualify it as the shipped default.
 
 The current process-wide development identity boundary remains unchanged. Separate assistant panels do not share their provider keys, but this is not production per-user authentication.
 

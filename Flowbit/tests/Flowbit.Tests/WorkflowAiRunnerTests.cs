@@ -55,6 +55,19 @@ public sealed class WorkflowAiRunnerTests
     }
 
     [Fact]
+    public async Task DefaultBudgets_AllowComplexDraftToFinishBeyondPreviousCallAndTokenLimits()
+    {
+        var provider = new ScriptedProvider((call, _, _) => Task.FromResult(new AiCompletion(
+            call < 24 ? Edit(call, "batch-" + call, Set("workflow", null, "/name", "Draft " + call)) : Finish,
+            "stop", OutputTokens: 4096)));
+        var result = await Service(provider).TurnAsync(Request(), Key, CancellationToken.None);
+        Assert.Equal("proposal", result.Kind);
+        Assert.Equal(25, result.Run!.ProviderCalls);
+        Assert.True(result.Run.OutputTokens > 65_536);
+        Assert.Equal("Draft 23", result.Definition!.Value.GetProperty("name").GetString());
+    }
+
+    [Fact]
     public async Task ReadPlan_IsCheckpointedWithoutAdvancingDraftRevisionAndSurvivesDeadline()
     {
         const string read = """{"kind":"read","plan":"Requirements inspected; build the missing review branch next.","reads":[{"kind":"source","resource":"requirements","count":100}]}""";
@@ -69,7 +82,72 @@ public sealed class WorkflowAiRunnerTests
         Assert.Equal("paused", result.Kind);
         Assert.Equal(0, result.Checkpoint!.Revision);
         Assert.Equal("Requirements inspected; build the missing review branch next.", result.Checkpoint.Plan);
+        Assert.Equal(1, result.Run!.ContextReads);
         Assert.Contains(events, frame => frame.Type == "checkpoint" && frame.Stage == "reading" && frame.Checkpoint!.Plan == result.Checkpoint.Plan);
+    }
+
+    [Fact]
+    public async Task Resume_RebuildsReadExcerptsWithoutStoringTextOrRepeatingProviderReads()
+    {
+        var request = Request() with { Message = "Review REQUIREMENT_MARKER " + Key };
+        var knowledge = new TestKnowledge(new Dictionary<string, string> { ["references/rule.md"] = "CANONICAL_RULE_MARKER" });
+        var options = new WorkflowAiOptions { MaxProviderCalls = 1 };
+        const string read = """{"kind":"read","reads":[{"kind":"reference","resource":"references/rule.md","count":100},{"kind":"source","resource":"requirements","count":100},{"kind":"draft","target":"node","id":2,"count":100}]}""";
+        var events = new List<AiRunEventDto>();
+        var paused = await Service(new ScriptedProvider(Complete(read)), options, knowledge).RunAsync(request, Key, Capture(events), CancellationToken.None);
+        Assert.Equal("paused", paused.Kind);
+        Assert.Equal(2, paused.Checkpoint!.ContextReads.Count);
+        Assert.DoesNotContain(paused.Checkpoint.ContextReads, item => item.Kind == "draft");
+        Assert.Contains(events, frame => frame.Stage == "reading" && frame.Checkpoint?.ContextReads.Count == 2);
+        var serialized = JsonSerializer.Serialize(paused.Checkpoint, JsonOptions);
+        Assert.DoesNotContain("CANONICAL_RULE_MARKER", serialized);
+        Assert.DoesNotContain("REQUIREMENT_MARKER", serialized);
+        Assert.DoesNotContain(Key, serialized);
+
+        var provider = new ScriptedProvider(Complete(Finish));
+        var result = await Service(provider, options, knowledge).TurnAsync(request with { Checkpoint = paused.Checkpoint }, Key, CancellationToken.None);
+        Assert.Equal("proposal", result.Kind);
+        var observations = Payload(Assert.Single(provider.Calls)).GetProperty("observations").GetRawText();
+        Assert.Contains("CANONICAL_RULE_MARKER", observations);
+        Assert.Contains("REQUIREMENT_MARKER", observations);
+        Assert.DoesNotContain(Key, observations);
+    }
+
+    [Theory]
+    [InlineData("reference", "missing/reference.md", 0, 100)]
+    [InlineData("source", "missing/source", 0, 100)]
+    [InlineData("draft", "requirements", 0, 100)]
+    [InlineData("source", "requirements", -1, 100)]
+    [InlineData("source", "requirements", 10000, 100)]
+    [InlineData("source", "requirements", 0, 0)]
+    [InlineData("source", "requirements", 0, 12001)]
+    public async Task Resume_RejectsInvalidReadPositionsBeforeProviderTransport(string kind, string resource, int offset, int count)
+    {
+        var request = Request();
+        var options = new WorkflowAiOptions { MaxProviderCalls = 1 };
+        var paused = await Service(new ScriptedProvider(Complete(Edit(0, "rename", Set("workflow", null, "/name", "Draft")))), options)
+            .TurnAsync(request, Key, CancellationToken.None);
+        var provider = new ScriptedProvider(Complete(Finish));
+        var error = await Assert.ThrowsAsync<WorkflowAiException>(() => Service(provider, options).TurnAsync(request with
+        { Checkpoint = paused.Checkpoint! with { ContextReads = [new(kind, resource, offset, count)] } }, Key, CancellationToken.None));
+        Assert.Equal("invalid_checkpoint", error.Code);
+        Assert.Empty(provider.Calls);
+    }
+
+    [Theory]
+    [InlineData(19, 1)]
+    [InlineData(3, 12000)]
+    public async Task Resume_RejectsExcessiveReadPositionsBeforeProviderTransport(int reads, int count)
+    {
+        var request = Request();
+        var options = new WorkflowAiOptions { MaxProviderCalls = 1 };
+        var paused = await Service(new ScriptedProvider(Complete(Edit(0, "rename", Set("workflow", null, "/name", "Draft")))), options)
+            .TurnAsync(request, Key, CancellationToken.None);
+        var provider = new ScriptedProvider(Complete(Finish));
+        var error = await Assert.ThrowsAsync<WorkflowAiException>(() => Service(provider, options).TurnAsync(request with
+        { Checkpoint = paused.Checkpoint! with { ContextReads = Enumerable.Range(0, reads).Select(_ => new AiContextReadDto("source", "requirements", 0, count)).ToArray() } }, Key, CancellationToken.None));
+        Assert.Equal("invalid_checkpoint", error.Code);
+        Assert.Empty(provider.Calls);
     }
 
     [Theory]
@@ -211,6 +289,42 @@ public sealed class WorkflowAiRunnerTests
     }
 
     [Fact]
+    public async Task ExhaustedTimeoutRetries_ReportTimeoutInsteadOfProviderOutage()
+    {
+        var provider = new ScriptedProvider((_, _, _) => throw new WorkflowAiException("provider_unavailable", "Timed out.", 504) { Retryable = true });
+        var options = new WorkflowAiOptions { RetryBaseDelayMilliseconds = 1 };
+        var events = new List<AiRunEventDto>();
+        var result = await Service(provider, options).RunAsync(Request(), Key, Capture(events), CancellationToken.None);
+
+        Assert.Equal("paused", result.Kind);
+        Assert.Equal(3, provider.Calls.Count);
+        Assert.NotNull(result.Checkpoint);
+        Assert.Equal("provider_timeout", events.Last().Code);
+        Assert.Contains("180-second request timeout", result.Message);
+        Assert.DoesNotContain("unavailable", result.Message);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(3)]
+    public async Task UnreadableProviderRetry_PreservesAcceptedDraftAndPausesAtRetryLimit(int failures)
+    {
+        var provider = new ScriptedProvider((call, _, _) => call == 0
+            ? Task.FromResult(Complete(Edit(0, "kept-edit", Set("workflow", null, "/name", "Retained draft"))))
+            : call <= failures ? throw new WorkflowAiException("provider_invalid_response", "Unreadable.", 502) { Retryable = true }
+            : Task.FromResult(Complete(Finish)));
+        var events = new List<AiRunEventDto>();
+        var result = await Service(provider, new WorkflowAiOptions { RetryBaseDelayMilliseconds = 1 })
+            .RunAsync(Request(), Key, Capture(events), CancellationToken.None);
+        Assert.Equal(1, Payload(provider.Calls[1]).GetProperty("revision").GetInt64());
+        Assert.Equal(failures == 1 ? "proposal" : "paused", result.Kind);
+        Assert.Equal(failures == 1 ? 3 : 4, provider.Calls.Count);
+        var retained = result.Definition ?? result.Checkpoint!.Draft;
+        Assert.Equal("Retained draft", retained.GetProperty("name").GetString());
+        if (failures == 3) Assert.Equal("provider_invalid_response", events.Last().Code);
+    }
+
+    [Fact]
     public async Task SlowCheckpointEmission_RespectsRunDeadlineAndRetainsCheckpoint()
     {
         var provider = new ScriptedProvider(Complete(Finish));
@@ -303,7 +417,8 @@ public sealed class WorkflowAiRunnerTests
         var provider = new ScriptedProvider((_, _, _) => throw new WorkflowAiException("provider_rate_limit", "Wait.", 429)
             { Retryable = true, RetryAfter = TimeSpan.FromMinutes(10) });
         var events = new List<AiRunEventDto>();
-        var result = await Service(provider).RunAsync(Request(), Key, Capture(events), CancellationToken.None);
+        var result = await Service(provider, new WorkflowAiOptions { RunTimeoutSeconds = 30 })
+            .RunAsync(Request(), Key, Capture(events), CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
         Assert.Equal("paused", result.Kind);
         Assert.Single(provider.Calls);
         Assert.Contains(events, frame => frame.Code == "provider_wait");
@@ -327,6 +442,7 @@ public sealed class WorkflowAiRunnerTests
         else Assert.Equal("proposal", (await Service(provider).RunAsync(Request(), Key, Capture(events), CancellationToken.None)).Kind);
         Assert.Equal(2, provider.Calls.Count);
         Assert.Single(events, frame => frame.Stage == "compacting");
+        Assert.Equal(JsonValueKind.Array, Payload(provider.Calls[0]).GetProperty("currentWorkflow").GetProperty("flowNodes").ValueKind);
         Assert.True(Payload(provider.Calls[1]).GetProperty("currentWorkflow").TryGetProperty("note", out _));
     }
 
@@ -496,8 +612,10 @@ public sealed class WorkflowAiRunnerTests
         Assert.Equal(18_000, ContextPayload(context, request, compact: false).GetProperty("maxReadCharacters").GetInt32());
     }
 
-    [Fact]
-    public void Context_RetainsTwoFocusedReadBatchesWithinTheWorkingBudget()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Context_RetainsTwoFocusedReadBatchesWithinTheWorkingBudget(bool compact)
     {
         var request = Request();
         var knowledge = new TestKnowledge(new Dictionary<string, string>
@@ -508,9 +626,57 @@ public sealed class WorkflowAiRunnerTests
             using var reads = JsonDocument.Parse(JsonSerializer.Serialize(new[] { new { kind = "reference", resource, count = 12000 } }));
             context.Observe(context.Read(reads.RootElement, request.CurrentWorkflow!.Value, text => text));
         }
-        var observations = ContextPayload(context, request, compact: false).GetProperty("observations").GetRawText();
+        var observations = ContextPayload(context, request, compact).GetProperty("observations").GetRawText();
         Assert.Contains("FIRST_RULE", observations);
         Assert.Contains("SECOND_RULE", observations);
+    }
+
+    [Fact]
+    public void CompactContext_PreservesModerateRequirementsAndStillBoundsLargeInput()
+    {
+        var request = Request() with { Message = new string('a', 3000) + "REQUIRED_TAIL" };
+        var payload = ContextPayload(new WorkflowAiContext(new TestKnowledge(), request), request, compact: true);
+        Assert.Equal(request.Message, payload.GetProperty("request").GetString());
+        Assert.False(payload.GetProperty("requestIsExcerpt").GetBoolean());
+        request = request with { Message = new string('b', 20000) };
+        payload = ContextPayload(new WorkflowAiContext(new TestKnowledge(), request), request, compact: true);
+        Assert.Equal(8000, payload.GetProperty("request").GetString()!.Length);
+        Assert.True(payload.GetProperty("requestIsExcerpt").GetBoolean());
+    }
+
+    [Fact]
+    public void CompactContext_KeepsSmallDraftDetailsSoTheModelNeedNotReadThemAgain()
+    {
+        var request = Request();
+        var payload = ContextPayload(new WorkflowAiContext(new TestKnowledge(), request), request, compact: true);
+        Assert.Equal(JsonValueKind.Array, payload.GetProperty("currentWorkflow").GetProperty("flowNodes").ValueKind);
+        Assert.Equal(request.CurrentWorkflow!.Value.GetProperty("sequenceFlows").GetRawText(),
+            payload.GetProperty("currentWorkflow").GetProperty("sequenceFlows").GetRawText());
+    }
+
+    [Fact]
+    public void Context_RestoresReadPositionsAcrossCombinedExcerptBudgets()
+    {
+        var request = Request();
+        var resources = new Dictionary<string, string>
+        {
+            ["references/first.md"] = new string('a', 11990) + "FIRST_END",
+            ["references/second.md"] = new string('b', 11990) + "SECOND_END",
+            ["references/third.md"] = new string('c', 5990) + "THIRD_END"
+        };
+        var knowledge = new TestKnowledge(resources);
+        var context = new WorkflowAiContext(knowledge, request);
+        foreach (var (resource, text) in resources)
+        {
+            var reads = JsonSerializer.SerializeToElement(new[] { new { kind = "reference", resource, count = text.Length } }, JsonOptions);
+            context.Observe(context.Read(reads, request.CurrentWorkflow!.Value, value => value));
+        }
+        var restored = new WorkflowAiContext(knowledge, request);
+        restored.RestoreReads(context.RetainedReads(), request.CurrentWorkflow!.Value, value => value);
+        var observations = ContextPayload(restored, request, compact: false).GetProperty("observations").GetRawText();
+        Assert.Contains("FIRST_END", observations);
+        Assert.Contains("SECOND_END", observations);
+        Assert.Contains("THIRD_END", observations);
     }
 
     [Fact]

@@ -7,16 +7,24 @@ using Flowbit.Shared.Dtos;
 namespace Flowbit.Service.Ai;
 
 /// <summary>Bounded discovery over immutable knowledge and request-local data; never opens user paths.</summary>
-internal sealed class WorkflowAiContext(IAuthoringKnowledge knowledge, AiTurnRequestDto request)
+internal sealed class WorkflowAiContext(IAuthoringKnowledge knowledge, AiTurnRequestDto request, bool optimized = false)
 {
     private const int MaxReadCharacters = 18_000;
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private readonly Dictionary<string, SourceResource> sources = CreateSources(request);
     private readonly string[] schemaIndex = SchemaResources(knowledge);
     private readonly List<JsonArray> readObservations = [];
+    private readonly List<JsonObject> immutableReads = [];
+    private readonly List<JsonObject> draftReads = [];
+    private readonly HashSet<string> seenReads = [];
     private readonly List<string> notices = [];
     private JsonObject? lastValidation;
     public int ObservationCharacters { get; set; } = 32_000;
+    public bool UseDraftIndex { get; set; }
+    public int DraftCharacters { get; set; } = 100_000;
+    public int ReadCount { get; private set; }
+    public int DuplicateReadCount { get; private set; }
+    public void DraftChanged() { if (optimized) draftReads.Clear(); }
 
     public string SystemPrompt => """
         You are Flowbit's workflow authoring assistant. Work incrementally using ONLY the JSON commands below.
@@ -34,7 +42,8 @@ internal sealed class WorkflowAiContext(IAuthoringKnowledge knowledge, AiTurnReq
         Only actual supplied pages may be referenced. Use only the fields documented for each command.
         Commands:
         1. {"kind":"read","reads":[{"kind":"reference","resource":"schema:FlowNodeModel","offset":0,"count":6000}]}
-           At most 6 reads, with the combined excerpts bounded by maxReadCharacters. Request 1–3 focused resources
+           At most 6 reads; each count must be 1–12000 characters, with combined excerpts bounded by maxReadCharacters.
+           Request 1–3 focused resources
            whose total count fits that budget. References use EXACT resource names from referenceIndex or schemaIndex.
            Never guess schema definition names; use the advertised schema:<definition name> resource.
            Search a selected reference with {kind:"reference",resource:"references/docs/node-reference.md",query:"multiInstance",count:6000}.
@@ -50,6 +59,7 @@ internal sealed class WorkflowAiContext(IAuthoringKnowledge knowledge, AiTurnReq
            the requirements, including remaining excerpts. Original text remains available; never silently omit it.
            Once enough is known for a safe part of the draft, submit its edit batch before researching later features.
            Keep a string plan of completed decisions and remaining work. Avoid repeating reads without a specific missing rule.
+           Continue restores previously read reference/source excerpts in observations. Reuse them before requesting the same reads.
            A new workflow can begin with its name, lanes, basic variables and entry node; advanced routing can follow.
            Do not require every advanced feature's reference before committing those basic parts.
            Use runBudget to pace work: preserve useful complete edits before the remaining time expires.
@@ -78,7 +88,8 @@ internal sealed class WorkflowAiContext(IAuthoringKnowledge knowledge, AiTurnReq
         and finish any outstanding work. Validate complete requirements and graph before finishing.
         Shared-variable metadata is explicitly selected and value-free; use only supplied exact catalog contracts.
         Never include the provider API key. Never pretend validation executes generated scripts or services.
-        """ + Core("references/capabilities.json") + Core("references/authoring-guide.md");
+        """ + Core("references/capabilities.json") + Core("references/authoring-guide.md")
+        + (optimized ? WorkflowAiContextPrimer.Build(knowledge, request) : "");
 
     private string Core(string name) => knowledge.Resources.TryGetValue(name, out var value)
         ? "\n--- " + name + " ---\n" + (value.Length <= 12_000 ? value : "Read this reference through the read command; it exceeds the core budget.") : "";
@@ -94,6 +105,20 @@ internal sealed class WorkflowAiContext(IAuthoringKnowledge knowledge, AiTurnReq
         catch (JsonException) { }
         if (structured is JsonArray reads)
         {
+            if (optimized)
+            {
+                foreach (var read in reads.OfType<JsonObject>())
+                {
+                    var resource = read["resource"]?.GetValue<string>() ?? "";
+                    var cache = resource.StartsWith("draft:", StringComparison.Ordinal) ? draftReads : immutableReads;
+                    var offset = read["offset"]?.GetValue<int>() ?? 0;
+                    cache.RemoveAll(old => old["resource"]?.GetValue<string>() == resource && old["offset"]?.GetValue<int>() == offset);
+                    cache.Add(read.DeepClone().AsObject());
+                    while (cache.Count > 18 || cache.Sum(item => item["text"]?.GetValue<string>()?.Length ?? 0) > ObservationCharacters)
+                        cache.RemoveAt(0);
+                }
+                return;
+            }
             readObservations.Add(reads);
             while (readObservations.Count > 1 && readObservations.Sum(item => item.OfType<JsonObject>().Sum(read => read["text"]?.GetValue<string>()?.Length ?? 0)) > ObservationCharacters)
                 readObservations.RemoveAt(0);
@@ -104,6 +129,34 @@ internal sealed class WorkflowAiContext(IAuthoringKnowledge knowledge, AiTurnReq
             notices.Add(Excerpt(text, 0, 2500));
             while (notices.Count > 4) notices.RemoveAt(0);
         }
+    }
+
+    public IReadOnlyList<AiContextReadDto> RetainedReads()
+    {
+        var reads = (optimized ? immutableReads : readObservations.TakeLast(4).SelectMany(batch => batch.OfType<JsonObject>()))
+            .Where(read => read["resource"]?.GetValue<string>() is { } resource && !resource.StartsWith("draft:", StringComparison.Ordinal)
+                && read["text"]?.GetValue<string>() is { Length: > 0 })
+            .Select(read => new AiContextReadDto(sources.ContainsKey(read["resource"]!.GetValue<string>()) ? "source" : "reference",
+                read["resource"]!.GetValue<string>(), read["offset"]!.GetValue<int>(),
+                read["nextOffset"]!.GetValue<int>() - read["offset"]!.GetValue<int>()))
+            .Reverse().DistinctBy(read => (read.Kind, read.Resource, read.Offset)).Take(18).Reverse().ToList();
+        while (reads.Sum(read => (long)read.Count) > 32_000) reads.RemoveAt(0);
+        return reads;
+    }
+
+    public void RestoreReads(IReadOnlyList<AiContextReadDto> reads, JsonElement draft, Func<string, string> sanitize)
+    {
+        var batch = new List<AiContextReadDto>();
+        foreach (var read in reads)
+        {
+            if (batch.Count == 6 || batch.Sum(item => item.Count) + read.Count > MaxReadCharacters)
+            {
+                Observe(Read(JsonSerializer.SerializeToElement(batch, Json), draft, sanitize));
+                batch.Clear();
+            }
+            batch.Add(read);
+        }
+        if (batch.Count > 0) Observe(Read(JsonSerializer.SerializeToElement(batch, Json), draft, sanitize));
     }
 
     public List<AiChatMessageDto> Messages(JsonElement draft, long revision, string plan, object catalog, int maxOperations,
@@ -119,8 +172,9 @@ internal sealed class WorkflowAiContext(IAuthoringKnowledge knowledge, AiTurnReq
         }, Json);
         var payload = JsonSerializer.Serialize(new
         {
-            request = sanitize(Excerpt(request.Message, 0, compact ? 2000 : 8000)), requestIsExcerpt = request.Message.Length > (compact ? 2000 : 8000),
-            currentWorkflow = !compact && raw.Length <= 14_000 ? SanitizeDraft(draft, sanitize) : index,
+            request = sanitize(Excerpt(request.Message, 0, 8000)), requestIsExcerpt = request.Message.Length > 8000,
+            currentWorkflow = optimized ? SemanticDraft(draft, index, sanitize)
+                : !UseDraftIndex && raw.Length <= 14_000 ? SanitizeDraft(draft, sanitize) : index,
             sourcePages = compact ? Array.Empty<object>() : request.Sources.Select((source, position) => new { source, position })
                 .Where(item => item.source.Text.Length <= 2000).Take(3)
                 .Select(item => (object)new { resource = "source/" + item.position, sourceName = sanitize(item.source.SourceName), item.source.PageNumber, text = sanitize(item.source.Text) }).ToArray(),
@@ -212,6 +266,8 @@ internal sealed class WorkflowAiContext(IAuthoringKnowledge knowledge, AiTurnReq
             if (offset < 0 || offset > text.Length || count is < 1 or > 12_000) throw new JsonException("Invalid read offset/count (maximum 12000 characters).");
             count = Math.Min(count, Math.Max(0, remaining));
             var excerpt = queryFound == false ? "" : Excerpt(text, offset, count);
+            ReadCount++;
+            if (kind != "draft" && !seenReads.Add($"{kind}:{resource}:{offset}:{excerpt.Length}")) DuplicateReadCount++;
             remaining -= excerpt.Length;
             results.Add(new
             {
@@ -229,7 +285,10 @@ internal sealed class WorkflowAiContext(IAuthoringKnowledge knowledge, AiTurnReq
         var result = new List<object>();
         var remaining = Math.Max(0, ObservationCharacters);
         // Reserve the budget for the latest reads first, then present retained batches chronologically.
-        foreach (var batch in readObservations.TakeLast(compact ? 1 : 4).Reverse())
+        var batches = optimized
+            ? immutableReads.Concat(draftReads).Select(item => new JsonArray(item.DeepClone())).ToArray()
+            : readObservations.TakeLast(4).ToArray();
+        foreach (var batch in batches.Reverse())
         {
             var copy = batch.DeepClone().AsArray();
             foreach (var read in copy.OfType<JsonObject>())
@@ -249,6 +308,18 @@ internal sealed class WorkflowAiContext(IAuthoringKnowledge knowledge, AiTurnReq
         if (lastValidation is not null) result.Add(lastValidation);
         result.AddRange(notices.TakeLast(compact ? 1 : 3));
         return result.ToArray();
+    }
+
+    private JsonElement SemanticDraft(JsonElement draft, JsonElement index, Func<string, string> sanitize)
+    {
+        var node = JsonNode.Parse(SanitizeDraft(draft, sanitize).GetRawText())!.AsObject();
+        // Layout is regenerated locally. Preserve every business property before falling back to a disclosed index.
+        foreach (var name in new[] { "lanes", "flowNodes", "sequenceFlows" })
+            if (node[name] is JsonArray items)
+                foreach (var entity in items.OfType<JsonObject>())
+                    foreach (var property in new[] { "x", "y", "w", "h", "waypoints", "labelOffset" }) entity.Remove(property);
+        var semantic = JsonSerializer.SerializeToElement(node, Json);
+        return !UseDraftIndex && Encoding.UTF8.GetByteCount(semantic.GetRawText()) <= DraftCharacters ? semantic : index;
     }
 
     private static JsonElement SanitizeData(JsonElement data, Func<string, string> sanitize)

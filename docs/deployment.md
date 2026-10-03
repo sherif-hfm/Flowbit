@@ -162,25 +162,48 @@ No database migration or persistent conversation store is introduced.
 | API setting (`__` separates environment keys) | Default | Purpose |
 | --- | --- | --- |
 | `WorkflowAi:Enabled` | `true` | Enable provider discovery/generation. |
-| `WorkflowAi:OpenCodeBaseUrl` | `https://opencode.ai/zen/go/v1/` | Server-owned OpenCode Go endpoint. HTTPS required except loopback test servers; callers cannot supply a URL. |
-| `WorkflowAi:OpenCodeModels` | `kimi-k2.7-code`, `glm-5.3`, `glm-5.3-flash` | Chat-completions models offered by the adapter; the first is the default. Verify live account/model compatibility separately. |
-| `WorkflowAi:OpenCodeReasoningEfforts` | `{}` | Model-id-to-effort mapping. A configured selected model sends `reasoning_effort` as exactly `low`, `high`, or `max`; any other value rejects the request with `provider_configuration` (503) before provider transport. Unmapped models omit the field and retain provider defaults. |
+| `WorkflowAi:ExecutionVariant` | `current` | `current`, `optimized`, or `agent-framework`. Experimental variants share the existing authoring budget/validation owner. Framework execution requires native tool support; it never silently falls back to text. See [execution variants](ai-authoring.md#execution-variants-and-evaluation) and the [evaluation tool](../Flowbit/tools/AuthoringEval/README.md) before changing defaults. |
+| `WorkflowAi:OpenCodeBaseUrl` | `https://opencode.ai/zen/v1/` | Server-owned OpenCode Zen endpoint. HTTPS required except loopback test servers; callers cannot supply a URL. |
+| `WorkflowAi:OpenCodeModels` | Shipped configuration: `glm-5.3-flash`; unconfigured fallback: `kimi-k2.7-code`, `glm-5.3`, `glm-5.3-flash` | An explicit configured list replaces fallback models; its first entry is the default. Verify live account/model compatibility separately. |
+| `WorkflowAi:OpenCodeReasoningEfforts` | Shipped configuration: `{"glm-5.3-flash":"max"}`; unconfigured fallback: `{}` | Model-id-to-effort mapping. A configured selected model sends `reasoning_effort` as exactly `low`, `high`, or `max`; any other value rejects the request with `provider_configuration` (503) before provider transport. Unmapped models omit the field and retain provider defaults. |
 | `WorkflowAi:MaxInputCharacters` / `MaxHistoryMessages` | `200000` / `30` | Combined input/history bounds. |
 | `WorkflowAi:MaxContextCharacters` | `750000` | Assembled prompt bound, in addition to the model token budget. Original requirements and source pages remain available through bounded reads. |
 | `WorkflowAi:MaxWorkflowCharacters` / `MaxOutputBytes` | `2097152` / `2097152` | Workflow/context and provider response bounds. |
-| `WorkflowAi:RunTimeoutSeconds` / `RequestTimeoutSeconds` | `300` / `90` | Total run deadline (1–300 seconds) and individual provider-call deadline. Every call is also bounded by the remaining run time. Continue starts another bounded run. |
-| `WorkflowAi:MaxProviderCalls` / `MaxRunOutputTokens` | `20` / `65536` | Total calls and output-token budget per run, including recovery. Missing usage and retryable failed attempts are conservatively charged their requested allowance. |
+| `WorkflowAi:RunTimeoutSeconds` / `RequestTimeoutSeconds` | `1800` / `180` | Total run deadline (1–3600 seconds) and individual provider-call deadline. Every call is also bounded by the remaining run time. Continue starts another bounded run. |
+| `WorkflowAi:MaxProviderCalls` / `MaxRunOutputTokens` | `50` / `262144` | Total calls and output-token budget per run, including recovery. Missing usage and retryable failed attempts are conservatively charged their requested allowance. |
 | `WorkflowAi:MaxTransportRetries` / `RetryBaseDelayMilliseconds` | `2` / `1000` | Bounded transient retries with exponential delay, jitter, and provider `Retry-After`; waits must fit the remaining run deadline. |
 | `WorkflowAi:MaxTruncationRecoveries` / `MaxOperationsPerBatch` | `3` / `20` | Output-limit recoveries before pausing, and initial/maximum atomic edit-batch size. Truncation and timed-out calls shrink batches; accepted edits adjust batch size according to reported output usage. Truncation recovery can raise the output allowance once for a single operation. |
 | `WorkflowAi:MaxRepairAttempts` / `MaxConcurrentRequests` | `2` / `4` | Consecutive validation/command repairs and process-local concurrent runs. Accepted edits reset repair/truncation counters; global run limits still apply. |
 | `WorkflowAi:ContextTokens` / `InitialOutputTokens` / `MaxModelOutputTokens` | `65536` / `8192` / `32768` | Conservative fallback model profile; input estimation uses rounded-up UTF-8 bytes divided by two plus 32 tokens per message, reserving the requested output allowance and a 10% context safety margin. This is a heuristic, not the provider's tokenizer or detected model capacity. |
-| `WorkflowAi:ModelProfiles` | `{}` | Optional model-id map with `ContextTokens`, `InitialOutputTokens`, and `MaxOutputTokens`; overrides the fallback profile for that model. The model must still be enabled. |
+| `WorkflowAi:ModelProfiles` | Shipped Flash profile: context `65536`, initial output `16384`, maximum output `32768`; unconfigured fallback: `{}` | Optional model-id map with `ContextTokens`, `InitialOutputTokens`, and `MaxOutputTokens`; overrides the fallback profile for that model. The model must still be enabled. |
 | `WorkflowAiDocuments:MaxBytes` / `MaxPages` / `MaxCharacters` | `20971520` / `100` / `200000` | PDF limits; excess input is rejected. |
 | `WorkflowAiDocuments:TimeoutSeconds` / `ProcessTimeoutSeconds` | `300` / `45` | Total extraction and individual raster/OCR process deadlines. |
 | `WorkflowAiDocuments:MaxRasterDimension` / `MaxConcurrentExtractions` | `4096` / `2` | Maximum raster dimension in pixels and process-local extraction concurrency. |
 | `WorkflowAiDocuments:PdfToPpmPath` / `TesseractPath` | `pdftoppm` / `tesseract` | Executable paths; arguments are passed without a shell. |
 
-Reasoning effort defaults to the provider's choice. The official
+The default endpoint is now OpenCode Zen. Use a key/account with access to the
+selected Zen model. Existing deployments that explicitly configure an endpoint
+keep that override; to continue using Go, set `WorkflowAi:OpenCodeBaseUrl` to
+`https://opencode.ai/zen/go/v1/`. The provider label is OpenCode Zen by default and
+OpenCode Go for that Go endpoint. The API provider id remains `opencode-go` for
+compatibility with existing callers. Restart the API after changing configuration.
+
+The shipped configuration explicitly selects `max` reasoning for GLM-5.3-Flash,
+allows 180 seconds per model call, and starts with a 16,384-token output allowance.
+These settings accommodate long reasoning responses; they do not guarantee completion
+within one 30-minute run. Repeated individual call timeouts pause with
+`provider_timeout`, while temporary server/connectivity failures retain
+`provider_unavailable`. Check the configured endpoint and model when diagnosing retries;
+three roughly 90-second calls indicate an older 90-second request timeout.
+Empty or unreadable successful responses receive bounded transport retries, then
+pause with `provider_invalid_response`. Provider `Retry-After` hints cover the
+maximum one-hour run; a wait beyond the remaining run time pauses immediately.
+Continuation retains up to 18 validated reference/source read positions within a
+32,000-character excerpt budget, rebuilding text from the original inputs rather
+than trusting cached text. Upgrade and restart both API and UI to carry this
+optional checkpoint field through the Blazor session.
+
+For models without an explicit effort mapping, reasoning defaults to the provider's choice. The official
 [GLM-5.3-Flash model card](https://huggingface.co/zai-org/GLM-5.3-Flash#note) documents
 `low`, `high`, and `max`, with `max` when omitted. Administrators can set an explicit
 effort after checking the latency and result quality for their requirements:
@@ -198,7 +221,7 @@ effort after checking the latency and result quality for their requirements:
 This reasoning mapping does not enable models or change the default model, output-token
 budgets, or request deadlines. It is server-owned configuration, not a caller-supplied
 request option. Configure an effort only after verifying that the selected model
-and OpenCode Go endpoint support it; accepted values in Flowbit do not establish
+and configured OpenCode endpoint support it; accepted values in Flowbit do not establish
 live provider compatibility. Record an authorized live check for each configured
 model/provider combination. Models absent from the mapping omit `reasoning_effort`;
 configuring Flash's effort does not change another model's requests.
@@ -215,8 +238,12 @@ Both turn endpoints accept at most 8 MiB so a continuation can carry its origina
 request and checkpoint. Each workflow/draft remains separately bounded to 2 MiB by
 default. The stream uses `application/x-ndjson`, explicit flushes, and no-store/no-buffer
 headers. Configure reverse proxies to pass streamed responses without buffering and
-allow the five-minute run plus response overhead; the UI HTTP client allows six minutes.
-Administrators can shorten the run deadline; values above five minutes are rejected.
+allow the configured run plus response overhead. The dedicated UI authoring HTTP
+client and stream reader allow 61 minutes, covering the maximum one-hour server
+run plus overhead; ordinary UI API requests retain their six-minute timeout.
+Administrators can shorten the default 30-minute run or extend it up to one hour.
+Explicit older overrides such as `WorkflowAi__RunTimeoutSeconds=300` still apply;
+restart both API and UI after upgrading or changing these settings.
 
 Continuations have no API session store or database migration. A checkpoint lives in
 the current Blazor Server UI circuit and is sent back as untrusted bounded state with
@@ -225,10 +252,27 @@ inputs, selected catalog contracts, or package hashes reject it as stale. UI res
 circuit loss, close/reset, navigation, or identity/model changes discard panel state.
 Do not log checkpoint bodies: they may contain restored workflow credentials.
 
+New version 2 checkpoints also bind the execution variant, reasoning effort, model
+profile, and provider endpoint. Replicas must agree on these settings for Continue;
+changing them requires a new request. Version 1 checkpoints retain current-engine
+compatibility. The framework package requires no Azure account, hosted agent,
+database migration, or persistent session store. Roll back new requests with
+`WorkflowAi:ExecutionVariant=current`; existing version 2 checkpoints for another
+variant must be abandoned or resumed under their original settings.
+Finish or discard open assistant drafts before changing engine/reasoning settings.
+To restore the shipped behavior explicitly, use `ExecutionVariant=current` and
+`OpenCodeReasoningEfforts:glm-5.3-flash=max`. The targeted framework/high evaluation
+did not meet its functional completion gates, so shipped defaults remain unchanged;
+see the [acceptance results](../Flowbit/tools/AuthoringEval/RESULTS.md#targeted-adoption-follow-up).
+
 The `Flowbit.Ai.Authoring` meter exposes `flowbit.ai.provider.calls`,
-`flowbit.ai.recoveries`, and `flowbit.ai.run.seconds` without prompt/workflow contents.
+`flowbit.ai.recoveries`, `flowbit.ai.provider.seconds`, and `flowbit.ai.run.seconds` without prompt/workflow contents.
 Run responses report model calls, elapsed seconds, output-token accounting, and whether
 usage includes estimates. These are operational bounds, not provider billing totals.
+Summaries additionally expose reported input tokens, first-edit/last-call timing,
+read/duplicate-read counts, retries, and accepted batches. The framework adapter
+makes exactly one bounded HTTP attempt per step; no SDK retry policy or automatic
+function loop is layered over Flowbit's retry/deadline controller.
 
 The provider adapter sends `Flowbit/1.0` as its user-agent and a stable
 `x-opencode-session` for the temporary conversation. It receives the key only for
@@ -281,7 +325,7 @@ dotnet run --project Flowbit/src/Flowbit.Api
 
 The package's provider-neutral rules are independent of live provider availability.
 Automated tests use a local provider server and do not require billed requests.
-A successful test-server run does not establish live OpenCode Go compatibility;
+A successful test-server run does not establish live OpenCode compatibility;
 perform and record that check using an authorized account before making that claim.
 
 The separate [native document verification](../Flowbit/tests/Flowbit.DocumentTests/README.md)

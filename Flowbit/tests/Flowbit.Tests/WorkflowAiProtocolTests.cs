@@ -23,11 +23,12 @@ public sealed class WorkflowAiProtocolTests
     private const string Finish = """{"kind":"finish","message":"Review this workflow."}""";
 
     [Fact]
-    public void RunDeadlineCanBeShortenedButCannotExceedFiveMinutes()
+    public void RunDeadlineSupportsLongAuthoringButCannotExceedOneHour()
     {
         new WorkflowAiOptions { RunTimeoutSeconds = 1 }.Validate();
-        new WorkflowAiOptions { RunTimeoutSeconds = 300 }.Validate();
-        var error = Assert.Throws<WorkflowAiException>(() => new WorkflowAiOptions { RunTimeoutSeconds = 301 }.Validate());
+        new WorkflowAiOptions { RunTimeoutSeconds = 1800 }.Validate();
+        new WorkflowAiOptions { RunTimeoutSeconds = 3600 }.Validate();
+        var error = Assert.Throws<WorkflowAiException>(() => new WorkflowAiOptions { RunTimeoutSeconds = 3601 }.Validate());
         Assert.Equal("provider_configuration", error.Code);
     }
 

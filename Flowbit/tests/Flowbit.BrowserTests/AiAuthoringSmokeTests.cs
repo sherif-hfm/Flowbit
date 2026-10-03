@@ -25,6 +25,7 @@ public sealed class AiAuthoringSmokeTests(BrowserStackFixture stack)
             var page = await scenario.OpenUiAsync("workflows/new");
             await ReadyAsync(page);
             await OpenAssistantAsync(page);
+            await page.ScreenshotAsync(new PageScreenshotOptions { Path = Path.Combine(scenario.ArtifactDirectory, "ai-connection.png"), FullPage = true });
             if (width == 390)
             {
                 await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Close AI assistant", Exact = true }).FocusAsync();
@@ -214,15 +215,19 @@ public sealed class AiAuthoringSmokeTests(BrowserStackFixture stack)
             var requestStart = stack.AiProvider.Requests.Count;
             stack.AiProvider.EnqueueTruncation();
             stack.AiProvider.EnqueueFailure(System.Net.HttpStatusCode.ServiceUnavailable);
+            stack.AiProvider.EnqueueReferenceRead();
             stack.AiProvider.EnqueueNameEdit("Incremental recovery");
             var waiting = stack.AiProvider.EnqueueFinish(delayed: true);
             await SendAsync(page, requirement);
             await waiting.Arrived.Task.WaitAsync(TimeSpan.FromSeconds(30));
             await Assertions.Expect(page.Locator("#ai-progress-stage")).ToBeVisibleAsync();
+            await Assertions.Expect(page.Locator("#ai-model-wait")).ToContainTextAsync("Waiting for the model:");
             await Assertions.Expect(page.Locator("#ai-continue")).ToBeDisabledAsync();
             await Assertions.Expect(page.Locator("#ai-apply")).ToHaveCountAsync(0);
             await Assertions.Expect(page.Locator("#wfName")).ToHaveValueAsync(original.Name);
-            await Assertions.Expect(page.Locator("#ai-progress-metrics")).ToContainTextAsync(new Regex(@"^(?:[3-9]|\d{2,}) s elapsed"));
+            await Assertions.Expect(page.Locator("#ai-progress-metrics")).ToContainTextAsync(new Regex(@"^(?:[3-9]|\d{2,}) s this run"));
+            await Assertions.Expect(page.Locator("#ai-draft-progress")).ToContainTextAsync("1 completed draft step");
+            var keptProgress = await page.Locator("#ai-draft-progress").InnerTextAsync();
             var elapsedBeforeCancel = int.Parse(Regex.Match(await page.Locator("#ai-progress-metrics").InnerTextAsync(), @"\d+").Value);
             Assert.True(await page.EvaluateAsync<bool>("document.documentElement.scrollWidth <= innerWidth + 2"));
             await page.Locator(".ai-progress").ScrollIntoViewIfNeededAsync();
@@ -233,26 +238,43 @@ public sealed class AiAuthoringSmokeTests(BrowserStackFixture stack)
             await Assertions.Expect(page.Locator("#ai-continue")).ToBeEnabledAsync();
             await Assertions.Expect(page.Locator("#ai-notice")).ToContainTextAsync("cancelled");
             await Assertions.Expect(page.Locator("#ai-progress-stage")).ToContainTextAsync("cancelled");
+            await Assertions.Expect(page.Locator("#ai-model-wait")).ToHaveCountAsync(0);
             var elapsedAfterCancel = int.Parse(Regex.Match(await page.Locator("#ai-progress-metrics").InnerTextAsync(), @"\d+").Value);
             Assert.True(elapsedAfterCancel >= elapsedBeforeCancel);
             await page.Locator(".ai-progress").ScrollIntoViewIfNeededAsync();
             await page.ScreenshotAsync(new() { Path = Path.Combine(scenario.ArtifactDirectory, "ai-continuation.png"), FullPage = true });
             var initial = stack.AiProvider.Requests.Skip(requestStart).ToArray();
-            Assert.Equal(4, initial.Length);
+            Assert.Equal(5, initial.Length);
             Assert.True(initial[1].MaxOperations < initial[0].MaxOperations);
             Assert.Equal(0, initial[2].Revision);
-            Assert.Equal(1, initial[3].Revision);
-            Assert.All(initial, request => Assert.Equal("kimi-k2.7-code", request.Model));
+            Assert.Equal(0, initial[3].Revision);
+            Assert.Equal(1, initial[4].Revision);
+            Assert.All(initial, request => Assert.Equal("glm-5.3-flash", request.Model));
+            Assert.All(initial, request => Assert.Equal(16_384, request.MaxTokens));
+            if (stack.UsesShippedAiExecution)
+                Assert.All(initial, request => { Assert.Equal(stack.ShippedAiExecutionVariant == "agent-framework" ? 4 : 0, request.NativeToolCount); Assert.Equal(stack.ShippedFlashReasoning, request.ReasoningEffort); });
+            if (stack.UsesFrameworkCandidate)
+                Assert.All(initial, request => { Assert.Equal(4, request.NativeToolCount); Assert.Equal("high", request.ReasoningEffort); });
 
             // Changing the composer does not replace the frozen requirements of Continue.
             await page.Locator("#ai-message").FillAsync("This unsent text must not change the continuation.");
-            stack.AiProvider.EnqueueFinish();
+            var resumedWaiting = stack.AiProvider.EnqueueFinish(delayed: true);
             await page.Locator("#ai-continue").ClickAsync();
+            await resumedWaiting.Arrived.Task.WaitAsync(TimeSpan.FromSeconds(30));
+            await Assertions.Expect(page.Locator("#ai-draft-progress")).ToHaveTextAsync(keptProgress);
+            await Assertions.Expect(page.Locator("#ai-model-wait")).ToBeVisibleAsync();
+            await Assertions.Expect(page.Locator("#ai-progress-metrics")).ToContainTextAsync("s this run");
+            await page.Locator(".ai-progress").ScrollIntoViewIfNeededAsync();
+            await page.ScreenshotAsync(new() { Path = Path.Combine(scenario.ArtifactDirectory, "ai-resumed-progress.png"), FullPage = true });
+            resumedWaiting.Complete();
             await Assertions.Expect(page.Locator("#ai-apply")).ToBeEnabledAsync();
             var resumed = stack.AiProvider.Requests.Last();
             Assert.Equal(requirement, resumed.Requirement);
             Assert.Equal(1, resumed.Revision);
+            Assert.Contains("schema:FlowNodeModel", resumed.ReadResources);
+            Assert.Contains("requirements", resumed.ReadResources);
             Assert.Equal(AiProviderTestHost.HashKey(key), resumed.KeyHash);
+            if (stack.UsesShippedAiExecution) { Assert.Equal(stack.ShippedAiExecutionVariant == "agent-framework" ? 4 : 0, resumed.NativeToolCount); Assert.Equal(stack.ShippedFlashReasoning, resumed.ReasoningEffort); }
             await Assertions.Expect(page.Locator("#ai-continue")).ToHaveCountAsync(0);
             await page.Locator("#ai-apply").ClickAsync();
             await Assertions.Expect(page.Locator("#ai-notice")).ToContainTextAsync("Applied to the editor");
@@ -286,7 +308,7 @@ public sealed class AiAuthoringSmokeTests(BrowserStackFixture stack)
             await page.Locator("#ai-model").SelectOptionAsync("glm-5.3");
             await Assertions.Expect(page.Locator("#ai-continue")).ToHaveCountAsync(0);
             await Assertions.Expect(page.Locator("#ai-model")).ToHaveValueAsync("glm-5.3");
-            await page.Locator("#ai-model").SelectOptionAsync("kimi-k2.7-code");
+            await page.Locator("#ai-model").SelectOptionAsync("glm-5.3-flash");
             stack.AiProvider.EnqueueNameEdit("Fresh private draft");
             stack.AiProvider.EnqueueFailure(System.Net.HttpStatusCode.Unauthorized);
             await SendAsync(page, "Rename this workflow Fresh private draft.");
@@ -339,6 +361,8 @@ public sealed class AiAuthoringSmokeTests(BrowserStackFixture stack)
     {
         await page.Locator("#open-ai-assistant").ClickAsync();
         await Assertions.Expect(page.Locator("#ai-provider")).ToHaveValueAsync("opencode-go");
+        await Assertions.Expect(page.Locator("#ai-provider option:checked")).ToHaveTextAsync("OpenCode Zen");
+        await Assertions.Expect(page.Locator("#ai-model")).ToHaveValueAsync("glm-5.3-flash");
     }
     private static Task CloseAssistantAsync(IPage page) => page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Close AI assistant", Exact = true }).ClickAsync();
     private static async Task SendAsync(IPage page, string text)

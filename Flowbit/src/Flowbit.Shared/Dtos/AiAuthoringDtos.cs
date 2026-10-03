@@ -54,6 +54,9 @@ public sealed record AiTurnResultDto(
 public sealed record AiCheckpointDto
 {
     public int Version { get; init; } = 1;
+    public string? ExecutionVariant { get; init; }
+    public string? ReasoningEffort { get; init; }
+    public string? ModelProfileHash { get; init; }
     public string InputHash { get; init; } = "";
     public string ContractHash { get; init; } = "";
     public JsonElement Draft { get; init; }
@@ -62,10 +65,24 @@ public sealed record AiCheckpointDto
     public IReadOnlyList<AiBatchReceiptDto> Batches { get; init; } = [];
     public int? OutputAllowance { get; init; }
     public int? MaxOperations { get; init; }
+    /// <summary>Bounded read positions; excerpts are rebuilt from original inputs and verified references on resume.</summary>
+    public IReadOnlyList<AiContextReadDto> ContextReads { get; init; } = [];
 }
 
+public sealed record AiContextReadDto(string Kind, string Resource, int Offset, int Count);
 public sealed record AiBatchReceiptDto(string Id, string Hash);
-public sealed record AiRunSummaryDto(int ProviderCalls, long OutputTokens, bool UsageEstimated, double ElapsedSeconds);
+public sealed record AiRunSummaryDto(int ProviderCalls, long OutputTokens, bool UsageEstimated, double ElapsedSeconds)
+{
+    public string? ExecutionVariant { get; init; }
+    public string? ReasoningEffort { get; init; }
+    public double? FirstEditSeconds { get; init; }
+    public double LastCallSeconds { get; init; }
+    public int ContextReads { get; init; }
+    public int DuplicateReads { get; init; }
+    public int Retries { get; init; }
+    public int AcceptedBatches { get; init; }
+    public long InputTokens { get; init; }
+}
 
 /// <summary>Versioned NDJSON frame. Draft checkpoints are private state, never applicable proposals.</summary>
 public sealed record AiRunEventDto

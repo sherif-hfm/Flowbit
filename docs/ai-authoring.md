@@ -9,22 +9,95 @@ The assistant returns a proposal for review. Applying a proposal changes the edi
 ## Use the assistant
 
 1. Open a new or existing workflow in Flowbit.Ui and select **AI assistant**.
-2. Select the configured provider/model and enter your own provider API key. OpenCode Go is the first provider. Keys are held only for the active editor session and sent for the specific generation request; they are not saved in workflow JSON or the engine settings. Closing the assistant/session clears the key.
+2. Select the configured provider/model and enter your own provider API key. OpenCode Zen is the default provider endpoint. Keys are held only for the active editor session and sent for the specific generation request; they are not saved in workflow JSON or the engine settings. Closing the assistant/session clears the key.
 3. Describe the process or requested modification. You can supply BRD/SRS text or upload a PDF. Inspect extracted text, especially scanned pages where OCR can misread identifiers, numeric thresholds, or negation.
-4. Follow progress as the assistant reads relevant references, builds the draft in small steps, validates it, and recovers from temporary provider failures. A run lasts up to five minutes by default and stays on the selected model. **Cancel** stops it; **Continue** resumes the last complete draft step while this panel stays open. Answer missing-business-rule questions by sending a new message.
+4. Follow progress as the assistant reads relevant references, builds the draft in small steps, validates it, and recovers from temporary provider failures. A run lasts up to 30 minutes by default and stays on the selected model. **Cancel** stops it; **Continue** resumes the last complete draft step while this panel stays open. The panel shows retained draft steps, nodes and connections; only the per-run timer and call count reset on Continue. Answer missing-business-rule questions by sending a new message.
 5. Review the proposed changes, assumptions, validation results, and external prerequisites. Partial draft steps are private working state and cannot be applied.
 6. Apply the proposal to the current draft and review the diagram. Existing-workflow edits retain the family key and unchanged IDs/coordinates and apply as one undoable change. If the diagram changed while the model was working, regenerate against the current revision.
 7. Save the unpublished version when ready, then use the existing explicit publication flow.
 
-The assistant uses a bounded loop of reference/source reads, atomic workflow edits, and validation. It accepts one complete JSON command surrounded by ordinary explanatory prose, but rejects multiple adjacent command objects and fields that do not belong to the selected command. If an output reaches the model limit, the incomplete response is discarded and the assistant requests a smaller complete edit; it does not concatenate broken JSON. Temporary throttling and connection/server failures receive bounded retries with backoff and provider wait hints. Authentication failures, exhausted account quota, refusals, and response-size violations require attention instead of repeated retries. Validation failures produce focused repair feedback; repeated failures stop the run.
+The assistant uses a bounded loop of reference/source reads, atomic workflow edits, and validation. Text execution accepts one complete JSON command surrounded by ordinary explanatory prose, but rejects multiple adjacent command objects and fields that do not belong to the selected command. If an output reaches the model limit, the incomplete response is discarded and the assistant requests a smaller complete edit; it does not concatenate broken JSON. Temporary throttling and connection/server failures receive bounded retries with backoff and provider wait hints. Authentication failures, exhausted account quota, refusals, and response-size violations require attention instead of repeated retries. Validation failures produce focused repair feedback; repeated failures stop the run.
 
-Reference reads advertise exact schema names and a combined excerpt budget. Guide searches prefer matching section headings over contents links. The assistant sees the remaining run time and call/output budgets and can build known portions while reading rules for later features; original requirements remain available throughout. A timed-out model call reduces the next edit-batch limit. Successful edits also adjust that limit: batches shrink when reported output usage approaches the allowance and grow toward the configured limit when there is room. Checkpoints retain accepted read plans and bounded output-recovery settings, without advancing the draft revision for planning alone. If transient retries are exhausted, the run pauses with its checkpoint for a later attempt.
+Reference reads advertise exact schema names and a combined excerpt budget. Guide searches prefer matching section headings over contents links. The assistant sees the remaining run time and call/output budgets and can build known portions while reading rules for later features; original requirements remain available throughout. A timed-out model call reduces the next edit-batch limit. Successful edits also adjust that limit: batches shrink when reported output usage approaches the allowance and grow toward the configured limit when there is room. Checkpoints retain accepted read plans and bounded output-recovery settings, without advancing the draft revision for planning alone. If transient retries are exhausted, the run pauses with its checkpoint for a later attempt. Exhausted model-call timeouts report the request timeout separately from temporary provider outages. The shipped GLM Flash configuration uses max reasoning, a 180-second call timeout, and a 16,384-token initial allowance. Each run is bounded by 30 minutes, 50 model calls, and 262,144 output tokens; reaching any limit can still require Continue.
 
 Each complete draft step can be retained as a checkpoint in the current Blazor Server panel circuit. **Continue** sends that checkpoint with the original frozen request and selected provider/model for another bounded run. It does not include unsent changes to requirements, source text, or catalog selection; use **Send** for changed instructions. Editing the diagram makes the checkpoint stale. Closing/resetting the panel, changing identity or model, navigating away, or losing the UI circuit clears continuation state. Checkpoints are not database records or durable saved workflow versions, and are not shown as proposals. Reloading the page cannot restore them.
+
+Continue also restores bounded reference and source excerpts already read by the
+assistant. The checkpoint keeps only read positions; the server validates them
+and rebuilds the text from the verified package and original inputs with fresh
+redaction. Mutable draft excerpts are read again when needed. This reduces repeated
+research after a pause, although the model can still request additional reads.
+Compact prompts keep the same 8,000-character requirements excerpt and retain
+recent reference batches within the working excerpt budget. Compaction reduces
+that budget when necessary instead of discarding every batch except the latest.
+In the `current` variant, drafts up to 14,000 JSON characters remain complete during normal compaction;
+larger drafts use an entity index with bounded reads for omitted details. If the
+context still exceeds a configured limit or the provider rejects its size, even
+a small draft falls back to that index.
+
+Empty or unreadable successful provider responses use the same bounded transport
+retries without changing the draft. Repeated failures pause with
+`provider_invalid_response`. Authentication, billing, refusals and unsupported
+completion formats remain terminal; their last emitted checkpoint stays available
+in the open panel.
 
 The provider receives the submitted requirements, document text, conversation context, and the workflow needed to make an edit. Recognized workflow credential fields are redacted before model calls. Request-derived context is scrubbed without rewriting internal command names or JSON member names. Public packaged references and the protocol instructions retain their exact text, so a short credential such as `node` cannot corrupt the schema or command vocabulary. Avoid putting unrelated confidential material in requirements; redaction cannot identify every sensitive business value inside arbitrary text or JSON.
 
 Text extraction occurs on the Flowbit server. Scanned PDF pages use the configured local OCR tools, so scanned input does not depend on a provider-specific file/vision API. Encrypted, malformed, over-limit, or unreadable documents produce an error; review any extraction warnings before generation. See [deployment configuration](deployment.md) for OCR dependencies and limits.
+
+## Execution variants and evaluation
+
+`WorkflowAi:ExecutionVariant` selects `current` (the default), `optimized`, or
+`agent-framework`. The latter two are experimental until the live acceptance
+gates pass; installing a framework does not guarantee faster or correct results.
+The selected variant and reasoning effort stay fixed for the run. The provider
+and model remain OpenCode Zen and the configured model; a variant does not switch
+models or obtain different provider capacity.
+
+Both experimental variants supply compact contracts derived from the verified
+schema and relevant guide excerpts before the first call. Immutable reads are
+deduplicated separately from mutable draft reads; accepted edits discard stale
+draft excerpts. Draft context preserves business fields and removes layout first,
+using the remaining context budget instead of the current runner's fixed
+14,000-character cutoff. If the semantic draft still cannot fit, a disclosed
+entity index and bounded reads remain available. Following a timeout or truncation,
+batches shrink. They grow by two operations only after two accepted batches each
+use less than half the call deadline and reported output allowance, up to the
+configured maximum. Missing usage never triggers growth.
+
+The framework prototype pins `Microsoft.Agents.AI` 1.23.0 in Infrastructure and uses
+one `ChatClientAgent` per bounded model step. Its four native tools are
+`read_authoring_context`, `apply_draft_batch`, `finish_proposal`, and
+`request_clarification`. Flowbit dispatches the complete tool command through the
+same authoring kernel used by text execution. SDK automatic tool loops, retries,
+and retained chat history are disabled; Flowbit owns budgets, context rebuilding,
+checkpoints, and serial edits. Finishing validates locally and stops immediately
+on success; errors return as focused repair feedback. There is no fallback from
+native tools to text, and no execution, save, publish, shell, or network tool.
+
+New checkpoints use version 2, binding the execution variant, reasoning effort,
+model profile, and provider endpoint as well as the original inputs and package.
+Changing those server settings rejects continuation before any provider call;
+start a new request. Version 1 checkpoints continue through `current`. Neither
+format survives loss of the open UI circuit. Progress now shows the wait time for
+the current model call separately from elapsed run time and retained draft counts.
+
+The repeatable [authoring evaluation tool](../Flowbit/tools/AuthoringEval/README.md)
+contains synthetic creation/modification fixtures and 36 complex-procurement
+checks. It compares variants and reasoning efforts with a 300-second trial limit,
+counts pauses/failures as failures, and never promotes defaults automatically.
+Validated structure is necessary but does not establish coverage of every
+business requirement. Review the evaluation evidence before changing defaults.
+The [2026-10-03 evaluation](../Flowbit/tools/AuthoringEval/RESULTS.md) retained
+the existing default: framework/high passed two of three fresh complex trials,
+short of the required three; optimized candidates did not pass every requirement.
+The subsequent targeted-adoption round treated approved action-label aliases as
+warnings and separately passed all three retained definitions' functional checks.
+It still retained `current`/max: simple creation passed, editing returned an
+invalid result, and live Cancel/Continue preserved the checkpoint but did not
+finish within five minutes. Neither the framework nor a structural validation
+result guarantees full requirement completion. See the report for the unchanged
+historical verdicts and new evidence.
 
 ## Use the same skill in another agent
 
@@ -57,7 +130,7 @@ Example requests:
 
 > Use the flowbit-authoring skill to update this existing workflow: add a non-interrupting reminder boundary to the review task. Preserve unrelated configuration, IDs, permissions, and layout.
 
-Generation with the portable package needs no Flowbit repository, running Flowbit server, or Flowbit AI-provider key. The external agent uses its own model/account and document tools. The skill does not install a model, obtain credentials, provide OCR executables, or automatically connect to OpenCode Go. A raw provider API also does not discover local skill files: Flowbit's internal context assembler explicitly supplies the same packaged instructions and relevant resources.
+Generation with the portable package needs no Flowbit repository, running Flowbit server, or Flowbit AI-provider key. The external agent uses its own model/account and document tools. The skill does not install a model, obtain credentials, provide OCR executables, or automatically connect to OpenCode. A raw provider API also does not discover local skill files: Flowbit's internal context assembler explicitly supplies the same packaged instructions and relevant resources.
 
 ## Validation and readiness
 

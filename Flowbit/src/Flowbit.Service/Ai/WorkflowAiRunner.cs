@@ -16,6 +16,7 @@ public sealed partial class WorkflowAiAuthoringService
     private static readonly Counter<long> CallCounter = AiMeter.CreateCounter<long>("flowbit.ai.provider.calls");
     private static readonly Counter<long> RecoveryCounter = AiMeter.CreateCounter<long>("flowbit.ai.recoveries");
     private static readonly Histogram<double> RunDuration = AiMeter.CreateHistogram<double>("flowbit.ai.run.seconds");
+    private static readonly Histogram<double> CallDuration = AiMeter.CreateHistogram<double>("flowbit.ai.provider.seconds");
 
     public Task<AiTurnResultDto> TurnAsync(AiTurnRequestDto request, string apiKey, CancellationToken cancellationToken)
         => RunAsync(request, apiKey, null, cancellationToken);
@@ -33,9 +34,18 @@ public sealed partial class WorkflowAiAuthoringService
         var provider = matches.FirstOrDefault() ?? throw new WorkflowAiException("unsupported_provider", "Select an enabled AI provider.");
         if (!provider.Descriptor.Models.Any(model => model.Id == request.ModelId)) throw new WorkflowAiException("unsupported_model", "Select an enabled model.");
         var profile = options.GetModelProfile(request.ModelId);
+        var execution = new AiExecutionSettings(request.Checkpoint?.Version == 1 ? "current" : options.ExecutionVariant,
+            options.OpenCodeReasoningEfforts.GetValueOrDefault(request.ModelId));
+        var profileHash = AuthoringPackageBuilder.Hash(JsonSerializer.Serialize(new { profile, options.OpenCodeBaseUrl }, JsonOptions));
+        if (!provider.SupportsExecution(execution.Variant))
+            throw new WorkflowAiException("execution_unavailable", "The selected provider does not support this authoring engine.", 503);
+        if (request.Checkpoint is { Version: 2 } bound && (bound.ExecutionVariant != execution.Variant
+            || bound.ReasoningEffort != execution.ReasoningEffort || bound.ModelProfileHash != profileHash))
+            throw new WorkflowAiException("checkpoint_configuration_changed", "The authoring engine or model settings changed. Start a new request.", 409);
+        var optimized = execution.Variant != "current";
         if (!await concurrency.Semaphore.WaitAsync(0, cancellationToken)) throw new WorkflowAiException("authoring_busy", "AI authoring is busy. Try again when another request finishes.", 429);
         var clock = Stopwatch.StartNew();
-        var state = new RunState();
+        var state = new WorkflowAiSession();
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(options.RunTimeoutSeconds));
         try
@@ -69,7 +79,16 @@ public sealed partial class WorkflowAiAuthoringService
                 throw new WorkflowAiException("workflow_too_large", "The canonical workflow exceeds the authoring checkpoint size limit.", 413);
             string Sanitize(string text) => redaction.Sanitize(RemoveApiKey(text, apiKey));
             state.Plan = Sanitize(state.Plan);
-            var context = new WorkflowAiContext(knowledge, request);
+            var context = new WorkflowAiContext(knowledge, request, optimized)
+            { DraftCharacters = Math.Min(options.MaxContextCharacters, profile.ContextTokens * 2) };
+            if (request.Checkpoint is { } resumed)
+            {
+                try { context.RestoreReads(resumed.ContextReads, draft, Sanitize); }
+                catch (Exception error) when (error is JsonException or InvalidOperationException or KeyNotFoundException)
+                { throw new WorkflowAiException("invalid_checkpoint", "The continuation read positions are malformed."); }
+            }
+            state.ContextReads = context.ReadCount;
+            state.DuplicateReads = context.DuplicateReadCount;
             var maxOperations = Math.Min(options.MaxOperationsPerBatch, request.Checkpoint?.MaxOperations ?? options.MaxOperationsPerBatch);
             var outputAllowance = Math.Clamp(request.Checkpoint?.OutputAllowance ?? profile.InitialOutputTokens, profile.InitialOutputTokens, profile.MaxOutputTokens);
             var validationFailures = 0;
@@ -78,18 +97,21 @@ public sealed partial class WorkflowAiAuthoringService
             var contextRecovery = false;
             var lastFailure = "";
             var sameFailures = 0;
-            var compact = false;
+            var compact = optimized;
+            var fastBatches = 0;
             AiValidationResultDto validation = Invalid("The draft is not yet complete.");
 
             AiCheckpointDto MakeCheckpoint() => new()
             {
+                Version = 2, ExecutionVariant = execution.Variant, ReasoningEffort = execution.ReasoningEffort, ModelProfileHash = profileHash,
                 InputHash = inputHash, ContractHash = knowledge.ContractHash,
                 Draft = redaction.Restore(draft), Revision = state.Revision,
                 Plan = Sanitize(state.Plan), Batches = state.Batches.TakeLast(100).ToArray(),
-                OutputAllowance = outputAllowance, MaxOperations = maxOperations
+                OutputAllowance = outputAllowance, MaxOperations = maxOperations, ContextReads = context.RetainedReads()
             };
             state.Checkpoint = MakeCheckpoint();
-            await Event("checkpoint", "preparing", "Preparing workflow context.", state.Checkpoint);
+            await Event("checkpoint", request.Checkpoint is null ? "preparing" : "resuming",
+                request.Checkpoint is null ? "Preparing workflow context." : $"Resuming the saved draft after {state.Revision} completed draft steps.", state.Checkpoint);
             while (true)
             {
                 deadline.Token.ThrowIfCancellationRequested();
@@ -107,15 +129,28 @@ public sealed partial class WorkflowAiAuthoringService
                     compact = true;
                     messages = context.Messages(draft, state.Revision, state.Plan, catalog, maxOperations, tokens, Sanitize, true, Budget());
                     if (messages.Sum(message => (long)message.Content.Length) > options.MaxContextCharacters)
+                    {
+                        context.UseDraftIndex = true;
+                        messages = context.Messages(draft, state.Revision, state.Plan, catalog, maxOperations, tokens, Sanitize, true, Budget());
+                    }
+                    if (messages.Sum(message => (long)message.Content.Length) > options.MaxContextCharacters)
                         throw new WorkflowAiException("context_too_large", "Authoring context exceeds the configured character limit. Reduce the supplied input or increase the configured limit; original requirements were retained.", 413);
                 }
                 var safeContext = (long)(profile.ContextTokens * .9) - tokens;
+                if (optimized && WorkflowAiContext.EstimateTokens(messages) > safeContext)
+                {
+                    // Allocate the remainder after actual instructions, sources and retained reads, not a fixed draft cutoff.
+                    var excessBytes = (WorkflowAiContext.EstimateTokens(messages) - safeContext) * 2;
+                    context.DraftCharacters = (int)Math.Max(2000, Encoding.UTF8.GetByteCount(draft.GetRawText()) - excessBytes);
+                    messages = context.Messages(draft, state.Revision, state.Plan, catalog, maxOperations, tokens, Sanitize, compact, Budget());
+                }
                 if (WorkflowAiContext.EstimateTokens(messages) > safeContext)
                 {
                     compact = true;
                     messages = context.Messages(draft, state.Revision, state.Plan, catalog, maxOperations, tokens, Sanitize, true, Budget());
                     if (WorkflowAiContext.EstimateTokens(messages) > safeContext)
                     {
+                        context.UseDraftIndex = true;
                         context.ObservationCharacters = Math.Max(2000, context.ObservationCharacters / 2);
                         messages = context.Messages(draft, state.Revision, state.Plan, catalog, maxOperations, tokens, Sanitize, true, Budget());
                     }
@@ -128,18 +163,24 @@ public sealed partial class WorkflowAiAuthoringService
                     if (state.Calls >= options.MaxProviderCalls || options.MaxRunOutputTokens - state.OutputTokens < tokens)
                         return await FinishPaused("run_budget", "This run reached its model usage budget. Continue from the last completed draft step.");
                     state.Calls++;
+                    if (retry > 0) state.Retries++;
                     await Event("progress", retry == 0 ? "generating" : "retrying", retry == 0 ? "Building the next workflow step." : "Retrying the selected provider.");
                     CallCounter.Add(1, new KeyValuePair<string, object?>("provider", request.ProviderId));
                     try
                     {
-                        completion = await provider.CompleteAsync(request.ModelId, request.ConversationId, messages, apiKey, tokens, deadline.Token);
+                        completion = await CompleteStepAsync();
+                        state.InputTokens += Math.Max(0, completion.InputTokens ?? 0);
                         if (completion.OutputTokens is { } usage) state.OutputTokens += Math.Max(0, usage);
                         else { state.OutputTokens += tokens; state.Estimated = true; }
                         break;
                     }
                     catch (WorkflowAiException error) when (error.Code == "provider_context" && !contextRecovery)
                     {
+                        state.OutputTokens += tokens;
+                        state.Estimated = true;
+                        fastBatches = 0;
                         contextRecovery = compact = true;
+                        context.UseDraftIndex = true;
                         context.ObservationCharacters = 2000;
                         messages = context.Messages(draft, state.Revision, state.Plan, catalog, maxOperations, tokens, Sanitize, true, Budget());
                         RecoveryCounter.Add(1, new KeyValuePair<string, object?>("kind", "context"));
@@ -151,9 +192,14 @@ public sealed partial class WorkflowAiAuthoringService
                         state.OutputTokens += tokens;
                         state.Estimated = true;
                         if (retry >= options.MaxTransportRetries)
-                            return await FinishPaused("provider_unavailable", "The provider is still unavailable after bounded retries. Continue later from the last completed draft step.");
+                            return error.Code == "provider_invalid_response"
+                                ? await FinishPaused("provider_invalid_response", "The provider repeatedly returned an unreadable response. Continue from the last completed draft step.")
+                                : error.StatusCode == 504
+                                ? await FinishPaused("provider_timeout", $"The model repeatedly exceeded the {options.RequestTimeoutSeconds}-second request timeout. Continue from the last completed draft step, or send a smaller request.")
+                                : await FinishPaused("provider_unavailable", "The provider is still unavailable after bounded retries. Continue later from the last completed draft step.");
                         if (error.StatusCode == 504)
                         {
+                            fastBatches = 0;
                             maxOperations = Math.Max(1, maxOperations / 2);
                             context.Observe($"The previous model call timed out. No output from it was applied. Focus only on the next safe batch of at most {maxOperations} operations; reuse prior planning decisions instead of rebuilding the full plan.");
                             state.Checkpoint = MakeCheckpoint();
@@ -174,16 +220,28 @@ public sealed partial class WorkflowAiAuthoringService
                         state.Estimated = true;
                         throw;
                     }
+                    async Task<AiCompletion> CompleteStepAsync()
+                    {
+                        var callClock = Stopwatch.StartNew();
+                        try { return await provider.CompleteAsync(request.ModelId, request.ConversationId, messages, apiKey, tokens, execution, deadline.Token); }
+                        finally
+                        {
+                            // Measure only the model attempt; recovery notifications/backoff are separate activities.
+                            state.LastCallSeconds = callClock.Elapsed.TotalSeconds;
+                            CallDuration.Record(state.LastCallSeconds, new KeyValuePair<string, object?>("variant", execution.Variant));
+                        }
+                    }
                 }
                 deadline.Token.ThrowIfCancellationRequested();
                 if (Encoding.UTF8.GetByteCount(completion.Content) > options.MaxOutputBytes)
                     throw new WorkflowAiException("provider_output_too_large", "The provider response exceeded the authoring size limit.", 502);
                 if (completion.FinishReason == "length")
                 {
+                    fastBatches = 0;
                     RecoveryCounter.Add(1, new KeyValuePair<string, object?>("kind", "truncation"));
                     if (++truncations > options.MaxTruncationRecoveries)
                         return await FinishPaused("provider_truncated", "The model repeatedly exceeded its output limit. The last completed draft is retained; narrow the requested change or continue.");
-                    if (maxOperations > 1) maxOperations = truncations == 1 ? Math.Max(1, maxOperations / 2) : 1;
+                    if (maxOperations > 1) maxOperations = optimized || truncations == 1 ? Math.Max(1, maxOperations / 2) : 1;
                     else if (!escalated && outputAllowance < profile.MaxOutputTokens)
                     { outputAllowance = profile.MaxOutputTokens; escalated = true; }
                     else return await FinishPaused("provider_value_too_large", "A single change exceeds this model's output allowance. Split the value or simplify that change.");
@@ -214,37 +272,38 @@ public sealed partial class WorkflowAiAuthoringService
                     if (kind == "read")
                     {
                         context.Observe(context.Read(command.GetProperty("reads"), draft, Sanitize));
-                        var planChanged = state.Plan != nextPlan;
+                        state.ContextReads = context.ReadCount;
+                        state.DuplicateReads = context.DuplicateReadCount;
+                        var checkpointChanged = state.Plan != nextPlan || !state.Checkpoint!.ContextReads.SequenceEqual(context.RetainedReads());
                         state.Plan = nextPlan;
                         state.Checkpoint = MakeCheckpoint();
-                        await Event(planChanged ? "checkpoint" : "progress", "reading", "Reading relevant workflow references and requirements.", planChanged ? state.Checkpoint : null);
+                        await Event(checkpointChanged ? "checkpoint" : "progress", "reading", "Reading relevant workflow references and requirements.", checkpointChanged ? state.Checkpoint : null);
                     }
                     else if (kind == "edit")
                     {
                         var batchId = RequiredString(command, "batchId");
-                        if (string.IsNullOrWhiteSpace(batchId) || batchId.Length > 100) throw new JsonException("Use a nonempty batchId up to 100 characters.");
-                        var hash = AuthoringPackageBuilder.Hash(command.GetRawText());
-                        var receipt = state.Batches.FirstOrDefault(batch => batch.Id == batchId);
-                        if (receipt is not null)
+                        var next = state.ApplyBatch(draft, command, redaction, original?.Id ?? draft.GetProperty("id").GetString()!, options.MaxWorkflowCharacters, maxOperations);
+                        if (next is null)
                         {
-                            if (receipt.Hash != hash) throw new JsonException("This batchId was already used for different operations.");
                             context.Observe($"Batch {batchId} was already applied. Current revision {state.Revision}; submit new work or finish.");
                         }
                         else
                         {
-                            if (command.GetProperty("baseRevision").GetInt64() != state.Revision) throw new JsonException($"Stale draft revision; expected {state.Revision}.");
-                            var next = WorkflowAiDraft.Apply(draft, command.GetProperty("operations"), redaction, original?.Id ?? draft.GetProperty("id").GetString()!, options.MaxWorkflowCharacters, maxOperations);
-                            if (next.GetRawText() == draft.GetRawText()) throw new JsonException("The batch made no changes; inspect remaining work or finish.");
-                            draft = next;
+                            draft = next.Value;
                             state.Plan = nextPlan;
-                            state.Revision++;
-                            state.Batches.Add(new(batchId, hash));
-                            if (state.Batches.Count > 100) state.Batches.RemoveAt(0);
+                            state.AcceptedBatches++;
+                            state.FirstEditSeconds ??= clock.Elapsed.TotalSeconds;
+                            context.DraftChanged();
                             context.Observe($"Batch {batchId} accepted atomically. Current revision {state.Revision}. Continue remaining planned changes or finish.");
                             validationFailures = truncations = sameFailures = 0;
-                            maxOperations = completion.OutputTokens is { } used && used >= tokens * .8
-                                ? Math.Max(1, maxOperations / 2)
-                                : Math.Min(options.MaxOperationsPerBatch, maxOperations * 2);
+                            if (optimized)
+                            {
+                                fastBatches = completion.OutputTokens is { } used && used < tokens / 2
+                                    && state.LastCallSeconds < options.RequestTimeoutSeconds / 2d ? fastBatches + 1 : 0;
+                                if (fastBatches >= 2) { maxOperations = Math.Min(options.MaxOperationsPerBatch, maxOperations + 2); fastBatches = 0; }
+                            }
+                            else maxOperations = completion.OutputTokens is { } used && used >= tokens * .8
+                                ? Math.Max(1, maxOperations / 2) : Math.Min(options.MaxOperationsPerBatch, maxOperations * 2);
                             state.Checkpoint = MakeCheckpoint();
                             await Event("checkpoint", "building", "Completed a workflow draft step.", state.Checkpoint);
                         }
@@ -297,7 +356,7 @@ public sealed partial class WorkflowAiAuthoringService
                 }
             }
 
-            AiRunSummaryDto Summary() => new(state.Calls, state.OutputTokens, state.Estimated, clock.Elapsed.TotalSeconds);
+            AiRunSummaryDto Summary() => state.Summary(clock.Elapsed.TotalSeconds, execution);
             async Task Event(string type, string stage, string message, AiCheckpointDto? checkpoint = null, AiTurnResultDto? result = null)
             {
                 if (emit is not null) await emit(new AiRunEventDto { RunId = state.Id, Sequence = ++state.Sequence, Type = type,
@@ -316,7 +375,7 @@ public sealed partial class WorkflowAiAuthoringService
         {
             var result = new AiTurnResultDto("paused", "The authoring run reached its time limit. Continue from the last completed draft step.", [], null, [], [], [],
                 Invalid("Generation is not complete."), request.SnapshotId, knowledge.ContractHash)
-            { Checkpoint = state.Checkpoint, Run = new(state.Calls, state.OutputTokens, state.Estimated, clock.Elapsed.TotalSeconds) };
+            { Checkpoint = state.Checkpoint, Run = state.Summary(clock.Elapsed.TotalSeconds, execution) };
             if (emit is not null) await emit(new AiRunEventDto { RunId = state.Id, Sequence = ++state.Sequence, Type = "paused", Code = "authoring_timeout", Message = result.Message, Result = result, Run = result.Run }, cancellationToken);
             return result;
         }
@@ -329,7 +388,7 @@ public sealed partial class WorkflowAiAuthoringService
 
     private void ValidateCheckpoint(AiCheckpointDto checkpoint, string inputHash, string lockedId)
     {
-        if (checkpoint.Version != 1 || checkpoint.InputHash != inputHash || checkpoint.ContractHash != knowledge.ContractHash)
+        if (checkpoint.Version is not (1 or 2) || checkpoint.InputHash != inputHash || checkpoint.ContractHash != knowledge.ContractHash)
             throw new WorkflowAiException("stale_checkpoint", "The original inputs, catalog, or authoring contract changed. Start a new request.", 409);
         if (checkpoint.Revision < 0 || checkpoint.Revision > 1_000_000 || checkpoint.Plan is null || checkpoint.Plan.Length > 10_000
             || checkpoint.Batches is null || checkpoint.Batches.Count > 100 || checkpoint.Batches.Any(batch => batch is null || string.IsNullOrWhiteSpace(batch.Id) || batch.Id.Length > 100 || batch.Hash is not { Length: 64 })
@@ -337,6 +396,11 @@ public sealed partial class WorkflowAiAuthoringService
             throw new WorkflowAiException("invalid_checkpoint", "The continuation checkpoint is malformed.");
         if (checkpoint.OutputAllowance is < 1 or > 262_144 || checkpoint.MaxOperations is < 1 or > 100)
             throw new WorkflowAiException("invalid_checkpoint", "The continuation recovery limits are malformed.");
+        if (checkpoint.ContextReads is null || checkpoint.ContextReads.Count > 18
+            || checkpoint.ContextReads.Any(read => read is null || read.Kind is not ("reference" or "source")
+                || read.Resource is not { Length: > 0 and <= 300 } || read.Offset < 0 || read.Count is < 1 or > 12_000)
+            || checkpoint.ContextReads.Sum(read => (long)read.Count) > 32_000)
+            throw new WorkflowAiException("invalid_checkpoint", "The continuation read positions exceed their limits.");
         try { WorkflowAiDraft.ValidateCandidate(checkpoint.Draft, string.IsNullOrEmpty(lockedId) ? checkpoint.Draft.GetProperty("id").GetString()! : lockedId, options.MaxWorkflowCharacters); }
         catch (Exception error) when (IsDefinitionError(error) || error is InvalidOperationException or KeyNotFoundException)
         { throw new WorkflowAiException("invalid_checkpoint", "The continuation draft is malformed or exceeds its limits."); }
@@ -409,14 +473,4 @@ public sealed partial class WorkflowAiAuthoringService
         return ParseEnvelope(node.ToJsonString(), request.Sources, apiKey);
     }
 
-    private sealed class RunState
-    {
-        public string Id { get; } = Guid.NewGuid().ToString("N");
-        public long Sequence, Revision, OutputTokens;
-        public int Calls;
-        public bool Estimated;
-        public string Plan = "";
-        public List<AiBatchReceiptDto> Batches { get; } = [];
-        public AiCheckpointDto? Checkpoint;
-    }
 }

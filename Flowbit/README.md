@@ -34,13 +34,15 @@ Start with the [developer documentation](../docs/index.md) for HTTP onboarding, 
 ### AI authoring ownership
 
 The hosted editor's optional assistant calls authenticated, non-persisting authoring operations.
-`IAiWorkflowProvider` isolates model transport/authentication; OpenCode Go is the first adapter.
+`IAiWorkflowProvider` isolates model transport/authentication; the OpenCode adapter defaults to Zen and retains the legacy `opencode-go` API provider id.
 `WorkflowAiAuthoringService` runs a bounded private-draft loop through `WorkflowAiRunner`,
 `WorkflowAiContext`, and `WorkflowAiDraft`: read packaged references/source excerpts, apply typed
 atomic edits, validate, and produce the complete canonical proposal. Transport retries, output-limit
 recovery, and consecutive validation repairs have separate caps under a shared run deadline/call/token
 budget. `IAiWorkflowProvider` returns completion/usage metadata; it makes one request without hidden
-retries. The model stays fixed for a run and its continuations. `IAuthoringKnowledge` loads/verifies
+retries. The default run allows 30 minutes, 50 calls and 262,144 output tokens. The UI uses a dedicated
+authoring HTTP client whose deadline covers the maximum configurable one-hour server run; normal
+API requests keep their existing timeout. The model stays fixed for a run and its continuations. `IAuthoringKnowledge` loads/verifies
 the exact portable package produced by `tools/AuthoringExport`; the download is the same deterministic
 archive, while the internal prompt reads applicable resources on demand. PDF extraction is local and bounded (PdfPig plus Poppler/Tesseract).
 
@@ -52,9 +54,28 @@ the editor owns atomic application, undo, identity preservation, and snapshot gu
 HTTP adapter emits versioned NDJSON progress, complete draft checkpoints, and one terminal outcome;
 the buffered route uses the same runner. Checkpoints remain untrusted and live only in the open
 Blazor Server circuit. Continuation rechecks original-input/catalog and contract hashes, reparses the
-draft, and recreates request-local redaction from both baseline and checkpoint. API replicas need no
+draft, and recreates request-local redaction from both baseline and checkpoint. Bounded reference/source
+read positions rebuild working excerpts from the verified package and original request; cached text
+and mutable draft reads are excluded. API replicas need no
 shared session store; a lost UI circuit loses its checkpoint. No database migration is needed. See [AI authoring](../docs/ai-authoring.md), [HTTP contracts](../docs/api-guide.md#ai-authoring-and-read-only-validation),
 and [OCR deployment](../docs/deployment.md#ai-authoring-and-local-ocr).
+
+`WorkflowAiSession` owns request-local edit receipts and progress accounting across
+the `current`, `optimized`, and `agent-framework` variants. The latter two use the
+same compact schema/guide primer, semantic draft projection and conservative batch
+growth. Infrastructure alone references Microsoft Agent Framework 1.23.0.
+`OpenCodeAgentStep` uses a `ChatClientAgent` for one native-tool step, with SDK
+automatic loops/history/retries disabled; the shared runner dispatches the four
+local authoring operations and terminates after a validated finish. The native
+and text adapters share bounded HTTP transport and failure classification.
+Checkpoints now bind the execution variant, reasoning effort, profile and endpoint
+in version 2; version 1 continues through the current runner. The experimental
+variants remain opt-in until the [live evaluation gates](tools/AuthoringEval/README.md)
+pass. The server still owns all time/call/token and validation budgets.
+The targeted framework/high adoption round allows explicitly equivalent action
+labels as evaluation warnings, while preserving functional and existing-content
+checks. It retained the current defaults after an editing failure and a resume
+deadline; see [the follow-up results](tools/AuthoringEval/RESULTS.md#targeted-adoption-follow-up).
 
 ### Instance query ownership
 

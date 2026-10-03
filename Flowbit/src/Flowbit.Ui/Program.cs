@@ -36,6 +36,14 @@ try
     .RedactLoggedHeaders(_ => true)
     .AddHttpMessageHandler<AuthTokenHandler>();
 
+    builder.Services.AddHttpClient(WorkflowApiClient.AiClientName, client =>
+    {
+        client.BaseAddress = new Uri(builder.Configuration["WorkflowApi:BaseUrl"] ?? "http://localhost:5017");
+        client.Timeout = WorkflowApiClient.AiRequestTimeout;
+    })
+    .RedactLoggedHeaders(_ => true)
+    .AddHttpMessageHandler<AuthTokenHandler>();
+
     var app = builder.Build();
 
     app.UseSerilogRequestLogging();

@@ -21,7 +21,18 @@ solution test command stays free of Chromium requirements.
 - AI scenarios use a fixture-owned loopback OpenCode-compatible provider with
   synthetic keys. Requests still pass through the real API authoring, PDF
   extraction, validation, and save paths. No billed provider call is made and
-  no application state or database rows are injected.
+  no application state or database rows are injected. The fixture explicitly enables
+  Flash plus two alternate models to exercise model changes; ordinary shipped
+  configuration enables Flash alone.
+  The fixture defaults to `current` execution. Set `FLOWBIT_BROWSER_AI_VARIANT` to
+  `optimized` or `agent-framework` and run H8/H9 to exercise the same real
+  Generate/Cancel/Continue/Apply/Undo path through either candidate. H8's loopback
+  upstream supports complete native tool envelopes as well as text responses.
+  The framework candidate explicitly uses `high` Flash reasoning. Set the value
+  to `shipped` to leave execution/reasoning settings from the published API's
+  appsettings intact. H8 verifies the corresponding tool envelope and reasoning
+  on initial and resumed calls. Ambient `WorkflowAi__*` settings are stripped;
+  the loopback endpoint and extra lifecycle-test models remain fixture overrides.
 
 Worker-driven audit and administrative-batch acceptance is maintained in the
 separate local [Flowbit.BrowserAcceptanceTests suite](../Flowbit.BrowserAcceptanceTests/README.md).
@@ -31,6 +42,32 @@ publication disabled, does not launch a Worker or API proxy, and retains this
 suite's existing CI configuration.
 
 ## Prerequisites
+
+H8 also checks the current-model-call wait timer at 1440x900, 1024x768, and 390x844.
+The timer appears while waiting, resets after Continue and disappears on Cancel.
+Progress screenshots and browser console diagnostics remain required evidence.
+
+PowerShell, after publishing/building as below:
+
+```powershell
+$env:FLOWBIT_BROWSER_AI_VARIANT = 'agent-framework'
+dotnet test Flowbit/tests/Flowbit.BrowserTests/Flowbit.BrowserTests.csproj -c Release --no-build --no-restore --filter FullyQualifiedName~H8_TruncationRetryCheckpointCancellationAndContinue
+Remove-Item Env:FLOWBIT_BROWSER_AI_VARIANT
+```
+
+Bash:
+
+```bash
+FLOWBIT_BROWSER_AI_VARIANT=agent-framework dotnet test Flowbit/tests/Flowbit.BrowserTests/Flowbit.BrowserTests.csproj -c Release --no-build --no-restore --filter FullyQualifiedName~H8_TruncationRetryCheckpointCancellationAndContinue
+```
+
+Replace `agent-framework` with `optimized` for the text candidate. H6/H7 use
+legacy full-proposal fixtures and should run with `current`.
+H9's incremental checkpoint fixture also supports native execution. To test the
+actual shipped engine/reasoning, use `shipped` instead of `agent-framework` in
+the commands above and filter `"FullyQualifiedName~H8|FullyQualifiedName~H9"`.
+Run the full AI suite separately with `current` for legacy regression coverage.
+Manifests record the requested execution mode and published settings.
 
 - .NET 10 SDK
 - Docker (Testcontainers starts one `postgres:17-alpine` per run)
@@ -79,9 +116,9 @@ Hosted editor scenarios H1 (1440x900 and 1024x768) and H2 exercise exact-version
 
 | Scenario | Viewports | Behavior under test |
 | --- | --- | --- |
-| H6 AI creation and editing | 1440x900, 1024x768, 390x844 | Clarification, explicit value-free catalog selection plus PDF upload/corrected extraction (1440 only), generated proposal review, apply, undo/redo, new unpublished save, conversational modification, preserved workflow family/positions/saved baseline, skill archive download, narrow drawer keyboard focus/Escape, and responsive screenshots. |
+| H6 AI creation and editing | 1440x900, 1024x768, 390x844 | OpenCode Zen provider label with the compatible `opencode-go` id, clarification, explicit value-free catalog selection plus PDF upload/corrected extraction (1440 only), generated proposal review, apply, undo/redo, new unpublished save, conversational modification, preserved workflow family/positions/saved baseline, skill archive download, narrow drawer keyboard focus/Escape, and responsive screenshots. |
 | H7 AI session lifecycle | 1440x900 | Manual edits invalidate proposals; cancellation reaches the upstream provider; separate panels keep separate keys; identity change, reset, disposal and navigation clear transient keys and conversation state. |
-| H8 AI incremental recovery | 1440x900, 1024x768, 390x844 | The real provider adapter receives truncated output and a temporary server failure, reduces the edit batch size, retains an accepted draft edit, cancels an in-flight call, continues from the session checkpoint with frozen requirements, and applies the completed proposal in one undoable edit. Progress screenshots and console diagnostics are captured. |
+| H8 AI incremental recovery | 1440x900, 1024x768, 390x844 | The real provider adapter receives truncated output and a temporary server failure, reduces the edit batch size, reads schema/requirements, retains an accepted draft edit, cancels an in-flight call, continues from the session checkpoint with frozen requirements and rebuilt read excerpts, and applies the completed proposal in one undoable edit. Progress screenshots and console diagnostics are captured. |
 | H9 AI checkpoint invalidation | 1440x900 | A provider authentication failure preserves the last complete private checkpoint; changing the selected model clears it, editor edits disable Continue, and New conversation clears the checkpoint and key. |
 | E1 load/edit/save/reload | 1440x900, 1024x768 | File menu load via the real file chooser, node rename in the inspector, workflow name edit, forced download-fallback save, JSON round-trip into a fresh page. |
 | E2 node drag | 1440x900, 1024x768 | Real mouse drag with intermediate steps; screen/diagram deltas, unrelated nodes fixed, connectors intact, persisted positions in the downloaded JSON. |
@@ -143,11 +180,13 @@ Every run writes to `artifacts/browser/runs/<timestamp>-<id>/`:
   all observed page URLs/viewports, console errors/warnings, uncaught errors,
   HTTP failures, transport failures, and unexpected dialogs.
 - Selected successful editor-search and responsive-results screenshots.
-- H6 retains `ai-proposal.png` and `ai-applied-diagram.png` at all three
+- H6 retains `ai-connection.png`, `ai-proposal.png`, and `ai-applied-diagram.png` at all three
   viewports, the downloaded skill archive, and its generated text PDF fixture.
 - H8 retains `ai-incremental-progress.png` at all three viewports while a
   recovered edit is checkpointed and the next model call is in flight, plus
   `ai-continuation.png` showing the retained checkpoint after cancellation.
+- H8 additionally retains `ai-resumed-progress.png`, showing the same completed
+  draft-step/node/connection counts after Continue resets the per-run metrics.
 - E7 captures `boundary-conversion-before.png` and
   `boundary-conversion-after.png` at both editor viewports, with the populated
   workflow and host selected. These show the service-task inspector and attached

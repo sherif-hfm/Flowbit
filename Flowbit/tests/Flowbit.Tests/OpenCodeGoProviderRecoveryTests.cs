@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using Flowbit.Infrastructure.Ai;
 using Flowbit.Service.Ai;
+using Flowbit.Shared.Dtos;
 using Microsoft.Extensions.Configuration;
 using Xunit;
 
@@ -68,7 +69,8 @@ public sealed class OpenCodeGoProviderRecoveryTests
 
     [Theory]
     [InlineData("12", 12)]
-    [InlineData("999999", 600)]
+    [InlineData("2700", 2700)]
+    [InlineData("999999", AiAuthoringLimits.MaxRunTimeoutSeconds)]
     [InlineData("0", 0)]
     [InlineData("invalid", null)]
     public async Task ReadsAndBoundsRetryAfterSeconds(string header, int? expectedSeconds)
@@ -104,12 +106,24 @@ public sealed class OpenCodeGoProviderRecoveryTests
     [InlineData("""{"choices":[{"finish_reason":"tool_calls","message":{"content":"secret"}}]}""")]
     [InlineData("""{"choices":[{"finish_reason":"stop","message":{"content":"secret","tool_calls":[{}]}}]}""")]
     [InlineData("""{"choices":[{"finish_reason":42,"message":{"content":"secret"}}]}""")]
-    [InlineData("""{"choices":[{"finish_reason":"stop","message":{"content":""}}]}""")]
     public async Task UnsupportedOrMalformedCompletionsAreTerminal(string body)
     {
         var error = await Assert.ThrowsAsync<WorkflowAiException>(() => CompleteAsync(Response(HttpStatusCode.OK, body)));
         Assert.Equal("provider_invalid_response", error.Code);
         Assert.False(error.Retryable);
+        Assert.DoesNotContain("secret", error.Message);
+    }
+
+    [Theory]
+    [InlineData("{\"secret\":")]
+    [InlineData("""{"choices":[]}""")]
+    [InlineData("""{"choices":[{"finish_reason":"stop","message":{"content":""}}]}""")]
+    [InlineData("""{"choices":[{"finish_reason":"stop","message":{"content":null}}]}""")]
+    public async Task EmptyOrUnreadableSuccessfulResponsesAllowBoundedRunnerRetry(string body)
+    {
+        var error = await Assert.ThrowsAsync<WorkflowAiException>(() => CompleteAsync(Response(HttpStatusCode.OK, body)));
+        Assert.Equal("provider_invalid_response", error.Code);
+        Assert.True(error.Retryable);
         Assert.DoesNotContain("secret", error.Message);
     }
 
@@ -226,12 +240,73 @@ public sealed class OpenCodeGoProviderRecoveryTests
             ["WorkflowAi:RequestTimeoutSeconds"] = "90",
             ["WorkflowAi:RunTimeoutSeconds"] = "300"
         }).Build();
-        var options = configuration.GetSection("WorkflowAi").Get<WorkflowAiOptions>()!;
+        var options = WorkflowAiServiceCollectionExtensions.ReadWorkflowAiOptions(configuration);
         options.Validate();
         using var client = new HttpClient(new Handler((_, _) => throw new InvalidOperationException("Discovery must not call the provider.")));
         var descriptor = new OpenCodeGoProvider(client, options).Descriptor;
         Assert.Equal("kimi-k2.7-code", descriptor.DefaultModelId);
         Assert.Equal(new[] { "kimi-k2.7-code", "glm-5.3", "glm-5.3-flash" }, descriptor.Models.Select(model => model.Id));
+    }
+
+    [Fact]
+    public void ConfiguredModelListReplacesFallbacksAndSetsTheDiscoveredDefault()
+    {
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["WorkflowAi:OpenCodeModels:0"] = "glm-5.3-flash"
+        }).Build();
+        var options = WorkflowAiServiceCollectionExtensions.ReadWorkflowAiOptions(configuration);
+        using var client = new HttpClient(new Handler((_, _) => throw new InvalidOperationException("Discovery must not call the provider.")));
+        var descriptor = new OpenCodeGoProvider(client, options).Descriptor;
+        Assert.Equal("glm-5.3-flash", descriptor.DefaultModelId);
+        Assert.Equal("glm-5.3-flash", Assert.Single(descriptor.Models).Id);
+        var unconfigured = WorkflowAiServiceCollectionExtensions.ReadWorkflowAiOptions(new ConfigurationBuilder().Build());
+        Assert.Equal(new WorkflowAiOptions().OpenCodeModels, unconfigured.OpenCodeModels);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ShippedFlashSettingsReachTransportWithTheTestedOutputAllowanceAndReasoning(bool frameworkCandidate)
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "Flowbit", "src", "Flowbit.Api", "appsettings.json")))
+            directory = directory.Parent;
+        Assert.NotNull(directory);
+        var path = Path.Combine(directory.FullName, "Flowbit", "src", "Flowbit.Api", "appsettings.json");
+        var configurationBuilder = new ConfigurationBuilder().AddJsonFile(path);
+        if (frameworkCandidate) configurationBuilder.AddInMemoryCollection(new Dictionary<string, string?>
+        { ["WorkflowAi:ExecutionVariant"] = "agent-framework", ["WorkflowAi:OpenCodeReasoningEfforts:glm-5.3-flash"] = "high" });
+        var configuration = configurationBuilder.Build();
+        var options = WorkflowAiServiceCollectionExtensions.ReadWorkflowAiOptions(configuration);
+        options.Validate();
+        var profile = options.GetModelProfile("glm-5.3-flash");
+        string? sent = null;
+        using var client = new HttpClient(new Handler(async (request, ct) =>
+        {
+            Assert.Equal("https://opencode.ai/zen/v1/chat/completions", request.RequestUri!.AbsoluteUri);
+            sent = await request.Content!.ReadAsStringAsync(ct);
+            return Response(HttpStatusCode.OK, options.ExecutionVariant == "agent-framework"
+                ? """{"choices":[{"finish_reason":"tool_calls","message":{"tool_calls":[{"id":"finish","type":"function","function":{"name":"finish_proposal","arguments":"{\"message\":\"Done\"}"}}]}}]}"""
+                : """{"choices":[{"finish_reason":"stop","message":{"content":"{}"}}]}""");
+        }));
+        await new OpenCodeGoProvider(client, options).CompleteAsync("glm-5.3-flash", "session-one", [new("system", "Transport contract test")], "key-one", profile.InitialOutputTokens,
+            new(options.ExecutionVariant, options.OpenCodeReasoningEfforts.GetValueOrDefault("glm-5.3-flash")), CancellationToken.None);
+        using var body = JsonDocument.Parse(sent!);
+        Assert.Equal(180, options.RequestTimeoutSeconds);
+        Assert.Equal(1800, options.RunTimeoutSeconds);
+        Assert.Equal(50, options.MaxProviderCalls);
+        Assert.Equal(262_144, options.MaxRunOutputTokens);
+        Assert.Equal(16_384, body.RootElement.GetProperty("max_tokens").GetInt32());
+        Assert.Equal(frameworkCandidate ? "high" : "max", body.RootElement.GetProperty("reasoning_effort").GetString());
+        if (frameworkCandidate)
+        {
+            Assert.Equal("agent-framework", options.ExecutionVariant);
+            Assert.Equal(4, body.RootElement.GetProperty("tools").GetArrayLength());
+            Assert.Equal("required", body.RootElement.GetProperty("tool_choice").GetString());
+            Assert.False(body.RootElement.GetProperty("parallel_tool_calls").GetBoolean());
+        }
+        else Assert.False(body.RootElement.TryGetProperty("tools", out _));
     }
 
     private static HttpResponseMessage Response(HttpStatusCode status, string body) =>

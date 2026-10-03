@@ -347,7 +347,7 @@ try
         .AddServiceLayer()
         .AddInfrastructure(builder.Configuration);
 
-    var aiOptions = builder.Configuration.GetSection(WorkflowAiOptions.SectionName).Get<WorkflowAiOptions>() ?? new();
+    var aiOptions = WorkflowAiServiceCollectionExtensions.ReadWorkflowAiOptions(builder.Configuration);
     builder.Services.AddWorkflowAiAuthoring(aiOptions);
     builder.Services.AddSingleton<IAuthoringKnowledge, AuthoringKnowledge>();
     var documentOptions = builder.Configuration.GetSection(AiDocumentOptions.SectionName).Get<AiDocumentOptions>() ?? new();

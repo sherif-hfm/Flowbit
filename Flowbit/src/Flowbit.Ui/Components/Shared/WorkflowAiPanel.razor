@@ -106,10 +106,15 @@
             <section class="ai-progress" aria-labelledby="ai-progress-heading">
                 <h3 id="ai-progress-heading">@(authoringRunning ? "Building your workflow" : "Draft kept in this session")</h3>
                 <p id="ai-progress-stage" role="status">@progressStage</p>
-                <p id="ai-progress-metrics" class="ai-help">@ElapsedSeconds s elapsed · @(runSummary?.ProviderCalls ?? 0) model calls</p>
+                <p id="ai-progress-metrics" class="ai-help">@ElapsedSeconds s this run · @(runSummary?.ProviderCalls ?? 0) model calls</p>
+                @if (authoringRunning && modelCallStarted is { } started)
+                {
+                    <p id="ai-model-wait" class="ai-help">Waiting for the model: @((int)(DateTimeOffset.UtcNow - started).TotalSeconds) s on this call</p>
+                }
                 @if (checkpoint is not null)
                 {
-                    <p class="ai-help">Completed draft edits are kept while this assistant stays open. Continue uses the original requirements and selected model.</p>
+                    <p id="ai-draft-progress" class="ai-help">@checkpoint.Revision completed draft @(checkpoint.Revision == 1 ? "step" : "steps") · @DraftCount("flowNodes") nodes · @DraftCount("sequenceFlows") connections</p>
+                    <p class="ai-help">Continue keeps this draft and its reference context. Only the run timer and call count restart. The original requirements and selected model stay the same.</p>
                     @if (IsCheckpointStale) { <p class="ai-warning" role="status">The editor changed. Send a new request to work from the current workflow.</p> }
                     <button type="button" id="ai-continue" class="btn btn-outline-primary" disabled="@(busy || IsCheckpointStale || string.IsNullOrWhiteSpace(apiKey))" @onclick="ContinueAsync">Continue</button>
                 }
@@ -188,6 +193,7 @@
     private bool authoringRunning;
     private string progressStage = "";
     private DateTimeOffset runStarted;
+    private DateTimeOffset? modelCallStarted;
     private string providerId = "opencode-go", modelId = "kimi-k2.7-code", apiKey = "", messageText = "", languages = "eng+ara";
     private string conversationId = Guid.NewGuid().ToString("N");
     private string? error, notice;
@@ -199,6 +205,8 @@
     private bool IsStale => result is not null && EditorRevision is not null && result.SnapshotId != EditorRevision;
     private bool IsCheckpointStale => frozenRequest is null || EditorRevision is not null && frozenRequest.SnapshotId != EditorRevision;
     private int ElapsedSeconds => authoringRunning ? (int)(DateTimeOffset.UtcNow - runStarted).TotalSeconds : (int)(runSummary?.ElapsedSeconds ?? 0);
+    private int DraftCount(string property) => checkpoint?.Draft is { ValueKind: JsonValueKind.Object } draft
+        && draft.TryGetProperty(property, out var items) && items.ValueKind == JsonValueKind.Array ? items.GetArrayLength() : 0;
     private string ProposalJson => result?.Definition is { } definition ? JsonSerializer.Serialize(definition, new JsonSerializerOptions { WriteIndented = true }) : "";
 
     protected override async Task OnInitializedAsync()
@@ -257,7 +265,7 @@
     }
     private void ClearContinuation()
     {
-        frozenRequest = null; checkpoint = null; runSummary = null; progressStage = ""; authoringRunning = false;
+        frozenRequest = null; checkpoint = null; runSummary = null; progressStage = ""; authoringRunning = false; modelCallStarted = null;
     }
     private void ClearDocument() { documentFile = null; sourcePages.Clear(); documentWarnings = []; }
     private void NewConversation()
@@ -408,9 +416,10 @@
     private async Task RunFrozenRequestAsync(AiTurnRequestDto request, long revision, string activeOperationId, CancellationToken cancellationToken)
     {
         authoringRunning = true;
-        progressStage = "Reading requirements";
+        progressStage = request.Checkpoint is null ? "Reading requirements" : $"Resuming the saved draft after {request.Checkpoint.Revision} completed draft steps.";
         runSummary = null;
         runStarted = DateTimeOffset.UtcNow;
+        modelCallStarted = null;
         _ = UpdateElapsedAsync(revision, activeOperationId, cancellationToken);
         var response = await Api.SendAiTurnStreamingAsync(request, apiKey.Trim(), async frame =>
         {
@@ -418,6 +427,7 @@
             if (frame.Type == "checkpoint" && frame.Checkpoint is not null) checkpoint = frame.Checkpoint;
             if (frame.Result?.Checkpoint is not null) checkpoint = frame.Result.Checkpoint;
             if (frame.Run is not null) runSummary = frame.Run;
+            modelCallStarted = frame.Stage is "generating" or "retrying" ? DateTimeOffset.UtcNow : null;
             if (!string.IsNullOrWhiteSpace(frame.Message)) progressStage = frame.Message;
             else if (!string.IsNullOrWhiteSpace(frame.Stage)) progressStage = frame.Stage;
             await InvokeAsync(StateHasChanged);

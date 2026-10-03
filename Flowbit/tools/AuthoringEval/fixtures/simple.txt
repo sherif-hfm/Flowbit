@@ -1,0 +1,1 @@
+Create a workflow named Simple approval. Start at a normal Start event, then a user task named Review with role manager. Review has selectable Approve and Reject actions to separate normal end events named Approved and Rejected. No variables, services, scripts, timers, shared values, credentials or missing decisions. Finish a validated proposal.

@@ -7,6 +7,8 @@ namespace Flowbit.Ui.Clients;
 
 public sealed partial class WorkflowApiClient
 {
+    public const string AiClientName = "Flowbit.AiAuthoring";
+    public static TimeSpan AiRequestTimeout => TimeSpan.FromSeconds(AiAuthoringLimits.MaxRunTimeoutSeconds + 60);
     public async Task<IReadOnlyList<AiProviderDto>> GetAiProvidersAsync(CancellationToken cancellationToken = default)
     {
         using var response = await httpClient.GetAsync("/api/workflows/ai/providers", cancellationToken);
@@ -16,10 +18,11 @@ public sealed partial class WorkflowApiClient
 
     public async Task<AiTurnResultDto> SendAiTurnAsync(AiTurnRequestDto request, string apiKey, CancellationToken cancellationToken = default)
     {
+        using var authoringClient = clientFactory?.CreateClient(AiClientName);
         using var message = new HttpRequestMessage(HttpMethod.Post, "/api/workflows/ai/turn");
         message.Headers.Add("X-Flowbit-AI-Key", apiKey);
         message.Content = JsonContent.Create(request);
-        using var response = await httpClient.SendAsync(message, cancellationToken);
+        using var response = await (authoringClient ?? httpClient).SendAsync(message, cancellationToken);
         await EnsureSuccessAsync(response, cancellationToken);
         return await response.Content.ReadFromJsonAsync<AiTurnResultDto>(cancellationToken)
             ?? throw new InvalidOperationException("The AI service returned an empty response.");
@@ -29,12 +32,13 @@ public sealed partial class WorkflowApiClient
         Func<AiRunEventDto, Task> onEvent, CancellationToken cancellationToken = default)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(TimeSpan.FromMinutes(6));
+        timeout.CancelAfter(AiRequestTimeout);
         var ct = timeout.Token;
+        using var authoringClient = clientFactory?.CreateClient(AiClientName);
         using var message = new HttpRequestMessage(HttpMethod.Post, "/api/workflows/ai/turn/stream");
         message.Headers.Add("X-Flowbit-AI-Key", apiKey);
         message.Content = JsonContent.Create(request);
-        using var response = await httpClient.SendAsync(message, HttpCompletionOption.ResponseHeadersRead, ct);
+        using var response = await (authoringClient ?? httpClient).SendAsync(message, HttpCompletionOption.ResponseHeadersRead, ct);
         await EnsureSuccessAsync(response, ct);
         if (response.Content.Headers.ContentType?.MediaType != "application/x-ndjson")
             throw new InvalidOperationException("The AI service returned an unsupported stream format.");

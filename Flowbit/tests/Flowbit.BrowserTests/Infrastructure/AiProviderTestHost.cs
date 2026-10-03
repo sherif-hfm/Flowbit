@@ -20,7 +20,7 @@ public sealed class AiProviderTestHost : IAsyncDisposable
     public ConcurrentQueue<Request> Requests { get; } = new();
 
     public sealed record Request(string KeyHash, string Conversation, string Model, string Requirement, string WorkflowKey, string[] SourceTexts, string[] CatalogKeys, bool IncludesCatalogValue,
-        long Revision, int MaxOperations, int MaxTokens);
+        long Revision, int MaxOperations, int MaxTokens, string[] ReadResources, int NativeToolCount, string? ReasoningEffort);
     public sealed class Reply(string kind, string workflowName, bool delayed)
     {
         internal string Kind { get; } = kind;
@@ -64,6 +64,16 @@ public sealed class AiProviderTestHost : IAsyncDisposable
                 plan = "Rename the workflow, then validate the completed draft.",
                 operations = new[] { new { op = "set", target = "workflow", path = "/name", value = name } }
             })
+        };
+        replies.Enqueue(reply);
+        return reply;
+    }
+
+    public Reply EnqueueReferenceRead()
+    {
+        var reply = new Reply("read", "", false)
+        {
+            Content = _ => """{"kind":"read","reads":[{"kind":"reference","resource":"schema:FlowNodeModel","count":6000},{"kind":"source","resource":"requirements","count":1000}]}"""
         };
         replies.Enqueue(reply);
         return reply;
@@ -121,7 +131,11 @@ public sealed class AiProviderTestHost : IAsyncDisposable
                 input["selectedSharedVariables"]!.AsArray().Select(item => item!["key"]!.GetValue<string>()).ToArray(),
                 input["selectedSharedVariables"]!.AsArray().Any(item => item!.AsObject().ContainsKey("value")),
                 input["revision"]?.GetValue<long>() ?? 0, input["maxOperations"]?.GetValue<int>() ?? 0,
-                envelope.TryGetProperty("max_tokens", out var maxTokens) ? maxTokens.GetInt32() : 0));
+                envelope.TryGetProperty("max_tokens", out var maxTokens) ? maxTokens.GetInt32() : 0,
+                input["observations"]!.AsArray().OfType<JsonArray>().SelectMany(batch => batch.OfType<JsonObject>())
+                    .Select(read => read["resource"]!.GetValue<string>()).ToArray(),
+                envelope.TryGetProperty("tools", out var requestedTools) ? requestedTools.GetArrayLength() : 0,
+                envelope.TryGetProperty("reasoning_effort", out var reasoning) ? reasoning.GetString() : null));
             reply.Arrived.TrySetResult();
             if (reply.Delayed)
             {
@@ -136,9 +150,33 @@ public sealed class AiProviderTestHost : IAsyncDisposable
             }
             if (reply.Content is not null)
             {
+                if (envelope.TryGetProperty("tools", out _))
+                {
+                    var content = reply.Content(input);
+                    var name = "apply_draft_batch";
+                    if (reply.FinishReason != "length")
+                    {
+                        var command = JsonNode.Parse(content)!.AsObject();
+                        name = command["kind"]!.GetValue<string>() switch
+                        { "read" => "read_authoring_context", "edit" => "apply_draft_batch", "finish" => "finish_proposal", _ => "request_clarification" };
+                        command.Remove("kind");
+                        content = command.ToJsonString();
+                    }
+                    await context.Response.WriteAsJsonAsync(new
+                    {
+                        choices = new[] { new { finish_reason = reply.FinishReason == "length" ? "length" : "tool_calls", message = new
+                        {
+                            role = "assistant", content = (string?)null,
+                            tool_calls = new[] { new { id = "browser-tool", type = "function", function = new { name, arguments = content } } }
+                        } } },
+                        usage = new { prompt_tokens = 100, completion_tokens = reply.FinishReason == "length" ? envelope.GetProperty("max_tokens").GetInt32() : 100 }
+                    }, context.RequestAborted);
+                    return;
+                }
                 await context.Response.WriteAsJsonAsync(new
                 {
-                    choices = new[] { new { finish_reason = reply.FinishReason, message = new { role = "assistant", content = reply.Content(input) } } }
+                    choices = new[] { new { finish_reason = reply.FinishReason, message = new { role = "assistant", content = reply.Content(input) } } },
+                    usage = new { completion_tokens = reply.FinishReason == "length" ? envelope.GetProperty("max_tokens").GetInt32() : 100 }
                 }, context.RequestAborted);
                 return;
             }

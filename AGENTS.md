@@ -144,14 +144,28 @@ The key pieces:
   PDF extraction review, and proposal requests. Dedicated editor snapshot/apply operations
   preserve undo history, the saved baseline, and locked workflow-family identity, rejecting
   stale proposals after document changes. Do not use `load()` or file import for AI edits.
-  The API uses a provider registry behind `IAiWorkflowProvider`; OpenCode Go is the initial
-  adapter. Providers return finish/usage metadata for one bounded call; `WorkflowAiRunner` owns
+  The API uses a provider registry behind `IAiWorkflowProvider`; the OpenCode adapter defaults
+  to Zen while retaining the legacy `opencode-go` API provider id. Providers return
+  finish/usage metadata for one bounded call; `WorkflowAiRunner` owns
   separate transport retries, output-limit recovery, validation repairs, and total run budgets.
+  `WorkflowAiSession` shares atomic edit receipts and accounting across server-configured
+  `current`, `optimized`, and `agent-framework` execution. Experimental variants use a
+  schema-derived primer, semantic draft context and conservative batch growth.
+  Infrastructure pins Microsoft Agent Framework 1.23.0; `OpenCodeAgentStep` performs one
+  native-tool model step with SDK automatic loops/history/retries disabled. The shared
+  runner dispatches tools and stops immediately after successful local finish validation.
+  Version 2 checkpoints bind execution, reasoning, profile and endpoint; version 1 stays
+  on current execution. Do not promote defaults without the authoring evaluation gates.
+  Defaults allow 30 minutes, 50 calls, and 262,144 output tokens. The UI's dedicated authoring
+  transport covers the configurable server deadline; ordinary API calls retain their timeout.
+  Progress distinguishes per-run metrics from retained draft steps, nodes, and connections.
   `WorkflowAiContext` exposes bounded reads of immutable packaged references and request-local
   source/draft data; `WorkflowAiDraft` applies typed edits atomically to a private candidate.
   Partial model responses never mutate that candidate. Streamed NDJSON checkpoints remain
   untrusted temporary state in the open Blazor Server circuit, tied to the original request,
   catalog contracts, selected model, and editor snapshot. Continuation revalidates state and
+  rebuilds bounded reference/source excerpts from retained read positions and original inputs;
+  cached excerpt text and mutable draft reads are not retained. Continuation
   seeds fresh redaction from baseline and checkpoint. Only a fully validated final proposal
   may reach the editor apply operation; generation and checkpoints never save the workflow.
   `IAuthoringKnowledge` verifies and caches the deterministic portable skill package
