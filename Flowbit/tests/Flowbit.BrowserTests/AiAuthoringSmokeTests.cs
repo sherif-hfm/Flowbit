@@ -251,10 +251,7 @@ public sealed class AiAuthoringSmokeTests(BrowserStackFixture stack)
             Assert.Equal(1, initial[4].Revision);
             Assert.All(initial, request => Assert.Equal("glm-5.3-flash", request.Model));
             Assert.All(initial, request => Assert.Equal(16_384, request.MaxTokens));
-            if (stack.UsesShippedAiExecution)
-                Assert.All(initial, request => { Assert.Equal(stack.ShippedAiExecutionVariant == "agent-framework" ? 4 : 0, request.NativeToolCount); Assert.Equal(stack.ShippedFlashReasoning, request.ReasoningEffort); });
-            if (stack.UsesFrameworkCandidate)
-                Assert.All(initial, request => { Assert.Equal(4, request.NativeToolCount); Assert.Equal("high", request.ReasoningEffort); });
+            Assert.All(initial, request => { Assert.Equal(0, request.NativeToolCount); Assert.Equal(stack.ShippedFlashReasoning, request.ReasoningEffort); });
 
             // Changing the composer does not replace the frozen requirements of Continue.
             await page.Locator("#ai-message").FillAsync("This unsent text must not change the continuation.");
@@ -274,7 +271,8 @@ public sealed class AiAuthoringSmokeTests(BrowserStackFixture stack)
             Assert.Contains("schema:FlowNodeModel", resumed.ReadResources);
             Assert.Contains("requirements", resumed.ReadResources);
             Assert.Equal(AiProviderTestHost.HashKey(key), resumed.KeyHash);
-            if (stack.UsesShippedAiExecution) { Assert.Equal(stack.ShippedAiExecutionVariant == "agent-framework" ? 4 : 0, resumed.NativeToolCount); Assert.Equal(stack.ShippedFlashReasoning, resumed.ReasoningEffort); }
+            Assert.Equal(0, resumed.NativeToolCount);
+            Assert.Equal(stack.ShippedFlashReasoning, resumed.ReasoningEffort);
             await Assertions.Expect(page.Locator("#ai-continue")).ToHaveCountAsync(0);
             await page.Locator("#ai-apply").ClickAsync();
             await Assertions.Expect(page.Locator("#ai-notice")).ToContainTextAsync("Applied to the editor");

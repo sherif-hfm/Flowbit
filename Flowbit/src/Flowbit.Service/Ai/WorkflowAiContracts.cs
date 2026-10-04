@@ -35,8 +35,9 @@ public sealed class WorkflowAiOptions
     /// <summary>Reject invalid server settings before spending a provider call. Values are never caller supplied.</summary>
     public void Validate()
     {
-        if (ExecutionVariant is not ("current" or "optimized" or "agent-framework")
-            || !InRange(MaxInputCharacters, 1, 1_000_000) || !InRange(MaxContextCharacters, 1, 4_000_000)
+        if (ExecutionVariant is not ("current" or "optimized"))
+            throw new WorkflowAiException("provider_configuration", "The configured AI authoring execution mode is unsupported. Set WorkflowAi:ExecutionVariant to current or optimized and start a new request.", 503);
+        if (!InRange(MaxInputCharacters, 1, 1_000_000) || !InRange(MaxContextCharacters, 1, 4_000_000)
             || !InRange(MaxWorkflowCharacters, 1, 8_388_608) || !InRange(MaxOutputBytes, 1, 8_388_608)
             || !InRange(MaxHistoryMessages, 0, 100) || !InRange(MaxRepairAttempts, 0, 2)
             || !InRange(RunTimeoutSeconds, 1, AiAuthoringLimits.MaxRunTimeoutSeconds) || !InRange(RequestTimeoutSeconds, 1, 600)

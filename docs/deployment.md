@@ -162,7 +162,7 @@ No database migration or persistent conversation store is introduced.
 | API setting (`__` separates environment keys) | Default | Purpose |
 | --- | --- | --- |
 | `WorkflowAi:Enabled` | `true` | Enable provider discovery/generation. |
-| `WorkflowAi:ExecutionVariant` | `current` | `current`, `optimized`, or `agent-framework`. Experimental variants share the existing authoring budget/validation owner. Framework execution requires native tool support; it never silently falls back to text. See [execution variants](ai-authoring.md#execution-variants-and-evaluation) and the [evaluation tool](../Flowbit/tools/AuthoringEval/README.md) before changing defaults. |
+| `WorkflowAi:ExecutionVariant` | `current` | `current` or `optimized`, both using the custom authoring loop. Optimized remains experimental. Removed values fail with `provider_configuration` before any provider call. See [execution variants](ai-authoring.md#execution-variants-and-evaluation) and the [evaluation tool](../Flowbit/tools/AuthoringEval/README.md) before changing defaults. |
 | `WorkflowAi:OpenCodeBaseUrl` | `https://opencode.ai/zen/v1/` | Server-owned OpenCode Zen endpoint. HTTPS required except loopback test servers; callers cannot supply a URL. |
 | `WorkflowAi:OpenCodeModels` | Shipped configuration: `glm-5.3-flash`; unconfigured fallback: `kimi-k2.7-code`, `glm-5.3`, `glm-5.3-flash` | An explicit configured list replaces fallback models; its first entry is the default. Verify live account/model compatibility separately. |
 | `WorkflowAi:OpenCodeReasoningEfforts` | Shipped configuration: `{"glm-5.3-flash":"max"}`; unconfigured fallback: `{}` | Model-id-to-effort mapping. A configured selected model sends `reasoning_effort` as exactly `low`, `high`, or `max`; any other value rejects the request with `provider_configuration` (503) before provider transport. Unmapped models omit the field and retain provider defaults. |
@@ -255,24 +255,30 @@ Do not log checkpoint bodies: they may contain restored workflow credentials.
 New version 2 checkpoints also bind the execution variant, reasoning effort, model
 profile, and provider endpoint. Replicas must agree on these settings for Continue;
 changing them requires a new request. Version 1 checkpoints retain current-engine
-compatibility. The framework package requires no Azure account, hosted agent,
-database migration, or persistent session store. Roll back new requests with
-`WorkflowAi:ExecutionVariant=current`; existing version 2 checkpoints for another
-variant must be abandoned or resumed under their original settings.
+compatibility. Both supported modes run inside Flowbit without an agent SDK or
+persistent session store. To restore the default for new requests, set
+`WorkflowAi:ExecutionVariant=current`; version 2 checkpoints for optimized require
+their original settings or a new request.
 Finish or discard open assistant drafts before changing engine/reasoning settings.
 To restore the shipped behavior explicitly, use `ExecutionVariant=current` and
-`OpenCodeReasoningEfforts:glm-5.3-flash=max`. The targeted framework/high evaluation
-did not meet its functional completion gates, so shipped defaults remain unchanged;
-see the [acceptance results](../Flowbit/tools/AuthoringEval/RESULTS.md#targeted-adoption-follow-up).
+`OpenCodeReasoningEfforts:glm-5.3-flash=max`. Microsoft Agent Framework is removed.
+Before upgrading a deployment configured with `ExecutionVariant=agent-framework`,
+set it to `current` or `optimized` and start fresh authoring requests. The removed
+setting returns `provider_configuration` (503); there is no silent fallback.
+Old framework checkpoints return `checkpoint_configuration_changed` (409) under
+either supported mode. No database migration or provider-key relocation is needed.
+Historical evaluation results remain [available](../Flowbit/tools/AuthoringEval/RESULTS.md).
 
 The `Flowbit.Ai.Authoring` meter exposes `flowbit.ai.provider.calls`,
 `flowbit.ai.recoveries`, `flowbit.ai.provider.seconds`, and `flowbit.ai.run.seconds` without prompt/workflow contents.
 Run responses report model calls, elapsed seconds, output-token accounting, and whether
 usage includes estimates. These are operational bounds, not provider billing totals.
 Summaries additionally expose reported input tokens, first-edit/last-call timing,
-read/duplicate-read counts, retries, and accepted batches. The framework adapter
-makes exactly one bounded HTTP attempt per step; no SDK retry policy or automatic
-function loop is layered over Flowbit's retry/deadline controller.
+read/duplicate-read counts, retries, and accepted batches. Flowbit's custom runner
+owns model/command iteration and recovery in both supported modes. Every HTTP
+attempt counts, including failed retries. Continue restores the validated draft
+and read positions with fresh per-run accounting; no provider conversation is
+persisted. See [execution ownership](ai-authoring.md#execution-variants-and-evaluation).
 
 The provider adapter sends `Flowbit/1.0` as its user-agent and a stable
 `x-opencode-session` for the temporary conversation. It receives the key only for

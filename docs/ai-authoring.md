@@ -38,8 +38,8 @@ a small draft falls back to that index.
 Empty or unreadable successful provider responses use the same bounded transport
 retries without changing the draft. Repeated failures pause with
 `provider_invalid_response`. Authentication, billing, refusals and unsupported
-completion formats remain terminal; their last emitted checkpoint stays available
-in the open panel.
+completion formats (including native tool-call responses) remain
+terminal; their last emitted checkpoint stays available in the open panel.
 
 The provider receives the submitted requirements, document text, conversation context, and the workflow needed to make an edit. Recognized workflow credential fields are redacted before model calls. Request-derived context is scrubbed without rewriting internal command names or JSON member names. Public packaged references and the protocol instructions retain their exact text, so a short credential such as `node` cannot corrupt the schema or command vocabulary. Avoid putting unrelated confidential material in requirements; redaction cannot identify every sensitive business value inside arbitrary text or JSON.
 
@@ -47,57 +47,68 @@ Text extraction occurs on the Flowbit server. Scanned PDF pages use the configur
 
 ## Execution variants and evaluation
 
-`WorkflowAi:ExecutionVariant` selects `current` (the default), `optimized`, or
-`agent-framework`. The latter two are experimental until the live acceptance
-gates pass; installing a framework does not guarantee faster or correct results.
+`WorkflowAi:ExecutionVariant` selects `current` (the default) or `optimized`.
+Both use Flowbit's custom authoring loop and text-completion provider adapter.
+Microsoft Agent Framework and its native-tool execution path have been removed.
 The selected variant and reasoning effort stay fixed for the run. The provider
-and model remain OpenCode Zen and the configured model; a variant does not switch
-models or obtain different provider capacity.
+and model remain OpenCode Zen and the configured model; changing the variant does
+not switch models or obtain different provider capacity.
 
-Both experimental variants supply compact contracts derived from the verified
-schema and relevant guide excerpts before the first call. Immutable reads are
-deduplicated separately from mutable draft reads; accepted edits discard stale
-draft excerpts. Draft context preserves business fields and removes layout first,
-using the remaining context budget instead of the current runner's fixed
-14,000-character cutoff. If the semantic draft still cannot fit, a disclosed
-entity index and bounded reads remain available. Following a timeout or truncation,
-batches shrink. They grow by two operations only after two accepted batches each
-use less than half the call deadline and reported output allowance, up to the
-configured maximum. Missing usage never triggers growth.
+The optimized variant remains experimental until the live acceptance gates pass.
+It supplies compact contracts derived from the verified schema and relevant guide
+excerpts before the first call. Immutable reads are deduplicated separately from
+mutable draft reads; accepted edits discard stale draft excerpts. Draft context
+preserves business fields and removes layout first, using the remaining context
+budget instead of the current runner's fixed 14,000-character cutoff. If the draft
+cannot fit, an entity index and bounded reads remain available. After timeout or
+truncation, batches shrink. They grow by two operations only after two accepted
+batches each use less than half the call deadline and reported output allowance,
+up to the configured maximum. Missing usage never triggers growth.
 
-The framework prototype pins `Microsoft.Agents.AI` 1.23.0 in Infrastructure and uses
-one `ChatClientAgent` per bounded model step. Its four native tools are
-`read_authoring_context`, `apply_draft_batch`, `finish_proposal`, and
-`request_clarification`. Flowbit dispatches the complete tool command through the
-same authoring kernel used by text execution. SDK automatic tool loops, retries,
-and retained chat history are disabled; Flowbit owns budgets, context rebuilding,
-checkpoints, and serial edits. Finishing validates locally and stops immediately
-on success; errors return as focused repair feedback. There is no fallback from
-native tools to text, and no execution, save, publish, shell, or network tool.
+Flowbit owns the complete model/command loop: deadlines, call/token accounting,
+bounded transport retries, output-limit recovery, context rebuilding, typed
+atomic draft edits, validation and checkpoints. Incomplete responses never mutate
+the draft. A validated finish, clarification or exhausted repair budget stops
+without another model call. There are no execution, save, publish, shell or network
+commands. Native tool-call responses are unsupported and rejected.
 
-New checkpoints use version 2, binding the execution variant, reasoning effort,
-model profile, and provider endpoint as well as the original inputs and package.
-Changing those server settings rejects continuation before any provider call;
-start a new request. Version 1 checkpoints continue through `current`. Neither
-format survives loss of the open UI circuit. Progress now shows the wait time for
-the current model call separately from elapsed run time and retained draft counts.
+Missing or mistyped command/read fields produce named repair diagnostics instead
+of a generic dictionary lookup error. Before returning a completed proposal,
+the assistant checks structural reachability from normal, message and timer starts,
+following attached boundary routes. Newly added or newly disconnected nodes must
+be connected. Existing disconnected work in an edited diagram is preserved. This
+authoring guard does not change save/runtime validation or establish that every
+business requirement is correct.
 
-The repeatable [authoring evaluation tool](../Flowbit/tools/AuthoringEval/README.md)
-contains synthetic creation/modification fixtures and 36 complex-procurement
-checks. It compares variants and reasoning efforts with a 300-second trial limit,
-counts pauses/failures as failures, and never promotes defaults automatically.
-Validated structure is necessary but does not establish coverage of every
-business requirement. Review the evaluation evidence before changing defaults.
-The [2026-10-03 evaluation](../Flowbit/tools/AuthoringEval/RESULTS.md) retained
-the existing default: framework/high passed two of three fresh complex trials,
-short of the required three; optimized candidates did not pass every requirement.
-The subsequent targeted-adoption round treated approved action-label aliases as
-warnings and separately passed all three retained definitions' functional checks.
-It still retained `current`/max: simple creation passed, editing returned an
-invalid result, and live Cancel/Continue preserved the checkpoint but did not
-finish within five minutes. Neither the framework nor a structural validation
-result guarantees full requirement completion. See the report for the unchanged
-historical verdicts and new evidence.
+New checkpoints use version 2, binding execution, reasoning, model profile and
+provider endpoint as well as original inputs and package. Changing those settings
+rejects continuation before any provider call. Version 1 checkpoints continue
+through `current`. Neither format survives loss of the open UI circuit. Continue
+rebuilds context from the validated Flowbit checkpoint and retained read positions,
+with fresh run accounting. Progress separates current-call wait time, elapsed run
+time and retained draft counts.
+
+For upgrades from the removed experiment, replace
+`WorkflowAi:ExecutionVariant=agent-framework` with `current` or `optimized`.
+The removed value returns `provider_configuration` (503), with no provider call
+or silent fallback. Old framework checkpoints return
+`checkpoint_configuration_changed` (409) under either supported mode; start a new
+request. Provider IDs, model selection, API DTOs and checkpoint version are unchanged.
+
+The [authoring evaluation tool](../Flowbit/tools/AuthoringEval/README.md) retains
+creation/modification fixtures, 36 strict complex-procurement checks and 78
+functional checks. Its current/optimized comparison uses a 300-second trial limit,
+counts failures as failures, and never promotes defaults automatically. The
+[historical report](../Flowbit/tools/AuthoringEval/RESULTS.md) preserves earlier
+framework trials, including a successful complex continuation and a fresh run
+that exceeded 30 minutes. Those results do not qualify the remaining optimized
+mode for promotion or prove the shipped default meets the speed target.
+
+Known optimized-context limitation: different draft entities read at the same
+offset can replace one another's cached excerpts because the cache key omits the
+entity ID. Framework removal does not fix that independent defect. It may
+contribute to repeated reads; the historical evidence does not establish it as
+the sole timeout cause. Draft reads are excluded from the duplicate-read metric.
 
 ## Use the same skill in another agent
 

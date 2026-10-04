@@ -15,17 +15,59 @@ using Xunit;
 
 namespace Flowbit.Tests;
 
-public sealed class WorkflowAiExecutionTests
+public sealed partial class WorkflowAiExecutionTests
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private const string Finish = """{"kind":"finish","message":"Complete"}""";
     private const string Edit = """{"kind":"edit","batchId":"rename","baseRevision":0,"operations":[{"op":"set","target":"workflow","path":"/name","value":"Recovered"}]}""";
     private const string Key = "synthetic-execution-key";
 
+    public static IEnumerable<object[]> MalformedCommands()
+    {
+        var cases = new (string Command, string Field)[]
+        {
+            ("""{"kind":"read"}""", "reads array"),
+            ("""{"kind":"read","reads":[{"resource":"rule"}]}""", "kind"),
+            ("""{"kind":"read","reads":[{"kind":"reference"}]}""", "resource"),
+            ("""{"kind":"read","reads":[{"kind":"draft"}]}""", "target"),
+            ("""{"kind":"read","reads":[{"kind":"draft","target":"node"}]}""", "id"),
+            ("""{"kind":"read","reads":[{"kind":"draft","target":"workflow","count":"all"}]}""", "count"),
+            ("""{"kind":"edit","batchId":"bad","operations":[]}""", "baseRevision"),
+            ("""{"kind":"edit","batchId":"bad","baseRevision":"0","operations":[]}""", "baseRevision"),
+            ("""{"kind":"edit","batchId":"bad","baseRevision":0}""", "operations array")
+        };
+        foreach (var variant in new[] { "current", "optimized" })
+            foreach (var (command, field) in cases) yield return [variant, command, field];
+    }
+
+    [Theory]
+    [MemberData(nameof(MalformedCommands))]
+    public async Task MissingOrMistypedToolArgumentsReceiveActionableRepairWithoutChangingDraft(string variant, string malformed, string field)
+    {
+        using var handler = new Handler((index, body) =>
+        {
+            if (index == 1)
+            {
+                var context = Payload(body);
+                Assert.Equal(0, context.GetProperty("revision").GetInt64());
+                Assert.Equal("Original", context.GetProperty("currentWorkflow").GetProperty("name").GetString());
+                var feedback = context.GetProperty("observations").ToString();
+                Assert.Contains(field, feedback);
+                Assert.DoesNotContain("given key", feedback, StringComparison.OrdinalIgnoreCase);
+            }
+            return Reply(index == 0 ? malformed : Finish, variant);
+        });
+        using var client = new HttpClient(handler);
+        var options = Options(variant);
+        var result = await Service(new OpenCodeGoProvider(client, options), options).TurnAsync(Request(), Key, CancellationToken.None);
+        Assert.Equal("proposal", result.Kind);
+        Assert.Equal(2, handler.Bodies.Count);
+        Assert.Equal(0, result.Run!.AcceptedBatches);
+    }
+
     [Theory]
     [InlineData("current")]
     [InlineData("optimized")]
-    [InlineData("agent-framework")]
     public async Task AddingRejectionToExistingWorkflowFinishesWithoutChangingOriginalNodes(string variant)
     {
         const string add = """{"kind":"edit","batchId":"add-rejection","baseRevision":0,"operations":[{"op":"create","target":"node","id":4,"value":{"id":4,"name":"Rejected","type":"endEvent"}},{"op":"create","target":"flow","id":3,"value":{"id":3,"name":"Reject","sourceRef":2,"targetRef":4}}]}""";
@@ -45,7 +87,59 @@ public sealed class WorkflowAiExecutionTests
     [Theory]
     [InlineData("current")]
     [InlineData("optimized")]
-    [InlineData("agent-framework")]
+    public async Task FinishRepairsAnUnreachableRequiredStepBeforeReturningProposal(string variant)
+    {
+        const string add = """{"kind":"edit","batchId":"add-vote","baseRevision":0,"operations":[{"op":"create","target":"node","id":4,"value":{"id":4,"name":"Committee vote","type":"userTask"}},{"op":"create","target":"flow","id":3,"value":{"id":3,"name":"Approve","sourceRef":4,"targetRef":3}}]}""";
+        const string repair = """{"kind":"edit","batchId":"wire-vote","baseRevision":1,"operations":[{"op":"set","target":"flow","id":2,"path":"/targetRef","value":4}]}""";
+        using var handler = new Handler((index, body) =>
+        {
+            if (index == 2)
+            {
+                Assert.Contains("Unreachable draft nodes", Payload(body).GetProperty("observations").ToString());
+                Assert.Contains("Committee vote", Payload(body).GetProperty("observations").ToString());
+            }
+            return Reply(index switch { 0 => add, 1 => Finish, 2 => repair, _ => Finish }, variant);
+        });
+        using var client = new HttpClient(handler);
+        var options = Options(variant);
+        var result = await Service(new OpenCodeGoProvider(client, options), options).TurnAsync(Request(), Key, CancellationToken.None);
+        Assert.Equal("proposal", result.Kind);
+        Assert.Equal(4, handler.Bodies.Count);
+        var model = JsonSerializer.Deserialize<WorkflowModel>(result.Definition!.Value, Json)!;
+        Assert.Equal(4, model.SequenceFlows.Single(flow => flow.Id == 2).TargetRef);
+    }
+
+    [Fact]
+    public void CompletionReachabilityPreservesExistingIslandsButRejectsNewIslandsAndDisconnectedOldWork()
+    {
+        var original = Baseline();
+        original.FlowNodes.Add(new() { Id = 10, Type = "userTask", Name = "Existing unused work" });
+        var candidate = JsonSerializer.Deserialize<WorkflowModel>(JsonSerializer.Serialize(original, Json), Json)!;
+        WorkflowAiAuthoringService.ValidateProposalReachability(candidate, original);
+        candidate.SequenceFlows.Single(flow => flow.Id == 1).TargetRef = 3;
+        Assert.Contains("#2", Assert.Throws<JsonException>(() => WorkflowAiAuthoringService.ValidateProposalReachability(candidate, original)).Message);
+        candidate.SequenceFlows.Single(flow => flow.Id == 1).TargetRef = 2;
+        candidate.FlowNodes.Add(new() { Id = 11, Type = "userTask", Name = "New island" });
+        candidate.SequenceFlows.Add(new() { Id = 11, SourceRef = 10, TargetRef = 11 });
+        candidate.SequenceFlows.Add(new() { Id = 12, SourceRef = 11, TargetRef = 10 });
+        Assert.Contains("#11", Assert.Throws<JsonException>(() => WorkflowAiAuthoringService.ValidateProposalReachability(candidate, original)).Message);
+        Assert.Throws<JsonException>(() => WorkflowAiAuthoringService.ValidateProposalReachability(candidate, null));
+    }
+
+    [Fact]
+    public void CompletionReachabilityRecognizesMessageTimerStartsAndAttachedBoundaryRoutes()
+    {
+        var model = Baseline();
+        model.InitialEventId = null;
+        model.FlowNodes.Single(node => node.Id == 1).Type = "messageStartEvent";
+        model.FlowNodes.AddRange([new() { Id = 4, Type = "timerStartEvent" }, new() { Id = 5, Type = "timerBoundaryEvent", AttachedToRef = 2 }, new() { Id = 6, Type = "endEvent" }]);
+        model.SequenceFlows.AddRange([new() { Id = 3, SourceRef = 4, TargetRef = 2 }, new() { Id = 4, SourceRef = 5, TargetRef = 6 }]);
+        WorkflowAiAuthoringService.ValidateProposalReachability(model, null);
+    }
+
+    [Theory]
+    [InlineData("current")]
+    [InlineData("optimized")]
     public async Task SharedKernel_DiscardsTruncatedBatchAndDeduplicatesAcceptedReceipt(string variant)
     {
         var frames = new List<AiRunEventDto>();
@@ -61,21 +155,12 @@ public sealed class WorkflowAiExecutionTests
         Assert.Equal(new long[] { 0, 0, 1 }, frames.Where(frame => frame.Type == "checkpoint").Select(frame => frame.Checkpoint!.Revision));
         Assert.All(handler.Bodies, body => Assert.DoesNotContain(Key, body));
         Assert.All(frames.Where(frame => frame.Checkpoint is not null), frame => Assert.Equal(2, frame.Checkpoint!.Version));
-        if (variant == "agent-framework")
-            Assert.All(handler.Bodies, body =>
-            {
-                using var document = JsonDocument.Parse(body);
-                Assert.Equal(4, document.RootElement.GetProperty("tools").GetArrayLength());
-                Assert.Equal("required", document.RootElement.GetProperty("tool_choice").GetString());
-                Assert.False(document.RootElement.GetProperty("parallel_tool_calls").GetBoolean());
-                Assert.Equal("low", document.RootElement.GetProperty("reasoning_effort").GetString());
-            });
+
     }
 
     [Theory]
     [InlineData("current")]
     [InlineData("optimized")]
-    [InlineData("agent-framework")]
     public async Task FinishRunsLocalValidationAndReturnsTargetedRepairFeedback(string variant)
     {
         const string remove = """{"kind":"edit","batchId":"remove","baseRevision":0,"operations":[{"op":"delete","target":"flow","id":2}]}""";
@@ -115,6 +200,71 @@ public sealed class WorkflowAiExecutionTests
     }
 
     [Fact]
+    public async Task RemovedExecutionConfigurationFailsBeforeTransport()
+    {
+        using var handler = new Handler((_, _) => throw new InvalidOperationException("No request should be sent."));
+        using var client = new HttpClient(handler);
+        var options = Options("agent-framework");
+        var provider = new OpenCodeGoProvider(client, options);
+        var error = await Assert.ThrowsAsync<WorkflowAiException>(() => Service(provider, options).TurnAsync(Request(), Key, CancellationToken.None));
+        Assert.Equal("provider_configuration", error.Code);
+        Assert.Equal(503, error.StatusCode);
+        Assert.Contains("current or optimized", error.Message);
+        Assert.False(provider.SupportsExecution("agent-framework"));
+        Assert.Empty(handler.Bodies);
+    }
+
+    [Theory]
+    [InlineData("current")]
+    [InlineData("optimized")]
+    public async Task RemovedExecutionCheckpointFailsBeforeAnotherTransport(string variant)
+    {
+        using var handler = new Handler((_, _) => Reply(Edit, variant));
+        using var client = new HttpClient(handler);
+        var options = Options(variant); options.MaxProviderCalls = 1;
+        var service = Service(new OpenCodeGoProvider(client, options), options);
+        var paused = await service.TurnAsync(Request(), Key, CancellationToken.None);
+        var oldCheckpoint = paused.Checkpoint! with { ExecutionVariant = "agent-framework" };
+        var error = await Assert.ThrowsAsync<WorkflowAiException>(() => service.TurnAsync(Request() with { Checkpoint = oldCheckpoint }, Key, CancellationToken.None));
+        Assert.Equal("checkpoint_configuration_changed", error.Code);
+        Assert.Equal(409, error.StatusCode);
+        Assert.Single(handler.Bodies);
+    }
+
+    [Theory]
+    [InlineData("current")]
+    [InlineData("optimized")]
+    public async Task CustomExecutionContinuesTheExactDraftWithFreshAccounting(string variant)
+    {
+        using var handler = new Handler((index, body) =>
+        {
+            if (index == 1)
+            {
+                Assert.Equal(1, Payload(body).GetProperty("revision").GetInt64());
+                Assert.Equal("Recovered", Payload(body).GetProperty("currentWorkflow").GetProperty("name").GetString());
+            }
+            return Reply(index == 0 ? Edit : Finish, variant);
+        });
+        using var client = new HttpClient(handler);
+        var options = Options(variant); options.MaxProviderCalls = 1;
+        var service = Service(new OpenCodeGoProvider(client, options), options);
+        var paused = await service.TurnAsync(Request(), Key, CancellationToken.None);
+        Assert.Equal("paused", paused.Kind);
+        AiCheckpointDto? restored = null;
+        var result = await service.RunAsync(Request() with { Checkpoint = paused.Checkpoint }, Key,
+            (frame, _) => { if (frame.Stage == "resuming") restored = frame.Checkpoint; return Task.CompletedTask; }, CancellationToken.None);
+        Assert.Equal("proposal", result.Kind);
+        Assert.Equal("Recovered", result.Definition!.Value.GetProperty("name").GetString());
+        Assert.Equal(paused.Checkpoint!.Draft.GetRawText(), restored!.Draft.GetRawText());
+        Assert.Equal(paused.Checkpoint.Batches, restored.Batches);
+        Assert.Equal(paused.Checkpoint.ContextReads, restored.ContextReads);
+        Assert.Equal(variant, result.Run!.ExecutionVariant);
+        Assert.Equal(1, result.Run.ProviderCalls);
+        Assert.Equal(0, result.Run.AcceptedBatches);
+        Assert.Equal(2, handler.Bodies.Count);
+    }
+
+    [Fact]
     public async Task VersionOneCheckpointKeepsLegacyExecutionWhenServerDefaultChanges()
     {
         using var handler = new Handler((index, _) => Reply(index == 0 ? Edit : Finish, "current"));
@@ -123,7 +273,7 @@ public sealed class WorkflowAiExecutionTests
         var service = Service(new OpenCodeGoProvider(client, options), options);
         var request = Request();
         var paused = await service.TurnAsync(request, Key, CancellationToken.None);
-        options.ExecutionVariant = "agent-framework";
+        options.ExecutionVariant = "optimized";
         var result = await service.TurnAsync(request with { Checkpoint = paused.Checkpoint! with
             { Version = 1, ExecutionVariant = null, ReasoningEffort = null, ModelProfileHash = null } }, Key, CancellationToken.None);
         Assert.Equal("proposal", result.Kind);
@@ -136,45 +286,25 @@ public sealed class WorkflowAiExecutionTests
     [InlineData(402, "provider_quota")]
     [InlineData(429, "provider_throttled")]
     [InlineData(503, "provider_unavailable")]
-    public async Task FrameworkDoesNotAddTransportRetries(int status, string code)
+    public async Task ProviderDoesNotAddTransportRetries(int status, string code)
     {
         using var handler = new Handler((_, _) => new((HttpStatusCode)status) { Content = new StringContent("{}") });
         using var client = new HttpClient(handler);
-        var provider = new OpenCodeGoProvider(client, Options("agent-framework"));
+        var provider = new OpenCodeGoProvider(client, Options("optimized"));
         var error = await Assert.ThrowsAsync<WorkflowAiException>(() => provider.CompleteAsync("glm-5.3-flash", "session",
-            [new("system", "test")], Key, 8192, new("agent-framework", "low"), CancellationToken.None));
+            [new("system", "test")], Key, 8192, new("optimized", "low"), CancellationToken.None));
         Assert.Equal(code, error.Code);
         Assert.Single(handler.Bodies);
     }
 
-    [Theory]
-    [InlineData("text")]
-    [InlineData("multiple")]
-    [InlineData("unknown")]
-    [InlineData("duplicate")]
-    [InlineData("null-arguments")]
-    public async Task FrameworkRejectsUnsupportedOrAmbiguousToolsBeforeKernel(string mode)
-    {
-        var reply = mode == "null-arguments" ? Response(new { choices = new[] { new { finish_reason = "tool_calls", message = new
-            { tool_calls = new[] { new { type = "function", function = new { name = "finish_proposal", arguments = (string?)null } } } } } } })
-            : mode == "text" ? Reply(Finish, "current") : Native(mode == "unknown" ? "publish_workflow" : "finish_proposal",
-            mode == "duplicate" ? "{\"message\":\"a\",\"message\":\"b\"}" : "{}", mode == "multiple" ? 2 : 1);
-        using var handler = new Handler((_, _) => reply);
-        using var client = new HttpClient(handler);
-        var provider = new OpenCodeGoProvider(client, Options("agent-framework"));
-        await Assert.ThrowsAsync<WorkflowAiException>(() => provider.CompleteAsync("glm-5.3-flash", "session",
-            [new("system", "test")], Key, 8192, new("agent-framework", "low"), CancellationToken.None));
-        Assert.Single(handler.Bodies);
-    }
-
     [Fact]
-    public async Task FrameworkPropagatesCallerCancellationWithoutRetry()
+    public async Task ProviderPropagatesCallerCancellationWithoutRetry()
     {
         using var handler = new BlockingHandler();
         using var client = new HttpClient(handler);
         using var cancellation = new CancellationTokenSource();
-        var call = new OpenCodeGoProvider(client, Options("agent-framework")).CompleteAsync("glm-5.3-flash", "session",
-            [new("system", "test")], Key, 8192, new("agent-framework", "low"), cancellation.Token);
+        var call = new OpenCodeGoProvider(client, Options("optimized")).CompleteAsync("glm-5.3-flash", "session",
+            [new("system", "test")], Key, 8192, new("optimized", "low"), cancellation.Token);
         await handler.Arrived.Task.WaitAsync(TimeSpan.FromSeconds(5)); cancellation.Cancel();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => call);
         Assert.Equal(1, handler.Calls);
@@ -182,7 +312,6 @@ public sealed class WorkflowAiExecutionTests
 
     [Theory]
     [InlineData("optimized")]
-    [InlineData("agent-framework")]
     public async Task FailedAttemptTimingIsAvailableBeforeBackoffAndFinalPause(string variant)
     {
         using var handler = new Handler((_, _) => new(HttpStatusCode.ServiceUnavailable) { Content = new StringContent("{}") });
@@ -209,7 +338,6 @@ public sealed class WorkflowAiExecutionTests
 
     [Theory]
     [InlineData("optimized")]
-    [InlineData("agent-framework")]
     public async Task RepeatedTruncationHalvesEachBatchWithoutJumpingStraightToOne(string variant)
     {
         using var handler = new Handler((index, _) => Reply(index < 3 ? Edit : Finish, variant, index < 2));
@@ -271,18 +399,9 @@ public sealed class WorkflowAiExecutionTests
         new WorkflowDefinitionReadinessChecker(), options, new WorkflowAiConcurrencyGate(options));
     private static HttpResponseMessage Reply(string command, string variant, bool length = false)
     {
-        if (variant != "agent-framework") return Response(new { choices = new[] { new { finish_reason = length ? "length" : "stop", message = new { content = command } } }, usage = new { prompt_tokens = 100, completion_tokens = 100 } });
-        var arguments = JsonNode.Parse(command)!.AsObject();
-        var name = arguments["kind"]!.GetValue<string>() switch { "edit" => "apply_draft_batch", "finish" => "finish_proposal", _ => "read_authoring_context" };
-        arguments.Remove("kind");
-        return Native(name, length ? "{\"partial\":" : arguments.ToJsonString(), 1, length);
+        Assert.Contains(variant, new[] { "current", "optimized" });
+        return Response(new { choices = new[] { new { finish_reason = length ? "length" : "stop", message = new { content = command } } }, usage = new { prompt_tokens = 100, completion_tokens = 100 } });
     }
-    private static HttpResponseMessage Native(string name, string arguments, int count, bool length = false) => Response(new
-    {
-        choices = new[] { new { finish_reason = length ? "length" : "tool_calls", message = new { content = (string?)null,
-            tool_calls = Enumerable.Range(0, count).Select(i => new { id = "call" + i, type = "function", function = new { name, arguments } }).ToArray() } } },
-        usage = new { prompt_tokens = 100, completion_tokens = 100 }
-    });
     private static HttpResponseMessage Response(object value) => new(HttpStatusCode.OK) { Content = new StringContent(JsonSerializer.Serialize(value), Encoding.UTF8, "application/json") };
     private sealed class Handler(Func<int, string, HttpResponseMessage> respond) : HttpMessageHandler
     {
@@ -292,6 +411,16 @@ public sealed class WorkflowAiExecutionTests
             Assert.Contains(Assert.Single(request.Headers.GetValues("x-opencode-session")), new[] { "session", "b1781b3b-88d2-4708-9103-ec7daa7f9ca1" });
             Assert.Equal(Key, request.Headers.Authorization!.Parameter);
             var body = await request.Content!.ReadAsStringAsync(ct); Bodies.Add(body);
+            using var payload = JsonDocument.Parse(body);
+            Assert.False(payload.RootElement.TryGetProperty("tools", out _));
+            Assert.False(payload.RootElement.TryGetProperty("tool_choice", out _));
+            Assert.False(payload.RootElement.TryGetProperty("parallel_tool_calls", out _));
+            Assert.All(payload.RootElement.GetProperty("messages").EnumerateArray(), message =>
+            {
+                Assert.NotEqual("tool", message.GetProperty("role").GetString());
+                Assert.False(message.TryGetProperty("tool_calls", out _));
+                Assert.False(message.TryGetProperty("reasoning_content", out _));
+            });
             return respond(Bodies.Count - 1, body);
         }
     }

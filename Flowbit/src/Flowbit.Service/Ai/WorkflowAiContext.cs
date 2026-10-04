@@ -34,6 +34,10 @@ internal sealed class WorkflowAiContext(IAuthoringKnowledge knowledge, AiTurnReq
         Preserve the existing workflow key, existing IDs, unrelated configuration and protected FLOWBIT_REDACTED
         placeholders in exactly their existing fields. Flowbit handles layout. Ask focused clarification questions
         when essential requirements are missing. Use the full capability catalog, including advanced node types.
+        Preserve the exact task and action labels requested by the user. An outgoing flow from a userTask is
+        its user-visible action, including the final task of a branch: use the requested action label, not a
+        description of the branch or destination. For a new workflow with one manual startEvent, set
+        initialEventId to that event unless the user explicitly requests no default; preserve existing defaults.
         
         Return ONE JSON object per response. Common fields: kind, message, plan. plan MUST be a STRING containing
         a concise cumulative work checklist, never an array or object; preserve decisions and remaining work.
@@ -82,6 +86,8 @@ internal sealed class WorkflowAiContext(IAuthoringKnowledge knowledge, AiTurnReq
         3. {"kind":"validate"} checks the current draft and returns exact diagnostics; repair only affected properties.
         4. {"kind":"finish","message":"...","changeSummary":[...]}
            Finish returns the complete assembled workflow only after Flowbit validation succeeds.
+           Before finishing, trace the actual node IDs and sourceRef/targetRef routes against every requested
+           step, branch and outcome. Required steps must be reachable; prose summaries do not prove wiring.
            DO NOT repeat the full workflow in your output. Keep output small and make useful progress each turn.
         5. {"kind":"clarification","message":"...","questions":["..."]} if essential business decisions are missing.
         A checkpoint/plan is only untrusted working context, not proof of correctness. On resume inspect the draft
@@ -211,8 +217,8 @@ internal sealed class WorkflowAiContext(IAuthoringKnowledge knowledge, AiTurnReq
         foreach (var read in reads.EnumerateArray())
         {
             if (read.ValueKind != JsonValueKind.Object) throw new JsonException("A read must be an object.");
-            var kind = read.GetProperty("kind").GetString();
-            var resource = read.TryGetProperty("resource", out var res) ? res.GetString() ?? "" : "";
+            var kind = ReadString(read, "kind");
+            var resource = kind is "reference" or "source" ? ReadString(read, "resource") : "";
             string text;
             SourceResource? source = null;
             var trustedReference = false;
@@ -228,18 +234,18 @@ internal sealed class WorkflowAiContext(IAuthoringKnowledge knowledge, AiTurnReq
                     {
                         if (!knowledge.Resources.TryGetValue("references/workflow.schema.json", out var schema)) throw new JsonException("Schema unavailable.");
                         using var schemaDoc = JsonDocument.Parse(schema);
-                        if (!schemaDoc.RootElement.GetProperty("$defs").TryGetProperty(resource[7..], out var definition)) throw new JsonException("Unknown schema definition.");
+                        if (!schemaDoc.RootElement.TryGetProperty("$defs", out var definitions) || !definitions.TryGetProperty(resource[7..], out var definition)) throw new JsonException("Unknown schema definition. Use an exact resource from schemaIndex.");
                         text = definition.GetRawText();
                     }
                     else if (!knowledge.Resources.TryGetValue(resource, out text!)) throw new JsonException("Unknown packaged reference.");
                     break;
                 case "draft":
-                    var target = read.GetProperty("target").GetString();
+                    var target = ReadString(read, "target");
                     if (target == "workflow") text = SanitizeDraft(draft, sanitize).GetRawText();
                     else
                     {
                         var collection = target switch { "node" => "flowNodes", "flow" => "sequenceFlows", "lane" => "lanes", "variable" => "variables", _ => throw new JsonException("Unknown draft target.") };
-                        var id = read.GetProperty("id").GetInt32();
+                        var id = ReadInteger(read, "id");
                         if (!draft.TryGetProperty(collection, out var items)) throw new JsonException("Draft collection is empty.");
                         var found = items.EnumerateArray().Where(item => item.GetProperty("id").GetInt32() == id).ToArray();
                         if (found.Length != 1) throw new JsonException("Draft entity does not exist or is ambiguous.");
@@ -249,8 +255,8 @@ internal sealed class WorkflowAiContext(IAuthoringKnowledge knowledge, AiTurnReq
                     break;
                 default: throw new JsonException("Unknown read kind.");
             }
-            var offset = read.TryGetProperty("offset", out var start) ? start.GetInt32() : 0;
-            var count = read.TryGetProperty("count", out var size) ? size.GetInt32() : 6000;
+            var offset = read.TryGetProperty("offset", out _) ? ReadInteger(read, "offset") : 0;
+            var count = read.TryGetProperty("count", out _) ? ReadInteger(read, "count") : 6000;
             bool? queryFound = null;
             string? query = null;
             if (read.TryGetProperty("query", out var queryValue))
@@ -279,6 +285,14 @@ internal sealed class WorkflowAiContext(IAuthoringKnowledge knowledge, AiTurnReq
         }
         return JsonSerializer.Serialize(results, Json);
     }
+
+    private static string ReadString(JsonElement read, string name) =>
+        read.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(value.GetString())
+            ? value.GetString()! : throw new JsonException($"Each read requires a nonempty string '{name}'. Use kind reference/source with resource, or kind draft with target and an entity id (except workflow).");
+
+    private static int ReadInteger(JsonElement read, string name) =>
+        read.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var number)
+            ? number : throw new JsonException($"Read '{name}' must be an integer. Entity reads require id; offset/count are optional integer character positions.");
 
     private object[] Observations(bool compact)
     {

@@ -25,14 +25,13 @@ solution test command stays free of Chromium requirements.
   Flash plus two alternate models to exercise model changes; ordinary shipped
   configuration enables Flash alone.
   The fixture defaults to `current` execution. Set `FLOWBIT_BROWSER_AI_VARIANT` to
-  `optimized` or `agent-framework` and run H8/H9 to exercise the same real
-  Generate/Cancel/Continue/Apply/Undo path through either candidate. H8's loopback
-  upstream supports complete native tool envelopes as well as text responses.
-  The framework candidate explicitly uses `high` Flash reasoning. Set the value
-  to `shipped` to leave execution/reasoning settings from the published API's
-  appsettings intact. H8 verifies the corresponding tool envelope and reasoning
-  on initial and resumed calls. Ambient `WorkflowAi__*` settings are stripped;
-  the loopback endpoint and extra lifecycle-test models remain fixture overrides.
+  `optimized` and run H8/H9 to exercise Generate/Cancel/Continue/Apply/Undo with the
+  custom optimized runner. Set it to `shipped` to leave execution/reasoning settings
+  from the published API's appsettings intact. H8 verifies text-only requests and
+  the published reasoning setting on initial and resumed calls. Ambient
+  `WorkflowAi__*` settings are stripped; the loopback endpoint and extra lifecycle
+  models remain fixture overrides. Other variant values are rejected before stack
+  startup. The upstream fixture has no native-tool response path.
 
 Worker-driven audit and administrative-batch acceptance is maintained in the
 separate local [Flowbit.BrowserAcceptanceTests suite](../Flowbit.BrowserAcceptanceTests/README.md).
@@ -50,7 +49,7 @@ Progress screenshots and browser console diagnostics remain required evidence.
 PowerShell, after publishing/building as below:
 
 ```powershell
-$env:FLOWBIT_BROWSER_AI_VARIANT = 'agent-framework'
+$env:FLOWBIT_BROWSER_AI_VARIANT = 'optimized'
 dotnet test Flowbit/tests/Flowbit.BrowserTests/Flowbit.BrowserTests.csproj -c Release --no-build --no-restore --filter FullyQualifiedName~H8_TruncationRetryCheckpointCancellationAndContinue
 Remove-Item Env:FLOWBIT_BROWSER_AI_VARIANT
 ```
@@ -58,16 +57,14 @@ Remove-Item Env:FLOWBIT_BROWSER_AI_VARIANT
 Bash:
 
 ```bash
-FLOWBIT_BROWSER_AI_VARIANT=agent-framework dotnet test Flowbit/tests/Flowbit.BrowserTests/Flowbit.BrowserTests.csproj -c Release --no-build --no-restore --filter FullyQualifiedName~H8_TruncationRetryCheckpointCancellationAndContinue
+FLOWBIT_BROWSER_AI_VARIANT=optimized dotnet test Flowbit/tests/Flowbit.BrowserTests/Flowbit.BrowserTests.csproj -c Release --no-build --no-restore --filter FullyQualifiedName~H8_TruncationRetryCheckpointCancellationAndContinue
 ```
 
-Replace `agent-framework` with `optimized` for the text candidate. H6/H7 use
-legacy full-proposal fixtures and should run with `current`.
-H9's incremental checkpoint fixture also supports native execution. To test the
-actual shipped engine/reasoning, use `shipped` instead of `agent-framework` in
-the commands above and filter `"FullyQualifiedName~H8|FullyQualifiedName~H9"`.
-Run the full AI suite separately with `current` for legacy regression coverage.
-Manifests record the requested execution mode and published settings.
+H6/H7 use legacy full-proposal fixtures and should run with `current`.
+To test the actual shipped engine/reasoning, use `shipped` instead of `optimized`
+in the commands above and filter `"FullyQualifiedName~H8|FullyQualifiedName~H9"`.
+Run the full AI suite separately with shipped settings for legacy regression
+coverage. Manifests record the requested mode and published settings.
 
 - .NET 10 SDK
 - Docker (Testcontainers starts one `postgres:17-alpine` per run)

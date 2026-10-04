@@ -21,6 +21,8 @@ var fixture = arguments.GetValueOrDefault("fixture", "complex");
 var policy = arguments.GetValueOrDefault("policy", "strict-v1");
 if (policy is not ("strict-v1" or "functional-v2")) throw new ArgumentException("Unknown acceptance policy.");
 var labelWarnings = new List<object>();
+var timeoutSeconds = int.Parse(arguments.GetValueOrDefault("timeout-seconds", "300"), System.Globalization.CultureInfo.InvariantCulture);
+if (timeoutSeconds is < 30 or > AiAuthoringLimits.MaxRunTimeoutSeconds) throw new ArgumentException("Timeout must be between 30 and 3600 seconds.");
 var output = Path.GetFullPath(arguments["output"]);
 Directory.CreateDirectory(output);
 if (arguments.TryGetValue("check-only", out var checkFile))
@@ -30,10 +32,13 @@ if (arguments.TryGetValue("check-only", out var checkFile))
     await File.WriteAllTextAsync(Path.Combine(output, "acceptance.json"), JsonSerializer.Serialize(new { policy, passed = checkPassed, labelWarnings, offline = true }, json));
     return checkPassed ? 0 : 1;
 }
+if (variant is not ("current" or "optimized")) throw new ArgumentException("Variant must be current or optimized.");
+if (fixture is not ("simple" or "modify" or "complex")) throw new ArgumentException("Fixture must be simple, modify or complex.");
 var key = (await File.ReadAllTextAsync(arguments["key-file"])).Trim();
+using var diagnostics = new EvaluationDiagnostics(arguments.GetValueOrDefault("diagnostics") == "true");
 var options = new WorkflowAiOptions
 {
-    ExecutionVariant = variant, RunTimeoutSeconds = 300, RequestTimeoutSeconds = 180,
+    ExecutionVariant = variant, RunTimeoutSeconds = timeoutSeconds, RequestTimeoutSeconds = Math.Min(180, timeoutSeconds),
     OpenCodeModels = ["glm-5.3-flash"], OpenCodeReasoningEfforts = new() { ["glm-5.3-flash"] = effort },
     ModelProfiles = new() { ["glm-5.3-flash"] = new() { InitialOutputTokens = 16384, MaxOutputTokens = 32768, ContextTokens = 65536 } }
 };
@@ -47,21 +52,6 @@ var service = new WorkflowAiAuthoringService([observed], knowledge,
     new WorkflowDefinitionValidator(new JintScriptEvaluator(new ScriptOptions(), NullLogger<JintScriptEvaluator>.Instance), new ServiceTaskOptions()),
     new WorkflowDefinitionReadinessChecker(durableProcessingOptions: new DurableProcessingOptions { PublicationEnabled = true }), options, gate);
 var clock = Stopwatch.StartNew();
-if (fixture == "probe")
-{
-    try
-    {
-        var completion = await observed.CompleteAsync("glm-5.3-flash", Guid.NewGuid().ToString(),
-            [new("system", "You are testing tool compatibility, not generating a workflow."),
-             new("user", "Call request_clarification with questions [\"Which department approves?\"] and message \"Capability probe\". Do not read or edit anything.")],
-            key, 16384, new(variant, effort), CancellationToken.None);
-        var probePassed = completion.FinishReason == "stop" && completion.Content.Contains("clarification", StringComparison.Ordinal)
-            && completion.InputTokens.HasValue && completion.OutputTokens.HasValue;
-        await Save("probe.json", new { passed = probePassed, completion.FinishReason, completion.InputTokens, completion.OutputTokens, seconds = clock.Elapsed.TotalSeconds, observed.Calls });
-        return probePassed ? 0 : 1;
-    }
-    catch (WorkflowAiException error) { await Save("probe.json", new { passed = false, error.Code, error.StatusCode, observed.Calls }); return 1; }
-}
 var inputPath = Path.Combine(AppContext.BaseDirectory, "fixtures", fixture + ".txt");
 if (!File.Exists(inputPath)) inputPath = Path.Combine(arguments["fixtures"], fixture + ".txt");
 var request = new AiTurnRequestDto
@@ -70,7 +60,7 @@ var request = new AiTurnRequestDto
     Message = await File.ReadAllTextAsync(inputPath),
     CurrentWorkflow = fixture == "modify" ? JsonSerializer.SerializeToElement(Baseline(), json) : null
 };
-using var overall = new CancellationTokenSource(TimeSpan.FromSeconds(300));
+using var overall = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
 using var cancel = CancellationTokenSource.CreateLinkedTokenSource(overall.Token);
 var events = new List<object>();
 AiCheckpointDto? checkpoint = null;
@@ -103,12 +93,12 @@ catch (WorkflowAiException error) { failure = error.Code; }
 catch (OperationCanceledException) { failure = "evaluation_deadline"; }
 if (result is not null) await Save("result.json", result);
 var passed = result?.Kind == "proposal" && result.Validation.IsValid && result.Validation.CanSave && result.Validation.CanPublish
-    && clock.Elapsed.TotalSeconds <= 300;
+    && clock.Elapsed.TotalSeconds <= timeoutSeconds;
 if (fixture is "simple" or "modify") passed &= CheckSimple(result, fixture == "modify", policy, labelWarnings);
 if (arguments.GetValueOrDefault("resume-test") == "true") passed &= resumed && resumeVerified && transport.CancelledAttempts > 0;
 await Save("evidence.json", new { variant, effort, fixture, policy, passed, failure, labelWarnings, resumed, resumeVerified, transport.Attempts, transport.CancelledAttempts, seconds = clock.Elapsed.TotalSeconds,
     model = request.ModelId, endpoint = options.OpenCodeBaseUrl, knowledge.ContractHash, limits = new { options.RunTimeoutSeconds, options.RequestTimeoutSeconds, options.MaxProviderCalls, options.MaxRunOutputTokens },
-    firstEditSeconds = lastRun?.FirstEditSeconds, events, observed.Calls });
+    firstEditSeconds = lastRun?.FirstEditSeconds, events, observed.Calls, diagnostics = diagnostics.Snapshot() });
 return passed ? 0 : 1;
 
 async Task Observe(AiRunEventDto frame, CancellationToken token)
@@ -122,6 +112,7 @@ async Task Observe(AiRunEventDto frame, CancellationToken token)
             && restored.Batches.SequenceEqual(previous.Batches) && restored.ContextReads.SequenceEqual(previous.ContextReads);
     var item = new { frame.Type, frame.Stage, frame.Code, frame.Sequence, frame.Run, revision = frame.Checkpoint?.Revision, kind = frame.Result?.Kind };
     events.Add(item);
+    await File.AppendAllTextAsync(Path.Combine(output, "progress.ndjson"), JsonSerializer.Serialize(item) + Environment.NewLine, token);
     Console.WriteLine(JsonSerializer.Serialize(item));
     if (!resumed && arguments.GetValueOrDefault("resume-test") == "true" && checkpoint is { Revision: > 0 } && frame.Stage == "generating") cancellationArmed = true;
     await Task.CompletedTask;
@@ -182,18 +173,60 @@ sealed class ObservedProvider(IAiWorkflowProvider inner) : IAiWorkflowProvider
     public List<object> Calls { get; } = [];
     public Task<AiCompletion> CompleteAsync(string model, string conversation, IReadOnlyList<AiChatMessageDto> messages, string key, int tokens, CancellationToken ct) =>
         CompleteAsync(model, conversation, messages, key, tokens, new("current", "max"), ct);
-    public async Task<AiCompletion> CompleteAsync(string model, string conversation, IReadOnlyList<AiChatMessageDto> messages, string key, int tokens, AiExecutionSettings execution, CancellationToken ct)
+    public Task<AiCompletion> CompleteAsync(string model, string conversation, IReadOnlyList<AiChatMessageDto> messages, string key, int tokens, AiExecutionSettings execution, CancellationToken ct)
+        => ObserveAsync(() => inner.CompleteAsync(model, conversation, messages, key, tokens, execution, ct), tokens);
+
+    private async Task<AiCompletion> ObserveAsync(Func<Task<AiCompletion>> complete, int tokens)
     {
         var clock = Stopwatch.StartNew();
         try
         {
-            var response = await inner.CompleteAsync(model, conversation, messages, key, tokens, execution, ct);
-            Calls.Add(new { seconds = clock.Elapsed.TotalSeconds, response.FinishReason, response.InputTokens, response.OutputTokens, allowance = tokens });
+            var response = await complete();
+            // Only allowlisted shape metadata: never command values, prompts or reasoning.
+            object? command = null;
+            if (response.FinishReason == "stop")
+            {
+                try
+                {
+                    using var parsed = JsonDocument.Parse(response.Content);
+                    var root = parsed.RootElement;
+                    var kind = root.TryGetProperty("kind", out var item) && item.ValueKind == JsonValueKind.String ? item.GetString() : null;
+                    if (kind is "read" or "edit" or "finish" or "clarification" or "validate" or "proposal")
+                        command = new { kind, operations = Count("operations"), reads = Count("reads"), sourceReferences = Count("sourceReferences") };
+                    int? Count(string name) => root.TryGetProperty(name, out var array) && array.ValueKind == JsonValueKind.Array ? array.GetArrayLength() : null;
+                }
+                catch (JsonException) { }
+            }
+            Calls.Add(new { seconds = clock.Elapsed.TotalSeconds, response.FinishReason, response.InputTokens, response.OutputTokens, allowance = tokens, command });
             return response;
         }
         catch (WorkflowAiException error) { Calls.Add(new { seconds = clock.Elapsed.TotalSeconds, error.Code, allowance = tokens }); throw; }
         catch (OperationCanceledException) { Calls.Add(new { seconds = clock.Elapsed.TotalSeconds, Code = "cancelled", allowance = tokens }); throw; }
     }
+}
+
+sealed class EvaluationDiagnostics : IDisposable
+{
+    private readonly bool enabled;
+    private readonly List<object> failures = [];
+    private readonly Stopwatch clock = Stopwatch.StartNew();
+    public EvaluationDiagnostics(bool enabled)
+    {
+        this.enabled = enabled;
+        if (enabled) AppDomain.CurrentDomain.FirstChanceException += Observe;
+    }
+    private void Observe(object? sender, System.Runtime.ExceptionServices.FirstChanceExceptionEventArgs args)
+    {
+        if (args.Exception is not (KeyNotFoundException or JsonException or InvalidOperationException or WorkflowDomainException or WorkflowAiException)) return;
+        var frames = new StackTrace(args.Exception, true).GetFrames()
+            .Where(frame => frame.GetMethod()?.DeclaringType?.Namespace?.StartsWith("Flowbit.", StringComparison.Ordinal) == true)
+            .Take(8).Select(frame => new { type = frame.GetMethod()!.DeclaringType!.FullName, method = frame.GetMethod()!.Name, line = frame.GetFileLineNumber() }).ToArray();
+        if (frames.Length == 0) return;
+        lock (failures)
+            if (failures.Count < 100) failures.Add(new { seconds = clock.Elapsed.TotalSeconds, exception = args.Exception.GetType().Name, frames });
+    }
+    public object[] Snapshot() { lock (failures) return failures.ToArray(); }
+    public void Dispose() { if (enabled) AppDomain.CurrentDomain.FirstChanceException -= Observe; }
 }
 
 sealed class ObservedHttpHandler(Action onAttempt) : DelegatingHandler(new HttpClientHandler { AllowAutoRedirect = false })

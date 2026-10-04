@@ -150,29 +150,6 @@ public sealed class AiProviderTestHost : IAsyncDisposable
             }
             if (reply.Content is not null)
             {
-                if (envelope.TryGetProperty("tools", out _))
-                {
-                    var content = reply.Content(input);
-                    var name = "apply_draft_batch";
-                    if (reply.FinishReason != "length")
-                    {
-                        var command = JsonNode.Parse(content)!.AsObject();
-                        name = command["kind"]!.GetValue<string>() switch
-                        { "read" => "read_authoring_context", "edit" => "apply_draft_batch", "finish" => "finish_proposal", _ => "request_clarification" };
-                        command.Remove("kind");
-                        content = command.ToJsonString();
-                    }
-                    await context.Response.WriteAsJsonAsync(new
-                    {
-                        choices = new[] { new { finish_reason = reply.FinishReason == "length" ? "length" : "tool_calls", message = new
-                        {
-                            role = "assistant", content = (string?)null,
-                            tool_calls = new[] { new { id = "browser-tool", type = "function", function = new { name, arguments = content } } }
-                        } } },
-                        usage = new { prompt_tokens = 100, completion_tokens = reply.FinishReason == "length" ? envelope.GetProperty("max_tokens").GetInt32() : 100 }
-                    }, context.RequestAborted);
-                    return;
-                }
                 await context.Response.WriteAsJsonAsync(new
                 {
                     choices = new[] { new { finish_reason = reply.FinishReason, message = new { role = "assistant", content = reply.Content(input) } } },

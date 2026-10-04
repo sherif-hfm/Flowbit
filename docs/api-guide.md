@@ -587,10 +587,15 @@ are server-selected continuation bindings, not options for choosing an engine
 in an HTTP request. A mismatch with server configuration returns
 `checkpoint_configuration_changed` (409) before a provider call. Version 1 remains
 accepted and uses the `current` execution variant. An unavailable provider/engine
-combination returns `execution_unavailable` (503). Native-tool execution rejects
-unsupported or multiple tool calls with `provider_tools_unsupported` (502), without
-a text fallback. Existing request authorization, routes, and NDJSON frame types
-are unchanged.
+combination returns `execution_unavailable` (503). Supported server execution
+settings are `current` and `optimized`, both using Flowbit's custom loop. The
+removed `agent-framework` setting returns `provider_configuration` (503) before
+transport; change the server setting and start a new request. An old framework
+checkpoint returns `checkpoint_configuration_changed` (409) under either supported
+mode. Unknown/native tool-call responses are rejected as `provider_invalid_response`
+(502); no native tools execute. Existing authorization, routes, DTOs, checkpoint
+version and NDJSON frame types are unchanged. Continue reconstructs context from
+the validated draft and original inputs; it does not add durable session storage.
 
 This is private continuation data, not an applicable workflow
 proposal or a saved version. Resume by submitting the **exact original turn request**

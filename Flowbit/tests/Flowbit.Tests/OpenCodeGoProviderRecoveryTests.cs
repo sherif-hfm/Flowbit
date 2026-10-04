@@ -265,9 +265,9 @@ public sealed class OpenCodeGoProviderRecoveryTests
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task ShippedFlashSettingsReachTransportWithTheTestedOutputAllowanceAndReasoning(bool frameworkCandidate)
+    [InlineData("current")]
+    [InlineData("optimized")]
+    public async Task ShippedFlashSettingsReachTransportWithTheTestedOutputAllowanceAndReasoning(string variant)
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
         while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "Flowbit", "src", "Flowbit.Api", "appsettings.json")))
@@ -275,8 +275,8 @@ public sealed class OpenCodeGoProviderRecoveryTests
         Assert.NotNull(directory);
         var path = Path.Combine(directory.FullName, "Flowbit", "src", "Flowbit.Api", "appsettings.json");
         var configurationBuilder = new ConfigurationBuilder().AddJsonFile(path);
-        if (frameworkCandidate) configurationBuilder.AddInMemoryCollection(new Dictionary<string, string?>
-        { ["WorkflowAi:ExecutionVariant"] = "agent-framework", ["WorkflowAi:OpenCodeReasoningEfforts:glm-5.3-flash"] = "high" });
+        if (variant == "optimized") configurationBuilder.AddInMemoryCollection(new Dictionary<string, string?>
+        { ["WorkflowAi:ExecutionVariant"] = variant });
         var configuration = configurationBuilder.Build();
         var options = WorkflowAiServiceCollectionExtensions.ReadWorkflowAiOptions(configuration);
         options.Validate();
@@ -286,9 +286,7 @@ public sealed class OpenCodeGoProviderRecoveryTests
         {
             Assert.Equal("https://opencode.ai/zen/v1/chat/completions", request.RequestUri!.AbsoluteUri);
             sent = await request.Content!.ReadAsStringAsync(ct);
-            return Response(HttpStatusCode.OK, options.ExecutionVariant == "agent-framework"
-                ? """{"choices":[{"finish_reason":"tool_calls","message":{"tool_calls":[{"id":"finish","type":"function","function":{"name":"finish_proposal","arguments":"{\"message\":\"Done\"}"}}]}}]}"""
-                : """{"choices":[{"finish_reason":"stop","message":{"content":"{}"}}]}""");
+            return Response(HttpStatusCode.OK, """{"choices":[{"finish_reason":"stop","message":{"content":"{}"}}]}""");
         }));
         await new OpenCodeGoProvider(client, options).CompleteAsync("glm-5.3-flash", "session-one", [new("system", "Transport contract test")], "key-one", profile.InitialOutputTokens,
             new(options.ExecutionVariant, options.OpenCodeReasoningEfforts.GetValueOrDefault("glm-5.3-flash")), CancellationToken.None);
@@ -298,15 +296,11 @@ public sealed class OpenCodeGoProviderRecoveryTests
         Assert.Equal(50, options.MaxProviderCalls);
         Assert.Equal(262_144, options.MaxRunOutputTokens);
         Assert.Equal(16_384, body.RootElement.GetProperty("max_tokens").GetInt32());
-        Assert.Equal(frameworkCandidate ? "high" : "max", body.RootElement.GetProperty("reasoning_effort").GetString());
-        if (frameworkCandidate)
-        {
-            Assert.Equal("agent-framework", options.ExecutionVariant);
-            Assert.Equal(4, body.RootElement.GetProperty("tools").GetArrayLength());
-            Assert.Equal("required", body.RootElement.GetProperty("tool_choice").GetString());
-            Assert.False(body.RootElement.GetProperty("parallel_tool_calls").GetBoolean());
-        }
-        else Assert.False(body.RootElement.TryGetProperty("tools", out _));
+        Assert.Equal("max", body.RootElement.GetProperty("reasoning_effort").GetString());
+        Assert.Equal(variant, options.ExecutionVariant);
+        Assert.False(body.RootElement.TryGetProperty("tools", out _));
+        Assert.False(body.RootElement.TryGetProperty("tool_choice", out _));
+        Assert.False(body.RootElement.TryGetProperty("parallel_tool_calls", out _));
     }
 
     private static HttpResponseMessage Response(HttpStatusCode status, string body) =>

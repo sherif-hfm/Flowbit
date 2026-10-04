@@ -171,9 +171,10 @@ Generation and application do not save, publish, or run workflows. **Save new ve
 
 Finish or discard an open assistant draft before an administrator switches its
 execution mode or reasoning setting. Existing version 2 checkpoints are bound
-to those settings and require a new request after a change. The framework-backed
-mode remains opt-in; the [targeted acceptance round](../Flowbit/tools/AuthoringEval/RESULTS.md#targeted-adoption-follow-up)
-did not qualify it as the shipped default.
+to those settings and require a new request after a change. Supported modes are
+`current` and `optimized`, both using Flowbit's custom loop. The framework-backed
+experiment has been removed; drafts from that mode require a new request after
+the administrator changes the configuration. See [upgrade settings](deployment.md#ai-authoring-and-local-ocr).
 
 The current process-wide development identity boundary remains unchanged. Separate assistant panels do not share their provider keys, but this is not production per-user authentication.
 

@@ -4,7 +4,7 @@ using Flowbit.Shared.Dtos;
 
 namespace Flowbit.Service.Ai;
 
-/// <summary>Request-local state shared by text and native-tool execution. No provider or SDK dependencies.</summary>
+/// <summary>Request-local draft and accounting shared by current and optimized authoring execution.</summary>
 internal sealed class WorkflowAiSession
 {
     public string Id { get; } = Guid.NewGuid().ToString("N");
@@ -20,7 +20,7 @@ internal sealed class WorkflowAiSession
     public JsonElement? ApplyBatch(JsonElement draft, JsonElement command, WorkflowAiRedaction redaction,
         string lockedId, int maxBytes, int maxOperations)
     {
-        var batchId = command.GetProperty("batchId").GetString();
+        var batchId = command.TryGetProperty("batchId", out var batch) && batch.ValueKind == JsonValueKind.String ? batch.GetString() : null;
         if (string.IsNullOrWhiteSpace(batchId) || batchId.Length > 100) throw new JsonException("Use a nonempty batchId up to 100 characters.");
         var hash = AuthoringPackageBuilder.Hash(command.GetRawText());
         var receipt = Batches.FirstOrDefault(batch => batch.Id == batchId);
@@ -29,8 +29,11 @@ internal sealed class WorkflowAiSession
             if (receipt.Hash != hash) throw new JsonException("This batchId was already used for different operations.");
             return null;
         }
-        if (command.GetProperty("baseRevision").GetInt64() != Revision) throw new JsonException($"Stale draft revision; expected {Revision}.");
-        var next = WorkflowAiDraft.Apply(draft, command.GetProperty("operations"), redaction, lockedId, maxBytes, maxOperations);
+        if (!command.TryGetProperty("baseRevision", out var revision) || revision.ValueKind != JsonValueKind.Number || !revision.TryGetInt64(out var number))
+            throw new JsonException($"The edit command requires integer baseRevision; current revision is {Revision}.");
+        if (number != Revision) throw new JsonException($"Stale draft revision; expected {Revision}.");
+        if (!command.TryGetProperty("operations", out var operations)) throw new JsonException("The edit command requires an operations array of complete typed edits.");
+        var next = WorkflowAiDraft.Apply(draft, operations, redaction, lockedId, maxBytes, maxOperations);
         if (next.GetRawText() == draft.GetRawText()) throw new JsonException("The batch made no changes; inspect remaining work or finish.");
         Revision++;
         Batches.Add(new(batchId, hash));

@@ -2,7 +2,6 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
-using System.Text.Json.Nodes;
 using Flowbit.Service.Ai;
 using Flowbit.Shared.Dtos;
 
@@ -21,25 +20,25 @@ public sealed class OpenCodeGoProvider(HttpClient httpClient, WorkflowAiOptions 
     public AiProviderDto Descriptor => new("opencode-go", ProviderName, options.OpenCodeModels.FirstOrDefault() ?? "kimi-k2.7-code",
         options.OpenCodeModels.Distinct(StringComparer.Ordinal).Select(id => new AiModelDto(id, id)).ToArray());
 
-    public bool SupportsExecution(string variant) => variant is "current" or "optimized" or "agent-framework";
+    public bool SupportsExecution(string variant) => variant is "current" or "optimized";
 
     public Task<AiCompletion> CompleteAsync(string modelId, string conversationId,
         IReadOnlyList<AiChatMessageDto> messages, string apiKey, int maxOutputTokens, CancellationToken cancellationToken)
         => CompleteCoreAsync(modelId, conversationId, messages, apiKey, maxOutputTokens,
-            new("current", options.OpenCodeReasoningEfforts.GetValueOrDefault(modelId)), null, cancellationToken);
+            new("current", options.OpenCodeReasoningEfforts.GetValueOrDefault(modelId)), cancellationToken);
 
     public Task<AiCompletion> CompleteAsync(string modelId, string conversationId,
         IReadOnlyList<AiChatMessageDto> messages, string apiKey, int maxOutputTokens, AiExecutionSettings execution, CancellationToken cancellationToken)
-        => execution.Variant == "agent-framework"
-            ? OpenCodeAgentStep.CompleteAsync(this, modelId, conversationId, messages, apiKey, maxOutputTokens, execution, cancellationToken)
-            : CompleteCoreAsync(modelId, conversationId, messages, apiKey, maxOutputTokens, execution, null, cancellationToken);
+        => CompleteCoreAsync(modelId, conversationId, messages, apiKey, maxOutputTokens, execution, cancellationToken);
 
-    internal async Task<AiCompletion> CompleteCoreAsync(string modelId, string conversationId,
+    private async Task<AiCompletion> CompleteCoreAsync(string modelId, string conversationId,
         IReadOnlyList<AiChatMessageDto> messages, string apiKey, int maxOutputTokens, AiExecutionSettings execution,
-        object[]? tools, CancellationToken cancellationToken)
+        CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var profile = options.GetModelProfile(modelId);
+        if (!SupportsExecution(execution.Variant))
+            throw new WorkflowAiException("execution_unavailable", "Select current or optimized AI authoring execution.", 503);
         if (!options.OpenCodeModels.Contains(modelId, StringComparer.Ordinal))
             throw new WorkflowAiException("unsupported_model", "Select an enabled OpenCode chat model.");
         if (maxOutputTokens < 1 || maxOutputTokens > profile.MaxOutputTokens)
@@ -71,12 +70,6 @@ public sealed class OpenCodeGoProvider(HttpClient httpClient, WorkflowAiOptions 
             ["stream"] = false
         };
         if (hasReasoningEffort) payload["reasoning_effort"] = reasoningEffort!;
-        if (tools is not null)
-        {
-            payload["tools"] = tools;
-            payload["tool_choice"] = "required";
-            payload["parallel_tool_calls"] = false;
-        }
         request.Content = JsonContent.Create(payload);
 
         try
@@ -106,20 +99,19 @@ public sealed class OpenCodeGoProvider(HttpClient httpClient, WorkflowAiOptions 
                 finishReason = finish.GetString()!;
             }
             if (finishReason is "content_filter" or "refusal") throw Refusal();
-            if (finishReason is not ("stop" or "length") && !(tools is not null && finishReason == "tool_calls")) throw InvalidResponse();
+            if (finishReason is not ("stop" or "length")) throw InvalidResponse();
             if (!choice.TryGetProperty("message", out var message) || message.ValueKind != JsonValueKind.Object)
                 throw InvalidResponse();
             if (message.TryGetProperty("refusal", out var refusal) && refusal.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined)
                 && (refusal.ValueKind != JsonValueKind.String || !string.IsNullOrEmpty(refusal.GetString())))
                 throw Refusal();
-            if (tools is null && message.TryGetProperty("tool_calls", out var toolCalls) && toolCalls.ValueKind != JsonValueKind.Null
+            if (message.TryGetProperty("tool_calls", out var toolCalls) && toolCalls.ValueKind != JsonValueKind.Null
                 && (toolCalls.ValueKind != JsonValueKind.Array || toolCalls.GetArrayLength() > 0))
                 throw InvalidResponse();
             var hasContent = message.TryGetProperty("content", out var content);
-            if (tools is null && ((!hasContent && finishReason != "length") || (hasContent && content.ValueKind is not (JsonValueKind.String or JsonValueKind.Null))))
+            if ((!hasContent && finishReason != "length") || (hasContent && content.ValueKind is not (JsonValueKind.String or JsonValueKind.Null)))
                 throw InvalidResponse();
-            var text = tools is null ? content.ValueKind == JsonValueKind.String ? content.GetString()! : ""
-                : finishReason == "length" ? "" : NativeCommand(message, finishReason);
+            var text = content.ValueKind == JsonValueKind.String ? content.GetString()! : "";
             // Reasoning models may exhaust their output allowance before producing visible content.
             if (finishReason != "length" && string.IsNullOrWhiteSpace(text)) throw InvalidResponse(retryable: true);
             int? inputTokens = null, outputTokens = null;
@@ -145,37 +137,6 @@ public sealed class OpenCodeGoProvider(HttpClient httpClient, WorkflowAiOptions 
         catch (Exception error) when (error is JsonException or InvalidOperationException or KeyNotFoundException)
         {
             throw InvalidResponse(retryable: true);
-        }
-    }
-
-    private static string NativeCommand(JsonElement message, string finishReason)
-    {
-        // Complete and validate the entire tool envelope before the shared kernel can see it.
-        if (finishReason != "tool_calls" || !message.TryGetProperty("tool_calls", out var calls)
-            || calls.ValueKind != JsonValueKind.Array || calls.GetArrayLength() != 1)
-            throw new WorkflowAiException("provider_tools_unsupported", "The selected model must return exactly one native authoring tool call.", 502);
-        var call = calls[0];
-        if (call.GetProperty("type").GetString() != "function") throw InvalidResponse();
-        var function = call.GetProperty("function");
-        var kind = OpenCodeAgentStep.Kind(function.GetProperty("name").GetString()!);
-        if (!function.TryGetProperty("arguments", out var argumentText) || argumentText.ValueKind != JsonValueKind.String
-            || string.IsNullOrWhiteSpace(argumentText.GetString())) throw InvalidResponse();
-        using var arguments = JsonDocument.Parse(argumentText.GetString()!, new JsonDocumentOptions { MaxDepth = 64 });
-        CheckDuplicates(arguments.RootElement);
-        if (arguments.RootElement.ValueKind != JsonValueKind.Object || arguments.RootElement.TryGetProperty("kind", out _)) throw InvalidResponse();
-        var command = JsonNode.Parse(arguments.RootElement.GetRawText())!.AsObject();
-        command["kind"] = kind;
-        return command.ToJsonString();
-
-        static void CheckDuplicates(JsonElement item)
-        {
-            if (item.ValueKind == JsonValueKind.Object)
-            {
-                var names = new HashSet<string>(StringComparer.Ordinal);
-                foreach (var property in item.EnumerateObject())
-                { if (!names.Add(property.Name)) throw InvalidResponse(); CheckDuplicates(property.Value); }
-            }
-            else if (item.ValueKind == JsonValueKind.Array) foreach (var child in item.EnumerateArray()) CheckDuplicates(child);
         }
     }
 

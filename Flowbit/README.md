@@ -35,7 +35,7 @@ Start with the [developer documentation](../docs/index.md) for HTTP onboarding, 
 
 The hosted editor's optional assistant calls authenticated, non-persisting authoring operations.
 `IAiWorkflowProvider` isolates model transport/authentication; the OpenCode adapter defaults to Zen and retains the legacy `opencode-go` API provider id.
-`WorkflowAiAuthoringService` runs a bounded private-draft loop through `WorkflowAiRunner`,
+`WorkflowAiAuthoringService` prepares a bounded private draft through `WorkflowAiRunner`,
 `WorkflowAiContext`, and `WorkflowAiDraft`: read packaged references/source excerpts, apply typed
 atomic edits, validate, and produce the complete canonical proposal. Transport retries, output-limit
 recovery, and consecutive validation repairs have separate caps under a shared run deadline/call/token
@@ -61,21 +61,22 @@ shared session store; a lost UI circuit loses its checkpoint. No database migrat
 and [OCR deployment](../docs/deployment.md#ai-authoring-and-local-ocr).
 
 `WorkflowAiSession` owns request-local edit receipts and progress accounting across
-the `current`, `optimized`, and `agent-framework` variants. The latter two use the
-same compact schema/guide primer, semantic draft projection and conservative batch
-growth. Infrastructure alone references Microsoft Agent Framework 1.23.0.
-`OpenCodeAgentStep` uses a `ChatClientAgent` for one native-tool step, with SDK
-automatic loops/history/retries disabled; the shared runner dispatches the four
-local authoring operations and terminates after a validated finish. The native
-and text adapters share bounded HTTP transport and failure classification.
-Checkpoints now bind the execution variant, reasoning effort, profile and endpoint
-in version 2; version 1 continues through the current runner. The experimental
-variants remain opt-in until the [live evaluation gates](tools/AuthoringEval/README.md)
-pass. The server still owns all time/call/token and validation budgets.
-The targeted framework/high adoption round allows explicitly equivalent action
-labels as evaluation warnings, while preserving functional and existing-content
-checks. It retained the current defaults after an editing failure and a resume
-deadline; see [the follow-up results](tools/AuthoringEval/RESULTS.md#targeted-adoption-follow-up).
+the `current` and `optimized` custom variants. `WorkflowAiRunner` owns their
+model/command loop, atomic edits, validation, bounded transport/output recovery,
+and per-attempt accounting. Infrastructure supplies one bounded text-completion
+attempt through `IAiWorkflowProvider`; no agent SDK or native-tool adapter remains.
+The optimized variant uses a compact schema/guide primer, semantic draft projection
+and conservative batch growth. Missing command fields identify the required field
+in repair feedback. Final proposals cannot introduce unreachable work or disconnect
+previously reachable nodes; the guard includes all start types and boundary routes,
+preserves existing disconnected content, and leaves runtime validation unchanged.
+
+Version 2 checkpoints bind execution, reasoning, profile and endpoint; version 1
+continues through `current`. Removed execution settings fail configuration checks,
+and checkpoints from the removed framework experiment require a new request.
+The optimized variant stays opt-in until the [live evaluation gates](tools/AuthoringEval/README.md)
+pass. Shipped defaults remain current/Zen/Flash/max. Historical experiment results
+are retained in the [evaluation report](tools/AuthoringEval/RESULTS.md).
 
 ### Instance query ownership
 

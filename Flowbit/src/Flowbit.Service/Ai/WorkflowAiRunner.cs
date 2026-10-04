@@ -12,6 +12,8 @@ namespace Flowbit.Service.Ai;
 
 public sealed partial class WorkflowAiAuthoringService
 {
+    private sealed record ModelStep(AiCompletion? Completion, int MaxOutputTokens, AiTurnResultDto? Result = null);
+
     private static readonly Meter AiMeter = new("Flowbit.Ai.Authoring");
     private static readonly Counter<long> CallCounter = AiMeter.CreateCounter<long>("flowbit.ai.provider.calls");
     private static readonly Counter<long> RecoveryCounter = AiMeter.CreateCounter<long>("flowbit.ai.recoveries");
@@ -114,143 +116,173 @@ public sealed partial class WorkflowAiAuthoringService
                 request.Checkpoint is null ? "Preparing workflow context." : $"Resuming the saved draft after {state.Revision} completed draft steps.", state.Checkpoint);
             while (true)
             {
-                deadline.Token.ThrowIfCancellationRequested();
-                if (clock.Elapsed.TotalSeconds >= options.RunTimeoutSeconds - Math.Min(5, options.RunTimeoutSeconds / 10d))
-                    return await FinishPaused("authoring_timeout", "This run has too little time for another model call. Continue from the last completed draft step.");
-                var available = options.MaxRunOutputTokens - state.OutputTokens;
-                if (state.Calls >= options.MaxProviderCalls || available < Math.Min(1024, profile.InitialOutputTokens))
-                    return await FinishPaused("run_budget", "This run reached its model usage budget. Continue from the last completed draft step.");
-                var tokens = (int)Math.Min(outputAllowance, available);
-                object Budget() => new { secondsRemaining = Math.Max(0, options.RunTimeoutSeconds - clock.Elapsed.TotalSeconds),
-                    providerCallsRemaining = options.MaxProviderCalls - state.Calls, outputTokensRemaining = options.MaxRunOutputTokens - state.OutputTokens };
-                var messages = context.Messages(draft, state.Revision, state.Plan, catalog, maxOperations, tokens, Sanitize, compact, Budget());
-                if (messages.Sum(message => (long)message.Content.Length) > options.MaxContextCharacters)
+                var step = await NextModelStepAsync(deadline.Token);
+                if (step.Result is { } stopped) return stopped;
+                var completed = await ExecuteCommandAsync(step, deadline.Token);
+                if (completed is not null) return completed;
+            }
+
+            async Task<ModelStep> PauseStep(string code, string message)
+                => new(null, 0, await FinishPaused(code, message));
+
+            async Task<ModelStep> NextModelStepAsync(CancellationToken ct)
+            {
+                ct.ThrowIfCancellationRequested();
+                // Recover failed or truncated attempts before dispatching a complete command.
+                while (true)
                 {
-                    compact = true;
-                    messages = context.Messages(draft, state.Revision, state.Plan, catalog, maxOperations, tokens, Sanitize, true, Budget());
+                    deadline.Token.ThrowIfCancellationRequested();
+                    if (clock.Elapsed.TotalSeconds >= options.RunTimeoutSeconds - Math.Min(5, options.RunTimeoutSeconds / 10d))
+                        return await PauseStep("authoring_timeout", "This run has too little time for another model call. Continue from the last completed draft step.");
+                    var available = options.MaxRunOutputTokens - state.OutputTokens;
+                    if (state.Calls >= options.MaxProviderCalls || available < Math.Min(1024, profile.InitialOutputTokens))
+                        return await PauseStep("run_budget", "This run reached its model usage budget. Continue from the last completed draft step.");
+                    var tokens = (int)Math.Min(outputAllowance, available);
+                    object Budget() => new { secondsRemaining = Math.Max(0, options.RunTimeoutSeconds - clock.Elapsed.TotalSeconds),
+                        providerCallsRemaining = options.MaxProviderCalls - state.Calls, outputTokensRemaining = options.MaxRunOutputTokens - state.OutputTokens };
+                    var messages = context.Messages(draft, state.Revision, state.Plan, catalog, maxOperations, tokens, Sanitize, compact, Budget());
                     if (messages.Sum(message => (long)message.Content.Length) > options.MaxContextCharacters)
                     {
-                        context.UseDraftIndex = true;
+                        compact = true;
                         messages = context.Messages(draft, state.Revision, state.Plan, catalog, maxOperations, tokens, Sanitize, true, Budget());
-                    }
-                    if (messages.Sum(message => (long)message.Content.Length) > options.MaxContextCharacters)
-                        throw new WorkflowAiException("context_too_large", "Authoring context exceeds the configured character limit. Reduce the supplied input or increase the configured limit; original requirements were retained.", 413);
-                }
-                var safeContext = (long)(profile.ContextTokens * .9) - tokens;
-                if (optimized && WorkflowAiContext.EstimateTokens(messages) > safeContext)
-                {
-                    // Allocate the remainder after actual instructions, sources and retained reads, not a fixed draft cutoff.
-                    var excessBytes = (WorkflowAiContext.EstimateTokens(messages) - safeContext) * 2;
-                    context.DraftCharacters = (int)Math.Max(2000, Encoding.UTF8.GetByteCount(draft.GetRawText()) - excessBytes);
-                    messages = context.Messages(draft, state.Revision, state.Plan, catalog, maxOperations, tokens, Sanitize, compact, Budget());
-                }
-                if (WorkflowAiContext.EstimateTokens(messages) > safeContext)
-                {
-                    compact = true;
-                    messages = context.Messages(draft, state.Revision, state.Plan, catalog, maxOperations, tokens, Sanitize, true, Budget());
-                    if (WorkflowAiContext.EstimateTokens(messages) > safeContext)
-                    {
-                        context.UseDraftIndex = true;
-                        context.ObservationCharacters = Math.Max(2000, context.ObservationCharacters / 2);
-                        messages = context.Messages(draft, state.Revision, state.Plan, catalog, maxOperations, tokens, Sanitize, true, Budget());
-                    }
-                    if (WorkflowAiContext.EstimateTokens(messages) > safeContext)
-                        return await FinishPaused("context_too_large", "Required authoring context exceeds this model's configured context budget. Reduce the input or adjust the model profile.");
-                }
-                AiCompletion completion;
-                for (var retry = 0; ; retry++)
-                {
-                    if (state.Calls >= options.MaxProviderCalls || options.MaxRunOutputTokens - state.OutputTokens < tokens)
-                        return await FinishPaused("run_budget", "This run reached its model usage budget. Continue from the last completed draft step.");
-                    state.Calls++;
-                    if (retry > 0) state.Retries++;
-                    await Event("progress", retry == 0 ? "generating" : "retrying", retry == 0 ? "Building the next workflow step." : "Retrying the selected provider.");
-                    CallCounter.Add(1, new KeyValuePair<string, object?>("provider", request.ProviderId));
-                    try
-                    {
-                        completion = await CompleteStepAsync();
-                        state.InputTokens += Math.Max(0, completion.InputTokens ?? 0);
-                        if (completion.OutputTokens is { } usage) state.OutputTokens += Math.Max(0, usage);
-                        else { state.OutputTokens += tokens; state.Estimated = true; }
-                        break;
-                    }
-                    catch (WorkflowAiException error) when (error.Code == "provider_context" && !contextRecovery)
-                    {
-                        state.OutputTokens += tokens;
-                        state.Estimated = true;
-                        fastBatches = 0;
-                        contextRecovery = compact = true;
-                        context.UseDraftIndex = true;
-                        context.ObservationCharacters = 2000;
-                        messages = context.Messages(draft, state.Revision, state.Plan, catalog, maxOperations, tokens, Sanitize, true, Budget());
-                        RecoveryCounter.Add(1, new KeyValuePair<string, object?>("kind", "context"));
-                        await Event("progress", "compacting", "Rebuilding a smaller context; original requirements remain available.");
-                    }
-                    catch (WorkflowAiException error) when (error.Retryable)
-                    {
-                        // A failed request can still consume output at the provider. Reserve its full allowance.
-                        state.OutputTokens += tokens;
-                        state.Estimated = true;
-                        if (retry >= options.MaxTransportRetries)
-                            return error.Code == "provider_invalid_response"
-                                ? await FinishPaused("provider_invalid_response", "The provider repeatedly returned an unreadable response. Continue from the last completed draft step.")
-                                : error.StatusCode == 504
-                                ? await FinishPaused("provider_timeout", $"The model repeatedly exceeded the {options.RequestTimeoutSeconds}-second request timeout. Continue from the last completed draft step, or send a smaller request.")
-                                : await FinishPaused("provider_unavailable", "The provider is still unavailable after bounded retries. Continue later from the last completed draft step.");
-                        if (error.StatusCode == 504)
+                        if (messages.Sum(message => (long)message.Content.Length) > options.MaxContextCharacters)
                         {
+                            context.UseDraftIndex = true;
+                            messages = context.Messages(draft, state.Revision, state.Plan, catalog, maxOperations, tokens, Sanitize, true, Budget());
+                        }
+                        if (messages.Sum(message => (long)message.Content.Length) > options.MaxContextCharacters)
+                            throw new WorkflowAiException("context_too_large", "Authoring context exceeds the configured character limit. Reduce the supplied input or increase the configured limit; original requirements were retained.", 413);
+                    }
+                    var safeContext = (long)(profile.ContextTokens * .9) - tokens;
+                    if (optimized && WorkflowAiContext.EstimateTokens(messages) > safeContext)
+                    {
+                        // Allocate the remainder after actual instructions, sources and retained reads, not a fixed draft cutoff.
+                        var excessBytes = (WorkflowAiContext.EstimateTokens(messages) - safeContext) * 2;
+                        context.DraftCharacters = (int)Math.Max(2000, Encoding.UTF8.GetByteCount(draft.GetRawText()) - excessBytes);
+                        messages = context.Messages(draft, state.Revision, state.Plan, catalog, maxOperations, tokens, Sanitize, compact, Budget());
+                    }
+                    if (WorkflowAiContext.EstimateTokens(messages) > safeContext)
+                    {
+                        compact = true;
+                        messages = context.Messages(draft, state.Revision, state.Plan, catalog, maxOperations, tokens, Sanitize, true, Budget());
+                        if (WorkflowAiContext.EstimateTokens(messages) > safeContext)
+                        {
+                            context.UseDraftIndex = true;
+                            context.ObservationCharacters = Math.Max(2000, context.ObservationCharacters / 2);
+                            messages = context.Messages(draft, state.Revision, state.Plan, catalog, maxOperations, tokens, Sanitize, true, Budget());
+                        }
+                        if (WorkflowAiContext.EstimateTokens(messages) > safeContext)
+                            return await PauseStep("context_too_large", "Required authoring context exceeds this model's configured context budget. Reduce the input or adjust the model profile.");
+                    }
+                    AiCompletion completion;
+                    for (var retry = 0; ; retry++)
+                    {
+                        // Recovery guidance also consumes context. Recheck after every retry rebuild.
+                        if (messages.Sum(message => (long)message.Content.Length) > options.MaxContextCharacters
+                            || WorkflowAiContext.EstimateTokens(messages) > safeContext)
+                            return await PauseStep("context_too_large", "Required authoring context exceeds this model's configured context budget. Reduce the input or adjust the model profile.");
+                        if (state.Calls >= options.MaxProviderCalls || options.MaxRunOutputTokens - state.OutputTokens < tokens)
+                            return await PauseStep("run_budget", "This run reached its model usage budget. Continue from the last completed draft step.");
+                        state.Calls++;
+                        if (retry > 0) state.Retries++;
+                        await Event("progress", retry == 0 ? "generating" : "retrying", retry == 0 ? "Building the next workflow step." : "Retrying the selected provider.");
+                        CallCounter.Add(1, new KeyValuePair<string, object?>("provider", request.ProviderId));
+                        try
+                        {
+                            completion = await CompleteStepAsync();
+                            state.InputTokens += Math.Max(0, completion.InputTokens ?? 0);
+                            if (completion.OutputTokens is { } usage) state.OutputTokens += Math.Max(0, usage);
+                            else { state.OutputTokens += tokens; state.Estimated = true; }
+                            break;
+                        }
+                        catch (WorkflowAiException error) when (error.Code == "provider_context" && !contextRecovery)
+                        {
+                            state.OutputTokens += tokens;
+                            state.Estimated = true;
                             fastBatches = 0;
-                            maxOperations = Math.Max(1, maxOperations / 2);
-                            context.Observe($"The previous model call timed out. No output from it was applied. Focus only on the next safe batch of at most {maxOperations} operations; reuse prior planning decisions instead of rebuilding the full plan.");
-                            state.Checkpoint = MakeCheckpoint();
-                            messages = context.Messages(draft, state.Revision, state.Plan, catalog, maxOperations, tokens, Sanitize, compact, Budget());
-                            await Event("checkpoint", "recovering", "The model call timed out. Retrying a smaller complete step.", state.Checkpoint);
+                            contextRecovery = compact = true;
+                            context.UseDraftIndex = true;
+                            context.ObservationCharacters = 2000;
+                            messages = context.Messages(draft, state.Revision, state.Plan, catalog, maxOperations, tokens, Sanitize, true, Budget());
+                            RecoveryCounter.Add(1, new KeyValuePair<string, object?>("kind", "context"));
+                            await Event("progress", "compacting", "Rebuilding a smaller context; original requirements remain available.");
                         }
-                        var backoff = TimeSpan.FromMilliseconds(options.RetryBaseDelayMilliseconds * Math.Pow(2, retry) + Random.Shared.Next(0, 251));
-                        var delay = error.RetryAfter > backoff ? error.RetryAfter.Value : backoff;
-                        if (delay.TotalSeconds >= options.RunTimeoutSeconds - clock.Elapsed.TotalSeconds)
-                            return await FinishPaused("provider_wait", "The provider asked to wait beyond this run's remaining time. Continue later.");
-                        RecoveryCounter.Add(1, new KeyValuePair<string, object?>("kind", "transport"));
-                        await Event("progress", "waiting", $"Provider temporarily unavailable. Retrying in {Math.Ceiling(delay.TotalSeconds)} seconds.");
-                        await Task.Delay(delay, deadline.Token);
-                    }
-                    catch (OperationCanceledException)
-                    {
-                        state.OutputTokens += tokens;
-                        state.Estimated = true;
-                        throw;
-                    }
-                    async Task<AiCompletion> CompleteStepAsync()
-                    {
-                        var callClock = Stopwatch.StartNew();
-                        try { return await provider.CompleteAsync(request.ModelId, request.ConversationId, messages, apiKey, tokens, execution, deadline.Token); }
-                        finally
+                        catch (WorkflowAiException error) when (error.Retryable)
                         {
-                            // Measure only the model attempt; recovery notifications/backoff are separate activities.
-                            state.LastCallSeconds = callClock.Elapsed.TotalSeconds;
-                            CallDuration.Record(state.LastCallSeconds, new KeyValuePair<string, object?>("variant", execution.Variant));
+                            // A failed request can still consume output at the provider. Reserve its full allowance.
+                            state.OutputTokens += tokens;
+                            state.Estimated = true;
+                            if (retry >= options.MaxTransportRetries)
+                                return error.Code == "provider_invalid_response"
+                                    ? await PauseStep("provider_invalid_response", "The provider repeatedly returned an unreadable response. Continue from the last completed draft step.")
+                                    : error.StatusCode == 504
+                                    ? await PauseStep("provider_timeout", $"The model repeatedly exceeded the {options.RequestTimeoutSeconds}-second request timeout. Continue from the last completed draft step, or send a smaller request.")
+                                    : await PauseStep("provider_unavailable", "The provider is still unavailable after bounded retries. Continue later from the last completed draft step.");
+                            if (error.StatusCode == 504)
+                            {
+                                fastBatches = 0;
+                                maxOperations = Math.Max(1, maxOperations / 2);
+                                context.Observe($"The previous model call timed out. No output from it was applied. Focus only on the next safe batch of at most {maxOperations} operations; reuse prior planning decisions instead of rebuilding the full plan.");
+                                state.Checkpoint = MakeCheckpoint();
+                                messages = context.Messages(draft, state.Revision, state.Plan, catalog, maxOperations, tokens, Sanitize, compact, Budget());
+                                await Event("checkpoint", "recovering", "The model call timed out. Retrying a smaller complete step.", state.Checkpoint);
+                            }
+                            var backoff = TimeSpan.FromMilliseconds(options.RetryBaseDelayMilliseconds * Math.Pow(2, retry) + Random.Shared.Next(0, 251));
+                            var delay = error.RetryAfter > backoff ? error.RetryAfter.Value : backoff;
+                            if (delay.TotalSeconds >= options.RunTimeoutSeconds - clock.Elapsed.TotalSeconds)
+                                return await PauseStep("provider_wait", "The provider asked to wait beyond this run's remaining time. Continue later.");
+                            RecoveryCounter.Add(1, new KeyValuePair<string, object?>("kind", "transport"));
+                            await Event("progress", "waiting", $"Provider temporarily unavailable. Retrying in {Math.Ceiling(delay.TotalSeconds)} seconds.");
+                            await Task.Delay(delay, deadline.Token);
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            state.OutputTokens += tokens;
+                            state.Estimated = true;
+                            throw;
+                        }
+                        async Task<AiCompletion> CompleteStepAsync()
+                        {
+                            var callClock = Stopwatch.StartNew();
+                            try { return await provider.CompleteAsync(request.ModelId, request.ConversationId,
+                                messages, apiKey, tokens, execution, deadline.Token); }
+                            finally
+                            {
+                                // Measure only the model attempt; recovery notifications/backoff are separate activities.
+                                state.LastCallSeconds = callClock.Elapsed.TotalSeconds;
+                                CallDuration.Record(state.LastCallSeconds, new KeyValuePair<string, object?>("variant", execution.Variant));
+                            }
                         }
                     }
+                    deadline.Token.ThrowIfCancellationRequested();
+                    if (Encoding.UTF8.GetByteCount(completion.Content) > options.MaxOutputBytes)
+                        throw new WorkflowAiException("provider_output_too_large", "The provider response exceeded the authoring size limit.", 502);
+                    if (completion.FinishReason == "length")
+                    {
+                        fastBatches = 0;
+                        RecoveryCounter.Add(1, new KeyValuePair<string, object?>("kind", "truncation"));
+                        if (++truncations > options.MaxTruncationRecoveries)
+                            return await PauseStep("provider_truncated", "The model repeatedly exceeded its output limit. The last completed draft is retained; narrow the requested change or continue.");
+                        if (maxOperations > 1) maxOperations = optimized || truncations == 1 ? Math.Max(1, maxOperations / 2) : 1;
+                        else if (!escalated && outputAllowance < profile.MaxOutputTokens)
+                        { outputAllowance = profile.MaxOutputTokens; escalated = true; }
+                        else return await PauseStep("provider_value_too_large", "A single change exceeds this model's output allowance. Split the value or simplify that change.");
+                        state.Checkpoint = MakeCheckpoint();
+                        context.Observe($"The last response hit the OUTPUT limit. Nothing from it was applied. Base revision remains {state.Revision}. Return at most {maxOperations} operations, editing smaller properties. Never repeat the whole workflow.");
+                        await Event("checkpoint", "recovering", "Response reached the output limit. Retrying a smaller complete step.", state.Checkpoint);
+                        continue;
+                    }
+                    if (completion.FinishReason is "content_filter" or "refusal") throw new WorkflowAiException("provider_refusal", "The selected model declined this request.", 502);
+                    return new(completion, tokens);
                 }
-                deadline.Token.ThrowIfCancellationRequested();
-                if (Encoding.UTF8.GetByteCount(completion.Content) > options.MaxOutputBytes)
-                    throw new WorkflowAiException("provider_output_too_large", "The provider response exceeded the authoring size limit.", 502);
-                if (completion.FinishReason == "length")
-                {
-                    fastBatches = 0;
-                    RecoveryCounter.Add(1, new KeyValuePair<string, object?>("kind", "truncation"));
-                    if (++truncations > options.MaxTruncationRecoveries)
-                        return await FinishPaused("provider_truncated", "The model repeatedly exceeded its output limit. The last completed draft is retained; narrow the requested change or continue.");
-                    if (maxOperations > 1) maxOperations = optimized || truncations == 1 ? Math.Max(1, maxOperations / 2) : 1;
-                    else if (!escalated && outputAllowance < profile.MaxOutputTokens)
-                    { outputAllowance = profile.MaxOutputTokens; escalated = true; }
-                    else return await FinishPaused("provider_value_too_large", "A single change exceeds this model's output allowance. Split the value or simplify that change.");
-                    state.Checkpoint = MakeCheckpoint();
-                    context.Observe($"The last response hit the OUTPUT limit. Nothing from it was applied. Base revision remains {state.Revision}. Return at most {maxOperations} operations, editing smaller properties. Never repeat the whole workflow.");
-                    await Event("checkpoint", "recovering", "Response reached the output limit. Retrying a smaller complete step.", state.Checkpoint);
-                    continue;
-                }
-                if (completion.FinishReason is "content_filter" or "refusal") throw new WorkflowAiException("provider_refusal", "The selected model declined this request.", 502);
+            }
+
+            async Task<AiTurnResultDto?> ExecuteCommandAsync(ModelStep step, CancellationToken ct)
+            {
+                ct.ThrowIfCancellationRequested();
+                var completion = step.Completion ?? throw new InvalidOperationException("A complete model response is required.");
+                var tokens = step.MaxOutputTokens;
+                void ObserveCommand(string text) => context.Observe(Sanitize(text));
                 try
                 {
                     using var commandDoc = ParseProviderCommand(completion.Content, apiKey);
@@ -271,7 +303,8 @@ public sealed partial class WorkflowAiAuthoringService
                     }
                     if (kind == "read")
                     {
-                        context.Observe(context.Read(command.GetProperty("reads"), draft, Sanitize));
+                        if (!command.TryGetProperty("reads", out var reads)) throw new JsonException("The read command requires a reads array with 1 to 6 read objects.");
+                        ObserveCommand(context.Read(reads, draft, Sanitize));
                         state.ContextReads = context.ReadCount;
                         state.DuplicateReads = context.DuplicateReadCount;
                         var checkpointChanged = state.Plan != nextPlan || !state.Checkpoint!.ContextReads.SequenceEqual(context.RetainedReads());
@@ -285,7 +318,7 @@ public sealed partial class WorkflowAiAuthoringService
                         var next = state.ApplyBatch(draft, command, redaction, original?.Id ?? draft.GetProperty("id").GetString()!, options.MaxWorkflowCharacters, maxOperations);
                         if (next is null)
                         {
-                            context.Observe($"Batch {batchId} was already applied. Current revision {state.Revision}; submit new work or finish.");
+                            ObserveCommand($"Batch {batchId} was already applied. Current revision {state.Revision}; submit new work or finish.");
                         }
                         else
                         {
@@ -294,7 +327,7 @@ public sealed partial class WorkflowAiAuthoringService
                             state.AcceptedBatches++;
                             state.FirstEditSeconds ??= clock.Elapsed.TotalSeconds;
                             context.DraftChanged();
-                            context.Observe($"Batch {batchId} accepted atomically. Current revision {state.Revision}. Continue remaining planned changes or finish.");
+                            ObserveCommand($"Batch {batchId} accepted atomically. Current revision {state.Revision}. Continue remaining planned changes or finish.");
                             validationFailures = truncations = sameFailures = 0;
                             if (optimized)
                             {
@@ -310,7 +343,8 @@ public sealed partial class WorkflowAiAuthoringService
                     }
                     else if (kind is "validate" or "finish" or "proposal")
                     {
-                        var raw = kind == "proposal" ? command.GetProperty("definition") : draft;
+                        var raw = draft;
+                        if (kind == "proposal" && !command.TryGetProperty("definition", out raw)) throw new JsonException("The proposal command requires a definition object. Use finish to validate the existing draft without repeating it.");
                         if (raw.ValueKind != JsonValueKind.Object || Encoding.UTF8.GetByteCount(raw.GetRawText()) > options.MaxWorkflowCharacters) throw new JsonException("A bounded workflow object is required.");
                         var restored = redaction.Restore(raw);
                         var model = WorkflowAuthoringJson.Parse(restored.GetRawText());
@@ -319,6 +353,7 @@ public sealed partial class WorkflowAiAuthoringService
                         validation = ScrubDiagnostics(await ValidateModelAsync(model, deadline.Token), redaction, apiKey);
                         if (validation.IsValid && kind is "finish" or "proposal")
                         {
+                            ValidateProposalReachability(model, original);
                             WorkflowAuthoringLayout.Apply(model, original);
                             validation = ScrubDiagnostics(await ValidateModelAsync(model, deadline.Token), redaction, apiKey);
                             if (!validation.IsValid) throw new JsonException("The final layout did not pass workflow validation.");
@@ -327,7 +362,7 @@ public sealed partial class WorkflowAiAuthoringService
                             await Event("result", "complete", "The validated proposal is ready for review.", result: result);
                             return result;
                         }
-                        context.Observe(Sanitize(JsonSerializer.Serialize(validation, JsonOptions)));
+                        ObserveCommand(Sanitize(JsonSerializer.Serialize(validation, JsonOptions)));
                         if (!validation.IsValid) throw new JsonException(string.Join("\n", validation.Errors.Take(12)));
                         state.Plan = nextPlan;
                         state.Checkpoint = MakeCheckpoint();
@@ -350,10 +385,11 @@ public sealed partial class WorkflowAiAuthoringService
                         await Event("result", "invalid", "The draft needs correction.", result: invalid);
                         return invalid;
                     }
-                    context.Observe("The command failed Flowbit validation; the private draft is unchanged. Correct this error using the actual schema and smaller edits: " + diagnostic);
+                    ObserveCommand("The command failed Flowbit validation; the private draft is unchanged. Correct this error using the actual schema and smaller edits: " + diagnostic);
                     RecoveryCounter.Add(1, new KeyValuePair<string, object?>("kind", "validation"));
                     await Event("progress", "repairing", "Repairing a workflow validation error.");
                 }
+                return null;
             }
 
             AiRunSummaryDto Summary() => state.Summary(clock.Elapsed.TotalSeconds, execution);

@@ -149,11 +149,15 @@ The key pieces:
   finish/usage metadata for one bounded call; `WorkflowAiRunner` owns
   separate transport retries, output-limit recovery, validation repairs, and total run budgets.
   `WorkflowAiSession` shares atomic edit receipts and accounting across server-configured
-  `current`, `optimized`, and `agent-framework` execution. Experimental variants use a
+  `current` and `optimized` custom execution. The optimized variant uses a
   schema-derived primer, semantic draft context and conservative batch growth.
-  Infrastructure pins Microsoft Agent Framework 1.23.0; `OpenCodeAgentStep` performs one
-  native-tool model step with SDK automatic loops/history/retries disabled. The shared
-  runner dispatches tools and stops immediately after successful local finish validation.
+  Both use Flowbit's own model/command loop and the bounded text-completion adapter;
+  there is no agent SDK dependency or native-tool transport. Successful finish,
+  clarification and terminal repair results stop immediately. Removed execution
+  settings fail configuration validation before transport; old framework checkpoints
+  cannot continue under a different execution mode. Preserve the version 2 bindings.
+  Final proposal checks reject new/disconnected unreachable work while preserving
+  existing islands; all start types and attached boundary routes count as entry paths.
   Version 2 checkpoints bind execution, reasoning, profile and endpoint; version 1 stays
   on current execution. Do not promote defaults without the authoring evaluation gates.
   Defaults allow 30 minutes, 50 calls, and 262,144 output tokens. The UI's dedicated authoring

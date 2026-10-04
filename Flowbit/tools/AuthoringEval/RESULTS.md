@@ -1,8 +1,17 @@
 # Zen GLM Flash evaluation — 2026-10-03
 
+> Historical evidence: Microsoft Agent Framework was subsequently removed from
+> Flowbit. Only `current` and `optimized` are now supported. Framework commands,
+> settings, package versions and adoption procedures below describe the tested
+> historical builds, not the current product or runnable tooling. Frozen historical
+> artifacts are not application deliverables. See the [current evaluation guide](README.md)
+> and [removal verification](#framework-removal).
+
 The [targeted-adoption follow-up](#targeted-adoption-follow-up) also retained
 defaults after testing all three remaining scenarios. The original strict
 comparison below remains unchanged as historical evidence.
+The separately authorized [recovery retest](#recovery-retest) records subsequent
+fixes and diagnostic runs without rewriting those original trial results.
 
 No candidate qualified for promotion. Keep the existing `current` execution
 variant, OpenCode Zen endpoint, and `glm-5.3-flash` with `max` reasoning. The
@@ -238,3 +247,309 @@ Final documentation validation checked 20 changed/new relative links and anchors
 without failures; `git diff --check` passed. The authorized test key was absent
 from all 46 changed/new source files and 58 retained live/browser evidence files
 scanned by the final audit.
+
+## Recovery retest
+
+The user's subsequent request to try Agent Framework again and fix the failures
+authorized a new diagnostic round. These runs are separate from the completed
+14-trial comparison; its cap, evidence and verdicts remain unchanged. All new
+runs used Microsoft Agent Framework, OpenCode Zen `glm-5.3-flash`, high reasoning,
+and the same frozen authoring contract. Complex diagnostics used a 1,800-second
+overall limit, including time before and after intentional Cancel/Continue.
+This matches the shipped run duration, not the earlier 300-second acceptance gate.
+
+Implemented changes:
+
+- Missing or mistyped command/read fields now produce named repair instructions
+  rather than unchecked JSON lookup errors. Native schemas describe read selectors,
+  typed edit fields, uploaded-page citations, and the current operation limit.
+- Missing/text-only/multiple native calls are discarded and receive bounded
+  retries, explicit one-tool guidance and a smaller batch. Exhaustion pauses with
+  the same checkpoint; unknown tool names remain terminal. SDK loops stay disabled.
+- Completed proposals cannot introduce unreachable work or disconnect previously
+  reachable work. Starts and attached boundaries are included; existing diagram
+  islands remain untouched. Runtime save/validation rules are unchanged.
+- Instructions preserve requested action labels even on the final task of a
+  branch, and ask for a default when creating a single-manual-start workflow.
+  These instructions do not automatically rename model output or relax checks.
+
+| Local run | Build | Scenario | Seconds | Result |
+| --- | --- | --- | ---: | --- |
+| 01 | Diagnostic, before fixes | Modify existing approval | 9.35 | Pass, preserved existing content |
+| 02 | Diagnostic, before fixes | Repeat modification | 14.08 | Pass, preserved existing content |
+| 03 | Diagnostic, before fixes | Complex Cancel/Continue | 174.67 | Terminal native-tool protocol failure after retained progress; resume verified |
+| 04 | Tool fixes | Modify existing approval | 9.60 | Pass, preserved existing content |
+| 05 | Tool fixes | Complex Cancel/Continue | 197.52 | Valid proposal, but only 75/78 checks: both amount routes bypassed Committee vote |
+| 06 | Reachability guard | Complex Cancel/Continue | 232.67 | Valid proposal, 74/78: missing default start and three changed Complete labels |
+| 07 | Reachability guard | Fresh complex generation | 303.18 | Valid proposal, same 74/78 misses; beyond the old five-minute limit |
+| 08 | Final label/default guidance | Complex Cancel/Continue | 171.05 | Valid proposal, 77/78; Submit action was named Fork department reviews |
+
+Run 08 made eight HTTP attempts including one intentional cancellation. It
+restored the identical checkpoint, completed a validated proposal and passed all
+remaining behavioral checks. The wrong action label is not in the approved alias
+list, so it remains a failed acceptance check. This is improvement in completion
+and recovery, not a 78/78 pass or a new default-adoption qualification.
+
+Eight new diagnostic workflow trials were performed in this round. No generated
+proposal was manually repaired, applied, saved or published. Shipped defaults
+remain `current` / Zen / `glm-5.3-flash` / max; framework/high remains opt-in.
+
+The historical dictionary-key failure did not recur in the three live editing
+runs. Its exact original trigger remains unknown because the old raw tool calls
+were not recorded. New regressions reproduce missing-field failures and verify
+repair feedback across all three engines. It would be inaccurate to claim a
+proven root cause for the original trial from these later passes alone.
+
+Run 03 revealed repeated malformed edit arguments and an oversized batch before
+the terminal native response failure. Run 05 exposed an unreachable Committee
+step that ordinary structural validation allowed. Runs 06/07 motivated the final
+label/default-start guidance. All failed functional checks remain failures;
+structural success alone is not an acceptance pass.
+
+Evidence is retained in `artifacts/ai-recovery/`, with separate output folders
+and frozen runners at each stage. Allowlisted command shapes and exception
+types/code locations are recorded without raw command values, prompts, exception
+messages, provider keys or model reasoning. Final runner hashes:
+
+| Artifact | SHA-256 |
+| --- | --- |
+| AuthoringEval.dll | `ff80ecc90bfdd4b6f3e22a7d8a1ae58722de968ffe1aa346d28e3d09d80db6ed` |
+| Flowbit.Service.dll | `7e50fa4d748bed3ef29e6f7c13f9d42ac8e062a44cd5794729d0c26a7a3e6799` |
+| Flowbit.Infrastructure.dll | `980cc5ed9d354a289fff6dd9c1520b386bf6a158f15006fc7e795f44606e7559` |
+
+Automated verification covers field-specific repair, untouched drafts, bounded
+native retries/accounting, safe pause/resume, dynamic operation limits, reachability
+repair, existing islands, message/timer starts and attached boundary paths.
+The focused suite passed **390/390**. Its command is the same as above, with TRX output
+`artifacts/ai-tests/ai-recovery-complete.trx`.
+
+Chromium 151.0.7922.34 H8/H9 passed **8/8** against published hosts, 4/4 with
+framework/high and 4/4 with shipped current/max. Native H8 additionally injected
+multiple tool calls after an accepted edit and asserted a smaller retry at the
+same revision, followed by real Cancel/Continue/Apply/Undo interactions.
+The command was the H8/H9 command above with `FLOWBIT_BROWSER_AI_VARIANT` set
+to `agent-framework` and `shipped`; final TRX names are
+`ai-recovery-connected-framework.trx` and `ai-recovery-connected-shipped.trx`.
+UI URLs were `http://127.0.0.1:51612` and `http://127.0.0.1:51615` respectively;
+the disposable hosts have stopped. All ten diagnostic files reported zero page
+errors, console errors/warnings, failed requests or unexpected dialogs.
+Screenshots at **1440×900, 1024×768 and 390×844** were visually inspected under
+`artifacts/browser/runs/20261003-201404-4a93e85c/`; the shipped run is
+`20261003-201404-9e427ede`. No product layout changed.
+
+Documentation links/anchors and `git diff --check` passed. A final scan of changed
+source files and retained diagnostic/browser evidence found no copy of the
+authorized provider key.
+
+## SDK-owned loop verification — 2026-10-04
+
+This change replaces experimental per-step SDK calls with one
+`ChatClientAgent.RunAsync` and executable `FunctionInvokingChatClient` tools.
+The SDK dispatches tools and schedules subsequent model turns; Flowbit callbacks
+retain atomic edits, validation, checkpoint reconstruction and bounded transport
+recovery/accounting. The default remains `current` with Zen/Flash/max.
+
+Earlier live results above used the single-step adapter. **No new live Zen calls
+were made during this implementation verification**, so those results do not
+establish the new loop's speed or business-requirement accuracy. This section
+records deterministic integration and browser verification. The separately
+authorized [live max round](#sdk-max-live) below tests the SDK-owned loop.
+
+The focused automated suite passed **402/402**:
+
+```text
+dotnet test Flowbit/tests/Flowbit.Tests/Flowbit.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~WorkflowAi|FullyQualifiedName~OpenCodeGoProviderRecovery|FullyQualifiedName~WorkflowAuthoringPackage|FullyQualifiedName~WorkflowApiClientAi" --logger "trx;LogFileName=ai-sdk-loop.trx" --results-directory artifacts/ai-tests-sdk-loop
+```
+
+New regressions prove the service selects the whole-run interface instead of the
+custom per-step loop, native read/edit results reach the next model request,
+45 edits finish without a hidden SDK final call, validation feedback returns
+through tools, clarification/finish stop immediately, budgets stop before another
+HTTP attempt, and Cancel/Continue retains the draft with fresh run accounting.
+History tests cover complete-pair omission above 8,000 bytes, credentials with
+quotes/newlines, short credentials matching structural tokens, and opaque GLM
+reasoning retained unchanged only within a safe bounded native pair. Neither
+reasoning nor native metadata enters serialized completion/progress/checkpoints.
+The evaluation observer now records each SDK transport attempt through the same
+allowlisted metrics wrapper. Its Release build passed, and all **12 offline
+creation/preservation checker cases** passed without a key or network access.
+
+Real-browser H8/H9 passed **8/8** (4 framework/high and 4 shipped current/max).
+After the documented API/UI publish and browser-test build commands, run this
+command with `FLOWBIT_BROWSER_AI_VARIANT` set to `agent-framework` and `shipped`:
+
+```text
+dotnet test Flowbit/tests/Flowbit.BrowserTests/Flowbit.BrowserTests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName~H8|FullyQualifiedName~H9"
+```
+
+Chromium **151.0.7922.34** exercised Generate, output-limit/transient/native-envelope
+recovery, real in-flight Cancel, Continue, Apply, Undo, and stale-checkpoint/model
+invalidation. Framework UI: `http://127.0.0.1:59803`; shipped UI:
+`http://127.0.0.1:59795` (disposable hosts have stopped). Viewports were
+**1440×900, 1024×768 and 390×844**. All ten diagnostics files contained zero page
+errors, console errors/warnings, failed requests or unexpected dialogs.
+Progress screenshots at all three widths were inspected; no product layout changed.
+Final evidence lives in `artifacts/browser/runs/20261004-062532-e2dcff61`
+(framework) and `20261004-062532-ab5ab9e1` (shipped), with TRX files
+`framework-sdk-loop-verified.trx` and `shipped-sdk-loop-verified.trx` under
+`artifacts/browser/test-results-sdk-loop/`.
+
+The initial browser attempt could not start because a `--no-build` republish
+omitted the generated authoring manifest; a full publish restored the package,
+then both engines passed. Source changes were not required for that setup error.
+The test build still reports pre-existing SSH.NET advisory and unrelated analyzer
+warnings. Changed documentation links/anchors and `git diff --check` passed.
+
+<a id="sdk-max-live"></a>
+## SDK-owned loop live max evaluation — 2026-10-04
+
+The user explicitly requested the new SDK-controlled experimental engine with
+OpenCode **Zen → `glm-5.3-flash` → max**. Three live trials used one frozen
+Release runner and authoring package. `ChatClientAgent.RunAsync` and executable
+`FunctionInvokingChatClient` tools controlled model/tool iteration; Flowbit
+callbacks retained draft, validation, budget and recovery responsibilities.
+This is a separate round from the earlier 14-trial comparison and eight-trial
+recovery diagnostic. All three new trials are included, with no replacement runs.
+
+Each trial had a **1,800-second total deadline**, a 180-second request timeout,
+50 calls and 262,144 output tokens per run. The cancellation/resume trial shared
+one total deadline across both runs. The profile used an initial 16,384 output
+tokens, a 32,768 maximum and a 65,536 context window. Functional acceptance used
+the existing `functional-v2` policy; completed proposals were also checked with
+`strict-v1`. Nothing was manually repaired, applied, saved, published or executed.
+
+| Trial | Total elapsed | HTTP attempts | Outcome |
+| --- | ---: | ---: | --- |
+| Fresh complex procurement | 1,800.01 s | 21 | Failed: evaluation deadline; no final proposal |
+| Edit existing workflow | 45.09 s | 2 | Passed functional and strict preservation checks |
+| Complex procurement with in-flight Cancel/Continue | 412.76 s | 8 | Passed 78/78 functional and 36/36 strict checks; identical checkpoint restored |
+
+The editing trial preserved the existing workflow and added the requested Reject
+route and Rejected end event. The completed complex proposal contained all six
+lanes, 29 nodes and 33 connections: three parallel review branches, amount-based
+director review, multi-instance voting/quorum/fallback, the approval script,
+one-hour timer, fulfilment and closure. No action-label aliases or requirement
+warnings were needed. Authoring validation reported only its normal generated
+script review warning; the proposal documented the timer's Worker prerequisite.
+These checks inspect the proposal; they do not execute its business process.
+
+Cancellation happened during a real HTTP request after the first committed batch
+at 93.98 seconds. Continue restored the exact draft, revision, input/contract
+hashes, execution/reasoning selection, batch receipts and read positions. It then
+completed in another 318.20 seconds. The eight attempts include the intentionally
+cancelled attempt; the final response's six-call counter covers only the resumed
+run. Four draft batches were accepted across both runs. This demonstrates
+checkpoint preservation for this trial, not general reliability after arbitrary
+interruptions or UI-circuit loss.
+
+The failed fresh trial accepted seven batches containing 74 edit operations but
+never requested final validation. It spent approximately 886 seconds in 11 read
+calls (47 read items), 516 seconds in seven edit calls, 360 seconds in two
+180-second request timeouts and 35 seconds in the final deadline-cancelled call.
+Its first edit arrived at 166.72 seconds. No truncated-output response was
+observed. A structurally complete draft cannot be inferred from these counters;
+without a returned proposal, business-requirement acceptance was not evaluated.
+
+An offline audit reproduced a context-cache defect in `WorkflowAiContext`: draft
+read resources omit entity IDs, while the optimized cache replaces entries by
+resource and offset. Reading nodes 1 and 2 together returned both, but retained
+only node 2 in cached observations. This affects the shared experimental context
+and may contribute to repeated reads. Live selectors were deliberately not
+recorded, so it is **not a proven sole cause** of the timeout. Draft reads are
+excluded from the duplicate-read metric; zero there does not rule out repeated
+draft reads. The defect was not changed during this frozen test round.
+
+**Verdict:** the new engine completed editing and one complex resumed workflow,
+but fresh complex creation failed even with 30 minutes. It is not qualified for
+default promotion. Defaults remain `current` / Zen / `glm-5.3-flash` / max. This
+round neither compares engines under matching conditions nor establishes that
+max is faster or more accurate than high. The successful resumed trial also
+exceeded the original five-minute promotion gate.
+
+Evidence is under `artifacts/ai-sdk-max-20261004/`: `plan.json`, `summary.json`,
+frozen `runner/` and `knowledge/`, per-trial progress/evidence, returned proposals,
+independent acceptance files and `cache-audit.json`. Allowlisted metrics exclude
+provider keys, prompts, raw tool arguments and private reasoning. Token sums in
+the summary cover reported responses only, not unknown usage on cancelled or
+timed-out requests. Frozen binary and fixture hashes were rechecked after all
+three trials. Package contract hash:
+`5357aa5b8a140750ad70df37d34eae93b75da6b992e20b23e0553dd2f992c307`.
+
+| Frozen artifact | SHA-256 |
+| --- | --- |
+| AuthoringEval.dll | `37e7c8c64b44f6debf91dcff74dd89660f6e6b3bc9a5e0ddfdecd8c75c726e1e` |
+| Flowbit.Service.dll | `a1c33dbc2f42ef2c52ee5860c88d3edbf5d118128952b4ea78c11b089604ee01` |
+| Flowbit.Infrastructure.dll | `632772b57b76c8842fabfebc2b346992e8beba2d3279ec069b3924573d8d7191` |
+
+Release build and package export passed. Offline acceptance commands (identical
+in PowerShell and Bash, with PowerShell 7 installed) were:
+
+```text
+dotnet artifacts/ai-sdk-max-20261004/runner/AuthoringEval.dll --check-only artifacts/ai-sdk-max-20261004/02-modify/result.json --fixture modify --policy strict-v1 --output artifacts/ai-sdk-max-20261004/02-modify/strict
+pwsh -File Flowbit/tools/AuthoringEval/Check-Complex.ps1 -Directory artifacts/ai-sdk-max-20261004/03-complex-resume -Policy functional-v2
+pwsh -File Flowbit/tools/AuthoringEval/Check-Complex.ps1 -Directory artifacts/ai-sdk-max-20261004/03-complex-resume -Policy strict-v1 -OutputDirectory artifacts/ai-sdk-max-20261004/03-complex-resume/strict
+dotnet run --project artifacts/ai-sdk-max-20261004/cache-audit/CacheAudit.csproj -c Release
+```
+
+The first three checks passed; the last reproduced the cache defect without a
+provider call. This turn changed test-result documentation only; no product UI
+changed and no new browser run was performed. Earlier automated/browser results
+remain in the preceding section. Changed documentation links/anchors and
+`git diff --check` passed; a source/evidence scan found no copy of the provider key.
+
+<a id="framework-removal"></a>
+## Framework removal verification — 2026-10-04
+
+Microsoft Agent Framework was removed at the user's request. Current and optimized
+remain custom Flowbit execution modes, with current/Zen/Flash/max still shipped.
+The SDK package, runtime adapters, native-tool transport/history, agent interfaces,
+framework-only tests, transport probe and framework matrix branches are removed.
+Shared retry/output recovery, validation, redaction, draft receipts, progress and
+checkpoint behavior remain. The separate optimized draft-read cache defect is
+unchanged and documented; this removal makes no new latency or live-accuracy claim.
+
+Removed execution configuration fails with `provider_configuration` (503) before
+transport. Framework version 2 checkpoints fail `checkpoint_configuration_changed`
+(409) under either supported mode. Current/optimized checkpoints retain version 2;
+version 1 remains current-only. No database migration or provider-key move is needed.
+
+Validation for the removal:
+
+| Check | Result |
+| --- | --- |
+| Release solution and evaluation tool builds | Passed |
+| Focused AI unit/integration tests | 370/370 passed |
+| Offline complex-checker regressions | 12/12 passed |
+| Offline creation/preservation regressions | 12/12 passed |
+| Matrix control flow with simulated runner outcomes | 4/4 cases passed: qualification, all failures, final failure, insufficient remaining cap |
+| Evaluation CLI removed variant/probe | Both rejected before key-file access |
+| Chromium with shipped current/max | 8/8 passed |
+| Chromium H8/H9 with optimized/max | 4/4 passed |
+| Fresh API, UI, Worker and evaluation-tool publishes | No `Microsoft.Agents.AI*` or `Microsoft.Extensions.AI*` packages/assemblies |
+
+The focused test command was:
+
+```text
+dotnet test Flowbit/tests/Flowbit.Tests/Flowbit.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~WorkflowAi|FullyQualifiedName~OpenCodeGoProviderRecovery|FullyQualifiedName~WorkflowAuthoringPackage|FullyQualifiedName~WorkflowApiClientAi" --logger "trx;LogFileName=framework-removal.trx" --results-directory artifacts/remove-framework/tests
+```
+
+After the documented API/UI publish and browser-test build, Chromium
+**151.0.7922.34** ran `AiAuthoringSmokeTests` with `FLOWBIT_BROWSER_AI_VARIANT=shipped`
+and `H8|H9` with `FLOWBIT_BROWSER_AI_VARIANT=optimized`, using the suite's real
+localhost API/UI and loopback synthetic provider. Shipped UI:
+`http://127.0.0.1:61840`; optimized UI: `http://127.0.0.1:61973`. Both disposable
+hosts have stopped. Tests exercised Generate, output-limit/transient recovery,
+real in-flight Cancel, exact draft continuation, Apply, Undo, PDF/skill flows,
+and stale-document/model invalidation. Viewports were **1440×900, 1024×768 and
+390×844**; progress/continuation screenshots were inspected. No product layout
+changed. Console, page, request and dialog diagnostics were checked separately.
+All 14 diagnostic files reported zero page errors, console errors/warnings,
+failed requests or unexpected dialogs.
+
+Evidence is under `artifacts/remove-framework/`, with TRX files, dependency audit,
+build/checker logs and explicitly simulated matrix evidence. Browser runs are
+`artifacts/browser/runs/20261004-081517-45649045` (shipped) and
+`artifacts/browser/runs/20261004-081628-c7a63c85` (optimized). No live Zen call,
+workflow execution or default promotion was performed. Existing SSH.NET advisory
+and unrelated test-analyzer warnings remain. Historical frozen experiment outputs
+were preserved outside the new application deliverables.

@@ -24,7 +24,6 @@ public sealed class BrowserStackFixture : IAsyncLifetime
     public bool IsAcceptance => acceptance is not null;
     public bool RequiresInteractiveMarkers => acceptance?.LegacyUiWithoutInteractiveMarkers != true;
     public bool UsesShippedAiExecution => Environment.GetEnvironmentVariable("FLOWBIT_BROWSER_AI_VARIANT") == "shipped";
-    public bool UsesFrameworkCandidate => Environment.GetEnvironmentVariable("FLOWBIT_BROWSER_AI_VARIANT") == "agent-framework";
     public string ShippedAiExecutionVariant { get; private set; } = "current";
     public string? ShippedFlashReasoning { get; private set; }
 
@@ -112,6 +111,9 @@ public sealed class BrowserStackFixture : IAsyncLifetime
             await WriteSetupLogAsync(
                 $"Browser smoke stack initializing. Repository root: {RepositoryRoot}. Headless: {Headless}.");
 
+            if (!IsAcceptance && Environment.GetEnvironmentVariable("FLOWBIT_BROWSER_AI_VARIANT") is { } variant
+                && variant is not ("current" or "optimized" or "shipped"))
+                throw new InvalidOperationException("FLOWBIT_BROWSER_AI_VARIANT must be current, optimized or shipped.");
             await StartDatabaseAsync();
             if (!IsAcceptance)
             {
@@ -350,7 +352,6 @@ public sealed class BrowserStackFixture : IAsyncLifetime
             environment["WorkflowAi__Enabled"] = "true";
             if (!UsesShippedAiExecution)
                 environment["WorkflowAi__ExecutionVariant"] = Environment.GetEnvironmentVariable("FLOWBIT_BROWSER_AI_VARIANT") ?? "current";
-            if (UsesFrameworkCandidate) environment["WorkflowAi__OpenCodeReasoningEfforts__glm-5.3-flash"] = "high";
             environment["WorkflowAi__OpenCodeBaseUrl"] = aiProvider.BaseAddress;
             environment["WorkflowAi__OpenCodeModels__0"] = "glm-5.3-flash";
             environment["WorkflowAi__OpenCodeModels__1"] = "glm-5.3";

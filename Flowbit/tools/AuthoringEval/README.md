@@ -1,120 +1,100 @@
 # Authoring evaluation
 
-The [2026-10-03 evaluation report](RESULTS.md) records the initial live comparison:
-no candidate met all promotion gates, so existing defaults were retained.
-The later targeted-adoption round also retained defaults: editing returned an
-invalid result and the live cancellation/resume trial exceeded its deadline.
+This opt-in tool compares Flowbit's custom `current` and `optimized` execution
+on OpenCode Zen `glm-5.3-flash`. Microsoft Agent Framework, its native transport
+probe and the `FinalizeFramework` matrix mode have been removed. The
+[historical evaluation report](RESULTS.md) retains earlier results without
+rewriting their outcomes; its framework commands apply only to historical builds.
 
-## Targeted framework adoption
+Live calls use the authorized account and may consume credits. A past evaluation
+does not authorize a new billed round. The key is read from a private file and
+never printed or placed in command arguments. Only synthetic fixtures, final
+proposals and safe metrics are written. No workflow is applied, saved, published
+or executed. Defaults remain current/Zen/Flash/max.
 
-The explicitly selected adoption policy is separate from the original speed
-comparison. `functional-v2` splits behavior from action wording; the approved
-aliases are Approve/Approved, Reject/Rejected, Complete/Completed and
-Submit/Submitted, plus Director approved on the Director approval route. A known
-alias records a warning with expected/actual text. Unknown, blank or opposite
-labels fail. Routing, permissions, selectability, conditions and quorum references
-remain blocking. Existing content in modification fixtures must remain exact.
-These are evaluation checks, not automatic production renaming or relaxed
-workflow validation.
+## Build and run
 
-`FinalizeFramework` requires `-PriorTrials 11` and the retained trial folders
-07, 10 and 11 from the first comparison. It rechecks their definitions into a new
-output folder without rewriting history, then runs only trials 12–14: simple,
-modify, and complex with actual HTTP Cancel/Continue. It does not apply the
-fastest/20% selection rule or promote application settings. A blocking failure
-retains the existing default. This round consumed all 14 authorized trials;
-starting another billed round requires a newly agreed budget.
-
-The command is the same in PowerShell and Bash (PowerShell 7 installed):
-
-```text
-pwsh -File Flowbit/tools/AuthoringEval/Run-Matrix.ps1 -Mode FinalizeFramework -PriorTrials 11 -RetainedResults artifacts/ai-variants/matrix-02 -KeyFile /private/zen.key -Package artifacts/ai-variants/knowledge/flowbit-authoring -Output artifacts/authoring-eval/finalist-new -Runner artifacts/authoring-eval/frozen/AuthoringEval.dll
-```
-
-This documents the completed round; do not rerun it to reset the trial counter.
-Finalist evidence records the policy and runner hashes. Original strict 2/3
-framework passes remain historical; the separate reassessment passed behavior
-with one label warning. A passed `evidence.json` for complex creation must still
-be combined with the independent checker verdict.
-
-Offline checker regressions require no key or provider calls. Both commands are
-identical in PowerShell and Bash; use fresh output directories:
-
-```text
-pwsh -File Flowbit/tools/AuthoringEval/Test-Checks.ps1 -ExampleResult artifacts/ai-variants/matrix-02/11-agent-framework-high-complex/result.json -Output artifacts/authoring-eval/checker-regressions
-pwsh -File Flowbit/tools/AuthoringEval/Test-SimpleChecks.ps1 -Runner Flowbit/tools/AuthoringEval/bin/Release/net10.0/AuthoringEval.dll -Output artifacts/authoring-eval/preservation-regressions
-```
-
-The single-trial CLI accepts `--policy functional-v2`. Its `--check-only
-result.json` mode checks a saved simple/modify result without reading a key or
-creating an authoring service. It writes only offline acceptance evidence.
-
-## Original strict comparison
-
-This opt-in tool compares `current`, `optimized`, and `agent-framework` execution
-on OpenCode Zen `glm-5.3-flash`, using `low`, `high`, and `max` reasoning. Live calls
-use the authorized account and may consume credits. The key is read from a file
-and never printed or placed in command arguments. Only synthetic fixtures, final
-proposals and safe metrics are written. No generated code executes and no workflow
-is saved, applied, or published.
-
-Run from the repository root with .NET 10. These build/export commands are the
-same in PowerShell and Bash:
+Run from the repository root with .NET 10. Commands are identical in PowerShell
+and Bash; matrix/checker commands also require PowerShell 7:
 
 ```text
 dotnet build Flowbit/tools/AuthoringEval/AuthoringEval.csproj -c Release
 dotnet run --project Flowbit/tools/AuthoringExport -c Release -- . artifacts/authoring-eval/knowledge
 ```
 
-Use a fresh output directory for each comparison. PowerShell (substitute your
-private key-file location):
-
-```powershell
-pwsh -File Flowbit/tools/AuthoringEval/Run-Matrix.ps1 -KeyFile /private/zen.key -Package artifacts/authoring-eval/knowledge/flowbit-authoring -Output artifacts/authoring-eval/run-01
-```
-
-Bash, with PowerShell 7 installed for the matrix/checker:
-
-```bash
-pwsh -File Flowbit/tools/AuthoringEval/Run-Matrix.ps1 -KeyFile /private/zen.key -Package artifacts/authoring-eval/knowledge/flowbit-authoring -Output artifacts/authoring-eval/run-01
-```
-
-The matrix starts with current/max, alternates optimized/framework at low/high/max,
-then repeats each variant's fastest fully correct candidate twice. Every fresh
-workflow trial has a 300-second deadline, identical limits and a frozen knowledge
-package. A paused/error/timeout run fails; no automatic Continue, recorded-response
-replay, or human repair contributes to a passing fresh trial. `Check-Complex.ps1`
-performs 36 checks over six lanes, 29 nodes, 33 connections, parallel reviews,
-amount routing, multi-instance quorum/fallback, script output, timer and prerequisites.
-
-Finalists require 3/3 fully correct fresh completions within 300 seconds. Framework
-wins only if it is the sole passing finalist or its median is at least 20% faster
-than optimized. The selected candidate must also pass simple creation, preservation
-of an existing workflow, and a separate live Cancel/Continue trial. The initial
-matrix cap is 14 workflow trials; `-PriorTrials` accounts for earlier preliminary
-or interrupted trials, and `-SkipBaseline` avoids repeating an already recorded
-baseline. If the cap leaves too little room for final validation, no candidate is
-selected. Never reset the counter to conceal failed or interrupted trials.
-
-`decision.json` records the outcome but never changes application defaults.
-Automated and real-browser checks must also pass before promotion. Failure to meet
-the gates leaves the existing configuration intact; a framework migration is not
-justified by structural validation or one fast run alone.
-
-For one trial, the following command is identical in both shells:
+For one authorized trial, substitute your private key-file path and use a fresh
+output directory. Supported variants are `current` and `optimized`; supported
+fixtures are `simple`, `modify` and `complex`. Invalid values are rejected before
+reading the key or contacting the provider.
 
 ```text
-dotnet Flowbit/tools/AuthoringEval/bin/Release/net10.0/AuthoringEval.dll --key-file /private/zen.key --package artifacts/authoring-eval/knowledge/flowbit-authoring --output artifacts/authoring-eval/single --variant optimized --effort low --fixture complex --fixtures Flowbit/tools/AuthoringEval/fixtures
+dotnet Flowbit/tools/AuthoringEval/bin/Release/net10.0/AuthoringEval.dll --key-file /private/zen.key --package artifacts/authoring-eval/knowledge/flowbit-authoring --output artifacts/authoring-eval/single --variant optimized --effort max --fixture complex --fixtures Flowbit/tools/AuthoringEval/fixtures
+pwsh -File Flowbit/tools/AuthoringEval/Check-Complex.ps1 -Directory artifacts/authoring-eval/single -Policy strict-v1
 ```
 
-Use `--fixture probe --variant agent-framework` for a small native-tool/usage
-compatibility check before the matrix; it is not a workflow trial. Unit tests cover
-session headers, reasoning settings, native framing and cancellation. Each trial
-records elapsed/first-edit time, calls, tokens, retries, reads and accepted batches,
-without provider prompts, keys or private reasoning. For repeatability, freeze the
-built runner and package, record their hashes, and pass the copied DLL with
-`-Runner`. Changing implementation during a comparison invalidates that comparison;
-retain its evidence as preliminary instead of combining candidates across builds.
+Complex trials require the independent checker's verdict in addition to
+`evidence.json`; a structurally valid proposal alone is insufficient. Add
+`--resume-test true` to a separate trial to cancel a real in-flight request after
+an accepted edit and verify the exact checkpoint before continuing. The overall
+trial deadline spans both runs; final per-run counters cover only the resumed run.
+
+Each trial records elapsed/first-edit time, calls, tokens, retries, reads and
+accepted batches without prompts, keys or private reasoning. `progress.ndjson`
+provides safe live metrics; `evidence.json` records the final outcome.
+`--diagnostics true` records exception types and code locations, never messages or
+command values. The default deadline is 300 seconds; `--timeout-seconds 1800`
+uses a separate 30-minute diagnostic budget (allowed range 30–3600). Never count
+a longer run as passing the five-minute gate or overwrite prior evidence.
+
+## Current/optimized comparison
+
+For a separately authorized matrix, in either shell:
+
+```text
+pwsh -File Flowbit/tools/AuthoringEval/Run-Matrix.ps1 -KeyFile /private/zen.key -Package artifacts/authoring-eval/knowledge/flowbit-authoring -Output artifacts/authoring-eval/run-01
+```
+
+The matrix runs current/max as a baseline, then optimized at low/high/max. It
+repeats the fastest fully correct optimized candidate twice. Qualification
+requires three fully correct fresh completions within 300 seconds, followed by
+simple creation, preservation of an existing workflow, and a separate complex
+Cancel/Continue pass. This is an accuracy/completion gate, not a claim of a
+particular speed improvement over current.
+
+The matrix retains its 14-trial cap. `-PriorTrials` accounts for already consumed
+trials, and `-SkipBaseline` avoids repeating a recorded baseline. If insufficient
+trials remain for final validation, no candidate is selected. Never reset the
+counter to hide failures or interrupted runs. `decision.json` records the result
+but does not change application defaults. Automated and browser checks are also
+required before promotion.
+
+For repeatability, freeze the runner and package, record their hashes, and pass
+the copied DLL with `-Runner`. Changing implementation during a comparison
+invalidates that comparison; preserve its evidence as preliminary. Historical
+framework runners are not supported application deliverables.
+
+## Acceptance policies and offline checks
+
+`strict-v1` checks exact action wording with 36 complex-procurement checks.
+`functional-v2` uses 78 checks, separating behavior from the approved aliases
+Approve/Approved, Reject/Rejected, Complete/Completed, Submit/Submitted, and
+Director approved on the director approval route. Known aliases generate warnings;
+unknown, blank or opposite labels fail. Routing, roles, selectability, conditions,
+quorum references and existing-content preservation remain blocking. These
+policies do not rename generated models or relax production validation.
+
+Use `--policy functional-v2` for a single trial. The `--check-only result.json`
+mode checks a saved simple/modify result without a key or provider call. Checker
+regressions also run offline, using a retained valid complex proposal:
+
+```text
+pwsh -File Flowbit/tools/AuthoringEval/Test-Checks.ps1 -ExampleResult artifacts/ai-sdk-max-20261004/03-complex-resume/result.json -Output artifacts/authoring-eval/checker-regressions
+pwsh -File Flowbit/tools/AuthoringEval/Test-SimpleChecks.ps1 -Runner Flowbit/tools/AuthoringEval/bin/Release/net10.0/AuthoringEval.dll -Output artifacts/authoring-eval/preservation-regressions
+```
+
+The historical result file is optional local evidence, not a bundled fixture;
+substitute another retained valid complex result if it is unavailable. These
+checks inspect its JSON only and do not load or execute the historical runner.
 
 See [AI authoring](../../../docs/ai-authoring.md#execution-variants-and-evaluation),
 [configuration](../../../docs/deployment.md#ai-authoring-and-local-ocr), and the
