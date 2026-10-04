@@ -80,9 +80,9 @@ within the existing 14-trial cap. Preserve failures and immutable provenance.
 Report both existing checker policies; never use AI review as its own oracle.
 Report correctness, latency, usage, calls, repairs, rereads, and actual overlap.
 
-Gate: retain three fully correct fresh complex completions within 300 seconds,
+Gate: retain three fully correct fresh complex completions within 600 seconds,
 then passing simple/modification/continuation. Longer diagnostics cannot satisfy
-the five-minute gate. Defaults do not change automatically. Billed calls require
+the ten-minute gate. Defaults do not change automatically. Billed calls require
 separate authorization after offline/browser verification.
 
 ## Interfaces and compatibility
@@ -110,17 +110,32 @@ authoring references when needed. Historical reports retain their original facts
 
 ## Execution record
 
+On 2026-10-04 the user authorized live evaluation and enabling a qualifying
+configuration, then raised the per-trial deadline to **600 seconds**. The original
+300-second trial was interrupted and retained as one consumed trial. The restarted
+comparison uses a common 600-second limit and `PriorTrials=1`; failures and the
+interruption remain in the 14-trial allowance. Offline evidence below remains historical.
+
+The completed comparison consumed nine trials including that interruption. The
+pre-change optimized baseline passed both independent policies in 427.94 seconds;
+the cache-only trial and all six reviewed trials timed out. Serial and parallel
+review each finished with **0/3 qualifying completions**. No candidate advanced to
+simple/modification/Cancel-Continue, and no defaults were promoted.
+
 | Stage | Implementation | Verification |
 | --- | --- | --- |
 | 1 — measurement | Implemented | Frozen pre-change runner/package; correlated metadata and secret-canary tests passed |
 | 2 — cache | Implemented | Entity/offset identity, eviction, sanitation and edit invalidation tests passed |
 | 3 — requirements | Implemented, opt-in | Blocking findings, targeted repair, source/evidence validation, ambiguity, checkpoint and UI tests passed |
 | 4 — parallelism | Implemented, opt-in | Overlap, global cap, reservations, cancellation, out-of-order results, Continue and real-browser checks passed |
-| 5 — evaluation | Harness implemented; live gate pending | 15 complex and 12 simple/modify checker regressions passed; fixed 11-trial dry-run and cap guard verified; no billed calls |
+| 5 — evaluation | Harness implemented; live promotion gate failed | Offline checker regressions passed; authorized 600-second comparison did not produce three passing reviewed complex runs, so candidate simple/modify/continuation and promotion were not reached |
 
-The [verification record](../../Flowbit/tools/AuthoringEval/RESULTS.md#requirements-review-and-parallelism-offline-verification-2026-10-04)
-records commands, browser evidence and remaining limits. Review stays disabled by
-default. Live correctness and speed have **not** been established; running the billed
-comparison and promoting defaults remain separate decisions.
+The [offline verification record](../../Flowbit/tools/AuthoringEval/RESULTS.md#requirements-review-and-parallelism-offline-verification-2026-10-04)
+records automated and browser checks. The
+[live evaluation record](../../Flowbit/tools/AuthoringEval/RESULTS.md#requirements-review-and-parallelism-live-evaluation-2026-10-04)
+records the ten-minute comparison, usage limits and promotion decision. Review
+stays disabled by default and optimized execution remains experimental. Real-provider
+reviewer overlap was observed, but reliable completion and a speed improvement
+were not established. The live promotion gate remains unsatisfied.
 
 [Documentation home](../index.md) · [AI authoring](../ai-authoring.md)

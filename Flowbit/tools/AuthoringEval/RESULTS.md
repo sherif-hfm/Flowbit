@@ -617,3 +617,103 @@ Builds and portable package export passed. Local documentation validation checke
 introduced. Existing SSH.NET advisory warnings and
 unrelated test-analyzer warnings remain. Live model accuracy, token cost and latency
 are still unverified; only deterministic/synthetic and real-browser behavior is covered.
+
+## Requirements review and parallelism live evaluation (2026-10-04)
+
+The user authorized live testing and promotion only if the checks passed, then
+raised this comparison's per-trial deadline from 300 to **600 seconds**. The first
+300-second trial was interrupted and preserved as one consumed trial, without a
+correctness or timing verdict. The replacement comparison carries `PriorTrials=1`.
+Earlier five-minute reports above retain their original results.
+
+Neither reviewed configuration met the requirement of three correct fresh complex
+completions within ten minutes. Requirements review remains disabled, optimized
+execution remains experimental, and application defaults are unchanged. Actual
+reviewer overlap was observed, but it did not establish reliable completion or a
+speed improvement. Candidate simple/modification/Cancel-Continue tests were not
+reached because no configuration qualified.
+
+The comparison fixes OpenCode Zen, `glm-5.3-flash`, max reasoning and optimized
+execution. All configurations share the frozen 68-file authoring package and
+fixtures. `plan.json` retains the hashes of every runner/package/fixture file;
+the script rechecks them before each trial. Both reviewed configurations use the
+same frozen binary, changing only the per-run concurrency setting from one to two.
+No prompts, implementation, fixtures or model settings changed during the round.
+
+| Trial | Configuration | Result | Elapsed seconds | HTTP calls | Observed input / output tokens | First edit seconds |
+| --- | --- | --- | ---: | ---: | ---: | ---: |
+| 2 | Pre-change optimized | Both policies passed | 427.94 | 11 | 213,161 / 57,229 | 139.52 |
+| 3 | Cache-fixed optimized | Deadline; no proposal | 600.03 | 8 | 121,322 / 47,387 | 189.81 |
+| 4 | Reviewed serial 1 | Deadline; no proposal | 600.02 | 7 | 92,436 / 44,274 | 343.32 |
+| 5 | Reviewed serial 2 | Deadline; no proposal | 600.01 | 11 | 161,368 / 59,766 | 228.41 |
+| 6 | Reviewed serial 3 | Deadline; no proposal | 600.03 | 12 | 203,842 / 45,401 | 160.78 |
+| 7 | Reviewed parallel 1 | Deadline; no proposal | 600.02 | 13 | 200,124 / 82,843 | 243.85 |
+| 8 | Reviewed parallel 2 | Deadline; no proposal | 600.02 | 9 | 141,485 / 51,295 | 188.76 |
+| 9 | Reviewed parallel 3 | Deadline; no proposal | 600.02 | 11 | 173,048 / 54,688 | 226.16 |
+
+Trial 2 passed all 36 `strict-v1` and 78 `functional-v2` checks with zero errors
+or warnings. The seven deadline failures returned no final proposal, so their
+independent checkers could not run; they count as failed completions, not passes
+based on a partial draft. All six reviewed trials failed to qualify. One baseline
+trial and one cache-only trial cannot establish a statistically reliable speed
+effect or show that the cache fix caused a regression.
+
+| Trial | Accepted edits | Builder context reads / immutable duplicates | Same-revision draft rereads | Recorded validation repairs | Review HTTP calls | Peak traced calls | Summed provider seconds |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 2 | 4 | 15 / 1 | Not instrumented | Not instrumented | 0 | Not instrumented | 427.33 |
+| 3 | 5 | 3 / 0 | Not instrumented | 0 | 0 | 1 | 599.51 |
+| 4 | 3 | 3 / 0 | 0 | 1 | 0 | 1 | 599.77 |
+| 5 | 5 | 5 / 0 | 0 | 0 | 2 | 1 | 599.41 |
+| 6 | 4 | 3 / 0 | 0 | 0 | 1 | 1 | 599.42 |
+| 7 | 5 | 4 / 0 | 0 | 0 | 3 | 2 | 663.09 |
+| 8 | 4 | 3 / 0 | 0 | 1 | 0 | 1 | 599.46 |
+| 9 | 5 | 3 / 0 | 0 | 1 | 0 | 1 | 599.47 |
+
+These edit/read counters are the last observed progress snapshots; reviewer reads
+belong to isolated worker contexts and are not included in builder counters. All
+reviewed runs used one source-analysis batch. Trial 7 reached the two reviewers at
+512.10 seconds and recorded **63.71 seconds of actual overlapping provider calls**.
+Coverage returned a review; routing requested four draft reads and was canceled
+during its following call. Trials 5 and 6 reached coverage review serially, while
+trials 4, 8 and 9 remained in construction. No traced transport, truncation or
+requirements-repair recovery occurred; validation repairs were recorded in trials
+4, 8 and 9. Reducing builder round trips and avoidable reviewer reads is a concrete
+area to investigate before another evaluation; this round does not demonstrate
+that such a change would pass.
+
+Across the eight 600-second trials, 82 HTTP attempts include seven canceled
+attempts. Completed responses reported 1,306,786 input and 442,883 output tokens.
+Each canceled call has unknown usage and a 16,384-token reserved allowance:
+114,688 additional conservatively charged output tokens across those calls.
+These are budget allowances, not measured billed usage; neither these totals nor
+the table include unknown consumption from interrupted trial 1. After cancellation,
+`evidence.json.run` is the last progress snapshot rather than settled terminal
+accounting. Call outcomes and trace durations provide the cancellation/overlap
+evidence separately.
+
+The matrix completed normally and `decision.json` selected no candidate. It
+consumed **9 of 14 trials**, including the interrupted first trial. No additional
+billed round, workflow application/save/publication/execution, or default change
+was performed. The production authoring deadline remains 1,800 seconds; only this
+comparison's per-trial deadline and qualification limit changed to 600 seconds.
+
+Evidence directories are `artifacts/ai-improvements/live-20261004-01/`
+(interruption and partial progress), `live-20261004-02/` (plan, matrix, decision,
+per-trial evidence, traces and checker reports), and `ten-minute-plan/` (key-free
+600-second dry-run). All three are beneath `artifacts/ai-improvements/`.
+The completed command used these arguments, with the private key path substituted
+locally; use a fresh output directory for any separately authorized future run:
+
+```text
+pwsh -NoProfile -File Flowbit/tools/AuthoringEval/Run-Improvements.ps1 -BaselineRunner artifacts/ai-improvements/baseline/runner/AuthoringEval.dll -CacheRunner artifacts/ai-improvements/cache-fixed/runner/AuthoringEval.dll -Runner artifacts/ai-improvements/reviewed-final/runner/AuthoringEval.dll -Package artifacts/ai-improvements/reviewed-final/knowledge/flowbit-authoring -Output artifacts/ai-improvements/live-20261004-02 -TimeoutSeconds 600 -PriorTrials 1 -KeyFile /private/zen.key -Execute
+```
+
+The changed PowerShell script parses successfully and its dry-run recorded the
+600-second limit and carried-forward trial count without provider calls. This turn
+changes the evaluation script and documentation, with no application/UI change.
+The preceding 397 automated tests and 12 Chromium cases remain historical checks;
+they were not rerun or represented as live-provider correctness evidence here.
+Changed-document validation passed 32 local links/anchors/image references and
+parsed the fixture/configuration JSON, with no broken references in the four
+changed Markdown files. `git diff --check` passed. No new browser run was needed
+for the evaluation-only change.

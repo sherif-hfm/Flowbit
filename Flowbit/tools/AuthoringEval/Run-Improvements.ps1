@@ -5,6 +5,7 @@ param(
     [Parameter(Mandatory=$true)][string]$Package,
     [Parameter(Mandatory=$true)][string]$Output,
     [string]$KeyFile,
+    [ValidateRange(30,3600)][int]$TimeoutSeconds = 600,
     [ValidateRange(0,14)][int]$PriorTrials = 0,
     [switch]$Execute
 )
@@ -36,7 +37,7 @@ $taskPackageFiles = Fingerprint $taskPackage
 $taskFixtureFiles = Fingerprint "$PSScriptRoot/fixtures"
 New-Item -ItemType Directory -Path $taskOutput | Out-Null
 [pscustomobject]@{ executionRequested = [bool]$Execute; createdUtc = [DateTime]::UtcNow; priorTrials = $PriorTrials; plannedTrials = 11; cap = 14;
-    model = 'glm-5.3-flash'; endpoint = 'https://opencode.ai/zen/v1'; variant = 'optimized'; effort = 'max'; seconds = 300;
+    model = 'glm-5.3-flash'; endpoint = 'https://opencode.ai/zen/v1'; variant = 'optimized'; effort = 'max'; seconds = $TimeoutSeconds;
     package = $taskPackage; packageFiles = $taskPackageFiles; fixtureFiles = $taskFixtureFiles; configurations = $taskConfigurations;
     finalValidation = @('simple', 'modify', 'complex Cancel/Continue'); policies = @('strict-v1','functional-v2')
 } | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $taskOutput 'plan.json')
@@ -59,7 +60,7 @@ function Run-Trial($config, [string]$fixture = 'complex', [bool]$resume = $false
         status = 'started'; passed = $false; seconds = $null; directory = $directory; policies = @{}; run = $null }
     $script:taskTrials.Add($trial)
     $script:taskTrials | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $taskOutput 'matrix.json')
-    & dotnet $config.runner --key-file $KeyFile --package $taskPackage --output $directory --variant optimized --effort max --fixture $fixture --fixtures "$PSScriptRoot/fixtures" --timeout-seconds 300 --resume-test $resume.ToString().ToLowerInvariant() --policy strict-v1 --review $config.review.ToString().ToLowerInvariant() --analysis-workers $config.workers *> (Join-Path $directory 'run.log')
+    & dotnet $config.runner --key-file $KeyFile --package $taskPackage --output $directory --variant optimized --effort max --fixture $fixture --fixtures "$PSScriptRoot/fixtures" --timeout-seconds $TimeoutSeconds --resume-test $resume.ToString().ToLowerInvariant() --policy strict-v1 --review $config.review.ToString().ToLowerInvariant() --analysis-workers $config.workers *> (Join-Path $directory 'run.log')
     $exit = $LASTEXITCODE
     $evidence = if (Test-Path (Join-Path $directory 'evidence.json')) { Get-Content -LiteralPath (Join-Path $directory 'evidence.json') -Raw | ConvertFrom-Json } else { $null }
     foreach ($policy in @('strict-v1','functional-v2')) {
@@ -74,7 +75,7 @@ function Run-Trial($config, [string]$fixture = 'complex', [bool]$resume = $false
         $trial.policies[$policy] = $LASTEXITCODE -eq 0
     }
     $trial.status = 'completed'; $trial.seconds = $evidence.seconds; $trial.run = $evidence.run
-    $trial.passed = $exit -eq 0 -and $null -ne $evidence -and $evidence.passed -and $evidence.seconds -le 300 -and $trial.policies['strict-v1']
+    $trial.passed = $exit -eq 0 -and $null -ne $evidence -and $evidence.passed -and $evidence.seconds -le $TimeoutSeconds -and $trial.policies['strict-v1']
     $script:taskTrials | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $taskOutput 'matrix.json')
     Write-Output ("{0}: pass={1}, seconds={2}" -f (Split-Path -Leaf $directory), $trial.passed, $trial.seconds)
 }
@@ -93,6 +94,6 @@ if ($null -ne $taskWinner) {
     Run-Trial $taskWinner.configuration 'complex' $true
     if (@($taskTrials | Select-Object -Last 3 | Where-Object { !$_.passed }).Count -gt 0) { $taskWinner = $null }
 }
-[pscustomobject]@{ selected = $taskWinner.configuration.name; workflowTrials = $taskNumber; cap = 14;
+[pscustomobject]@{ selected = $taskWinner.configuration.name; workflowTrials = $taskNumber; cap = 14; timeoutSeconds = $TimeoutSeconds;
     decision = $(if ($null -eq $taskWinner) { 'No reviewed configuration qualified. Keep defaults.' } else { 'Candidate passed the live gate. Defaults remain unchanged; promotion is a separate decision.' })
 } | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $taskOutput 'decision.json')

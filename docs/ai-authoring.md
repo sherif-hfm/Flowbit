@@ -82,8 +82,13 @@ a checklist nor a verdict. Changing review enablement or concurrency policy requ
 a new request. Versions 1/2 remain accepted only with review disabled.
 
 The [improvement plan](plans/ai-assistant-improvement-plan.md) records offline/browser
-verification. The [fixed-configuration benchmark](../Flowbit/tools/AuthoringEval/README.md#requirements-and-parallelism-comparison)
-is prepared, but live quality/latency gates must pass before defaults are promoted.
+verification and the authorized live comparison. The
+[600-second evaluation](../Flowbit/tools/AuthoringEval/RESULTS.md#requirements-review-and-parallelism-live-evaluation-2026-10-04)
+observed real-provider reviewer overlap but failed the promotion gate: neither
+reviewed configuration achieved three passing complex runs within ten minutes.
+Review remains disabled by default; reliable completion and a speed gain have not
+been established. The [benchmark procedure](../Flowbit/tools/AuthoringEval/README.md#requirements-and-parallelism-comparison)
+retains failures and requires independent checks before promotion.
 
 ## Execution variants and evaluation
 

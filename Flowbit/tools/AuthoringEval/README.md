@@ -78,11 +78,15 @@ framework runners are not supported application deliverables.
 ### Requirements and parallelism comparison
 
 `Run-Improvements.ps1` keeps Zen/GLM-5.3-Flash/max, optimized execution, a common
-frozen package, and a 300-second deadline fixed. It compares one pre-change and one
+frozen package, and a 600-second deadline fixed (the user raised this comparison's
+limit from five to ten minutes on 2026-10-04). It compares one pre-change and one
 cache-fixed complex trial, three reviewed-serial and three reviewed-parallel trials,
 then the qualifying candidate's simple, modify and Cancel/Continue cases: at most
 11 trials within the existing 14-trial cap. Pass `-PriorTrials` to account for already
-consumed trials. Interrupted trials are recorded before transport and count toward
+consumed trials. `-TimeoutSeconds` sets the common deadline and qualification limit
+(30–3600 seconds; default 600). The older matrix and single-trial default remain
+300 seconds; their historical five-minute results are not reclassified.
+Interrupted trials are recorded before transport and count toward
 the cap; use a fresh output directory for each invocation.
 
 Freeze each complete runner directory before a comparison. Both reviewed configurations
@@ -98,7 +102,7 @@ The command below only records a plan and hashes, with no key and no provider ca
 it works in PowerShell and Bash. Adjust frozen paths for the local evidence directory.
 
 ```text
-pwsh -File Flowbit/tools/AuthoringEval/Run-Improvements.ps1 -BaselineRunner artifacts/ai-improvements/baseline/runner/AuthoringEval.dll -CacheRunner artifacts/ai-improvements/cache-fixed/runner/AuthoringEval.dll -Runner artifacts/ai-improvements/reviewed-final/runner/AuthoringEval.dll -Package artifacts/ai-improvements/reviewed-final/knowledge/flowbit-authoring -Output artifacts/ai-improvements/dry-run-final
+pwsh -File Flowbit/tools/AuthoringEval/Run-Improvements.ps1 -BaselineRunner artifacts/ai-improvements/baseline/runner/AuthoringEval.dll -CacheRunner artifacts/ai-improvements/cache-fixed/runner/AuthoringEval.dll -Runner artifacts/ai-improvements/reviewed-final/runner/AuthoringEval.dll -Package artifacts/ai-improvements/reviewed-final/knowledge/flowbit-authoring -Output artifacts/ai-improvements/ten-minute-plan -TimeoutSeconds 600
 ```
 
 After separate authorization for billed calls, use a new output directory and add
@@ -107,6 +111,18 @@ After separate authorization for billed calls, use a new output directory and ad
 calls, total provider duration, per-run accounting and builder rereads. Compare elapsed
 time separately from summed provider duration, especially with overlap. Original
 requests, provider response bodies, keys and reasoning are never trace tags.
+
+After an evaluation deadline, `evidence.json.run` may be the last progress snapshot,
+not settled terminal accounting. Use recorded call outcomes and trace spans to
+identify canceled attempts and overlap. Report completed-response token usage
+separately from unknown usage on canceled/failed calls; their reserved allowances
+are conservative budget charges, not measured billing totals.
+
+The [2026-10-04 live comparison](RESULTS.md#requirements-review-and-parallelism-live-evaluation-2026-10-04)
+did not qualify either reviewed configuration: all six reviewed trials reached the
+600-second deadline. Real-provider reviewer overlap was observed in one trial,
+but review remains disabled by default. The report retains every trial and the
+interrupted five-minute attempt without reclassifying it as a timing verdict.
 
 ### Checker policies
 
