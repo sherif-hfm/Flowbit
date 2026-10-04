@@ -159,7 +159,17 @@ The key pieces:
   Final proposal checks reject new/disconnected unreachable work while preserving
   existing islands; all start types and attached boundary routes count as entry paths.
   Version 2 checkpoints bind execution, reasoning, profile and endpoint; version 1 stays
-  on current execution. Do not promote defaults without the authoring evaluation gates.
+  on current execution. Opt-in requirements review uses version 3 with review-policy
+  binding; Continue recomputes source analysis and final reviews. Versions 1/2 require
+  review disabled. `WorkflowAiRequirements` supplies bounded, source-anchored checklists
+  and read-only coverage/routing reviews; unresolved findings cannot produce a proposal.
+  `WorkflowAiCallDispatcher` shares atomic reservations, global/per-run provider-call
+  admission, retries/accounting and cancellation. Independent analysis/review calls
+  may overlap (at most two per run, four per process by default); the coordinator alone
+  edits drafts and emits ordered progress. Review remains disabled by default. Mutable
+  excerpt keys include target/entity/offset and invalidate after edits. Metadata-only
+  `Flowbit.Ai.Authoring` spans must never contain prompt, draft, source or exception text.
+  Do not promote defaults without the authoring evaluation gates.
   Defaults allow 30 minutes, 50 calls, and 262,144 output tokens. The UI's dedicated authoring
   transport covers the configurable server deadline; ordinary API calls retain their timeout.
   Progress distinguishes per-run metrics from retained draft steps, nodes, and connections.

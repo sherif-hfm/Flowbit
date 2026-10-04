@@ -17,6 +17,7 @@ internal sealed class WorkflowAiContext(IAuthoringKnowledge knowledge, AiTurnReq
     private readonly List<JsonObject> immutableReads = [];
     private readonly List<JsonObject> draftReads = [];
     private readonly HashSet<string> seenReads = [];
+    private readonly HashSet<string> seenDraftReads = [];
     private readonly List<string> notices = [];
     private JsonObject? lastValidation;
     public int ObservationCharacters { get; set; } = 32_000;
@@ -24,7 +25,9 @@ internal sealed class WorkflowAiContext(IAuthoringKnowledge knowledge, AiTurnReq
     public int DraftCharacters { get; set; } = 100_000;
     public int ReadCount { get; private set; }
     public int DuplicateReadCount { get; private set; }
-    public void DraftChanged() { if (optimized) draftReads.Clear(); }
+    public int RepeatedDraftReadCount { get; private set; }
+    public IReadOnlyList<AiRequirementDto>? RequirementChecklist { get; set; }
+    public void DraftChanged() { seenDraftReads.Clear(); if (optimized) draftReads.Clear(); }
 
     public string SystemPrompt => """
         You are Flowbit's workflow authoring assistant. Work incrementally using ONLY the JSON commands below.
@@ -152,6 +155,7 @@ internal sealed class WorkflowAiContext(IAuthoringKnowledge knowledge, AiTurnReq
 
     public void RestoreReads(IReadOnlyList<AiContextReadDto> reads, JsonElement draft, Func<string, string> sanitize)
     {
+        WorkflowAiTelemetry.RestoredReads.Add(reads.Count);
         var batch = new List<AiContextReadDto>();
         foreach (var read in reads)
         {
@@ -200,6 +204,12 @@ internal sealed class WorkflowAiContext(IAuthoringKnowledge knowledge, AiTurnReq
             schemaIndex,
             observations = Observations(compact)
         }, Json);
+        if (RequirementChecklist is not null)
+        {
+            var reviewedPayload = JsonNode.Parse(payload)!.AsObject();
+            reviewedPayload["requirementChecklist"] = JsonSerializer.SerializeToNode(RequirementChecklist, Json);
+            payload = reviewedPayload.ToJsonString(Json);
+        }
         return [new("system", SystemPrompt), new("user", payload)];
 
         object Entities(string property) => draft.TryGetProperty(property, out var entities) && entities.ValueKind == JsonValueKind.Array
@@ -211,7 +221,9 @@ internal sealed class WorkflowAiContext(IAuthoringKnowledge knowledge, AiTurnReq
 
     public string Read(JsonElement reads, JsonElement draft, Func<string, string> sanitize)
     {
+        using var activity = WorkflowAiTelemetry.Start("context.read");
         if (reads.ValueKind != JsonValueKind.Array || reads.GetArrayLength() is < 1 or > 6) throw new JsonException("Supply 1 to 6 reads.");
+        activity?.SetTag("read.count", reads.GetArrayLength());
         var results = new List<object>();
         var remaining = Math.Min(ObservationCharacters, MaxReadCharacters);
         foreach (var read in reads.EnumerateArray())
@@ -241,17 +253,18 @@ internal sealed class WorkflowAiContext(IAuthoringKnowledge knowledge, AiTurnReq
                     break;
                 case "draft":
                     var target = ReadString(read, "target");
+                    resource = "draft:" + target;
                     if (target == "workflow") text = SanitizeDraft(draft, sanitize).GetRawText();
                     else
                     {
                         var collection = target switch { "node" => "flowNodes", "flow" => "sequenceFlows", "lane" => "lanes", "variable" => "variables", _ => throw new JsonException("Unknown draft target.") };
                         var id = ReadInteger(read, "id");
+                        resource += ":" + id.ToString(System.Globalization.CultureInfo.InvariantCulture);
                         if (!draft.TryGetProperty(collection, out var items)) throw new JsonException("Draft collection is empty.");
                         var found = items.EnumerateArray().Where(item => item.GetProperty("id").GetInt32() == id).ToArray();
                         if (found.Length != 1) throw new JsonException("Draft entity does not exist or is ambiguous.");
                         text = SanitizeDraftEntity(found[0], target!, sanitize).GetRawText();
                     }
-                    resource = "draft:" + target;
                     break;
                 default: throw new JsonException("Unknown read kind.");
             }
@@ -274,6 +287,11 @@ internal sealed class WorkflowAiContext(IAuthoringKnowledge knowledge, AiTurnReq
             var excerpt = queryFound == false ? "" : Excerpt(text, offset, count);
             ReadCount++;
             if (kind != "draft" && !seenReads.Add($"{kind}:{resource}:{offset}:{excerpt.Length}")) DuplicateReadCount++;
+            if (kind == "draft" && !seenDraftReads.Add($"{resource}:{offset}:{excerpt.Length}"))
+            {
+                RepeatedDraftReadCount++;
+                WorkflowAiTelemetry.DraftRepeats.Add(1);
+            }
             remaining -= excerpt.Length;
             results.Add(new
             {
@@ -283,6 +301,7 @@ internal sealed class WorkflowAiContext(IAuthoringKnowledge knowledge, AiTurnReq
                 text = trustedReference || kind == "draft" ? excerpt : sanitize(excerpt)
             });
         }
+        activity?.SetTag("outcome", "completed");
         return JsonSerializer.Serialize(results, Json);
     }
 

@@ -9,6 +9,7 @@ using Flowbit.Shared.Dtos;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.OpenApi;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -21,6 +22,24 @@ namespace Flowbit.Tests;
 [Collection(InstanceDetailApiContractCollection.Name)]
 public sealed class WorkflowAiEndpointTests
 {
+    [Fact]
+    public async Task OptionalReviewAndConcurrentProgressAppearInProductionOpenApi()
+    {
+        await using var factory = new AiFactory();
+        await using var scope = factory.Services.CreateAsyncScope();
+        var provider = scope.ServiceProvider.GetRequiredKeyedService<IOpenApiDocumentProvider>("v1");
+        var document = await provider.GetOpenApiDocumentAsync();
+        var operation = document.Paths["/api/workflows/ai/turn"].Operations![HttpMethod.Post];
+        Assert.Contains("200", operation.Responses!.Keys);
+        var schemas = document.Components!.Schemas!;
+        Assert.Contains("requirementsReview", schemas["AiTurnResultDto"].Properties!.Keys);
+        Assert.DoesNotContain("requirementsReview", schemas["AiTurnResultDto"].Required!);
+        Assert.Contains("reviewPolicyHash", schemas["AiCheckpointDto"].Properties!.Keys);
+        Assert.Contains("activeProviderCalls", schemas["AiRunSummaryDto"].Properties!.Keys);
+        Assert.Contains("candidateHash", schemas["AiRequirementsReviewDto"].Properties!.Keys);
+        Assert.Equal(0, factory.Service.Calls);
+    }
+
     [Fact]
     public async Task AuthoringRequiresAuthenticationAndTheConfiguredAuthorRole()
     {

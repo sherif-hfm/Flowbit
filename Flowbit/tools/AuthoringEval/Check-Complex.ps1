@@ -54,7 +54,7 @@ $taskGateway = @($taskDefinition.flowNodes | Where-Object type -eq 'exclusiveGat
 $taskDirector = Node 'Director review'; $taskCommittee = Node 'Committee vote'; $taskManual = Node 'Manual decision'
 Add-Check 'Parallel join precedes amount routing' ((Link $taskJoin $taskGateway).Count -eq 1 -and @($taskDefinition.sequenceFlows | Where-Object targetRef -eq $taskJoin.id).Count -eq 3)
 $taskThreshold = (Link $taskGateway $taskDirector)[0]; $taskSkip = (Link $taskGateway $taskCommittee)[0]
-Add-Check 'Amount > 10000 priority 1 and default skip' ($taskThreshold.condition -match '\[?amount\]?\s*>\s*10000' -and $taskThreshold.conditionPriority -eq 1 -and $taskSkip.isDefault)
+Add-Check 'Amount > 10000 priority 1 and default skip' ($taskThreshold.condition -match '^\s*(?:amount|\[amount\])\s*>\s*10000\s*$' -and $taskThreshold.conditionPriority -eq 1 -and $taskSkip.isDefault)
 Add-Action 'Director finance Approve enters Committee' ($taskDirector.type -eq 'userTask' -and $taskDirector.roles -contains 'finance' -and (Outgoing $taskDirector).Count -eq 1 -and (Link $taskDirector $taskCommittee).Count -eq 1 -and (Link $taskDirector $taskCommittee)[0].isSelectable -ne $false) (Link $taskDirector $taskCommittee)[0] 'Approve' @('Director approved')
 Add-Check 'Parallel collection Committee evaluates afterAll into votes' ($taskCommittee.roles -contains 'committee' -and $taskCommittee.multiInstance.mode -eq 'parallel' -and $taskCommittee.multiInstance.source -eq 'collection' -and $taskCommittee.multiInstance.collectionVariable -eq 'reviewers' -and $taskCommittee.multiInstance.completionEvaluation -eq 'afterAll' -and $taskCommittee.multiInstance.resultVariable -eq 'votes')
 $taskVoteFlows = Outgoing $taskCommittee

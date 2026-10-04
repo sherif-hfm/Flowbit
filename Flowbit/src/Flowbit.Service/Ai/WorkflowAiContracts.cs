@@ -27,6 +27,9 @@ public sealed class WorkflowAiOptions
     public int ContextTokens { get; set; } = 65_536;
     public int RetryBaseDelayMilliseconds { get; set; } = 1_000;
     public int MaxConcurrentRequests { get; set; } = 4;
+    public bool RequirementsReviewEnabled { get; set; }
+    public int MaxParallelAnalysisCalls { get; set; } = 2;
+    public int MaxConcurrentProviderCalls { get; set; } = 4;
     public string OpenCodeBaseUrl { get; set; } = "https://opencode.ai/zen/v1/";
     public List<string> OpenCodeModels { get; set; } = ["kimi-k2.7-code", "glm-5.3", "glm-5.3-flash"];
     public Dictionary<string, string> OpenCodeReasoningEfforts { get; set; } = [];
@@ -44,6 +47,7 @@ public sealed class WorkflowAiOptions
             || !InRange(MaxProviderCalls, 1, 100) || !InRange(MaxRunOutputTokens, 1, 1_048_576)
             || !InRange(MaxTransportRetries, 0, 5) || !InRange(MaxTruncationRecoveries, 0, 10)
             || !InRange(MaxOperationsPerBatch, 1, 100) || !InRange(MaxConcurrentRequests, 1, 32)
+            || !InRange(MaxParallelAnalysisCalls, 1, 2) || !InRange(MaxConcurrentProviderCalls, 1, 32)
             || !InRange(RetryBaseDelayMilliseconds, 1, 30_000)
             || OpenCodeModels is null || OpenCodeModels.Count is < 1 or > 100
             || OpenCodeModels.Any(id => string.IsNullOrWhiteSpace(id) || id.Length > 200 || id.Any(char.IsControl))
@@ -97,7 +101,8 @@ public sealed record AiExecutionSettings(string Variant, string? ReasoningEffort
 public sealed class WorkflowAiConcurrencyGate(WorkflowAiOptions options) : IDisposable
 {
     public SemaphoreSlim Semaphore { get; } = new(Math.Clamp(options.MaxConcurrentRequests, 1, 32));
-    public void Dispose() => Semaphore.Dispose();
+    public SemaphoreSlim ProviderCalls { get; } = new(Math.Clamp(options.MaxConcurrentProviderCalls, 1, 32));
+    public void Dispose() { Semaphore.Dispose(); ProviderCalls.Dispose(); }
 }
 
 public sealed class WorkflowAiException(string code, string message, int statusCode = 400) : Exception(message)

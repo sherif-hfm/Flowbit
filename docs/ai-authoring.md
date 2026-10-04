@@ -45,6 +45,46 @@ The provider receives the submitted requirements, document text, conversation co
 
 Text extraction occurs on the Flowbit server. Scanned PDF pages use the configured local OCR tools, so scanned input does not depend on a provider-specific file/vision API. Encrypted, malformed, over-limit, or unreadable documents produce an error; review any extraction warnings before generation. See [deployment configuration](deployment.md) for OCR dependencies and limits.
 
+## Optional requirements review
+
+`WorkflowAi:RequirementsReviewEnabled` is **false by default**. When enabled, the
+custom runner first analyzes all user-history, source-page and current-message text
+in batches of at most 24,000 UTF-16 characters. It builds a checklist with verified
+source ranges and supplies that checklist to the builder. Assistant history is
+context, not an authoritative requirements source. Analysis is bounded to 128
+requirements per batch, 512 total, and the configured input-character limit.
+Supplying every source range does not prove that the model understood every requirement.
+
+After deterministic validation and final layout, two read-only model reviews check
+the exact candidate: source coverage, and routing/roles/outcomes. Each must return a
+check for every checklist item with valid candidate references. Missing behavior
+triggers up to `MaxRepairAttempts` targeted repair rounds and both reviews run again.
+Essential ambiguity produces clarification; malformed/incomplete review or insufficient
+run/context budget pauses with no applicable definition. A reviewer cannot erase
+essential ambiguity flagged during analysis. Newly discovered source requirements
+also force reconciliation and another review. Review does not execute the workflow
+or prove business correctness; users must still inspect the proposal.
+
+Independent source batches and reviewers may overlap, up to
+`MaxParallelAnalysisCalls=2` per run (set `1` for serial evaluation). The builder
+remains the only draft writer. All calls share model selection, cancellation,
+timeouts, retries, and call/output budgets. Output allowances are reserved before
+dispatch; unknown usage and failed calls consume their allowance. The process-wide
+`MaxConcurrentProviderCalls=4` gate also limits calls across concurrent runs.
+These bounds are per API process, not a distributed rate limiter.
+
+The panel shows active calls and uses a group timer when calls overlap. Its expandable
+**AI requirements review** shows checklist findings separately from definition/save/
+publication validation. Unresolved findings cannot enable Apply. Review-enabled
+checkpoints use version 3, binding the execution settings and review policy. Continue
+rebuilds analysis from the original inputs and reruns final review; it retains neither
+a checklist nor a verdict. Changing review enablement or concurrency policy requires
+a new request. Versions 1/2 remain accepted only with review disabled.
+
+The [improvement plan](plans/ai-assistant-improvement-plan.md) records offline/browser
+verification. The [fixed-configuration benchmark](../Flowbit/tools/AuthoringEval/README.md#requirements-and-parallelism-comparison)
+is prepared, but live quality/latency gates must pass before defaults are promoted.
+
 ## Execution variants and evaluation
 
 `WorkflowAi:ExecutionVariant` selects `current` (the default) or `optimized`.
@@ -68,8 +108,9 @@ up to the configured maximum. Missing usage never triggers growth.
 Flowbit owns the complete model/command loop: deadlines, call/token accounting,
 bounded transport retries, output-limit recovery, context rebuilding, typed
 atomic draft edits, validation and checkpoints. Incomplete responses never mutate
-the draft. A validated finish, clarification or exhausted repair budget stops
-without another model call. There are no execution, save, publish, shell or network
+the draft. With review disabled, a validated finish stops without another model call;
+enabled review first completes its required checks and repairs. Clarification and
+exhausted repair budgets remain terminal. There are no execution, save, publish, shell or network
 commands. Native tool-call responses are unsupported and rejected.
 
 Missing or mistyped command/read fields produce named repair diagnostics instead
@@ -80,7 +121,7 @@ be connected. Existing disconnected work in an edited diagram is preserved. This
 authoring guard does not change save/runtime validation or establish that every
 business requirement is correct.
 
-New checkpoints use version 2, binding execution, reasoning, model profile and
+With requirements review disabled, new checkpoints use version 2, binding execution, reasoning, model profile and
 provider endpoint as well as original inputs and package. Changing those settings
 rejects continuation before any provider call. Version 1 checkpoints continue
 through `current`. Neither format survives loss of the open UI circuit. Continue
@@ -93,7 +134,7 @@ For upgrades from the removed experiment, replace
 The removed value returns `provider_configuration` (503), with no provider call
 or silent fallback. Old framework checkpoints return
 `checkpoint_configuration_changed` (409) under either supported mode; start a new
-request. Provider IDs, model selection, API DTOs and checkpoint version are unchanged.
+request. Provider IDs and model selection remain compatible; review adds optional response fields and checkpoint version 3.
 
 The [authoring evaluation tool](../Flowbit/tools/AuthoringEval/README.md) retains
 creation/modification fixtures, 36 strict complex-procurement checks and 78
@@ -104,11 +145,19 @@ framework trials, including a successful complex continuation and a fresh run
 that exceeded 30 minutes. Those results do not qualify the remaining optimized
 mode for promotion or prove the shipped default meets the speed target.
 
-Known optimized-context limitation: different draft entities read at the same
-offset can replace one another's cached excerpts because the cache key omits the
-entity ID. Framework removal does not fix that independent defect. It may
-contribute to repeated reads; the historical evidence does not establish it as
-the sole timeout cause. Draft reads are excluded from the duplicate-read metric.
+Optimized draft excerpts are keyed by entity type, ID, and offset, so reading a
+second entity does not replace the first entity's excerpt. Accepted edits clear
+mutable excerpts; immutable references keep their existing bounded cache and
+continuation behavior. The historical cache defect remains described in the
+evaluation report, without attributing all timeouts to it. `DuplicateReads`
+continues to count immutable reads only; same-revision draft repetitions have a
+separate telemetry counter.
+
+The `Flowbit.Ai.Authoring` activity source exposes metadata-only run, provider
+attempt, read, edit, validation and retry-wait spans alongside the existing
+metrics. It does not export prompts, responses, source text, draft contents,
+credentials, or raw exception messages. No external telemetry exporter is
+installed automatically.
 
 ## Use the same skill in another agent
 

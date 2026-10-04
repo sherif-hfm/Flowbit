@@ -18,7 +18,10 @@ namespace Flowbit.BrowserTests.Infrastructure;
 public sealed class BrowserStackFixture : IAsyncLifetime
 {
     private readonly BrowserAcceptanceOptions? acceptance;
+    private readonly bool requirementsReview;
     public BrowserStackFixture() { }
+    private BrowserStackFixture(bool review) => requirementsReview = review;
+    public static BrowserStackFixture CreateForAiReview() => new(true);
     private BrowserStackFixture(BrowserAcceptanceOptions options) => acceptance = options;
     public static BrowserStackFixture CreateForAcceptance(BrowserAcceptanceOptions options) => new(options);
     public bool IsAcceptance => acceptance is not null;
@@ -350,6 +353,11 @@ public sealed class BrowserStackFixture : IAsyncLifetime
             ShippedAiExecutionVariant = ai.TryGetProperty("ExecutionVariant", out var configuredVariant) ? configuredVariant.GetString()! : "current";
             ShippedFlashReasoning = ai.GetProperty("OpenCodeReasoningEfforts").GetProperty("glm-5.3-flash").GetString();
             environment["WorkflowAi__Enabled"] = "true";
+            if (requirementsReview)
+            {
+                environment["WorkflowAi__RequirementsReviewEnabled"] = "true";
+                environment["WorkflowAi__MaxParallelAnalysisCalls"] = "2";
+            }
             if (!UsesShippedAiExecution)
                 environment["WorkflowAi__ExecutionVariant"] = Environment.GetEnvironmentVariable("FLOWBIT_BROWSER_AI_VARIANT") ?? "current";
             environment["WorkflowAi__OpenCodeBaseUrl"] = aiProvider.BaseAddress;
@@ -494,6 +502,7 @@ public sealed class BrowserStackFixture : IAsyncLifetime
             initialized,
             aiExecution = Environment.GetEnvironmentVariable("FLOWBIT_BROWSER_AI_VARIANT") ?? "current",
             shippedAiExecution = ShippedAiExecutionVariant,
+            requirementsReview,
             shippedFlashReasoning = ShippedFlashReasoning,
             acceptance = IsAcceptance,
             workerStarts = workerNumber,

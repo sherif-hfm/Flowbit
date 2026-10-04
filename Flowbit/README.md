@@ -71,9 +71,22 @@ in repair feedback. Final proposals cannot introduce unreachable work or disconn
 previously reachable nodes; the guard includes all start types and boundary routes,
 preserves existing disconnected content, and leaves runtime validation unchanged.
 
+`WorkflowAiCallDispatcher` shares process/per-run admission, atomic call/output
+reservations, cancellation and metadata-only provider tracing across purposes.
+Optional `WorkflowAiRequirements` analyzes every input batch, validates source
+anchors, and runs coverage/routing reviews against an immutable final candidate.
+Workers can read but cannot edit. The coordinator owns checklist reconciliation,
+bounded repairs and ordered progress. Unresolved review blocks proposals independently
+of deterministic validation. Defaults keep review disabled; configured parallelism
+is one or two read-only calls per run and at most four provider calls per process.
+Optimized draft excerpts key on target/entity/offset and invalidate after edits.
+
 Version 2 checkpoints bind execution, reasoning, profile and endpoint; version 1
 continues through `current`. Removed execution settings fail configuration checks,
 and checkpoints from the removed framework experiment require a new request.
+Review-enabled runs use version 3 with review-policy binding and recompute analysis/
+review on Continue; versions 1/2 require review disabled. No checklist/verdict is
+trusted from a checkpoint. `Flowbit.Ai.Authoring` spans contain only safe metadata.
 The optimized variant stays opt-in until the [live evaluation gates](tools/AuthoringEval/README.md)
 pass. Shipped defaults remain current/Zen/Flash/max. Historical experiment results
 are retained in the [evaluation report](tools/AuthoringEval/RESULTS.md).

@@ -567,9 +567,25 @@ transport budget; exhaustion pauses with `provider_invalid_response` and retains
 the draft. Rejected requests and unsupported completion formats are not retried.
 A paused/invalid
 result has no applicable definition. Only `kind: "proposal"` with a valid definition
-may be offered for application.
+may be offered for application. If optional `requirementsReview` is present,
+`passed` must also be true. With server-side requirements review enabled, unresolved
+business findings return `invalid` (repair exhausted) or `clarification` (essential
+ambiguity), with no definition; incomplete/unverifiable review pauses with
+`requirements_unverified`. Deterministic `validation` remains independent of AI review.
 
-Optional `checkpoint` in a result or stream frame contains `version` (currently 2),
+`requirementsReview` contains `passed`, `candidateHash` (SHA-256 of the exact serialized
+final candidate), `requirements`, and `checks`. Requirements have `id`, `text`,
+`needsClarification`, and `source` (`resource`, `offset`, `count`, optional `sourceName`
+and `pageNumber`). Source ranges are UTF-16 positions in sanitized original inputs:
+`requirements`, `history/{index}`, or `source/{index}`. Checks have `requirementId`,
+`reviewer` (`coverage`, `routing`, or ambiguity from `analysis`), `status` (`covered`,
+`missing`, `uncertain`), `explanation`, and `evidence` (`target`: workflow/node/flow/
+lane/variable, plus integer `id` for entities). These model assessments are not a
+correctness guarantee. Clients must treat text as untrusted and preserve ordinary
+snapshot/authorization/application guards. Server configuration controls review;
+callers cannot enable it or select concurrency in request JSON.
+
+Optional `checkpoint` in a result or stream frame contains `version` (2 with review disabled, 3 when enabled),
 `inputHash`, `contractHash`, `draft`, `revision`, `plan`, and `batches` (bounded
 `{id,hash}` receipts). Optional `outputAllowance` and `maxOperations` retain the
 output-recovery strategy; the server validates and clamps them to its current model
@@ -581,20 +597,25 @@ with at most 12,000 characters per read and 32,000 combined. Only `reference` an
 these positions and rebuilds excerpts from the verified package and original
 request, applying fresh redaction. Checkpoints contain no cached excerpt text.
 Older checkpoints without read positions resume with an empty working context.
-Version 2 additionally contains `executionVariant`, nullable `reasoningEffort`,
+Versions 2/3 additionally contain `executionVariant`, nullable `reasoningEffort`,
 and `modelProfileHash` (binding the model profile and provider endpoint). These
 are server-selected continuation bindings, not options for choosing an engine
 in an HTTP request. A mismatch with server configuration returns
 `checkpoint_configuration_changed` (409) before a provider call. Version 1 remains
-accepted and uses the `current` execution variant. An unavailable provider/engine
+accepted with review disabled and uses the `current` execution variant. Version 3
+adds `reviewPolicyHash`, binding review enablement and per-run/process concurrency
+settings. A review-enabled server rejects versions 1/2; a disabled server rejects
+version 3. These mismatches return `checkpoint_configuration_changed` before transport.
+Version 3 contains no retained checklist or verdict: Continue reanalyzes original
+sources and reruns reviews before proposing the candidate. An unavailable provider/engine
 combination returns `execution_unavailable` (503). Supported server execution
 settings are `current` and `optimized`, both using Flowbit's custom loop. The
 removed `agent-framework` setting returns `provider_configuration` (503) before
 transport; change the server setting and start a new request. An old framework
 checkpoint returns `checkpoint_configuration_changed` (409) under either supported
 mode. Unknown/native tool-call responses are rejected as `provider_invalid_response`
-(502); no native tools execute. Existing authorization, routes, DTOs, checkpoint
-version and NDJSON frame types are unchanged. Continue reconstructs context from
+(502); no native tools execute. Authorization, routes and NDJSON frame types remain
+unchanged; review fields are additive. Continue reconstructs context from
 the validated draft and original inputs; it does not add durable session storage.
 
 This is private continuation data, not an applicable workflow
@@ -613,6 +634,15 @@ The optional `run` summary also reports `executionVariant`, `reasoningEffort`,
 checkpoint `revision` remains the retained draft-step count. These metrics contain
 no prompts, provider keys, or private reasoning; missing input usage is not a
 billing estimate.
+
+Additive summary fields are `activeProviderCalls`, `peakProviderCalls`,
+`totalProviderSeconds` (summed completed attempts, which may exceed elapsed time),
+and `repeatedDraftReads` (same-revision mutable rereads). Existing `duplicateReads`
+counts repeated immutable resource reads. Read counters describe the builder context;
+worker reads also emit trace spans. Calls, tokens, retries and durations include all
+builder/analysis/review attempts and use shared atomic reservations. Progress stages
+may include `analysis`, `review-coverage`, `review-routing`, and `processing`; use
+active-call counts rather than interpreting overlapping frames as serial calls.
 
 Every stream frame has `version`, `runId`, monotonically increasing `sequence`, and
 `type`. Optional fields are `stage`, `message`, `code`, `checkpoint`, `result`, and

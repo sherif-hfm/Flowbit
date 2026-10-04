@@ -52,6 +52,8 @@ public sealed partial class WorkflowAiAuthoringService(
 
     private async Task<AiValidationResultDto> ValidateModelAsync(WorkflowModel model, CancellationToken cancellationToken)
     {
+        using var activity = WorkflowAiTelemetry.Start("draft.validate");
+        activity?.SetTag("outcome", "invalid");
         cancellationToken.ThrowIfCancellationRequested();
         try
         {
@@ -78,6 +80,7 @@ public sealed partial class WorkflowAiAuthoringService(
             warnings.Add("Review service endpoints, credentials, response mappings, and network access before running this workflow.");
         if (model.FlowNodes.Any(node => node.Type == "scriptTask"))
             warnings.Add("Review generated scripts before publication; authoring validation does not execute them.");
+        activity?.SetTag("outcome", "valid");
         return new(true, [], warnings)
         {
             CanSave = saveBlockers.Count == 0,

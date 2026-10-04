@@ -75,6 +75,41 @@ framework runners are not supported application deliverables.
 
 ## Acceptance policies and offline checks
 
+### Requirements and parallelism comparison
+
+`Run-Improvements.ps1` keeps Zen/GLM-5.3-Flash/max, optimized execution, a common
+frozen package, and a 300-second deadline fixed. It compares one pre-change and one
+cache-fixed complex trial, three reviewed-serial and three reviewed-parallel trials,
+then the qualifying candidate's simple, modify and Cancel/Continue cases: at most
+11 trials within the existing 14-trial cap. Pass `-PriorTrials` to account for already
+consumed trials. Interrupted trials are recorded before transport and count toward
+the cap; use a fresh output directory for each invocation.
+
+Freeze each complete runner directory before a comparison. Both reviewed configurations
+use the same new runner; `--review true --analysis-workers 1` selects serial review
+and `--analysis-workers 2` allows overlap. Review defaults to false. The script hashes
+all runner/package/fixture files and rechecks them before every trial. It preserves
+all failures, reports both independent checker policies, and selects only a candidate
+with three strict complex passes plus passing simple/modify/continuation. It never
+changes application defaults. The historical one-trial baselines are exploratory,
+not sufficient to establish a statistically reliable speed improvement.
+
+The command below only records a plan and hashes, with no key and no provider calls;
+it works in PowerShell and Bash. Adjust frozen paths for the local evidence directory.
+
+```text
+pwsh -File Flowbit/tools/AuthoringEval/Run-Improvements.ps1 -BaselineRunner artifacts/ai-improvements/baseline/runner/AuthoringEval.dll -CacheRunner artifacts/ai-improvements/cache-fixed/runner/AuthoringEval.dll -Runner artifacts/ai-improvements/reviewed-final/runner/AuthoringEval.dll -Package artifacts/ai-improvements/reviewed-final/knowledge/flowbit-authoring -Output artifacts/ai-improvements/dry-run-final
+```
+
+After separate authorization for billed calls, use a new output directory and add
+`-Execute -KeyFile /private/zen.key`. Keep private keys outside the repository.
+`trace.json` contains correlated metadata spans; `evidence.json` includes active/peak
+calls, total provider duration, per-run accounting and builder rereads. Compare elapsed
+time separately from summed provider duration, especially with overlap. Original
+requests, provider response bodies, keys and reasoning are never trace tags.
+
+### Checker policies
+
 `strict-v1` checks exact action wording with 36 complex-procurement checks.
 `functional-v2` uses 78 checks, separating behavior from the approved aliases
 Approve/Approved, Reject/Rejected, Complete/Completed, Submit/Submitted, and
@@ -88,13 +123,19 @@ mode checks a saved simple/modify result without a key or provider call. Checker
 regressions also run offline, using a retained valid complex proposal:
 
 ```text
-pwsh -File Flowbit/tools/AuthoringEval/Test-Checks.ps1 -ExampleResult artifacts/ai-sdk-max-20261004/03-complex-resume/result.json -Output artifacts/authoring-eval/checker-regressions
+pwsh -File Flowbit/tools/AuthoringEval/Test-Checks.ps1 -Output artifacts/authoring-eval/checker-regressions
 pwsh -File Flowbit/tools/AuthoringEval/Test-SimpleChecks.ps1 -Runner Flowbit/tools/AuthoringEval/bin/Release/net10.0/AuthoringEval.dll -Output artifacts/authoring-eval/preservation-regressions
 ```
 
-The historical result file is optional local evidence, not a bundled fixture;
-substitute another retained valid complex result if it is unavailable. These
-checks inspect its JSON only and do not load or execute the historical runner.
+`fixtures/complex-valid.json` is a checked-in synthetic checker fixture derived from
+the retained procurement definition with exact action wording and explicit Worker
+prerequisites; it contains no live-run metrics or credentials. `-ExampleResult` can
+instead inspect another retained valid result. Fifteen regressions cover labels,
+roles, routing, selectability, quorum IDs, an omitted branch, a bypassed task and
+an incorrect threshold. Threshold matching requires the complete `amount > 10000`
+expression; the old substring check could incorrectly accept `100000`. Historical
+reports are retained unchanged and must not be silently reclassified. These checks
+inspect JSON only and never load a historical runner or call a provider.
 
 See [AI authoring](../../../docs/ai-authoring.md#execution-variants-and-evaluation),
 [configuration](../../../docs/deployment.md#ai-authoring-and-local-ocr), and the

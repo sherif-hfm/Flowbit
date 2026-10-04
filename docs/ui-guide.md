@@ -158,9 +158,19 @@ The progress area shows the current stage, elapsed time and model-call count for
 
 Checkpoints live only in this open Blazor Server panel circuit. They are cleared when you close/reset the assistant, change provider/model or identity, leave the editor, or lose the circuit; page reload and server restart do not restore them. No workflow is saved by reaching a checkpoint.
 
+When an administrator enables requirements review, the assistant analyzes the
+source requirements and checks coverage plus routing/roles before offering a
+proposal. Independent analysis/review calls can overlap; progress shows the active
+call count. Expand **AI requirements review** to inspect each requirement and its
+findings. Missing behavior is repaired within bounded attempts; essential ambiguity
+asks for clarification. Unresolved or incomplete review cannot enable Apply.
+AI review is separate from definition, save and publication validation and does not
+guarantee business correctness. Continue repeats requirements analysis/review from
+the frozen input; a checkpoint does not retain a passing verdict.
+
 While a model call is in progress, **Waiting for the model** shows the seconds
-spent on that call. This resets on the next call and disappears after cancellation
-or completion; the retained draft counts remain separate. New checkpoints also
+spent on that call, or since the current group started when calls overlap. The timer
+disappears after cancellation or completion; retained draft counts remain separate. New checkpoints also
 bind the server's execution variant and reasoning/profile settings. If an
 administrator changes those settings, Continue asks you to start a new request
 before any provider call is made. See [execution variants](ai-authoring.md#execution-variants-and-evaluation).
@@ -170,7 +180,7 @@ Answer clarification questions in the conversation by sending a new message. Rev
 Generation and application do not save, publish, or run workflows. **Save new version** retains its existing unpublished-version behavior. Structurally valid proposals may still have catalog or publication blockers and need operational setup. **Download Flowbit AI skill** provides the same self-contained knowledge package for external agents. See [AI authoring and portable skill](ai-authoring.md) and [AI deployment settings](deployment.md#ai-authoring-and-local-ocr).
 
 Finish or discard an open assistant draft before an administrator switches its
-execution mode or reasoning setting. Existing version 2 checkpoints are bound
+execution mode, reasoning setting or requirements-review policy. Versions 2/3 are bound
 to those settings and require a new request after a change. Supported modes are
 `current` and `optimized`, both using Flowbit's custom loop. The framework-backed
 experiment has been removed; drafts from that mode require a new request after

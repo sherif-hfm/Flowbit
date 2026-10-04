@@ -107,9 +107,13 @@
                 <h3 id="ai-progress-heading">@(authoringRunning ? "Building your workflow" : "Draft kept in this session")</h3>
                 <p id="ai-progress-stage" role="status">@progressStage</p>
                 <p id="ai-progress-metrics" class="ai-help">@ElapsedSeconds s this run · @(runSummary?.ProviderCalls ?? 0) model calls</p>
+                @if (authoringRunning && runSummary is { ActiveProviderCalls: > 0 })
+                {
+                    <p id="ai-active-calls" class="ai-help">@runSummary.ActiveProviderCalls active AI @(runSummary.ActiveProviderCalls == 1 ? "call" : "calls")</p>
+                }
                 @if (authoringRunning && modelCallStarted is { } started)
                 {
-                    <p id="ai-model-wait" class="ai-help">Waiting for the model: @((int)(DateTimeOffset.UtcNow - started).TotalSeconds) s on this call</p>
+                    <p id="ai-model-wait" class="ai-help">Waiting for the model: @((int)(DateTimeOffset.UtcNow - started).TotalSeconds) s @(overlappingCalls ? "since this group of calls started" : "on this call")</p>
                 }
                 @if (checkpoint is not null)
                 {
@@ -122,6 +126,27 @@
         }
         @if (result is not null)
         {
+            @if (result.RequirementsReview is { } review)
+            {
+                <details id="ai-requirements-review" class="ai-review">
+                    <summary>AI requirements review: @(review.Passed ? "passed" : "needs attention")</summary>
+                    <p class="ai-help">AI assessment of the requested behavior. Review business correctness before saving.</p>
+                    <ul>
+                        @foreach (var requirement in review.Requirements)
+                        {
+                            <li dir="auto">
+                                <strong>@requirement.Text</strong>
+                                @if (requirement.Source.SourceName is { } sourceName)
+                                { <p class="ai-help">@sourceName · page @requirement.Source.PageNumber</p> }
+                                @foreach (var check in review.Checks.Where(item => item.RequirementId == requirement.Id))
+                                {
+                                    <p class="@(check.Status == "covered" ? "ai-readiness" : "ai-warning")">@(check.Reviewer switch { "coverage" => "Coverage", "analysis" => "Requirements analysis", _ => "Routing and roles" }): @check.Status — @check.Explanation</p>
+                                }
+                            </li>
+                        }
+                    </ul>
+                </details>
+            }
             @if (result.Questions.Count > 0)
             {
                 <section class="ai-review"><h3>Details to clarify</h3><ul>@foreach (var question in result.Questions) { <li dir="auto">@question</li> }</ul></section>
@@ -141,7 +166,7 @@
                     @foreach (var item in result.Validation.Errors.Concat(result.Validation.Warnings).Concat(result.Validation.SaveBlockers).Concat(result.Validation.PublicationBlockers).Distinct()) { <p class="ai-warning">@item</p> }
                     <details><summary>Workflow JSON</summary><pre id="ai-proposal-json">@ProposalJson</pre></details>
                     @if (IsStale) { <p class="ai-warning" role="status">The editor changed. Send another message to update this proposal before applying it.</p> }
-                    <button type="button" id="ai-apply" class="btn btn-primary" disabled="@(busy || IsStale || !result.Validation.IsValid || result.Kind != "proposal")" @onclick="ApplyAsync">Apply to editor</button>
+                    <button type="button" id="ai-apply" class="btn btn-primary" disabled="@(busy || IsStale || !result.Validation.IsValid || result.Kind != "proposal" || result.RequirementsReview is { Passed: false })" @onclick="ApplyAsync">Apply to editor</button>
                     <p class="ai-help">Applying is one undoable edit. Use Save new version, then publish separately when ready.</p>
                 </section>
             }
@@ -194,6 +219,7 @@
     private string progressStage = "";
     private DateTimeOffset runStarted;
     private DateTimeOffset? modelCallStarted;
+    private bool overlappingCalls;
     private string providerId = "opencode-go", modelId = "kimi-k2.7-code", apiKey = "", messageText = "", languages = "eng+ara";
     private string conversationId = Guid.NewGuid().ToString("N");
     private string? error, notice;
@@ -420,6 +446,7 @@
         runSummary = null;
         runStarted = DateTimeOffset.UtcNow;
         modelCallStarted = null;
+        overlappingCalls = false;
         _ = UpdateElapsedAsync(revision, activeOperationId, cancellationToken);
         var response = await Api.SendAiTurnStreamingAsync(request, apiKey.Trim(), async frame =>
         {
@@ -427,7 +454,12 @@
             if (frame.Type == "checkpoint" && frame.Checkpoint is not null) checkpoint = frame.Checkpoint;
             if (frame.Result?.Checkpoint is not null) checkpoint = frame.Result.Checkpoint;
             if (frame.Run is not null) runSummary = frame.Run;
-            modelCallStarted = frame.Stage is "generating" or "retrying" ? DateTimeOffset.UtcNow : null;
+            if (frame.Run is { ActiveProviderCalls: > 0 } active)
+            {
+                modelCallStarted ??= DateTimeOffset.UtcNow;
+                overlappingCalls |= active.ActiveProviderCalls > 1;
+            }
+            else { modelCallStarted = null; overlappingCalls = false; }
             if (!string.IsNullOrWhiteSpace(frame.Message)) progressStage = frame.Message;
             else if (!string.IsNullOrWhiteSpace(frame.Stage)) progressStage = frame.Stage;
             await InvokeAsync(StateHasChanged);
@@ -465,7 +497,8 @@
 
     private async Task ApplyAsync()
     {
-        if (busy || result?.Definition is not { } definition || IsStale || !result.Validation.IsValid || result.Kind != "proposal") return;
+        if (busy || result?.Definition is not { } definition || IsStale || !result.Validation.IsValid || result.Kind != "proposal"
+            || result.RequirementsReview is { Passed: false }) return;
         var cancellationToken = BeginOperation();
         var revision = identityRevision;
         try

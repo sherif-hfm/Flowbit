@@ -162,6 +162,9 @@ No database migration or persistent conversation store is introduced.
 | API setting (`__` separates environment keys) | Default | Purpose |
 | --- | --- | --- |
 | `WorkflowAi:Enabled` | `true` | Enable provider discovery/generation. |
+| `WorkflowAi:RequirementsReviewEnabled` | `false` | Opt-in source analysis and blocking coverage/routing reviews before a proposal. Uses the selected model and existing run budgets; no framework dependency. |
+| `WorkflowAi:MaxParallelAnalysisCalls` | `2` | One or two concurrent read-only analysis/review calls per run. Set `1` for serial operation; workflow edits stay serial. |
+| `WorkflowAi:MaxConcurrentProviderCalls` | `4` | Process-wide provider-attempt cap (1–32), shared across all runs and purposes, in addition to the whole-run cap. |
 | `WorkflowAi:ExecutionVariant` | `current` | `current` or `optimized`, both using the custom authoring loop. Optimized remains experimental. Removed values fail with `provider_configuration` before any provider call. See [execution variants](ai-authoring.md#execution-variants-and-evaluation) and the [evaluation tool](../Flowbit/tools/AuthoringEval/README.md) before changing defaults. |
 | `WorkflowAi:OpenCodeBaseUrl` | `https://opencode.ai/zen/v1/` | Server-owned OpenCode Zen endpoint. HTTPS required except loopback test servers; callers cannot supply a URL. |
 | `WorkflowAi:OpenCodeModels` | Shipped configuration: `glm-5.3-flash`; unconfigured fallback: `kimi-k2.7-code`, `glm-5.3`, `glm-5.3-flash` | An explicit configured list replaces fallback models; its first entry is the default. Verify live account/model compatibility separately. |
@@ -252,7 +255,7 @@ inputs, selected catalog contracts, or package hashes reject it as stale. UI res
 circuit loss, close/reset, navigation, or identity/model changes discard panel state.
 Do not log checkpoint bodies: they may contain restored workflow credentials.
 
-New version 2 checkpoints also bind the execution variant, reasoning effort, model
+Version 2 checkpoints also bind the execution variant, reasoning effort, model
 profile, and provider endpoint. Replicas must agree on these settings for Continue;
 changing them requires a new request. Version 1 checkpoints retain current-engine
 compatibility. Both supported modes run inside Flowbit without an agent SDK or
@@ -269,8 +272,32 @@ Old framework checkpoints return `checkpoint_configuration_changed` (409) under
 either supported mode. No database migration or provider-key relocation is needed.
 Historical evaluation results remain [available](../Flowbit/tools/AuthoringEval/RESULTS.md).
 
+Requirements review stays disabled until the independent evaluation gates pass.
+When enabled, all analysis/review attempts reserve output allowance under the shared
+run budget before dispatch; errors and missing usage conservatively consume that
+allowance. Read-only workers retry transient failures within the configured transport
+cap. Exhaustion pauses with `requirements_unverified`; no incomplete review permits
+Apply. Requirements repairs have a separate `MaxRepairAttempts` counter that accepted
+edits do not reset. Source batches are at most 24,000 UTF-16 characters; checklists
+are limited to 128 items per batch and 512 total under `MaxInputCharacters`.
+
+Enabled runs issue version 3 checkpoints with `reviewPolicyHash`, binding enablement,
+the per-run analysis cap and the process provider-call cap. Replicas must agree on
+these settings. Versions 1/2 require review disabled, and version 3 requires its
+original enabled policy; changing policy returns `checkpoint_configuration_changed`
+before transport. Continue recomputes analysis and review. Upgrade API/UI together
+for the additional progress and checklist fields. Defaults, authentication, storage
+and the standalone editor are unchanged.
+
 The `Flowbit.Ai.Authoring` meter exposes `flowbit.ai.provider.calls`,
-`flowbit.ai.recoveries`, `flowbit.ai.provider.seconds`, and `flowbit.ai.run.seconds` without prompt/workflow contents.
+`flowbit.ai.recoveries`, `flowbit.ai.provider.seconds`, `flowbit.ai.run.seconds`,
+`flowbit.ai.reads.draft_repeated`, and `flowbit.ai.reads.restored` without prompt/workflow contents.
+The same-name `ActivitySource` emits correlated run, provider-attempt, retry-wait,
+context-read, atomic-edit, validation, requirements-analysis and review spans. Attach
+your existing .NET diagnostics/OpenTelemetry listener to collect them; Flowbit adds
+no exporter or framework. Tags contain operation/outcome, counts, usage and call
+purpose, never prompts, outputs, source names/text, draft bodies or raw exceptions.
+Elapsed run time differs from summed provider duration when calls overlap.
 Run responses report model calls, elapsed seconds, output-token accounting, and whether
 usage includes estimates. These are operational bounds, not provider billing totals.
 Summaries additionally expose reported input tokens, first-edit/last-call timing,

@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Collections.Concurrent;
 using Flowbit.Infrastructure.Ai;
 using Flowbit.Infrastructure.Scripting;
 using Flowbit.Service.Abstractions;
@@ -19,6 +20,9 @@ var variant = arguments.GetValueOrDefault("variant", "current");
 var effort = arguments.GetValueOrDefault("effort", "max");
 var fixture = arguments.GetValueOrDefault("fixture", "complex");
 var policy = arguments.GetValueOrDefault("policy", "strict-v1");
+var review = bool.Parse(arguments.GetValueOrDefault("review", "false"));
+var analysisWorkers = int.Parse(arguments.GetValueOrDefault("analysis-workers", "2"), System.Globalization.CultureInfo.InvariantCulture);
+if (analysisWorkers is < 1 or > 2) throw new ArgumentException("Analysis workers must be 1 or 2.");
 if (policy is not ("strict-v1" or "functional-v2")) throw new ArgumentException("Unknown acceptance policy.");
 var labelWarnings = new List<object>();
 var timeoutSeconds = int.Parse(arguments.GetValueOrDefault("timeout-seconds", "300"), System.Globalization.CultureInfo.InvariantCulture);
@@ -36,9 +40,11 @@ if (variant is not ("current" or "optimized")) throw new ArgumentException("Vari
 if (fixture is not ("simple" or "modify" or "complex")) throw new ArgumentException("Fixture must be simple, modify or complex.");
 var key = (await File.ReadAllTextAsync(arguments["key-file"])).Trim();
 using var diagnostics = new EvaluationDiagnostics(arguments.GetValueOrDefault("diagnostics") == "true");
+using var traces = new EvaluationTraces();
 var options = new WorkflowAiOptions
 {
     ExecutionVariant = variant, RunTimeoutSeconds = timeoutSeconds, RequestTimeoutSeconds = Math.Min(180, timeoutSeconds),
+    RequirementsReviewEnabled = review, MaxParallelAnalysisCalls = analysisWorkers,
     OpenCodeModels = ["glm-5.3-flash"], OpenCodeReasoningEfforts = new() { ["glm-5.3-flash"] = effort },
     ModelProfiles = new() { ["glm-5.3-flash"] = new() { InitialOutputTokens = 16384, MaxOutputTokens = 32768, ContextTokens = 65536 } }
 };
@@ -62,19 +68,20 @@ var request = new AiTurnRequestDto
 };
 using var overall = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
 using var cancel = CancellationTokenSource.CreateLinkedTokenSource(overall.Token);
-var events = new List<object>();
+var events = new ConcurrentQueue<object>();
 AiCheckpointDto? checkpoint = null;
 AiTurnResultDto? result = null;
 string? failure = null;
 bool resumed = false;
-bool cancellationArmed = false, cancellationIssued = false, resumeVerified = false;
+int cancellationArmed = 0, cancellationIssued = 0;
+bool resumeVerified = false;
+using var recordingGate = new SemaphoreSlim(1);
 AiRunSummaryDto? lastRun = null;
 AiCheckpointDto? cancelledCheckpoint = null;
 onHttpAttempt = () =>
 {
-    if (cancellationArmed && !cancellationIssued)
+    if (Volatile.Read(ref cancellationArmed) != 0 && Interlocked.CompareExchange(ref cancellationIssued, 1, 0) == 0)
     {
-        cancellationIssued = true;
         // Cancel a real in-flight HTTP attempt, not the progress callback before transport starts.
         cancel.CancelAfter(TimeSpan.FromMilliseconds(500));
     }
@@ -96,26 +103,31 @@ var passed = result?.Kind == "proposal" && result.Validation.IsValid && result.V
     && clock.Elapsed.TotalSeconds <= timeoutSeconds;
 if (fixture is "simple" or "modify") passed &= CheckSimple(result, fixture == "modify", policy, labelWarnings);
 if (arguments.GetValueOrDefault("resume-test") == "true") passed &= resumed && resumeVerified && transport.CancelledAttempts > 0;
-await Save("evidence.json", new { variant, effort, fixture, policy, passed, failure, labelWarnings, resumed, resumeVerified, transport.Attempts, transport.CancelledAttempts, seconds = clock.Elapsed.TotalSeconds,
+await Save("evidence.json", new { variant, effort, fixture, policy, review, analysisWorkers, passed, failure, labelWarnings, resumed, resumeVerified, transport.Attempts, transport.CancelledAttempts, seconds = clock.Elapsed.TotalSeconds,
     model = request.ModelId, endpoint = options.OpenCodeBaseUrl, knowledge.ContractHash, limits = new { options.RunTimeoutSeconds, options.RequestTimeoutSeconds, options.MaxProviderCalls, options.MaxRunOutputTokens },
-    firstEditSeconds = lastRun?.FirstEditSeconds, events, observed.Calls, diagnostics = diagnostics.Snapshot() });
+    firstEditSeconds = lastRun?.FirstEditSeconds, run = lastRun, events, observed.Calls, diagnostics = diagnostics.Snapshot() });
+await Save("trace.json", traces.Snapshot());
 return passed ? 0 : 1;
 
 async Task Observe(AiRunEventDto frame, CancellationToken token)
 {
-    if (frame.Checkpoint is { } saved) checkpoint = saved;
-    if (frame.Run is { } run) lastRun = run;
-    if (resumed && frame.Stage == "resuming" && cancelledCheckpoint is { } previous && frame.Checkpoint is { } restored)
-        resumeVerified = restored.Revision == previous.Revision && restored.Draft.GetRawText() == previous.Draft.GetRawText()
-            && restored.InputHash == previous.InputHash && restored.ContractHash == previous.ContractHash
-            && restored.ExecutionVariant == previous.ExecutionVariant && restored.ReasoningEffort == previous.ReasoningEffort
-            && restored.Batches.SequenceEqual(previous.Batches) && restored.ContextReads.SequenceEqual(previous.ContextReads);
-    var item = new { frame.Type, frame.Stage, frame.Code, frame.Sequence, frame.Run, revision = frame.Checkpoint?.Revision, kind = frame.Result?.Kind };
-    events.Add(item);
-    await File.AppendAllTextAsync(Path.Combine(output, "progress.ndjson"), JsonSerializer.Serialize(item) + Environment.NewLine, token);
-    Console.WriteLine(JsonSerializer.Serialize(item));
-    if (!resumed && arguments.GetValueOrDefault("resume-test") == "true" && checkpoint is { Revision: > 0 } && frame.Stage == "generating") cancellationArmed = true;
-    await Task.CompletedTask;
+    await recordingGate.WaitAsync(token);
+    try
+    {
+        if (frame.Checkpoint is { } saved) checkpoint = saved;
+        if (frame.Run is { } run) lastRun = run;
+        if (resumed && frame.Stage == "resuming" && cancelledCheckpoint is { } previous && frame.Checkpoint is { } restored)
+            resumeVerified = restored.Revision == previous.Revision && restored.Draft.GetRawText() == previous.Draft.GetRawText()
+                && restored.InputHash == previous.InputHash && restored.ContractHash == previous.ContractHash
+                && restored.ExecutionVariant == previous.ExecutionVariant && restored.ReasoningEffort == previous.ReasoningEffort
+                && restored.Batches.SequenceEqual(previous.Batches) && restored.ContextReads.SequenceEqual(previous.ContextReads);
+        var item = new { frame.Type, frame.Stage, frame.Code, frame.Sequence, frame.Run, revision = frame.Checkpoint?.Revision, kind = frame.Result?.Kind };
+        events.Enqueue(item);
+        await File.AppendAllTextAsync(Path.Combine(output, "progress.ndjson"), JsonSerializer.Serialize(item) + Environment.NewLine, token);
+        Console.WriteLine(JsonSerializer.Serialize(item));
+        if (!resumed && arguments.GetValueOrDefault("resume-test") == "true" && checkpoint is { Revision: > 0 } && frame.Stage == "generating") Volatile.Write(ref cancellationArmed, 1);
+    }
+    finally { recordingGate.Release(); }
 }
 async Task Save(string name, object value)
 {
@@ -170,7 +182,7 @@ sealed class ObservedProvider(IAiWorkflowProvider inner) : IAiWorkflowProvider
 {
     public AiProviderDto Descriptor => inner.Descriptor;
     public bool SupportsExecution(string variant) => inner.SupportsExecution(variant);
-    public List<object> Calls { get; } = [];
+    public ConcurrentQueue<object> Calls { get; } = new();
     public Task<AiCompletion> CompleteAsync(string model, string conversation, IReadOnlyList<AiChatMessageDto> messages, string key, int tokens, CancellationToken ct) =>
         CompleteAsync(model, conversation, messages, key, tokens, new("current", "max"), ct);
     public Task<AiCompletion> CompleteAsync(string model, string conversation, IReadOnlyList<AiChatMessageDto> messages, string key, int tokens, AiExecutionSettings execution, CancellationToken ct)
@@ -191,17 +203,17 @@ sealed class ObservedProvider(IAiWorkflowProvider inner) : IAiWorkflowProvider
                     using var parsed = JsonDocument.Parse(response.Content);
                     var root = parsed.RootElement;
                     var kind = root.TryGetProperty("kind", out var item) && item.ValueKind == JsonValueKind.String ? item.GetString() : null;
-                    if (kind is "read" or "edit" or "finish" or "clarification" or "validate" or "proposal")
+                    if (kind is "read" or "edit" or "finish" or "clarification" or "validate" or "proposal" or "analysis" or "review")
                         command = new { kind, operations = Count("operations"), reads = Count("reads"), sourceReferences = Count("sourceReferences") };
                     int? Count(string name) => root.TryGetProperty(name, out var array) && array.ValueKind == JsonValueKind.Array ? array.GetArrayLength() : null;
                 }
                 catch (JsonException) { }
             }
-            Calls.Add(new { seconds = clock.Elapsed.TotalSeconds, response.FinishReason, response.InputTokens, response.OutputTokens, allowance = tokens, command });
+            Calls.Enqueue(new { seconds = clock.Elapsed.TotalSeconds, response.FinishReason, response.InputTokens, response.OutputTokens, allowance = tokens, command });
             return response;
         }
-        catch (WorkflowAiException error) { Calls.Add(new { seconds = clock.Elapsed.TotalSeconds, error.Code, allowance = tokens }); throw; }
-        catch (OperationCanceledException) { Calls.Add(new { seconds = clock.Elapsed.TotalSeconds, Code = "cancelled", allowance = tokens }); throw; }
+        catch (WorkflowAiException error) { Calls.Enqueue(new { seconds = clock.Elapsed.TotalSeconds, error.Code, allowance = tokens }); throw; }
+        catch (OperationCanceledException) { Calls.Enqueue(new { seconds = clock.Elapsed.TotalSeconds, Code = "cancelled", allowance = tokens }); throw; }
     }
 }
 
@@ -231,12 +243,40 @@ sealed class EvaluationDiagnostics : IDisposable
 
 sealed class ObservedHttpHandler(Action onAttempt) : DelegatingHandler(new HttpClientHandler { AllowAutoRedirect = false })
 {
-    public int Attempts { get; private set; }
-    public int CancelledAttempts { get; private set; }
+    private int attempts, cancelledAttempts;
+    public int Attempts => Volatile.Read(ref attempts);
+    public int CancelledAttempts => Volatile.Read(ref cancelledAttempts);
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
-        Attempts++; onAttempt();
+        Interlocked.Increment(ref attempts); onAttempt();
         try { return await base.SendAsync(request, cancellationToken); }
-        catch (OperationCanceledException) { CancelledAttempts++; throw; }
+        catch (OperationCanceledException) { Interlocked.Increment(ref cancelledAttempts); throw; }
     }
+}
+
+sealed class EvaluationTraces : IDisposable
+{
+    private readonly ConcurrentQueue<object> spans = new();
+    private readonly ActivityListener listener;
+    public EvaluationTraces()
+    {
+        listener = new()
+        {
+            ShouldListenTo = source => source.Name == "Flowbit.Ai.Authoring",
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData,
+            ActivityStopped = activity =>
+            {
+                if (spans.Count < 10_000) spans.Enqueue(new
+                {
+                    operation = activity.OperationName, traceId = activity.TraceId.ToString(),
+                    spanId = activity.SpanId.ToString(), parentSpanId = activity.ParentSpanId.ToString(),
+                    startedUtc = activity.StartTimeUtc, seconds = activity.Duration.TotalSeconds,
+                    tags = activity.TagObjects.ToDictionary(pair => pair.Key, pair => pair.Value)
+                });
+            }
+        };
+        ActivitySource.AddActivityListener(listener);
+    }
+    public object[] Snapshot() => spans.ToArray();
+    public void Dispose() => listener.Dispose();
 }

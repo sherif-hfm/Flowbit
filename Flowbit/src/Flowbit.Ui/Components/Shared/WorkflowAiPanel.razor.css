@@ -20,6 +20,7 @@
 .ai-review h3 { font-size: .95rem; }
 .ai-review h4 { font-size: .8rem; margin: .85rem 0 .25rem; }
 .ai-review ul { padding-left: 1.1rem; font-size: .82rem; }
+.ai-review li { overflow-wrap: anywhere; }
 .ai-warning { font-size: .8rem; color: #7c4d11; overflow-wrap: anywhere; }
 .ai-readiness { font-size: .8rem; color: #365957; }
 .ai-review pre { font-size: .7rem; max-height: 20rem; overflow: auto; margin: .5rem 0 0; white-space: pre; }

@@ -553,3 +553,67 @@ build/checker logs and explicitly simulated matrix evidence. Browser runs are
 workflow execution or default promotion was performed. Existing SSH.NET advisory
 and unrelated test-analyzer warnings remain. Historical frozen experiment outputs
 were preserved outside the new application deliverables.
+
+## Requirements review and parallelism offline verification (2026-10-04)
+
+This records implementation/offline verification only. No Zen requests were made,
+no live quality or speed gain is established, and defaults were not promoted.
+The [staged plan](../../../docs/plans/ai-assistant-improvement-plan.md) covers
+recommendations 1–4 and 7. The reviewed path remains disabled by default.
+
+The pre-change build was frozen from commit
+`c4217603503e81d7a58d0d751bffb57b0e27e3d6` under
+`artifacts/ai-improvements/baseline/`; cache-fixed and reviewed builds are retained
+separately. `Run-Improvements.ps1` produced a key-free 11-trial plan with file hashes
+under `artifacts/ai-improvements/dry-run-final/`; its cap guard rejected four prior trials
+before creating output. The live comparison remains pending separate authorization.
+
+Focused automated verification passed **397 tests**, including endpoint authorization,
+the production OpenAPI schema, transport recovery, source/checklist validation,
+blocking review, exact-candidate review after repairs, v3 policy binding, cancellation,
+reservations, global provider caps, overlapping/reversed completions, metadata tracing
+and mutable-cache behavior. Commands, runnable in PowerShell or Bash:
+
+```text
+dotnet test Flowbit/tests/Flowbit.Tests/Flowbit.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~WorkflowAi|FullyQualifiedName~OpenCodeGoProviderRecovery|FullyQualifiedName~WorkflowAuthoringPackage|FullyQualifiedName~WorkflowApiClientAi|FullyQualifiedName~OpenApiContractTests" --logger "trx;LogFileName=verified-ai.trx" --results-directory artifacts/ai-improvements/tests --nologo
+dotnet test Flowbit/tests/Flowbit.BrowserTests/Flowbit.BrowserTests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName~AiAuthoringSmokeTests|FullyQualifiedName~AiRequirementsSmokeTests" --logger "trx;LogFileName=final-browser.trx" --results-directory artifacts/ai-improvements/tests --nologo
+pwsh -File Flowbit/tools/AuthoringEval/Test-Checks.ps1 -Output artifacts/ai-improvements/checker-regressions-final
+pwsh -File Flowbit/tools/AuthoringEval/Test-SimpleChecks.ps1 -Runner Flowbit/tools/AuthoringEval/bin/Release/net10.0/AuthoringEval.dll -Output artifacts/ai-improvements/simple-regressions
+```
+
+Offline checker verification passed **15 complex** and **12 creation/preservation**
+regressions. The new wrong-threshold case found that the previous substring regex
+accepted `amount > 100000`; the checker now matches the complete requested threshold.
+The checked-in synthetic fixture supplies a repeatable independent oracle. These
+results do not retroactively change historical live reports above.
+
+The separately published API/UI passed **12 Chromium 151.0.7922.34 browser cases**:
+legacy H6–H9 and reviewed H10/H11. Reviewed UI: `http://127.0.0.1:64496`;
+legacy UI: `http://127.0.0.1:64576`. Scenarios cover blocked Apply, targeted repair,
+overlapping calls, cancellation of both workers, Continue with fresh analysis/review,
+reversed reviewer completion, stale editor/model guards, Apply and Undo. Viewports:
+1440×900, 1024×768 and 390×844. Fourteen diagnostic files show zero page errors,
+console errors/warnings, failed requests or unexpected dialogs. One initial H11
+cleanup failure from a dirty editor was fixed by undoing its edit; the complete
+12-case rerun passed.
+
+Scenario-specific manual verification used the Chromium-based Codex in-app browser
+at `http://127.0.0.1:64698/workflows/1/edit`, with a separate disposable real API/UI
+stack and synthetic upstream. Real clicks/typing exercised generation, overlapping
+progress, Enter to expand the checklist, Apply, Escape on the mobile drawer, and
+one-step Undo restoring the saved workflow. Desktop/tablet/mobile layouts were
+inspected at the same three widths. Console warnings/errors were empty. Temporary
+tabs and all verification hosts were closed afterward; nothing was saved or published
+through the assistant.
+
+Evidence: `artifacts/browser/runs/20261004-104008-ffffcd99` (reviewed),
+`20261004-104040-9108e829` (legacy), `20261004-104111-7a9b0d5b` (manual stack).
+Reviewed screenshots include `parallel-review.png`, `requirements-review.png`
+and `requirements-blocked.png`; desktop and mobile screenshots were inspected.
+Builds and portable package export passed. Local documentation validation checked
+884 links/anchors/image references and parsed the new fixture/configuration JSON;
+12 pre-existing references to absent refactoring guides are recorded separately in
+`artifacts/ai-improvements/pre-existing-doc-link-issues.txt`. No new broken link was
+introduced. Existing SSH.NET advisory warnings and
+unrelated test-analyzer warnings remain. Live model accuracy, token cost and latency
+are still unverified; only deterministic/synthetic and real-browser behavior is covered.

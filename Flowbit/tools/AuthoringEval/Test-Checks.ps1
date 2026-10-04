@@ -1,4 +1,4 @@
-param([Parameter(Mandatory=$true)][string]$ExampleResult, [Parameter(Mandatory=$true)][string]$Output)
+param([string]$ExampleResult = "$PSScriptRoot/fixtures/complex-valid.json", [Parameter(Mandatory=$true)][string]$Output)
 $ErrorActionPreference = 'Stop'
 $taskShell = (Get-Process -Id $PID).Path
 $taskOriginal = Get-Content -LiteralPath $ExampleResult -Raw
@@ -14,7 +14,10 @@ $taskCases = @(
     @{ Name = 'condition-with-alias'; Mutate = { $script:directorFlow.name = 'Director approved'; $script:directorFlow | Add-Member condition 'amount > 99999' -Force }; Expected = $false },
     @{ Name = 'quorum-reference'; Mutate = { ($script:model.sequenceFlows | Where-Object { $_.completionPriority -eq 1 }).completionCondition = 'CountFlow(999999) >= 2' }; Expected = $false },
     @{ Name = 'committee-alias'; Mutate = { ($script:model.sequenceFlows | Where-Object { $_.completionPriority -eq 1 }).name = 'Approved' }; Expected = $true; Warnings = 1 },
-    @{ Name = 'strict-alias'; Policy = 'strict-v1'; Mutate = { $script:directorFlow.name = 'Director approved' }; Expected = $false }
+    @{ Name = 'strict-alias'; Policy = 'strict-v1'; Mutate = { $script:directorFlow.name = 'Director approved' }; Expected = $false },
+    @{ Name = 'wrong-threshold'; Mutate = { ($script:model.sequenceFlows | Where-Object targetRef -eq $script:director.id).condition = 'amount > 100000' }; Expected = $false },
+    @{ Name = 'bypassed-legal-task'; Mutate = { $node = $script:model.flowNodes | Where-Object name -eq 'Contract'; $next = $script:model.flowNodes | Where-Object name -eq 'Export terms'; ($script:model.sequenceFlows | Where-Object sourceRef -eq $node.id).targetRef = $next.id }; Expected = $false },
+    @{ Name = 'omitted-security-branch'; Mutate = { $node = $script:model.flowNodes | Where-Object name -eq 'Identity'; $script:model.sequenceFlows = @($script:model.sequenceFlows | Where-Object targetRef -ne $node.id) }; Expected = $false }
 )
 New-Item -ItemType Directory -Path $Output | Out-Null
 foreach ($taskCase in $taskCases) {

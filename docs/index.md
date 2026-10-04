@@ -38,6 +38,14 @@ Flowbit is a **BPMN-aligned JSON workflow engine** with a visual editor, an HTTP
 
 Flowbit does not import or export BPMN XML, execute arbitrary BPMN diagrams, or provide production OIDC/per-user UI authentication out of the box. Read [BPMN support](bpmn-support.md) and [deployment](deployment.md) before choosing your integration and authentication boundaries.
 
+## AI assistant improvement work
+
+The [eight recommendations](plans/ai-assistant-recommendations.md) and
+[staged implementation plan](plans/ai-assistant-improvement-plan.md) record the
+agreed AI authoring improvements. The plan distinguishes implementation and
+verification status from future work; the [AI authoring guide](ai-authoring.md)
+describes supported behavior.
+
 ## Planned refactoring
 
 The [staged refactoring plans](refactoring/README.md) describe contributor work,

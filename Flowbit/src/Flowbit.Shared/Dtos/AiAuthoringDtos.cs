@@ -48,7 +48,17 @@ public sealed record AiTurnResultDto(
     public IReadOnlyList<AiSourceReferenceDto> SourceReferences { get; init; } = [];
     public AiCheckpointDto? Checkpoint { get; init; }
     public AiRunSummaryDto? Run { get; init; }
+    public AiRequirementsReviewDto? RequirementsReview { get; init; }
 }
+
+public sealed record AiRequirementSourceDto(string Resource, int Offset, int Count, string? SourceName, int? PageNumber);
+public sealed record AiRequirementDto(string Id, string Text, AiRequirementSourceDto Source, bool NeedsClarification);
+public sealed record AiRequirementEvidenceDto(string Target, int? Id);
+public sealed record AiRequirementCheckDto(string RequirementId, string Reviewer, string Status, string Explanation,
+    IReadOnlyList<AiRequirementEvidenceDto> Evidence);
+/// <summary>AI assessment, separate from deterministic workflow validity. Evidence belongs to this exact candidate.</summary>
+public sealed record AiRequirementsReviewDto(bool Passed, string CandidateHash,
+    IReadOnlyList<AiRequirementDto> Requirements, IReadOnlyList<AiRequirementCheckDto> Checks);
 
 /// <summary>Untrusted, bounded continuation state, retained only in the open assistant circuit.</summary>
 public sealed record AiCheckpointDto
@@ -57,6 +67,7 @@ public sealed record AiCheckpointDto
     public string? ExecutionVariant { get; init; }
     public string? ReasoningEffort { get; init; }
     public string? ModelProfileHash { get; init; }
+    public string? ReviewPolicyHash { get; init; }
     public string InputHash { get; init; } = "";
     public string ContractHash { get; init; } = "";
     public JsonElement Draft { get; init; }
@@ -82,6 +93,10 @@ public sealed record AiRunSummaryDto(int ProviderCalls, long OutputTokens, bool 
     public int Retries { get; init; }
     public int AcceptedBatches { get; init; }
     public long InputTokens { get; init; }
+    public int ActiveProviderCalls { get; init; }
+    public int PeakProviderCalls { get; init; }
+    public double TotalProviderSeconds { get; init; }
+    public int RepeatedDraftReads { get; init; }
 }
 
 /// <summary>Versioned NDJSON frame. Draft checkpoints are private state, never applicable proposals.</summary>

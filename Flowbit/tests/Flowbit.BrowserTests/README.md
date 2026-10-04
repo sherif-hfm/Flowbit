@@ -66,6 +66,19 @@ in the commands above and filter `"FullyQualifiedName~H8|FullyQualifiedName~H9"`
 Run the full AI suite separately with shipped settings for legacy regression
 coverage. Manifests record the requested mode and published settings.
 
+H10/H11 use a separate `CreateForAiReview()` fixture with requirements review enabled
+and two analysis/review slots. The ordinary fixture retains shipped review defaults.
+Provider responses are synthetic upstream completions; all orchestration, validation,
+streaming, editor Apply and Undo are real. Run both reviewed and legacy cases with:
+
+```text
+dotnet test Flowbit/tests/Flowbit.BrowserTests/Flowbit.BrowserTests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName~AiAuthoringSmokeTests|FullyQualifiedName~AiRequirementsSmokeTests"
+```
+
+H10 saves `parallel-review.png` and `requirements-review.png` at each width; H11
+saves `requirements-blocked.png`. Inspect these and the console diagnostics in
+addition to the scenario-specific manual keyboard/visual checks.
+
 - .NET 10 SDK
 - Docker (Testcontainers starts one `postgres:17-alpine` per run)
 - Playwright Chromium (installed once per checkout, per configuration)
@@ -117,6 +130,8 @@ Hosted editor scenarios H1 (1440x900 and 1024x768) and H2 exercise exact-version
 | H7 AI session lifecycle | 1440x900 | Manual edits invalidate proposals; cancellation reaches the upstream provider; separate panels keep separate keys; identity change, reset, disposal and navigation clear transient keys and conversation state. |
 | H8 AI incremental recovery | 1440x900, 1024x768, 390x844 | The real provider adapter receives truncated output and a temporary server failure, reduces the edit batch size, reads schema/requirements, retains an accepted draft edit, cancels an in-flight call, continues from the session checkpoint with frozen requirements and rebuilt read excerpts, and applies the completed proposal in one undoable edit. Progress screenshots and console diagnostics are captured. |
 | H9 AI checkpoint invalidation | 1440x900 | A provider authentication failure preserves the last complete private checkpoint; changing the selected model clears it, editor edits disable Continue, and New conversation clears the checkpoint and key. |
+| H10 Parallel requirements review | 1440x900, 1024x768, 390x844 | Two delayed reviewer calls overlap; progress reports two active calls and a group wait timer. Cancel reaches both upstream calls, the editor stays unchanged, Continue repeats analysis/review, reversed completion order still yields one proposal, and Apply is undone in one step. |
+| H11 Requirements blocking and repair | 1440x900 | Ambiguous business requirements show clarification with no Apply; missing behavior triggers a targeted edit and fresh reviews before Apply. The test undoes its edit before identity cleanup. |
 | E1 load/edit/save/reload | 1440x900, 1024x768 | File menu load via the real file chooser, node rename in the inspector, workflow name edit, forced download-fallback save, JSON round-trip into a fresh page. |
 | E2 node drag | 1440x900, 1024x768 | Real mouse drag with intermediate steps; screen/diagram deltas, unrelated nodes fixed, connectors intact, persisted positions in the downloaded JSON. |
 | E3 lane drag | 1440x900, 1024x768 | Lane header drag moves the lane with its children; other lanes fixed; persisted positions verified. |

@@ -20,7 +20,7 @@ public sealed class AiProviderTestHost : IAsyncDisposable
     public ConcurrentQueue<Request> Requests { get; } = new();
 
     public sealed record Request(string KeyHash, string Conversation, string Model, string Requirement, string WorkflowKey, string[] SourceTexts, string[] CatalogKeys, bool IncludesCatalogValue,
-        long Revision, int MaxOperations, int MaxTokens, string[] ReadResources, int NativeToolCount, string? ReasoningEffort);
+        long Revision, int MaxOperations, int MaxTokens, string[] ReadResources, int NativeToolCount, string? ReasoningEffort, string Purpose);
     public sealed class Reply(string kind, string workflowName, bool delayed)
     {
         internal string Kind { get; } = kind;
@@ -101,6 +101,33 @@ public sealed class AiProviderTestHost : IAsyncDisposable
         return reply;
     }
 
+    public Reply EnqueueAnalysis()
+    {
+        var reply = new Reply("analysis", "", false)
+        {
+            Content = input => JsonSerializer.Serialize(new { kind = "analysis", requirements = new[] { new
+            {
+                text = "Use the requested workflow name.", source = input["sourceBatch"]![0]!["key"]!.GetValue<string>(),
+                quote = input["sourceBatch"]![0]!["text"]!.GetValue<string>(), needsClarification = false
+            } } })
+        };
+        replies.Enqueue(reply); return reply;
+    }
+
+    public Reply EnqueueReview(string status = "covered", bool delayed = false)
+    {
+        var reply = new Reply("review", "", delayed)
+        {
+            Content = input => JsonSerializer.Serialize(new { kind = "review", checks = input["checklist"]!.AsArray().Select(item => new
+            {
+                requirementId = item!["id"]!.GetValue<string>(), status,
+                explanation = status == "uncertain" ? "Which workflow name should be used?" : "The workflow name matches the requirement.",
+                evidence = new[] { new { target = "workflow" } }
+            }), additionalRequirements = Array.Empty<object>() })
+        };
+        replies.Enqueue(reply); return reply;
+    }
+
     public static string HashKey(string key) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key)));
 
     public async Task StartAsync()
@@ -119,9 +146,12 @@ public sealed class AiProviderTestHost : IAsyncDisposable
             }
             using var body = await JsonDocument.ParseAsync(context.Request.Body, cancellationToken: context.RequestAborted);
             var envelope = body.RootElement;
-            var prompt = envelope.GetProperty("messages").EnumerateArray()
-                .Last(item => item.GetProperty("role").GetString() == "user").GetProperty("content").GetString()!;
+            var userMessages = envelope.GetProperty("messages").EnumerateArray().Where(item => item.GetProperty("role").GetString() == "user").ToArray();
+            var prompt = userMessages[0].GetProperty("content").GetString()!;
             var input = JsonNode.Parse(prompt)!;
+            if (userMessages.Length > 1)
+                foreach (var field in JsonNode.Parse(userMessages[^1].GetProperty("content").GetString()!)!.AsObject())
+                    input[field.Key] = field.Value?.DeepClone();
             var current = input["currentWorkflow"];
             var workflowKey = current?["id"]?.GetValue<string>() ?? "missing-workflow-key";
             Requests.Enqueue(new(HashKey(context.Request.Headers.Authorization.ToString().Replace("Bearer ", "", StringComparison.Ordinal)),
@@ -135,7 +165,8 @@ public sealed class AiProviderTestHost : IAsyncDisposable
                 input["observations"]!.AsArray().OfType<JsonArray>().SelectMany(batch => batch.OfType<JsonObject>())
                     .Select(read => read["resource"]!.GetValue<string>()).ToArray(),
                 envelope.TryGetProperty("tools", out var requestedTools) ? requestedTools.GetArrayLength() : 0,
-                envelope.TryGetProperty("reasoning_effort", out var reasoning) ? reasoning.GetString() : null));
+                envelope.TryGetProperty("reasoning_effort", out var reasoning) ? reasoning.GetString() : null,
+                input["purpose"]?.GetValue<string>() ?? "builder"));
             reply.Arrived.TrySetResult();
             if (reply.Delayed)
             {

@@ -14,11 +14,7 @@ public sealed partial class WorkflowAiAuthoringService
 {
     private sealed record ModelStep(AiCompletion? Completion, int MaxOutputTokens, AiTurnResultDto? Result = null);
 
-    private static readonly Meter AiMeter = new("Flowbit.Ai.Authoring");
-    private static readonly Counter<long> CallCounter = AiMeter.CreateCounter<long>("flowbit.ai.provider.calls");
-    private static readonly Counter<long> RecoveryCounter = AiMeter.CreateCounter<long>("flowbit.ai.recoveries");
-    private static readonly Histogram<double> RunDuration = AiMeter.CreateHistogram<double>("flowbit.ai.run.seconds");
-    private static readonly Histogram<double> CallDuration = AiMeter.CreateHistogram<double>("flowbit.ai.provider.seconds");
+    private static readonly Histogram<double> RunDuration = WorkflowAiTelemetry.RunSeconds;
 
     public Task<AiTurnResultDto> TurnAsync(AiTurnRequestDto request, string apiKey, CancellationToken cancellationToken)
         => RunAsync(request, apiKey, null, cancellationToken);
@@ -39,15 +35,24 @@ public sealed partial class WorkflowAiAuthoringService
         var execution = new AiExecutionSettings(request.Checkpoint?.Version == 1 ? "current" : options.ExecutionVariant,
             options.OpenCodeReasoningEfforts.GetValueOrDefault(request.ModelId));
         var profileHash = AuthoringPackageBuilder.Hash(JsonSerializer.Serialize(new { profile, options.OpenCodeBaseUrl }, JsonOptions));
+        var reviewPolicyHash = options.RequirementsReviewEnabled ? AuthoringPackageBuilder.Hash(JsonSerializer.Serialize(new
+        { version = 1, options.RequirementsReviewEnabled, options.MaxParallelAnalysisCalls, options.MaxConcurrentProviderCalls }, JsonOptions)) : null;
         if (!provider.SupportsExecution(execution.Variant))
             throw new WorkflowAiException("execution_unavailable", "The selected provider does not support this authoring engine.", 503);
-        if (request.Checkpoint is { Version: 2 } bound && (bound.ExecutionVariant != execution.Variant
+        if (request.Checkpoint is { } configured && (options.RequirementsReviewEnabled != (configured.Version == 3)
+            || configured.Version == 3 && configured.ReviewPolicyHash != reviewPolicyHash))
+            throw new WorkflowAiException("checkpoint_configuration_changed", "Requirements review settings changed. Start a new request.", 409);
+        if (request.Checkpoint is { Version: 2 or 3 } bound && (bound.ExecutionVariant != execution.Variant
             || bound.ReasoningEffort != execution.ReasoningEffort || bound.ModelProfileHash != profileHash))
             throw new WorkflowAiException("checkpoint_configuration_changed", "The authoring engine or model settings changed. Start a new request.", 409);
         var optimized = execution.Variant != "current";
         if (!await concurrency.Semaphore.WaitAsync(0, cancellationToken)) throw new WorkflowAiException("authoring_busy", "AI authoring is busy. Try again when another request finishes.", 429);
         var clock = Stopwatch.StartNew();
+        using var runActivity = WorkflowAiTelemetry.Start("authoring.run");
+        runActivity?.SetTag("variant", execution.Variant);
+        runActivity?.SetTag("outcome", "failed");
         var state = new WorkflowAiSession();
+        using var eventGate = new SemaphoreSlim(1, 1);
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(options.RunTimeoutSeconds));
         try
@@ -102,10 +107,17 @@ public sealed partial class WorkflowAiAuthoringService
             var compact = optimized;
             var fastBatches = 0;
             AiValidationResultDto validation = Invalid("The draft is not yet complete.");
+            AiRequirementsReviewDto? requirementsReview = null;
+            var requirementRepairs = 0;
+            using var dispatcher = new WorkflowAiCallDispatcher(provider, options, concurrency, state, request, execution, apiKey,
+                (stage, message) => Event("progress", stage, message));
+            var requirements = options.RequirementsReviewEnabled
+                ? new WorkflowAiRequirements(knowledge, request, options, dispatcher, Sanitize) : null;
 
             AiCheckpointDto MakeCheckpoint() => new()
             {
-                Version = 2, ExecutionVariant = execution.Variant, ReasoningEffort = execution.ReasoningEffort, ModelProfileHash = profileHash,
+                Version = options.RequirementsReviewEnabled ? 3 : 2, ReviewPolicyHash = reviewPolicyHash,
+                ExecutionVariant = execution.Variant, ReasoningEffort = execution.ReasoningEffort, ModelProfileHash = profileHash,
                 InputHash = inputHash, ContractHash = knowledge.ContractHash,
                 Draft = redaction.Restore(draft), Revision = state.Revision,
                 Plan = Sanitize(state.Plan), Batches = state.Batches.TakeLast(100).ToArray(),
@@ -114,12 +126,17 @@ public sealed partial class WorkflowAiAuthoringService
             state.Checkpoint = MakeCheckpoint();
             await Event("checkpoint", request.Checkpoint is null ? "preparing" : "resuming",
                 request.Checkpoint is null ? "Preparing workflow context." : $"Resuming the saved draft after {state.Revision} completed draft steps.", state.Checkpoint);
+            if (requirements is not null)
+            {
+                await requirements.AnalyzeAsync(draft, deadline.Token);
+                context.RequirementChecklist = requirements.Checklist;
+            }
             while (true)
             {
                 var step = await NextModelStepAsync(deadline.Token);
-                if (step.Result is { } stopped) return stopped;
+                if (step.Result is { } stopped) { runActivity?.SetTag("outcome", stopped.Kind); return stopped; }
                 var completed = await ExecuteCommandAsync(step, deadline.Token);
-                if (completed is not null) return completed;
+                if (completed is not null) { runActivity?.SetTag("outcome", completed.Kind); return completed; }
             }
 
             async Task<ModelStep> PauseStep(string code, string message)
@@ -183,35 +200,23 @@ public sealed partial class WorkflowAiAuthoringService
                             return await PauseStep("context_too_large", "Required authoring context exceeds this model's configured context budget. Reduce the input or adjust the model profile.");
                         if (state.Calls >= options.MaxProviderCalls || options.MaxRunOutputTokens - state.OutputTokens < tokens)
                             return await PauseStep("run_budget", "This run reached its model usage budget. Continue from the last completed draft step.");
-                        state.Calls++;
-                        if (retry > 0) state.Retries++;
-                        await Event("progress", retry == 0 ? "generating" : "retrying", retry == 0 ? "Building the next workflow step." : "Retrying the selected provider.");
-                        CallCounter.Add(1, new KeyValuePair<string, object?>("provider", request.ProviderId));
                         try
                         {
-                            completion = await CompleteStepAsync();
-                            state.InputTokens += Math.Max(0, completion.InputTokens ?? 0);
-                            if (completion.OutputTokens is { } usage) state.OutputTokens += Math.Max(0, usage);
-                            else { state.OutputTokens += tokens; state.Estimated = true; }
+                            completion = await dispatcher.AttemptAsync(messages, tokens, "builder", retry > 0, deadline.Token);
                             break;
                         }
                         catch (WorkflowAiException error) when (error.Code == "provider_context" && !contextRecovery)
                         {
-                            state.OutputTokens += tokens;
-                            state.Estimated = true;
                             fastBatches = 0;
                             contextRecovery = compact = true;
                             context.UseDraftIndex = true;
                             context.ObservationCharacters = 2000;
                             messages = context.Messages(draft, state.Revision, state.Plan, catalog, maxOperations, tokens, Sanitize, true, Budget());
-                            RecoveryCounter.Add(1, new KeyValuePair<string, object?>("kind", "context"));
+                            WorkflowAiTelemetry.Recovery("context", "builder");
                             await Event("progress", "compacting", "Rebuilding a smaller context; original requirements remain available.");
                         }
                         catch (WorkflowAiException error) when (error.Retryable)
                         {
-                            // A failed request can still consume output at the provider. Reserve its full allowance.
-                            state.OutputTokens += tokens;
-                            state.Estimated = true;
                             if (retry >= options.MaxTransportRetries)
                                 return error.Code == "provider_invalid_response"
                                     ? await PauseStep("provider_invalid_response", "The provider repeatedly returned an unreadable response. Continue from the last completed draft step.")
@@ -231,27 +236,9 @@ public sealed partial class WorkflowAiAuthoringService
                             var delay = error.RetryAfter > backoff ? error.RetryAfter.Value : backoff;
                             if (delay.TotalSeconds >= options.RunTimeoutSeconds - clock.Elapsed.TotalSeconds)
                                 return await PauseStep("provider_wait", "The provider asked to wait beyond this run's remaining time. Continue later.");
-                            RecoveryCounter.Add(1, new KeyValuePair<string, object?>("kind", "transport"));
+                            WorkflowAiTelemetry.Recovery("transport", "builder");
                             await Event("progress", "waiting", $"Provider temporarily unavailable. Retrying in {Math.Ceiling(delay.TotalSeconds)} seconds.");
-                            await Task.Delay(delay, deadline.Token);
-                        }
-                        catch (OperationCanceledException)
-                        {
-                            state.OutputTokens += tokens;
-                            state.Estimated = true;
-                            throw;
-                        }
-                        async Task<AiCompletion> CompleteStepAsync()
-                        {
-                            var callClock = Stopwatch.StartNew();
-                            try { return await provider.CompleteAsync(request.ModelId, request.ConversationId,
-                                messages, apiKey, tokens, execution, deadline.Token); }
-                            finally
-                            {
-                                // Measure only the model attempt; recovery notifications/backoff are separate activities.
-                                state.LastCallSeconds = callClock.Elapsed.TotalSeconds;
-                                CallDuration.Record(state.LastCallSeconds, new KeyValuePair<string, object?>("variant", execution.Variant));
-                            }
+                            using (WorkflowAiTelemetry.Start("provider.retry_wait")) await Task.Delay(delay, deadline.Token);
                         }
                     }
                     deadline.Token.ThrowIfCancellationRequested();
@@ -260,7 +247,7 @@ public sealed partial class WorkflowAiAuthoringService
                     if (completion.FinishReason == "length")
                     {
                         fastBatches = 0;
-                        RecoveryCounter.Add(1, new KeyValuePair<string, object?>("kind", "truncation"));
+                        WorkflowAiTelemetry.Recovery("truncation", "builder");
                         if (++truncations > options.MaxTruncationRecoveries)
                             return await PauseStep("provider_truncated", "The model repeatedly exceeded its output limit. The last completed draft is retained; narrow the requested change or continue.");
                         if (maxOperations > 1) maxOperations = optimized || truncations == 1 ? Math.Max(1, maxOperations / 2) : 1;
@@ -307,6 +294,7 @@ public sealed partial class WorkflowAiAuthoringService
                         ObserveCommand(context.Read(reads, draft, Sanitize));
                         state.ContextReads = context.ReadCount;
                         state.DuplicateReads = context.DuplicateReadCount;
+                        state.RepeatedDraftReads = context.RepeatedDraftReadCount;
                         var checkpointChanged = state.Plan != nextPlan || !state.Checkpoint!.ContextReads.SequenceEqual(context.RetainedReads());
                         state.Plan = nextPlan;
                         state.Checkpoint = MakeCheckpoint();
@@ -323,6 +311,7 @@ public sealed partial class WorkflowAiAuthoringService
                         else
                         {
                             draft = next.Value;
+                            requirementsReview = null;
                             state.Plan = nextPlan;
                             state.AcceptedBatches++;
                             state.FirstEditSeconds ??= clock.Elapsed.TotalSeconds;
@@ -357,8 +346,40 @@ public sealed partial class WorkflowAiAuthoringService
                             WorkflowAuthoringLayout.Apply(model, original);
                             validation = ScrubDiagnostics(await ValidateModelAsync(model, deadline.Token), redaction, apiKey);
                             if (!validation.IsValid) throw new JsonException("The final layout did not pass workflow validation.");
+                            var definition = JsonSerializer.SerializeToElement(model, JsonOptions);
+                            if (requirements is not null)
+                            {
+                                requirementsReview = await requirements.ReviewAsync(redaction.Redact(definition),
+                                    AuthoringPackageBuilder.Hash(definition.GetRawText()), deadline.Token);
+                                if (!requirementsReview.Passed)
+                                {
+                                    var unresolved = requirementsReview.Checks.Where(check => check.Status != "covered").ToArray();
+                                    if (unresolved.Any(check => check.Status == "uncertain"))
+                                    {
+                                        var clarification = new AiTurnResultDto("clarification", "Clarify the unresolved business requirements before applying a proposal.",
+                                            unresolved.Where(check => check.Status == "uncertain").Select(check => check.Explanation).Distinct().Take(10).ToArray(),
+                                            null, [], [], [], validation, request.SnapshotId, knowledge.ContractHash)
+                                        { RequirementsReview = requirementsReview, Checkpoint = MakeCheckpoint(), Run = Summary() };
+                                        await Event("result", "clarification", clarification.Message, result: clarification);
+                                        return clarification;
+                                    }
+                                    if (requirementRepairs++ >= options.MaxRepairAttempts)
+                                    {
+                                        var invalid = new AiTurnResultDto("invalid", "The workflow still has unresolved requirements after bounded repair.", [], null,
+                                            [], [], [], validation, request.SnapshotId, knowledge.ContractHash)
+                                        { RequirementsReview = requirementsReview, Checkpoint = MakeCheckpoint(), Run = Summary() };
+                                        await Event("result", "invalid", invalid.Message, result: invalid);
+                                        return invalid;
+                                    }
+                                    context.RequirementChecklist = requirements.Checklist;
+                                    WorkflowAiTelemetry.Recovery("requirements", "builder");
+                                    ObserveCommand(JsonSerializer.Serialize(new { requirementsReview.Checks, instruction = "Repair the missing requirements, preserving unrelated work, then finish again." }, JsonOptions));
+                                    await Event("progress", "repairing", "Repairing requirements found by independent review.");
+                                    return null;
+                                }
+                            }
                             var envelope = CommandEnvelope(command, request, apiKey, "proposal");
-                            var result = Result(envelope, JsonSerializer.SerializeToElement(model, JsonOptions), validation, request) with { Run = Summary() };
+                            var result = Result(envelope, definition, validation, request) with { Run = Summary(), RequirementsReview = requirementsReview };
                             await Event("result", "complete", "The validated proposal is ready for review.", result: result);
                             return result;
                         }
@@ -386,7 +407,7 @@ public sealed partial class WorkflowAiAuthoringService
                         return invalid;
                     }
                     ObserveCommand("The command failed Flowbit validation; the private draft is unchanged. Correct this error using the actual schema and smaller edits: " + diagnostic);
-                    RecoveryCounter.Add(1, new KeyValuePair<string, object?>("kind", "validation"));
+                    WorkflowAiTelemetry.Recovery("validation", "builder");
                     await Event("progress", "repairing", "Repairing a workflow validation error.");
                 }
                 return null;
@@ -395,8 +416,11 @@ public sealed partial class WorkflowAiAuthoringService
             AiRunSummaryDto Summary() => state.Summary(clock.Elapsed.TotalSeconds, execution);
             async Task Event(string type, string stage, string message, AiCheckpointDto? checkpoint = null, AiTurnResultDto? result = null)
             {
-                if (emit is not null) await emit(new AiRunEventDto { RunId = state.Id, Sequence = ++state.Sequence, Type = type,
-                    Stage = stage, Message = message, Checkpoint = checkpoint, Result = result, Run = Summary() }, deadline.Token);
+                if (emit is null) return;
+                await eventGate.WaitAsync(deadline.Token);
+                try { await emit(new AiRunEventDto { RunId = state.Id, Sequence = ++state.Sequence, Type = type,
+                    Stage = stage, Message = message, Checkpoint = checkpoint, Result = result, Run = Summary() }, deadline.Token); }
+                finally { eventGate.Release(); }
             }
             async Task<AiTurnResultDto> FinishPaused(string code, string message)
             {
@@ -407,14 +431,26 @@ public sealed partial class WorkflowAiAuthoringService
                 return result;
             }
         }
+        catch (WorkflowAiException error) when (error.Code == "run_budget" || options.RequirementsReviewEnabled
+            && error.Code is "context_too_large" or "requirements_unverified" or "provider_timeout" or "provider_wait")
+        {
+            runActivity?.SetTag("outcome", "paused");
+            var result = new AiTurnResultDto("paused", error.Message, [], null, [], [], [], Invalid("Generation or requirements review is incomplete."), request.SnapshotId, knowledge.ContractHash)
+                { Checkpoint = state.Checkpoint, Run = state.Summary(clock.Elapsed.TotalSeconds, execution) };
+            if (emit is not null) await emit(new AiRunEventDto { RunId = state.Id, Sequence = ++state.Sequence, Type = "paused", Code = error.Code,
+                Message = result.Message, Result = result, Run = result.Run }, cancellationToken);
+            return result;
+        }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
+            runActivity?.SetTag("outcome", "paused");
             var result = new AiTurnResultDto("paused", "The authoring run reached its time limit. Continue from the last completed draft step.", [], null, [], [], [],
                 Invalid("Generation is not complete."), request.SnapshotId, knowledge.ContractHash)
             { Checkpoint = state.Checkpoint, Run = state.Summary(clock.Elapsed.TotalSeconds, execution) };
             if (emit is not null) await emit(new AiRunEventDto { RunId = state.Id, Sequence = ++state.Sequence, Type = "paused", Code = "authoring_timeout", Message = result.Message, Result = result, Run = result.Run }, cancellationToken);
             return result;
         }
+        catch (OperationCanceledException) { runActivity?.SetTag("outcome", "cancelled"); throw; }
         finally
         {
             concurrency.Semaphore.Release();
@@ -424,7 +460,7 @@ public sealed partial class WorkflowAiAuthoringService
 
     private void ValidateCheckpoint(AiCheckpointDto checkpoint, string inputHash, string lockedId)
     {
-        if (checkpoint.Version is not (1 or 2) || checkpoint.InputHash != inputHash || checkpoint.ContractHash != knowledge.ContractHash)
+        if (checkpoint.Version is not (1 or 2 or 3) || checkpoint.InputHash != inputHash || checkpoint.ContractHash != knowledge.ContractHash)
             throw new WorkflowAiException("stale_checkpoint", "The original inputs, catalog, or authoring contract changed. Start a new request.", 409);
         if (checkpoint.Revision < 0 || checkpoint.Revision > 1_000_000 || checkpoint.Plan is null || checkpoint.Plan.Length > 10_000
             || checkpoint.Batches is null || checkpoint.Batches.Count > 100 || checkpoint.Batches.Any(batch => batch is null || string.IsNullOrWhiteSpace(batch.Id) || batch.Id.Length > 100 || batch.Hash is not { Length: 64 })
