@@ -45,7 +45,7 @@ The current model supports **21 node types**. “Worker” means the standalone 
 | `conditionalBoundaryEvent` | Observes instance-variable changes while its host is active; interrupts the host or captures repeatable false-to-true occurrences. | For `durableAsync` or an async host | [Conditional boundaries](#conditional-boundaries) |
 | `scopedInterruptEvent` | Flowbit extension: interrupts the nearest active activation of a referenced Parallel, Inclusive, or Complex split and continues with the surviving token. | No | [Scoped interrupt](../examples/gateways/06-scoped-interrupt-parallel-branch.json) |
 | `endEvent` | Completes its token. The instance completes when its remaining work has finished. | No | [Example catalog](../examples/README.md) |
-| `terminateEndEvent` | Completes the instance and atomically cancels other active tokens, tasks, waits, and gateway scopes. | No | [Quorum with terminate end](../examples/gateways/04-complex-two-of-three-merge.json) |
+| `terminateEndEvent` | Completes the instance and atomically cancels other active tokens, tasks, waits, and gateway scopes. | No | [Terminate with live siblings](../examples/gateways/08-terminate-live-siblings.json) |
 | `errorEndEvent` | Faults the instance with an authored error code/description and cancels sibling work. | No | [REST failure and error end](../examples/service-tasks/02-rest-error-boundary-and-error-end.json) |
 
 ## Graph and routing rules
@@ -145,6 +145,11 @@ Without async flags, pass-through nodes execute in the current transition until 
 Durable service/script work uses short staging and finalization transactions, with external HTTP or script execution between them. Lease generations, activation fences, and output-version checks prevent an expired attempt from overwriting newer state. They do **not** make remote HTTP side effects exactly-once. Send a stable downstream idempotency key derived from `sys.jobId`; `sys.jobAttempt` identifies the attempt.
 
 Node `job` policy selects `boundaryFirst` (default) or `retryFirst` failure handling. Omitting `retryDelays` uses the engine's retry schedule of 10 seconds, 1 minute, and 5 minutes; an explicit empty array disables automatic retries. Up to ten positive fixed ISO-8601 delays can be authored. Unresolved failures become inspectable incidents with fenced manual retry. See [deployment and Worker operations](deployment.md) and the [durable runtime reference](../Flowbit/README.md#durable-async-work-and-timers).
+
+Runnable scenarios in the [durable-job guide](../examples/durable-jobs/README.md)
+demonstrate each failure policy. The [nested scope](../examples/gateways/README.md#nested-scope-cancellation)
+and [receipt/deadline](../examples/messages/README.md#example-03-receipt-versus-timeout)
+walkthroughs show cancellation of durable waits while other work continues.
 
 ## Variables, expressions, and evidence
 

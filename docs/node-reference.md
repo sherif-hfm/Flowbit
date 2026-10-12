@@ -141,6 +141,9 @@ Task roles and action roles are separate checks: passing one does not bypass the
 
 A `rolesVariable` value must resolve to a nonempty string array with at most 100 entries, each trimmed role at most 300 Unicode scalar values. Missing values, wrong types, empty normalized lists, and oversized lists fail closed. Waiting work retains its captured task/action roles when variables change, pending children activate, or ownership changes. Authorized role managers can replace the saved policy through the roles API; this preserves existing ownership and completed children. Explicit empty literal/manual role lists remain unrestricted.
 
+The [multi-instance role-management walkthrough](../examples/multi-instance/README.md#role-management-across-active-and-pending-items)
+shows that replacement across active/pending children and stale-edit handling.
+
 `inboxVisibilityCondition` supports Boolean composition, scalar comparisons, arithmetic, variable-to-variable operands, and `Number(expr)`. It accepts declared scalar instance producers with consistent types (`string`, `number`, `boolean`, `date`, `datetime`), configured `config.*`/`setting.*` values, allowlisted `sys.claim.*` claims, and scalar `sys.user`, `sys.actingFor`, `sys.workflowName`, `sys.nodeName`, `sys.now`, `sys.today`, `sys.instanceId`, `sys.workflowId`, and `sys.nodeId` context. This is a bounded language, not unrestricted NCalc. Only exact true makes a task visible; missing/null/wrongly typed operands and failed arithmetic fail closed. It runs before inbox representative selection, count, order, and paging, and personal detail/actions recheck it (hidden work returns `404`). Management, distribution, and administrative surfaces keep their own privileged scope; configured recovery roles can bypass it for unclaim only.
 
 Visibility limits are 4,096 UTF-8 bytes, expression depth 8, 64 compiled instructions, 16 comparisons, 8 distinct instance-variable references, 16 external references, and 16 distinct literals. String literals allow 512 UTF-8 bytes; numeric literals allow 128 characters and exponent magnitude at most 100. For example, `"[amount] > Number([config.ReviewLimit]) and [approved] == false"` is valid when those variables/context values exist with appropriate types.
@@ -475,6 +478,10 @@ The event carries no node `variables` input form. Credentials and correlation te
 
 Declare `caseId` and `accepted` with compatible types and configure the secret before use. See [inbound-message integration](developer-guide.md#integrate-inbound-messages).
 
+Use the [receipt-versus-timeout example](../examples/messages/README.md#example-03-receipt-versus-timeout)
+to compare successful delivery with an interrupting timer boundary and rejected
+late delivery.
+
 ### intermediateTimerCatchEvent
 
 Persists a timed wait. The Worker resumes the token when its scheduled occurrence is due. A cyclic catch consumes a trigger and then leaves the node; it does not produce recurring sibling branches after departure.
@@ -609,7 +616,7 @@ A Flowbit control-flow extension. On entry, it finds the nearest active activati
 }
 ```
 
-The continuation cannot target the same interrupt, an entry event, a boundary event, or a Parallel/Complex merge directly. Cancellation covers nested gateway scopes, tasks/MI items, message/timer waits, conditional subscriptions, and durable jobs in the interrupted activation. Strict BPMN normally models this scope with an interruptible subprocess. See the [scoped-interrupt example](../examples/gateways/06-scoped-interrupt-parallel-branch.json).
+The continuation cannot target the same interrupt, an entry event, a boundary event, or a Parallel/Complex merge directly. Cancellation covers nested gateway scopes, tasks/MI items, message/timer waits, conditional subscriptions, and durable jobs in the interrupted activation. Strict BPMN normally models this scope with an interruptible subprocess. See the [scoped-interrupt example](../examples/gateways/06-scoped-interrupt-parallel-branch.json) and [nested-scope walkthrough](../examples/gateways/README.md#nested-scope-cancellation).
 
 ### endEvent
 
@@ -631,7 +638,7 @@ Completes the triggering token, cancels all other active tokens and gateway scop
 { "id": 91, "name": "Finish all work", "type": "terminateEndEvent" }
 ```
 
-See the [quorum example with terminate end](../examples/gateways/04-complex-two-of-three-merge.json).
+Compare both end types in the [terminate-with-live-siblings walkthrough](../examples/gateways/README.md#normal-end-versus-terminate-with-live-siblings).
 
 ### errorEndEvent
 
@@ -937,6 +944,9 @@ Only `task`, `userTask`, `serviceTask`, and `scriptTask` support these node prop
 | `job.retryDelays` | array of strings | Optional/null; `["PT10S", "PT1M", "PT5M"]`. | Delay before each retry, up to 10 positive fixed-unit ISO-8601 durations, each at most 128 characters. `[]` explicitly disables automatic retries. The initial attempt is additional to the retries. Calendar months/years and nonpositive delays are invalid. |
 
 For multi-instance tasks the async flags apply to the parent execution, not independently to each child. Workers must be deployed for jobs to advance. A durable REST call may be repeated after a failure; remote side effects need their own idempotency contract. See [durable execution](bpmn-support.md#synchronous-and-durable-execution).
+
+The [durable-job examples](../examples/durable-jobs/README.md) contrast the two
+failure policies and include a local REST retry/incident recovery walkthrough.
 
 ```json
 {

@@ -12,6 +12,7 @@ examples keep the required engine-only default outcome visible in the diagram.
 | [`04-early-quorum-and-priorities.json`](04-early-quorum-and-priorities.json) | No input. `quorumSize` defaults to `5`. | Start as `ApprovalCoordinator`. Distinct `Approver` users take `Approve` (`201`) or `Object` (`202`). `ApprovalManager` handles flow `401` when required. | Conditions run `afterEach`. Three approvals end early unless an objection already exists; then priority `1` routes to manual resolution ahead of priority `2`. Unfinished items are cancelled. If no condition wins after all items, fallback `203` is used. | Published definition and API; no Worker. Max instances must be at least `5`. |
 | [`05-parent-interrupt.json`](05-parent-interrupt.json) | No input. Process defaults assign four reviewers. | Start as `ReviewCoordinator`. Named `Reviewer` users may take flow `201`. A `ReviewManager` may take parent flow `202` with `interruptReason`, without owning a child item. | Normal completion writes four item rows. A parent interrupt cancels unfinished items, appends one `parentInterrupt` result row, and rests at **Inspect Interrupt Results**. | Published definition and API; no Worker. Use the multi-instance execution endpoints for the parent action. |
 | [`06-multi-instance-reminder.json`](06-multi-instance-reminder.json) | No input. Cardinality is fixed at `3`. | Complete each visible `Approve` action (`201`). The non-interrupting boundary timer requires no user action. | Aggregate conditions run `afterAll`; recurring timer branches increment `remindersSent` without completing the parent. All approvals route to the normal end. | API plus `Flowbit.Worker`. Durable job processing and timers must be enabled; the authored cycle is `R3/PT15S`. |
+| [`07-role-management-active-and-pending.json`](07-role-management-active-and-pending.json) | No input. Defaults assign `analyst`, `manager`, and `director`, with `reviewRoles=["Reviewer"]` and `approvalRoles=["Approver"]`. | `ReviewCoordinator` starts; each assigned actor takes flow `201`. After analyst completion, `RoleManager` replaces task/action roles for unfinished work. | The completed item retains its evidence; active/pending items keep assignees and share the replacement policy. Identical stale retry is unchanged success; a different stale edit is `409`. | Published definition, API, database, and the role-policy migration; no Worker or external setting. |
 
 ## Shared contract
 
@@ -104,9 +105,61 @@ unfinished children, writes the index-ordered child rows, and appends one final
 `kind: "parentInterrupt"` row containing flow `202`, the manager, action-time
 roles, timestamp, and `interruptReason`.
 
+## Role management across active and pending items
+
+Start `example-multi-instance-role-management` as `ReviewCoordinator`. The
+process defaults provide all values. Each child is directly assigned; role
+management cannot transfer that assignment or grant action authority to the
+manager performing the edit.
+
+1. Sign in as `analyst` with both `Reviewer` and `Approver`. Complete flow `201`
+   on the assigned child with `{"variables":{}}`. `analyst` is now completed,
+   `manager` is active, and `director` is pending.
+2. As `RoleManager`, find the returned `multiInstanceExecutionId` in task
+   management or instance detail, then read
+   `GET /api/multi-instance-executions/{executionId}/roles`. Save its actual
+   `rolePolicyId`; the sample `501` below is only a placeholder.
+3. Replace the complete policy through
+   `POST /api/multi-instance-executions/{executionId}/roles`:
+
+```json
+{
+  "expectedRolePolicyId": 501,
+  "roles": ["SeniorReviewer"],
+  "flows": [{ "flowId": 201, "roles": ["SeniorApprover"] }],
+  "reason": "Move unfinished review to the senior team"
+}
+```
+
+The acknowledgement has `changed=true` and a new policy ID. Both unfinished
+children receive that policy atomically. The completed analyst's action-time
+roles and history, and all three assignees, stay unchanged. The `reviewRoles`
+and `approvalRoles` source variables are unchanged too: the edit replaces the
+captured policy, not its authored source.
+
+Resend the **same body with the old policy ID**: this is unchanged success
+(`changed=false`) and creates no additional role-change audit event. Resend
+that stale ID with different task or action roles: the server returns `409`.
+Refresh the policy before making another intended edit.
+
+Give `manager` and `director` both `SeniorReviewer` and `SeniorApprover` in
+their test identities. Complete the manager's flow `201`, then the director's.
+The pending director activates under the replacement policy; the old
+`Reviewer`/`Approver` combination alone no longer authorizes unfinished work.
+Final `reviewResults` preserves all three items and their action-time roles.
+
+For the UI path, sign in as `RoleManager`, open **Task management**, filter to
+the running instance, and choose **Edit roles** on its MI work. Enter
+`SeniorReviewer` under **Task roles** and `SeniorApprover` under **Complete
+current review**, then **Save roles**. Reopen the policy to inspect it, then
+use the assigned actors' inboxes to finish. See
+[management UI](../../docs/ui-guide.md#manage-assignments-and-roles) and
+[roles API](../../docs/api-guide.md#post-apimulti-instance-executionsexecutionidroles).
+
 ## Worker boundary
 
-Examples 01 through 05 are synchronous and require only `Flowbit.Api`. Example
+Examples 01 through 05 and 07 are synchronous and require only `Flowbit.Api`
+and PostgreSQL. Example
 06 authors `asyncBefore`, `asyncAfter`, and a recurring non-interrupting timer
 boundary, so run `Flowbit.Worker` as well. Its 15-second local timings are for
 demonstration; increase them before adapting the definition for production.

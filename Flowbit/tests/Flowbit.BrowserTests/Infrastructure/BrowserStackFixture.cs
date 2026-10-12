@@ -412,8 +412,16 @@ public sealed class BrowserStackFixture : IAsyncLifetime
             ["Serilog__MinimumLevel__Override__Microsoft.Hosting.Lifetime"] = "Information",
         };
         if (acceptance is not null)
+        {
             for (var i = 0; i < acceptance.AuditClaims.Count; i++)
                 environment[$"WorkflowAudit__AllowedClaims__{i}"] = acceptance.AuditClaims[i];
+            foreach (var (key, value) in acceptance.WorkflowContextConfig)
+            {
+                if (key.Length == 0 || key.Any(character => !char.IsAsciiLetterOrDigit(character)))
+                    throw new ArgumentException("Acceptance workflow context keys must be alphanumeric.");
+                environment[$"WorkflowContext__Config__{key}"] = value;
+            }
+        }
         return environment;
     }
 

@@ -115,7 +115,9 @@ public sealed class WorkflowAuthoringPackageTests
         Assert.Equal(original, File.ReadAllBytes(System.IO.Path.Combine(output.Path, "flowbit-authoring.zip")));
         var loaded = new AuthoringKnowledge(package);
         Assert.Equal(original, loaded.GetPackageZip());
-        Assert.Equal(42, loaded.Resources.Count(item => item.Key.StartsWith("examples/", StringComparison.Ordinal) && item.Key.EndsWith(".json", StringComparison.Ordinal)));
+        Assert.Equal(ExampleWorkflowData.RelativePaths.Order(StringComparer.Ordinal),
+            loaded.Resources.Keys.Where(path => path.StartsWith("examples/", StringComparison.Ordinal)
+                && path.EndsWith(".json", StringComparison.Ordinal)).Order(StringComparer.Ordinal));
         using var archive = new ZipArchive(new MemoryStream(original));
         Assert.Equal(loaded.Resources.Keys.Select(key => "flowbit-authoring/" + key).Order(), archive.Entries.Select(entry => entry.FullName).Order());
         foreach (var entry in archive.Entries)

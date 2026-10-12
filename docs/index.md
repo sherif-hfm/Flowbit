@@ -104,6 +104,11 @@ Contributor browser commands are documented separately for the
 Both use disposable databases and localhost hosts; the acceptance suite is
 run explicitly and does not add or change a GitHub CI job.
 
+The [example coverage matrix](../examples/README.md#coverage-matrix) separates
+node-type coverage from runtime scenarios. For an operational walkthrough, use
+the [durable-job examples](../examples/durable-jobs/README.md) to observe retries,
+error-boundary precedence, attempts, and incident recovery with a local mock.
+
 ## Reference ownership
 
 The [node and property reference](node-reference.md) owns the consolidated authoring tables for nodes and their nested configuration. The [example catalog](../examples/README.md) owns each sample's prerequisites, actors, inputs, and expected outcome. The [runtime README](../Flowbit/README.md) remains the detailed implementation reference for database behavior and individual features. These guides explain the developer and operator workflows and link to those sources for deeper details.

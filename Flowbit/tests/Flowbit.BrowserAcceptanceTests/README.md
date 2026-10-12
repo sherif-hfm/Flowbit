@@ -2,7 +2,8 @@
 
 This standalone .NET 10 xUnit project closes the runtime browser checks in
 [Stage 5](../../../docs/refactoring/stage-05-instance-detail-components.md) and
-[Stage 11](../../../docs/refactoring/stage-11-administrative-action-display-components.md).
+[Stage 11](../../../docs/refactoring/stage-11-administrative-action-display-components.md),
+and exercises focused [canonical workflow examples](../../../examples/README.md#coverage-matrix).
 It is outside both solution files and GitHub CI. The existing
 [browser smoke suite](../Flowbit.BrowserTests/README.md) remains Worker-free;
 run it separately to retain the editor and basic runtime checks.
@@ -27,6 +28,10 @@ inspection, use the same test command with `--environment
 FLOWBIT_BROWSER_HEADED=1`. To run a subset, append `--filter
 FullyQualifiedName~InstanceDetailAcceptanceTests` or
 `--filter FullyQualifiedName~AdministrativeBatchAcceptanceTests`.
+For all canonical-example runtime, editor, and UI scenarios, append
+`--filter FullyQualifiedName~ExampleWorkflow`. Use
+`--filter FullyQualifiedName~ExampleWorkflowAcceptanceTests` for runtime-only
+coverage.
 
 Run final regressions separately:
 
@@ -38,8 +43,9 @@ git diff --check
 
 Publish/build before testing; the fixture never compiles applications. Do not
 rebuild either browser project while its test process is using the binaries
-(particularly on Windows). There are 24 cases: nine instance-detail cases,
-11 administrative cases, and four harness regressions. Test counts are separate
+(particularly on Windows). The original coverage has nine instance-detail cases,
+11 administrative cases, and four harness regressions; the example suite adds
+its runtime and browser scenarios. Test counts are separate
 from the number of screenshots or the earlier one-off runner's 11 groups.
 
 ## Isolation and evidence
@@ -55,6 +61,15 @@ All setup uses authenticated HTTP, including catalog entries, compatible workflo
 versions, delegation grants and batches. UI identities and selected claims are
 entered through the real token screen. API and Worker audit capture allowlists
 `department` and `region`; expression claim allowlisting is independent.
+
+`ExampleAcceptanceFixture` owns the example stack and its controlled retry
+service. It reads canonical JSONs directly and changes only workflow identity
+for isolation. `BrowserAcceptanceOptions.WorkflowContextConfig` supplies the
+same narrowly scoped example configuration to API and Worker: the loopback
+`exampleApiBaseUrl`, fixture-owned synthetic `exampleApiToken`, and message
+secret. The
+ordinary smoke fixture remains unable to start a Worker. Example tests do not rewrite
+graphs, database rows, clocks, or real API responses to force an outcome.
 
 The proxy receives the UI's server-side HTTP calls, forwards real request and
 response content unchanged, and can hold one matching response for a bounded
@@ -95,6 +110,10 @@ and timestamps. Native save dialogs and visual review remain manual gates.
 | A7 | Identity replacement and clearing hide restricted data; permission-denied and cleared-identity captures; authorized deep-link recovery. |
 | A8, three viewports | Held genuine history/items responses reveal loading branches; release restores the exact real instance row/link and pager; one history and one items request, with no duplicate request after recovery. |
 | Harness, four cases | Smoke rejects Worker activation; proxy transport/gating preserves real content; cleanup releases/disarms gates; ambient endpoint configuration is ignored. |
+| Canonical durable examples | REST fail-once success, three-attempt exhaustion and fenced incident recovery; one-attempt `boundaryFirst` versus exhausted `retryFirst` catches, with no incident for handled failures. |
+| Canonical messages and scopes | Timely receipt versus 30-second deadline; rejection of late delivery without mapped writes; inner MI/message/timer cancellation with surviving outer work; ordinary versus terminate end with live siblings. |
+| Canonical role management | One completed, one active, one pending child; policy replacement preserves ownership/history, applies when pending work activates, and distinguishes identical versus conflicting stale edits. |
+| Existing example corrections | Two-step approval's actual one-minute timer return; quorum `joinCancellation` cancels the third review before finalization. |
 
 Runtime viewports are 1440×900, 1024×768 and 390×844. Administrative cases that
 are not viewport theories capture the relevant state at all three sizes.
@@ -106,6 +125,21 @@ pages and section viewports, after finite CSS transitions settle; full pages
 are returned to the top with real wheel input before capture.
 [Fixture prerequisites](Fixtures/README.md) document the new instance-detail
 definition; administrative variants reuse the existing smoke definition.
+
+The example retry mock accepts `POST /retry` with
+`X-Example-Credential`, `X-Flowbit-Job-Id`, and `X-Flowbit-Job-Attempt`.
+`{"scenario":"fail-once"}` fails the first call per job; `{"scenario":"recover"}`
+keeps failing until the fixture releases that specific job. Success returns
+`{"ok":true}`. Tests correlate its observations with real job-attempt records
+and use bounded state polling, not exact timing assertions. See the
+[manual HTTP walkthrough](../../../examples/durable-jobs/README.md).
+
+For the six new diagrams, inspect load, representative node/boundary selection,
+save/reload, clipping, and overlaps at 1440×900 and 1024×768. Exercise incident
+retry and MI role editing at 1440×900, 1024×768, and 390×844. Review screenshots
+and console diagnostics; an API assertion does not replace this browser gate.
+Record unavailable native-picker paths separately rather than reporting them
+as verified.
 
 A6 intentionally stops only its own Worker while a harmless HTTP service call
 is held. The already-started item remains committed while the action transaction

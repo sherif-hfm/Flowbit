@@ -1,0 +1,183 @@
+{
+  "id": "example-retries-and-incident-recovery",
+  "name": "Durable Jobs Example 02 - Retries and Incident Recovery",
+  "initialEventId": 1,
+  "variables": [
+    {
+      "id": 1,
+      "name": "recovered",
+      "dataType": "boolean",
+      "isArray": false,
+      "nullable": false,
+      "required": false,
+      "defaultValue": false
+    },
+    {
+      "id": 2,
+      "name": "httpStatus",
+      "dataType": "number",
+      "isArray": false,
+      "nullable": false,
+      "required": false,
+      "defaultValue": 0
+    }
+  ],
+  "lanes": [
+    {
+      "id": 1,
+      "name": "Durable REST Recovery",
+      "externalId": "LANE_MAIN",
+      "x": 30,
+      "y": 30,
+      "w": 1250,
+      "h": 330
+    }
+  ],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Request Durable Work",
+      "externalId": "START_EVENT_1",
+      "type": "startEvent",
+      "laneId": 1,
+      "x": 80,
+      "y": 165,
+      "roles": [
+        "ExampleRequester"
+      ],
+      "variables": [
+        {
+          "id": 1,
+          "name": "scenario",
+          "dataType": "string",
+          "isArray": false,
+          "nullable": false,
+          "required": false,
+          "defaultValue": "fail-once",
+          "validation": "scenario == 'fail-once' or scenario == 'recover'"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "Call Controlled Service",
+      "externalId": "SERVICE_TASK_2",
+      "type": "serviceTask",
+      "laneId": 1,
+      "x": 300,
+      "y": 145,
+      "roles": [],
+      "variables": [],
+      "asyncBefore": true,
+      "job": {
+        "failureHandling": "retryFirst",
+        "retryDelays": [
+          "PT2S",
+          "PT2S"
+        ]
+      },
+      "service": {
+        "type": "rest",
+        "method": "POST",
+        "url": "${config.exampleApiBaseUrl}/retry",
+        "headers": [
+          {
+            "name": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "name": "X-Example-Credential",
+            "value": "${config.exampleApiToken}"
+          },
+          {
+            "name": "X-Flowbit-Job-Id",
+            "value": "${sys.jobId}"
+          },
+          {
+            "name": "X-Flowbit-Job-Attempt",
+            "value": "${sys.jobAttempt}"
+          }
+        ],
+        "body": "{\"scenario\":\"${scenario}\"}",
+        "timeoutSeconds": 10,
+        "statusVariable": "httpStatus",
+        "outputMappings": [
+          {
+            "variable": "recovered",
+            "path": "ok",
+            "dataType": "boolean",
+            "isArray": false,
+            "required": true,
+            "validation": "recovered == true"
+          }
+        ]
+      }
+    },
+    {
+      "id": 3,
+      "name": "Inspect Recovered Result",
+      "externalId": "USER_TASK_3",
+      "type": "userTask",
+      "laneId": 1,
+      "x": 720,
+      "y": 145,
+      "roles": [
+        "ExampleOperator"
+      ],
+      "variables": [],
+      "requiresClaim": false,
+      "claimMode": "fresh"
+    },
+    {
+      "id": 4,
+      "name": "Recovery Completed",
+      "externalId": "END_EVENT_4",
+      "type": "endEvent",
+      "laneId": 1,
+      "x": 1100,
+      "y": 165,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "Queue REST work",
+      "externalId": "FLOW_101",
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 201,
+      "name": "Review successful output",
+      "externalId": "FLOW_201",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 301,
+      "name": "Confirm recovery",
+      "externalId": "FLOW_301",
+      "sourceRef": 3,
+      "targetRef": 4,
+      "roles": [
+        "ExampleOperator"
+      ],
+      "variables": []
+    }
+  ],
+  "cancelRoles": [
+    "ExampleOperator"
+  ],
+  "unclaimRoles": [],
+  "taskAssignmentRoles": [
+    "ExampleOperator"
+  ],
+  "taskDistribution": null
+}
+

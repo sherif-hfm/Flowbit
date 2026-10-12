@@ -1,19 +1,20 @@
 # Message workflow examples
 
 These examples cover the two inbound-message entry points supported by Flowbit.
-They use only local API calls and server-resolved settings; neither workflow
+They use only local API calls and server-resolved settings; none of the workflows
 contacts an external service.
 
 | Example | Start values | Actors and actions | Expected result | Runtime requirements |
 | --- | --- | --- | --- | --- |
 | [`01-message-start-typed-mapping.json`](01-message-start-typed-mapping.json) | The JSON message supplies `orderId`, `customerEmail`, `totalAmount`, `requestedDate`, and optional typed fields. The `Idempotency-Key` header supplies the separate implicit `messageRequestId`. | A machine client starts the instance. An `OrderReviewer` takes flow `201` and may accept the default `reviewNote`. | A valid message creates an instance at **Review Imported Order**. The review action completes it. Duplicate transport keys are rejected permanently; duplicate active `orderId` business keys are rejected while their owning instance is active. | Published default definition and `Flowbit.Api`; no Worker. Supply the message-client secret and optionally override the seeded example settings below. |
 | [`02-message-catch-delivery-idempotency.json`](02-message-catch-delivery-idempotency.json) | Start node `1` with a required `purchaseOrderId`, for example `PO-1001`. | A `Purchasing` actor takes flow `201`; the machine client delivers the receipt; a `Purchasing` actor takes flow `401`. | The instance waits at **Wait for Provider Receipt**. One authenticated, valid delivery writes all six mapped values atomically and advances it. Reusing its delivery key returns `409`. | Published definition and `Flowbit.Api`; no Worker. Supply the message-client secret and optionally override the seeded client id. |
+| [`03-message-catch-with-timeout.json`](03-message-catch-with-timeout.json) | `ExampleRequester` starts node `1` with `caseKey`, default `CASE-EXAMPLE`. | The machine client delivers before expiry; `ExampleReviewer` takes flow `301`. Alternatively `ExampleOperator` takes escalation flow `501` after expiry. | Receipt cancels the competing deadline; the 30-second deadline cancels the message wait. Late delivery changes no mapped values. | Published definition, API, and Worker; use the same configured message credentials. |
 
 ## Required configuration
 
 The settings migration supplies the two non-secret `setting.*` example values
 shown below when they are missing. Supply the `config.*` secret through the API
-deployment configuration before running either example, and override the seeded
+deployment configuration before running these examples, and override the seeded
 values when a different local identity or correlation value is required:
 
 | Context key | Example local value | Purpose |
@@ -119,5 +120,51 @@ instance; an authenticated duplicate returns `409`. Invalid credentials return
 `401`, while a bad header, payload, mapping, validation, or wait state returns
 `400` without partial variable writes.
 
-No example embeds a working secret, invokes a public endpoint, or requires a
-background worker.
+## Example 03: receipt versus timeout
+
+Publish `example-message-catch-with-timeout` and start two separate runs through
+`POST /api/instances` as `ExampleRequester`:
+
+```json
+{
+  "workflowKey": "example-message-catch-with-timeout",
+  "startEventId": 1,
+  "variables": { "caseKey": "CASE-1001" }
+}
+```
+
+For the timely run, deliver to its returned instance ID while **Wait for
+Receipt** (node `2`) is active:
+
+```http
+POST /api/instances/{instanceId}/message
+Content-Type: application/json
+X-Client-Id: example-message-client
+X-Client-Secret: <configured server-side secret>
+X-Correlation: CASE-1001
+X-Flowbit-Delivery-Key: deadline-receipt-0001
+
+{"receipt":{"accepted":true,"code":"RCPT-1001"}}
+```
+
+The receipt writes `acknowledged=true` and `receiptCode="RCPT-1001"`, cancels
+the timer job, and opens **Review Timely Receipt**. As `ExampleReviewer`, take
+flow `301` to finish. An authenticated duplicate of the committed delivery key
+returns `409`.
+
+For the expiry run, send nothing, keep the Worker running, and wait until
+**Escalate Missing Receipt** appears. The timer is due after 30 seconds; use
+observed state rather than assuming it fires at an exact wall-clock instant.
+While escalation is still active, send the same valid receipt shape using a
+new delivery key. With no active message wait it returns `400`;
+`acknowledged=false` and `receiptCode="PENDING"` remain unchanged. The late
+message cannot restore the cancelled wait. As `ExampleOperator`, take flow
+`501` to resolve escalation.
+
+These are distinct conflicts: a late message with a new key is invalid wait
+state (`400`), while reuse of a committed delivery key is a duplicate (`409`).
+See [message HTTP contracts](../../docs/api-guide.md#instances-and-messages).
+
+No example embeds a working secret or invokes a public endpoint. Examples 01
+and 02 need only the API and database; example 03 also requires a Worker to
+fire its deadline.

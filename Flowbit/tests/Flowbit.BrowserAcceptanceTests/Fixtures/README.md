@@ -31,3 +31,12 @@ visual review and are not pixel-comparison baselines.
 
 No setup writes application tables or fabricates completed DTOs. The disposable
 database and all API/UI/Worker hosts belong to the acceptance fixture.
+
+The example acceptance fixture loads the six new definitions from the canonical
+[example catalog](../../../../examples/README.md), plus the existing two-step
+approval and quorum definitions. Only workflow identities are suffixed for
+isolation; no alternative graphs are kept here. A fixture-owned loopback retry
+service starts before the application hosts and supplies its URL/credential
+through matching API and Worker workflow context configuration. The message
+client uses the seeded example client ID and a fixture-owned secret. Actual
+HTTP actions and Worker attempts establish each scenario's evidence.

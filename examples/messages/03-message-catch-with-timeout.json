@@ -1,0 +1,217 @@
+{
+  "id": "example-message-catch-with-timeout",
+  "name": "Message Example 03 - Receipt versus Timeout",
+  "initialEventId": 1,
+  "variables": [
+    {
+      "id": 1,
+      "name": "acknowledged",
+      "dataType": "boolean",
+      "isArray": false,
+      "nullable": false,
+      "required": false,
+      "defaultValue": false
+    },
+    {
+      "id": 2,
+      "name": "receiptCode",
+      "dataType": "string",
+      "isArray": false,
+      "nullable": false,
+      "required": false,
+      "defaultValue": "PENDING"
+    }
+  ],
+  "lanes": [
+    {
+      "id": 1,
+      "name": "Receipt with a Deadline",
+      "externalId": "LANE_MAIN",
+      "x": 30,
+      "y": 30,
+      "w": 1370,
+      "h": 590
+    }
+  ],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Await Provider Receipt",
+      "externalId": "START_EVENT_1",
+      "type": "startEvent",
+      "laneId": 1,
+      "x": 80,
+      "y": 175,
+      "roles": [
+        "ExampleRequester"
+      ],
+      "variables": [
+        {
+          "id": 1,
+          "name": "caseKey",
+          "dataType": "string",
+          "isArray": false,
+          "nullable": false,
+          "required": false,
+          "defaultValue": "CASE-EXAMPLE",
+          "validation": "Length(caseKey) > 0"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "Wait for Receipt",
+      "externalId": "INTERMEDIATE_MESSAGE_CATCH_EVENT_2",
+      "type": "intermediateMessageCatchEvent",
+      "laneId": 1,
+      "x": 385,
+      "y": 175,
+      "roles": [],
+      "variables": [],
+      "message": {
+        "clientId": "${setting.examples.messageClientId}",
+        "clientSecret": "${config.exampleMessageClientSecret}",
+        "headerName": "X-Correlation",
+        "headerValue": "${caseKey}",
+        "headerValidation": "header == caseKey",
+        "outputMappings": [
+          {
+            "variable": "acknowledged",
+            "path": "receipt.accepted",
+            "dataType": "boolean",
+            "isArray": false,
+            "required": true,
+            "validation": "acknowledged == true"
+          },
+          {
+            "variable": "receiptCode",
+            "path": "receipt.code",
+            "dataType": "string",
+            "isArray": false,
+            "required": true,
+            "validation": "StartsWith(receiptCode, 'RCPT-')"
+          }
+        ],
+        "deliveryIdempotency": true,
+        "deliveryIdempotencyHeaderName": "X-Flowbit-Delivery-Key"
+      }
+    },
+    {
+      "id": 3,
+      "name": "Review Timely Receipt",
+      "externalId": "USER_TASK_3",
+      "type": "userTask",
+      "laneId": 1,
+      "x": 830,
+      "y": 155,
+      "roles": [
+        "ExampleReviewer"
+      ],
+      "variables": [],
+      "requiresClaim": false,
+      "claimMode": "fresh"
+    },
+    {
+      "id": 4,
+      "name": "30 Second Deadline",
+      "externalId": "TIMER_BOUNDARY_EVENT_4",
+      "type": "timerBoundaryEvent",
+      "laneId": 1,
+      "x": 430,
+      "y": 215,
+      "roles": [],
+      "variables": [],
+      "attachedToRef": 2,
+      "cancelActivity": true,
+      "timer": {
+        "timeDuration": "PT30S"
+      }
+    },
+    {
+      "id": 5,
+      "name": "Escalate Missing Receipt",
+      "externalId": "USER_TASK_5",
+      "type": "userTask",
+      "laneId": 1,
+      "x": 830,
+      "y": 435,
+      "roles": [
+        "ExampleOperator"
+      ],
+      "variables": [],
+      "requiresClaim": false,
+      "claimMode": "fresh"
+    },
+    {
+      "id": 6,
+      "name": "Receipt Case Complete",
+      "externalId": "END_EVENT_6",
+      "type": "endEvent",
+      "laneId": 1,
+      "x": 1240,
+      "y": 310,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "Open receipt window",
+      "externalId": "FLOW_101",
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 201,
+      "name": "Receipt arrived in time",
+      "externalId": "FLOW_201",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 301,
+      "name": "Confirm receipt",
+      "externalId": "FLOW_301",
+      "sourceRef": 3,
+      "targetRef": 6,
+      "roles": [
+        "ExampleReviewer"
+      ],
+      "variables": []
+    },
+    {
+      "id": 401,
+      "name": "Deadline expired",
+      "externalId": "FLOW_401",
+      "sourceRef": 4,
+      "targetRef": 5,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 501,
+      "name": "Resolve escalation",
+      "externalId": "FLOW_501",
+      "sourceRef": 5,
+      "targetRef": 6,
+      "roles": [
+        "ExampleOperator"
+      ],
+      "variables": []
+    }
+  ],
+  "cancelRoles": [
+    "ExampleOperator"
+  ],
+  "unclaimRoles": [],
+  "taskAssignmentRoles": [
+    "ExampleOperator"
+  ],
+  "taskDistribution": null
+}
+

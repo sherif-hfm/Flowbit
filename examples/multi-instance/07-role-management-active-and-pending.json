@@ -1,0 +1,160 @@
+{
+  "id": "example-multi-instance-role-management",
+  "name": "Multi-Instance Example 07 - Manage Active and Pending Roles",
+  "initialEventId": 1,
+  "variables": [
+    {
+      "id": 1,
+      "name": "reviewChain",
+      "dataType": "string",
+      "isArray": true,
+      "nullable": false,
+      "required": false,
+      "defaultValue": [
+        "analyst",
+        "manager",
+        "director"
+      ]
+    },
+    {
+      "id": 2,
+      "name": "reviewRoles",
+      "dataType": "string",
+      "isArray": true,
+      "nullable": false,
+      "required": false,
+      "defaultValue": [
+        "Reviewer"
+      ]
+    },
+    {
+      "id": 3,
+      "name": "approvalRoles",
+      "dataType": "string",
+      "isArray": true,
+      "nullable": false,
+      "required": false,
+      "defaultValue": [
+        "Approver"
+      ]
+    },
+    {
+      "id": 4,
+      "name": "reviewResults",
+      "dataType": "json",
+      "isArray": false,
+      "nullable": false,
+      "required": false,
+      "defaultValue": []
+    }
+  ],
+  "lanes": [
+    {
+      "id": 1,
+      "name": "Sequential Review with Managed Roles",
+      "externalId": "LANE_MAIN",
+      "x": 30,
+      "y": 30,
+      "w": 1250,
+      "h": 350
+    }
+  ],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Start Managed Review",
+      "externalId": "START_EVENT_1",
+      "type": "startEvent",
+      "laneId": 1,
+      "x": 80,
+      "y": 165,
+      "roles": [
+        "ReviewCoordinator"
+      ],
+      "variables": []
+    },
+    {
+      "id": 2,
+      "name": "Review with Saved Roles",
+      "externalId": "USER_TASK_2",
+      "type": "userTask",
+      "laneId": 1,
+      "x": 430,
+      "y": 145,
+      "roles": [],
+      "variables": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "rolesVariable": "reviewRoles",
+      "multiInstance": {
+        "mode": "sequential",
+        "source": "collection",
+        "collectionVariable": "reviewChain",
+        "onePerActor": false,
+        "completionEvaluation": "afterAll",
+        "resultVariable": "reviewResults"
+      }
+    },
+    {
+      "id": 3,
+      "name": "Managed Review Complete",
+      "externalId": "END_EVENT_3",
+      "type": "endEvent",
+      "laneId": 1,
+      "x": 1100,
+      "y": 165,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "Capture roles for all items",
+      "externalId": "FLOW_101",
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 201,
+      "name": "Complete current review",
+      "externalId": "FLOW_201",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [],
+      "variables": [],
+      "rolesVariable": "approvalRoles",
+      "isSelectable": true,
+      "isDefault": false,
+      "completionCondition": "CountFlow(201) == [mi.total]",
+      "completionPriority": 1
+    },
+    {
+      "id": 202,
+      "name": "Engine fallback",
+      "externalId": "FLOW_202",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [],
+      "variables": [],
+      "isSelectable": false,
+      "isDefault": true
+    }
+  ],
+  "cancelRoles": [
+    "ReviewCoordinator"
+  ],
+  "unclaimRoles": [
+    "ReviewCoordinator"
+  ],
+  "taskAssignmentRoles": [
+    "ReviewCoordinator"
+  ],
+  "taskDistribution": null,
+  "taskRoleManagementRoles": [
+    "RoleManager"
+  ]
+}
+

@@ -1,0 +1,227 @@
+{
+  "id": "example-error-boundary-precedence",
+  "name": "Durable Jobs Example 03 - Error Boundary Precedence",
+  "initialEventId": 1,
+  "variables": [
+    {
+      "id": 1,
+      "name": "boundaryFirstError",
+      "dataType": "string",
+      "isArray": false,
+      "nullable": false,
+      "required": false,
+      "defaultValue": ""
+    },
+    {
+      "id": 2,
+      "name": "retryFirstError",
+      "dataType": "string",
+      "isArray": false,
+      "nullable": false,
+      "required": false,
+      "defaultValue": ""
+    }
+  ],
+  "lanes": [
+    {
+      "id": 1,
+      "name": "Compare Boundary and Retry Order",
+      "externalId": "LANE_MAIN",
+      "x": 30,
+      "y": 30,
+      "w": 1600,
+      "h": 670
+    }
+  ],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Start Policy Comparison",
+      "externalId": "START_EVENT_1",
+      "type": "startEvent",
+      "laneId": 1,
+      "x": 80,
+      "y": 155,
+      "roles": [
+        "ExampleRequester"
+      ],
+      "variables": []
+    },
+    {
+      "id": 2,
+      "name": "Boundary First Failure",
+      "externalId": "SCRIPT_TASK_2",
+      "type": "scriptTask",
+      "laneId": 1,
+      "x": 340,
+      "y": 135,
+      "roles": [],
+      "variables": [],
+      "asyncBefore": true,
+      "job": {
+        "failureHandling": "boundaryFirst",
+        "retryDelays": [
+          "PT2S",
+          "PT2S"
+        ]
+      },
+      "scriptFormat": "javascript",
+      "assignments": [],
+      "script": "throw new Error('Intentional boundaryFirst example failure');",
+      "usesFlowInfo": false
+    },
+    {
+      "id": 3,
+      "name": "Catch Before Retries",
+      "externalId": "ERROR_BOUNDARY_EVENT_3",
+      "type": "errorBoundaryEvent",
+      "laneId": 1,
+      "x": 450,
+      "y": 195,
+      "roles": [],
+      "variables": [],
+      "attachedToRef": 2,
+      "errorVariable": "boundaryFirstError"
+    },
+    {
+      "id": 4,
+      "name": "Retry First Failure",
+      "externalId": "SCRIPT_TASK_4",
+      "type": "scriptTask",
+      "laneId": 1,
+      "x": 720,
+      "y": 360,
+      "roles": [],
+      "variables": [],
+      "asyncBefore": true,
+      "job": {
+        "failureHandling": "retryFirst",
+        "retryDelays": [
+          "PT2S",
+          "PT2S"
+        ]
+      },
+      "scriptFormat": "javascript",
+      "assignments": [],
+      "script": "throw new Error('Intentional retryFirst example failure');",
+      "usesFlowInfo": false
+    },
+    {
+      "id": 5,
+      "name": "Catch After Retries",
+      "externalId": "ERROR_BOUNDARY_EVENT_5",
+      "type": "errorBoundaryEvent",
+      "laneId": 1,
+      "x": 830,
+      "y": 420,
+      "roles": [],
+      "variables": [],
+      "attachedToRef": 4,
+      "errorVariable": "retryFirstError"
+    },
+    {
+      "id": 6,
+      "name": "Inspect Both Errors",
+      "externalId": "USER_TASK_6",
+      "type": "userTask",
+      "laneId": 1,
+      "x": 1090,
+      "y": 535,
+      "roles": [
+        "ExampleOperator"
+      ],
+      "variables": [],
+      "requiresClaim": false,
+      "claimMode": "fresh"
+    },
+    {
+      "id": 7,
+      "name": "Handled Failures Complete",
+      "externalId": "END_EVENT_7",
+      "type": "endEvent",
+      "laneId": 1,
+      "x": 1480,
+      "y": 555,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 8,
+      "name": "Unexpected Success",
+      "externalId": "END_EVENT_8",
+      "type": "endEvent",
+      "laneId": 1,
+      "x": 1110,
+      "y": 155,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "Queue boundary-first host",
+      "externalId": "FLOW_101",
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 201,
+      "name": "Only if script succeeds",
+      "externalId": "FLOW_201",
+      "sourceRef": 2,
+      "targetRef": 8,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 301,
+      "name": "Queue retry-first host",
+      "externalId": "FLOW_301",
+      "sourceRef": 3,
+      "targetRef": 4,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 401,
+      "name": "Only if script succeeds",
+      "externalId": "FLOW_401",
+      "sourceRef": 4,
+      "targetRef": 8,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 501,
+      "name": "Both failures handled",
+      "externalId": "FLOW_501",
+      "sourceRef": 5,
+      "targetRef": 6,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 601,
+      "name": "Acknowledge both errors",
+      "externalId": "FLOW_601",
+      "sourceRef": 6,
+      "targetRef": 7,
+      "roles": [
+        "ExampleOperator"
+      ],
+      "variables": []
+    }
+  ],
+  "cancelRoles": [
+    "ExampleOperator"
+  ],
+  "unclaimRoles": [],
+  "taskAssignmentRoles": [
+    "ExampleOperator"
+  ],
+  "taskDistribution": null
+}
+

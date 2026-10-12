@@ -11,9 +11,11 @@ gateway behavior easy to observe at a time. Load any JSON file directly into
 | `01-exclusive-priority-and-default.json` | An Exclusive split evaluates non-default routes by ascending `conditionPriority` and selects only the first match. The separate Exclusive merge has multiple incoming flows and one unconditional outgoing flow. |
 | `02-parallel-fork-and-join.json` | A Parallel split creates Finance, Legal, and Security work simultaneously. The Parallel join waits for one token from every incoming branch. |
 | `03-inclusive-conditional-split-and-merge.json` | An Inclusive split selects every true condition. Its default is used only when no condition matches, and the merge waits only for branches selected by the active split. |
-| `04-complex-two-of-three-merge.json` | A Parallel fork creates three reviews, while a Complex merge activates when `TotalIncomingCount() >= 2`. A terminate end event closes any remaining review after the coordinator finalizes. |
+| `04-complex-two-of-three-merge.json` | A Parallel fork creates three reviews, while a Complex merge activates when `TotalIncomingCount() >= 2`. Its `joinCancellation` cancels the unfinished review when the merge fires, before the coordinator finalizes. |
 | `05-complex-start-reset-cycle.json` | A Complex split uses `IncomingCount(flowId)` for activation and `[gateway.waitingForStart]` to choose start-phase versus reset-phase work across cycles. |
 | `06-scoped-interrupt-parallel-branch.json` | Flowbit's `scopedInterruptEvent` references a Parallel split with `gatewayRef`; triggering it cancels sibling work in the nearest active activation and continues on an emergency path. |
+| [`07-nested-scope-cancellation.json`](07-nested-scope-cancellation.json) | An inner Parallel activation contains sequential MI work, message/timer waits, and a supervisor trigger. Interrupting it preserves independent outer work and continues through recovery to the outer join. |
+| [`08-terminate-live-siblings.json`](08-terminate-live-siblings.json) | A controller chooses ordinary end or terminate while ordinary sibling work and a timer are live; there is no cancelling join to obscure which operation cancels work. |
 
 ## Suggested inputs and actions
 
@@ -38,9 +40,10 @@ Start `03-inclusive-conditional-split-and-merge.json` with:
 ### Complex quorum merge
 
 In `04-complex-two-of-three-merge.json`, complete any two reviewer tasks. The
-Complex merge activates and creates **Finalize Quorum Decision**. Taking its
-action reaches a terminate end event, which cancels the third review if it is
-still active.
+Complex merge activates and creates **Finalize Quorum Decision**. The merge's
+`joinCancellation` cancels the unfinished third review in that same transition.
+Inspect its cancelled state before finalizing: the later terminate end is not
+responsible for that cancellation.
 
 ### Complex phases
 
@@ -55,6 +58,65 @@ In `06-scoped-interrupt-parallel-branch.json`, leave **Normal Investigation**
 active and take **Trigger scoped interrupt** from **Raise Emergency**. The
 investigation task is cancelled and the promoted token rests at **Emergency
 Response**.
+
+### Nested scope cancellation
+
+Publish `07-nested-scope-cancellation.json` and start as `ExampleRequester`.
+`caseKey` defaults to `CASE-INNER`. Configure the seeded message client ID and
+`config.exampleMessageClientSecret` as described in the
+[message guide](../messages/README.md#required-configuration). Run a Worker to
+exercise the timer, or start it after interrupting so the queued timer remains
+available for inspection beforehand.
+
+1. Confirm **Independent Outer Work** is active for `ExampleReviewer`. The inner
+   scope also has **Sequential Inner Review** with one active assigned item
+   (`inner-analyst`) and two pending items (`inner-manager`, `inner-director`),
+   **Wait for Inner Message**, **Wait 15 Seconds**, and **Interrupt Inner Work**.
+   Inner reviewers would need `Reviewer` as well as their assigned identity.
+2. Before the inner timer fires, take **Stop only inner scope** (flow `801`) as
+   `Supervisor`. The interrupt references inner split `4`, not outer split `2`.
+   It cancels the inner active/pending items, message wait, timer wait, and timer
+   job; **Recover Inner Work** opens. The outer task remains active and actionable.
+3. Take **Recovery finished** (`1001`) as `Supervisor`. The outer join still waits
+   for **Independent Outer Work**; leave that task active during inspection.
+4. Inspect cancelled task/execution and job evidence. Keep the Worker running
+   past the cancelled timer's due time; it must not recreate inner work. A valid
+   late message to the cancelled wait (correct credentials, `X-Correlation`, a
+   fresh delivery key, and `{}` body) is rejected while the instance is running.
+   Finally finish outer work with flow `301` as `ExampleReviewer`.
+
+The continuation passes through a recovery task before the outer join because
+a scoped interrupt cannot directly target a Parallel merge. This definition
+does not cancel the outer activation or its independent branch.
+
+Selecting **Cancel Inner Scope** in the editor shows the advisory that its
+continuation can reach Parallel merge `11`, whose interrupted siblings might
+not satisfy the join. In this example the interrupt targets inner split `4`;
+merge `11` belongs to the outer work from split `2`. Its two inputs remain
+reachable through recovery and the surviving independent task, as the runtime
+walkthrough demonstrates. The advisory does not distinguish those scopes.
+
+### Normal end versus terminate with live siblings
+
+Publish `08-terminate-live-siblings.json` and start two runs as
+`ExampleRequester`; no inputs or external configuration are needed. Each run
+opens **Ordinary Sibling Work** for `ExampleReviewer`, a 15-second timer, and
+**Choose How to End** for `Supervisor`.
+
+- In the first run, take **End controller normally** (`501`) as `Supervisor`.
+  The instance remains running. The ordinary task stays actionable and the
+  timer completes through the Worker. Finish ordinary work with flow `301`;
+  the instance completes only once all branches have ended.
+- In the second run, take **Terminate all work** (`502`) before the timer fires.
+  The instance completes immediately, cancelling the ordinary task, timer wait,
+  and timer job. Keep the Worker running beyond the due time and confirm that
+  no sibling work reappears.
+
+For an unhurried inspection, start these runs with the Worker stopped, make
+the controller choice, then start the Worker. This changes no definition or
+clock and makes the normal-run timer's completion observable. Unlike the
+quorum example, this graph has no merge or `joinCancellation`; termination
+itself causes the sibling cancellation.
 
 ## Gateway authoring rules illustrated here
 

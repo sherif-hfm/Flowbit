@@ -274,6 +274,9 @@ In the tutorial, `Requester` starts; `Reviewer` or `Supervisor` can perform the 
 
 An authorized `taskRoleManagementRoles` actor can inspect and replace the waiting role policy with `GET`/`POST /api/user-tasks/{taskId}/roles` for a normal task, or `/api/multi-instance-executions/{executionId}/roles` for a repeated task. Use the returned `rolePolicyId` as the request's `expectedRolePolicyId`, and submit the complete task/action role lists and an optional reason. An identical stale retry is unchanged success; a different stale edit is `409`. A multi-instance edit updates all unfinished children atomically and preserves completed history and ownership.
 
+Follow the [sequential role-management example](../examples/multi-instance/README.md#role-management-across-active-and-pending-items)
+to replace roles while one child is completed, one active, and one pending.
+
 Ownership management uses `/assign` and `/unassign`, authorized independently through `taskAssignmentRoles`, with the task's returned `updatedAt` supplied as `expectedUpdatedAt`. Machine task distribution has its own configured workflow-family client credentials. Neither assignment management nor role management automatically grants normal action authority.
 
 ### Delegated work
@@ -422,6 +425,12 @@ For an asynchronous REST task, a service-header configuration can send the stabl
 This is an authored `service.headers` entry, not an API response. `sys.jobId` remains stable across retries of that job; `sys.jobAttempt` identifies the attempt. Namespace the key in the downstream system if several Flowbit deployments share that endpoint. A later new activity/job is a separate operation. Flowbit's transaction locks cannot make a remote HTTP effect exactly once or physically cancel an already-running remote call.
 
 Durable job policies control retry schedules and error-boundary precedence. Exhausted or conflicting work can open an incident for an authorized operator to inspect and retry. Do not resubmit the original user action to recover a job: the user action may already be committed. Read the instance's execution positions/job summary and use operational APIs instead.
+
+The [durable-job walkthrough](../examples/durable-jobs/README.md) demonstrates
+automatic recovery, exhaustion, and a bodyless incident-retry POST. The
+[receipt-versus-timeout example](../examples/messages/README.md#example-03-receipt-versus-timeout)
+demonstrates a message wait cancelled by its deadline; a late delivery returns
+`400` without changing mapped values.
 
 Atomic conditional catches evaluate within the variable writer's transaction. Durable conditional catches latch a true result and queue a wake that remains valid even if a later write makes the condition false. Conditional boundaries may also create sibling work or interrupt a host. Account for those transitions when your application updates variables administratively or submits outputs.
 

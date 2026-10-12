@@ -12,5 +12,8 @@ public sealed record BrowserAcceptanceOptions
     public bool StartEditorHost { get; init; }
     public bool LegacyUiWithoutInteractiveMarkers { get; init; }
     public IReadOnlyList<string> AuditClaims { get; init; } = ["department", "region"];
+    /// <summary>Test-owned config.* values supplied identically to API and Worker.</summary>
+    public IReadOnlyDictionary<string, string> WorkflowContextConfig { get; init; } =
+        new Dictionary<string, string>();
     public TimeSpan ScenarioTimeout { get; init; } = TimeSpan.FromMinutes(5);
 }

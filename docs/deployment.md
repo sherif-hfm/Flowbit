@@ -606,6 +606,13 @@ Observe queue depth and oldest age, timer lateness, acquisition/instance-lock la
 
 Use the UI Operations page or the role-protected jobs/incidents APIs. `WorkflowJobs.RequiredRole` defaults to `admin`. Collection endpoints use opaque keyset cursors; use detail/attempt endpoints to inspect evidence rather than expecting large execution snapshots in every list row.
 
+Practice against a controlled local service with the
+[durable-job examples](../examples/durable-jobs/README.md). They correlate
+`sys.jobId` and `sys.jobAttempt` with remote calls and show both automatic
+recovery and a fenced incident retry. The retry request has no JSON body and
+queues work; inspect subsequent Worker attempts before treating recovery as
+complete.
+
 | Symptom | Recovery approach |
 | --- | --- |
 | Durable tasks or timers stay queued | Check matching Worker processes, target database, configuration, due times, lease expiry, queue metrics, and logs. Turning the publication gate on does not start a Worker. |

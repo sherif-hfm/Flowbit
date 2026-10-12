@@ -1,0 +1,405 @@
+{
+  "id": "example-nested-scope-cancellation",
+  "name": "Gateway Example 07 - Nested Scope Cancellation",
+  "initialEventId": 1,
+  "variables": [
+    {
+      "id": 1,
+      "name": "reviewChain",
+      "dataType": "string",
+      "isArray": true,
+      "nullable": false,
+      "required": false,
+      "defaultValue": [
+        "inner-analyst",
+        "inner-manager",
+        "inner-director"
+      ]
+    },
+    {
+      "id": 2,
+      "name": "innerReviewResults",
+      "dataType": "json",
+      "isArray": false,
+      "nullable": false,
+      "required": false,
+      "defaultValue": []
+    }
+  ],
+  "lanes": [
+    {
+      "id": 1,
+      "name": "Outer Work and Interruptible Inner Work",
+      "externalId": "LANE_MAIN",
+      "x": 30,
+      "y": 30,
+      "w": 1600,
+      "h": 1040
+    }
+  ],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Start Nested Work",
+      "externalId": "START_EVENT_1",
+      "type": "startEvent",
+      "laneId": 1,
+      "x": 60,
+      "y": 530,
+      "roles": [
+        "ExampleRequester"
+      ],
+      "variables": [
+        {
+          "id": 1,
+          "name": "caseKey",
+          "dataType": "string",
+          "isArray": false,
+          "nullable": false,
+          "required": false,
+          "defaultValue": "CASE-INNER",
+          "validation": "Length(caseKey) > 0"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "Start Outer Branches",
+      "externalId": "PARALLEL_GATEWAY_2",
+      "type": "parallelGateway",
+      "laneId": 1,
+      "x": 220,
+      "y": 525,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 3,
+      "name": "Independent Outer Work",
+      "externalId": "USER_TASK_3",
+      "type": "userTask",
+      "laneId": 1,
+      "x": 900,
+      "y": 110,
+      "roles": [
+        "ExampleReviewer"
+      ],
+      "variables": [],
+      "requiresClaim": false,
+      "claimMode": "fresh"
+    },
+    {
+      "id": 4,
+      "name": "Start Inner Branches",
+      "externalId": "PARALLEL_GATEWAY_4",
+      "type": "parallelGateway",
+      "laneId": 1,
+      "x": 400,
+      "y": 570,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 5,
+      "name": "Sequential Inner Review",
+      "externalId": "USER_TASK_5",
+      "type": "userTask",
+      "laneId": 1,
+      "x": 620,
+      "y": 325,
+      "roles": [
+        "Reviewer"
+      ],
+      "variables": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "multiInstance": {
+        "mode": "sequential",
+        "source": "collection",
+        "collectionVariable": "reviewChain",
+        "onePerActor": false,
+        "completionEvaluation": "afterAll",
+        "resultVariable": "innerReviewResults"
+      }
+    },
+    {
+      "id": 6,
+      "name": "Wait for Inner Message",
+      "externalId": "INTERMEDIATE_MESSAGE_CATCH_EVENT_6",
+      "type": "intermediateMessageCatchEvent",
+      "laneId": 1,
+      "x": 680,
+      "y": 515,
+      "roles": [],
+      "variables": [],
+      "message": {
+        "clientId": "${setting.examples.messageClientId}",
+        "clientSecret": "${config.exampleMessageClientSecret}",
+        "headerName": "X-Correlation",
+        "headerValue": "${caseKey}",
+        "headerValidation": "header == caseKey",
+        "outputMappings": [],
+        "deliveryIdempotency": true,
+        "deliveryIdempotencyHeaderName": "X-Flowbit-Delivery-Key"
+      }
+    },
+    {
+      "id": 7,
+      "name": "Wait 15 Seconds",
+      "externalId": "INTERMEDIATE_TIMER_CATCH_EVENT_7",
+      "type": "intermediateTimerCatchEvent",
+      "laneId": 1,
+      "x": 680,
+      "y": 695,
+      "roles": [],
+      "variables": [],
+      "timer": {
+        "timeDuration": "PT15S"
+      }
+    },
+    {
+      "id": 8,
+      "name": "Interrupt Inner Work",
+      "externalId": "USER_TASK_8",
+      "type": "userTask",
+      "laneId": 1,
+      "x": 620,
+      "y": 905,
+      "roles": [
+        "Supervisor"
+      ],
+      "variables": [],
+      "requiresClaim": false,
+      "claimMode": "fresh"
+    },
+    {
+      "id": 9,
+      "name": "Cancel Inner Scope",
+      "externalId": "SCOPED_INTERRUPT_EVENT_9",
+      "type": "scopedInterruptEvent",
+      "laneId": 1,
+      "x": 890,
+      "y": 925,
+      "roles": [],
+      "variables": [],
+      "gatewayRef": 4
+    },
+    {
+      "id": 10,
+      "name": "Recover Inner Work",
+      "externalId": "USER_TASK_10",
+      "type": "userTask",
+      "laneId": 1,
+      "x": 1110,
+      "y": 905,
+      "roles": [
+        "Supervisor"
+      ],
+      "variables": [],
+      "requiresClaim": false,
+      "claimMode": "fresh"
+    },
+    {
+      "id": 11,
+      "name": "Wait for Outer Branches",
+      "externalId": "PARALLEL_GATEWAY_11",
+      "type": "parallelGateway",
+      "laneId": 1,
+      "x": 1370,
+      "y": 525,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 12,
+      "name": "All Outer Work Complete",
+      "externalId": "END_EVENT_12",
+      "type": "endEvent",
+      "laneId": 1,
+      "x": 1490,
+      "y": 530,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 13,
+      "name": "Inner Branch Complete",
+      "externalId": "END_EVENT_13",
+      "type": "endEvent",
+      "laneId": 1,
+      "x": 1070,
+      "y": 525,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "Fork outer work",
+      "externalId": "FLOW_101",
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 201,
+      "name": "Keep independent work",
+      "externalId": "FLOW_201",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 202,
+      "name": "Enter inner scope",
+      "externalId": "FLOW_202",
+      "sourceRef": 2,
+      "targetRef": 4,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 301,
+      "name": "Outer work finished",
+      "externalId": "FLOW_301",
+      "sourceRef": 3,
+      "targetRef": 11,
+      "roles": [
+        "ExampleReviewer"
+      ],
+      "variables": []
+    },
+    {
+      "id": 401,
+      "name": "Review branch",
+      "externalId": "FLOW_401",
+      "sourceRef": 4,
+      "targetRef": 5,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 402,
+      "name": "Message branch",
+      "externalId": "FLOW_402",
+      "sourceRef": 4,
+      "targetRef": 6,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 403,
+      "name": "Timer branch",
+      "externalId": "FLOW_403",
+      "sourceRef": 4,
+      "targetRef": 7,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 404,
+      "name": "Supervisor branch",
+      "externalId": "FLOW_404",
+      "sourceRef": 4,
+      "targetRef": 8,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 501,
+      "name": "Complete current review",
+      "externalId": "FLOW_501",
+      "sourceRef": 5,
+      "targetRef": 13,
+      "roles": [
+        "Reviewer"
+      ],
+      "variables": [],
+      "isSelectable": true,
+      "isDefault": false,
+      "completionCondition": "CountFlow(501) == [mi.total]",
+      "completionPriority": 1
+    },
+    {
+      "id": 502,
+      "name": "Engine fallback",
+      "externalId": "FLOW_502",
+      "sourceRef": 5,
+      "targetRef": 13,
+      "roles": [],
+      "variables": [],
+      "isSelectable": false,
+      "isDefault": true
+    },
+    {
+      "id": 601,
+      "name": "Message received",
+      "externalId": "FLOW_601",
+      "sourceRef": 6,
+      "targetRef": 13,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 701,
+      "name": "Timer elapsed",
+      "externalId": "FLOW_701",
+      "sourceRef": 7,
+      "targetRef": 13,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 801,
+      "name": "Stop only inner scope",
+      "externalId": "FLOW_801",
+      "sourceRef": 8,
+      "targetRef": 9,
+      "roles": [
+        "Supervisor"
+      ],
+      "variables": []
+    },
+    {
+      "id": 901,
+      "name": "Continue in outer scope",
+      "externalId": "FLOW_901",
+      "sourceRef": 9,
+      "targetRef": 10,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 1001,
+      "name": "Recovery finished",
+      "externalId": "FLOW_1001",
+      "sourceRef": 10,
+      "targetRef": 11,
+      "roles": [
+        "Supervisor"
+      ],
+      "variables": []
+    },
+    {
+      "id": 1101,
+      "name": "Both outer branches finished",
+      "externalId": "FLOW_1101",
+      "sourceRef": 11,
+      "targetRef": 12,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "cancelRoles": [
+    "Supervisor"
+  ],
+  "unclaimRoles": [],
+  "taskAssignmentRoles": [
+    "Supervisor"
+  ],
+  "taskDistribution": null
+}
+

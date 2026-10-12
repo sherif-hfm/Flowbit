@@ -1,0 +1,198 @@
+{
+  "id": "example-terminate-live-siblings",
+  "name": "Gateway Example 08 - Terminate with Live Siblings",
+  "initialEventId": 1,
+  "variables": [],
+  "lanes": [
+    {
+      "id": 1,
+      "name": "Normal End versus Terminate End",
+      "externalId": "LANE_MAIN",
+      "x": 30,
+      "y": 30,
+      "w": 1390,
+      "h": 770
+    }
+  ],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Start Parallel Work",
+      "externalId": "START_EVENT_1",
+      "type": "startEvent",
+      "laneId": 1,
+      "x": 80,
+      "y": 350,
+      "roles": [
+        "ExampleRequester"
+      ],
+      "variables": []
+    },
+    {
+      "id": 2,
+      "name": "Start Three Branches",
+      "externalId": "PARALLEL_GATEWAY_2",
+      "type": "parallelGateway",
+      "laneId": 1,
+      "x": 280,
+      "y": 345,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 3,
+      "name": "Ordinary Sibling Work",
+      "externalId": "USER_TASK_3",
+      "type": "userTask",
+      "laneId": 1,
+      "x": 540,
+      "y": 110,
+      "roles": [
+        "ExampleReviewer"
+      ],
+      "variables": [],
+      "requiresClaim": false,
+      "claimMode": "fresh"
+    },
+    {
+      "id": 4,
+      "name": "Wait 15 Seconds",
+      "externalId": "INTERMEDIATE_TIMER_CATCH_EVENT_4",
+      "type": "intermediateTimerCatchEvent",
+      "laneId": 1,
+      "x": 595,
+      "y": 350,
+      "roles": [],
+      "variables": [],
+      "timer": {
+        "timeDuration": "PT15S"
+      }
+    },
+    {
+      "id": 5,
+      "name": "Choose How to End",
+      "externalId": "USER_TASK_5",
+      "type": "userTask",
+      "laneId": 1,
+      "x": 540,
+      "y": 590,
+      "roles": [
+        "Supervisor"
+      ],
+      "variables": [],
+      "requiresClaim": false,
+      "claimMode": "fresh"
+    },
+    {
+      "id": 6,
+      "name": "Only This Branch Ends",
+      "externalId": "END_EVENT_6",
+      "type": "endEvent",
+      "laneId": 1,
+      "x": 1080,
+      "y": 225,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 7,
+      "name": "Terminate Entire Instance",
+      "externalId": "TERMINATE_END_EVENT_7",
+      "type": "terminateEndEvent",
+      "laneId": 1,
+      "x": 1190,
+      "y": 610,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "Fork work and controller",
+      "externalId": "FLOW_101",
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 201,
+      "name": "Ordinary work",
+      "externalId": "FLOW_201",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 202,
+      "name": "Timer work",
+      "externalId": "FLOW_202",
+      "sourceRef": 2,
+      "targetRef": 4,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 203,
+      "name": "Controller work",
+      "externalId": "FLOW_203",
+      "sourceRef": 2,
+      "targetRef": 5,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 301,
+      "name": "Finish ordinary work",
+      "externalId": "FLOW_301",
+      "sourceRef": 3,
+      "targetRef": 6,
+      "roles": [
+        "ExampleReviewer"
+      ],
+      "variables": []
+    },
+    {
+      "id": 401,
+      "name": "Timer completed",
+      "externalId": "FLOW_401",
+      "sourceRef": 4,
+      "targetRef": 6,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 501,
+      "name": "End controller normally",
+      "externalId": "FLOW_501",
+      "sourceRef": 5,
+      "targetRef": 6,
+      "roles": [
+        "Supervisor"
+      ],
+      "variables": []
+    },
+    {
+      "id": 502,
+      "name": "Terminate all work",
+      "externalId": "FLOW_502",
+      "sourceRef": 5,
+      "targetRef": 7,
+      "roles": [
+        "Supervisor"
+      ],
+      "variables": []
+    }
+  ],
+  "cancelRoles": [
+    "Supervisor"
+  ],
+  "unclaimRoles": [],
+  "taskAssignmentRoles": [
+    "Supervisor"
+  ],
+  "taskDistribution": null
+}
+
