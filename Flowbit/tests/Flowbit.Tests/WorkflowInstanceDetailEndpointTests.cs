@@ -142,6 +142,7 @@ public sealed class WorkflowInstanceDetailEndpointTests
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
             builder.UseEnvironment("Testing");
+            ApiTestAuthentication.Configure(builder);
             builder.ConfigureAppConfiguration((_, configuration) =>
                 configuration.AddInMemoryCollection(new Dictionary<string, string?>
                 {

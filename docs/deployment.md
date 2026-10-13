@@ -2,7 +2,7 @@
 
 [Documentation home](index.md) · [Local setup](getting-started.md) · [Developer guide](developer-guide.md) · [API reference](api-guide.md)
 
-Flowbit runs as a .NET 10 API backed by PostgreSQL. Deploy `Flowbit.Worker` when using durable tasks, timers, durable conditionals, administrative batches, or retention cleanup. `Flowbit.Ui` is optional for HTTP integrations and currently uses a shared development identity; production user authentication requires application changes.
+Flowbit runs as a .NET 10 API backed by PostgreSQL. Deploy `Flowbit.Worker` when using durable tasks, timers, durable conditionals, administrative batches, or retention cleanup. `Flowbit.Ui` is optional for HTTP integrations. It supports [OpenID Connect sign-in](openid-connect.md) with isolated per-login sessions on one UI instance; its shared test-identity utility is restricted to DevelopmentToken mode in Development.
 
 For a disposable development database and your first working instance, follow [Getting started](getting-started.md). This guide covers deployed services, migration ordering, and operational behavior of the current checkout.
 
@@ -30,9 +30,9 @@ For a disposable development database and your first working instance, follow [G
 | UI | Optional ASP.NET Core / Blazor Server application. | Management and demo client for the API; browser circuits use the server-side API client. |
 | Editor | Shared static document and adjacent assets under `Flowbit.Ui/wwwroot/editor/`. | Authors JSON locally or inside Flowbit.Ui. Local file authoring needs neither the database nor a Worker; API saves require API/database access. |
 
-Run replicas against the same authoritative database, with matching runtime configuration and compatible binaries. In-memory definition caches are rebuildable. PostgreSQL locking and durable fences coordinate mutations; extra API/Worker replicas do not replace a database availability and recovery strategy.
+Run API/Worker replicas against the same authoritative database, with matching runtime configuration and compatible binaries. In-memory definition caches are rebuildable. PostgreSQL locking and durable fences coordinate mutations; extra API/Worker replicas do not replace a database availability and recovery strategy. OIDC currently supports one UI instance: its session/token store is in memory and restarting it signs users out.
 
-Terminate HTTPS at a configured hosting boundary or configure Kestrel certificates. For a reverse proxy, validate forwarded scheme/host behavior in that deployment: this checkout does not provide a complete reverse-proxy configuration. The API and UI invoke HTTPS redirection. A browser frontend that calls the API directly also needs an explicit origin/CORS design; the bundled UI calls from its server.
+Terminate HTTPS at a configured hosting boundary or configure Kestrel certificates. For a reverse proxy, configure `ReverseProxy:KnownProxies` with the actual proxy IP addresses and verify the external HTTPS scheme/host and OIDC callbacks. Do not accept arbitrary forwarded headers. The API and UI invoke HTTPS redirection. A browser frontend that calls the API directly also needs an explicit origin/CORS design; the bundled UI calls from its server.
 
 ## Local Docker Compose stack
 
@@ -93,9 +93,9 @@ docker build -f Flowbit/src/Flowbit.Worker/Dockerfile -t flowbit-worker:local .
 
 Build stages use the [.NET SDK image](https://github.com/dotnet/dotnet-docker/blob/main/README.sdk.md); the final images run as a non-root user on the [.NET 10 ASP.NET Core runtime image](https://github.com/dotnet/dotnet-docker/blob/main/README.aspnet.md), including the Worker because it hosts HTTP health and metrics endpoints. The runtime variants use Ubuntu Noble.
 
-The UI Dockerfile copies Razor sources before restore so the SDK includes Blazor's framework assets. Its health check requests both the token page and the Blazor client script; server-rendered HTML alone does not establish that interactive controls can start.
+The UI Dockerfile copies Razor sources before restore so the SDK includes Blazor's framework assets. Its health check requests anonymous `/health/live` and the Blazor client script; it works in either authentication mode. Liveness does not check API/provider/database availability, and the script probe detects missing interactive assets.
 
-This Compose file is not a production deployment template. Changing only `DOTNET_ENVIRONMENT` disables automatic migrations and the API's development OpenAPI health check; it also leaves the UI's shared token generator intact. For deployment, apply [reviewed migrations](#database-migrations), provide a suitable API readiness probe, configure authentication and HTTPS, and follow the upgrade procedure below. Before rebuilding against an existing local database after schema changes, stop the stack so old API/Worker processes cannot run during migrations.
+This Compose file explicitly selects DevelopmentToken and is not a production deployment template. Changing only `DOTNET_ENVIRONMENT` disables automatic migrations and the API's development OpenAPI health check, and DevelopmentToken outside Development fails startup. For deployment, apply [reviewed migrations](#database-migrations), provide a suitable API readiness probe, configure [OIDC](openid-connect.md) and HTTPS, and follow the upgrade procedure below. The optional [Keycloak Compose file](../compose.oidc.yaml) is a separate local provider for host-run HTTPS API/UI. Before rebuilding against an existing local database after schema changes, stop the stack so old API/Worker processes cannot run during migrations.
 
 ## Configuration
 
@@ -106,7 +106,12 @@ ASP.NET Core configuration accepts JSON and environment variables. Use `__` to s
 | `ConnectionStrings:Flowbit` / `ConnectionStrings__Flowbit` | API, Worker, EF tooling | Npgsql connection string. Set explicitly; do not inherit a developer machine's database. Legacy `ConnectionStrings:WorkflowEngine` remains a fallback. |
 | `DOTNET_ENVIRONMENT` | All hosts | Use `Production` for a deployed service. Development API startup applies migrations automatically and exposes OpenAPI/Swagger. |
 | `ASPNETCORE_URLS` | API, UI | Host listener URLs. Worker instead uses `FlowbitWorker:HealthListenUrl`. |
-| `Jwt:Issuer`, `Jwt:Audience`, `Jwt:Key` | API; matching values for development UI | Current bearer validation uses the shared symmetric key, issuer, audience, and lifetime. Replace all sample values. |
+| `Authentication:Mode` | API, UI | `OpenIdConnect` for provider sign-in/JWT validation; `DevelopmentToken` is accepted only in Development. |
+| `Authentication:Oidc:*` | API, UI | Trusted authority, API audience/scope/claim mapping, and UI client/scopes/PKCE. See the complete [configuration table](openid-connect.md#modes-and-configuration). |
+| `Authentication:Session:*`, `Authentication:DataProtection*` | UI | Absolute session lifetime, circuit revalidation, persisted key-ring path and key protection. One UI instance; see [session operations](openid-connect.md#session-behavior-and-operations). |
+| `ReverseProxy:KnownProxies` | API, UI | Explicit proxy IP allowlist for forwarded headers, in addition to framework loopback defaults. Both hosts process these headers before HTTPS and authentication. |
+| `AllowedHosts` | API, UI | Semicolon-separated direct and forwarded host allowlist. The UI requires explicit public hostnames outside Development; missing or wildcard `*` values fail UI OIDC startup. API configuration is optional and retains its `*` default. |
+| `Jwt:Issuer`, `Jwt:Audience`, `Jwt:Key` | API; matching values for development UI | Symmetric test-token validation only in DevelopmentToken mode. No fallback in OpenIdConnect mode. |
 | `WorkflowApi:BaseUrl` / `WorkflowApi__BaseUrl` | UI | Server-to-server API address, default `http://localhost:5017`. |
 | `WorkflowContext:Config:<name>` / `WorkflowContext__Config__<name>` | API and Worker | Trusted `config.<name>` values for expressions and placeholders, including integration endpoints/credentials. Supply the same required values to both execution hosts. |
 | `WorkflowContext:AllowedClaims` / `WorkflowContext__AllowedClaims__0` etc. | API and Worker | Allowlist for `sys.claim.*`. API sample configuration allows `depId`; Worker does not automatically inherit it. |
@@ -122,15 +127,26 @@ For example, these are configuration names and **public placeholders**, not usab
 
 ```text
 ConnectionStrings__Flowbit=Host=DB_HOST;Port=5432;Database=FLOWBIT_DATABASE;Username=FLOWBIT_USER;Password=INJECTED_DATABASE_SECRET
-Jwt__Issuer=YOUR_TRUSTED_ISSUER
-Jwt__Audience=YOUR_FLOWBIT_AUDIENCE
-Jwt__Key=INJECTED_HIGH_ENTROPY_SIGNING_SECRET
+Authentication__Mode=OpenIdConnect
+Authentication__Oidc__Authority=https://YOUR_IDENTITY_PROVIDER/ISSUER_PATH
+Authentication__Oidc__Audience=YOUR_FLOWBIT_API_AUDIENCE
+Authentication__Oidc__ClientId=YOUR_CONFIDENTIAL_UI_CLIENT
+Authentication__Oidc__ClientSecret=INJECTED_UI_CLIENT_SECRET
+Authentication__DataProtectionKeysPath=/var/lib/flowbit/ui-keys
+Authentication__DataProtectionCertificatePath=/run/secrets/flowbit-ui-key-protection.pfx
+Authentication__DataProtectionCertificatePassword=INJECTED_CERTIFICATE_PASSWORD
+AllowedHosts=YOUR_PUBLIC_UI_HOSTNAME;127.0.0.1
 WorkflowContext__Config__exampleApiBaseUrl=https://YOUR_CONTROLLED_SERVICE
 WorkflowContext__Config__exampleApiToken=INJECTED_SERVICE_SECRET
 WorkflowContext__AllowedClaims__0=depId
 WorkflowDurableProcessing__PublicationEnabled=false
 FlowbitWorker__HealthListenUrl=http://127.0.0.1:8081
 ```
+
+Apply each name only to the host identified in the table; the key-ring certificate
+example is for a Linux UI deployment. DevelopmentToken load tools must target a
+Development API. A custom `LoadTest` environment is not an exemption: it requires
+OIDC configuration, and the existing HMAC-minting tools do not acquire OIDC tokens.
 
 Engine and workflow **settings stored in PostgreSQL** are distinct from host configuration. They are managed through [settings APIs](api-guide.md), not arbitrary environment variable names. Examples include `Workflow.RequiredRole`, `Settings.RequiredRole`, `WorkflowJobs.RequiredRole`, `NodeExecution.RequiredRole`, `Workflow.MultiInstance.MaxInstances`, and `Workflow.Async.MaxConsecutiveAutomaticActivations`. Missing/default management roles are generally `admin`; definition-owned permissions remain separate.
 
@@ -314,9 +330,11 @@ enable proxy/APM request-body or sensitive-header capture for these routes; the
 application does not persist provider keys or conversations. Selected workflow
 credential fields are masked in model context and unchanged values restored on
 edits. Review the provider's data handling before sending requirements or PDFs.
-The hosted UI retains the existing shared test identity boundary; its AI keys and
-conversation are panel-local and cleared on close, reset, disposal, and identity
-replacement. Production per-user authentication remains separate work.
+The hosted UI uses per-login sessions in OpenIdConnect mode and retains the shared
+test identity only in DevelopmentToken mode. AI keys and conversations remain
+panel-local and are cleared on close, reset, disposal, and identity replacement.
+Routine access-token refresh does not replace the actor or clear the conversation;
+session or actor/role changes do. Authentication failures do not replay AI streams.
 
 The API container installs Poppler, Tesseract, and English/Arabic language data.
 Text extraction uses PdfPig locally. OCR uses bounded raster sizes, process
@@ -368,13 +386,15 @@ checks the container's real English/Arabic OCR and mixed-page extraction using s
 
 ### User-facing API
 
-The current API validates bearer JWTs using `Jwt:Key` as a symmetric signing key. Issuer, audience, signature, and token lifetime are checked. Roles and the configured identity claim feed runtime authorization; allowlisted custom claims may be used in workflow expressions.
+`Authentication:Mode=OpenIdConnect` validates JWT access tokens using the trusted provider's discovery/JWKS, expected API audience, and lifetime. Bearer access additionally requires the configured API scope. Roles and the canonical actor claim feed existing runtime authorization; allowlisted custom claims may be used in workflow expressions. Configure [OIDC registration, PKCE, and claim mappings](openid-connect.md) before starting deployed hosts.
 
-There is **no API token-issuance endpoint**. The UI's `/token` page is a development utility. It can mint an HMAC-SHA256 token from the configured shared key or accept a token, then sends that token through its typed API client.
+There is **no API token-issuance endpoint**. The API never redirects callers to the provider or accepts an ID token for API access. The UI signs users in with confidential authorization code and PKCE by default; an explicit `UsePkce=false` option supports a configured confidential compatibility client. Access/refresh tokens stay server-side.
 
-**Flowbit.Ui is not a per-user authentication implementation.** `TokenState` and `DevTokenFactory` are registered as singletons; the selected identity applies to the entire UI process. `Production` does not convert this into user sessions or remove the token generator. Keep that utility within a trusted development environment. A production UI requires an authentication flow, per-user token/session storage, and corresponding authorization boundaries implemented in source.
+OIDC sessions are isolated per login, protected in memory, and bounded by an absolute lifetime. Only one UI instance is supported; restarts sign users out. The browser receives an HttpOnly session identifier cookie. Preserve a protected Data Protection key ring outside Development; configure Windows DPAPI or the required Linux certificate. Shared keys alone do not provide distributed sessions. API and Worker replicas remain supported.
 
-Integrating OIDC is also a source integration: configure a trusted provider in `AddJwtBearer`, map identity/role claims to the engine's contracts, and obtain tokens through your application. Merely adding `Authority` to configuration does not replace the current symmetric-key validator. Do not treat the bundled development signing key as a production trust boundary.
+`Authentication:Mode=DevelopmentToken` retains the process-wide `TokenState` and `/token` HMAC-SHA256 generator for trusted local testing, using matching API/UI `Jwt:*` settings. It is accepted only in Development; `/token` and the minting service are unavailable in OpenIdConnect mode. The production API never trusts the development signing key. This is a startup-breaking change for deployments that previously ran test-token authentication outside Development: provision OIDC before upgrading.
+
+Before switching providers or mode, compare `GET /api/auth/context` for existing users and preserve stored actor values. The default OIDC name claim is `flowbit_user`; the database setting `Authentication.UserIdentityClaim` still overrides canonical actor selection. No database migration changes assignments or old history. Machine integration credentials below retain their existing contracts.
 
 All administrative-action catalog, candidate, batch/audit, and direct instance endpoints require a nonblank authenticated actor and `Workflow.RequiredRole`. This engine setting accepts comma-separated roles matched case-insensitively; missing/blank defaults to `admin`, and custom roles replace the default. The HTTP and service/engine entry points share the policy. An administrator override does not relax ordinary task, inbox, claim, assignment, delegation, or multi-instance interrupt authorization. See [administrative HTTP contracts](api-guide.md#instance-administrative-actions).
 
@@ -408,8 +428,9 @@ PowerShell, API process:
 ```powershell
 $env:DOTNET_ENVIRONMENT = 'Production'
 $env:ASPNETCORE_URLS = 'http://127.0.0.1:5017'
-# ConnectionStrings__Flowbit and Jwt__* are supplied by the deployment environment.
-foreach ($flowbitKey in @('ConnectionStrings__Flowbit', 'Jwt__Issuer', 'Jwt__Audience', 'Jwt__Key')) {
+$env:Authentication__Mode = 'OpenIdConnect'
+# Database and trusted authority/audience are supplied by the deployment environment.
+foreach ($flowbitKey in @('ConnectionStrings__Flowbit', 'Authentication__Oidc__Authority', 'Authentication__Oidc__Audience')) {
     if (-not [Environment]::GetEnvironmentVariable($flowbitKey)) {
         throw "Required deployment environment variable is missing: $flowbitKey"
     }
@@ -423,16 +444,16 @@ Bash, API process:
 ```bash
 export DOTNET_ENVIRONMENT=Production
 export ASPNETCORE_URLS=http://127.0.0.1:5017
-# ConnectionStrings__Flowbit and Jwt__* are supplied by the deployment environment.
+export Authentication__Mode=OpenIdConnect
+# Database and trusted authority/audience are supplied by the deployment environment.
 : "${ConnectionStrings__Flowbit:?Set the intended database connection}"
-: "${Jwt__Issuer:?Set the trusted issuer}"
-: "${Jwt__Audience:?Set the API audience}"
-: "${Jwt__Key:?Inject the signing secret}"
+: "${Authentication__Oidc__Authority:?Set the trusted HTTPS authority}"
+: "${Authentication__Oidc__Audience:?Set the API audience}"
 cd artifacts/publish/api
 dotnet Flowbit.Api.dll
 ```
 
-Use a separate process rooted at the Worker publish directory with `dotnet Flowbit.Worker.dll`, and optionally one at the UI publish directory with `dotnet Flowbit.Ui.dll`. Assign distinct listener ports. These listener examples assume HTTPS is handled by the chosen hosting configuration.
+Use a separate process rooted at the Worker publish directory with `dotnet Flowbit.Worker.dll`, and optionally one at the UI publish directory with `dotnet Flowbit.Ui.dll`. Assign distinct listener ports. Configure the UI's client secret, API origin, protected key ring, and provider callback URLs using the [OIDC deployment contract](openid-connect.md). These listener examples assume HTTPS is handled by the chosen hosting configuration and explicit trusted-proxy settings.
 
 ## Database migrations
 

@@ -1256,11 +1256,29 @@ duplicate node/flow ids, and case-variant duplicate variable names are rejected.
 Cardinality and collection fan-out are bounded before allocation by
 `Workflow.MultiInstance.MaxInstances`.
 
+## Authentication ownership
+
+The API and UI select `Authentication:Mode=OpenIdConnect` or the Development-only
+`DevelopmentToken` utility. OIDC is a confidential UI authorization-code client
+with S256 PKCE by default; disabling PKCE is an explicit compatibility choice.
+The API validates the provider's JWT access tokens through discovery/JWKS,
+checks its own audience and configured API scope, and retains all existing
+workflow authorization. The development symmetric key is not an OIDC fallback.
+
+The UI owns protected in-memory authentication tickets and tokens per login;
+the browser receives a session identifier cookie. Token acquisition is explicit
+before each API request and serialized per login, with no automatic API retry.
+The ordinary client and AI streaming client share the identity/token provider.
+One UI replica is supported, and restart invalidates its sessions. Development
+test identity retains its process-wide shared state. The static standalone editor needs no identity
+provider. See [configuration, local Keycloak, and operations](../docs/openid-connect.md).
+
 The JWT claim used as the canonical workflow actor can be configured in
 `flowbit.engine_settings` with namespace `Authentication`, key
 `UserIdentityClaim`, and a stable claim name such as `sub` or `oid`. The value is
 loaded once at API startup. If the row is absent, the API retains the legacy
-`Identity.Name`/`NameIdentifier` selection; a configured claim that is missing or
+`Identity.Name`/`NameIdentifier` selection, with OIDC's configured name claim
+defaulting to `flowbit_user`; a configured claim that is missing or
 invalid causes a 401. Restart all API replicas after changing it, and migrate or
 drain active assignments and claims before switching identity formats.
 

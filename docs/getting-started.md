@@ -50,7 +50,7 @@ docker compose ps
 
 The root [Compose file](../compose.yaml) builds the .NET applications and starts PostgreSQL, the API, UI, and Worker. A local .NET SDK is not required. The API applies migrations after PostgreSQL becomes healthy; the UI and Worker start after the API responds. The default URLs match this tutorial: [API Swagger](http://127.0.0.1:15017/swagger), [UI](http://127.0.0.1:15152), and [Worker readiness](http://127.0.0.1:18081/health/ready). All published ports bind to loopback, with PostgreSQL at `127.0.0.1:55439`.
 
-Defaults run without a `.env` file. Optional [.env.example](../.env.example) overrides are documented with storage, image builds, startup ordering, and shutdown in [the Docker deployment guide](deployment.md#local-docker-compose-stack). This is a development stack with a shared UI test identity and public local credentials.
+Defaults run without a `.env` file. Optional [.env.example](../.env.example) overrides are documented with storage, image builds, startup ordering, and shutdown in [the Docker deployment guide](deployment.md#local-docker-compose-stack). This stack explicitly selects DevelopmentToken authentication, with a shared process-wide UI test identity and public local credentials. For real provider sign-in, follow the separate [OpenID Connect and Keycloak walkthrough](openid-connect.md#local-keycloak-walkthrough).
 
 Once startup succeeds, skip the host database/API/UI startup commands below and continue at [Generate the token](#generate-the-token), then complete either HTTP walkthrough. Compose already runs the Worker for the later timer exercise. Keep the default API and UI ports to use the walkthrough unchanged, and run either this stack or the host setup at one time to avoid port conflicts. The standalone [editor](../flowbit-editor.html) still opens directly in your browser; keep its adjacent JS/CSS assets together when copying it. Flowbit.Ui also offers **Create workflow** and per-version **Edit**; see [visual authoring](ui-guide.md#design-workflows-in-the-ui).
 
@@ -96,6 +96,7 @@ PowerShell:
 
 ```powershell
 $env:ConnectionStrings__Flowbit = 'Host=127.0.0.1;Port=55439;Database=flowbit_docs;Username=flowbit;Password=flowbit-docs-local-only'
+$env:Authentication__Mode = 'DevelopmentToken'
 $env:Jwt__Issuer = 'flowbit-docs-dev'
 $env:Jwt__Audience = 'flowbit-docs-api'
 $env:Jwt__Key = 'flowbit-docs-demo-signing-key-only-2026-09-09'
@@ -106,6 +107,7 @@ Bash:
 
 ```bash
 export ConnectionStrings__Flowbit='Host=127.0.0.1;Port=55439;Database=flowbit_docs;Username=flowbit;Password=flowbit-docs-local-only'
+export Authentication__Mode=DevelopmentToken
 export Jwt__Issuer='flowbit-docs-dev'
 export Jwt__Audience='flowbit-docs-api'
 export Jwt__Key='flowbit-docs-demo-signing-key-only-2026-09-09'
@@ -124,6 +126,7 @@ PowerShell:
 
 ```powershell
 $env:WorkflowApi__BaseUrl = 'http://127.0.0.1:15017'
+$env:Authentication__Mode = 'DevelopmentToken'
 $env:Jwt__Issuer = 'flowbit-docs-dev'
 $env:Jwt__Audience = 'flowbit-docs-api'
 $env:Jwt__Key = 'flowbit-docs-demo-signing-key-only-2026-09-09'
@@ -134,6 +137,7 @@ Bash:
 
 ```bash
 export WorkflowApi__BaseUrl='http://127.0.0.1:15017'
+export Authentication__Mode=DevelopmentToken
 export Jwt__Issuer='flowbit-docs-dev'
 export Jwt__Audience='flowbit-docs-api'
 export Jwt__Key='flowbit-docs-demo-signing-key-only-2026-09-09'
@@ -148,7 +152,7 @@ dotnet run --no-launch-profile --project ./Flowbit/src/Flowbit.Ui/Flowbit.Ui.csp
 4. Leave custom claims empty and click **Generate and apply**.
 5. Copy the value from **Raw JWT**. Paste only the token when the shell walkthrough prompts for it, without the `Bearer ` prefix.
 
-There is **no token-issuance HTTP endpoint**. The local UI server generates this development JWT using its configured symmetric key. Its test identity is process-wide and shared by every UI user. It is not production sign-in or per-user session isolation. See [authentication boundaries](deployment.md) before exposing the UI or API beyond local development.
+There is **no token-issuance HTTP endpoint**. The local UI server generates this development JWT using its configured symmetric key. The selected test identity is process-wide: another visitor changing it changes the identity used by that UI process. This utility requires both Development and `Authentication:Mode=DevelopmentToken`; it is unavailable in OpenIdConnect mode. See [authentication boundaries](deployment.md#authentication-boundaries) and [OIDC sign-in](openid-connect.md) for deployed hosts.
 
 All remaining approval steps use HTTP. Once a token is copied, the UI need not remain running for those requests; the token remains usable until its expiry if the API configuration stays the same.
 

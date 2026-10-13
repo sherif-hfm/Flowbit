@@ -15,6 +15,7 @@ Both applications use the connected F mark and blue [Flowbit identity](branding.
 ## Contents
 
 - [Before you begin](#before-you-begin)
+- [Sign in with OpenID Connect](#sign-in-with-openid-connect)
 - [Set your development identity](#set-your-development-identity)
 - [Complete your first approval](#complete-your-first-approval)
 - [Find your way around](#find-your-way-around)
@@ -35,11 +36,19 @@ Both applications use the connected F mark and blue [Flowbit identity](branding.
 
 Follow [Getting started](getting-started.md#prerequisites) to create an isolated PostgreSQL database, start the API, and [start Flowbit.Ui](getting-started.md#obtain-a-development-bearer-token). Both PowerShell and Bash commands are provided there. You can stop before the HTTP walkthrough and continue on this page instead.
 
-With that setup, open [Flowbit.Ui](http://127.0.0.1:15152). The UI's server-side API address is `WorkflowApi:BaseUrl`; its development JWT issuer, audience, and key must match the API configuration. Opening the UI alone does not start the API or database.
+With that DevelopmentToken setup, open [Flowbit.Ui](http://127.0.0.1:15152). The UI's server-side API address is `WorkflowApi:BaseUrl`; its development JWT issuer, audience, and key must match the API configuration. Opening the UI alone does not start the API or database. For provider sign-in, use the separate [OIDC setup](openid-connect.md).
 
 The first approval requires **API + database + UI**. Run the [Worker](getting-started.md#when-to-run-the-worker) for timers, async tasks, durable conditional wakes, administrative batches, and retention cleanup. The UI itself does not execute queued jobs.
 
-**Development identity boundary:** the current UI stores one identity for the entire UI process. Another visitor changing Test identity changes the identity attached to that process's API requests. This remains true in Production; production OIDC and per-user UI sessions require implementation. Read [authentication boundaries](deployment.md#authentication-boundaries) before exposing this interface beyond a trusted development environment.
+**Development identity boundary:** Test identity is shared by the entire UI process. Another visitor changing it changes the identity used by that process's API requests. It is enabled only when both the environment is Development and `Authentication:Mode=DevelopmentToken`; this mode is rejected on deployed non-Development hosts. It is a trusted testing utility, not a user directory.
+
+## Sign in with OpenID Connect
+
+When configured for OpenIdConnect, use **Sign in** to continue to the deployment's identity provider. The provider returns you to the UI after authentication. Test identity and `/token` are unavailable in this mode. The UI calls the API using your own server-held access token; another user's login does not replace it.
+
+Use **Sign out** to end the local session and initiate provider logout where supported. Sign-in and sign-out perform a full browser navigation. The session has an absolute eight-hour limit by default; API tokens refresh server-side when permitted by the provider. A UI restart loses all sessions and requires sign-in again. Other tabs revalidate their session periodically and on subsequent API token requests.
+
+The API remains authoritative for your workflow identity, roles, and actions. A successful provider login does not grant administration or task access. If authentication expires while working, sign in again and inspect the current workflow/task state before resubmitting an action; commands and AI streams are not automatically replayed. Export or save local editor work before deliberately navigating away. See [session behavior](openid-connect.md#session-behavior-and-operations) for deployment limits and the local Keycloak users.
 
 ## Set your development identity
 
@@ -49,7 +58,7 @@ The first approval requires **API + database + UI**. Run the [Worker](getting-st
 4. Leave custom claims empty for this tutorial. The default expiry is 60 minutes.
 5. Click **Generate and apply**. Confirm the **Current identity** shows your username and roles.
 
-The UI now attaches the bearer token to its API requests. You do not need to copy **Raw JWT** or call HTTP endpoints to follow this guide. **Apply pasted token** accepts an existing compatible token; **Clear identity** removes the process's current token. Generate or apply another token when it expires.
+The UI now attaches the bearer token to its API requests. You do not need to copy **Raw JWT** or call HTTP endpoints to follow this guide. **Apply pasted token** accepts an existing compatible development token; **Clear identity** removes the process's current token. Generate or apply another token when it expires. For the OIDC walkthrough, sign in as `alice` instead and skip these token-generation steps.
 
 Custom claim values are strings. **Add claim** lets you supply a name/value pair, but workflow expressions can access it only if the API also allowlists that name in `WorkflowContext:AllowedClaims`. Follow the [configuration guide](deployment.md#configuration) when an example needs claims or integration settings.
 
@@ -140,7 +149,7 @@ Paths below are relative to the UI origin, not API endpoints. Most data screens 
 | **Shared variables** | `/shared-variables` | Shared catalog contracts, current values, revisions, and lifecycle. |
 | **Shared-variable clients** | `/shared-variable-clients` | Machine-client scopes, credentials, rotation, and revocation. |
 | **Distribution search** | `/task-distribution` | Development-only search using workflow distribution credentials. |
-| **Test identity** | `/token` | Configure the UI process's development identity. |
+| **Test identity** | `/token` | Configure the UI process's development identity; DevelopmentToken mode only. |
 
 Overview totals and lists reflect the API's visibility rules; a restricted panel can report an authorization error while another panel works. Treat **My work** as the personal inbox rather than interpreting every displayed instance as actionable by you.
 
@@ -186,7 +195,7 @@ to those settings and require a new request after a change. Supported modes are
 experiment has been removed; drafts from that mode require a new request after
 the administrator changes the configuration. See [upgrade settings](deployment.md#ai-authoring-and-local-ocr).
 
-The current process-wide development identity boundary remains unchanged. Separate assistant panels do not share their provider keys, but this is not production per-user authentication.
+DevelopmentToken mode retains its process-wide test identity. OpenIdConnect mode uses isolated per-login server sessions. Separate assistant panels do not share provider keys; routine access-token refresh preserves panel state, while session or actor/role changes clear it.
 
 ### Visual editing and saving
 
@@ -198,7 +207,7 @@ Hosted saves are limited to **2 MiB of UTF-8 JSON**. Larger local imports remain
 
 **Unsaved changes** includes diagram and property edits and uncommitted JavaScript-dialog text. Use **Save & Close** in that dialog before saving the workflow. Leaving, reloading, New, or local import warns before discarding changes. New/local import clears the stored-version association and starts a new unsaved document; the existing key in imported JSON is editable. Downloading JSON does not mark the hosted document saved to the API. Edits made while an API save is running remain unsaved after that save completes. Undoing back to the last API-saved state clears the unsaved indicator.
 
-The editor mounts directly into the page using the same template, CSS, and JavaScript as the standalone editor. Its light appearance matches the app; the standalone page retains its theme toggle. Editor shortcuts apply while focus is inside the editor, and modal keyboard navigation stays in the active dialog. Blazor performs API operations using its existing server-side client; the editor does not receive its bearer token. The current process-wide Test identity boundary still applies. The standalone editor runs without the runtime when its complete asset folder is present.
+The editor mounts directly into the page using the same template, CSS, and JavaScript as the standalone editor. Its light appearance matches the app; the standalone page retains its theme toggle. Editor shortcuts apply while focus is inside the editor, and modal keyboard navigation stays in the active dialog. Blazor performs API operations using its server-side client; the editor does not receive its bearer token. DevelopmentToken's process-wide test identity and OIDC's per-login sessions retain their respective boundaries. If an OIDC session expires while the editor is open, local JSON export remains available while hosted saves and AI actions are disabled. Signing in navigates away and warns about unsaved work. The standalone editor runs without the runtime when its complete asset folder is present.
 
 ## Manage workflow versions
 
@@ -363,7 +372,7 @@ Saved policies apply to automatic Worker cleanup. **Run cleanup now** queues a r
 | Symptom | Next step |
 | --- | --- |
 | UI opens but data fails to load | Confirm API/database startup and the UI's `WorkflowApi:BaseUrl`. Read the page's error message. |
-| Authentication error / `401` | Generate or apply a nonexpired token; confirm matching API/UI issuer, audience, and signing key. |
+| Authentication error / `401` | In OpenIdConnect mode, sign in again; an operator should check the provider, audience, and actor claim. In DevelopmentToken mode, generate or apply a nonexpired token and confirm matching API/UI issuer, audience, and signing key. |
 | Workflow list or Start page denied | Check definition-administration permission as well as the selected event's start roles. |
 | Import fails | Select a valid exported Flowbit JSON document under 2 MiB, inspect the validation error, and check prerequisites in the example catalog. |
 | No start choices | The identity lacks an accepted manual-start role, or the workflow uses system-only message/timer starts. |

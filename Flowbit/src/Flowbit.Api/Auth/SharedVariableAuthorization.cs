@@ -22,6 +22,7 @@ public static class SharedVariableAuthorizationPolicies
                 JwtBearerDefaults.AuthenticationScheme,
                 SharedVariableClientAuthenticationDefaults.Scheme);
             policy.RequireAuthenticatedUser();
+            policy.AddRequirements(new FlowbitBearerScopeRequirement());
             policy.AddRequirements(new SharedVariableAccessRequirement(
                 SharedVariableClientScopes.Read,
                 AllowClient: true));
@@ -32,6 +33,7 @@ public static class SharedVariableAuthorizationPolicies
                 JwtBearerDefaults.AuthenticationScheme,
                 SharedVariableClientAuthenticationDefaults.Scheme);
             policy.RequireAuthenticatedUser();
+            policy.AddRequirements(new FlowbitBearerScopeRequirement());
             policy.AddRequirements(new SharedVariableAccessRequirement(
                 SharedVariableClientScopes.Write,
                 AllowClient: true));
@@ -40,6 +42,7 @@ public static class SharedVariableAuthorizationPolicies
         {
             policy.AddAuthenticationSchemes(JwtBearerDefaults.AuthenticationScheme);
             policy.RequireAuthenticatedUser();
+            policy.AddRequirements(new FlowbitBearerScopeRequirement());
             policy.AddRequirements(new SharedVariableAccessRequirement(
                 RequiredClientScope: null,
                 AllowClient: false));

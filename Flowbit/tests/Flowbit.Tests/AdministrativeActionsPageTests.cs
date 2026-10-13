@@ -466,12 +466,14 @@ public sealed class AdministrativeActionsPageTests
         await using var harness = await CreateHarnessAsync();
         var component = await harness.RenderPageAsync();
         var record = harness.Record;
-        await harness.SetBatchAsync(BatchDetail(98, status));
+        await harness.SetBatchAsync(BatchDetail(98, status), () =>
+        {
+            record.Clear();
+            record.ArmDetailGate();
+            record.ArmItemsGate();
+            record.ArmListGate();
+        });
         var before = await harness.HtmlAsync(component);
-        record.Clear();
-        record.ArmDetailGate();
-        record.ArmItemsGate();
-        record.ArmListGate();
         await record.DetailStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
         Assert.True(await harness.ValueAsync<bool>("refreshingBatch"));
         await harness.CallWithoutRenderAsync("RefreshCurrentBatchAsync");
@@ -700,9 +702,12 @@ public sealed class AdministrativeActionsPageTests
         /// <summary>
         /// Assigns the page's current batch directly through its field so the
         /// poll observes the staged state without issuing additional requests.
+        /// Optional gates are prepared on the dispatcher before making a batch
+        /// live, so a timer tick cannot observe partially armed response gates.
         /// </summary>
-        public Task SetBatchAsync(AdministrativeActionBatchDetailDto batch) => DispatchAsync(() =>
+        public Task SetBatchAsync(AdministrativeActionBatchDetailDto batch, Action? prepare = null) => DispatchAsync(() =>
         {
+            prepare?.Invoke();
             Record.SetDetail(batch);
             typeof(BatchPage).GetField("currentBatch", BindingFlags.Instance | BindingFlags.NonPublic)!
                 .SetValue(activator.Batch, batch);
@@ -760,8 +765,11 @@ public sealed class AdministrativeActionsPageTests
             {
                 var body = await request.Content!.ReadFromJsonAsync<JsonElement>(cancellationToken);
                 record.Posts.Add(new RecordedPost(path, body));
+                // Capture the gate before publishing readiness: the test may
+                // detach/rearm it as soon as the asynchronous signal completes.
+                var requestGate = record.PostGate;
                 record.PostStarted.TrySetResult();
-                if (record.PostGate is { } gate)
+                if (requestGate is { } gate)
                 {
                     return await gate.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
                 }
@@ -778,6 +786,7 @@ public sealed class AdministrativeActionsPageTests
             if (path is "/api/administrative-action-batches/98" or "/api/administrative-action-batches/99")
             {
                 record.IncrementDetail();
+                var requestGate = record.DetailGate;
                 record.DetailStarted.TrySetResult();
                 if (record.DenyDetail)
                 {
@@ -786,7 +795,7 @@ public sealed class AdministrativeActionsPageTests
                         Content = JsonContent.Create(new { error = "denied" })
                     };
                 }
-                if (record.DetailGate is { } gate)
+                if (requestGate is { } gate)
                 {
                     return await gate.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
                 }
@@ -797,8 +806,9 @@ public sealed class AdministrativeActionsPageTests
                 || path.StartsWith("/api/administrative-action-batches/99/items", StringComparison.Ordinal))
             {
                 record.IncrementItems();
+                var requestGate = record.ItemsGate;
                 record.ItemsStarted.TrySetResult();
-                if (record.ItemsGate is { } gate)
+                if (requestGate is { } gate)
                 {
                     return await gate.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
                 }
@@ -816,8 +826,9 @@ public sealed class AdministrativeActionsPageTests
             if (path.StartsWith("/api/administrative-action-batches?", StringComparison.Ordinal))
             {
                 record.IncrementList();
+                var requestGate = record.ListGate;
                 record.ListStarted.TrySetResult();
-                if (record.ListGate is { } gate)
+                if (requestGate is { } gate)
                 {
                     return await gate.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
                 }

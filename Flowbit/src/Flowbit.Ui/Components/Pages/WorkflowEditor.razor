@@ -7,19 +7,27 @@
 @inject WorkflowApiClient Api
 @inject IJSRuntime JS
 @inject NavigationManager Navigation
+@inject Flowbit.Ui.Auth.TokenState Token
 
 <PageTitle>Workflow editor · Flowbit</PageTitle>
 
 <NavigationLock OnBeforeInternalNavigation="BeforeNavigationAsync" />
 
 <div class="workflow-editor-page" data-editor-ready="@(loaded ? "true" : "false")">
+    @if (!Token.IsDevelopment && !Token.HasToken)
+    {
+        <div class="alert alert-warning" role="alert">
+            <strong>Your session has expired.</strong> Your unsaved workflow is still open. Export JSON from the File menu before signing in again; signing in leaves this page.
+            <IdentityAction Class="btn btn-primary btn-sm mt-2" />
+        </div>
+    }
     @if (host is null && !string.IsNullOrWhiteSpace(error))
     {
         <div class="editor-startup-error alert alert-danger" role="alert">@error</div>
     }
     <div class="editor-assistant-bar">
         <span>Build and refine your workflow</span>
-        <button type="button" id="open-ai-assistant" class="btn btn-sm btn-outline-primary" disabled="@(!loaded)" aria-expanded="@aiOpen.ToString().ToLowerInvariant()" @onclick="ToggleAi">AI assistant</button>
+        <button type="button" id="open-ai-assistant" class="btn btn-sm btn-outline-primary" disabled="@(!loaded || !CanUseHostedOperations)" aria-expanded="@aiOpen.ToString().ToLowerInvariant()" @onclick="ToggleAi">AI assistant</button>
     </div>
     <div class="editor-ai-layout @(aiOpen ? "ai-open" : "")">
         <div @ref="editorRoot" id="workflow-editor-root" class="flowbit-editor" aria-label="Workflow editor"></div>
@@ -47,6 +55,8 @@
     private long editorLoadRevision = -1;
     private long documentGeneration;
     private long? retainedRouteId;
+    private long? initializedRouteId;
+    private bool routeInitialized;
     private bool retainingDocument;
     private bool allowNavigation;
     private bool loaded;
@@ -60,12 +70,28 @@
     private string? error;
     private string? notice;
     private EditorHostState? lastHostState;
-    private sealed record EditorHostState(bool Loaded, bool Saving, string Version, string Source, string? Error, string? Notice);
+    private bool CanUseHostedOperations => Token.IsDevelopment || Token.HasToken;
+    private sealed record EditorHostState(bool Loaded, bool Saving, bool CanSave, string Version, string Source, string? Error, string? Notice);
+
+    protected override void OnInitialized() => Token.Changed += OnIdentityChanged;
+
+    private void OnIdentityChanged() => _ = InvokeAsync(async () =>
+    {
+        if (disposed) return;
+        if (!Token.IsDevelopment) aiOpen = false;
+        if (!CanUseHostedOperations)
+        {
+            error = "Your session has expired. Export your unsaved workflow before signing in again.";
+            notice = null;
+        }
+        await UpdateHostStateAsync();
+        StateHasChanged();
+    });
 
     private async Task UpdateHostStateAsync()
     {
         if (host is null || disposed) return;
-        var value = new EditorHostState(loaded, saving, source is null ? "New workflow" : $"Version {source.Version}",
+        var value = new EditorHostState(loaded, saving, CanUseHostedOperations, source is null ? "New workflow" : $"Version {source.Version}",
             source is null ? "" : $"{source.Name} · {source.WorkflowKey}", error, notice);
         if (value == lastHostState) return;
         await host.InvokeVoidAsync("setHostState", lifetime.Token, value);
@@ -79,8 +105,15 @@
         if (retainingDocument && retainedRouteId == Id)
         {
             retainingDocument = false;
+            initializedRouteId = Id;
+            routeInitialized = true;
             return;
         }
+        // Layout and authentication notifications can resend identical route
+        // parameters. Only a different document route may replace the draft.
+        if (routeInitialized && initializedRouteId == Id) return;
+        initializedRouteId = Id;
+        routeInitialized = true;
         loaded = false;
         definitionLoaded = false;
         source = null;
@@ -153,11 +186,18 @@
     public async Task SaveEditor()
     {
         if (!loaded || saving || host is null) return;
+        if (!CanUseHostedOperations)
+        {
+            error = "Sign in again before saving to Flowbit. Export JSON first to keep your unsaved workflow.";
+            await UpdateHostStateAsync();
+            return;
+        }
         saving = true;
         error = null;
         notice = null;
         var generation = documentGeneration;
         var sourceId = source?.Id;
+        var identity = Token.IdentityKey;
         try
         {
             await UpdateHostStateAsync();
@@ -167,11 +207,18 @@
                 ?? throw new InvalidOperationException("Workflow JSON could not be parsed.");
             if (generation != documentGeneration)
                 throw new InvalidOperationException("The document was replaced before submission. Save the replacement document again.");
+            if (!CanUseHostedOperations || identity != Token.IdentityKey)
+                throw new InvalidOperationException("Your identity changed before submission. Sign in again before saving.");
             var saved = sourceId.HasValue
                 ? await Api.CreateNewVersionAsync(sourceId.Value, new UpdateWorkflowRequest(definition, Publish: false), lifetime.Token)
                 : await Api.CreateWorkflowAsync(new CreateWorkflowRequest(definition, Publish: false), lifetime.Token);
             if (saved is null) throw new InvalidOperationException("The API returned no saved workflow version. Check Workflows before saving again.");
             if (disposed) return;
+            if (!CanUseHostedOperations || identity != Token.IdentityKey)
+            {
+                error = "Your identity changed while saving. Check Workflows after signing in; the submitted version may have been saved. Your local document remains unsaved.";
+                return;
+            }
             if (generation != documentGeneration)
             {
                 notice = $"Saved {saved.WorkflowKey} version {saved.Version}. The replacement document remains unsaved.";
@@ -206,11 +253,12 @@
         return InvokeAsync(StateHasChanged);
     }
 
-    private void ToggleAi() => aiOpen = !aiOpen;
+    private void ToggleAi() { if (CanUseHostedOperations) aiOpen = !aiOpen; }
     private void CloseAi() => aiOpen = false;
 
     private async Task<EditorAuthoringSnapshot> CaptureAiSnapshotAsync()
     {
+        if (!CanUseHostedOperations) throw new InvalidOperationException("Sign in again to use AI authoring.");
         if (!loaded || host is null || saving) throw new InvalidOperationException("Wait for the editor to finish loading or saving.");
         await using var reference = await host.InvokeAsync<IJSStreamReference>("authoringSnapshotStream", lifetime.Token);
         await using var stream = await reference.OpenReadStreamAsync(MaxDocumentBytes, lifetime.Token);
@@ -222,6 +270,7 @@
 
     private async Task ApplyAiProposalAsync(EditorAiProposal proposal)
     {
+        if (!CanUseHostedOperations) throw new InvalidOperationException("Sign in again to apply an AI proposal.");
         if (!loaded || host is null || saving) throw new InvalidOperationException("Wait for the editor to finish loading or saving.");
         if (!CanApplyAiProposal(proposal.OperationId)) throw new InvalidOperationException("This AI operation is no longer active.");
         await host.InvokeVoidAsync("beginAuthoringApply", lifetime.Token, proposal.OperationId);
@@ -236,7 +285,7 @@
     }
 
     [JSInvokable]
-    public bool CanApplyAiProposal(string operationId) => !disposed && loaded && !saving && aiOpen
+    public bool CanApplyAiProposal(string operationId) => !disposed && loaded && !saving && aiOpen && CanUseHostedOperations
         && aiPanel?.CanApplyAuthoringProposal(operationId) == true;
 
     private async Task InvalidateAiOperationAsync(string operationId)
@@ -286,6 +335,7 @@
     {
         if (disposed) return;
         disposed = true;
+        Token.Changed -= OnIdentityChanged;
         loadRevision++;
         await lifetime.CancelAsync();
         if (host is not null)

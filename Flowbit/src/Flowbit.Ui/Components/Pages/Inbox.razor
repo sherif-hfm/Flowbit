@@ -10,7 +10,7 @@
 <PageHeader Eyebrow="Workspace" Title="My work"
             Description="Review the user tasks visible to your current identity and move work forward.">
     <Actions>
-        <a class="btn btn-outline-secondary" href="token"><AppIcon Name="token" /> Change identity</a>
+        <IdentityAction Class="btn btn-outline-secondary" DevelopmentLabel="Change identity" />
         <button class="btn btn-primary" @onclick="LoadAsync" disabled="@(!Token.HasToken || loading)"><AppIcon Name="refresh" /> Refresh inbox</button>
     </Actions>
 </PageHeader>
@@ -24,7 +24,7 @@
 {
     <section class="panel">
         <EmptyState Icon="token" Title="A test identity is required" Description="Generate or paste a token to load the work items authorized for that user and role set.">
-            <a class="btn btn-primary" href="token">Set test identity</a>
+            <IdentityAction Class="btn btn-primary" DevelopmentLabel="Set test identity" />
         </EmptyState>
     </section>
 }
@@ -117,7 +117,7 @@ else
         {
             <div class="table-responsive">
                 <table class="table align-middle">
-                    <caption class="visually-hidden">Work items visible to the current test identity</caption>
+                    <caption class="visually-hidden">Work items visible to the current identity</caption>
                     <thead><tr><th scope="col">Task</th><th scope="col">Workflow</th><th scope="col">Assignment</th><th scope="col">Progress</th><th scope="col">Readiness</th>@if (includeVariables) { <th scope="col">Variables</th> }<th scope="col">Task updated</th><th scope="col"><span class="visually-hidden">Open</span></th></tr></thead>
                     <tbody>
                         @foreach (var item in result.Items)

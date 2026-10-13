@@ -3,21 +3,23 @@ using System.Net.Http.Headers;
 namespace Flowbit.Ui.Auth;
 
 /// <summary>
-/// Attaches the current <see cref="TokenState"/> JWT as a Bearer header to every
-/// outgoing API request.
+/// Acquires the current circuit's API token and attaches it to this request only.
+/// Responses are never retried, including rejected workflow mutations.
 /// </summary>
-public sealed class AuthTokenHandler(TokenState tokenState) : DelegatingHandler
+public sealed class AuthTokenHandler(IUiAccessTokenProvider tokens) : DelegatingHandler
 {
-    protected override Task<HttpResponseMessage> SendAsync(
+    protected override async Task<HttpResponseMessage> SendAsync(
         HttpRequestMessage request,
         CancellationToken cancellationToken)
     {
-        var token = tokenState.Token;
+        var token = await tokens.GetAccessTokenAsync(cancellationToken);
         if (!string.IsNullOrWhiteSpace(token))
         {
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
         }
 
-        return base.SendAsync(request, cancellationToken);
+        var response = await base.SendAsync(request, cancellationToken);
+        if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized) tokens.RejectSession();
+        return response;
     }
 }

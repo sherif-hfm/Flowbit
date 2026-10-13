@@ -24,12 +24,20 @@ public sealed class ActorContextResolver(
     public ActorContext Resolve(ClaimsPrincipal principal)
     {
         var configuredClaimType = configuration.ClaimType;
+        if (configuredClaimType is null && principal.Identity is ClaimsIdentity identity
+            && identity.NameClaimType != ClaimTypes.Name)
+        {
+            configuredClaimType = identity.NameClaimType;
+        }
         var user = configuredClaimType is null
             ? principal.Identity?.Name ?? principal.FindFirstValue(ClaimTypes.NameIdentifier)
             : ResolveConfiguredIdentity(principal, configuredClaimType);
 
-        var roles = principal.FindAll(ClaimTypes.Role)
+        var roles = principal.Identities.SelectMany(identity => identity.FindAll(identity.RoleClaimType))
             .Select(claim => claim.Value)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
         // Preserve the first value for each raw claim type. WorkflowContext.AllowedClaims
@@ -93,7 +101,8 @@ public sealed class ActorContextResolver(
             .Where(claim => candidateTypes.Contains(claim.Type))
             .ToList();
 
-        if (matchingClaims.Count == 0 || matchingClaims.Any(claim => string.IsNullOrWhiteSpace(claim.Value)))
+        if (matchingClaims.Count == 0 || matchingClaims.Any(claim =>
+                claim.ValueType != ClaimValueTypes.String || string.IsNullOrWhiteSpace(claim.Value)))
         {
             throw InvalidIdentityClaim(configuredClaimType);
         }

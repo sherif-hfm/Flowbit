@@ -14,7 +14,8 @@ public static class AuthenticationEndpoints
 
         group.MapGet("/context", GetContext)
             .Produces<ActorContextDto>(StatusCodes.Status200OK)
-            .Produces(StatusCodes.Status401Unauthorized);
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status403Forbidden);
 
         return app;
     }

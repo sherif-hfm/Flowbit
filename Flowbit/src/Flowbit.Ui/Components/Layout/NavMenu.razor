@@ -1,4 +1,5 @@
 @inject IWebHostEnvironment HostEnvironment
+@inject Flowbit.Ui.Auth.TokenState Token
 
 <nav class="nav-groups">
     <div class="nav-group">
@@ -81,6 +82,8 @@
         </NavLink>
     </div>
 
+    @if (Token.IsDevelopment)
+    {
     <div class="nav-group developer-group">
         <div class="nav-label">Developer</div>
         @if (HostEnvironment.IsDevelopment())
@@ -95,6 +98,7 @@
             <span>Test identity</span>
         </NavLink>
     </div>
+    }
 </nav>
 
 @code {

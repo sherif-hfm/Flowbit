@@ -12,6 +12,7 @@ Flowbit is a **BPMN-aligned JSON workflow engine** with a visual editor, an HTTP
 6. [Node and property reference](node-reference.md) — look up every task, event, and gateway, including properties, defaults, validation rules, and JSON fragments.
 7. [Deployment and operations](deployment.md) — configure, publish, migrate, monitor, and recover the runtime.
 8. [AI authoring and portable skill](ai-authoring.md) — generate and modify Flowbit JSON in the UI or install the self-contained authoring package in an external agent.
+9. [OpenID Connect](openid-connect.md) — configure provider sign-in, PKCE, API access tokens, actor continuity, and the local Keycloak walkthrough.
 
 [Branding reference](branding.md) — shared logo assets, palette, themes, and contributor maintenance.
 
@@ -32,11 +33,11 @@ Flowbit is a **BPMN-aligned JSON workflow engine** with a visual editor, an HTTP
 | `flowbit-editor.html` | Standalone browser editor; saves native Flowbit JSON with diagram layout and executable configuration. | No; the tutorial reuses a checked-in example. |
 | `Flowbit.Api` | Authenticated HTTP operations, definition validation, execution, and queries. | Yes. |
 | PostgreSQL | Stores immutable definition versions, execution state, work items, jobs, and history in the `flowbit` schema. | Yes. |
-| `Flowbit.Ui` | Blazor operations interface and development test-token page. Its current identity is shared by the whole UI process. | Used only to obtain the local development token. |
+| `Flowbit.Ui` | Blazor operations interface with per-login OIDC sign-in; DevelopmentToken mode provides a process-wide shared test identity. | Used only to obtain the local development token. |
 | `Flowbit.Worker` | Processes durable jobs, timers, retries, asynchronous conditional wakes, administrative batches, and retention cleanup. | No for the first approval; yes for examples requiring durable execution. |
 | Service / Infrastructure / Shared projects | Engine logic, persistence and integrations, and shared contracts behind the API and Worker. | Built as dependencies; applications can integrate entirely through HTTP. |
 
-Flowbit does not import or export BPMN XML, execute arbitrary BPMN diagrams, or provide production OIDC/per-user UI authentication out of the box. Read [BPMN support](bpmn-support.md) and [deployment](deployment.md) before choosing your integration and authentication boundaries.
+Flowbit does not import or export BPMN XML or execute arbitrary BPMN diagrams. OIDC requires an external provider and supports one UI instance with per-login in-memory sessions. Read [BPMN support](bpmn-support.md), [OpenID Connect](openid-connect.md), and [deployment](deployment.md) before choosing your integration and hosting boundaries.
 
 ## AI assistant improvement work
 

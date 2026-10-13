@@ -1,13 +1,10 @@
-using System.Text;
-using Microsoft.AspNetCore.Authentication;
-using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.OpenApi;
-using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi;
 using Serilog;
 using Flowbit.Api.Auth;
 using Flowbit.Api.Endpoints;
+using Flowbit.Api.Hosting;
 using Flowbit.Api.OpenApi;
 using Flowbit.Infrastructure.Data;
 using Flowbit.Infrastructure.Ai;
@@ -32,42 +29,14 @@ try
         .ReadFrom.Configuration(context.Configuration)
         .ReadFrom.Services(services));
 
-    var jwtIssuer = builder.Configuration["Jwt:Issuer"] ?? "workflow-engine-dev";
-    var jwtAudience = builder.Configuration["Jwt:Audience"] ?? "workflow-engine-api";
-    var jwtKey = builder.Configuration["Jwt:Key"]
-        ?? throw new InvalidOperationException("Jwt:Key is not configured.");
-    var signingKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey));
-
-    builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-        .AddJwtBearer(options =>
-        {
-            options.TokenValidationParameters = new TokenValidationParameters
-            {
-                AuthenticationType = JwtBearerDefaults.AuthenticationScheme,
-                ValidateIssuer = true,
-                ValidateAudience = true,
-                ValidateLifetime = true,
-                ValidateIssuerSigningKey = true,
-                ValidIssuer = jwtIssuer,
-                ValidAudience = jwtAudience,
-                IssuerSigningKey = signingKey
-            };
-        })
-        .AddScheme<SharedVariableClientAuthenticationOptions, SharedVariableClientAuthenticationHandler>(
-            SharedVariableClientAuthenticationDefaults.Scheme,
-            options =>
-            {
-                options.MaxClientIdRunes = 300;
-                options.MaxClientSecretBytes = 512;
-            });
-    builder.Services.AddAuthorization(SharedVariableAuthorizationPolicies.AddPolicies);
-    builder.Services.AddScoped<IAuthorizationHandler, SharedVariableAccessAuthorizationHandler>();
-    builder.Services.AddScoped<ISharedVariableCallerResolver, SharedVariableCallerResolver>();
+    builder.Services.AddFlowbitAuthentication(builder.Configuration, builder.Environment);
+    builder.Services.AddFlowbitForwardedHeaders(builder.Configuration);
 
     builder.Services.AddOpenApi(options =>
     {
-        options.AddDocumentTransformer((document, _, _) =>
+        options.AddDocumentTransformer((document, context, _) =>
         {
+            var authenticationSettings = context.ApplicationServices.GetRequiredService<FlowbitAuthenticationOptions>();
             document.Info = new OpenApiInfo
             {
                 Title = "Flowbit API",
@@ -105,9 +74,11 @@ try
 
                     ## Authentication
                     The `/api/instances` and `/api/workflows` groups require a bearer JWT
-                    validated against a shared symmetric key (`Jwt:Key`). The Blazor UI mints its
-                    own dev token from `/token`; for production swap `AddJwtBearer` to a real OIDC
-                    identity provider. The two message endpoints
+                    validated against the configured OpenID Connect authority and API audience.
+                    User tokens require the configured delegated API scope; roles and actor claims
+                    retain the workflow authorization rules. Flowbit.Ui signs in through authorization
+                    code with PKCE and sends access tokens from its server session. DevelopmentToken
+                    mode uses `Jwt:Key` only in Development. The two message endpoints
                     (`POST /api/instances/{id}/message` and `POST /api/workflows/{workflowKey}/message-start`)
                     are `AllowAnonymous` - they authenticate the caller against the node's
                     configured client id/secret + required custom header, not the user JWT. The
@@ -202,7 +173,9 @@ try
                 Type = SecuritySchemeType.Http,
                 Scheme = "bearer",
                 BearerFormat = "JWT",
-                Description = "JWT bearer token validated against the configured `Jwt:Key`."
+                Description = authenticationSettings.Mode == FlowbitAuthenticationOptions.OpenIdConnectMode
+                    ? $"JWT access token from the configured authority, for API audience '{authenticationSettings.Oidc.Audience}', with scope '{authenticationSettings.Oidc.RequiredScope}'. ID tokens are not API credentials."
+                    : "Development-only JWT bearer token validated against the configured Jwt:Issuer, Jwt:Audience, and Jwt:Key."
             };
             document.Components.SecuritySchemes = document.Components.SecuritySchemes ?? new Dictionary<string, IOpenApiSecurityScheme>();
             document.Components.SecuritySchemes["Bearer"] = securityScheme;
@@ -356,6 +329,7 @@ try
     builder.Services.AddSingleton<IAiDocumentExtractor, PdfDocumentExtractor>();
 
     var app = builder.Build();
+    app.UseForwardedHeaders();
     // Verify/cache the exact exported knowledge package before accepting authoring requests.
     _ = app.Services.GetRequiredService<IAuthoringKnowledge>();
 

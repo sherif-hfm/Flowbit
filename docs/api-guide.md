@@ -37,11 +37,11 @@ All JSON property names below are the wire names. Database identifiers are integ
 
 The examples use `Host: localhost:5017`; replace it with your API origin. Send `Content-Type: application/json` when sending a JSON body. `TOKEN`, client credentials, IDs, timestamps, and sample results are illustrative. Copy IDs, revision numbers, capability flags, and timestamps from actual preceding responses. A successful request may finish automatic routing before it responds, so its representative current node can already be an end event.
 
-The API currently validates bearer JWTs with the deployment's symmetric `Jwt:Key`, issuer, audience, and lifetime. It does not expose a login or token-issuance endpoint. The optional UI's `/token` page provides its development token; see [deployment authentication](deployment.md). The canonical actor claim is selected at API startup by `Authentication.UserIdentityClaim`; roles are normalized server-side. Call `GET /api/auth/context` to see the resulting identity.
+With `Authentication:Mode=OpenIdConnect`, the API validates JWT access tokens against the trusted authority's discovery/signing keys, expected audience, and lifetime, and requires `Authentication:Oidc:RequiredScope` (default `flowbit.api`). It does not expose a login or token-issuance endpoint, accept ID tokens, or redirect API callers to sign-in. `DevelopmentToken` retains symmetric `Jwt:Key` validation only in Development; the UI's `/token` utility is available only in that mode. See [OIDC configuration](openid-connect.md). The canonical actor claim is selected at API startup by `Authentication.UserIdentityClaim`, or the configured OIDC name claim when that engine setting is absent; roles are normalized server-side. Call `GET /api/auth/context` to see the resulting identity.
 
 | Permission name in this reference | Actual authorization |
 | --- | --- |
-| Bearer | A valid bearer JWT. Additional actor/task checks are described at the endpoint. |
+| Bearer | A valid JWT access token, plus the configured API scope in OpenIdConnect mode. Additional actor/task checks are described at the endpoint. |
 | Workflow administrator | Bearer plus any role in the comma-separated engine setting `Workflow.RequiredRole`, matched case-insensitively; missing/blank defaults to `admin`. A custom value replaces the default. Administrative-action routes also require a nonblank actor. |
 | Settings administrator | Bearer plus `Settings.RequiredRole`, default `admin`. |
 | Job operator | Bearer plus `WorkflowJobs.RequiredRole`, default `admin`. |
@@ -69,7 +69,7 @@ The API does not have one universal error envelope. Clients should branch on HTT
 | `200`, `201`, `202`, `204` | Successful read/mutation, created resource, accepted durable work, or success without a response body. `201` and `202` endpoints described below set `Location`. A batch `202` means preparation is queued, not that its items have executed. |
 | `400` | Domain validation normally returns `{"error":"description"}`. Malformed transport input may instead use framework binding errors or Problem Details. Task role/claim/flow mismatches are often domain errors, not `403`. |
 | `401` | Missing/invalid JWT or machine credentials. JWT middleware may return an empty body; service authentication errors can return `{"error":"description"}`. |
-| `403` | Required administrator/manager permission missing. Endpoint filters may return an empty body; service-level forbiddance returns an `error` object. |
+| `403` | Required OIDC API scope or administrator/manager permission missing. Endpoint filters may return an empty body; service-level forbiddance returns an `error` object. |
 | `404` | Missing resource, or an intentionally hidden personal-task/node-execution resource. Do not use detail probing to infer task availability. |
 | `409` | Stale work, incompatible version/reactivation, optimistic revision mismatch, or a conflict described below. Refresh the resource before deciding whether to retry. |
 | `413`, `415` | Request exceeds the endpoint limit, or JSON media type is required. The server/reverse proxy may impose a lower limit. |
@@ -139,7 +139,7 @@ Get the server-resolved actor identity and normalized roles.
 **Body:** none.
 
 **Success:** `200` [ActorContextDto](#schema-actorcontextdto).
-**Errors:** `401` Unauthorized. See [error envelopes](#errors-and-concurrency) and the family rules above.
+**Errors:** `401` Unauthorized; `403` Forbidden (missing OIDC API scope). See [error envelopes](#errors-and-concurrency) and the family rules above.
 
 ```http
 GET /api/auth/context HTTP/1.1
@@ -775,7 +775,7 @@ Starts a new workflow instance based on a workflow definition ID or key.
 **JSON body:** [StartInstanceRequest](#schema-startinstancerequest). Required JSON object; field presence, nullability and defaults are in the linked schema.
 
 **Success:** `201` [StartInstanceResultDto](#schema-startinstanceresultdto); `detail=full` returns [InstanceDetailDto](#schema-instancedetaildto).
-**Errors:** `400` Bad Request; `401` Unauthorized; `409` Conflict. See [error envelopes](#errors-and-concurrency) and the family rules above.
+**Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden (missing OIDC API scope); `409` Conflict. See [error envelopes](#errors-and-concurrency) and the family rules above.
 
 Default response is StartInstanceResultDto; detail=full selects InstanceDetailDto. StartEvent roles are enforced. Configured idempotency headers cannot be supplied through variables.
 
@@ -855,7 +855,7 @@ Lists workflow instances matching filter criteria.
 **Body:** none.
 
 **Success:** `200` [PagedResultOfInstanceSummaryDto](#schema-pagedresultofinstancesummarydto).
-**Errors:** `400` Bad Request; `401` Unauthorized. See [error envelopes](#errors-and-concurrency) and the family rules above.
+**Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden (missing OIDC API scope). See [error envelopes](#errors-and-concurrency) and the family rules above.
 
 ```http
 GET /api/instances?pageSize=50 HTTP/1.1
@@ -888,7 +888,7 @@ Search workflow instances with advanced variable predicates.
 **JSON body:** [InstanceSearchRequest](#schema-instancesearchrequest). Required JSON object; field presence, nullability and defaults are in the linked schema.
 
 **Success:** `200` [PagedResultOfInstanceSummaryDto](#schema-pagedresultofinstancesummarydto).
-**Errors:** `400` Bad Request; `401` Unauthorized; `413` Payload Too Large; `415` Unsupported Media Type. See [error envelopes](#errors-and-concurrency) and the family rules above.
+**Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden (missing OIDC API scope); `413` Payload Too Large; `415` Unsupported Media Type. See [error envelopes](#errors-and-concurrency) and the family rules above.
 
 ```http
 POST /api/instances/search HTTP/1.1
@@ -951,7 +951,7 @@ Retrieves user tasks pending claim or action for the current authenticated actor
 **Body:** none.
 
 **Success:** `200` [PagedResultOfInboxItemDto](#schema-pagedresultofinboxitemdto).
-**Errors:** `400` Bad Request; `401` Unauthorized. See [error envelopes](#errors-and-concurrency) and the family rules above.
+**Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden (missing OIDC API scope). See [error envelopes](#errors-and-concurrency) and the family rules above.
 
 ```http
 GET /api/instances/inbox?pageSize=50 HTTP/1.1
@@ -984,7 +984,7 @@ Search the actor inbox with advanced variable predicates.
 **JSON body:** [InboxSearchRequest](#schema-inboxsearchrequest). Required JSON object; field presence, nullability and defaults are in the linked schema.
 
 **Success:** `200` [PagedResultOfInboxItemDto](#schema-pagedresultofinboxitemdto).
-**Errors:** `400` Bad Request; `401` Unauthorized; `413` Payload Too Large; `415` Unsupported Media Type. See [error envelopes](#errors-and-concurrency) and the family rules above.
+**Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden (missing OIDC API scope); `413` Payload Too Large; `415` Unsupported Media Type. See [error envelopes](#errors-and-concurrency) and the family rules above.
 
 ```http
 POST /api/instances/inbox/search HTTP/1.1
@@ -1038,7 +1038,7 @@ Retrieves full structural and execution details of a specific workflow instance.
 **Body:** none.
 
 **Success:** `200` [InstanceDetailDto](#schema-instancedetaildto).
-**Errors:** `401` Unauthorized; `404` Not Found. See [error envelopes](#errors-and-concurrency) and the family rules above.
+**Errors:** `401` Unauthorized; `403` Forbidden (missing OIDC API scope); `404` Not Found. See [error envelopes](#errors-and-concurrency) and the family rules above.
 
 This is an authenticated deployment-level detail read, not a personal-task visibility check.
 
@@ -1352,7 +1352,7 @@ Lists all sequence flows currently available to be taken from the resting node o
 **Body:** none.
 
 **Success:** `200` array of [SequenceFlowModel](#schema-sequenceflowmodel).
-**Errors:** `401` Unauthorized; `404` Not Found; `409` Stale work or ambiguous legacy work address. See [error envelopes](#errors-and-concurrency) and the family rules above.
+**Errors:** `401` Unauthorized; `403` Forbidden (missing OIDC API scope); `404` Not Found; `409` Stale work or ambiguous legacy work address. See [error envelopes](#errors-and-concurrency) and the family rules above.
 
 ```http
 GET /api/instances/101/flows HTTP/1.1
@@ -1384,7 +1384,7 @@ A changed claim writes the same `taskClaim` history event as the [task-addressed
 **Body:** none.
 
 **Success:** `200` [InstanceDetailDto](#schema-instancedetaildto).
-**Errors:** `400` Bad Request; `401` Unauthorized; `404` Not Found; `409` Stale work or ambiguous legacy work address. See [error envelopes](#errors-and-concurrency) and the family rules above.
+**Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden (missing OIDC API scope); `404` Not Found; `409` Stale work or ambiguous legacy work address. See [error envelopes](#errors-and-concurrency) and the family rules above.
 
 ```http
 POST /api/instances/101/claim HTTP/1.1
@@ -1432,7 +1432,7 @@ A changed claim writes the same `taskClaim` history event as the [task-addressed
 **Body:** none.
 
 **Success:** `200` [InstanceDetailDto](#schema-instancedetaildto).
-**Errors:** `400` Bad Request; `401` Unauthorized; `404` Not Found; `409` Stale work or ambiguous legacy work address. See [error envelopes](#errors-and-concurrency) and the family rules above.
+**Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden (missing OIDC API scope); `404` Not Found; `409` Stale work or ambiguous legacy work address. See [error envelopes](#errors-and-concurrency) and the family rules above.
 
 ```http
 POST /api/instances/101/unclaim HTTP/1.1
@@ -1479,7 +1479,7 @@ Executes a transition flow from the current resting node to the next step.
 **JSON body:** [TakeFlowRequest](#schema-takeflowrequest). Required JSON object; field presence, nullability and defaults are in the linked schema.
 
 **Success:** `200` [InstanceDetailDto](#schema-instancedetaildto).
-**Errors:** `400` Bad Request; `401` Unauthorized; `404` Not Found; `409` Conflict. See [error envelopes](#errors-and-concurrency) and the family rules above.
+**Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden (missing OIDC API scope); `404` Not Found; `409` Conflict. See [error envelopes](#errors-and-concurrency) and the family rules above.
 
 ```http
 POST /api/instances/101/flows/201 HTTP/1.1
@@ -1532,7 +1532,7 @@ Cancels an active workflow instance.
 **Body:** none.
 
 **Success:** `204` without a response body.
-**Errors:** `400` Bad Request; `401` Unauthorized; `404` Not Found; `409` Conflict. See [error envelopes](#errors-and-concurrency) and the family rules above.
+**Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden (missing OIDC API scope); `404` Not Found; `409` Conflict. See [error envelopes](#errors-and-concurrency) and the family rules above.
 
 No request body. Cancels all active tokens, open work and waits atomically; an empty cancelRoles list does not grant cancellation.
 
@@ -1630,7 +1630,7 @@ List open tasks visible to assignment or role managers.
 **Body:** none.
 
 **Success:** `200` [PagedResultOfManagedUserTaskDto](#schema-pagedresultofmanagedusertaskdto).
-**Errors:** `400` Bad Request; `401` Unauthorized. See [error envelopes](#errors-and-concurrency) and the family rules above.
+**Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden (missing OIDC API scope). See [error envelopes](#errors-and-concurrency) and the family rules above.
 
 ```http
 GET /api/user-tasks/manage?pageSize=50 HTTP/1.1
@@ -1663,7 +1663,7 @@ Search manageable user tasks with advanced variable predicates.
 **JSON body:** [ManageableUserTaskSearchRequest](#schema-manageableusertasksearchrequest). Required JSON object; field presence, nullability and defaults are in the linked schema.
 
 **Success:** `200` [PagedResultOfManagedUserTaskDto](#schema-pagedresultofmanagedusertaskdto).
-**Errors:** `400` Bad Request; `401` Unauthorized; `413` Payload Too Large; `415` Unsupported Media Type. See [error envelopes](#errors-and-concurrency) and the family rules above.
+**Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden (missing OIDC API scope); `413` Payload Too Large; `415` Unsupported Media Type. See [error envelopes](#errors-and-concurrency) and the family rules above.
 
 ```http
 POST /api/user-tasks/manage/search HTTP/1.1
@@ -1712,7 +1712,7 @@ Read one personal user task and the caller’s capabilities.
 **Body:** none.
 
 **Success:** `200` [UserTaskDto](#schema-usertaskdto).
-**Errors:** `400` Bad Request; `401` Unauthorized; `404` Not Found. See [error envelopes](#errors-and-concurrency) and the family rules above.
+**Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden (missing OIDC API scope); `404` Not Found. See [error envelopes](#errors-and-concurrency) and the family rules above.
 
 ```http
 GET /api/user-tasks/301 HTTP/1.1
@@ -1761,7 +1761,7 @@ Discover currently available selectable actions for a personal task.
 **Body:** none.
 
 **Success:** `200` array of [SequenceFlowModel](#schema-sequenceflowmodel).
-**Errors:** `401` Unauthorized; `404` Not Found. See [error envelopes](#errors-and-concurrency) and the family rules above.
+**Errors:** `401` Unauthorized; `403` Forbidden (missing OIDC API scope); `404` Not Found. See [error envelopes](#errors-and-concurrency) and the family rules above.
 
 Only actionable selectable flows are returned; engine-only multi-instance fallback/outcome flows are omitted. Discover again after claiming or refreshing state.
 
@@ -1818,7 +1818,7 @@ A successful ownership change appends one `taskClaim` instance-history row in th
 **Body:** none.
 
 **Success:** `200` [UserTaskDto](#schema-usertaskdto).
-**Errors:** `400` Bad Request; `401` Unauthorized; `404` Not Found; `409` Conflict. See [error envelopes](#errors-and-concurrency) and the family rules above.
+**Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden (missing OIDC API scope); `404` Not Found; `409` Conflict. See [error envelopes](#errors-and-concurrency) and the family rules above.
 
 ```http
 POST /api/user-tasks/301/claim HTTP/1.1
@@ -1869,7 +1869,7 @@ A successful release appends one `taskClaim` history row with `operation: "uncla
 **Body:** none.
 
 **Success:** `200` [UserTaskDto](#schema-usertaskdto).
-**Errors:** `400` Bad Request; `401` Unauthorized; `404` Not Found; `409` Conflict. See [error envelopes](#errors-and-concurrency) and the family rules above.
+**Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden (missing OIDC API scope); `404` Not Found; `409` Conflict. See [error envelopes](#errors-and-concurrency) and the family rules above.
 
 ```http
 POST /api/user-tasks/301/unclaim HTTP/1.1
@@ -2140,7 +2140,7 @@ Complete this exact work item by taking a discovered flow.
 **JSON body:** [TakeFlowRequest](#schema-takeflowrequest). Required JSON object; field presence, nullability and defaults are in the linked schema.
 
 **Success:** `200` [UserTaskActionAckDto](#schema-usertaskactionackdto).
-**Errors:** `400` Bad Request; `401` Unauthorized; `404` Not Found; `409` Conflict. See [error envelopes](#errors-and-concurrency) and the family rules above.
+**Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden (missing OIDC API scope); `404` Not Found; `409` Conflict. See [error envelopes](#errors-and-concurrency) and the family rules above.
 
 ```http
 POST /api/user-tasks/301/flows/201 HTTP/1.1
@@ -2192,7 +2192,7 @@ Discover parent-level interrupt actions for an active multi-instance execution.
 **Body:** none.
 
 **Success:** `200` array of [SequenceFlowModel](#schema-sequenceflowmodel).
-**Errors:** `401` Unauthorized; `404` Not Found. See [error envelopes](#errors-and-concurrency) and the family rules above.
+**Errors:** `401` Unauthorized; `403` Forbidden (missing OIDC API scope); `404` Not Found. See [error envelopes](#errors-and-concurrency) and the family rules above.
 
 Requires both node and interrupt-flow roles; no active assigned child or claim is needed.
 
@@ -2225,7 +2225,7 @@ Take an immediate parent interrupt and cancel unfinished children.
 **JSON body:** [TakeFlowRequest](#schema-takeflowrequest). Required JSON object; field presence, nullability and defaults are in the linked schema.
 
 **Success:** `200` [InstanceDetailDto](#schema-instancedetaildto).
-**Errors:** `400` Bad Request; `401` Unauthorized; `404` Not Found; `409` Conflict. See [error envelopes](#errors-and-concurrency) and the family rules above.
+**Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden (missing OIDC API scope); `404` Not Found; `409` Conflict. See [error envelopes](#errors-and-concurrency) and the family rules above.
 
 Success returns the updated instance detail. This interrupts the parent, unlike a child vote.
 
@@ -2661,7 +2661,7 @@ Search node executions across workflow versions and instances.
 **Body:** none.
 
 **Success:** `200` [PagedResultOfNodeExecutionSummaryDto](#schema-pagedresultofnodeexecutionsummarydto).
-**Errors:** `400` Bad Request; `401` Unauthorized. See [error envelopes](#errors-and-concurrency) and the family rules above.
+**Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden (missing OIDC API scope). See [error envelopes](#errors-and-concurrency) and the family rules above.
 
 ```http
 GET /api/node-executions?pageSize=50 HTTP/1.1
@@ -2694,7 +2694,7 @@ Search node executions with advanced variable predicates.
 **JSON body:** [NodeExecutionSearchBodyRequest](#schema-nodeexecutionsearchbodyrequest). Required JSON object; field presence, nullability and defaults are in the linked schema.
 
 **Success:** `200` [PagedResultOfNodeExecutionSummaryDto](#schema-pagedresultofnodeexecutionsummarydto).
-**Errors:** `400` Bad Request; `401` Unauthorized; `413` Payload Too Large; `415` Unsupported Media Type. See [error envelopes](#errors-and-concurrency) and the family rules above.
+**Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden (missing OIDC API scope); `413` Payload Too Large; `415` Unsupported Media Type. See [error envelopes](#errors-and-concurrency) and the family rules above.
 
 ```http
 POST /api/node-executions/search HTTP/1.1
@@ -2752,7 +2752,7 @@ Detail includes `startedByClaims` and `completedByClaims`, independent snapshots
 **Body:** none.
 
 **Success:** `200` [NodeExecutionDetailDto](#schema-nodeexecutiondetaildto).
-**Errors:** `400` Bad Request; `401` Unauthorized; `404` Not Found. See [error envelopes](#errors-and-concurrency) and the family rules above.
+**Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden (missing OIDC API scope); `404` Not Found. See [error envelopes](#errors-and-concurrency) and the family rules above.
 
 ```http
 GET /api/node-executions/101 HTTP/1.1
@@ -4267,7 +4267,7 @@ List the current actor’s outgoing or incoming standing grants.
 **Body:** none.
 
 **Success:** `200` [PagedResultOfUserDelegationDto](#schema-pagedresultofuserdelegationdto).
-**Errors:** `400` Bad Request; `401` Unauthorized. See [error envelopes](#errors-and-concurrency) and the family rules above.
+**Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden (missing OIDC API scope). See [error envelopes](#errors-and-concurrency) and the family rules above.
 
 ```http
 GET /api/user-delegations?pageSize=50 HTTP/1.1
@@ -4300,7 +4300,7 @@ Create a self-service delegation grant for each requested workflow key.
 **JSON body:** [CreateUserDelegationRequest](#schema-createuserdelegationrequest). Required JSON object; field presence, nullability and defaults are in the linked schema.
 
 **Success:** `201` array of [UserDelegationDto](#schema-userdelegationdto).
-**Errors:** `400` Bad Request; `401` Unauthorized; `409` Conflict. See [error envelopes](#errors-and-concurrency) and the family rules above.
+**Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden (missing OIDC API scope); `409` Conflict. See [error envelopes](#errors-and-concurrency) and the family rules above.
 
 ```http
 POST /api/user-delegations HTTP/1.1

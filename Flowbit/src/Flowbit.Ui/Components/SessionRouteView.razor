@@ -1,0 +1,80 @@
+@using Flowbit.Ui.Auth
+@using Microsoft.AspNetCore.Components.Authorization
+@implements IDisposable
+@inject TokenState Token
+@inject IServiceProvider Services
+
+@if (CanRenderRoute)
+{
+    <StableRouteView RouteData="RouteData" />
+}
+else
+{
+    <LayoutView Layout="typeof(Layout.MainLayout)">
+        <section class="panel" aria-labelledby="session-heading">
+            @if (IsUnavailableDevelopmentPage)
+            {
+                <h1 id="session-heading">Page unavailable</h1>
+                <p>Development identity tools are unavailable with OpenID Connect sign-in.</p>
+            }
+            else if (!Token.AuthReady)
+            {
+                <h1 id="session-heading">Checking your session</h1>
+                <p role="status">Please wait while Flowbit checks your sign-in.</p>
+            }
+            else
+            {
+                <h1 id="session-heading">Sign in to Flowbit</h1>
+                <p>Your session is unavailable or has expired. Sign in to continue.</p>
+                <IdentityAction />
+            }
+        </section>
+    </LayoutView>
+}
+
+@code {
+    [Parameter, EditorRequired] public RouteData RouteData { get; set; } = default!;
+    private string? admittedEditorRoute;
+    private bool disposed;
+
+    private string RouteKey => StableRouteView.GetRouteKey(RouteData);
+    private bool IsEditor => RouteData.PageType == typeof(Pages.WorkflowEditor);
+    private bool IsAnonymousPage => RouteData.PageType == typeof(Pages.Error)
+        || RouteData.PageType == typeof(Pages.NotFound);
+    private bool IsUnavailableDevelopmentPage => !Token.IsDevelopment
+        && RouteData.PageType == typeof(Pages.Token);
+    private bool CanRenderRoute => !IsUnavailableDevelopmentPage && (Token.IsDevelopment || IsAnonymousPage
+        || (Token.AuthReady && Token.HasToken)
+        || (IsEditor && admittedEditorRoute == RouteKey));
+
+    protected override async Task OnInitializedAsync()
+    {
+        Token.Changed += SessionChanged;
+        if (!Token.IsDevelopment && Services.GetService<AuthenticationStateProvider>() is { } provider)
+            await provider.GetAuthenticationStateAsync();
+        RememberEditor();
+    }
+
+    protected override void OnParametersSet() => RememberEditor();
+
+    private void RememberEditor()
+    {
+        if (!IsEditor || (admittedEditorRoute is not null && admittedEditorRoute != RouteKey))
+            admittedEditorRoute = null;
+        if (IsEditor && Token.AuthReady && Token.HasToken)
+            admittedEditorRoute = RouteKey;
+    }
+
+    private void SessionChanged() => _ = InvokeAsync(() =>
+    {
+        if (disposed) return;
+        RememberEditor();
+        StateHasChanged();
+    });
+
+    public void Dispose()
+    {
+        disposed = true;
+        Token.Changed -= SessionChanged;
+    }
+}

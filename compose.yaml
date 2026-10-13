@@ -40,6 +40,7 @@ services:
     environment:
       <<: [*runtime-environment, *jwt-environment]
       ASPNETCORE_HTTP_PORTS: "8080"
+      Authentication__Mode: DevelopmentToken
       WorkflowDurableProcessing__PublicationEnabled: "true"
     ports:
       - "127.0.0.1:${FLOWBIT_API_PORT:-15017}:8080"
@@ -83,6 +84,7 @@ services:
     environment:
       <<: *jwt-environment
       DOTNET_ENVIRONMENT: Development
+      Authentication__Mode: DevelopmentToken
       ASPNETCORE_HTTP_PORTS: "8080"
       WorkflowApi__BaseUrl: http://api:8080
     ports:
@@ -91,8 +93,8 @@ services:
       api:
         condition: service_healthy
     healthcheck:
-      # Check the interactive framework as well as server-rendered markup.
-      test: ["CMD-SHELL", "curl --fail --silent --show-error --max-time 5 --output /dev/null http://127.0.0.1:8080/token && curl --fail --silent --show-error --max-time 5 --output /dev/null http://127.0.0.1:8080/_framework/blazor.web.js"]
+      # Check process liveness and the interactive framework independently of sign-in.
+      test: ["CMD-SHELL", "curl --fail --silent --show-error --max-time 5 --output /dev/null http://127.0.0.1:8080/health/live && curl --fail --silent --show-error --max-time 5 --output /dev/null http://127.0.0.1:8080/_framework/blazor.web.js"]
       interval: 10s
       timeout: 11s
       retries: 12

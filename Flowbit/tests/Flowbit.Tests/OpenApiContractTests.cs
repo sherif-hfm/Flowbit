@@ -37,7 +37,7 @@ public sealed class OpenApiContractTests
         Assert.Equal("id", parameter.Name);
         Assert.Equal(Microsoft.OpenApi.ParameterLocation.Path, parameter.In);
         Assert.True(parameter.Required);
-        Assert.Equal(["200", "401", "404"], operation.Responses!.Keys.Order().ToArray());
+        Assert.Equal(["200", "401", "403", "404"], operation.Responses!.Keys.Order().ToArray());
         var schema = operation.Responses["200"].Content!["application/json"].Schema;
         Assert.Equal("InstanceDetailDto", Assert.IsType<Microsoft.OpenApi.OpenApiSchemaReference>(schema).Reference.Id);
         var security = Assert.Single(operation.Security!);

@@ -387,6 +387,7 @@ public sealed class BrowserStackFixture : IAsyncLifetime
             RunDirectory,
             new Dictionary<string, string?>
             {
+                ["Authentication__Mode"] = "DevelopmentToken",
                 ["Jwt__Issuer"] = JwtIssuer,
                 ["Jwt__Audience"] = JwtAudience,
                 ["Jwt__Key"] = JwtKey,
@@ -395,7 +396,7 @@ public sealed class BrowserStackFixture : IAsyncLifetime
             },
             CreateProbeClient(),
             readyTimeout: ApplicationReadyTimeout);
-        UiBaseAddress = await ui.WaitForReadyAsync("/token", CancellationToken.None);
+        UiBaseAddress = await ui.WaitForReadyAsync(acceptance?.LegacyUiWithoutInteractiveMarkers == true ? "/token" : "/health/live", CancellationToken.None);
         await ui.WaitForReadyAsync("/_framework/blazor.web.js", CancellationToken.None);
         await WriteSetupLogAsync($"UI ready at {UiBaseAddress} (prerender and blazor.web.js probed; identity is applied interactively in scenarios).");
     }
@@ -404,6 +405,7 @@ public sealed class BrowserStackFixture : IAsyncLifetime
     {
         var environment = new Dictionary<string, string?>
         {
+            ["Authentication__Mode"] = "DevelopmentToken",
             ["ConnectionStrings__Flowbit"] = postgres!.GetConnectionString(),
             ["Jwt__Issuer"] = JwtIssuer,
             ["Jwt__Audience"] = JwtAudience,

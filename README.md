@@ -182,7 +182,7 @@ Compose already runs the Worker for asynchronous activities, timers, durable con
 
 Use `docker compose logs --tail=100 api worker ui` to inspect the services. `docker compose down` stops them while preserving the database volume; rerun the startup command to resume. An intentional reset with `docker compose down --volumes` **deletes this stack's saved workflows, instances, and history**.
 
-The stack's credentials and the UI's shared test identity generator are for local development. For existing databases and deployments, follow the [migration, authentication, and rollout guidance](docs/deployment.md). Changing only the environment to Production is insufficient: the bundled startup health check depends on Development OpenAPI, and production migrations and user authentication need explicit configuration.
+The stack's credentials and the UI's process-wide shared test identity generator are for local DevelopmentToken testing. Deployed API/UI hosts support [OpenID Connect authorization code with PKCE](docs/openid-connect.md), including a separate local Keycloak walkthrough and an explicit confidential code compatibility option. For existing databases and deployments, follow the [migration, authentication, and rollout guidance](docs/deployment.md). Changing only the environment to Production is insufficient: DevelopmentToken is rejected, migrations require explicit execution, and the API's Compose startup probe depends on Development OpenAPI. OIDC currently supports one UI instance; restarting it signs users out.
 
 ## Integrate through the API
 

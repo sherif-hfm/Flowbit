@@ -11758,7 +11758,7 @@ for (const button of root.querySelectorAll("[data-editor-action]")) {
   function updateHostPresentation() {
     if (disposed || options.mode !== "hosted") return;
     const busy = hostState.saving || requestingSave;
-    byId("save-workflow-version").disabled = !hostState.loaded || busy;
+    byId("save-workflow-version").disabled = !hostState.loaded || hostState.canSave === false || busy;
     byId("save-workflow-version").querySelector("span").textContent = busy ? "Saving…" : "Save new version";
     byId("editor-version").textContent = hostState.version;
     byId("editor-version").title = hostState.source;
@@ -11803,7 +11803,7 @@ for (const button of root.querySelectorAll("[data-editor-action]")) {
       }
     };
     byId("save-workflow-version").onclick = async () => {
-      if (!hostState.loaded || hostState.saving || requestingSave || disposed) return;
+      if (!hostState.loaded || hostState.canSave === false || hostState.saving || requestingSave || disposed) return;
       requestingSave = true;
       updateHostPresentation();
       try { await options.onSaveRequested?.(); }

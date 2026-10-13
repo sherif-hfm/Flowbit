@@ -115,6 +115,13 @@ internal static partial class FlowbitOpenApiEnrichment
                     Description = "Authentication failed or a bearer token was not supplied. The response can be empty or contain a diagnostic error object."
                 };
             }
+            if (requiresAuthorization && !operation.Responses.ContainsKey("403"))
+            {
+                operation.Responses["403"] = new OpenApiResponse
+                {
+                    Description = "The authenticated caller lacks a required permission or, in OpenID Connect mode, the configured delegated API scope."
+                };
+            }
 
             return Task.CompletedTask;
         });

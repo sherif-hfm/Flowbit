@@ -23,7 +23,7 @@
 
 @if (!Token.HasToken)
 {
-    <section class="panel"><EmptyState Icon="token" Title="An administrative identity is required" Description="Client administration accepts the configured JWT administrator role only."><a class="btn btn-primary" href="token">Set test identity</a></EmptyState></section>
+    <section class="panel"><EmptyState Icon="token" Title="An administrative identity is required" Description="Client administration accepts the configured JWT administrator role only."><IdentityAction Class="btn btn-primary" DevelopmentLabel="Set test identity" /></EmptyState></section>
 }
 else
 {

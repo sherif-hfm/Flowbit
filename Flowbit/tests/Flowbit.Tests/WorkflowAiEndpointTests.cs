@@ -219,6 +219,7 @@ public sealed class WorkflowAiEndpointTests
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
             builder.UseEnvironment("Testing");
+            ApiTestAuthentication.Configure(builder);
             builder.ConfigureAppConfiguration((_, configuration) => configuration.AddInMemoryCollection(new Dictionary<string, string?>
             { ["ConnectionStrings:Flowbit"] = "Host=127.0.0.1;Port=1;Database=unused;Username=test;Password=test;Timeout=1" }));
             builder.ConfigureTestServices(services =>

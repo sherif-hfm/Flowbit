@@ -19,14 +19,14 @@
         <NavMenu OnNavigate="CloseNavigation" />
 
         <div class="sidebar-footer">
-            <a class="sidebar-identity" href="token" @onclick="CloseNavigation">
+            <div class="sidebar-identity">
                 <span class="avatar">@IdentityInitial</span>
                 <span class="identity-copy">
                     <strong>@IdentityName</strong>
                     <small>@IdentityRoleSummary</small>
                 </span>
-                <AppIcon Name="chevron-right" />
-            </a>
+            </div>
+            <IdentityAction Class="btn btn-outline-secondary btn-sm" DevelopmentLabel="Test identity" />
         </div>
     </aside>
 
@@ -58,13 +58,17 @@
                     <AppIcon Name="plus" />
                     Start workflow
                 </a>
-                <a class="topbar-profile" href="token" aria-label="Open test identity settings">
+                <div class="topbar-profile" aria-label="Current identity">
                     <span class="avatar">@IdentityInitial</span>
                     <span>
                         <strong>@IdentityName</strong>
-                        <small>@(Token.HasToken ? "Test identity" : "Set test identity")</small>
+                        <small>@(Token.IsDevelopment ? "Test identity" : Token.HasToken ? "Signed in" : "Signed out")</small>
                     </span>
-                </a>
+                </div>
+                @if (!Token.IsDevelopment)
+                {
+                    <IdentityAction Class="btn btn-outline-primary btn-sm" />
+                }
             </div>
         </header>
 
@@ -97,7 +101,7 @@
     private string IdentityInitial => IdentityName[..1].ToUpperInvariant();
     private string IdentityRoleSummary => Token.HasToken
         ? Token.CurrentRoles.Count == 0 ? "No roles" : string.Join(", ", Token.CurrentRoles.Take(2))
-        : "Configure test token";
+        : Token.IsDevelopment ? "Configure test token" : "Sign in to continue";
 
     protected override void OnInitialized()
     {

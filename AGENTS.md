@@ -1242,21 +1242,30 @@ Storage follows the hybrid design:
   credential rotation takes effect on the next request. Its task list includes
   unassigned `requiresAssignment` work even though regular inboxes omit it.
   Instance-facing workflow details redact `taskDistribution.clientSecret`.
-- Authentication: the API validates a bearer JWT (`Microsoft.AspNetCore.Authentication.JwtBearer`)
-  using a shared symmetric key (`Jwt:Key`, dev only) and requires it on the
-  `/api/instances` group. The Blazor UI mints its own token from the `/token`
-  page (`DevTokenFactory` + `TokenState`) so a tester can switch user/roles and
-  add bounded custom string claims on the fly; `AuthTokenHandler` attaches it as
-  a `Bearer` header. Custom claims cannot replace the page-owned identity, role,
-  or JWT protocol claims, and only names configured in
-  `WorkflowContext:AllowedClaims` are exposed to workflow expressions as
-  `sys.claim.*`. For production,
-  swap `AddJwtBearer` to a real OIDC identity provider and remove the UI minting
-  page. The canonical workflow actor may be selected with the process-latched
+- Authentication: `Authentication:Mode=OpenIdConnect` uses a confidential
+  authorization-code UI client with S256 PKCE by default; `UsePkce=false` is an
+  explicit confidential-client compatibility option. The API validates JWT
+  access tokens using trusted discovery/JWKS, audience and lifetime, and
+  requires the configured API scope while preserving workflow permissions and
+  machine credential routes. The UI owns protected in-memory tickets/tokens per
+  login; the browser receives only a session identifier cookie. One UI process
+  is supported and restart signs users out. Per-session token refresh is
+  serialized; API mutations and AI streams are never replayed automatically.
+  Cookie and circuit validation both reject expired/revoked/missing sessions.
+  Token refresh must not resurrect a removed session or change actor identity.
+  `DevelopmentToken` is accepted only in Development and retains the shared
+  process-wide `/token` utility (`DevTokenFactory` + `TokenState`) with matching
+  symmetric `Jwt:*` API/UI settings. OIDC never falls back to that key or exposes
+  the token utility. Custom test claims cannot replace identity, role, or JWT
+  protocol claims; `WorkflowContext:AllowedClaims` independently controls
+  expression access. See [OIDC configuration and operations](docs/openid-connect.md).
+  The canonical workflow actor may be selected with the process-latched
   `flowbit.engine_settings` row `Authentication.UserIdentityClaim` (namespace
   `Authentication`, key `UserIdentityClaim`, value such as `sub` or `oid`). The
   setting is loaded at API startup; when absent, identity retains the legacy
-  `Identity.Name` then `NameIdentifier` behavior. When configured, the token must
+  `Identity.Name` then `NameIdentifier` behavior, with the OIDC name-claim type
+  defaulting to `flowbit_user`. Preserve existing actor strings at provider
+  provisioning; no automatic ownership migration changes them. When configured, the token must
   contain one nonblank, unambiguous value no longer than 300 characters or the
   request fails with 401. That identity drives `sys.user`, inbox/assignee matching,
   claims, completions, and actor audit fields. Roles and allowlisted `sys.claim.*`
@@ -1559,17 +1568,21 @@ database, API, UI development identity, and Worker. The root `compose.yaml`
 starts all four services with `docker compose up --build -d --wait`; no host
 .NET SDK is needed. PostgreSQL health gates API startup, and the API's
 Development-only OpenAPI check gates UI/Worker startup after migrations.
-All published ports bind to loopback; the UI retains its shared development
-identity. Application Dockerfiles use the repository root as build context.
+All published ports bind to loopback; API/UI explicitly select DevelopmentToken
+and the UI retains its shared development identity. UI health probes use
+anonymous `/health/live` plus the Blazor framework asset, independent of auth mode.
+Application Dockerfiles use the repository root as build context.
 The guide also retains a host .NET setup alternative. See
 [Docker deployment guidance](docs/deployment.md#local-docker-compose-stack)
 for optional `.env` settings, persistent volume behavior, and deployment limits.
 
-For instance throughput tests, start the API with the `LoadTest` environment so
-Serilog uses Warning level and console/file I/O does not dominate the result:
+For local instance throughput tests, use DevelopmentToken in Development and
+override Serilog to Warning so console/file I/O does not dominate the result.
+Development startup applies migrations; use an isolated load-test database.
+The `LoadTest` environment does not permit the development signing mode:
 
 ```powershell
-dotnet run --no-launch-profile --project .\src\Flowbit.Api\Flowbit.Api.csproj -- --environment LoadTest --urls http://localhost:5017
+dotnet run --no-launch-profile --project .\src\Flowbit.Api\Flowbit.Api.csproj -- --environment Development --Authentication:Mode DevelopmentToken --Serilog:MinimumLevel:Default Warning --urls http://localhost:5017
 dotnet run --project .\tools\InstanceLoadTest\InstanceLoadTest.csproj -- --count 1000 --concurrency 32
 dotnet run --project .\tools\InstanceLoadTest\InstanceLoadTest.csproj -- --count 200000 --concurrency 32
 # For an already-started cardinality multi-instance task whose normal outcome is flow 201:

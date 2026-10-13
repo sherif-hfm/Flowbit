@@ -1,0 +1,15 @@
+<RouteView RouteData="RouteData" DefaultLayout="typeof(Layout.MainLayout)" />
+
+@code {
+    [Parameter, EditorRequired] public RouteData RouteData { get; set; } = default!;
+    private string? renderedRoute;
+
+    // Session notifications must not rerun a mounted editor's parameter loader:
+    // it would replace its unsaved model even when the route has not changed.
+    protected override bool ShouldRender() => renderedRoute != GetRouteKey(RouteData);
+    protected override void OnAfterRender(bool firstRender) => renderedRoute = GetRouteKey(RouteData);
+
+    internal static string GetRouteKey(RouteData route) => route.PageType.FullName + ":"
+        + string.Join(";", route.RouteValues.OrderBy(pair => pair.Key, StringComparer.Ordinal)
+            .Select(pair => pair.Key + "=" + pair.Value));
+}

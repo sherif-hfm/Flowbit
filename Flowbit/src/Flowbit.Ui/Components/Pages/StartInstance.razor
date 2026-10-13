@@ -29,7 +29,7 @@ else
 
     @if (startEvents.Count == 0)
     {
-        <section class="panel"><EmptyState Icon="alert" Title="Start is not authorized" Description="Your current test identity does not have a role accepted by any user-startable event in this workflow."><a class="btn btn-primary" href="token">Change test identity</a></EmptyState></section>
+        <section class="panel"><EmptyState Icon="alert" Title="Start is not authorized" Description="Your current identity does not have a role accepted by any user-startable event in this workflow."><IdentityAction Class="btn btn-primary" DevelopmentLabel="Change test identity" /></EmptyState></section>
     }
     else
     {

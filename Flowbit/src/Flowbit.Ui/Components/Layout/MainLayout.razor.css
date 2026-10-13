@@ -37,6 +37,9 @@
 .mobile-brand:hover { color: var(--fb-primary); }
 
 .sidebar-footer { margin-top: auto; padding-top: 1rem; border-top: 1px solid rgba(255, 255, 255, .08); }
+.sidebar-footer ::deep .btn { color: #e2e8f0; border-color: #94a3b8; background: transparent; }
+.sidebar-footer ::deep .btn:hover { color: #fff; border-color: #cbd5e1; background: rgba(255, 255, 255, .12); }
+.sidebar-footer ::deep .btn:focus-visible { outline: 3px solid #93c5fd; outline-offset: 3px; }
 .sidebar-identity { display: flex; align-items: center; gap: .65rem; padding: .65rem; color: var(--fb-nav-text); text-decoration: none; border-radius: .75rem; }
 .sidebar-identity:hover { color: #fff; background: rgba(255, 255, 255, .06); }
 .identity-copy { min-width: 0; flex: 1; }

@@ -74,7 +74,8 @@ public sealed partial class HostedProcess : IAsyncDisposable
         HttpClient http,
         TimeSpan? readyTimeout = null,
         TimeSpan? perProbeTimeout = null,
-        TimeSpan? stopTimeout = null)
+        TimeSpan? stopTimeout = null,
+        bool useHttps = false)
     {
         if (!File.Exists(dllPath))
         {
@@ -100,7 +101,7 @@ public sealed partial class HostedProcess : IAsyncDisposable
         startInfo.ArgumentList.Add("--environment");
         startInfo.ArgumentList.Add("Development");
         startInfo.ArgumentList.Add("--urls");
-        startInfo.ArgumentList.Add("http://127.0.0.1:0");
+        startInfo.ArgumentList.Add(useHttps ? "https://127.0.0.1:0" : "http://127.0.0.1:0");
 
         // Explicit launch arguments override launch profiles and ambient URL
         // settings; direct DLL launch never reads launchSettings.json. Strip
@@ -209,7 +210,7 @@ public sealed partial class HostedProcess : IAsyncDisposable
         {
             return; // Only exact loopback IPv4 addresses are accepted.
         }
-        if (uri.Scheme != Uri.UriSchemeHttp)
+        if (uri.Scheme is not ("http" or "https"))
         {
             return;
         }
@@ -357,6 +358,8 @@ public sealed partial class HostedProcess : IAsyncDisposable
             "KESTREL_",
             "SERILOG_",
             "JWT__",
+            "AUTHENTICATION__",
+            "REVERSEPROXY__",
             "CONNECTIONSTRINGS__",
             "WORKFLOWAPI__",
             "WORKFLOWDURABLEPROCESSING__",

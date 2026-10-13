@@ -1,0 +1,43 @@
+@using Flowbit.Ui.Auth
+@implements IDisposable
+@inject TokenState Token
+@inject IServiceProvider Services
+
+@if (Token.IsDevelopment)
+{
+    <a class="@Class" href="token">@DevelopmentLabel</a>
+}
+else if (!Token.HasToken)
+{
+    <a class="@Class" href="@LoginUrl" data-enhance-nav="false">Sign in</a>
+}
+else
+{
+    <form method="post" action="auth/logout" data-enhance="false">
+        <AntiforgeryToken />
+        <input type="hidden" name="returnUrl" value="/" />
+        <button class="@Class" type="submit">Sign out</button>
+    </form>
+}
+
+@code {
+    [Parameter] public string Class { get; set; } = "btn btn-primary";
+    [Parameter] public string DevelopmentLabel { get; set; } = "Set test identity";
+    private bool disposed;
+
+    protected override void OnInitialized() => Token.Changed += IdentityChanged;
+    private void IdentityChanged() => _ = InvokeAsync(() =>
+    {
+        if (!disposed) StateHasChanged();
+    });
+
+    public void Dispose()
+    {
+        disposed = true;
+        Token.Changed -= IdentityChanged;
+    }
+
+    private string LoginUrl => "auth/login?returnUrl="
+        + Uri.EscapeDataString(Services.GetService<NavigationManager>() is { } navigation
+            ? "/" + navigation.ToBaseRelativePath(navigation.Uri) : "/");
+}

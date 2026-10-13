@@ -11,7 +11,9 @@ not delete the workflows or instances it creates.
 - The PostgreSQL connection configured by
   `src/Flowbit.Api/appsettings.json` is reachable.
 - `Flowbit.Api` is running (default: `http://localhost:5017`).
-- Development JWT issuer, audience, and signing key match the API settings.
+- The API uses `Authentication:Mode=DevelopmentToken` in Development, and its
+  development JWT issuer, audience, and signing key match the runner settings.
+  This runner mints local HMAC tokens; it does not acquire OIDC access tokens.
 
 From the `Flowbit` directory:
 

@@ -43,7 +43,7 @@
     <section class="panel">
         <EmptyState Icon="token" Title="An authenticated identity is required"
                     Description="Set an identity with the configured workflow administrator permission before searching or executing administrative actions.">
-            <a class="btn btn-primary" href="token">Set test identity</a>
+            <IdentityAction Class="btn btn-primary" DevelopmentLabel="Set test identity" />
         </EmptyState>
     </section>
 }
@@ -1077,13 +1077,13 @@ else
     private async Task<T> GuardAdministrativeAsync<T>(Func<Task<T>> request)
     {
         var epoch = Interlocked.Read(ref identityEpoch);
-        var identity = Token.Token;
+        var identity = Token.IdentityKey;
         EnsureIdentity(epoch);
         try
         {
             var result = await request();
             EnsureIdentity(epoch);
-            if (!string.Equals(identity, Token.Token, StringComparison.Ordinal)) throw new AdministrativeIdentityChangedException();
+            if (!string.Equals(identity, Token.IdentityKey, StringComparison.Ordinal)) throw new AdministrativeIdentityChangedException();
             return result;
         }
         catch (WorkflowApiException ex) when (ex.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)

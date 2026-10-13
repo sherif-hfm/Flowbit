@@ -62,9 +62,9 @@ Some runtime headers are authored per workflow and therefore cannot have a fixed
 
 ## Authenticate the actual actor
 
-User-facing API operations use bearer JWTs. The current API validates issuer, audience, lifetime, and a shared symmetric signing key through `Jwt:Issuer`, `Jwt:Audience`, and `Jwt:Key`. There is no built-in token-issuance HTTP endpoint or production OIDC configuration path. Integrating an OIDC authority requires an authentication implementation change.
+User-facing API operations use bearer JWT access tokens. `Authentication:Mode=OpenIdConnect` validates issuer, audience, lifetime, and signature through the configured provider's discovery/signing keys, then requires the configured API scope. `DevelopmentToken` uses `Jwt:Issuer`, `Jwt:Audience`, and `Jwt:Key` only in Development. There is no built-in token-issuance HTTP endpoint. See [OpenID Connect](openid-connect.md) for provider configuration and claim contracts.
 
-For local development, obtain a token from Flowbit.Ui's `/token` page as shown in [getting started](getting-started.md). The UI keeps its token in a **process-wide singleton**: changing the test identity affects the identity used by that UI process. Per-user production UI authentication requires implementation; it is not enabled by entering a different JWT setting.
+For local DevelopmentToken testing, obtain a token from Flowbit.Ui's `/token` page as shown in [getting started](getting-started.md). The test identity remains shared by the entire UI process; use this utility only in a trusted development environment. In OpenIdConnect mode the UI uses provider sign-in and a per-login server session; access and refresh tokens stay server-side and `/token` is unavailable. External integrations obtain their own delegated access token. UI session expiry does not replay a failed workflow command.
 
 Check the API's resolved identity instead of assuming a claim in an unvalidated token is the actor:
 
@@ -83,7 +83,7 @@ Example response for an identity created with these roles:
 }
 ```
 
-`Authentication.UserIdentityClaim` is an engine setting read once at API startup. When present, it selects the canonical actor claim; a missing, blank, or ambiguous value in the token fails authentication. Without that setting, the API uses `Identity.Name`, then `NameIdentifier`. Plan identity changes across all API replicas and existing task ownership; changing this setting requires restart. `WorkflowContext.AllowedClaims` separately controls expression access to claims and does not choose the actor.
+`Authentication.UserIdentityClaim` is an engine setting read once at API startup. When present, it selects the canonical actor claim; a missing, blank, or ambiguous value in the token fails authentication. Without that setting, the API uses `Identity.Name`, then `NameIdentifier`; OIDC sets the name claim type to `Authentication:Oidc:NameClaimType` (default `flowbit_user`). Preserve existing actor strings when provisioning provider accounts so assignments, claims, delegation, and history remain associated with the same users. Plan identity changes across all API replicas and existing task ownership; changing this setting requires restart. `WorkflowContext.AllowedClaims` separately controls expression access to claims and does not choose the actor.
 
 Workflow-definition and all administrative-action endpoints use `Workflow.RequiredRole`: any role in its comma-separated list matches case-insensitively, missing/blank defaults to `admin`, and a custom value replaces the default. Administrative actions also require a nonblank actor. This permission does not automatically satisfy authored `Requester`, `Reviewer`, or other roles on ordinary task APIs. Other administrative and operational endpoint families have their own policies, documented in the API reference.
 

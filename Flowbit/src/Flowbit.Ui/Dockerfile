@@ -18,4 +18,7 @@ COPY --from=build /app/publish .
 ENV ASPNETCORE_HTTP_PORTS=8080
 EXPOSE 8080
 USER $APP_UID
+HEALTHCHECK --interval=10s --timeout=11s --start-period=15s --retries=12 \
+    CMD curl --fail --silent --show-error --max-time 5 --output /dev/null http://127.0.0.1:8080/health/live \
+    && curl --fail --silent --show-error --max-time 5 --output /dev/null http://127.0.0.1:8080/_framework/blazor.web.js
 ENTRYPOINT ["dotnet", "Flowbit.Ui.dll"]

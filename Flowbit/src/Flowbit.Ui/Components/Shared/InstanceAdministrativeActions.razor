@@ -163,13 +163,13 @@ else if (!string.IsNullOrWhiteSpace(error) && IsCurrent(viewEpoch))
     }
 
     private bool IsCurrent(long epoch) => !disposed && epoch == Interlocked.Read(ref identityEpoch)
-        && string.Equals(loadedToken, Token.Token, StringComparison.Ordinal);
+        && string.Equals(loadedToken, Token.IdentityKey, StringComparison.Ordinal);
 
     private async Task LoadAsync()
     {
         var epoch = Interlocked.Read(ref identityEpoch);
         var sequence = ++loadSequence;
-        loadedToken = Token.Token;
+        loadedToken = Token.IdentityKey;
         viewEpoch = epoch;
         if (!Token.HasToken) { ClearData(); return; }
         loading = true;

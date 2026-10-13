@@ -11,8 +11,10 @@ solution test command stays free of Chromium requirements.
 - Real editor: the in-process Kestrel static host serves the build copy of
   canonical HTML/CSS/JavaScript assets from `Flowbit.Ui/wwwroot/editor/` next to
   the test assembly. There is no second edited editor fixture. Its configuration ignores ambient Kestrel endpoints.
-- Real identity: every runtime scenario mints its token through the UI's
-  `/token` screen and uses that exact JWT for HTTP setup clients.
+- Development identity: the ordinary runtime scenarios mint their token through the UI's
+  `/token` screen in explicit DevelopmentToken mode and use that exact JWT for HTTP setup clients.
+  UI startup probes use anonymous `/health/live`, independently of the sign-in mode;
+  the framework asset probe still verifies `/_framework/blazor.web.js` is served.
 - Synchronous only: the API runs with
   `WorkflowDurableProcessing:PublicationEnabled=false`, so no Worker is needed.
 - Serial and isolated: xUnit parallelization is disabled assembly-wide; each
@@ -39,6 +41,10 @@ It reuses these diagnostics, HTTP fixture helpers and host lifecycle with
 explicit acceptance options. The parameterless smoke fixture keeps durable
 publication disabled, does not launch a Worker or API proxy, and retains this
 suite's existing CI configuration.
+
+The separate [OpenID Connect browser scenarios](#openid-connect-browser-acceptance)
+exercise authorization code with and without PKCE, session isolation, refresh,
+logout, and protocol failures through a fixture-owned identity provider.
 
 ## Prerequisites
 
@@ -243,3 +249,67 @@ modified.
   containers owned by the fixture. Identity cleanup failures are written to
   `setup.log` and fail a passing scenario; the next scenario still clears and
   applies its own identity through `/token`.
+
+## OpenID Connect browser acceptance
+
+The independent `OidcAuthenticationSmokeTests` suite runs the published API and
+UI against a disposable PostgreSQL database and a fixture-owned loopback identity
+provider. It does not change the ordinary smoke fixture's DevelopmentToken mode,
+start a Worker, inject application sessions, or edit database rows. Publish both
+hosts using the commands above, then run this command in PowerShell or Bash:
+
+```text
+dotnet test Flowbit/tests/Flowbit.BrowserTests/Flowbit.BrowserTests.csproj -c Release --filter FullyQualifiedName~OidcAuthenticationSmokeTests
+```
+
+The UI uses HTTPS with a per-run test certificate. Certificate bypass applies only
+to the fixture's browser context; production certificate validation is unchanged.
+The loopback identity provider exposes real discovery, RSA JWKS, authorization,
+code exchange, rotating refresh-token and logout endpoints. Its HTML login form
+selects synthetic users; no external identity-provider account or billed service
+is required.
+
+- **O1**, with PKCE enabled and disabled, exercises browser redirects and form-post
+  callbacks, S256 verifier validation when enabled, two simultaneous users, API
+  actor resolution, secure HttpOnly cookies, absence of bearer tokens from browser
+  storage and markup, development-route denial and antiforgery logout rejection.
+  A second circuit refreshes Alice's tokens while her unsaved editor remains open.
+  Keyboard sign-out invalidates her other circuit while Bob remains signed in.
+  The editor retains the diagram and exports the unsaved JSON after logout;
+  cancelling the browser's unsaved-work prompt keeps the draft open when sign-in
+  would leave the editor.
+- **O2** rejects tampered callback state, an invalid ID-token nonce, an invalid
+  issuer and a callback replay from another browser context. It checks that an
+  external return URL resolves to the local overview and that provider refresh
+  revocation returns the UI to its sign-in boundary.
+- **O3** keeps a real AI response stream open during access-token refresh and
+  verifies that the provider key, draft checkpoint and editor remain intact.
+  Completing that stream yields a proposal. Signing out during a second stream
+  cancels the provider request and clears the assistant while retaining the
+  unsaved editor; a new login starts with an empty assistant.
+- **O4** places a real HTTPS loopback proxy in front of the HTTP UI. It verifies
+  that authorization and logout use the public HTTPS callback URLs, cookies stay
+  secure, and a reload and additional tab reuse the authenticated session. The
+  proxy drops its live WebSocket connections to exercise genuine Blazor circuit
+  reconnection: open filter state survives and a subsequent server-side toggle
+  confirms that the circuit is interactive. The proxy forwards original HTTP and
+  WebSocket payloads and adds trusted forwarded headers; it never injects
+  application or authentication state.
+
+Evidence is saved under `artifacts/browser/oidc/<timestamp>-<mode>-<id>/`:
+`manifest.json` records the localhost origins and browser version; successful O1
+runs retain desktop editor screenshots at 1440×900, account/inbox screenshots at
+1024×768 and 390×844, the exported workflow, protocol outcome counts and console
+error/warning files, plus desktop/mobile signed-out pages. O2 retains safe sign-in
+failure pages at all three widths and a refresh-revocation screenshot. O3 retains
+screenshots during the refreshed stream and after cancellation. O4 records the
+public HTTPS and internal HTTP origins, proxy request paths and WebSocket
+connection count, plus reconnected and signed-out screenshots. Its deliberate
+transport-drop console message is kept separately in
+`expected-disconnect-errors.txt`; unexpected console errors still fail the test.
+Host stdout/stderr logs cover fixture startup and application
+failures. These diagnostics do not record provider credentials or bearer tokens.
+
+JSON export exercises the supported download fallback by disabling the native
+File System Access picker in the test browser, matching the ordinary smoke suite.
+It does not replace the separate manual native-picker success/cancel checks.
