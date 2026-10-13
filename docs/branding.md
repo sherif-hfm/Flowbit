@@ -45,6 +45,25 @@ saved preference. Flowbit.Ui uses a light workspace and navy sidebar. Its
 Flowbit home link is also visible in the mobile header when navigation is
 closed. Branding does not change routes, permissions, or workflow behavior.
 
+## Keycloak login
+
+The local Keycloak `flowbit` realm uses the same mark, navy header, blue primary
+actions, Segoe UI/system font stack, and light canvas as Flowbit.Ui. The centered
+sign-in card adapts to narrow screens, retains visible keyboard focus and red error
+states, and uses a light appearance regardless of operating-system dark mode.
+
+The [login theme](../dev/keycloak/themes/flowbit/login/theme.properties) extends
+`keycloak.v2`. Its [stylesheet](../dev/keycloak/themes/flowbit/login/resources/css/flowbit.css)
+owns presentation; English messages own brand copy, and `footer.ftl` adds a small
+decorative workflow motif. Keep the login templates and authentication scripts
+inherited so Keycloak owns form actions, escaping, validation, and password controls.
+Compose mounts the canonical brand asset directory into the theme, including its
+SVG favicon; there are no copied logos, remote fonts, or custom JavaScript.
+
+See [login theme installation and rollback](openid-connect.md#flowbit-login-branding).
+Recheck login, errors, keyboard operation, sign-out, mobile layout, and inherited
+CSS selectors when changing the theme or upgrading the pinned Keycloak version.
+
 ## Maintaining consistency
 
 - Runtime styles use the `--fb-*` properties in `wwwroot/app.css`. Update

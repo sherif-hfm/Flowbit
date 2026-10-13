@@ -16,6 +16,8 @@ services:
     volumes:
       - keycloak-data:/opt/keycloak/data
       - ./dev/keycloak/flowbit-realm.json:/opt/keycloak/data/import/flowbit-realm.json:ro
+      - ./dev/keycloak/themes/flowbit:/opt/keycloak/themes/flowbit:ro
+      - ./Flowbit/src/Flowbit.Ui/wwwroot/branding:/opt/keycloak/themes/flowbit/login/resources/img/branding:ro
     mem_limit: 1g
     restart: unless-stopped
     healthcheck:

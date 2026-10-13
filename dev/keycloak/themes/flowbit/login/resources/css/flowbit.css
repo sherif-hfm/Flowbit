@@ -1,0 +1,259 @@
+/* Flowbit's light workspace palette. Authentication markup stays upstream. */
+:root {
+    color-scheme: light;
+    --pf-v5-global--FontFamily--text: "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+    --pf-v5-global--FontFamily--heading: var(--pf-v5-global--FontFamily--text);
+    --pf-v5-global--primary-color--100: #2563eb;
+    --pf-v5-global--primary-color--200: #1d4ed8;
+    --pf-v5-global--link--Color: #2563eb;
+    --pf-v5-global--link--Color--hover: #1d4ed8;
+    --pf-v5-global--Color--100: #334155;
+    --pf-v5-global--Color--200: #526277;
+    --pf-v5-global--BorderColor--100: #dbe3ee;
+    --pf-v5-global--danger-color--100: #dc2626;
+}
+
+.login-pf body {
+    margin: 0;
+    min-height: 100vh;
+    background: radial-gradient(ellipse at 15% 10%, #dbeafe 0, transparent 42%),
+                radial-gradient(ellipse at 90% 90%, #e2e8f0 0, transparent 40%), #f4f7fb;
+    color: #334155;
+    font-family: var(--pf-v5-global--FontFamily--text);
+    line-height: 1.55;
+}
+
+.pf-v5-c-login {
+    min-height: 100vh;
+    min-height: 100svh;
+    padding: 40px 24px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    place-items: center;
+    background: transparent;
+}
+
+.pf-v5-c-login__container {
+    width: min(100%, 460px);
+    margin: 0;
+    padding: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "header" "main";
+    gap: 0;
+    border: 1px solid #dbe3ee;
+    border-radius: 16px;
+    background: #fff;
+    box-shadow: 0 16px 40px rgba(15, 23, 42, .09);
+}
+
+#kc-header {
+    margin: 0;
+    padding: 32px 40px;
+    border-radius: 15px 15px 0 0;
+    background: #0f172a;
+}
+
+#kc-header-wrapper {
+    display: flex;
+    margin: 0;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 14px;
+    color: #f8fafc !important;
+    font-size: 32px;
+    font-weight: 700;
+    letter-spacing: -.9px;
+    line-height: 1.2;
+    text-align: start;
+    text-transform: none;
+}
+
+#kc-header-wrapper::before {
+    content: "";
+    flex: 0 0 48px;
+    width: 48px;
+    height: 48px;
+    background: url("../img/branding/flowbit-mark.svg") center / contain no-repeat;
+}
+
+.pf-v5-c-login__main {
+    min-width: 0;
+    margin: 0;
+    border-radius: 0 0 16px 16px;
+    background: #fff;
+    box-shadow: none;
+}
+
+.pf-v5-c-login__main-header {
+    padding: 32px 40px 24px;
+    border: 0;
+    gap: 16px;
+    grid-template-columns: minmax(0, 1fr) auto;
+}
+
+#kc-page-title {
+    color: #0f172a;
+    font-family: var(--pf-v5-global--FontFamily--text);
+    font-size: 23px;
+    font-weight: 700;
+    line-height: 1.35;
+    letter-spacing: -.45px;
+    overflow-wrap: anywhere;
+}
+
+.pf-v5-c-login__main-body {
+    padding: 0 40px 32px;
+}
+
+.pf-v5-c-form {
+    row-gap: 22px;
+}
+
+.pf-v5-c-form__label {
+    color: #334155;
+    font-size: 13px;
+    font-weight: 650;
+}
+
+.pf-v5-c-form-control {
+    min-height: 46px;
+    border: 1px solid #7b8a9f;
+    border-radius: 8px;
+    background: #fff;
+}
+
+.pf-v5-c-form-control::before,
+.pf-v5-c-form-control::after {
+    border: 0;
+}
+
+.pf-v5-c-form-control > :is(input, select, textarea) {
+    min-height: 44px;
+    padding-inline: 13px;
+    color: #0f172a;
+    font: inherit;
+    font-size: 15px;
+    border-radius: 7px;
+    outline: 0; /* The containing control supplies the visible focus ring. */
+}
+
+.pf-v5-c-form-control:focus-within {
+    border-color: #2563eb;
+    outline: 3px solid rgba(37, 99, 235, .24);
+    outline-offset: 2px;
+}
+
+.pf-v5-c-form-control.pf-m-error,
+.pf-v5-c-form-control:has([aria-invalid="true"]) {
+    border-color: #dc2626;
+}
+
+.pf-v5-c-input-group {
+    gap: 8px;
+}
+
+.pf-v5-c-button {
+    min-height: 44px;
+    border-radius: 8px;
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 650;
+}
+
+.pf-v5-c-button::after {
+    border-radius: 8px;
+}
+
+.pf-v5-c-button.pf-m-primary {
+    background: #2563eb;
+    color: #fff;
+}
+
+.pf-v5-c-button.pf-m-primary:hover {
+    background: #1d4ed8;
+}
+
+.pf-v5-c-button.pf-m-primary:active {
+    background: #1e40af;
+}
+
+.pf-v5-c-button.pf-m-primary:disabled {
+    background: #dbe3ee;
+    color: #526277;
+}
+
+.pf-v5-c-button.pf-m-control {
+    width: 46px;
+    min-height: 46px;
+    color: #475569;
+    background: #f8fafc;
+    border: 1px solid #7b8a9f;
+}
+
+.pf-v5-c-button.pf-m-control::after { border: 0; }
+
+.pf-v5-c-button.pf-m-control:hover {
+    color: #1d4ed8;
+    background: #eff6ff;
+}
+
+:is(a, button, input[type="checkbox"]):focus-visible {
+    outline: 3px solid rgba(37, 99, 235, .4);
+    outline-offset: 3px;
+}
+
+.pf-v5-c-alert {
+    border-radius: 8px;
+    overflow-wrap: anywhere;
+}
+
+.pf-v5-c-helper-text__item-text {
+    font-size: 13px;
+}
+
+.flowbit-login-footer {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    padding: 19px 24px;
+    border-top: 1px solid #dbe3ee;
+    border-radius: 0 0 16px 16px;
+    background: #f8fafc;
+    color: #526277;
+    font-size: 12px;
+}
+
+.flowbit-login-footer p { margin: 0; }
+
+.flowbit-workflow-dots {
+    display: flex;
+    align-items: center;
+    flex: 0 0 auto;
+    gap: 5px;
+    background: linear-gradient(#bfdbfe, #bfdbfe) center / 100% 2px no-repeat;
+}
+
+.flowbit-workflow-dots span {
+    width: 7px;
+    height: 7px;
+    border-radius: 2px;
+    background: #2563eb;
+}
+
+@media (max-width: 520px) {
+    .pf-v5-c-login { padding: 24px 16px; }
+    #kc-header { padding: 28px 24px; }
+    .pf-v5-c-login__main-header { padding: 28px 24px 22px; }
+    .pf-v5-c-login__main-body { padding: 0 24px 28px; }
+    #kc-page-title { font-size: 21px; }
+    .flowbit-login-footer { gap: 9px; padding-inline: 16px; }
+}
+
+@media (forced-colors: active) {
+    .pf-v5-c-form-control:focus-within,
+    :is(a, button, input[type="checkbox"]):focus-visible { outline-color: Highlight; }
+    .pf-v5-c-button.pf-m-primary { border: 1px solid ButtonText; }
+}

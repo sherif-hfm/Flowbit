@@ -119,6 +119,40 @@ To exercise explicit code flow without PKCE, stop only the UI, change `Authentic
 
 Keycloak administration is at [localhost:18080](http://localhost:18080), with `flowbit-admin` / `flowbit-keycloak-local-only`. This Keycloak administrator is separate from the Flowbit application users. Startup import skips an existing realm, so editing the JSON does not update existing users; use the admin console for an installed realm. `docker compose -f compose.oidc.yaml down` removes the container but keeps its database volume; the next `up -d --wait` retains realm settings, users, and passwords. To intentionally erase all local Keycloak data and reimport the sample, use `docker compose -f compose.oidc.yaml down -v`, then start it again. These commands do not remove the separate Flowbit PostgreSQL volume. If upgrading from the former volume-free Compose setup, export any needed realm data before recreating that old container. See [Keycloak realm import behavior](https://www.keycloak.org/server/importExport).
 
+### Flowbit login branding
+
+The local realm uses the `flowbit` login theme: the shared Flowbit mark and favicon,
+navy brand header, blue buttons, Segoe UI/system typography, and a responsive light
+sign-in card. The theme extends Keycloak 26.8.1's `keycloak.v2`; its authentication
+forms, validation messages, password visibility control, and scripts remain inherited.
+Only styling, English brand copy, and the decorative footer are customized. Other
+languages and authentication screens retain inherited content; additional identity
+flows should be exercised when enabled. The admin and account consoles retain their
+existing themes.
+
+Compose mounts [the theme](../dev/keycloak/themes/flowbit/login/theme.properties)
+read-only at `/opt/keycloak/themes/flowbit`, and separately mounts the canonical
+[brand assets](../Flowbit/src/Flowbit.Ui/wwwroot/branding/) at
+`/opt/keycloak/themes/flowbit/login/resources/img/branding`. Both mounts are needed;
+the theme does not keep a second copy of the logo. For a separate installation,
+package the same assets at that relative location with the theme. See the
+[brand guide](branding.md#keycloak-login) and [Keycloak theme documentation](https://www.keycloak.org/ui-customization/themes).
+
+New imports select the theme automatically. For an **existing realm**, run
+`docker compose -f compose.oidc.yaml up -d --wait` from the repository root to apply
+the mounts, then in the Keycloak admin console select **flowbit → Realm settings →
+Themes → Login theme → flowbit → Save**. A client-specific Login theme overrides
+the realm selection; leave it unset to inherit. Sign out of Flowbit and start a
+fresh sign-in at `https://localhost:7019` to see the page. Existing SSO sessions may
+otherwise skip it. Selecting `keycloak.v2` in the same dropdown rolls back the
+appearance without changing users, roles, clients, or tokens.
+
+After editing theme resources, restart the local container with
+`docker compose -f compose.oidc.yaml restart keycloak` and reload the login page.
+These Compose commands work in PowerShell and Bash. When upgrading Keycloak, verify
+the inherited markup and resource imports, keyboard focus, password toggle, error
+messages, successful sign-in/sign-out, and narrow-screen layout against the new version.
+
 ## Session behavior and operations
 
 Run **one UI instance**. Sessions and tokens live in that process; a restart signs every UI user out. A shared Data Protection key ring does not make those records distributed. API and Worker replicas remain possible with matching trusted issuer and runtime configuration. Multi-replica UI sessions require a separate distributed-store and refresh-lock implementation.

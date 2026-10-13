@@ -2,6 +2,7 @@
   "realm": "flowbit",
   "enabled": true,
   "displayName": "Flowbit local development",
+  "loginTheme": "flowbit",
   "sslRequired": "none",
   "registrationAllowed": false,
   "editUsernameAllowed": false,
