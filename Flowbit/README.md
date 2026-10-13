@@ -1269,6 +1269,10 @@ The UI owns protected in-memory authentication tickets and tokens per login;
 the browser receives a session identifier cookie. Token acquisition is explicit
 before each API request and serialized per login, with no automatic API retry.
 The ordinary client and AI streaming client share the identity/token provider.
+The cookie-authenticated UI Minimal API `GET /_info` uses that same provider to
+return the caller's access token, expiry, and API-resolved actor as non-cacheable
+JSON. It never returns refresh/ID tokens or accepts a target-user/session selector;
+see [the diagnostic contract](../docs/openid-connect.md#view-your-current-access-token).
 One UI replica is supported, and restart invalidates its sessions. Development
 test identity retains its process-wide shared state. The static standalone editor needs no identity
 provider. See [configuration, local Keycloak, and operations](../docs/openid-connect.md).

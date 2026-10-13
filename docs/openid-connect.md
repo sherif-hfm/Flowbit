@@ -4,7 +4,7 @@
 
 Flowbit.Ui signs users in through an external OpenID Connect provider using the authorization-code flow. PKCE with S256 is enabled by default; an explicit compatibility option permits confidential authorization code without PKCE. Flowbit.Api validates the resulting JWT access token using the provider's discovery document and signing keys. The API does not perform browser redirects or issue tokens, and never accepts an ID token as an API credential.
 
-The UI remains a Blazor Server application. The browser receives an HttpOnly session cookie; access and refresh tokens stay in the UI server's protected in-memory session store. API calls, including AI authoring streams, attach the current user's access token server-side. A request is sent once: authentication refresh does not replay workflow commands or AI requests.
+The UI remains a Blazor Server application. The browser receives an HttpOnly session cookie; access and refresh tokens are stored in the UI server's protected in-memory session store. API calls, including AI authoring streams, attach the current user's access token server-side. The authenticated [`/_info` diagnostic endpoint](#view-your-current-access-token) explicitly returns the current access token to its owner; refresh and ID tokens remain server-side. A request is sent once: authentication refresh does not replay workflow commands or AI requests.
 
 ## Modes and configuration
 
@@ -113,7 +113,7 @@ Open [Flowbit.Ui](https://localhost:7019) and sign in with one of these developm
 | `finance` | `111` | `Finance` |
 | `manager` | `111` | `Manager`, `RoleManager` |
 
-The realm maps the non-self-editable username to `flowbit_user`, emits a flat `roles` claim, and puts audience `flowbit-api` and scope `flowbit.api` in the access token. All six users also have Keycloak's `offline_access` role so the sample can obtain refresh tokens; this role grants no built-in Flowbit administration permission. Alice can follow the [UI approval walkthrough](ui-guide.md#complete-your-first-approval); the actor shown will be `alice`, not the tutorial's `docs.reviewer`. Only Alice has Flowbit's default administrative `admin` role. The other roles grant the permissions authored into each workflow, not global administration: Carol can start the [roles, claim, and bypass example](../examples/user-tasks/01-roles-claim-and-bypass.json), Bob can claim its review, Supervisor can use its protected bypass, and Alice's `WorkflowAdministrator` role permits its cancellation. Finance can approve the [variable-role example](../examples/user-tasks/05-variable-roles-and-role-management.json); Manager can view that task and manage its captured roles through `RoleManager`, but initially cannot use its Finance-only approval action. Separate browser profiles or private windows demonstrate isolated sessions. The UI does not expose a raw OIDC token; external HTTP clients must obtain their own delegated access tokens through their registered authorization-code flow.
+The realm maps the non-self-editable username to `flowbit_user`, emits a flat `roles` claim, and puts audience `flowbit-api` and scope `flowbit.api` in the access token. All six users also have Keycloak's `offline_access` role so the sample can obtain refresh tokens; this role grants no built-in Flowbit administration permission. Alice can follow the [UI approval walkthrough](ui-guide.md#complete-your-first-approval); the actor shown will be `alice`, not the tutorial's `docs.reviewer`. Only Alice has Flowbit's default administrative `admin` role. The other roles grant the permissions authored into each workflow, not global administration: Carol can start the [roles, claim, and bypass example](../examples/user-tasks/01-roles-claim-and-bypass.json), Bob can claim its review, Supervisor can use its protected bypass, and Alice's `WorkflowAdministrator` role permits its cancellation. Finance can approve the [variable-role example](../examples/user-tasks/05-variable-roles-and-role-management.json); Manager can view that task and manage its captured roles through `RoleManager`, but initially cannot use its Finance-only approval action. Separate browser profiles or private windows demonstrate isolated sessions. Use the authenticated UI `/_info` endpoint to inspect your current access token; see [token diagnostics](#view-your-current-access-token). External HTTP integrations should obtain their own delegated access tokens through their registered authorization-code flow.
 
 To exercise explicit code flow without PKCE, stop only the UI, change `Authentication__Oidc__ClientId` to `flowbit-ui-no-pkce`, `Authentication__Oidc__ClientSecret` to `flowbit-ui-legacy-local-only`, and `Authentication__Oidc__UsePkce` to `false` in the same shell, then start it again. The API settings are unchanged. Restore all three values to use the PKCE-enforcing client. Setting `UsePkce=false` against `flowbit-ui` must be rejected by Keycloak.
 
@@ -152,6 +152,44 @@ After editing theme resources, restart the local container with
 These Compose commands work in PowerShell and Bash. When upgrading Keycloak, verify
 the inherited markup and resource imports, keyboard focus, password toggle, error
 messages, successful sign-in/sign-out, and narrow-screen layout against the new version.
+
+## View your current access token
+
+In OpenIdConnect mode, open `https://<ui-host>/_info` in the browser used to sign in
+(locally, `https://localhost:7019/_info`). This UI Minimal API endpoint returns the
+current login's access token and API-resolved actor as JSON:
+
+```json
+{
+  "user": "alice",
+  "roles": ["admin", "Reviewer"],
+  "accessToken": "<current access token>",
+  "tokenType": "Bearer",
+  "expiresAt": "2026-10-13T19:00:00+00:00"
+}
+```
+
+The token and date above are illustrative. `expiresAt` is the access-token expiry,
+not the UI session deadline. The endpoint uses the same serialized refresh and
+actor validation as server-side API calls, so a near-expiry token can be refreshed
+before it is returned. No username or session selector is accepted; the UI cookie
+selects only the caller's session. Refresh tokens, ID tokens, and client secrets
+are not included. Responses use `Cache-Control: no-store, private`,
+`Pragma: no-cache`, and `X-Content-Type-Options: nosniff`.
+
+An unauthenticated request starts provider sign-in and returns to `/_info`.
+If an authenticated session's token expires or refresh is rejected, the endpoint
+clears the cookie and returns `401` with `error: "session_expired"` and a local
+`loginUrl`. A temporary token-provider or actor-validation failure returns `503`
+with `error: "authentication_unavailable"`; retrying is allowed. Error responses
+contain no token. In DevelopmentToken mode this endpoint is not registered (`404`);
+use the existing `/token` test-identity page instead.
+
+Copy `accessToken` into an HTTP client's Bearer authorization field when testing
+the API as yourself. Treat the response as a credential: keep it out of screenshots,
+shared logs, and response-body capture. External integrations should still register
+their own authorization-code client. This endpoint lives on the **UI origin**, is
+not part of the API's OpenAPI document, and does not issue a new kind of token.
 
 ## Session behavior and operations
 

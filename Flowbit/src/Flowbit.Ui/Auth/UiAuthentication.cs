@@ -68,7 +68,8 @@ public static class UiAuthentication
         services.AddScoped(_ => { var state = new TokenState(); state.ConfigureOidcMode(); return state; });
         services.AddScoped<AuthenticationStateProvider, OidcSessionAuthenticationStateProvider>();
         services.AddCascadingAuthenticationState();
-        services.AddScoped<IUiAccessTokenProvider, OidcAccessTokenProvider>();
+        services.AddScoped<OidcAccessTokenProvider>();
+        services.AddScoped<IUiAccessTokenProvider>(sp => sp.GetRequiredService<OidcAccessTokenProvider>());
         services.AddScoped<ApiActorContextClient>();
 
         services.AddAuthentication(authentication =>
@@ -188,6 +189,7 @@ public static class UiAuthentication
     {
         app.MapGet("/health/live", () => Results.Ok(new { status = "ok" })).AllowAnonymous();
         if (options.IsDevelopmentToken) return;
+        app.MapCurrentUserTokenInfo();
         app.MapGet("/auth/login", (string? returnUrl) => Results.Challenge(
             new AuthenticationProperties { RedirectUri = LocalReturnUrl(returnUrl) }, [OidcScheme])).AllowAnonymous();
         app.MapPost("/auth/logout", async (HttpContext context, IAntiforgery antiforgery,

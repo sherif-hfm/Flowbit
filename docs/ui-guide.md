@@ -50,6 +50,12 @@ Use **Sign out** to end the local session and initiate provider logout where sup
 
 The API remains authoritative for your workflow identity, roles, and actions. A successful provider login does not grant administration or task access. If authentication expires while working, sign in again and inspect the current workflow/task state before resubmitting an action; commands and AI streams are not automatically replayed. Export or save local editor work before deliberately navigating away. See [session behavior](openid-connect.md#session-behavior-and-operations) for deployment limits and the local Keycloak users.
 
+To view your own current access token, open `/_info` on the UI origin
+(for the local Keycloak setup, `https://localhost:7019/_info`). It displays JSON
+with your username, roles, Bearer access token, and expiry. Sign-in is required;
+see [token diagnostics](openid-connect.md#view-your-current-access-token) for
+refresh and error behavior. The response contains a credential, so do not share it.
+
 ## Set your development identity
 
 1. Open **Test identity** in the sidebar (`/token`).

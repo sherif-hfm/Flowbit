@@ -54,6 +54,8 @@ public sealed class UiOidcHostingValidationTests
     [InlineData("Production", "http", "/signout-callback-oidc", false, 400)]
     [InlineData("Production", "http", "/_blazor/negotiate", false, 400)]
     [InlineData("Production", "http", "/workflows", true, 400)]
+    [InlineData("Production", "http", "/_info", true, 400)]
+    [InlineData("Production", "https", "/_info", true, 200)]
     [InlineData("Production", "https", "/workflows", true, 200)]
     [InlineData("Production", "http", "/health/live", false, 200)]
     [InlineData("Production", "http", "/_framework/blazor.web.js", false, 200)]

@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Security.Claims;
 using Duende.AccessTokenManagement;
 using Duende.AccessTokenManagement.OpenIdConnect;
 using Flowbit.Shared.Dtos;
@@ -45,6 +46,14 @@ public sealed class OidcAccessTokenProvider(AuthenticationStateProvider authenti
     public async Task<string?> GetAccessTokenAsync(CancellationToken cancellationToken)
     {
         var principal = (await authentication.GetAuthenticationStateAsync()).User;
+        return (await GetTokenInfoAsync(principal, cancellationToken)).AccessToken;
+    }
+
+    // HTTP endpoints use their cookie-authenticated principal; a Blazor circuit
+    // AuthenticationStateProvider is not initialized for a normal HTTP request.
+    internal async Task<UiTokenInfo> GetTokenInfoAsync(ClaimsPrincipal principal, CancellationToken cancellationToken)
+    {
+        if (principal.Identity?.IsAuthenticated != true) throw new UiSessionExpiredException();
         sessionId = UiSessionStore.SessionId(principal);
         var record = sessions.Find(sessionId) ?? throw new UiSessionExpiredException();
         await record.RefreshLock.WaitAsync(cancellationToken);
@@ -75,7 +84,8 @@ public sealed class OidcAccessTokenProvider(AuthenticationStateProvider authenti
             // that await must still be valid when released to the API transport.
             if (sessions.Find(sessionId) is null || token.Expiration <= clock.GetUtcNow()
                 || token.Expiration == DateTimeOffset.MaxValue) throw new UiSessionExpiredException();
-            return token.AccessToken.ToString();
+            return new UiTokenInfo(record.Actor.User, record.Actor.Roles.ToArray(),
+                token.AccessToken.ToString(), "Bearer", token.Expiration);
         }
         catch (UiSessionExpiredException)
         {
@@ -95,5 +105,8 @@ public sealed class OidcAccessTokenProvider(AuthenticationStateProvider authenti
     }
     public void RejectSession() => sessions.Revoke(sessionId);
 }
+
+internal sealed record UiTokenInfo(string? User, IReadOnlyList<string> Roles,
+    string AccessToken, string TokenType, DateTimeOffset ExpiresAt);
 
 public sealed class UiAuthenticationUnavailableException() : InvalidOperationException("Authentication is temporarily unavailable. Try again shortly.");

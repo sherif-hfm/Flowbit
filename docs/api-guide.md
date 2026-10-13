@@ -60,6 +60,12 @@ Shared-variable routes reject combining bearer and client credentials. A write s
 
 **Integration boundary:** this checkout does not apply a universal tenant/owner filter to every bearer endpoint. Instance detail is a deployment-level read after authentication; instance lists/search separately enforce the workflow-version visibility rule above. Every administrative-action catalog, candidate, batch, and direct instance endpoint requires a nonblank authenticated actor and workflow-administrator permission. Those explicit overrides bypass ordinary task authorization; having the administrator role alone does not bypass personal task APIs or inbox filtering. Actor-scoped inbox and personal task routes retain their own visibility rules; filtering an API request is not an authorization mechanism.
 
+For manual OIDC API testing, the separate **UI-origin** `GET /_info` endpoint
+returns the signed-in user's current access token using their UI session cookie.
+See [token diagnostics](openid-connect.md#view-your-current-access-token) for its
+JSON fields and status behavior. It is not an API route and is not included in the
+API OpenAPI document; API requests still require `Authorization: Bearer <accessToken>`.
+
 ## Errors and concurrency
 
 The API does not have one universal error envelope. Clients should branch on HTTP status and, when present, the stable `code` field. Treat human-readable `error` text as diagnostics.
