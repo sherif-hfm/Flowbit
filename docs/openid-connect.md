@@ -14,7 +14,7 @@ JSON keys use colons below; environment variables replace each colon with `__`. 
 
 | Setting | Host | Value / behavior |
 | --- | --- | --- |
-| `Authentication:Mode` | API, UI | `OpenIdConnect` or `DevelopmentToken`. Development settings select the latter explicitly. |
+| `Authentication:Mode` | API, UI | `OpenIdConnect` or `DevelopmentToken`. Checked-in Development settings select OpenIdConnect with the local Keycloak realm; ordinary Compose explicitly overrides this to DevelopmentToken. |
 | `Authentication:Oidc:Authority` | API, UI | Exact trusted issuer base URL used for discovery; normally HTTPS. |
 | `Authentication:Oidc:ClientId` | UI | Confidential web-client registration, distinct from the API audience. |
 | `Authentication:Oidc:ClientSecret` | UI | Server-held client secret for both PKCE and compatibility code flows. |
@@ -57,7 +57,11 @@ Issuer, signature, audience, lifetime, required API scope, and actor validation 
 
 This optional setup runs Keycloak in Docker and runs the API/UI on the host using their HTTPS launch profiles. Use the same `localhost` spelling throughout. Docker-internal names are not interchangeable with the public issuer URL.
 
-The separate [compose.oidc.yaml](../compose.oidc.yaml) pins Keycloak **26.8.1**, imports [the development realm](../dev/keycloak/flowbit-realm.json), and binds only `127.0.0.1:18080`. It does not replace the ordinary four-service Compose stack. The realm contains public sample credentials and disables password grants, implicit flow, public clients, and user registration. It is disposable local configuration, not a production identity service. The pinned version is published by [Keycloak](https://www.keycloak.org/getting-started/getting-started-docker).
+The [API Development settings](../Flowbit/src/Flowbit.Api/appsettings.Development.json) and [UI Development settings](../Flowbit/src/Flowbit.Ui/appsettings.Development.json) already select `OpenIdConnect` and authority `http://localhost:18080/realms/flowbit`. The API expects audience `flowbit-api`, scope `flowbit.api`, actor claim `flowbit_user`, and flat `roles`. The UI uses client `flowbit-ui`, the public local secret `flowbit-ui-local-only`, S256 PKCE, and API base URL `https://localhost:7291`. HTTP provider metadata is enabled only in these Development files; production configuration must supply its own HTTPS authority and protected client secret.
+
+Use `--launch-profile https` for both projects: the realm registers the UI callback at `https://localhost:7019/signin-oidc`, not the HTTP profile's port. Existing environment variables or user secrets take precedence over appsettings; remove stale authentication/API overrides before following these commands. Database configuration remains independent.
+
+The separate [compose.oidc.yaml](../compose.oidc.yaml) pins Keycloak **26.8.1**, imports [the development realm](../dev/keycloak/flowbit-realm.json), and binds only `127.0.0.1:18080`. It does not replace the ordinary four-service Compose stack. The realm contains public sample credentials and disables password grants, implicit flow, public clients, and user registration. Its development database persists in the `flowbit-oidc_keycloak-data` Docker volume, and the container restarts with Docker Desktop unless explicitly stopped. This remains local development configuration, not a production identity service. The pinned version is published by [Keycloak](https://www.keycloak.org/downloads.html).
 
 From the repository root, in PowerShell or Bash:
 
@@ -74,11 +78,6 @@ PowerShell:
 
 ```powershell
 $env:ConnectionStrings__Flowbit = 'Host=127.0.0.1;Port=55439;Database=flowbit;Username=flowbit;Password=flowbit-local-only'
-$env:Authentication__Mode = 'OpenIdConnect'
-$env:Authentication__Oidc__Authority = 'http://localhost:18080/realms/flowbit'
-$env:Authentication__Oidc__Audience = 'flowbit-api'
-$env:Authentication__Oidc__RequiredScope = 'flowbit.api'
-$env:Authentication__Oidc__AllowHttpMetadata = 'true'
 dotnet run --project Flowbit/src/Flowbit.Api --launch-profile https
 ```
 
@@ -86,11 +85,6 @@ Bash:
 
 ```bash
 export ConnectionStrings__Flowbit='Host=127.0.0.1;Port=55439;Database=flowbit;Username=flowbit;Password=flowbit-local-only'
-export Authentication__Mode=OpenIdConnect
-export Authentication__Oidc__Authority=http://localhost:18080/realms/flowbit
-export Authentication__Oidc__Audience=flowbit-api
-export Authentication__Oidc__RequiredScope=flowbit.api
-export Authentication__Oidc__AllowHttpMetadata=true
 dotnet run --project Flowbit/src/Flowbit.Api --launch-profile https
 ```
 
@@ -99,34 +93,12 @@ Start the UI in a second terminal:
 PowerShell:
 
 ```powershell
-$env:WorkflowApi__BaseUrl = 'https://localhost:7291'
-$env:Authentication__Mode = 'OpenIdConnect'
-$env:Authentication__Oidc__Authority = 'http://localhost:18080/realms/flowbit'
-$env:Authentication__Oidc__ClientId = 'flowbit-ui'
-$env:Authentication__Oidc__ClientSecret = 'flowbit-ui-local-only'
-$env:Authentication__Oidc__UsePkce = 'true'
-$env:Authentication__Oidc__AllowHttpMetadata = 'true'
-$env:Authentication__Oidc__Scopes__0 = 'openid'
-$env:Authentication__Oidc__Scopes__1 = 'profile'
-$env:Authentication__Oidc__Scopes__2 = 'offline_access'
-$env:Authentication__Oidc__Scopes__3 = 'flowbit.api'
 dotnet run --project Flowbit/src/Flowbit.Ui --launch-profile https
 ```
 
 Bash:
 
 ```bash
-export WorkflowApi__BaseUrl=https://localhost:7291
-export Authentication__Mode=OpenIdConnect
-export Authentication__Oidc__Authority=http://localhost:18080/realms/flowbit
-export Authentication__Oidc__ClientId=flowbit-ui
-export Authentication__Oidc__ClientSecret=flowbit-ui-local-only
-export Authentication__Oidc__UsePkce=true
-export Authentication__Oidc__AllowHttpMetadata=true
-export Authentication__Oidc__Scopes__0=openid
-export Authentication__Oidc__Scopes__1=profile
-export Authentication__Oidc__Scopes__2=offline_access
-export Authentication__Oidc__Scopes__3=flowbit.api
 dotnet run --project Flowbit/src/Flowbit.Ui --launch-profile https
 ```
 
@@ -134,14 +106,18 @@ Open [Flowbit.Ui](https://localhost:7019) and sign in with one of these developm
 
 | Username | Password | Flowbit roles |
 | --- | --- | --- |
-| `alice` | `flowbit-alice-local-only` | `admin`, `Requester`, `Reviewer` |
-| `bob` | `flowbit-bob-local-only` | `Reviewer` |
+| `alice` | `111` | `admin`, `Requester`, `Reviewer`, `WorkflowAdministrator` |
+| `bob` | `111` | `Reviewer` |
+| `carol` | `111` | `Requester` |
+| `supervisor` | `111` | `Reviewer`, `Supervisor` |
+| `finance` | `111` | `Finance` |
+| `manager` | `111` | `Manager`, `RoleManager` |
 
-The realm maps the non-self-editable username to `flowbit_user`, emits a flat `roles` claim, and puts audience `flowbit-api` and scope `flowbit.api` in the access token. Both users also have Keycloak's `offline_access` role so the sample can obtain refresh tokens; this role grants no built-in Flowbit administration permission. Alice can follow the [UI approval walkthrough](ui-guide.md#complete-your-first-approval); the actor shown will be `alice`, not the tutorial's `docs.reviewer`. Bob is deliberately not a workflow administrator. Separate browser profiles or private windows demonstrate isolated sessions. The UI does not expose a raw OIDC token; external HTTP clients must obtain their own delegated access tokens through their registered authorization-code flow.
+The realm maps the non-self-editable username to `flowbit_user`, emits a flat `roles` claim, and puts audience `flowbit-api` and scope `flowbit.api` in the access token. All six users also have Keycloak's `offline_access` role so the sample can obtain refresh tokens; this role grants no built-in Flowbit administration permission. Alice can follow the [UI approval walkthrough](ui-guide.md#complete-your-first-approval); the actor shown will be `alice`, not the tutorial's `docs.reviewer`. Only Alice has Flowbit's default administrative `admin` role. The other roles grant the permissions authored into each workflow, not global administration: Carol can start the [roles, claim, and bypass example](../examples/user-tasks/01-roles-claim-and-bypass.json), Bob can claim its review, Supervisor can use its protected bypass, and Alice's `WorkflowAdministrator` role permits its cancellation. Finance can approve the [variable-role example](../examples/user-tasks/05-variable-roles-and-role-management.json); Manager can view that task and manage its captured roles through `RoleManager`, but initially cannot use its Finance-only approval action. Separate browser profiles or private windows demonstrate isolated sessions. The UI does not expose a raw OIDC token; external HTTP clients must obtain their own delegated access tokens through their registered authorization-code flow.
 
 To exercise explicit code flow without PKCE, stop only the UI, change `Authentication__Oidc__ClientId` to `flowbit-ui-no-pkce`, `Authentication__Oidc__ClientSecret` to `flowbit-ui-legacy-local-only`, and `Authentication__Oidc__UsePkce` to `false` in the same shell, then start it again. The API settings are unchanged. Restore all three values to use the PKCE-enforcing client. Setting `UsePkce=false` against `flowbit-ui` must be rejected by Keycloak.
 
-Keycloak administration is at [localhost:18080](http://localhost:18080), with `flowbit-admin` / `flowbit-keycloak-local-only`. Startup import skips an existing realm. `docker compose -f compose.oidc.yaml down` removes this disposable container and its internal development database; the next `up` imports the checked-in realm again. It does not remove the Flowbit PostgreSQL volume. See [Keycloak realm import behavior](https://www.keycloak.org/server/importExport).
+Keycloak administration is at [localhost:18080](http://localhost:18080), with `flowbit-admin` / `flowbit-keycloak-local-only`. This Keycloak administrator is separate from the Flowbit application users. Startup import skips an existing realm, so editing the JSON does not update existing users; use the admin console for an installed realm. `docker compose -f compose.oidc.yaml down` removes the container but keeps its database volume; the next `up -d --wait` retains realm settings, users, and passwords. To intentionally erase all local Keycloak data and reimport the sample, use `docker compose -f compose.oidc.yaml down -v`, then start it again. These commands do not remove the separate Flowbit PostgreSQL volume. If upgrading from the former volume-free Compose setup, export any needed realm data before recreating that old container. See [Keycloak realm import behavior](https://www.keycloak.org/server/importExport).
 
 ## Session behavior and operations
 

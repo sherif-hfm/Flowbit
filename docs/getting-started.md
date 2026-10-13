@@ -58,6 +58,8 @@ Once startup succeeds, skip the host database/API/UI startup commands below and 
 
 The following database and application commands run the .NET hosts on your machine. Confirm `dotnet --version` reports a .NET 10 SDK before continuing. Compose users can skip to [Generate the token](#generate-the-token).
 
+The projects' checked-in Development settings use the [local Keycloak realm](openid-connect.md#local-keycloak-walkthrough). This tutorial explicitly overrides both hosts to `DevelopmentToken` and supplies its own API URL so the shared test-identity walkthrough below remains self-contained. For Keycloak sign-in, use the HTTPS launch profiles and startup commands in the OIDC guide instead.
+
 ## Start an isolated PostgreSQL database
 
 The following container is dedicated to this tutorial. Its port is bound to loopback. The password and JWT key shown on this page are public local-development values; supply independently managed secrets for deployment.

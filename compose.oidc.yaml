@@ -1,5 +1,5 @@
 # Optional identity provider for host-run Flowbit.Api and Flowbit.Ui.
-# This is a separate disposable development stack, not an override for compose.yaml.
+# This is a separate local development stack, not an override for compose.yaml.
 name: flowbit-oidc
 
 services:
@@ -14,11 +14,16 @@ services:
     ports:
       - "127.0.0.1:18080:8080"
     volumes:
+      - keycloak-data:/opt/keycloak/data
       - ./dev/keycloak/flowbit-realm.json:/opt/keycloak/data/import/flowbit-realm.json:ro
     mem_limit: 1g
+    restart: unless-stopped
     healthcheck:
       test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9000; printf 'GET /health/ready HTTP/1.0\r\nHost: localhost\r\n\r\n' >&3; grep -q '200 OK' <&3"]
       interval: 5s
       timeout: 5s
       retries: 36
       start_period: 30s
+
+volumes:
+  keycloak-data:

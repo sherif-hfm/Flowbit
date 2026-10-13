@@ -58,6 +58,8 @@ public sealed class UiOidcForwardedHeadersTests
         {
             ["Authentication:Mode"] = "OpenIdConnect",
             ["Authentication:Oidc:Authority"] = "https://identity.flowbit.test",
+            // This synthetic HTTPS provider must not inherit the local Keycloak HTTP exception.
+            ["Authentication:Oidc:AllowHttpMetadata"] = "false",
             ["Authentication:Oidc:ClientId"] = "flowbit-ui",
             ["Authentication:Oidc:ClientSecret"] = "synthetic-test-secret",
             ["AllowedHosts"] = " ui.flowbit.test ; public.flowbit.test ",

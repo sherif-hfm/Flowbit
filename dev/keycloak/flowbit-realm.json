@@ -16,6 +16,11 @@
       { "name": "admin" },
       { "name": "Requester" },
       { "name": "Reviewer" },
+      { "name": "Supervisor" },
+      { "name": "Finance" },
+      { "name": "Manager" },
+      { "name": "RoleManager" },
+      { "name": "WorkflowAdministrator" },
       { "name": "offline_access" }
     ]
   },
@@ -129,8 +134,8 @@
       "firstName": "Alice",
       "lastName": "Flowbit",
       "email": "alice@example.test",
-      "credentials": [{ "type": "password", "value": "flowbit-alice-local-only", "temporary": false }],
-      "realmRoles": ["admin", "Requester", "Reviewer", "offline_access"]
+      "credentials": [{ "type": "password", "value": "111", "temporary": false }],
+      "realmRoles": ["admin", "Requester", "Reviewer", "WorkflowAdministrator", "offline_access"]
     },
     {
       "username": "bob",
@@ -139,8 +144,48 @@
       "firstName": "Bob",
       "lastName": "Flowbit",
       "email": "bob@example.test",
-      "credentials": [{ "type": "password", "value": "flowbit-bob-local-only", "temporary": false }],
+      "credentials": [{ "type": "password", "value": "111", "temporary": false }],
       "realmRoles": ["Reviewer", "offline_access"]
+    },
+    {
+      "username": "carol",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Carol",
+      "lastName": "Flowbit",
+      "email": "carol@example.test",
+      "credentials": [{ "type": "password", "value": "111", "temporary": false }],
+      "realmRoles": ["Requester", "offline_access"]
+    },
+    {
+      "username": "supervisor",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Supervisor",
+      "lastName": "Flowbit",
+      "email": "supervisor@example.test",
+      "credentials": [{ "type": "password", "value": "111", "temporary": false }],
+      "realmRoles": ["Reviewer", "Supervisor", "offline_access"]
+    },
+    {
+      "username": "finance",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Finance",
+      "lastName": "Flowbit",
+      "email": "finance@example.test",
+      "credentials": [{ "type": "password", "value": "111", "temporary": false }],
+      "realmRoles": ["Finance", "offline_access"]
+    },
+    {
+      "username": "manager",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Manager",
+      "lastName": "Flowbit",
+      "email": "manager@example.test",
+      "credentials": [{ "type": "password", "value": "111", "temporary": false }],
+      "realmRoles": ["Manager", "RoleManager", "offline_access"]
     }
   ]
 }

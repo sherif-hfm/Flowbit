@@ -24,6 +24,8 @@ internal static class ApiTestAuthentication
             {
                 ["Authentication:Mode"] = FlowbitAuthenticationOptions.OpenIdConnectMode,
                 ["Authentication:Oidc:Authority"] = "https://identity.flowbit.test",
+                // Development-host fixtures still use this synthetic HTTPS provider.
+                ["Authentication:Oidc:AllowHttpMetadata"] = "false",
                 ["Authentication:Oidc:Audience"] = ApiTestAuth.Audience
             }));
         builder.ConfigureTestServices(services =>

@@ -36,6 +36,8 @@ public sealed class UiOidcTokenFailureTests
         {
             ["Authentication:Mode"] = "OpenIdConnect",
             ["Authentication:Oidc:Authority"] = "https://issuer.test",
+            // This synthetic HTTPS provider must not inherit the local Keycloak HTTP exception.
+            ["Authentication:Oidc:AllowHttpMetadata"] = "false",
             ["Authentication:Oidc:ClientId"] = "ui",
             ["Authentication:Oidc:ClientSecret"] = "test"
         });
