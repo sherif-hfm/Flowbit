@@ -19,7 +19,7 @@ JSON keys use colons below; environment variables replace each colon with `__`. 
 | `Authentication:Oidc:ClientId` | UI | Confidential web-client registration, distinct from the API audience. |
 | `Authentication:Oidc:ClientSecret` | UI | Server-held client secret for both PKCE and compatibility code flows. |
 | `Authentication:Oidc:UsePkce` | UI | `true` by default; S256. Set `false` only for an explicitly configured confidential compatibility client. There is no automatic downgrade. |
-| `Authentication:Oidc:Scopes` | UI | Requested scopes, including `openid`, `profile`, and the provider's API scope. Include `offline_access` when the provider uses it to issue refresh tokens. |
+| `Authentication:Oidc:Scopes` | UI | Requested scopes, including `openid`, `profile`, and the provider's API scope. Request `email` for email claims; include `offline_access` when the provider uses it to issue refresh tokens. The local Development settings request all five. |
 | `Authentication:Oidc:Audience` | API | Expected API access-token audience, for example `flowbit-api`. |
 | `Authentication:Oidc:NameClaimType` | API | `flowbit_user` by default. The canonical actor contract is described below. |
 | `Authentication:Oidc:RoleClaimType` | API | `roles` by default; emit a flat string/array claim rather than provider-specific nested role JSON. |
@@ -57,7 +57,7 @@ Issuer, signature, audience, lifetime, required API scope, and actor validation 
 
 This optional setup runs Keycloak in Docker and runs the API/UI on the host using their HTTPS launch profiles. Use the same `localhost` spelling throughout. Docker-internal names are not interchangeable with the public issuer URL.
 
-The [API Development settings](../Flowbit/src/Flowbit.Api/appsettings.Development.json) and [UI Development settings](../Flowbit/src/Flowbit.Ui/appsettings.Development.json) already select `OpenIdConnect` and authority `http://localhost:18080/realms/flowbit`. The API expects audience `flowbit-api`, scope `flowbit.api`, actor claim `flowbit_user`, and flat `roles`. The UI uses client `flowbit-ui`, the public local secret `flowbit-ui-local-only`, S256 PKCE, and API base URL `https://localhost:7291`. HTTP provider metadata is enabled only in these Development files; production configuration must supply its own HTTPS authority and protected client secret.
+The [API Development settings](../Flowbit/src/Flowbit.Api/appsettings.Development.json) and [UI Development settings](../Flowbit/src/Flowbit.Ui/appsettings.Development.json) already select `OpenIdConnect` and authority `http://localhost:18080/realms/flowbit`. The API expects audience `flowbit-api`, scope `flowbit.api`, actor claim `flowbit_user`, and flat `roles`. The UI uses client `flowbit-ui`, the public local secret `flowbit-ui-local-only`, S256 PKCE, scopes `openid profile email offline_access flowbit.api`, and API base URL `https://localhost:7291`. HTTP provider metadata is enabled only in these Development files; production configuration must supply its own HTTPS authority and protected client secret.
 
 Use `--launch-profile https` for both projects: the realm registers the UI callback at `https://localhost:7019/signin-oidc`, not the HTTP profile's port. Existing environment variables or user secrets take precedence over appsettings; remove stale authentication/API overrides before following these commands. Database configuration remains independent.
 
@@ -118,6 +118,42 @@ The realm maps the non-self-editable username to `flowbit_user`, emits a flat `r
 To exercise explicit code flow without PKCE, stop only the UI, change `Authentication__Oidc__ClientId` to `flowbit-ui-no-pkce`, `Authentication__Oidc__ClientSecret` to `flowbit-ui-legacy-local-only`, and `Authentication__Oidc__UsePkce` to `false` in the same shell, then start it again. The API settings are unchanged. Restore all three values to use the PKCE-enforcing client. Setting `UsePkce=false` against `flowbit-ui` must be rejected by Keycloak.
 
 Keycloak administration is at [localhost:18080](http://localhost:18080), with `flowbit-admin` / `flowbit-keycloak-local-only`. This Keycloak administrator is separate from the Flowbit application users. Startup import skips an existing realm, so editing the JSON does not update existing users; use the admin console for an installed realm. `docker compose -f compose.oidc.yaml down` removes the container but keeps its database volume; the next `up -d --wait` retains realm settings, users, and passwords. To intentionally erase all local Keycloak data and reimport the sample, use `docker compose -f compose.oidc.yaml down -v`, then start it again. These commands do not remove the separate Flowbit PostgreSQL volume. If upgrading from the former volume-free Compose setup, export any needed realm data before recreating that old container. See [Keycloak realm import behavior](https://www.keycloak.org/server/importExport).
+
+### Profile and email claims
+
+Both local clients (`flowbit-ui` and `flowbit-ui-no-pkce`) have `profile` and
+`email` as default client scopes. These mappers include the following fields in
+new access tokens, ID tokens, and UserInfo responses when the user's profile is
+populated:
+
+| Scope | Mapper | Token claim | Keycloak user field / example for Alice |
+| --- | --- | --- | --- |
+| `profile` | username | `preferred_username` | Username: `alice` |
+| `profile` | given name | `given_name` | First name: `Alice` |
+| `profile` | family name | `family_name` | Last name: `Flowbit` |
+| `profile` | full name | `name` | Combined first and last name: `Alice Flowbit` |
+| `email` | email | `email` | Email: `alice@example.test` |
+| `email` | email verified | `email_verified` | Email verified: Boolean `true` for the sample users |
+
+In the admin console, select **flowbit → Client scopes → profile (or email) →
+Mappers** to inspect these mappings. Edit profile values under **Users → select
+user → Details**. `flowbit_user` and flat `roles` remain in the `flowbit.api`
+scope; Flowbit continues using `flowbit_user` as its actor identity. Profile
+claims do not automatically grant workflow permissions or enable expression or
+audit claim allowlists.
+
+New realm imports contain these mappings. For an existing realm, add the listed
+predefined mappers to `profile`, create the OpenID Connect `email` client scope
+with its two predefined mappers, and assign both scopes as **Default** under each
+Flowbit client's **Client scopes** tab. Enable access-token, ID-token and UserInfo
+output on each mapper, as in [the realm configuration](../dev/keycloak/flowbit-realm.json).
+Startup import does not apply these changes to an existing realm.
+
+Previously issued JWTs do not change. Sign out and sign in again to obtain the
+new claims, then inspect the JWT payload in `accessToken` from
+[`/_info`](#view-your-current-access-token). The endpoint's outer JSON fields are
+unchanged. A later token refresh also re-reads mapped profile fields for the
+session's granted scopes; a fresh sign-in ensures newly added scopes are granted.
 
 ### Flowbit login branding
 
