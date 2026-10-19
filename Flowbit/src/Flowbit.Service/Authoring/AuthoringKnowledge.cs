@@ -11,7 +11,6 @@ public interface IAuthoringKnowledge
 {
     string ContractHash { get; }
     IReadOnlyDictionary<string, string> Resources { get; }
-    string GetPromptContext(string? query = null);
     byte[] GetPackageZip();
 }
 
@@ -74,28 +73,6 @@ public sealed class AuthoringKnowledge : IAuthoringKnowledge
         "references/docs/node-reference.md", "references/docs/bpmn-support.md", "references/docs/developer-guide.md"
     ];
 
-    public string GetPromptContext(string? query = null)
-    {
-        var result = new StringBuilder();
-        // The API model cannot follow local file links. Always provide the complete authored behavior
-        // contract, independent of the user's language; keyword matching must not hide a capability.
-        foreach (var name in CoreResources)
-            Append(name, Resources[name]);
-        var terms = Regex.Matches(query ?? string.Empty, @"[\p{L}\p{N}]{3,}")
-            .Select(match => match.Value).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-        var remaining = 40000;
-        foreach (var example in Resources.Where(item => item.Key.StartsWith("examples/", StringComparison.Ordinal) && item.Key.EndsWith(".json", StringComparison.Ordinal))
-                     .Select(item => new { item.Key, item.Value, Score = terms.Count(term => item.Key.Contains(term, StringComparison.OrdinalIgnoreCase)) })
-                     .OrderByDescending(item => item.Score).ThenBy(item => item.Key, StringComparer.Ordinal).Take(2))
-        {
-            if (example.Value.Length > remaining) continue;
-            Append(example.Key, example.Value);
-            remaining -= example.Value.Length;
-        }
-        return result.ToString();
-
-        void Append(string name, string content) => result.Append("\n--- ").Append(name).Append(" ---\n").Append(content).Append('\n');
-    }
 }
 
 /// <summary>Build-time export shared by tests and the small command-line exporter.</summary>

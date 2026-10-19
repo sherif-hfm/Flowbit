@@ -1,9 +1,10 @@
 # Zen GLM Flash evaluation — 2026-10-03
 
-> Historical evidence: Microsoft Agent Framework was subsequently removed from
-> Flowbit. Only `current` and `optimized` are now supported. Framework commands,
-> settings, package versions and adoption procedures below describe the tested
-> historical builds, not the current product or runnable tooling. Frozen historical
+> Historical evidence: the `current`/`optimized` command-loop engine and the earlier
+> Microsoft Agent Framework variant evaluated below have both been replaced by the
+> agent engine (the Flowbit AI Lab v3 approach; see the [agent engine tooling](#agent-engine-tooling-2026-10-19)
+> section). Commands, settings, package versions and adoption procedures below describe the
+> tested historical builds, not the current product or runnable tooling. Frozen historical
 > artifacts are not application deliverables. See the [current evaluation guide](README.md)
 > and [removal verification](#framework-removal).
 
@@ -717,3 +718,105 @@ Changed-document validation passed 32 local links/anchors/image references and
 parsed the fixture/configuration JSON, with no broken references in the four
 changed Markdown files. `git diff --check` passed. No new browser run was needed
 for the evaluation-only change.
+
+<a id="agent-engine-tooling-2026-10-19"></a>
+
+## Agent engine tooling — 2026-10-19
+
+The editor assistant now runs the agent engine: one model agent with six file tools, the Flowbit AI Lab v3
+approach (see the [agent engine plan](../../../docs/plans/ai-assistant-agent-engine-plan.md)). The evaluation
+tool was rewritten for it, and `Run-Trials.ps1` replaced `Run-Matrix.ps1` and `Run-Improvements.ps1`. This
+offline verification preceded the first live round, recorded in the [next section](#agent-engine-live-round-2026-10-19).
+
+Offline verification on 2026-10-19 made no provider calls:
+
+- **Offline checkers.** `Test-Checks.ps1` passed its 15 complex-checker regressions and `Test-SimpleChecks.ps1`
+  its 12 creation/preservation checks against the new runner. Both ran in Windows PowerShell 5.1, which needs
+  `-ExampleResult` passed explicitly to `Test-Checks.ps1`.
+- **Runner.** A scratch copy of the runner, pointed at an in-process loopback provider that scripts GLM tool
+  calls, completed a `simple` trial with `--resume-test true`:
+  - call 2 was cancelled in flight;
+  - Continue resent the same request (`resumeVerified: true`);
+  - the proposal passed the simple checker.
+- **Sensitivity.** With Continue replaced by a new message, the same trial reported `resumeVerified: false` and
+  failed.
+- **Trial round.** `Run-Trials.ps1` was checked in three ways:
+  - planning mode recorded `plan.json` only;
+  - a round over the cap was refused;
+  - an executed three-trial round through the scratch runner kept its two scripted failures alongside the
+    passing trial in `trials.json` and `summary.json`.
+
+  The scratch runner and fake provider are not deliverables.
+
+<a id="agent-engine-live-round-2026-10-19"></a>
+
+## Agent engine live round — 2026-10-19
+
+The user authorized one live `Run-Trials.ps1` round with the default six trials. It ran against OpenCode Zen
+`glm-5.3-flash` with `high` reasoning and the shipped limits:
+
+- 40 model calls;
+- 32,768 output tokens per call;
+- two validation follow-ups;
+- a 1,800-second deadline per trial.
+
+The inputs were frozen in `artifacts/authoring-eval/live-20261019/`:
+
+- `runner/`: 65 files;
+- `knowledge/flowbit-authoring`: 77 files, exported from the working tree;
+- the four fixtures.
+
+`plan/` holds the key-free plan and hashes. `round/` holds `trials.json`, `summary.json` and every trial's
+evidence, traces and checker reports. No evidence file contains the key. Fingerprints:
+
+| Fingerprint | Value (prefix) |
+| --- | --- |
+| Prompt | `fd3542b29a33` |
+| Docs (63 files) | `285aba001f5d` |
+| Contract | `088d8efb92b8` |
+
+**Result: 3 of 6 trials passed.** Every trial ended with a proposal that passed Flowbit's validation, save
+readiness and publication checks, with no validation follow-up. The failures are checker verdicts on what the
+model built.
+
+| Trial | Seconds | Model calls | Input / cached / output tokens | Nodes / flows | strict-v1 | functional-v2 |
+| --- | ---: | ---: | --- | --- | --- | --- |
+| 01 complex | 90 | 10 | 346,916 / 290,728 / 13,339 | 30 / 34 | fail (33/36) | fail (74/78) |
+| 02 complex | 99 | 14 | 460,547 / 403,200 / 13,812 | 30 / 34 | fail (32/36) | fail (73/78) |
+| 03 complex | 64 | 6 | 165,108 / 120,552 / 9,077 | 29 / 33 | **pass** | **pass** |
+| 04 simple | 35 | 6 | 113,028 / 61,668 / 2,279 | 4 / 3 | fail | fail |
+| 05 modify | 21 | 8 | 39,118 / 32,004 / 1,685 | 4 / 3 | **pass** | **pass** |
+| 06 complex, Cancel and Continue | 84 | 7 after Continue (9 HTTP attempts) | 242,490 / 193,100 / 12,375 after Continue | 29 / 33 | **pass** | **pass** |
+
+The 394 seconds of trial time made 53 HTTP attempts. The token figures are the runs' operational counts, not
+billing totals. For trial 06 they cover only the run after Continue.
+
+**What failed:**
+
+- **Trials 01 and 02.** Both put an extra merging exclusive gateway before Committee vote, instead of letting the
+  Director and skip routes enter Committee vote directly. The fixture says "Both routes reach Committee vote". The
+  result is equivalent routing, but one more node and flow, so these checks fail:
+  - "All 29 nodes, 33 flows and six lanes present";
+  - "Amount > 10000 priority 1 and default skip";
+  - "Director finance Approve enters Committee".
+- **Trial 02, one more miss.** It labelled the start → intake flow `Submit` instead of the intake → fork flow, and
+  gave intake the role `Requester` where the fixture names `requester`.
+- **Trial 04.** It named the start event `start`; the simple checker requires `Start`. Everything else matched.
+
+**Cancel and Continue (trial 06).** The tool cancelled the second HTTP attempt 500 ms after it began, once the
+first model call had completed. Continue resent the same conversation (`resumeVerified: true`), and the resumed
+run finished in 7 more model calls.
+
+Within those 7 calls the model ran `validate_workflow` itself and saved a corrected workflow before ending its
+turn, so the host sent no follow-up.
+
+**Compared with earlier engines.** All four complex trials produced a valid proposal within 99 seconds, and two of
+the four passed every strict check. The command-loop engine above produced no qualifying complex run within 600
+seconds. Its fresh complex run failed even at 30 minutes.
+
+This round is small: one round, six trials. It is not a speed or accuracy distribution. Flowbit AI Lab v3's own
+results came from different requirement texts and the lab's docs copy, so they are not directly comparable.
+
+Validation checks structure, references, topology, routing and configuration; it does not prove business
+correctness. The checkers cover the fixtures' expected behavior only. No workflow was applied, saved, published or
+executed.

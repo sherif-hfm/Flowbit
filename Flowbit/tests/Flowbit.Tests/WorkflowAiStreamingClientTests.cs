@@ -35,15 +35,15 @@ public sealed class WorkflowAiStreamingClientTests
         var client = new WorkflowApiClient(normal, factory);
         var response = streaming ? await client.SendAiTurnStreamingAsync(new(), "session-key", _ => Task.CompletedTask)
             : await client.SendAiTurnAsync(new(), "session-key");
-        Assert.Equal("clarification", response.Kind);
+        Assert.Equal("answer", response.Kind);
         Assert.False(normal.DefaultRequestHeaders.Contains("X-Flowbit-AI-Key"));
     }
 
     [Fact]
     public async Task StreamsCheckpointsAndResultWithRequestLocalCredentialsAndFrozenInputs()
     {
-        var checkpoint = new AiCheckpointDto { Draft = JsonSerializer.SerializeToElement(new { id = "workflow" }), Revision = 2 };
-        var result = Result("paused") with { Checkpoint = checkpoint };
+        var state = new AiConversationStateDto { Format = "flowbit-agent-state/1", Data = "c3RhdGU=", CanContinue = true, Messages = 4 };
+        var result = Result("paused") with { State = state };
         using var handler = new Handler(async request =>
         {
             Assert.Equal("/api/workflows/ai/turn/stream", request.RequestUri!.AbsolutePath);
@@ -51,20 +51,21 @@ public sealed class WorkflowAiStreamingClientTests
             var body = await request.Content!.ReadAsStringAsync();
             Assert.DoesNotContain("synthetic-session-key", body);
             Assert.Contains("Original requirements", body);
-            Assert.Contains("\"revision\":2", body);
+            Assert.Contains("\"continue\":true", body);
+            Assert.Contains("c3RhdGU=", body);
             return StreamResponse(Lines(
                 new() { RunId = "run", Sequence = 1, Type = "progress", Stage = "planning" },
-                new() { RunId = "run", Sequence = 2, Type = "checkpoint", Checkpoint = checkpoint },
+                new() { RunId = "run", Sequence = 2, Type = "checkpoint", State = state },
                 new() { RunId = "run", Sequence = 3, Type = "paused", Result = result }));
         });
         using var http = new HttpClient(handler) { BaseAddress = new("https://flowbit.test") };
         var received = new List<AiRunEventDto>();
         var response = await new WorkflowApiClient(http).SendAiTurnStreamingAsync(
-            new() { Message = "Original requirements", Checkpoint = checkpoint }, "synthetic-session-key",
+            new() { Message = "Original requirements", Continue = true, State = state }, "synthetic-session-key",
             frame => { received.Add(frame); return Task.CompletedTask; });
         Assert.Equal(new[] { "progress", "checkpoint", "paused" }, received.Select(frame => frame.Type));
         Assert.Equal("paused", response.Kind);
-        Assert.Equal(2, response.Checkpoint!.Revision);
+        Assert.Equal(4, response.State!.Messages);
         Assert.False(http.DefaultRequestHeaders.Contains("X-Flowbit-AI-Key"));
     }
 
@@ -82,7 +83,7 @@ public sealed class WorkflowAiStreamingClientTests
         {
             "duplicate" => invalid with { Sequence = 1 },
             "run" => invalid with { RunId = "different" },
-            "version" => invalid with { Version = 2 },
+            "version" => invalid with { Version = 1 },
             "missing-result" => invalid with { Type = "result" },
             "missing-checkpoint" => invalid with { Type = "checkpoint" },
             _ => invalid with { Type = "unknown" }
@@ -100,7 +101,7 @@ public sealed class WorkflowAiStreamingClientTests
     public async Task EofWithoutTerminalRejectsPartialCheckpoint(bool partialCheckpoint)
     {
         var content = Lines(new AiRunEventDto { RunId = "run", Sequence = 1, Type = "progress" });
-        if (partialCheckpoint) content += "{\"type\":\"checkpoint\",\"checkpoint\":{\"draft\":";
+        if (partialCheckpoint) content += "{\"type\":\"checkpoint\",\"state\":{\"data\":";
         using var http = Client(content);
         var received = new List<AiRunEventDto>();
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() => new WorkflowApiClient(http).SendAiTurnStreamingAsync(new(), "key",
@@ -113,11 +114,11 @@ public sealed class WorkflowAiStreamingClientTests
     public async Task ErrorFrameKeepsEarlierCheckpointAvailable()
     {
         using var http = Client(Lines(
-            new() { RunId = "run", Sequence = 1, Type = "checkpoint", Checkpoint = new() { Draft = JsonSerializer.SerializeToElement(new { id = "workflow" }) } },
+            new() { RunId = "run", Sequence = 1, Type = "checkpoint", State = new() { Format = "flowbit-agent-state/1", Data = "c3RhdGU=", CanContinue = true } },
             new() { RunId = "run", Sequence = 2, Type = "error", Code = "provider_quota", Message = "Provider quota exhausted." }));
-        AiCheckpointDto? checkpoint = null;
+        AiConversationStateDto? checkpoint = null;
         var error = await Assert.ThrowsAsync<WorkflowApiException>(() => new WorkflowApiClient(http).SendAiTurnStreamingAsync(new(), "key",
-            frame => { checkpoint = frame.Checkpoint ?? checkpoint; return Task.CompletedTask; }));
+            frame => { checkpoint = frame.State ?? checkpoint; return Task.CompletedTask; }));
         Assert.NotNull(checkpoint);
         Assert.Contains("quota exhausted", error.Message);
     }
@@ -125,7 +126,7 @@ public sealed class WorkflowAiStreamingClientTests
     [Fact]
     public async Task OversizedFrameIsRejectedBeforeConsumer()
     {
-        using var http = Client(new string(' ', 4 * 1024 * 1024 + 1));
+        using var http = Client(new string(' ', WorkflowApiClient.MaxAiFrameBytes + 1));
         var calls = 0;
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() => new WorkflowApiClient(http).SendAiTurnStreamingAsync(new(), "key",
             _ => { calls++; return Task.CompletedTask; }));
@@ -155,7 +156,7 @@ public sealed class WorkflowAiStreamingClientTests
         Assert.Equal(1, count);
     }
 
-    private static AiTurnResultDto Result(string kind = "clarification") => new(kind, "Working", [], null, [], [], [], new(false, [], []), "snapshot", "contract");
+    private static AiTurnResultDto Result(string kind = "answer") => new(kind, "Working", null, new(false, [], []), "snapshot", "contract");
     private static string Lines(params AiRunEventDto[] events) => string.Join('\n', events.Select(frame => JsonSerializer.Serialize(frame, JsonOptions))) + "\n";
     private static HttpResponseMessage StreamResponse(string content) => new(HttpStatusCode.OK) { Content = new StringContent(content, Encoding.UTF8, "application/x-ndjson") };
     private static HttpClient Client(string content) => new(new Handler(_ => Task.FromResult(StreamResponse(content)))) { BaseAddress = new("https://flowbit.test") };

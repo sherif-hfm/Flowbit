@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
@@ -7,19 +9,32 @@ namespace Flowbit.Service.Ai;
 public sealed class WorkflowAiRedaction
 {
     private readonly Dictionary<string, (string Path, JsonNode? Value)> originals = new(StringComparer.Ordinal);
-    private readonly string nonce = Guid.NewGuid().ToString("N");
+    private readonly string nonce;
+
+    /// <summary>
+    /// Placeholders combine <paramref name="nonce"/> with a hash of the field's identity path. A conversation that keeps its nonce
+    /// and redacts each turn's editor workflow again therefore gets the same placeholder for the same credential field.
+    /// </summary>
+    public WorkflowAiRedaction(string? nonce = null)
+    {
+        this.nonce = nonce ?? Guid.NewGuid().ToString("N");
+        if (this.nonce.Length != 32 || !this.nonce.All(char.IsAsciiHexDigitLower))
+            throw new ArgumentException("A redaction nonce is 32 lower-case hexadecimal characters.", nameof(nonce));
+    }
+
+    public string Nonce => nonce;
 
     public JsonElement Redact(JsonElement source)
     {
         var node = JsonNode.Parse(source.GetRawText())!;
-        Visit(node, "", restore: false);
+        Visit(node, "", "", restore: false);
         return JsonSerializer.SerializeToElement(node);
     }
 
     public JsonElement Restore(JsonElement source)
     {
         var node = JsonNode.Parse(source.GetRawText())!;
-        Visit(node, "", restore: true);
+        Visit(node, "", "", restore: true);
         return JsonSerializer.SerializeToElement(node);
     }
 
@@ -59,20 +74,22 @@ public sealed class WorkflowAiRedaction
             foreach (var item in obj.SelectMany(property => SecretStrings(property.Value))) yield return item;
     }
 
-    private void Visit(JsonNode node, string path, bool restore)
+    // path binds a placeholder to its field by entity identity; pointer is the field's JSON pointer, for error reports.
+    private void Visit(JsonNode node, string path, string pointer, bool restore)
     {
         if (node is JsonArray array)
         {
             for (var index = 0; index < array.Count; index++)
             {
                 if (array[index] is not { } child) continue;
+                var childPointer = pointer + "/" + index.ToString(System.Globalization.CultureInfo.InvariantCulture);
                 if (restore && child is JsonValue value && value.TryGetValue<string>(out var text)
                     && text.Contains("FLOWBIT_REDACTED_", StringComparison.Ordinal))
-                    throw new JsonException("A protected credential placeholder moved into an array value.");
+                    throw new WorkflowAiPlaceholderException(childPointer, "A protected credential placeholder moved into an array value.");
                 // Only canonical entity collections have stable identity. Opaque JSON may repeat arbitrary id values.
                 var identity = IsEntityCollection(path) && child is JsonObject item && item["id"] is { } id
                     ? "id=" + id.ToJsonString() : index.ToString(System.Globalization.CultureInfo.InvariantCulture);
-                Visit(child, path + "/" + identity, restore);
+                Visit(child, path + "/" + identity, childPointer, restore);
             }
             return;
         }
@@ -80,7 +97,9 @@ public sealed class WorkflowAiRedaction
         var namedSecret = obj["name"] is JsonValue nameValue && nameValue.TryGetValue<string>(out var name) && IsSecretName(name);
         foreach (var pair in obj.ToArray())
         {
-            var childPath = path + "/" + pair.Key.Replace("~", "~0", StringComparison.Ordinal).Replace("/", "~1", StringComparison.Ordinal);
+            var key = pair.Key.Replace("~", "~0", StringComparison.Ordinal).Replace("/", "~1", StringComparison.Ordinal);
+            var childPath = path + "/" + key;
+            var childPointer = pointer + "/" + key;
             var secretField = IsSecretName(pair.Key) || (pair.Key == "value" && path.Contains("/headers/", StringComparison.Ordinal))
                 || (pair.Key == "defaultValue" && namedSecret);
             // JSON-valued defaults may be numbers or booleans as well as strings or objects.
@@ -88,9 +107,7 @@ public sealed class WorkflowAiRedaction
             if (!restore && secretField && pair.Value is not null
                 && (pair.Value is not JsonValue defaultValue || !defaultValue.TryGetValue<string>(out _)))
             {
-                var placeholder = "${config.FLOWBIT_REDACTED_" + nonce + "_" + originals.Count + "}";
-                originals.Add(placeholder, (childPath, pair.Value.DeepClone()));
-                obj[pair.Key] = placeholder;
+                obj[pair.Key] = Protect(childPath, pair.Value);
                 continue;
             }
             if (pair.Value is JsonValue value && value.TryGetValue<string>(out var text))
@@ -98,20 +115,27 @@ public sealed class WorkflowAiRedaction
                 if (restore && originals.TryGetValue(text, out var original))
                 {
                     if (!string.Equals(original.Path, childPath, StringComparison.Ordinal))
-                        throw new System.Text.Json.JsonException("A protected credential placeholder moved to another field.");
+                        throw new WorkflowAiPlaceholderException(childPointer, "A protected credential placeholder moved to another field.");
                     obj[pair.Key] = original.Value?.DeepClone();
                 }
                 else if (restore && text.Contains("FLOWBIT_REDACTED_", StringComparison.Ordinal))
-                    throw new JsonException("An unknown or modified protected credential placeholder was returned.");
+                    throw new WorkflowAiPlaceholderException(childPointer, "An unknown or modified protected credential placeholder was returned.");
                 else if (!restore && secretField && !IsTrustedReference(text) && !string.IsNullOrEmpty(text))
-                {
-                    var placeholder = "${config.FLOWBIT_REDACTED_" + nonce + "_" + originals.Count + "}";
-                    originals.Add(placeholder, (childPath, pair.Value?.DeepClone()));
-                    obj[pair.Key] = placeholder;
-                }
+                    obj[pair.Key] = Protect(childPath, pair.Value);
             }
-            else if (pair.Value is { } nested) Visit(nested, childPath, restore);
+            else if (pair.Value is { } nested) Visit(nested, childPath, childPointer, restore);
         }
+    }
+
+    private string Protect(string path, JsonNode value)
+    {
+        var name = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(path)))[..16];
+        var placeholder = "${config.FLOWBIT_REDACTED_" + nonce + "_" + name + "}";
+        // Entity ids are unique in a valid workflow; a duplicate identity path still gets its own placeholder.
+        for (var suffix = 2; originals.TryGetValue(placeholder, out var taken) && taken.Path != path; suffix++)
+            placeholder = "${config.FLOWBIT_REDACTED_" + nonce + "_" + name + "_" + suffix + "}";
+        originals[placeholder] = (path, value.DeepClone());
+        return placeholder;
     }
 
     private static bool IsEntityCollection(string path) => path is "/lanes" or "/flowNodes" or "/sequenceFlows" or "/variables"
@@ -129,4 +153,10 @@ public sealed class WorkflowAiRedaction
             || lower.Contains("apikey", StringComparison.Ordinal) || lower.Contains("accesstoken", StringComparison.Ordinal)
             || lower.Contains("refreshtoken", StringComparison.Ordinal) || lower is "authorization" or "headervalue";
     }
+}
+
+/// <summary>A credential placeholder that was moved, changed or invented, at the JSON pointer where it was found.</summary>
+public sealed class WorkflowAiPlaceholderException(string pointer, string message) : JsonException(message)
+{
+    public string Pointer { get; } = pointer;
 }

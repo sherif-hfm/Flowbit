@@ -20,20 +20,23 @@ solution test command stays free of Chromium requirements.
 - Serial and isolated: xUnit parallelization is disabled assembly-wide; each
   scenario gets a fresh browser context, its own viewport, and its own
   workflow/instance data inside the run's disposable database.
-- AI scenarios use a fixture-owned loopback OpenCode-compatible provider with
-  synthetic keys. Requests still pass through the real API authoring, PDF
-  extraction, validation, and save paths. No billed provider call is made and
-  no application state or database rows are injected. The fixture explicitly enables
-  Flash plus two alternate models to exercise model changes; ordinary shipped
-  configuration enables Flash alone.
-  The fixture defaults to `current` execution. Set `FLOWBIT_BROWSER_AI_VARIANT` to
-  `optimized` and run H8/H9 to exercise Generate/Cancel/Continue/Apply/Undo with the
-  custom optimized runner. Set it to `shipped` to leave execution/reasoning settings
-  from the published API's appsettings intact. H8 verifies text-only requests and
-  the published reasoning setting on initial and resumed calls. Ambient
-  `WorkflowAi__*` settings are stripped; the loopback endpoint and extra lifecycle
-  models remain fixture overrides. Other variant values are rejected before stack
-  startup. The upstream fixture has no native-tool response path.
+- AI scenarios use a fixture-owned loopback OpenCode-compatible chat-completions
+  provider with synthetic keys. It answers each model call with a scripted reply:
+  native tool calls with GLM-style `reasoning_content`, a final text, a response cut
+  off at the output limit, or an HTTP failure. The real API runs the agent, its six
+  file tools, Flowbit's checks, layout, streaming and the editor apply path; the
+  fixture only decides which tools the model calls. No billed provider call is made
+  and no application state or database rows are injected.
+- The fixture enables Flash plus two alternate models to exercise model changes;
+  ordinary shipped configuration enables Flash alone. Ambient `WorkflowAi__*`
+  settings are stripped; only the loopback endpoint and the model list are fixture
+  overrides, so the scenarios check the published reasoning setting, the 40-call
+  limit and the 32,768-token output limit from the API's `appsettings.json`.
+- The fixture records each provider request: key hash, user agent, session header,
+  model, reasoning, output limit, tool names, instructions, user messages, and the
+  conversation reduced to roles, text, tool calls, tool results and reasoning. The
+  scenarios use it to prove that Continue resends exactly the stopped request and
+  that catalog values and the provider key never reach a request body.
 
 Worker-driven audit and administrative-batch acceptance is maintained in the
 separate local [Flowbit.BrowserAcceptanceTests suite](../Flowbit.BrowserAcceptanceTests/README.md).
@@ -48,42 +51,14 @@ logout, and protocol failures through a fixture-owned identity provider.
 
 ## Prerequisites
 
-H8 also checks the current-model-call wait timer at 1440x900, 1024x768, and 390x844.
-The timer appears while waiting, resets after Continue and disappears on Cancel.
-Progress screenshots and browser console diagnostics remain required evidence.
-
-PowerShell, after publishing/building as below:
-
-```powershell
-$env:FLOWBIT_BROWSER_AI_VARIANT = 'optimized'
-dotnet test Flowbit/tests/Flowbit.BrowserTests/Flowbit.BrowserTests.csproj -c Release --no-build --no-restore --filter FullyQualifiedName~H8_TruncationRetryCheckpointCancellationAndContinue
-Remove-Item Env:FLOWBIT_BROWSER_AI_VARIANT
-```
-
-Bash:
-
-```bash
-FLOWBIT_BROWSER_AI_VARIANT=optimized dotnet test Flowbit/tests/Flowbit.BrowserTests/Flowbit.BrowserTests.csproj -c Release --no-build --no-restore --filter FullyQualifiedName~H8_TruncationRetryCheckpointCancellationAndContinue
-```
-
-H6/H7 use legacy full-proposal fixtures and should run with `current`.
-To test the actual shipped engine/reasoning, use `shipped` instead of `optimized`
-in the commands above and filter `"FullyQualifiedName~H8|FullyQualifiedName~H9"`.
-Run the full AI suite separately with shipped settings for legacy regression
-coverage. Manifests record the requested mode and published settings.
-
-H10/H11 use a separate `CreateForAiReview()` fixture with requirements review enabled
-and two analysis/review slots. The ordinary fixture retains shipped review defaults.
-Provider responses are synthetic upstream completions; all orchestration, validation,
-streaming, editor Apply and Undo are real. Run both reviewed and legacy cases with:
+The AI scenarios H6–H9 run at 1440x900, 1024x768 and 390x844. H8 also checks the
+current-model-call wait timer: it appears while waiting, resets after Continue and
+disappears on Cancel. Progress screenshots and browser console diagnostics remain
+required evidence. After publishing and building as below, run only the AI cases with:
 
 ```text
-dotnet test Flowbit/tests/Flowbit.BrowserTests/Flowbit.BrowserTests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName~AiAuthoringSmokeTests|FullyQualifiedName~AiRequirementsSmokeTests"
+dotnet test Flowbit/tests/Flowbit.BrowserTests/Flowbit.BrowserTests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName~AiAuthoringSmokeTests"
 ```
-
-H10 saves `parallel-review.png` and `requirements-review.png` at each width; H11
-saves `requirements-blocked.png`. Inspect these and the console diagnostics in
-addition to the scenario-specific manual keyboard/visual checks.
 
 - .NET 10 SDK
 - Docker (Testcontainers starts one `postgres:17-alpine` per run)
@@ -132,12 +107,10 @@ Hosted editor scenarios H1 (1440x900 and 1024x768) and H2 exercise exact-version
 
 | Scenario | Viewports | Behavior under test |
 | --- | --- | --- |
-| H6 AI creation and editing | 1440x900, 1024x768, 390x844 | OpenCode Zen provider label with the compatible `opencode-go` id, clarification, explicit value-free catalog selection plus PDF upload/corrected extraction (1440 only), generated proposal review, apply, undo/redo, new unpublished save, conversational modification, preserved workflow family/positions/saved baseline, skill archive download, narrow drawer keyboard focus/Escape, and responsive screenshots. |
-| H7 AI session lifecycle | 1440x900 | Manual edits invalidate proposals; cancellation reaches the upstream provider; separate panels keep separate keys; identity change, reset, disposal and navigation clear transient keys and conversation state. |
-| H8 AI incremental recovery | 1440x900, 1024x768, 390x844 | The real provider adapter receives truncated output and a temporary server failure, reduces the edit batch size, reads schema/requirements, retains an accepted draft edit, cancels an in-flight call, continues from the session checkpoint with frozen requirements and rebuilt read excerpts, and applies the completed proposal in one undoable edit. Progress screenshots and console diagnostics are captured. |
-| H9 AI checkpoint invalidation | 1440x900 | A provider authentication failure preserves the last complete private checkpoint; changing the selected model clears it, editor edits disable Continue, and New conversation clears the checkpoint and key. |
-| H10 Parallel requirements review | 1440x900, 1024x768, 390x844 | Two delayed reviewer calls overlap; progress reports two active calls and a group wait timer. Cancel reaches both upstream calls, the editor stays unchanged, Continue repeats analysis/review, reversed completion order still yields one proposal, and Apply is undone in one step. |
-| H11 Requirements blocking and repair | 1440x900 | Ambiguous business requirements show clarification with no Apply; missing behavior triggers a targeted edit and fresh reviews before Apply. The test undoes its edit before identity cleanup. |
+| H6 AI creation and editing | 1440x900, 1024x768, 390x844 | OpenCode Zen provider label with the compatible `opencode-go` id; the model reads the docs, saves `workflow.json` and `open-questions.md`, and the proposal shows the open questions; value-free catalog selection plus PDF upload/corrected extraction appended to the message as labelled blocks (1440 only); the agent's instructions, six tools, reasoning replay, model settings and user agent; compact layout of the new diagram; apply, undo/redo, new unpublished save; a question in a new conversation gets an answer with no proposal; an `edit_file` rename in the same conversation keeps the workflow family, positions and saved baseline; skill archive download; narrow drawer keyboard focus/Escape; responsive screenshots. |
+| H7 AI session lifecycle | 1440x900, 1024x768, 390x844 | Manual edits invalidate proposals and the next message carries the sync line; cancellation reaches the upstream provider; separate panels keep separate keys; identity change, reset, disposal and navigation clear transient keys and conversation state. |
+| H8 AI recovery | 1440x900, 1024x768, 390x844 | A response cut off at the output limit pauses the run; Continue repeats the stopped request, meets a 503 with no retry, and pauses again; the next Continue renames the workflow with `edit_file`; Cancel during the following model call keeps the checkpoint; Continue resends exactly the pending tool result, ignores unsent composer text, and the proposal applies in one undoable edit. Progress screenshots and console diagnostics are captured. |
+| H9 AI state and diagram changes | 1440x900, 1024x768, 390x844 | A provider authentication failure keeps the conversation state and offers Continue; changing the selected model clears it; editor edits disable Continue; the next message keeps the paused tool result, replaces the agent's `workflow.json` with the edited diagram and carries the sync line; New conversation clears the state and key. |
 | E1 load/edit/save/reload | 1440x900, 1024x768 | File menu load via the real file chooser, node rename in the inspector, workflow name edit, forced download-fallback save, JSON round-trip into a fresh page. |
 | E2 node drag | 1440x900, 1024x768 | Real mouse drag with intermediate steps; screen/diagram deltas, unrelated nodes fixed, connectors intact, persisted positions in the downloaded JSON. |
 | E3 lane drag | 1440x900, 1024x768 | Lane header drag moves the lane with its children; other lanes fixed; persisted positions verified. |
@@ -159,8 +132,8 @@ auxiliary-page errors/dialogs must fail, successful diagnostics must retain
 warnings/transport failures, timed-out work must stop before returning, and
 queued one-shot dialog expectations must accept, dismiss, fail on unconsumed
 entries, and fail on unmatched dialogs. The `harness-expected-*` artifacts
-intentionally contain injected failures. H6 and H8 each add three responsive AI
-cases; H7 and H9 add one lifecycle case each to the editor/runtime coverage.
+intentionally contain injected failures. H6, H7, H8 and H9 each add three
+responsive AI cases to the editor/runtime coverage.
 
 Scenarios register exact one-shot dialog expectations through
 `ExpectDialogOnce(dialogType, message, accept)` (checked before the
@@ -200,11 +173,11 @@ Every run writes to `artifacts/browser/runs/<timestamp>-<id>/`:
 - Selected successful editor-search and responsive-results screenshots.
 - H6 retains `ai-connection.png`, `ai-proposal.png`, and `ai-applied-diagram.png` at all three
   viewports, the downloaded skill archive, and its generated text PDF fixture.
-- H8 retains `ai-incremental-progress.png` at all three viewports while a
-  recovered edit is checkpointed and the next model call is in flight, plus
+- H8 retains `ai-incremental-progress.png` at all three viewports while the
+  renamed `workflow.json` is checkpointed and the next model call is in flight, plus
   `ai-continuation.png` showing the retained checkpoint after cancellation.
-- H8 additionally retains `ai-resumed-progress.png`, showing the same completed
-  draft-step/node/connection counts after Continue resets the per-run metrics.
+- H8 additionally retains `ai-resumed-progress.png`, showing the same
+  `workflow.json` node/connection counts after Continue resets the per-run metrics.
 - E7 captures `boundary-conversion-before.png` and
   `boundary-conversion-after.png` at both editor viewports, with the populated
   workflow and host selected. These show the service-task inspector and attached
@@ -283,7 +256,7 @@ is required.
   external return URL resolves to the local overview and that provider refresh
   revocation returns the UI to its sign-in boundary.
 - **O3** keeps a real AI response stream open during access-token refresh and
-  verifies that the provider key, draft checkpoint and editor remain intact.
+  verifies that the provider key, the `workflow.json` progress and the editor remain intact.
   Completing that stream yields a proposal. Signing out during a second stream
   cancels the provider request and clears the assistant while retaining the
   unsaved editor; a new login starts with an empty assistant.

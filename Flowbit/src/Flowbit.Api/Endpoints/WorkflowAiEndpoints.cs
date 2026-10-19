@@ -55,7 +55,7 @@ public static class WorkflowAiEndpoints
         {
             if (string.IsNullOrWhiteSpace(apiKey) || apiKey.Length > 4096 || http.Request.Headers["X-Flowbit-AI-Key"].Count != 1)
                 return Results.Json(new { code = "invalid_api_key", error = "Supply one AI provider key for this request." }, statusCode: 400);
-            var request = await ReadJsonAsync<AiTurnRequestDto>(http.Request, 8 * 1024 * 1024, ct);
+            var request = await ReadTurnAsync(http.Request, ct);
             if (request.SharedVariableKeys is { Count: > 0 } &&
                 !(await authorization.AuthorizeAsync(http.User, http, SharedVariableAuthorizationPolicies.Read)).Succeeded)
                 return Results.Forbid();
@@ -85,7 +85,7 @@ public static class WorkflowAiEndpoints
             if (eventCount >= 255 && frame.Type is not ("result" or "paused" or "error"))
                 throw new WorkflowAiException("event_limit", "The AI run exceeded its event limit. Continue from the last received checkpoint.", 502);
             var bytes = JsonSerializer.SerializeToUtf8Bytes(frame, JsonOptions);
-            if (bytes.Length > 4 * 1024 * 1024)
+            if (bytes.Length > MaxFrameBytes)
                 throw new WorkflowAiException("response_too_large", "The AI response exceeds its supported size.", 502);
             if (!http.Response.HasStarted)
             {
@@ -111,7 +111,7 @@ public static class WorkflowAiEndpoints
         {
             if (string.IsNullOrWhiteSpace(apiKey) || apiKey.Length > 4096 || http.Request.Headers["X-Flowbit-AI-Key"].Count != 1)
                 return Results.Json(new { code = "invalid_api_key", error = "Supply one AI provider key for this request." }, statusCode: 400);
-            var request = await ReadJsonAsync<AiTurnRequestDto>(http.Request, 8 * 1024 * 1024, ct);
+            var request = await ReadTurnAsync(http.Request, ct);
             if (request.SharedVariableKeys is { Count: > 0 } &&
                 !(await authorization.AuthorizeAsync(http.User, http, SharedVariableAuthorizationPolicies.Read)).Succeeded)
                 return Results.Forbid();
@@ -172,6 +172,25 @@ public static class WorkflowAiEndpoints
         catch (AiDocumentException ex) { return Results.Json(new { code = ex.Code, error = ex.Message }, statusCode: ex.StatusCode); }
         catch (BadHttpRequestException ex) { return BodyFailure(ex); }
         catch (InvalidDataException) { return Results.Json(new { code = "invalid_upload", error = "The upload is malformed or exceeds the configured document limits." }, statusCode: 413); }
+    }
+
+    // A turn carries the conversation state, so it may be larger than other requests.
+    private const int MaxTurnBytes = 12 * 1024 * 1024;
+    private const int MaxFrameBytes = 8 * 1024 * 1024;
+
+    private static async Task<AiTurnRequestDto> ReadTurnAsync(HttpRequest request, CancellationToken ct)
+    {
+        var body = await ReadJsonAsync<JsonElement>(request, MaxTurnBytes, ct);
+        if (body.ValueKind != JsonValueKind.Object) throw new JsonException();
+        // Fields of the replaced engine are refused rather than ignored, so a caller never loses context silently.
+        foreach (var property in body.EnumerateObject())
+        {
+            if (property.Name.Equals("history", StringComparison.OrdinalIgnoreCase) && property.Value.ValueKind == JsonValueKind.Array && property.Value.GetArrayLength() > 0)
+                throw new WorkflowAiException("history_unsupported", "The assistant keeps the conversation itself. Send the state from the previous result instead of a history.");
+            if (property.Name.Equals("checkpoint", StringComparison.OrdinalIgnoreCase) && property.Value.ValueKind != JsonValueKind.Null)
+                throw new WorkflowAiException("checkpoint_configuration_changed", "This checkpoint belongs to the replaced authoring engine. Start a new conversation.", 409);
+        }
+        return body.Deserialize<AiTurnRequestDto>(JsonOptions) ?? throw new JsonException();
     }
 
     private static async Task<T> ReadJsonAsync<T>(HttpRequest request, int maxBytes, CancellationToken ct)

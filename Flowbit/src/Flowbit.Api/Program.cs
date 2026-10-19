@@ -330,8 +330,11 @@ try
 
     var app = builder.Build();
     app.UseForwardedHeaders();
-    // Verify/cache the exact exported knowledge package before accepting authoring requests.
+    // Verify/cache the exact exported knowledge package, and the agent's docs taken from it, before accepting authoring requests.
     _ = app.Services.GetRequiredService<IAuthoringKnowledge>();
+    _ = app.Services.GetRequiredService<WorkflowAiDocs>();
+    foreach (var setting in aiOptions.IgnoredSettings)
+        app.Logger.LogWarning("WorkflowAi:{Setting} belongs to the replaced AI authoring engine and is ignored.", setting);
 
     app.Use(async (context, next) =>
     {

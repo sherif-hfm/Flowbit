@@ -164,19 +164,92 @@ public sealed class WorkflowAuthoringPackageTests
     }
 
     [Fact]
-    public void ArabicRequest_RetainsAllNodeBehaviorAndExampleContext()
+    public void ExportedPackage_GivesTheAgentEveryNodeTypesReferenceAndTheExamples()
     {
         using var output = new TemporaryDirectory();
         AuthoringPackageBuilder.Export(RepositoryRoot, output.Path);
-        var package = new AuthoringKnowledge(System.IO.Path.Combine(output.Path, "flowbit-authoring"));
-        var context = package.GetPromptContext("إنشاء سير عمل للمشتريات مع مراجعة وشرط انتظار");
-        foreach (var node in WorkflowAuthoringJson.NodeTypes) Assert.Contains("### " + node + "\n", context);
-        Assert.Contains("--- examples/", context);
-        Assert.Contains("--- references/docs/developer-guide.md ---", context);
+        var docs = new Flowbit.Service.Ai.WorkflowAiDocs(new AuthoringKnowledge(System.IO.Path.Combine(output.Path, "flowbit-authoring")));
+        foreach (var node in WorkflowAuthoringJson.NodeTypes) Assert.Contains("### " + node + "\n", docs.Files["node-reference.md"]);
+        Assert.Contains("examples/basics/02-two-step-approval.json", docs.Files.Keys);
+        Assert.Contains("developer-guide.md", docs.Files.Keys);
     }
 
     [Fact]
-    public void Layout_HandlesLoopsDisconnectedStartsAndAttachedBoundariesDeterministically()
+    public void NewDiagramLayout_KeepsLoopsInTheirColumnStacksParallelBranchesAndKeepsLanesCompact()
+    {
+        // Values worked out by hand in Flowbit AI Lab v3 from the compact layout rules. Columns: a task's centre is 290 px from a
+        // neighbouring task's, 227 px from an event's and 233 px from a gateway's; rows share a centre line 99 px below the lane top.
+
+        // The rework flow 3 -> 2 goes back to an earlier node, so task 2 keeps column 1; boundary event 5 sits at its host, task 3.
+        var loop = LaidOut("examples/basics/02-two-step-approval.json");
+        Assert.Equal(new[] { (1, 123, 97), (2, 287, 85), (3, 577, 85), (4, 867, 97), (5, 577, 85) }, Positions(loop));
+        Assert.Empty(loop.Lanes);
+
+        // The three parallel reviews share one column and stack in rows; the lane is only as tall as those three rows.
+        var parallel = LaidOut("examples/gateways/02-parallel-fork-and-join.json");
+        Assert.Equal(new[] { (1, 123, 97), (2, 297, 91), (3, 473, 85), (4, 473, 265), (5, 473, 383), (6, 763, 91), (7, 939, 85), (8, 1229, 97) },
+            Positions(parallel));
+        Assert.Equal(new[] { (1, 40, 30, 1336, 466) }, parallel.Lanes.Select(lane => (lane.Id, lane.X, lane.Y, lane.W, lane.H)));
+
+        // Two lanes of the same width, 30 px apart; the specialist's task keeps its place in the flow in the second lane.
+        var lanes = LaidOut("examples/user-tasks/02-claim-inheritance.json");
+        Assert.Equal(new[] { (1, 123, 97), (2, 287, 85), (3, 577, 85), (4, 867, 345), (5, 1157, 85), (6, 1447, 97) }, Positions(lanes));
+        Assert.Equal(new[] { (1, 40, 30, 1554, 230), (2, 40, 290, 1554, 168) }, lanes.Lanes.Select(lane => (lane.Id, lane.X, lane.Y, lane.W, lane.H)));
+
+        // An original without flow nodes, such as the editor's empty new document, is a new diagram too.
+        var empty = WorkflowAuthoringJson.Parse(ExampleWorkflowData.Read("examples/basics/02-two-step-approval.json"));
+        WorkflowAuthoringLayout.Apply(empty, new WorkflowModel { Id = "new", Name = "New workflow" });
+        Assert.Equal(Positions(loop), Positions(empty));
+    }
+
+    [Fact]
+    public void NewDiagramLayout_PutsShapesInsideCompactLanesWithoutOverlapsAndChangesOnlyLayoutFields()
+    {
+        foreach (var path in ExampleWorkflowData.RelativePaths)
+        {
+            var authored = WorkflowAuthoringJson.Parse(ExampleWorkflowData.Read(path));
+            // The problems seen in model-placed diagrams, provoked: every node at 0,0 and every lane 10 px square.
+            var model = WorkflowAuthoringJson.Parse(ExampleWorkflowData.Read(path));
+            foreach (var node in model.FlowNodes) (node.X, node.Y) = (0, 0);
+            foreach (var lane in model.Lanes) (lane.X, lane.Y, lane.W, lane.H) = (0, 0, 10, 10);
+            WorkflowAuthoringLayout.Apply(model);
+            var arranged = JsonSerializer.Serialize(model);
+            WorkflowAuthoringLayout.Apply(model);
+            Assert.Equal(arranged, JsonSerializer.Serialize(model));
+            Assert.Equal(WithoutLayout(authored), WithoutLayout(model));
+
+            var shapes = model.FlowNodes.Where(node => !BpmnFlowNodeTypes.IsBoundary(node.Type)).ToDictionary(node => node.Id);
+            // Each shape, caption included, lies inside its own lane.
+            foreach (var node in shapes.Values.Where(node => node.LaneId is not null))
+            {
+                var visual = Visual(node);
+                var lane = model.Lanes.Single(lane => lane.Id == node.LaneId);
+                Assert.True(visual.L >= lane.X && visual.T >= lane.Y && visual.R <= lane.X + lane.W && visual.B <= lane.Y + lane.H,
+                    $"{path}: node {node.Id} {visual} is not inside lane {lane.Id}");
+            }
+            // No shape or caption overlaps another node's shape or caption.
+            var list = shapes.Values.ToArray();
+            for (var i = 0; i < list.Length; i++)
+                for (var j = i + 1; j < list.Length; j++)
+                    Assert.True(Gap(Visual(list[i]), Visual(list[j])) > 0, $"{path}: nodes {list[i].Id} and {list[j].Id} overlap");
+            // Linked shapes leave at least 100 px for the arrow.
+            foreach (var flow in model.SequenceFlows)
+                if (flow.SourceRef != flow.TargetRef && shapes.TryGetValue(flow.SourceRef, out var from) && shapes.TryGetValue(flow.TargetRef, out var to))
+                    Assert.True(Gap(Box(from), Box(to)) >= 100, $"{path}: flow {flow.Id} links shapes only {Gap(Box(from), Box(to))} px apart");
+            // Lanes share one width and are stacked in their declared order, 30 px apart.
+            Assert.Single(model.Lanes.Select(lane => (lane.X, lane.W)).Distinct().DefaultIfEmpty());
+            for (var i = 1; i < model.Lanes.Count; i++) Assert.Equal(model.Lanes[i - 1].Y + model.Lanes[i - 1].H + 30, model.Lanes[i].Y);
+            // Boundary events sit at their host, in its lane.
+            foreach (var boundary in model.FlowNodes.Where(node => BpmnFlowNodeTypes.IsBoundary(node.Type)))
+            {
+                var host = shapes[boundary.AttachedToRef!.Value];
+                Assert.Equal((host.X, host.Y, host.LaneId), (boundary.X, boundary.Y, boundary.LaneId));
+            }
+        }
+    }
+
+    [Fact]
+    public void NewDiagramLayout_PlacesNodesWithoutALaneInABandBelowTheLanes()
     {
         var model = new WorkflowModel
         {
@@ -190,25 +263,54 @@ public sealed class WorkflowAuthoringPackageTests
             SequenceFlows = [Flow(1, 1, 2), Flow(2, 2, 3), Flow(3, 3, 2), Flow(4, 3, 4), Flow(5, 5, 6)]
         };
         WorkflowAuthoringLayout.Apply(model);
-        var arranged = JsonSerializer.Serialize(model);
-        WorkflowAuthoringLayout.Apply(model);
-        Assert.Equal(arranged, JsonSerializer.Serialize(model));
         Assert.True(model.FlowNodes.Single(node => node.Id == 4).X > model.FlowNodes.Single(node => node.Id == 3).X);
-        var nodes = model.FlowNodes.Where(node => !BpmnFlowNodeTypes.IsBoundary(node.Type)).ToArray();
-        foreach (var node in nodes)
-        foreach (var other in nodes.Where(other => other.Id != node.Id))
-            Assert.True(Math.Abs(node.X - other.X) >= 250 || Math.Abs(node.Y - other.Y) >= 150);
-        foreach (var lane in model.Lanes)
-        foreach (var node in nodes.Where(node => node.LaneId == lane.Id))
-        {
-            Assert.InRange(node.X, lane.X, lane.X + lane.W - 190);
-            Assert.InRange(node.Y, lane.Y, lane.Y + lane.H - 88);
-        }
         Assert.True(model.Lanes[1].Y >= model.Lanes[0].Y + model.Lanes[0].H);
+        Assert.True(model.FlowNodes.Single(node => node.Id == 8).Y > model.Lanes[1].Y + model.Lanes[1].H);
         var boundary = model.FlowNodes.Single(node => node.Id == 5);
         var host = model.FlowNodes.Single(node => node.Id == 2);
         Assert.Equal((host.LaneId, host.X, host.Y), (boundary.LaneId, boundary.X, boundary.Y));
     }
+
+    private static WorkflowModel LaidOut(string example)
+    {
+        var model = WorkflowAuthoringJson.Parse(ExampleWorkflowData.Read(example));
+        WorkflowAuthoringLayout.Apply(model);
+        return model;
+    }
+
+    private static (int Id, int X, int Y)[] Positions(WorkflowModel model) => model.FlowNodes.Select(node => (node.Id, node.X, node.Y)).ToArray();
+
+    private static string WithoutLayout(WorkflowModel model)
+    {
+        var root = JsonNode.Parse(JsonSerializer.Serialize(model))!;
+        foreach (var node in root["flowNodes"]!.AsArray().Select(node => node!.AsObject()))
+        {
+            node.Remove("x"); node.Remove("y");
+            if (BpmnFlowNodeTypes.IsBoundary((string)node["type"]!)) node.Remove("laneId");
+        }
+        foreach (var lane in root["lanes"]!.AsArray().Select(lane => lane!.AsObject())) { lane.Remove("x"); lane.Remove("y"); lane.Remove("w"); lane.Remove("h"); }
+        return root.ToJsonString();
+    }
+
+    // Shape sizes in the editor (flowbit-editor.js); x/y is the top-left corner.
+    private static (int L, int T, int R, int B) Box(FlowNodeModel node)
+    {
+        var (w, h) = node.Type.EndsWith("Gateway", StringComparison.Ordinal) ? (76, 76) : node.Type.EndsWith("Event", StringComparison.Ordinal) ? (64, 64) : (190, 88);
+        return (node.X, node.Y, node.X + w, node.Y + h);
+    }
+
+    // The shape plus the caption the editor writes under events and gateways (edgeNodeBounds in flowbit-editor.js).
+    private static (int L, int T, int R, int B) Visual(FlowNodeModel node)
+    {
+        var box = Box(node);
+        if (!node.Type.EndsWith("Gateway", StringComparison.Ordinal) && !node.Type.EndsWith("Event", StringComparison.Ordinal)) return box;
+        var middle = (box.L + box.R) / 2;
+        return (middle - 75, box.T, middle + 75, box.B + (node.Type == "startEvent" ? 74 : 62));
+    }
+
+    // Positive when the two boxes are apart: the larger of the horizontal and vertical gaps.
+    private static int Gap((int L, int T, int R, int B) a, (int L, int T, int R, int B) b) =>
+        Math.Max(Math.Max(b.L - a.R, a.L - b.R), Math.Max(b.T - a.B, a.T - b.B));
 
     [Fact]
     public void Editing_PreservesOriginalPositionsAndPlacesAdditionsOutsideOccupiedSpace()

@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Collections.Concurrent;
@@ -13,20 +15,19 @@ using Flowbit.Shared.Dtos;
 using Flowbit.Shared.Models;
 using Microsoft.Extensions.Logging.Abstractions;
 
-// This tool runs synthetic authoring only. It never applies, saves, publishes or executes a workflow.
+// This tool runs synthetic authoring with the editor assistant's agent engine only. It never applies, saves, publishes or executes a workflow.
 var arguments = args.Chunk(2).ToDictionary(pair => pair[0].TrimStart('-'), pair => pair.Length == 2 ? pair[1] : throw new ArgumentException("Use --name value pairs."));
+string[] known = ["key-file", "package", "output", "fixture", "fixtures", "policy", "timeout-seconds", "resume-test", "check-only", "diagnostics"];
+foreach (var name in arguments.Keys.Where(name => !known.Contains(name)))
+    throw new ArgumentException($"Unknown argument --{name}. The agent engine has no variant, effort or review settings.");
 var json = new JsonSerializerOptions(JsonSerializerDefaults.Web) { WriteIndented = true };
-var variant = arguments.GetValueOrDefault("variant", "current");
-var effort = arguments.GetValueOrDefault("effort", "max");
 var fixture = arguments.GetValueOrDefault("fixture", "complex");
 var policy = arguments.GetValueOrDefault("policy", "strict-v1");
-var review = bool.Parse(arguments.GetValueOrDefault("review", "false"));
-var analysisWorkers = int.Parse(arguments.GetValueOrDefault("analysis-workers", "2"), System.Globalization.CultureInfo.InvariantCulture);
-if (analysisWorkers is < 1 or > 2) throw new ArgumentException("Analysis workers must be 1 or 2.");
 if (policy is not ("strict-v1" or "functional-v2")) throw new ArgumentException("Unknown acceptance policy.");
 var labelWarnings = new List<object>();
-var timeoutSeconds = int.Parse(arguments.GetValueOrDefault("timeout-seconds", "300"), System.Globalization.CultureInfo.InvariantCulture);
+var timeoutSeconds = int.Parse(arguments.GetValueOrDefault("timeout-seconds", "1800"), System.Globalization.CultureInfo.InvariantCulture);
 if (timeoutSeconds is < 30 or > AiAuthoringLimits.MaxRunTimeoutSeconds) throw new ArgumentException("Timeout must be between 30 and 3600 seconds.");
+var resumeTest = bool.Parse(arguments.GetValueOrDefault("resume-test", "false"));
 var output = Path.GetFullPath(arguments["output"]);
 Directory.CreateDirectory(output);
 if (arguments.TryGetValue("check-only", out var checkFile))
@@ -36,25 +37,22 @@ if (arguments.TryGetValue("check-only", out var checkFile))
     await File.WriteAllTextAsync(Path.Combine(output, "acceptance.json"), JsonSerializer.Serialize(new { policy, passed = checkPassed, labelWarnings, offline = true }, json));
     return checkPassed ? 0 : 1;
 }
-if (variant is not ("current" or "optimized")) throw new ArgumentException("Variant must be current or optimized.");
 if (fixture is not ("simple" or "modify" or "complex")) throw new ArgumentException("Fixture must be simple, modify or complex.");
 var key = (await File.ReadAllTextAsync(arguments["key-file"])).Trim();
 using var diagnostics = new EvaluationDiagnostics(arguments.GetValueOrDefault("diagnostics") == "true");
 using var traces = new EvaluationTraces();
+// The shipped configuration: Zen, GLM-5.3-Flash with high reasoning, and the lab's limits (40 calls, 32,768 output tokens, two follow-ups).
 var options = new WorkflowAiOptions
 {
-    ExecutionVariant = variant, RunTimeoutSeconds = timeoutSeconds, RequestTimeoutSeconds = Math.Min(180, timeoutSeconds),
-    RequirementsReviewEnabled = review, MaxParallelAnalysisCalls = analysisWorkers,
-    OpenCodeModels = ["glm-5.3-flash"], OpenCodeReasoningEfforts = new() { ["glm-5.3-flash"] = effort },
-    ModelProfiles = new() { ["glm-5.3-flash"] = new() { InitialOutputTokens = 16384, MaxOutputTokens = 32768, ContextTokens = 65536 } }
+    RunTimeoutSeconds = timeoutSeconds, OpenCodeModels = ["glm-5.3-flash"], OpenCodeReasoningEfforts = new() { ["glm-5.3-flash"] = "high" }
 };
 Action? onHttpAttempt = null;
 using var transport = new ObservedHttpHandler(() => onHttpAttempt?.Invoke());
-using var http = new HttpClient(transport) { Timeout = Timeout.InfiniteTimeSpan };
-var observed = new ObservedProvider(new OpenCodeGoProvider(http, options));
+var clients = new OpenCodeZenChatClientFactory(options, () => transport);
 using var gate = new WorkflowAiConcurrencyGate(options);
 var knowledge = new AuthoringKnowledge(arguments["package"]);
-var service = new WorkflowAiAuthoringService([observed], knowledge,
+var docs = new WorkflowAiDocs(knowledge);
+var service = new WorkflowAiAuthoringService(clients, knowledge, docs,
     new WorkflowDefinitionValidator(new JintScriptEvaluator(new ScriptOptions(), NullLogger<JintScriptEvaluator>.Instance), new ServiceTaskOptions()),
     new WorkflowDefinitionReadinessChecker(durableProcessingOptions: new DurableProcessingOptions { PublicationEnabled = true }), options, gate);
 var clock = Stopwatch.StartNew();
@@ -62,50 +60,58 @@ var inputPath = Path.Combine(AppContext.BaseDirectory, "fixtures", fixture + ".t
 if (!File.Exists(inputPath)) inputPath = Path.Combine(arguments["fixtures"], fixture + ".txt");
 var request = new AiTurnRequestDto
 {
-    ModelId = "glm-5.3-flash", ConversationId = Guid.NewGuid().ToString(), SnapshotId = "synthetic-evaluation",
+    ModelId = "glm-5.3-flash", ConversationId = Guid.NewGuid().ToString("N"), SnapshotId = "synthetic-evaluation",
     Message = await File.ReadAllTextAsync(inputPath),
     CurrentWorkflow = fixture == "modify" ? JsonSerializer.SerializeToElement(Baseline(), json) : null
 };
 using var overall = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
 using var cancel = CancellationTokenSource.CreateLinkedTokenSource(overall.Token);
 var events = new ConcurrentQueue<object>();
-AiCheckpointDto? checkpoint = null;
+AiConversationStateDto? state = null;
 AiTurnResultDto? result = null;
-string? failure = null;
-bool resumed = false;
-int cancellationArmed = 0, cancellationIssued = 0;
-bool resumeVerified = false;
-using var recordingGate = new SemaphoreSlim(1);
 AiRunSummaryDto? lastRun = null;
-AiCheckpointDto? cancelledCheckpoint = null;
+string? failure = null;
+var resumed = false;
+int cancellationArmed = 0, cancellationIssued = 0;
+using var recordingGate = new SemaphoreSlim(1);
 onHttpAttempt = () =>
 {
     if (Volatile.Read(ref cancellationArmed) != 0 && Interlocked.CompareExchange(ref cancellationIssued, 1, 0) == 0)
     {
-        // Cancel a real in-flight HTTP attempt, not the progress callback before transport starts.
+        // Cancel a real in-flight model call, as the panel's Cancel does, not the host work before it.
+        transport.MarkNextAsCancelTarget();
         cancel.CancelAfter(TimeSpan.FromMilliseconds(500));
     }
 };
 try
 {
     try { result = await service.RunAsync(request, key, Observe, cancel.Token); }
-    catch (OperationCanceledException) when (arguments.GetValueOrDefault("resume-test") == "true" && !overall.IsCancellationRequested && checkpoint is { Revision: > 0 })
+    catch (OperationCanceledException) when (resumeTest && !overall.IsCancellationRequested && state is { CanContinue: true })
     {
+        // Continue, as the panel does: the same request with the last checkpoint and no new message.
         resumed = true;
-        cancelledCheckpoint = checkpoint;
-        result = await service.RunAsync(request with { Checkpoint = checkpoint }, key, Observe, overall.Token);
+        transport.MarkResumeStart();
+        result = await service.RunAsync(request with { Message = "", Continue = true, State = state }, key, Observe, overall.Token);
     }
 }
 catch (WorkflowAiException error) { failure = error.Code; }
 catch (OperationCanceledException) { failure = "evaluation_deadline"; }
-if (result is not null) await Save("result.json", result);
+// Continue must resend exactly the request whose model call was cancelled.
+var resumeVerified = resumed && transport.CancelledRequest is { } stopped && transport.FirstResumedRequest == stopped;
+if (result is not null) await Save("result.json", result with { State = null });
 var passed = result?.Kind == "proposal" && result.Validation.IsValid && result.Validation.CanSave && result.Validation.CanPublish
     && clock.Elapsed.TotalSeconds <= timeoutSeconds;
 if (fixture is "simple" or "modify") passed &= CheckSimple(result, fixture == "modify", policy, labelWarnings);
-if (arguments.GetValueOrDefault("resume-test") == "true") passed &= resumed && resumeVerified && transport.CancelledAttempts > 0;
-await Save("evidence.json", new { variant, effort, fixture, policy, review, analysisWorkers, passed, failure, labelWarnings, resumed, resumeVerified, transport.Attempts, transport.CancelledAttempts, seconds = clock.Elapsed.TotalSeconds,
-    model = request.ModelId, endpoint = options.OpenCodeBaseUrl, knowledge.ContractHash, limits = new { options.RunTimeoutSeconds, options.RequestTimeoutSeconds, options.MaxProviderCalls, options.MaxRunOutputTokens },
-    firstEditSeconds = lastRun?.FirstEditSeconds, run = lastRun, events, observed.Calls, diagnostics = diagnostics.Snapshot() });
+if (resumeTest) passed &= resumed && resumeVerified && transport.CancelledAttempts > 0;
+await Save("evidence.json", new
+{
+    engine = "agent", fixture, policy, passed, failure, kind = result?.Kind, code = result?.Code, labelWarnings, resumeTest, resumed, resumeVerified,
+    transport.Attempts, transport.CancelledAttempts, seconds = clock.Elapsed.TotalSeconds,
+    model = request.ModelId, endpoint = options.OpenCodeBaseUrl, knowledge.ContractHash,
+    promptFingerprint = WorkflowAiAgent.PromptFingerprint, docsFingerprint = docs.Fingerprint, docsFiles = docs.Files.Count,
+    limits = new { options.RunTimeoutSeconds, options.MaxProviderCalls, options.MaxModelOutputTokens, options.MaxNudges, reasoningEffort = "high" },
+    run = lastRun, events, calls = transport.Calls, diagnostics = diagnostics.Snapshot()
+});
 await Save("trace.json", traces.Snapshot());
 return passed ? 0 : 1;
 
@@ -114,18 +120,15 @@ async Task Observe(AiRunEventDto frame, CancellationToken token)
     await recordingGate.WaitAsync(token);
     try
     {
-        if (frame.Checkpoint is { } saved) checkpoint = saved;
+        if (frame.State is { } saved) state = saved;
         if (frame.Run is { } run) lastRun = run;
-        if (resumed && frame.Stage == "resuming" && cancelledCheckpoint is { } previous && frame.Checkpoint is { } restored)
-            resumeVerified = restored.Revision == previous.Revision && restored.Draft.GetRawText() == previous.Draft.GetRawText()
-                && restored.InputHash == previous.InputHash && restored.ContractHash == previous.ContractHash
-                && restored.ExecutionVariant == previous.ExecutionVariant && restored.ReasoningEffort == previous.ReasoningEffort
-                && restored.Batches.SequenceEqual(previous.Batches) && restored.ContextReads.SequenceEqual(previous.ContextReads);
-        var item = new { frame.Type, frame.Stage, frame.Code, frame.Sequence, frame.Run, revision = frame.Checkpoint?.Revision, kind = frame.Result?.Kind };
+        // Only allowlisted metadata: never messages, tool summaries, prompts or workflow content.
+        var item = new { frame.Type, frame.Stage, frame.Code, frame.Sequence, frame.Run, canContinue = frame.State?.CanContinue, kind = frame.Result?.Kind };
         events.Enqueue(item);
         await File.AppendAllTextAsync(Path.Combine(output, "progress.ndjson"), JsonSerializer.Serialize(item) + Environment.NewLine, token);
         Console.WriteLine(JsonSerializer.Serialize(item));
-        if (!resumed && arguments.GetValueOrDefault("resume-test") == "true" && checkpoint is { Revision: > 0 } && frame.Stage == "generating") Volatile.Write(ref cancellationArmed, 1);
+        // A checkpoint starts a model call; arm the cancellation once at least one call has completed.
+        if (resumeTest && !resumed && frame.Type == "checkpoint" && frame.Run is { ProviderCalls: >= 1 }) Volatile.Write(ref cancellationArmed, 1);
     }
     finally { recordingGate.Release(); }
 }
@@ -178,44 +181,6 @@ static bool CheckSimple(AiTurnResultDto? result, bool modification, string polic
             && model.SequenceFlows.Any(flow => flow.Id == 1 && flow.SourceRef == 1 && flow.TargetRef == 2)
             && model.SequenceFlows.Any(flow => flow.Id == 2 && flow.SourceRef == 2 && flow.TargetRef == 3 && flow.Name == "Approve") && Preserved());
 }
-sealed class ObservedProvider(IAiWorkflowProvider inner) : IAiWorkflowProvider
-{
-    public AiProviderDto Descriptor => inner.Descriptor;
-    public bool SupportsExecution(string variant) => inner.SupportsExecution(variant);
-    public ConcurrentQueue<object> Calls { get; } = new();
-    public Task<AiCompletion> CompleteAsync(string model, string conversation, IReadOnlyList<AiChatMessageDto> messages, string key, int tokens, CancellationToken ct) =>
-        CompleteAsync(model, conversation, messages, key, tokens, new("current", "max"), ct);
-    public Task<AiCompletion> CompleteAsync(string model, string conversation, IReadOnlyList<AiChatMessageDto> messages, string key, int tokens, AiExecutionSettings execution, CancellationToken ct)
-        => ObserveAsync(() => inner.CompleteAsync(model, conversation, messages, key, tokens, execution, ct), tokens);
-
-    private async Task<AiCompletion> ObserveAsync(Func<Task<AiCompletion>> complete, int tokens)
-    {
-        var clock = Stopwatch.StartNew();
-        try
-        {
-            var response = await complete();
-            // Only allowlisted shape metadata: never command values, prompts or reasoning.
-            object? command = null;
-            if (response.FinishReason == "stop")
-            {
-                try
-                {
-                    using var parsed = JsonDocument.Parse(response.Content);
-                    var root = parsed.RootElement;
-                    var kind = root.TryGetProperty("kind", out var item) && item.ValueKind == JsonValueKind.String ? item.GetString() : null;
-                    if (kind is "read" or "edit" or "finish" or "clarification" or "validate" or "proposal" or "analysis" or "review")
-                        command = new { kind, operations = Count("operations"), reads = Count("reads"), sourceReferences = Count("sourceReferences") };
-                    int? Count(string name) => root.TryGetProperty(name, out var array) && array.ValueKind == JsonValueKind.Array ? array.GetArrayLength() : null;
-                }
-                catch (JsonException) { }
-            }
-            Calls.Enqueue(new { seconds = clock.Elapsed.TotalSeconds, response.FinishReason, response.InputTokens, response.OutputTokens, allowance = tokens, command });
-            return response;
-        }
-        catch (WorkflowAiException error) { Calls.Enqueue(new { seconds = clock.Elapsed.TotalSeconds, error.Code, allowance = tokens }); throw; }
-        catch (OperationCanceledException) { Calls.Enqueue(new { seconds = clock.Elapsed.TotalSeconds, Code = "cancelled", allowance = tokens }); throw; }
-    }
-}
 
 sealed class EvaluationDiagnostics : IDisposable
 {
@@ -229,7 +194,7 @@ sealed class EvaluationDiagnostics : IDisposable
     }
     private void Observe(object? sender, System.Runtime.ExceptionServices.FirstChanceExceptionEventArgs args)
     {
-        if (args.Exception is not (KeyNotFoundException or JsonException or InvalidOperationException or WorkflowDomainException or WorkflowAiException)) return;
+        if (args.Exception is not (KeyNotFoundException or JsonException or InvalidOperationException or WorkflowDomainException or WorkflowAiException or WorkflowAiStopException)) return;
         var frames = new StackTrace(args.Exception, true).GetFrames()
             .Where(frame => frame.GetMethod()?.DeclaringType?.Namespace?.StartsWith("Flowbit.", StringComparison.Ordinal) == true)
             .Take(8).Select(frame => new { type = frame.GetMethod()!.DeclaringType!.FullName, method = frame.GetMethod()!.Name, line = frame.GetFileLineNumber() }).ToArray();
@@ -241,16 +206,106 @@ sealed class EvaluationDiagnostics : IDisposable
     public void Dispose() { if (enabled) AppDomain.CurrentDomain.FirstChanceException -= Observe; }
 }
 
+/// <summary>
+/// The transport under Flowbit's capture handler. It counts and cancels real HTTP attempts and records allowlisted metadata only: status,
+/// finish reason, token usage and the names of the tools called. Request conversations are kept only as hashes, to prove that Continue
+/// resends the cancelled request.
+/// </summary>
 sealed class ObservedHttpHandler(Action onAttempt) : DelegatingHandler(new HttpClientHandler { AllowAutoRedirect = false })
 {
-    private int attempts, cancelledAttempts;
+    private static readonly string[] ToolNames = ["get_files_list", "get_file", "save_append_file", "edit_file", "validate_workflow", "validate_item"];
+    private int attempts, cancelledAttempts, cancelTarget, resumeStart;
     public int Attempts => Volatile.Read(ref attempts);
     public int CancelledAttempts => Volatile.Read(ref cancelledAttempts);
+    public ConcurrentQueue<object> Calls { get; } = new();
+    public string? CancelledRequest { get; private set; }
+    public string? FirstResumedRequest { get; private set; }
+    public void MarkNextAsCancelTarget() => Volatile.Write(ref cancelTarget, 1);
+    public void MarkResumeStart() => Volatile.Write(ref resumeStart, 1);
+
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
-        Interlocked.Increment(ref attempts); onAttempt();
-        try { return await base.SendAsync(request, cancellationToken); }
-        catch (OperationCanceledException) { Interlocked.Increment(ref cancelledAttempts); throw; }
+        var number = Interlocked.Increment(ref attempts);
+        var conversation = request.Content is null ? null : Conversation(await request.Content.ReadAsByteArrayAsync(cancellationToken));
+        if (Interlocked.CompareExchange(ref resumeStart, 0, 1) == 1) FirstResumedRequest = conversation;
+        onAttempt();
+        var target = Interlocked.CompareExchange(ref cancelTarget, 0, 1) == 1;
+        var clock = Stopwatch.StartNew();
+        try
+        {
+            var response = await base.SendAsync(request, cancellationToken);
+            object? completion = null;
+            if (response.IsSuccessStatusCode)
+            {
+                await response.Content.LoadIntoBufferAsync(16 * 1024 * 1024, cancellationToken);
+                completion = Completion(await response.Content.ReadAsByteArrayAsync(cancellationToken));
+            }
+            Calls.Enqueue(new { number, seconds = clock.Elapsed.TotalSeconds, status = (int)response.StatusCode, completion });
+            return response;
+        }
+        catch (OperationCanceledException)
+        {
+            Interlocked.Increment(ref cancelledAttempts);
+            if (target) CancelledRequest = conversation;
+            Calls.Enqueue(new { number, seconds = clock.Elapsed.TotalSeconds, status = 0, cancelled = true });
+            throw;
+        }
+    }
+
+    private static object? Completion(byte[] body)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(body);
+            var root = document.RootElement;
+            var choice = root.TryGetProperty("choices", out var choices) && choices.ValueKind == JsonValueKind.Array && choices.GetArrayLength() > 0 ? choices[0] : default;
+            string? finish = choice.ValueKind == JsonValueKind.Object && choice.TryGetProperty("finish_reason", out var reason) && reason.ValueKind == JsonValueKind.String ? reason.GetString() : null;
+            var tools = choice.ValueKind == JsonValueKind.Object && choice.TryGetProperty("message", out var message) && message.TryGetProperty("tool_calls", out var calls) && calls.ValueKind == JsonValueKind.Array
+                ? calls.EnumerateArray().Select(call => call.TryGetProperty("function", out var function) && function.TryGetProperty("name", out var name)
+                    && ToolNames.Contains(name.GetString()) ? name.GetString()! : "other").ToArray()
+                : [];
+            var usage = root.TryGetProperty("usage", out var counts) && counts.ValueKind == JsonValueKind.Object ? counts : default;
+            return new
+            {
+                finishReason = finish, tools,
+                promptTokens = Count(usage, "prompt_tokens"), completionTokens = Count(usage, "completion_tokens"),
+                cachedTokens = usage.ValueKind == JsonValueKind.Object && usage.TryGetProperty("prompt_tokens_details", out var details) ? Count(details, "cached_tokens") : null
+            };
+        }
+        catch (JsonException) { return new { finishReason = "not-json" }; }
+        static long? Count(JsonElement owner, string name) =>
+            owner.ValueKind == JsonValueKind.Object && owner.TryGetProperty(name, out var value) && value.TryGetInt64(out var count) ? count : null;
+    }
+
+    /// <summary>A hash of the request's messages reduced to roles, text, tool calls, tool results and reasoning, so a restored session
+    /// that differs only in serialization details compares equal.</summary>
+    private static string? Conversation(byte[] body)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(body);
+            var text = new StringBuilder();
+            foreach (var message in document.RootElement.GetProperty("messages").EnumerateArray())
+            {
+                text.Append(message.GetProperty("role").GetString()).Append('\u001f');
+                if (message.TryGetProperty("content", out var content))
+                    text.Append(content.ValueKind == JsonValueKind.String ? content.GetString()
+                        : content.ValueKind == JsonValueKind.Array ? string.Concat(content.EnumerateArray().Select(part => part.TryGetProperty("text", out var item) ? item.GetString() : "")) : "");
+                if (message.TryGetProperty("tool_call_id", out var callId)) text.Append('\u001f').Append(callId.GetString());
+                if (message.TryGetProperty("tool_calls", out var calls))
+                    foreach (var call in calls.EnumerateArray())
+                    {
+                        var function = call.GetProperty("function");
+                        using var arguments = JsonDocument.Parse(function.GetProperty("arguments").GetString()!);
+                        text.Append('\u001f').Append(call.GetProperty("id").GetString()).Append(':').Append(function.GetProperty("name").GetString())
+                            .Append(':').Append(JsonSerializer.Serialize(arguments.RootElement));
+                    }
+                if (message.TryGetProperty("reasoning_content", out var reasoning)) text.Append('\u001f').Append(reasoning.GetString());
+                text.Append('\u001e');
+            }
+            return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text.ToString())));
+        }
+        catch (Exception error) when (error is JsonException or KeyNotFoundException or InvalidOperationException) { return null; }
     }
 }
 

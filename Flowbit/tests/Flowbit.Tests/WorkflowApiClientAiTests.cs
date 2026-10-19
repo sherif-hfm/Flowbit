@@ -23,8 +23,7 @@ public sealed class WorkflowApiClientAiTests
             return new(HttpStatusCode.OK)
             {
                 Content = request.RequestUri.AbsolutePath.EndsWith("/turn")
-                    ? JsonContent.Create(new AiTurnResultDto("clarification", "Who approves?", ["Which role?"], null,
-                        [], [], [], new(false, [], []), "snapshot", "contract"))
+                    ? JsonContent.Create(new AiTurnResultDto("answer", "Who approves?", null, new(false, [], []), "snapshot", "contract"))
                     : JsonContent.Create(new AiValidationResultDto(true, [], []) { CanSave = true, CanPublish = true })
             };
         });
@@ -32,7 +31,7 @@ public sealed class WorkflowApiClientAiTests
         var client = new WorkflowApiClient(http);
         var request = new AiTurnRequestDto { ConversationId = Guid.NewGuid().ToString(), Message = "Create approvals", SnapshotId = "snapshot" };
         var response = await client.SendAiTurnAsync(request, "synthetic-first-key");
-        Assert.Equal("clarification", response.Kind);
+        Assert.Equal("answer", response.Kind);
         await client.SendAiTurnAsync(request, "synthetic-second-key");
         var definition = JsonSerializer.SerializeToElement(new { id = "workflow", name = "Flow" });
         Assert.True((await client.ValidateAiWorkflowAsync(definition)).CanSave);

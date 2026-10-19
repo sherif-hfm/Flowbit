@@ -145,12 +145,12 @@ public sealed class OidcAuthenticationSmokeTests
             await Assertions.Expect(editor.Locator("#ai-provider")).ToHaveValueAsync("opencode-go");
             const string providerKey = "synthetic-oidc-ai-provider-key";
             await editor.Locator("#ai-key").FillAsync(providerKey);
-            stack.AiProvider.EnqueueNameEdit("Proposal after token refresh");
-            var refreshingStream = stack.AiProvider.EnqueueFinish(delayed: true);
+            stack.AiProvider.EnqueueRename("Unsaved AI OIDC draft", "Proposal after token refresh");
+            var refreshingStream = stack.AiProvider.EnqueueText("Renamed the workflow; its review rules are unchanged.", delayed: true);
             await editor.Locator("#ai-message").FillAsync("Rename this workflow Proposal after token refresh, keeping its review rules.");
             await editor.Locator("#ai-send").ClickAsync();
             await refreshingStream.Arrived.Task.WaitAsync(TimeSpan.FromSeconds(30));
-            await Assertions.Expect(editor.Locator("#ai-draft-progress")).ToContainTextAsync("1 completed draft step");
+            await Assertions.Expect(editor.Locator("#ai-draft-progress")).ToHaveTextAsync("workflow.json: 4 nodes · 3 connections");
             var retainedProgress = await editor.Locator("#ai-draft-progress").InnerTextAsync();
 
             var otherTab = await ObservePageAsync(context, errors, warnings);
@@ -175,8 +175,8 @@ public sealed class OidcAuthenticationSmokeTests
             await Assertions.Expect(editor.Locator("#ai-key")).ToHaveValueAsync(providerKey);
             await Assertions.Expect(editor.Locator("#wfName")).ToHaveValueAsync("Unsaved AI OIDC draft");
 
-            stack.AiProvider.EnqueueNameEdit("Cancelled private draft");
-            var revokedStream = stack.AiProvider.EnqueueFinish(delayed: true);
+            stack.AiProvider.EnqueueRename("Proposal after token refresh", "Cancelled private draft");
+            var revokedStream = stack.AiProvider.EnqueueText("Renamed the workflow; its review rules are unchanged.", delayed: true);
             await editor.Locator("#ai-message").FillAsync("Rename this workflow Cancelled private draft, keeping its review rules.");
             await editor.Locator("#ai-send").ClickAsync();
             await revokedStream.Arrived.Task.WaitAsync(TimeSpan.FromSeconds(30));

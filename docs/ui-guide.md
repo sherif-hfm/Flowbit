@@ -163,43 +163,29 @@ Overview totals and lists reflect the API's visibility rules; a restricted panel
 
 ### AI workflow assistant
 
-Open **AI assistant** in the editor to describe a new workflow or request changes to the current one. Select OpenCode Zen and an available model, then enter your provider API key. Zen is the default server endpoint; an administrator can explicitly configure the Go endpoint, which displays OpenCode Go instead. The shipped configuration selects GLM-5.3-Flash by default; an explicit configured model list replaces fallback choices. Requirements, reviewed document text, and the current workflow are sent to that provider. Keys and conversation state live only in the open assistant panel; closing it, leaving the editor, resetting it, or changing the selected test identity clears them. Provider keys are separate from the Flowbit JWT and are not saved in workflow definitions.
+Open **AI assistant** in the editor to describe a new workflow or request changes to the current one. Select OpenCode Zen and an available model, then enter your provider API key. Zen is the default server endpoint; an administrator can explicitly configure the Go endpoint, which displays OpenCode Go instead. The shipped configuration selects GLM-5.3-Flash. Your messages, reviewed document text, and the current workflow are sent to that provider. Keys and the conversation live only in the open assistant panel; closing it, leaving the editor, resetting it, or changing the selected test identity clears them. Provider keys are separate from the Flowbit JWT and are not saved in workflow definitions.
 
-Optionally expand **Include shared-variable metadata**, load or search active catalog keys, and select the contracts the workflow may use. This requires your existing shared-variable read permission. Only selected contracts and descriptions are included in model context; catalog values are excluded. Clear the selection to remove this context from later requests.
+Optionally expand **Include shared-variable metadata**, load or search active catalog keys, and select the contracts the workflow may use. This requires your existing shared-variable read permission. Only selected contracts and descriptions are included with your message; catalog values are excluded. A changed selection is sent with your next message.
 
-**Attach a BRD or SRS PDF** accepts text, scanned, and mixed PDFs. Extraction runs locally on the API host, with English, Arabic, or both OCR languages. Expand each extracted page to review or correct its text before sending. **Retry with OCR** forces OCR on the selected document; **Remove** removes its source text. Limits are 20 MiB, 100 pages, and 200,000 extracted characters by default. Scans, tables, diagrams, and handwriting can produce incomplete text; correct the extraction before relying on it.
+**Attach a BRD or SRS PDF** accepts text, scanned, and mixed PDFs. Extraction runs locally on the API host, with English, Arabic, or both OCR languages. Expand each extracted page to review or correct its text before sending. **Retry with OCR** forces OCR on the selected document; **Remove** removes its source text. Limits are 20 MiB, 100 pages, and 200,000 extracted characters by default. Scans, tables, diagrams, and handwriting can produce incomplete text; correct the extraction before relying on it. Each page is sent to the model once per conversation.
 
-The progress area shows the current stage, elapsed time and model-call count for this run, plus retained draft steps, nodes and connections. The assistant works in complete draft steps and retries temporary provider failures within a 30-minute run by default. It keeps the selected model. **Cancel** stops work; **Continue** resumes the most recent complete checkpoint using the original requirements, source pages, workflow snapshot, catalog selection, model and retained reference context. The timer and call counter reset for the new run; the completed draft steps remain. To change those inputs, send a new request. Changing the diagram disables continuation against its old snapshot. Incomplete steps are discarded and cannot be applied.
+While the assistant works, the progress area shows what it read, saved or checked since its previous model call, **Waiting for the model** with the seconds spent on the current call, the elapsed time, the model calls used of the run's limit, any validation follow-ups, and the size of the workflow it has saved. The assistant reads Flowbit's guides and examples itself, writes the workflow, and checks it; Flowbit checks the result and returns errors to the model at most twice. A run lasts up to 30 minutes and 40 model calls by default and keeps the selected model.
 
-Checkpoints live only in this open Blazor Server panel circuit. They are cleared when you close/reset the assistant, change provider/model or identity, leave the editor, or lose the circuit; page reload and server restart do not restore them. No workflow is saved by reaching a checkpoint.
+A run can stop: you select **Cancel**, the connection drops, the provider fails or throttles, a response reaches the output limit, or the run reaches its time or call limit. The progress area then explains why and offers **Continue**, which resumes from the last completed model call with the conversation, the assistant's files and the selected model unchanged. The timer and call counter restart for the new run. Continue is unavailable once the diagram has changed; send a message instead, and the assistant works from the current diagram. Nothing is retried automatically.
 
-When an administrator enables requirements review, the assistant analyzes the
-source requirements and checks coverage plus routing/roles before offering a
-proposal. Independent analysis/review calls can overlap; progress shows the active
-call count. Expand **AI requirements review** to inspect each requirement and its
-findings. Missing behavior is repaired within bounded attempts; essential ambiguity
-asks for clarification. Unresolved or incomplete review cannot enable Apply.
-AI review is separate from definition, save and publication validation and does not
-guarantee business correctness. Continue repeats requirements analysis/review from
-the frozen input; a checkpoint does not retain a passing verdict.
+When the run finishes, the assistant's reply appears in the conversation:
 
-While a model call is in progress, **Waiting for the model** shows the seconds
-spent on that call, or since the current group started when calls overlap. The timer
-disappears after cancellation or completion; retained draft counts remain separate. New checkpoints also
-bind the server's execution variant and reasoning/profile settings. If an
-administrator changes those settings, Continue asks you to start a new request
-before any provider call is made. See [execution variants](ai-authoring.md#execution-variants-and-evaluation).
+- **Proposal**: a validated workflow. Review the open questions and assumptions the assistant recorded, the validation and readiness results, and the workflow JSON, then select **Apply to editor**. Application is one undoable editor change; it retains the existing workflow family and saved baseline.
+- **Answer**: the assistant replied without changing the workflow.
+- **Still invalid**: the remaining problems are listed. Send a message, for example to ask for a fix; the assistant keeps the workflow it wrote.
 
-Answer clarification questions in the conversation by sending a new message. Review the proposal's changes, assumptions, setup dependencies, source references, and validation results, then select **Apply to editor**. Application is one undoable editor change; it retains the existing workflow family and saved baseline. Editing the diagram while generation is pending makes the proposal stale, so request a fresh proposal instead of overwriting later edits. Save or cancel pending script-dialog edits before capturing or applying a proposal.
+Answer open questions or request changes by sending another message. The assistant keeps the whole conversation, including what it read and wrote, also after **Apply**. If you edit or apply the diagram before your next message, the assistant is told that its workflow now contains the current diagram. Editing the diagram while generation is pending makes the proposal stale, so request a fresh proposal instead of overwriting later edits. Save or cancel pending script-dialog edits before capturing or applying a proposal.
+
+The conversation lives only in this open Blazor Server panel circuit. It is cleared when you select **New conversation**, close or reset the assistant, change provider, model or identity, leave the editor, or lose the circuit; page reload and server restart do not restore it. No workflow is saved by the assistant.
 
 Generation and application do not save, publish, or run workflows. **Save new version** retains its existing unpublished-version behavior. Structurally valid proposals may still have catalog or publication blockers and need operational setup. **Download Flowbit AI skill** provides the same self-contained knowledge package for external agents. See [AI authoring and portable skill](ai-authoring.md) and [AI deployment settings](deployment.md#ai-authoring-and-local-ocr).
 
-Finish or discard an open assistant draft before an administrator switches its
-execution mode, reasoning setting or requirements-review policy. Versions 2/3 are bound
-to those settings and require a new request after a change. Supported modes are
-`current` and `optimized`, both using Flowbit's custom loop. The framework-backed
-experiment has been removed; drafts from that mode require a new request after
-the administrator changes the configuration. See [upgrade settings](deployment.md#ai-authoring-and-local-ocr).
+After an administrator changes the provider endpoint, model list or reasoning setting, open conversations cannot continue; start a new conversation. See [upgrade settings](deployment.md#ai-authoring-and-local-ocr).
 
 DevelopmentToken mode retains its process-wide test identity. OpenIdConnect mode uses isolated per-login server sessions. Separate assistant panels do not share provider keys; routine access-token refresh preserves panel state, while session or actor/role changes clear it.
 

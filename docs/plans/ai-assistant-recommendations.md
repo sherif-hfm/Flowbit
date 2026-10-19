@@ -1,5 +1,8 @@
 # AI assistant recommendations
 
+> Superseded on 2026-10-17 by the [agent engine](ai-assistant-agent-engine-plan.md), which replaced the command-loop
+> engine these recommendations addressed. The list below is kept unchanged as history.
+
 Agreed 2026-10-04. These recommendations describe planned improvements, not
 claims about shipped behavior. See the [staged implementation plan](ai-assistant-improvement-plan.md)
 for items 1–4 and 7 and their verification status.

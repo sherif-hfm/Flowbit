@@ -1,5 +1,8 @@
 # AI assistant improvement plan
 
+> Superseded on 2026-10-17 by the [agent engine](ai-assistant-agent-engine-plan.md), which replaced the command-loop
+> engine this plan improved. The record below is kept unchanged as history.
+
 Agreed 2026-10-04. Implements recommendations **1–4 and 7** from the
 [eight-item list](ai-assistant-recommendations.md). Stage status is recorded below;
 planned behavior must not be interpreted as already implemented.

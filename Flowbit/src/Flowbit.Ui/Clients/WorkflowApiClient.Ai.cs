@@ -9,6 +9,8 @@ public sealed partial class WorkflowApiClient
 {
     public const string AiClientName = "Flowbit.AiAuthoring";
     public static TimeSpan AiRequestTimeout => TimeSpan.FromSeconds(AiAuthoringLimits.MaxRunTimeoutSeconds + 60);
+    // A checkpoint frame carries the conversation state.
+    public const int MaxAiFrameBytes = 8 * 1024 * 1024;
     public async Task<IReadOnlyList<AiProviderDto>> GetAiProvidersAsync(CancellationToken cancellationToken = default)
     {
         using var response = await httpClient.GetAsync("/api/workflows/ai/providers", cancellationToken);
@@ -68,10 +70,10 @@ public sealed partial class WorkflowApiClient
                 frameBytes.SetLength(0);
                 start = i + 1;
                 runId ??= frame.RunId;
-                if (frame.Version != 1 || string.IsNullOrWhiteSpace(frame.RunId) || frame.RunId.Length > 128 ||
+                if (frame.Version != 2 || string.IsNullOrWhiteSpace(frame.RunId) || frame.RunId.Length > 128 ||
                     frame.RunId != runId || frame.Sequence <= sequence ||
                     frame.Type is not ("progress" or "checkpoint" or "result" or "paused" or "error") ||
-                    frame.Type == "checkpoint" && frame.Checkpoint is null ||
+                    frame.Type == "checkpoint" && frame.State is null ||
                     frame.Type is "result" or "paused" && frame.Result is null)
                     throw new InvalidOperationException("The AI stream contains an invalid event sequence.");
                 sequence = frame.Sequence;
@@ -84,11 +86,11 @@ public sealed partial class WorkflowApiClient
             }
             Append(start, count - start);
         }
-        throw new InvalidOperationException("The AI connection ended before a final result. Continue from the last received checkpoint.");
+        throw new InvalidOperationException("The AI connection ended before a final result. Continue resumes from the last completed step.");
 
         void Append(int offset, int length)
         {
-            if (frameBytes.Length + length > 4 * 1024 * 1024)
+            if (frameBytes.Length + length > MaxAiFrameBytes)
                 throw new InvalidOperationException("The AI stream event exceeds its size limit.");
             frameBytes.Write(buffer, offset, length);
         }

@@ -140,54 +140,47 @@ The key pieces:
   schema and migrates supported legacy documents before `loadFromObject()`
   installs the result; malformed/unsupported input preserves the current document.
 - **Seed data**: `seedSample()` builds the "Parallel Purchase Review" example.
-- **AI authoring**: The hosted Blazor assistant owns temporary provider keys, requirements,
-  PDF extraction review, and proposal requests. Dedicated editor snapshot/apply operations
-  preserve undo history, the saved baseline, and locked workflow-family identity, rejecting
-  stale proposals after document changes. Do not use `load()` or file import for AI edits.
-  The API uses a provider registry behind `IAiWorkflowProvider`; the OpenCode adapter defaults
-  to Zen while retaining the legacy `opencode-go` API provider id. Providers return
-  finish/usage metadata for one bounded call; `WorkflowAiRunner` owns
-  separate transport retries, output-limit recovery, validation repairs, and total run budgets.
-  `WorkflowAiSession` shares atomic edit receipts and accounting across server-configured
-  `current` and `optimized` custom execution. The optimized variant uses a
-  schema-derived primer, semantic draft context and conservative batch growth.
-  Both use Flowbit's own model/command loop and the bounded text-completion adapter;
-  there is no agent SDK dependency or native-tool transport. Successful finish,
-  clarification and terminal repair results stop immediately. Removed execution
-  settings fail configuration validation before transport; old framework checkpoints
-  cannot continue under a different execution mode. Preserve the version 2 bindings.
-  Final proposal checks reject new/disconnected unreachable work while preserving
-  existing islands; all start types and attached boundary routes count as entry paths.
-  Version 2 checkpoints bind execution, reasoning, profile and endpoint; version 1 stays
-  on current execution. Opt-in requirements review uses version 3 with review-policy
-  binding; Continue recomputes source analysis and final reviews. Versions 1/2 require
-  review disabled. `WorkflowAiRequirements` supplies bounded, source-anchored checklists
-  and read-only coverage/routing reviews; unresolved findings cannot produce a proposal.
-  `WorkflowAiCallDispatcher` shares atomic reservations, global/per-run provider-call
-  admission, retries/accounting and cancellation. Independent analysis/review calls
-  may overlap (at most two per run, four per process by default); the coordinator alone
-  edits drafts and emits ordered progress. Review remains disabled by default. Mutable
-  excerpt keys include target/entity/offset and invalidate after edits. Metadata-only
-  `Flowbit.Ai.Authoring` spans must never contain prompt, draft, source or exception text.
-  Do not promote defaults without the authoring evaluation gates.
-  Defaults allow 30 minutes, 50 calls, and 262,144 output tokens. The UI's dedicated authoring
-  transport covers the configurable server deadline; ordinary API calls retain their timeout.
-  Progress distinguishes per-run metrics from retained draft steps, nodes, and connections.
-  `WorkflowAiContext` exposes bounded reads of immutable packaged references and request-local
-  source/draft data; `WorkflowAiDraft` applies typed edits atomically to a private candidate.
-  Partial model responses never mutate that candidate. Streamed NDJSON checkpoints remain
-  untrusted temporary state in the open Blazor Server circuit, tied to the original request,
-  catalog contracts, selected model, and editor snapshot. Continuation revalidates state and
-  rebuilds bounded reference/source excerpts from retained read positions and original inputs;
-  cached excerpt text and mutable draft reads are not retained. Continuation
-  seeds fresh redaction from baseline and checkpoint. Only a fully validated final proposal
-  may reach the editor apply operation; generation and checkpoints never save the workflow.
-  `IAuthoringKnowledge` verifies and caches the deterministic portable skill package
-  exported by `Flowbit/tools/AuthoringExport`. Schema and references come from the canonical
-  model, owning guides, and examples; generation never executes scripts, persists versions,
-  or publishes. `WorkflowDefinitionReadinessChecker` owns the reusable catalog, shared-service
-  durability, lock-order, and publication checks called by both definition lifecycle operations
-  and read-only authoring validation. See [AI authoring](docs/ai-authoring.md).
+- **AI authoring**: the hosted Blazor assistant owns temporary provider keys, requirements, PDF extraction review,
+  the conversation state, and proposal requests.
+  - **Editor operations.** Dedicated snapshot/apply operations preserve undo history, the saved baseline, and the locked
+    workflow-family identity, rejecting stale proposals after document changes. Do not use `load()` or file import for
+    AI edits.
+  - **Engine.** One model agent controls authoring (the Flowbit AI Lab v3 approach) on Microsoft Agent Framework
+    1.23.0, with Microsoft.Extensions.AI tool calling and the OpenAI .NET SDK against the configured OpenCode endpoint
+    (provider id `opencode-go`).
+    - `WorkflowAiAgent` owns the three-line instructions; their fingerprint changes with their wording.
+    - `WorkflowAiWorkspace` owns the six tools (`get_files_list`, `get_file`, `save_append_file`, `edit_file`,
+      `validate_workflow`, `validate_item`) over the `WorkflowAiDocs` view (six guides plus canonical examples from
+      `IAuthoringKnowledge`) and the agent's in-memory `workflow.json`/`open-questions.md`.
+    - Instructions, tool names and tool descriptions are user decisions; do not change them, or add tools, without a
+      request.
+  - **Turns.** `WorkflowAiConversation` runs one turn:
+    - the exact message, with credential values replaced and labelled page/catalog blocks;
+    - the agent run;
+    - the end-of-turn `WorkflowAiWorkflowCheck` with at most `MaxNudges` follow-ups;
+    - then the proposal: restore credentials, lay out, and validate again with readiness.
+
+    The host never edits the agent's workflow. Only layout fields change before a proposal.
+  - **Limits.** 40 model requests, a 1,800-second run deadline, 32,768 output tokens per call, `high` reasoning, and
+    no automatic retries; a stopped run pauses and Continue resumes it.
+  - **Errors returned to the model** must name their code, JSON path, the element they are in, and the specific cause
+    (`WorkflowAiError.Describe()`). Structural problems are all reported; definition rules give Flowbit's first error.
+  - **Conversation state.** Each model call starts with a checkpoint (`WorkflowAiCheckpointingChatClient`): the stored
+    session plus the not-yet-stored input. The state lives only in the open Blazor Server circuit and is untrusted when
+    it returns. It is bound to provider/model/endpoint/reasoning and holds credential placeholders, never values or the
+    provider key. Do not add a server-side session store without a request.
+  - **Diagram changes.** A changed editor diagram replaces `workflow.json` before the next message, with the fixed sync
+    line; an unchanged editor keeps the agent's file.
+  - **Removed engine.** Removed engine settings (`ExecutionVariant`, enabled `RequirementsReviewEnabled`) fail with
+    `provider_configuration`; other removed settings are ignored with a startup warning.
+  - **Telemetry.** Metadata-only `Flowbit.Ai.Authoring` spans and metrics must never contain prompts, workflow, source,
+    path or exception text.
+  - **Proposals.** Only a fully validated final proposal may reach the editor apply operation; generation and
+    checkpoints never save the workflow.
+  - **Shared checks.** `WorkflowDefinitionReadinessChecker` owns the reusable catalog, shared-service durability,
+    lock-order, and publication checks called by both definition lifecycle operations and read-only authoring
+    validation. Tests use mocked HTTP only; billed provider runs need explicit authorization. See
+    [AI authoring](docs/ai-authoring.md).
 - **Save validator**: `validateModelForSave(candidate)` is a thin entry point.
   Each call builds a fresh context with `createSaveValidationContext(candidate)`
   (error accumulator, candidate arrays, lookup maps, structural adjacency, and

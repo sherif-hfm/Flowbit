@@ -23,7 +23,7 @@ namespace Flowbit.Tests;
 public sealed class WorkflowAiEndpointTests
 {
     [Fact]
-    public async Task OptionalReviewAndConcurrentProgressAppearInProductionOpenApi()
+    public async Task ConversationStateAndRunSummaryAppearInProductionOpenApi()
     {
         await using var factory = new AiFactory();
         await using var scope = factory.Services.CreateAsyncScope();
@@ -32,11 +32,32 @@ public sealed class WorkflowAiEndpointTests
         var operation = document.Paths["/api/workflows/ai/turn"].Operations![HttpMethod.Post];
         Assert.Contains("200", operation.Responses!.Keys);
         var schemas = document.Components!.Schemas!;
-        Assert.Contains("requirementsReview", schemas["AiTurnResultDto"].Properties!.Keys);
-        Assert.DoesNotContain("requirementsReview", schemas["AiTurnResultDto"].Required!);
-        Assert.Contains("reviewPolicyHash", schemas["AiCheckpointDto"].Properties!.Keys);
-        Assert.Contains("activeProviderCalls", schemas["AiRunSummaryDto"].Properties!.Keys);
-        Assert.Contains("candidateHash", schemas["AiRequirementsReviewDto"].Properties!.Keys);
+        Assert.Contains("state", schemas["AiTurnRequestDto"].Properties!.Keys);
+        Assert.Contains("continue", schemas["AiTurnRequestDto"].Properties!.Keys);
+        Assert.DoesNotContain("history", schemas["AiTurnRequestDto"].Properties!.Keys);
+        Assert.DoesNotContain("checkpoint", schemas["AiTurnRequestDto"].Properties!.Keys);
+        Assert.Contains("openQuestions", schemas["AiTurnResultDto"].Properties!.Keys);
+        Assert.DoesNotContain("requirementsReview", schemas["AiTurnResultDto"].Properties!.Keys);
+        Assert.Contains("canContinue", schemas["AiConversationStateDto"].Properties!.Keys);
+        Assert.Contains("cachedInputTokens", schemas["AiRunSummaryDto"].Properties!.Keys);
+        Assert.Equal(0, factory.Service.Calls);
+    }
+
+    [Theory]
+    [InlineData("/api/workflows/ai/turn", "\"history\":[{\"role\":\"user\",\"content\":\"Earlier\"}]", HttpStatusCode.BadRequest, "history_unsupported")]
+    [InlineData("/api/workflows/ai/turn/stream", "\"history\":[{\"role\":\"user\",\"content\":\"Earlier\"}]", HttpStatusCode.BadRequest, "history_unsupported")]
+    [InlineData("/api/workflows/ai/turn", "\"checkpoint\":{\"version\":2}", HttpStatusCode.Conflict, "checkpoint_configuration_changed")]
+    [InlineData("/api/workflows/ai/turn/stream", "\"checkpoint\":{\"version\":2}", HttpStatusCode.Conflict, "checkpoint_configuration_changed")]
+    public async Task FieldsOfTheReplacedEngineAreRefusedBeforeGeneration(string path, string field, HttpStatusCode expected, string code)
+    {
+        await using var factory = new AiFactory();
+        using var client = factory.CreateClient();
+        using var request = ApiTestAuth.Authorize(new(HttpMethod.Post, path)
+        { Content = new StringContent("{\"message\":\"Build a review\",\"snapshotId\":\"revision-1\"," + field + "}", Encoding.UTF8, "application/json") });
+        request.Headers.Add("X-Flowbit-AI-Key", "synthetic-key");
+        using var response = await client.SendAsync(request);
+        Assert.Equal(expected, response.StatusCode);
+        Assert.Contains(code, await response.Content.ReadAsStringAsync());
         Assert.Equal(0, factory.Service.Calls);
     }
 
@@ -265,8 +286,7 @@ public sealed class WorkflowAiEndpointTests
         public Task<AiTurnResultDto> TurnAsync(AiTurnRequestDto request, string apiKey, CancellationToken ct)
         {
             Calls++; LastKey = apiKey;
-            return Task.FromResult(new AiTurnResultDto("clarification", "Who reviews?", ["Who reviews?"], null, [], [], [],
-                new(false, [], []), request.SnapshotId, "test-contract"));
+            return Task.FromResult(new AiTurnResultDto("answer", "Who reviews?", null, new(false, [], []), request.SnapshotId, "test-contract"));
         }
         public async Task<AiTurnResultDto> RunAsync(AiTurnRequestDto request, string apiKey,
             Func<AiRunEventDto, CancellationToken, Task>? emit, CancellationToken ct)

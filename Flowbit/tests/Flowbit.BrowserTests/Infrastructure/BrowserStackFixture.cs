@@ -18,16 +18,11 @@ namespace Flowbit.BrowserTests.Infrastructure;
 public sealed class BrowserStackFixture : IAsyncLifetime
 {
     private readonly BrowserAcceptanceOptions? acceptance;
-    private readonly bool requirementsReview;
     public BrowserStackFixture() { }
-    private BrowserStackFixture(bool review) => requirementsReview = review;
-    public static BrowserStackFixture CreateForAiReview() => new(true);
     private BrowserStackFixture(BrowserAcceptanceOptions options) => acceptance = options;
     public static BrowserStackFixture CreateForAcceptance(BrowserAcceptanceOptions options) => new(options);
     public bool IsAcceptance => acceptance is not null;
     public bool RequiresInteractiveMarkers => acceptance?.LegacyUiWithoutInteractiveMarkers != true;
-    public bool UsesShippedAiExecution => Environment.GetEnvironmentVariable("FLOWBIT_BROWSER_AI_VARIANT") == "shipped";
-    public string ShippedAiExecutionVariant { get; private set; } = "current";
     public string? ShippedFlashReasoning { get; private set; }
 
     /// <summary>Set to 1 to launch Chromium headed for local diagnosis.</summary>
@@ -114,9 +109,6 @@ public sealed class BrowserStackFixture : IAsyncLifetime
             await WriteSetupLogAsync(
                 $"Browser smoke stack initializing. Repository root: {RepositoryRoot}. Headless: {Headless}.");
 
-            if (!IsAcceptance && Environment.GetEnvironmentVariable("FLOWBIT_BROWSER_AI_VARIANT") is { } variant
-                && variant is not ("current" or "optimized" or "shipped"))
-                throw new InvalidOperationException("FLOWBIT_BROWSER_AI_VARIANT must be current, optimized or shipped.");
             await StartDatabaseAsync();
             if (!IsAcceptance)
             {
@@ -350,16 +342,8 @@ public sealed class BrowserStackFixture : IAsyncLifetime
         {
             using var settings = JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(directory, "appsettings.json")));
             var ai = settings.RootElement.GetProperty("WorkflowAi");
-            ShippedAiExecutionVariant = ai.TryGetProperty("ExecutionVariant", out var configuredVariant) ? configuredVariant.GetString()! : "current";
             ShippedFlashReasoning = ai.GetProperty("OpenCodeReasoningEfforts").GetProperty("glm-5.3-flash").GetString();
             environment["WorkflowAi__Enabled"] = "true";
-            if (requirementsReview)
-            {
-                environment["WorkflowAi__RequirementsReviewEnabled"] = "true";
-                environment["WorkflowAi__MaxParallelAnalysisCalls"] = "2";
-            }
-            if (!UsesShippedAiExecution)
-                environment["WorkflowAi__ExecutionVariant"] = Environment.GetEnvironmentVariable("FLOWBIT_BROWSER_AI_VARIANT") ?? "current";
             environment["WorkflowAi__OpenCodeBaseUrl"] = aiProvider.BaseAddress;
             environment["WorkflowAi__OpenCodeModels__0"] = "glm-5.3-flash";
             environment["WorkflowAi__OpenCodeModels__1"] = "glm-5.3";
@@ -510,9 +494,6 @@ public sealed class BrowserStackFixture : IAsyncLifetime
             uiBaseAddress = string.IsNullOrEmpty(UiBaseAddress) ? null : UiBaseAddress,
             editorBaseAddress = string.IsNullOrEmpty(EditorBaseAddress) ? null : EditorBaseAddress,
             initialized,
-            aiExecution = Environment.GetEnvironmentVariable("FLOWBIT_BROWSER_AI_VARIANT") ?? "current",
-            shippedAiExecution = ShippedAiExecutionVariant,
-            requirementsReview,
             shippedFlashReasoning = ShippedFlashReasoning,
             acceptance = IsAcceptance,
             workerStarts = workerNumber,

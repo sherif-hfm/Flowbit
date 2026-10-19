@@ -39,13 +39,12 @@ Flowbit is a **BPMN-aligned JSON workflow engine** with a visual editor, an HTTP
 
 Flowbit does not import or export BPMN XML or execute arbitrary BPMN diagrams. OIDC requires an external provider and supports one UI instance with per-login in-memory sessions. Read [BPMN support](bpmn-support.md), [OpenID Connect](openid-connect.md), and [deployment](deployment.md) before choosing your integration and hosting boundaries.
 
-## AI assistant improvement work
+## AI assistant engine
 
-The [eight recommendations](plans/ai-assistant-recommendations.md) and
-[staged implementation plan](plans/ai-assistant-improvement-plan.md) record the
-agreed AI authoring improvements. The plan distinguishes implementation and
-verification status from future work; the [AI authoring guide](ai-authoring.md)
-describes supported behavior.
+The [agent engine plan](plans/ai-assistant-agent-engine-plan.md) records why the assistant now runs one model agent
+with file tools, and what was verified. The earlier [eight recommendations](plans/ai-assistant-recommendations.md)
+and [staged improvement plan](plans/ai-assistant-improvement-plan.md) describe the replaced command-loop engine and
+are kept as history. The [AI authoring guide](ai-authoring.md) describes supported behavior.
 
 ## Planned refactoring
 

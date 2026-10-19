@@ -8,12 +8,21 @@ public sealed partial class WorkflowAiAuthoringService
     // Authoring completion guard only: do not change the runtime's support for saved partial diagrams.
     internal static void ValidateProposalReachability(WorkflowModel model, WorkflowModel? original)
     {
-        var reached = Reachable(model);
-        var existingIslands = original is null ? [] : original.FlowNodes.Select(node => node.Id).Except(Reachable(original)).ToHashSet();
-        var disconnected = model.FlowNodes.Where(node => !reached.Contains(node.Id) && !existingIslands.Contains(node.Id)).ToArray();
-        if (disconnected.Length > 0)
+        var disconnected = UnreachableNodes(model, original);
+        if (disconnected.Count > 0)
             throw new JsonException("Unreachable draft nodes: " + string.Join(", ", disconnected.Take(12).Select(node => $"#{node.Id} ({node.Name})"))
                 + ". Connect the required work from a start event using the intended incoming routes. Trace actual sourceRef/targetRef IDs; do not remove required steps to silence this check.");
+    }
+
+    /// <summary>
+    /// Nodes no entry event reaches by following sequence flows and boundary attachments. Islands the original diagram already
+    /// had are left alone.
+    /// </summary>
+    internal static IReadOnlyList<FlowNodeModel> UnreachableNodes(WorkflowModel model, WorkflowModel? original)
+    {
+        var reached = Reachable(model);
+        var existingIslands = original is null ? [] : original.FlowNodes.Select(node => node.Id).Except(Reachable(original)).ToHashSet();
+        return model.FlowNodes.Where(node => !reached.Contains(node.Id) && !existingIslands.Contains(node.Id)).ToArray();
     }
 
     private static HashSet<int> Reachable(WorkflowModel model)

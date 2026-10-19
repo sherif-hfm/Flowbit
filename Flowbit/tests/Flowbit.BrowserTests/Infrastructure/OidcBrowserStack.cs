@@ -59,7 +59,6 @@ public sealed class OidcBrowserStack : IAsyncDisposable
         {
             apiEnvironment["WorkflowAi__OpenCodeBaseUrl"] = AiProvider.BaseAddress;
             apiEnvironment["WorkflowAi__OpenCodeModels__0"] = "glm-5.3-flash";
-            apiEnvironment["WorkflowAi__ExecutionVariant"] = "current";
         }
         api = HostedProcess.Start("oidc-api", Path.Combine(apiDirectory, "Flowbit.Api.dll"), apiDirectory, RunDirectory,
             apiEnvironment, new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }));

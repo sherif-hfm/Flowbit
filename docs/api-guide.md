@@ -519,148 +519,72 @@ Content-Type: application/json
 These operations use the same **workflow administrator** authorization as definition saves.
 They do not save, publish, start instances, run scripts, or call authored service URLs.
 Provider credentials are separate from the Flowbit bearer token. Both `/ai/turn` and `/ai/turn/stream` need
-the single `X-Flowbit-AI-Key` header; never place it in a workflow or request history.
-See [AI authoring](ai-authoring.md) for the portable skill and [deployment](deployment.md#ai-authoring-and-local-ocr)
-for limits and provider configuration.
+the single `X-Flowbit-AI-Key` header; never place it in a workflow or in the request JSON.
+See [AI authoring](ai-authoring.md) for how the assistant works and the portable skill, and
+[deployment](deployment.md#ai-authoring-and-local-ocr) for limits and provider configuration.
 
 | Method and route | Request | Response |
 | --- | --- | --- |
-| `GET /api/workflows/ai/providers` | No body or provider key. | Array of `{id,name,defaultModelId,models:[{id,name}]}` from configured adapters. Discovery does not verify an account or make a billed call. |
-| `GET /api/workflows/ai/skill` | No body or provider key. | `application/zip`, attachment `flowbit-authoring.zip`, containing the startup-verified package used by the assistant. |
+| `GET /api/workflows/ai/providers` | No body or provider key. | Array of `{id,name,defaultModelId,models:[{id,name}]}` from the configured provider. Discovery does not verify an account or make a billed call. |
+| `GET /api/workflows/ai/skill` | No body or provider key. | `application/zip`, attachment `flowbit-authoring.zip`, containing the startup-verified package the assistant's documentation comes from. |
 | `POST /api/workflows/ai/extract` | `multipart/form-data`: exactly one `file`; optional `forceOcr=true` and `languages=eng`, `ara`, or `eng+ara` (default). | `{fileName,pages:[{page,text,usedOcr,warnings}],warnings}`. Pages are one-based and text remains editable before generation. |
-| `POST /api/workflows/ai/turn` | JSON described below, plus `X-Flowbit-AI-Key`. | Buffered clarification, validated proposal, invalid draft, or paused run result. |
-| `POST /api/workflows/ai/turn/stream` | Same JSON and header as `/ai/turn`. | `application/x-ndjson` progress/checkpoint frames followed by one result, pause, or error frame. |
+| `POST /api/workflows/ai/turn` | JSON described below, plus `X-Flowbit-AI-Key`. | Buffered `proposal`, `answer`, `invalid`, or `paused` result. |
+| `POST /api/workflows/ai/turn/stream` | Same JSON and header as `/ai/turn`. | `application/x-ndjson` progress and checkpoint frames followed by one `result`, `paused`, or `error` frame. |
 | `POST /api/workflows/validate` | Raw canonical workflow JSON, with no wrapper. | Structural validity and separate save/publication readiness, described below. No provider key or provider request. |
 
-The turn JSON has `providerId` (`opencode-go`, retained for compatibility even though
-the adapter now defaults to OpenCode Zen), `modelId` (fallback default
-`kimi-k2.7-code`), `conversationId`, `message`, `history`, `currentWorkflow`,
-`snapshotId`, and `sources`. Integrations should always send an enabled `modelId`
-from provider discovery; its `defaultModelId` reflects the configured list (shipped
-configuration selects `glm-5.3-flash`). The DTO fallback is rejected when that model
-is not enabled. Use a stable, non-secret UUID conversation identifier per
-temporary session. `history` contains `{role,content}` messages; `sources` contains
-`{sourceName,pageNumber,text}`. Omit `currentWorkflow` to create a new definition;
-pass the editor snapshot to edit, including incomplete drafts needing repair.
-Optional `sharedVariableKeys` selects up to 50 active catalog keys. This additionally
-requires the existing shared-variable read permission (`SharedVariables.RequiredRole`
-for JWT callers). Only the selected entries' contracts and descriptions enter the
-prompt; current values are excluded. Unknown or inactive selections are rejected.
-`snapshotId` is opaque client correlation; the hosted editor compares its current
-snapshot before accepting an apply. Clients must enforce their own equivalent stale-edit check.
+### Turn request
 
-The response has `kind` (`clarification`, `proposal`, `invalid`, or `paused`), `message`,
-`questions`, nullable `definition`, `assumptions`, `dependencies`, `changeSummary`,
-`validation`, echoed `snapshotId`, `contractHash`, and `sourceReferences`
-(`{sourceName,pageNumber,requirement}`). A proposal is canonical `WorkflowModel`
-JSON. Keep explanations outside the definition. Applying it is a separate user action;
-generation itself never changes the editor or saved definition. Optional `run` has
-`providerCalls`, `outputTokens`, `usageEstimated`, and `elapsedSeconds`. Output accounting
-uses reported completion usage when available and conservatively charges the requested
-allowance when missing or a retryable attempt fails; it is not a billing receipt.
+The turn JSON has:
 
-The runner keeps the selected model and applies complete bounded edits to a private
-draft. It can read packaged references/source excerpts, validate the draft, recover
-from output limits by shrinking edit batches, and retry transient provider failures.
-By default each run has 30 minutes, 50 provider calls, and 262,144 output tokens;
-each provider request has 180 seconds, further bounded by remaining run time. Up to two consecutive validation repairs and
-two transient retries are permitted, subject to all run limits. Exhausted transient
-retries pause with the last completed checkpoint, so callers can continue later.
-An exhausted individual timeout reports `provider_timeout`; exhausted temporary
-server/connectivity retries report `provider_unavailable`.
-Empty or unreadable successful provider responses are retried within the same
-transport budget; exhaustion pauses with `provider_invalid_response` and retains
-the draft. Rejected requests and unsupported completion formats are not retried.
-A paused/invalid
-result has no applicable definition. Only `kind: "proposal"` with a valid definition
-may be offered for application. If optional `requirementsReview` is present,
-`passed` must also be true. With server-side requirements review enabled, unresolved
-business findings return `invalid` (repair exhausted) or `clarification` (essential
-ambiguity), with no definition; incomplete/unverifiable review pauses with
-`requirements_unverified`. Deterministic `validation` remains independent of AI review.
+- `providerId`: `opencode-go`, retained for compatibility even though the endpoint defaults to OpenCode Zen.
+- `modelId`: an enabled model from provider discovery. The DTO default is `glm-5.3-flash`, which the shipped configuration enables.
+- `conversationId`: a stable, non-secret UUID per conversation.
+- `message`: the message for the model, sent as typed except that literal credential values of `currentWorkflow` are replaced. Required unless `continue` is true, when it must be empty.
+- `continue`: `true` resumes a stopped run without a new message (see below).
+- `currentWorkflow`: omit it, or send an empty document, to create a definition; send the editor's diagram to edit it, including an incomplete draft. It must pass the strict canonical parser.
+- `snapshotId`: opaque client correlation. The hosted editor compares its current snapshot before accepting an apply; other clients must enforce an equivalent stale-edit check.
+- `sources`: `{sourceName,pageNumber,text}` pages. Each page is sent to the model once per conversation.
+- `sharedVariableKeys`: up to 50 active catalog keys. This additionally requires the existing shared-variable read permission (`SharedVariables.RequiredRole` for JWT callers). Only the selected entries' contracts and descriptions are sent; current values are excluded. Unknown or inactive selections are rejected.
+- `state`: the conversation state from the previous result or from the latest checkpoint frame of the same conversation. Omit it to start a new conversation.
 
-`requirementsReview` contains `passed`, `candidateHash` (SHA-256 of the exact serialized
-final candidate), `requirements`, and `checks`. Requirements have `id`, `text`,
-`needsClarification`, and `source` (`resource`, `offset`, `count`, optional `sourceName`
-and `pageNumber`). Source ranges are UTF-16 positions in sanitized original inputs:
-`requirements`, `history/{index}`, or `source/{index}`. Checks have `requirementId`,
-`reviewer` (`coverage`, `routing`, or ambiguity from `analysis`), `status` (`covered`,
-`missing`, `uncertain`), `explanation`, and `evidence` (`target`: workflow/node/flow/
-lane/variable, plus integer `id` for entities). These model assessments are not a
-correctness guarantee. Clients must treat text as untrusted and preserve ordinary
-snapshot/authorization/application guards. Server configuration controls review;
-callers cannot enable it or select concurrency in request JSON.
+The fields of the replaced command-loop engine are refused before generation: a non-empty `history` returns `400 history_unsupported`, and any `checkpoint` returns `409 checkpoint_configuration_changed`. The assistant keeps the conversation in `state` instead.
 
-Optional `checkpoint` in a result or stream frame contains `version` (2 with review disabled, 3 when enabled),
-`inputHash`, `contractHash`, `draft`, `revision`, `plan`, and `batches` (bounded
-`{id,hash}` receipts). Optional `outputAllowance` and `maxOperations` retain the
-output-recovery strategy; the server validates and clamps them to its current model
-profile and batch limit. Read-plan or recovery checkpoints can retain the same draft
-revision. Older checkpoints without these hints use current server defaults.
-Optional `contextReads` retains up to 18 `{kind,resource,offset,count}` positions,
-with at most 12,000 characters per read and 32,000 combined. Only `reference` and
-`source` reads are retained; mutable draft reads are excluded. Resume validates
-these positions and rebuilds excerpts from the verified package and original
-request, applying fresh redaction. Checkpoints contain no cached excerpt text.
-Older checkpoints without read positions resume with an empty working context.
-Versions 2/3 additionally contain `executionVariant`, nullable `reasoningEffort`,
-and `modelProfileHash` (binding the model profile and provider endpoint). These
-are server-selected continuation bindings, not options for choosing an engine
-in an HTTP request. A mismatch with server configuration returns
-`checkpoint_configuration_changed` (409) before a provider call. Version 1 remains
-accepted with review disabled and uses the `current` execution variant. Version 3
-adds `reviewPolicyHash`, binding review enablement and per-run/process concurrency
-settings. A review-enabled server rejects versions 1/2; a disabled server rejects
-version 3. These mismatches return `checkpoint_configuration_changed` before transport.
-Version 3 contains no retained checklist or verdict: Continue reanalyzes original
-sources and reruns reviews before proposing the candidate. An unavailable provider/engine
-combination returns `execution_unavailable` (503). Supported server execution
-settings are `current` and `optimized`, both using Flowbit's custom loop. The
-removed `agent-framework` setting returns `provider_configuration` (503) before
-transport; change the server setting and start a new request. An old framework
-checkpoint returns `checkpoint_configuration_changed` (409) under either supported
-mode. Unknown/native tool-call responses are rejected as `provider_invalid_response`
-(502); no native tools execute. Authorization, routes and NDJSON frame types remain
-unchanged; review fields are additive. Continue reconstructs context from
-the validated draft and original inputs; it does not add durable session storage.
+### Turn result
 
-This is private continuation data, not an applicable workflow
-proposal or a saved version. Resume by submitting the **exact original turn request**
-with its `checkpoint` property set to the returned checkpoint, and supply the provider
-key again in the header. Preserve provider/model, conversation, message/history, source
-pages, catalog selection, original workflow, and snapshot; never replace `currentWorkflow`
-with the checkpoint draft. Resume receives a new bounded run budget. The service checks
-input/catalog and package hashes, reparses the bounded draft, and recreates redaction;
-hashes do not make checkpoint content trusted. Stale inputs/catalog/contracts return
-`stale_checkpoint` (409). There is no server-side checkpoint lookup or persistence.
+The result has `kind`, `message`, nullable `definition`, `validation`, echoed `snapshotId`, `contractHash`, and optional `code`, `openQuestions`, `state` and `run`.
 
-The optional `run` summary also reports `executionVariant`, `reasoningEffort`,
-`firstEditSeconds` (nullable), `lastCallSeconds`, `contextReads`, `duplicateReads`,
-`retries`, `acceptedBatches`, and reported `inputTokens`. Counters are per run;
-checkpoint `revision` remains the retained draft-step count. These metrics contain
-no prompts, provider keys, or private reasoning; missing input usage is not a
-billing estimate.
+- **`proposal`**: `definition` is canonical `WorkflowModel` JSON that passed Flowbit validation, laid out, with credentials restored. `message` is the model's final text and `openQuestions` the text of the `open-questions.md` it wrote. Applying it is a separate user action; generation never changes the editor or a saved definition.
+- **`answer`**: the model replied without changing an existing workflow. There is no definition.
+- **`invalid`**: no valid workflow after the host's follow-ups. `code` is `invalid_workflow` (`validation.errors` lists the remaining problems as `code at path (where): message`), `not_saved`, or `workflow_too_large`. There is no definition; the conversation can continue with the next message.
+- **`paused`**: the run stopped. `code` is `run_budget`, `authoring_timeout`, `provider_truncated`, `provider_auth`, `provider_quota`, `provider_throttled`, `provider_unavailable`, `provider_context`, `provider_refusal`, `provider_invalid_response`, or `authoring_interrupted`. Resume with `continue: true` after fixing the cause where needed.
 
-Additive summary fields are `activeProviderCalls`, `peakProviderCalls`,
-`totalProviderSeconds` (summed completed attempts, which may exceed elapsed time),
-and `repeatedDraftReads` (same-revision mutable rereads). Existing `duplicateReads`
-counts repeated immutable resource reads. Read counters describe the builder context;
-worker reads also emit trace spans. Calls, tokens, retries and durations include all
-builder/analysis/review attempts and use shared atomic reservations. Progress stages
-may include `analysis`, `review-coverage`, `review-routing`, and `processing`; use
-active-call counts rather than interpreting overlapping frames as serial calls.
+Only `kind: "proposal"` with a valid definition may be offered for application.
 
-Every stream frame has `version`, `runId`, monotonically increasing `sequence`, and
-`type`. Optional fields are `stage`, `message`, `code`, `checkpoint`, `result`, and
-`run`. Types are `progress`, `checkpoint`, `result`, `paused`, and `error`. Retain only
-the latest fully received checkpoint; incomplete frames/batches are discarded. A
-terminal `result` carries the normal turn response, `paused` carries an incomplete
-response and checkpoint, and `error` carries sanitized `code`/`message`. Once response
-headers have started, errors use terminal frames instead of changing HTTP status.
-Before streaming starts, ordinary JSON HTTP failures still apply. Frames are bounded
-to 4 MiB and a run to 256 frames. Stream termination without a terminal frame is an
-interruption, never success. A client can resume its last complete checkpoint after
-cancellation/disconnect, but must recheck its original editor snapshot first.
+`state` is `{format,data,canContinue,messages,workflowNodes,workflowFlows}`. `data` is opaque, compressed and base64-encoded; send the object back unchanged. It never contains the provider key or credential values, but it contains the conversation, the documentation read, and the workflow with credential placeholders, so treat it as confidential and do not log it. The API treats returned state as untrusted:
+
+- An invalid, forged or oversized state returns `400 invalid_state`.
+- State that would exceed its size limit returns `413 state_too_large`.
+- State from another provider, model, endpoint or reasoning setting returns `409 checkpoint_configuration_changed`.
+
+There is no server-side conversation store, and any API replica can continue a conversation.
+
+`continue: true` requires the state's `canContinue` (otherwise `409 nothing_to_continue`) and the same `currentWorkflow` the stopped run had (otherwise `409 stale_checkpoint`). The resumed run receives fresh limits.
+
+`run` has `providerCalls`, `maxProviderCalls`, `inputTokens`, `cachedInputTokens`, `outputTokens`, `usageEstimated` (true when a response omitted its usage, so totals are lower bounds), `elapsedSeconds`, `nudges`, `workflowNodes`, `workflowFlows`, `reasoningEffort`, `promptFingerprint` and `docsFingerprint`. It is not a billing receipt and contains no prompts, provider keys, or private reasoning.
+
+### Stream frames
+
+Every frame has `version` (`2`), `runId`, a monotonically increasing `sequence`, and `type`. Optional fields are `stage`, `message`, `code`, `result`, `run`, and `state`.
+
+- **`checkpoint`** starts every model call and carries `state`. Keep the latest one.
+- **`progress`** stages are `starting`, `model` (sent every 60 seconds while a model call runs), `validating`, and `nudge`.
+- **`result`** carries a `proposal`, `answer`, or `invalid` response.
+- **`paused`** carries a paused response with its `code` and `state`.
+- **`error`** carries a sanitized `code` and `message`; state from earlier checkpoint frames remains usable.
+
+Once response headers have started, errors use terminal frames instead of changing the HTTP status; before streaming starts, ordinary JSON HTTP failures apply. Frames are bounded to 8 MiB and a run to 256 frames. Stream termination without a terminal frame is an interruption, never success. A client can resume from its last checkpoint state with `continue: true` after cancellation or a disconnect, but must recheck its editor snapshot first.
+
+### Validation
 
 Validation returns `{isValid,errors,warnings,canSave,canPublish,saveBlockers,publicationBlockers}`.
 The service strictly parses, validates authored configuration, normalizes, validates
@@ -680,27 +604,38 @@ Content-Type: application/json
 ```
 
 This deliberately incomplete definition returns validation errors without creating a
-version. Transport-invalid JSON returns `400`. The validation body limit is 2 MiB;
-both turn body limits are 8 MiB. Individual workflow/draft bounds remain 2 MiB by
-default. Extract defaults are 20 MiB, 100 pages, and 200,000
-characters; exceeding a limit rejects the input rather than silently truncating it.
+version. Transport-invalid JSON returns `400`.
+
+### Limits and errors
+
+| Limit | Value |
+| --- | --- |
+| Validation body | 2 MiB |
+| Turn body | 12 MiB (a turn carries the conversation state) |
+| Workflow | 2 MiB by default |
+| Extraction | 20 MiB, 100 pages and 200,000 characters by default |
+
+Exceeding a limit rejects the input rather than silently truncating it.
 Scanned pages require the configured local OCR executables; mixed PDFs retain text
 extraction on readable pages. OCR warnings must be reviewed, especially Arabic,
 handwriting, and diagrams. `forceOcr` retries the whole document using OCR.
 
-Generation/extraction failures use `{code,error}` with sanitized diagnostics.
-Clients should distinguish invalid input (`400`), authentication (`401`), authorization
-(`403`), size (`413`), media type (`415`), quota/concurrency (`429`), upstream or
-generation transport (`502`), disabled/unavailable service (`503`), and deadline
-(`504`). Provider failures do not include raw upstream response bodies. A response
-with `code: "provider_auth"` uses `400` to distinguish a rejected provider key
-from missing/expired Flowbit bearer authorization (`401`). A response
-with `kind: "invalid"` or `kind: "paused"` uses HTTP `200`; inspect `kind` and `validation` before
-offering apply. `provider_throttled` and `provider_unavailable` are transient categories;
-`provider_auth`, `provider_quota`, `provider_refusal`, and `provider_output_too_large`
-are terminal provider failures. `provider_context` permits one compact-context retry;
-it does not permit deleting original requirements or switching models. Cancelling the HTTP request cancels provider/process work. Turn,
-validation, and extraction responses set `Cache-Control: no-store`.
+Failures before a run starts use `{code,error}` with sanitized diagnostics:
+
+| Status | Meaning |
+| --- | --- |
+| `400` | Invalid input, including `invalid_request`, `invalid_key`, `invalid_state`, `invalid_current_workflow` and `history_unsupported` |
+| `401` | Missing or expired Flowbit bearer authorization |
+| `403` | Authorization |
+| `409` | `checkpoint_configuration_changed`, `stale_checkpoint`, `nothing_to_continue` |
+| `413` | Size: `input_too_large`, `workflow_too_large`, `state_too_large` |
+| `415` | Media type |
+| `429` | `authoring_busy` |
+| `502` | Generation transport |
+| `503` | Disabled or misconfigured service: `ai_disabled`, `provider_configuration` |
+| `504` | Deadline |
+
+Provider failures during a run do not change the HTTP status. They return HTTP `200` with `kind: "paused"` and a provider code, and never include raw upstream response bodies. Nothing is retried automatically. Cancelling the HTTP request cancels the model call in progress. Turn, validation, and extraction responses set `Cache-Control: no-store`.
 
 ## Instances and messages
 

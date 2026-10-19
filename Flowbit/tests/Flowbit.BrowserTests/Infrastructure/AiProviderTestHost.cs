@@ -11,121 +11,77 @@ using Microsoft.Extensions.Logging;
 
 namespace Flowbit.BrowserTests.Infrastructure;
 
-/// <summary>A local upstream provider, never an API or application-state substitute.</summary>
+/// <summary>
+/// A local upstream OpenAI-compatible chat-completions provider, never an API or application-state substitute. Each request takes the
+/// next scripted reply: native tool calls (with GLM-style reasoning_content), a final text, a truncated response or an HTTP failure.
+/// The agent's tools run inside Flowbit; this host only decides what the model would call.
+/// </summary>
 public sealed class AiProviderTestHost : IAsyncDisposable
 {
+    public const string Reasoning = "Synthetic reasoning before the tool call.";
+    private static readonly JsonSerializerOptions Indented = new() { WriteIndented = true };
     private WebApplication? app;
     private readonly ConcurrentQueue<Reply> replies = new();
+    private int unexpected;
     public string BaseAddress { get; private set; } = "";
     public ConcurrentQueue<Request> Requests { get; } = new();
+    /// <summary>Requests that arrived with no scripted reply; they are answered with 503.</summary>
+    public int UnexpectedRequests => Volatile.Read(ref unexpected);
 
-    public sealed record Request(string KeyHash, string Conversation, string Model, string Requirement, string WorkflowKey, string[] SourceTexts, string[] CatalogKeys, bool IncludesCatalogValue,
-        long Revision, int MaxOperations, int MaxTokens, string[] ReadResources, int NativeToolCount, string? ReasoningEffort, string Purpose);
-    public sealed class Reply(string kind, string workflowName, bool delayed)
+    /// <summary>
+    /// What one provider request carried. Conversation reduces the messages to roles, text, tool calls, tool results and reasoning,
+    /// so a resumed request can be compared with the interrupted one. Body is the raw request for "never sent" assertions.
+    /// </summary>
+    public sealed record Request(string KeyHash, string Session, string UserAgent, string Model, string? ReasoningEffort, int MaxTokens,
+        string[] ToolNames, string Instructions, string FirstUserMessage, string LastUserMessage, string LastRole, string[] Conversation, string Body);
+
+    public sealed class Reply(bool delayed)
     {
-        internal string Kind { get; } = kind;
-        internal string WorkflowName { get; } = workflowName;
+        internal bool Delayed { get; } = delayed;
+        internal int StatusCode { get; init; } = StatusCodes.Status200OK;
+        internal string FinishReason { get; init; } = "stop";
+        internal string Content { get; init; } = "";
+        internal string? ReasoningContent { get; init; }
+        internal (string Name, object Arguments)[] Calls { get; init; } = [];
         internal TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource Arrived { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource Cancelled { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        internal bool Delayed { get; } = delayed;
-        internal Func<JsonNode, string>? Content { get; init; }
-        internal string FinishReason { get; init; } = "stop";
-        internal int StatusCode { get; init; } = StatusCodes.Status200OK;
         public void Complete() => Release.TrySetResult();
     }
 
-    public Reply Enqueue(string workflowName, bool clarification = false, bool delayed = false)
+    /// <summary>The model calls these tools in one response.</summary>
+    public Reply EnqueueTools((string Name, object Arguments)[] calls, bool delayed = false) =>
+        Add(new Reply(delayed) { Calls = calls, FinishReason = "tool_calls", ReasoningContent = Reasoning });
+
+    /// <summary>The model saves the browser fixture workflow under a new name, with every node at 0,0 so Flowbit's layout must place it.</summary>
+    public Reply EnqueueCreate(string name, string? openQuestions = null, bool delayed = false)
     {
-        var reply = new Reply(clarification ? "clarification" : "proposal", workflowName, delayed);
+        var definition = JsonNode.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "editor-basic.json")))!;
+        definition["name"] = name;
+        foreach (var node in definition["flowNodes"]!.AsArray()) { node!["x"] = 0; node["y"] = 0; }
+        (string, object)[] calls = openQuestions is null
+            ? [("save_append_file", new { path = "workflow.json", content = definition.ToJsonString(Indented), append = false })]
+            : [("save_append_file", new { path = "workflow.json", content = definition.ToJsonString(Indented), append = false }),
+               ("save_append_file", new { path = "open-questions.md", content = openQuestions, append = false })];
+        return EnqueueTools(calls, delayed);
+    }
+
+    /// <summary>The model renames the saved workflow with edit_file, which works on the indented workflow.json the host saved.</summary>
+    public Reply EnqueueRename(string from, string to, bool delayed = false) =>
+        EnqueueTools([("edit_file", new { path = "workflow.json", oldText = $"\"name\": \"{from}\"", newText = $"\"name\": \"{to}\"", replaceAll = false })], delayed);
+
+    /// <summary>The model ends its turn with this text.</summary>
+    public Reply EnqueueText(string text, bool delayed = false) => Add(new Reply(delayed) { Content = text });
+
+    /// <summary>The response reaches max_completion_tokens before it finishes.</summary>
+    public Reply EnqueueTruncation() => Add(new Reply(false) { FinishReason = "length", Content = "{\"path\":\"workflow.json\",\"content\":\"{\\\"name\\\":\\\"Truncated" });
+
+    public Reply EnqueueFailure(HttpStatusCode status, bool delayed = false) => Add(new Reply(delayed) { StatusCode = (int)status });
+
+    private Reply Add(Reply reply)
+    {
         replies.Enqueue(reply);
         return reply;
-    }
-
-    public Reply EnqueueTruncation()
-    {
-        var reply = new Reply("edit", "", false)
-        {
-            FinishReason = "length",
-            Content = _ => "{\"kind\":\"edit\",\"operations\":[{\"op\":\"set\",\"target\":\"workflow\",\"path\":\"/name\",\"value\":\"Truncated name must never apply"
-        };
-        replies.Enqueue(reply);
-        return reply;
-    }
-
-    public Reply EnqueueNameEdit(string name)
-    {
-        var batchId = Guid.NewGuid().ToString("N");
-        var reply = new Reply("edit", name, false)
-        {
-            Content = input => JsonSerializer.Serialize(new
-            {
-                kind = "edit", baseRevision = input["revision"]!.GetValue<long>(), batchId,
-                plan = "Rename the workflow, then validate the completed draft.",
-                operations = new[] { new { op = "set", target = "workflow", path = "/name", value = name } }
-            })
-        };
-        replies.Enqueue(reply);
-        return reply;
-    }
-
-    public Reply EnqueueReferenceRead()
-    {
-        var reply = new Reply("read", "", false)
-        {
-            Content = _ => """{"kind":"read","reads":[{"kind":"reference","resource":"schema:FlowNodeModel","count":6000},{"kind":"source","resource":"requirements","count":1000}]}"""
-        };
-        replies.Enqueue(reply);
-        return reply;
-    }
-
-    public Reply EnqueueFinish(bool delayed = false)
-    {
-        var reply = new Reply("finish", "", delayed)
-        {
-            Content = _ => JsonSerializer.Serialize(new
-            {
-                kind = "finish", message = "The workflow is ready for review.",
-                assumptions = Array.Empty<string>(), dependencies = Array.Empty<string>(),
-                changeSummary = new[] { "Updated the workflow name." }, sourceReferences = Array.Empty<object>()
-            })
-        };
-        replies.Enqueue(reply);
-        return reply;
-    }
-
-    public Reply EnqueueFailure(HttpStatusCode status)
-    {
-        var reply = new Reply("failure", "", false) { StatusCode = (int)status };
-        replies.Enqueue(reply);
-        return reply;
-    }
-
-    public Reply EnqueueAnalysis()
-    {
-        var reply = new Reply("analysis", "", false)
-        {
-            Content = input => JsonSerializer.Serialize(new { kind = "analysis", requirements = new[] { new
-            {
-                text = "Use the requested workflow name.", source = input["sourceBatch"]![0]!["key"]!.GetValue<string>(),
-                quote = input["sourceBatch"]![0]!["text"]!.GetValue<string>(), needsClarification = false
-            } } })
-        };
-        replies.Enqueue(reply); return reply;
-    }
-
-    public Reply EnqueueReview(string status = "covered", bool delayed = false)
-    {
-        var reply = new Reply("review", "", delayed)
-        {
-            Content = input => JsonSerializer.Serialize(new { kind = "review", checks = input["checklist"]!.AsArray().Select(item => new
-            {
-                requirementId = item!["id"]!.GetValue<string>(), status,
-                explanation = status == "uncertain" ? "Which workflow name should be used?" : "The workflow name matches the requirement.",
-                evidence = new[] { new { target = "workflow" } }
-            }), additionalRequirements = Array.Empty<object>() })
-        };
-        replies.Enqueue(reply); return reply;
     }
 
     public static string HashKey(string key) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key)));
@@ -139,34 +95,16 @@ public sealed class AiProviderTestHost : IAsyncDisposable
         app = builder.Build();
         app.MapPost("/chat/completions", async (HttpContext context) =>
         {
+            using var reader = new StreamReader(context.Request.Body, Encoding.UTF8);
+            var body = await reader.ReadToEndAsync(context.RequestAborted);
+            var request = Read(body, context.Request.Headers);
+            Requests.Enqueue(request);
             if (!replies.TryDequeue(out var reply))
             {
+                Interlocked.Increment(ref unexpected);
                 context.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
                 return;
             }
-            using var body = await JsonDocument.ParseAsync(context.Request.Body, cancellationToken: context.RequestAborted);
-            var envelope = body.RootElement;
-            var userMessages = envelope.GetProperty("messages").EnumerateArray().Where(item => item.GetProperty("role").GetString() == "user").ToArray();
-            var prompt = userMessages[0].GetProperty("content").GetString()!;
-            var input = JsonNode.Parse(prompt)!;
-            if (userMessages.Length > 1)
-                foreach (var field in JsonNode.Parse(userMessages[^1].GetProperty("content").GetString()!)!.AsObject())
-                    input[field.Key] = field.Value?.DeepClone();
-            var current = input["currentWorkflow"];
-            var workflowKey = current?["id"]?.GetValue<string>() ?? "missing-workflow-key";
-            Requests.Enqueue(new(HashKey(context.Request.Headers.Authorization.ToString().Replace("Bearer ", "", StringComparison.Ordinal)),
-                context.Request.Headers["x-opencode-session"].ToString(), envelope.GetProperty("model").GetString()!,
-                input["request"]!.GetValue<string>(), workflowKey,
-                input["sourcePages"]!.AsArray().Select(page => page!["text"]!.GetValue<string>()).ToArray(),
-                input["selectedSharedVariables"]!.AsArray().Select(item => item!["key"]!.GetValue<string>()).ToArray(),
-                input["selectedSharedVariables"]!.AsArray().Any(item => item!.AsObject().ContainsKey("value")),
-                input["revision"]?.GetValue<long>() ?? 0, input["maxOperations"]?.GetValue<int>() ?? 0,
-                envelope.TryGetProperty("max_tokens", out var maxTokens) ? maxTokens.GetInt32() : 0,
-                input["observations"]!.AsArray().OfType<JsonArray>().SelectMany(batch => batch.OfType<JsonObject>())
-                    .Select(read => read["resource"]!.GetValue<string>()).ToArray(),
-                envelope.TryGetProperty("tools", out var requestedTools) ? requestedTools.GetArrayLength() : 0,
-                envelope.TryGetProperty("reasoning_effort", out var reasoning) ? reasoning.GetString() : null,
-                input["purpose"]?.GetValue<string>() ?? "builder"));
             reply.Arrived.TrySetResult();
             if (reply.Delayed)
             {
@@ -179,40 +117,73 @@ public sealed class AiProviderTestHost : IAsyncDisposable
                 await context.Response.WriteAsJsonAsync(new { error = new { type = "test_provider_failure", message = "Synthetic provider failure." } }, context.RequestAborted);
                 return;
             }
-            if (reply.Content is not null)
-            {
-                await context.Response.WriteAsJsonAsync(new
+            var message = new JsonObject { ["role"] = "assistant", ["content"] = reply.Content };
+            if (reply.ReasoningContent is not null) message["reasoning_content"] = reply.ReasoningContent;
+            if (reply.Calls.Length > 0)
+                message["tool_calls"] = new JsonArray(reply.Calls.Select(call => (JsonNode)new JsonObject
                 {
-                    choices = new[] { new { finish_reason = reply.FinishReason, message = new { role = "assistant", content = reply.Content(input) } } },
-                    usage = new { completion_tokens = reply.FinishReason == "length" ? envelope.GetProperty("max_tokens").GetInt32() : 100 }
-                }, context.RequestAborted);
-                return;
-            }
-            var definition = current?["flowNodes"] is JsonArray { Count: > 0 }
-                ? current.DeepClone()
-                : JsonNode.Parse(await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory, "Fixtures", "editor-basic.json")));
-            definition!["id"] = workflowKey;
-            definition["name"] = reply.WorkflowName;
-            // Provider suggestions deliberately move existing objects. Flowbit must keep authored positions.
-            foreach (var node in definition["flowNodes"]!.AsArray()) { node!["x"] = 0; node["y"] = 0; }
-            var response = JsonSerializer.Serialize(new
+                    ["id"] = "call_" + Guid.NewGuid().ToString("N"), ["type"] = "function",
+                    ["function"] = new JsonObject { ["name"] = call.Name, ["arguments"] = JsonSerializer.Serialize(call.Arguments) }
+                }).ToArray());
+            var completion = new JsonObject
             {
-                kind = reply.Kind,
-                message = reply.Kind == "clarification" ? "Who should review the request?" : "The workflow is ready for review.",
-                questions = reply.Kind == "clarification" ? new[] { "Which role reviews the request?" } : [],
-                definition = reply.Kind == "clarification" ? null : definition,
-                assumptions = new[] { "One review is required." },
-                dependencies = Array.Empty<string>(),
-                changeSummary = new[] { $"Name the workflow {reply.WorkflowName}." },
-                sourceReferences = Array.Empty<string>()
-            });
-            await context.Response.WriteAsJsonAsync(new
-            {
-                choices = new[] { new { finish_reason = "stop", message = new { role = "assistant", content = response } } }
-            }, context.RequestAborted);
+                ["id"] = "chatcmpl-" + Guid.NewGuid().ToString("N"), ["object"] = "chat.completion", ["created"] = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                ["model"] = request.Model,
+                ["choices"] = new JsonArray(new JsonObject { ["index"] = 0, ["message"] = message, ["finish_reason"] = reply.FinishReason }),
+                ["usage"] = new JsonObject
+                {
+                    ["prompt_tokens"] = 2000, ["completion_tokens"] = reply.FinishReason == "length" ? request.MaxTokens : 100,
+                    ["total_tokens"] = 2000 + (reply.FinishReason == "length" ? request.MaxTokens : 100),
+                    ["prompt_tokens_details"] = new JsonObject { ["cached_tokens"] = 1500 }
+                }
+            };
+            context.Response.ContentType = "application/json";
+            await context.Response.WriteAsync(completion.ToJsonString(), context.RequestAborted);
         });
         await app.StartAsync();
         BaseAddress = app.Urls.Single() + "/";
+    }
+
+    private static Request Read(string body, IHeaderDictionary headers)
+    {
+        using var document = JsonDocument.Parse(body);
+        var root = document.RootElement;
+        var messages = root.GetProperty("messages").EnumerateArray().ToArray();
+        var users = messages.Where(item => item.GetProperty("role").GetString() == "user").Select(Text).ToArray();
+        return new(
+            HashKey(headers.Authorization.ToString().Replace("Bearer ", "", StringComparison.Ordinal)),
+            headers["x-opencode-session"].ToString(),
+            headers.UserAgent.ToString(),
+            root.GetProperty("model").GetString()!,
+            root.TryGetProperty("reasoning_effort", out var reasoning) ? reasoning.GetString() : null,
+            root.TryGetProperty("max_completion_tokens", out var maxTokens) ? maxTokens.GetInt32() : 0,
+            root.TryGetProperty("tools", out var tools) ? tools.EnumerateArray().Select(tool => tool.GetProperty("function").GetProperty("name").GetString()!).ToArray() : [],
+            messages.FirstOrDefault(item => item.GetProperty("role").GetString() is "system" or "developer") is { ValueKind: JsonValueKind.Object } system ? Text(system) : "",
+            users.FirstOrDefault() ?? "",
+            users.LastOrDefault() ?? "",
+            messages.Length == 0 ? "" : messages[^1].GetProperty("role").GetString()!,
+            messages.Select(Describe).ToArray(),
+            body);
+    }
+
+    private static string Text(JsonElement message) => !message.TryGetProperty("content", out var content) ? ""
+        : content.ValueKind == JsonValueKind.String ? content.GetString()!
+        : content.ValueKind == JsonValueKind.Array ? string.Concat(content.EnumerateArray().Select(part => part.TryGetProperty("text", out var text) ? text.GetString() : ""))
+        : "";
+
+    private static string Describe(JsonElement message)
+    {
+        var parts = new List<string> { message.GetProperty("role").GetString()!, "text:" + Text(message) };
+        if (message.TryGetProperty("tool_call_id", out var callId)) parts.Add("result-of:" + callId.GetString());
+        if (message.TryGetProperty("tool_calls", out var calls))
+            foreach (var call in calls.EnumerateArray())
+            {
+                var function = call.GetProperty("function");
+                using var arguments = JsonDocument.Parse(function.GetProperty("arguments").GetString()!);
+                parts.Add($"call:{call.GetProperty("id").GetString()}:{function.GetProperty("name").GetString()}:{JsonSerializer.Serialize(arguments.RootElement)}");
+            }
+        if (message.TryGetProperty("reasoning_content", out var reasoning)) parts.Add("reasoning:" + reasoning.GetString());
+        return string.Join(" | ", parts);
     }
 
     public async ValueTask DisposeAsync()

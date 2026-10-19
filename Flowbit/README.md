@@ -34,62 +34,54 @@ Start with the [developer documentation](../docs/index.md) for HTTP onboarding, 
 ### AI authoring ownership
 
 The hosted editor's optional assistant calls authenticated, non-persisting authoring operations.
-`IAiWorkflowProvider` isolates model transport/authentication; the OpenCode adapter defaults to Zen and retains the legacy `opencode-go` API provider id.
-`WorkflowAiAuthoringService` prepares a bounded private draft through `WorkflowAiRunner`,
-`WorkflowAiContext`, and `WorkflowAiDraft`: read packaged references/source excerpts, apply typed
-atomic edits, validate, and produce the complete canonical proposal. Transport retries, output-limit
-recovery, and consecutive validation repairs have separate caps under a shared run deadline/call/token
-budget. `IAiWorkflowProvider` returns completion/usage metadata; it makes one request without hidden
-retries. The default run allows 30 minutes, 50 calls and 262,144 output tokens. The UI uses a dedicated
-authoring HTTP client whose deadline covers the maximum configurable one-hour server run; normal
-API requests keep their existing timeout. The model stays fixed for a run and its continuations. `IAuthoringKnowledge` loads/verifies
-the exact portable package produced by `tools/AuthoringExport`; the download is the same deterministic
-archive, while the internal prompt reads applicable resources on demand. PDF extraction is local and bounded (PdfPig plus Poppler/Tesseract).
+One model agent controls authoring, the approach measured in the Flowbit AI Lab v3 experiments:
 
-`WorkflowDefinitionReadinessChecker` shares catalog, service durability, lock-order, and publication
-checks with `WorkflowDefinitionService`; existing lifecycle operations retain their check order.
-Read-only authoring never persists definitions, warms definition caches, calls generated REST
-endpoints, or executes generated JavaScript. The UI owns temporary credentials and proposals;
-the editor owns atomic application, undo, identity preservation, and snapshot guards. The streamed
-HTTP adapter emits versioned NDJSON progress, complete draft checkpoints, and one terminal outcome;
-the buffered route uses the same runner. Checkpoints remain untrusted and live only in the open
-Blazor Server circuit. Continuation rechecks original-input/catalog and contract hashes, reparses the
-draft, and recreates request-local redaction from both baseline and checkpoint. Bounded reference/source
-read positions rebuild working excerpts from the verified package and original request; cached text
-and mutable draft reads are excluded. API replicas need no
-shared session store; a lost UI circuit loses its checkpoint. No database migration is needed. See [AI authoring](../docs/ai-authoring.md), [HTTP contracts](../docs/api-guide.md#ai-authoring-and-read-only-validation),
+- **`WorkflowAiAgent`** owns the three-line instructions, their fingerprint, and the Microsoft Agent Framework 1.23.0
+  `ChatClientAgent`. Its pipeline, outermost first: Microsoft.Extensions.AI function invocation, the checkpoint layer,
+  per-call history persistence, compact tool results, then the provider client.
+- **`WorkflowAiWorkspace`** owns the six file tools over an in-memory workspace:
+  - `WorkflowAiDocs`: the six guides and canonical examples, taken from the verified `IAuthoringKnowledge` package;
+  - the agent's `workflow.json` and `open-questions.md`.
+- **`WorkflowAiWorkflowCheck`** is the one check behind `validate_workflow`, `validate_item` and the end-of-turn gate:
+  - every structural problem through `WorkflowAuthoringJson.Inspect`;
+  - credential placeholders;
+  - Flowbit's first definition error, located by `WorkflowAiDiagnostics`;
+  - one error per newly unreachable node.
+- **`WorkflowAiConversation`** runs one turn, with the limits in `WorkflowAiOptions`:
+  - message composition and the diagram-sync rule;
+  - the agent run and at most `MaxNudges` validation follow-ups;
+  - paused outcomes;
+  - the proposal: restore credentials, lay out, and validate again through the service's authored/normalized/readiness check.
+- **`WorkflowAiCheckpointingChatClient`** snapshots the stored session plus the not-yet-stored input at the start of every
+  model call. **`WorkflowAiConversationState`** encodes that untrusted state and checks it when it returns.
+- **Infrastructure** supplies `OpenCodeZenChatClientFactory`:
+  - the OpenAI .NET SDK with no retries, no redirects, and a network timeout as long as the run;
+  - GLM reasoning replay;
+  - `WorkflowAiCaptureHandler`, which refuses requests beyond the run's cap before sending them, records usage, and stops
+    the run on provider errors or a truncated response.
+
+`IAuthoringKnowledge` loads and verifies the exact portable package produced by `tools/AuthoringExport`. The download is the
+same deterministic archive, and the agent reads its guides and examples on demand. PDF extraction is local and bounded
+(PdfPig plus Poppler/Tesseract).
+
+`WorkflowDefinitionReadinessChecker` shares catalog, service durability, lock-order, and publication checks with
+`WorkflowDefinitionService`; existing lifecycle operations retain their check order. Read-only authoring never persists
+definitions, warms definition caches, calls generated REST endpoints, or executes generated JavaScript. The UI owns
+temporary credentials, proposals and the conversation state. The editor owns atomic application, undo, identity
+preservation, and snapshot guards.
+
+The streamed HTTP adapter emits versioned NDJSON progress, a checkpoint with the conversation state at the start of every
+model call, and one terminal outcome; the buffered route uses the same conversation. The state is untrusted and lives only
+in the open Blazor Server circuit. It holds credential placeholders, never values, and never the provider key. API replicas
+need no shared session store, and a lost UI circuit loses the conversation. No database migration is needed. See
+[AI authoring](../docs/ai-authoring.md), [HTTP contracts](../docs/api-guide.md#ai-authoring-and-read-only-validation),
 and [OCR deployment](../docs/deployment.md#ai-authoring-and-local-ocr).
 
-`WorkflowAiSession` owns request-local edit receipts and progress accounting across
-the `current` and `optimized` custom variants. `WorkflowAiRunner` owns their
-model/command loop, atomic edits, validation, bounded transport/output recovery,
-and per-attempt accounting. Infrastructure supplies one bounded text-completion
-attempt through `IAiWorkflowProvider`; no agent SDK or native-tool adapter remains.
-The optimized variant uses a compact schema/guide primer, semantic draft projection
-and conservative batch growth. Missing command fields identify the required field
-in repair feedback. Final proposals cannot introduce unreachable work or disconnect
-previously reachable nodes; the guard includes all start types and boundary routes,
-preserves existing disconnected content, and leaves runtime validation unchanged.
-
-`WorkflowAiCallDispatcher` shares process/per-run admission, atomic call/output
-reservations, cancellation and metadata-only provider tracing across purposes.
-Optional `WorkflowAiRequirements` analyzes every input batch, validates source
-anchors, and runs coverage/routing reviews against an immutable final candidate.
-Workers can read but cannot edit. The coordinator owns checklist reconciliation,
-bounded repairs and ordered progress. Unresolved review blocks proposals independently
-of deterministic validation. Defaults keep review disabled; configured parallelism
-is one or two read-only calls per run and at most four provider calls per process.
-Optimized draft excerpts key on target/entity/offset and invalidate after edits.
-
-Version 2 checkpoints bind execution, reasoning, profile and endpoint; version 1
-continues through `current`. Removed execution settings fail configuration checks,
-and checkpoints from the removed framework experiment require a new request.
-Review-enabled runs use version 3 with review-policy binding and recompute analysis/
-review on Continue; versions 1/2 require review disabled. No checklist/verdict is
-trusted from a checkpoint. `Flowbit.Ai.Authoring` spans contain only safe metadata.
-The optimized variant stays opt-in until the [live evaluation gates](tools/AuthoringEval/README.md)
-pass. Shipped defaults remain current/Zen/Flash/max. Historical experiment results
-are retained in the [evaluation report](tools/AuthoringEval/RESULTS.md).
+The UI uses a dedicated authoring HTTP client whose deadline covers the maximum configurable one-hour server run; normal
+API requests keep their existing timeout. `Flowbit.Ai.Authoring` spans and metrics contain only safe metadata. The
+replaced command-loop engine (`current`/`optimized` variants, typed draft edits, requirements review and parallel
+analysis) was removed when this engine was introduced. Historical results remain in the
+[evaluation report](tools/AuthoringEval/RESULTS.md).
 
 ### Instance query ownership
 

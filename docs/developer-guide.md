@@ -95,7 +95,7 @@ The [portable authoring skill](ai-authoring.md) contains a model-derived schema,
 
 For an authoritative read-only check, send the raw definition JSON to `POST /api/workflows/validate` using a workflow-author JWT. No AI key is required. The response separates `isValid`/`errors` from `canSave`/`saveBlockers`, `canPublish`/`publicationBlockers`, and `warnings`. Validation never creates a version, warms definition caches, calls authored REST integrations, or executes scripts. A successful check does not guarantee Worker availability, external credentials, or business correctness. Existing create/version/publish operations perform their normal checks again when the user saves or publishes.
 
-Flowbit.Ui's assistant supplies the same packaged knowledge to its selected provider, then validates the proposed full definition. Its explanation and source-page references remain outside the canonical JSON. Explicit application to the editor preserves undo and workflow-family identity; source revisions prevent delayed proposals from replacing later edits. See [authoring API operations](api-guide.md#ai-authoring-and-read-only-validation).
+Flowbit.Ui's assistant lets its model read the packaged guides and examples, write the full definition itself, and check it with these same rules; Flowbit then validates the proposed definition again. The model's explanation and open questions remain outside the canonical JSON. Explicit application to the editor preserves undo and workflow-family identity; source revisions prevent delayed proposals from replacing later edits. See [authoring API operations](api-guide.md#ai-authoring-and-read-only-validation).
 
 ## Understand a workflow definition
 

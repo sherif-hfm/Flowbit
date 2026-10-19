@@ -21,11 +21,32 @@ public static class WorkflowAuthoringJson
     public static WorkflowModel Parse(string json)
     {
         using var document = JsonDocument.Parse(json, new JsonDocumentOptions { MaxDepth = 64 });
-        RejectDuplicates(document.RootElement, "$");
-        ValidateShape(document.RootElement, typeof(WorkflowModel), "$", false);
+        // Stop at the first structural problem; Inspect reports all of them.
+        static bool Throw(WorkflowAuthoringIssue issue, string legacyMessage) => throw new JsonException(legacyMessage);
+        RejectDuplicates(document.RootElement, "$", "", Throw);
+        ValidateShape(document.RootElement, typeof(WorkflowModel), "$", "", false, Throw);
         return JsonSerializer.Deserialize<WorkflowModel>(document.RootElement, Options)
             ?? throw new JsonException("A workflow object is required.");
     }
+
+    /// <summary>
+    /// Every structural problem of a workflow: duplicate keys, unknown or missing properties, wrong types and unsupported values,
+    /// each at its RFC 6901 pointer. Parse stops at the first of them. Deserialization can still reject values these checks allow.
+    /// </summary>
+    public static IReadOnlyList<WorkflowAuthoringIssue> Inspect(JsonElement workflow) => InspectItem(workflow, typeof(WorkflowModel));
+
+    /// <summary>The structural problems of one canonical item, such as a FlowNodeModel or a LaneModel.</summary>
+    public static IReadOnlyList<WorkflowAuthoringIssue> InspectItem(JsonElement item, Type type)
+    {
+        var issues = new List<WorkflowAuthoringIssue>();
+        bool Collect(WorkflowAuthoringIssue issue, string legacyMessage) { issues.Add(issue); return true; }
+        RejectDuplicates(item, "$", "", Collect);
+        ValidateShape(item, type, "$", "", false, Collect);
+        return issues;
+    }
+
+    /// <summary>A model type's canonical property names, in ordinal order.</summary>
+    public static IReadOnlyList<string> PropertyNames(Type type) => Properties(type).Select(item => item.Name).ToArray();
 
     public static string CreateSchema()
     {
@@ -136,61 +157,113 @@ public static class WorkflowAuthoringJson
             : schema;
     }
 
-    private static void ValidateShape(JsonElement value, Type type, string path, bool nullable)
+    // Each problem carries Parse's original message, which other callers and the API already report, and an issue for Inspect.
+    private delegate bool IssueSink(WorkflowAuthoringIssue issue, string legacyMessage);
+
+    private static void ValidateShape(JsonElement value, Type type, string path, string pointer, bool nullable, IssueSink report)
     {
         type = Nullable.GetUnderlyingType(type) ?? type;
         if (value.ValueKind == JsonValueKind.Null)
         {
             if (nullable || type == typeof(JsonElement)) return;
-            throw new JsonException($"{path} cannot be null.");
-        }
-        if (type == typeof(JsonElement)) return;
-        if (type == typeof(string)) { Require(value.ValueKind == JsonValueKind.String, path, "string"); return; }
-        if (type == typeof(bool)) { Require(value.ValueKind is JsonValueKind.True or JsonValueKind.False, path, "boolean"); return; }
-        if (type == typeof(int)) { Require(value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out _), path, "32-bit integer"); return; }
-        if (type == typeof(long)) { Require(value.ValueKind == JsonValueKind.Number && value.TryGetInt64(out _), path, "integer"); return; }
-        if (type == typeof(double) || type == typeof(decimal)) { Require(value.ValueKind == JsonValueKind.Number, path, "number"); return; }
-        if (type.IsGenericType && type.GetGenericTypeDefinition() == typeof(List<>))
-        {
-            Require(value.ValueKind == JsonValueKind.Array, path, "array");
-            var index = 0;
-            foreach (var item in value.EnumerateArray()) ValidateShape(item, type.GetGenericArguments()[0], $"{path}[{index++}]", false);
+            report(new("wrong-type", pointer, $"Expected {Expected(type)}; found null."), $"{path} cannot be null.");
             return;
         }
-        Require(value.ValueKind == JsonValueKind.Object, path, "object");
+        if (type == typeof(JsonElement)) return;
+        if (type == typeof(string)) { Require(value.ValueKind == JsonValueKind.String, value, path, pointer, "string", report); return; }
+        if (type == typeof(bool)) { Require(value.ValueKind is JsonValueKind.True or JsonValueKind.False, value, path, pointer, "boolean", report); return; }
+        if (type == typeof(int)) { Require(value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out _), value, path, pointer, "32-bit integer", report); return; }
+        if (type == typeof(long)) { Require(value.ValueKind == JsonValueKind.Number && value.TryGetInt64(out _), value, path, pointer, "integer", report); return; }
+        if (type == typeof(double) || type == typeof(decimal)) { Require(value.ValueKind == JsonValueKind.Number, value, path, pointer, "number", report); return; }
+        if (type.IsGenericType && type.GetGenericTypeDefinition() == typeof(List<>))
+        {
+            if (!Require(value.ValueKind == JsonValueKind.Array, value, path, pointer, "array", report)) return;
+            var index = 0;
+            foreach (var item in value.EnumerateArray())
+            {
+                ValidateShape(item, type.GetGenericArguments()[0], $"{path}[{index}]", $"{pointer}/{index}", false, report);
+                index++;
+            }
+            return;
+        }
+        if (!Require(value.ValueKind == JsonValueKind.Object, value, path, pointer, "object", report)) return;
         var properties = Properties(type).ToDictionary(item => item.Name, item => item.Property, StringComparer.Ordinal);
-        foreach (var required in Required(type))
-            if (!value.TryGetProperty(required, out _)) throw new JsonException($"{path}.{required} is required.");
+        var missing = Required(type).Where(required => !value.TryGetProperty(required, out _)).ToArray();
+        if (missing.Length > 0)
+            report(new("missing-property", pointer,
+                    $"Missing required propert{(missing.Length == 1 ? "y" : "ies")} {string.Join(", ", missing.Select(name => "\"" + name + "\""))}."),
+                $"{path}.{missing[0]} is required.");
         foreach (var item in value.EnumerateObject())
         {
-            if (!properties.TryGetValue(item.Name, out var property)) throw new JsonException($"Unknown authoring property {path}.{item.Name}.");
-            ValidateShape(item.Value, property.PropertyType, path + "." + item.Name, AllowsNull(property));
+            var itemPointer = pointer + "/" + Escape(item.Name);
+            if (!properties.TryGetValue(item.Name, out var property))
+            {
+                report(new("unknown-property", itemPointer, $"Unknown property \"{item.Name}\"; allowed properties: {string.Join(", ", properties.Keys.Order(StringComparer.Ordinal))}."),
+                    $"Unknown authoring property {path}.{item.Name}.");
+                continue;
+            }
+            ValidateShape(item.Value, property.PropertyType, path + "." + item.Name, itemPointer, AllowsNull(property), report);
             if (item.Value.ValueKind == JsonValueKind.String && AllowedValues(type, item.Name) is { } values
                 && !values.Contains(item.Value.GetString(), StringComparer.Ordinal))
-                throw new JsonException($"Unsupported value at {path}.{item.Name}; use one of {string.Join(", ", values)}.");
+                report(new("unsupported-value", itemPointer,
+                        $"Value {JsonSerializer.Serialize(item.Value.GetString())} is not allowed; use one of: {string.Join(", ", values)}{(AllowsNull(property) ? " or null" : "")}."),
+                    $"Unsupported value at {path}.{item.Name}; use one of {string.Join(", ", values)}.");
         }
     }
 
-    private static void Require(bool condition, string path, string expected)
+    private static bool Require(bool condition, JsonElement value, string path, string pointer, string expected, IssueSink report)
     {
-        if (!condition) throw new JsonException($"{path} must be a {expected}.");
+        if (condition) return true;
+        report(new("wrong-type", pointer, $"Expected {Article(expected)} {expected}; found {Describe(value)}."), $"{path} must be a {expected}.");
+        return false;
     }
 
-    private static void RejectDuplicates(JsonElement value, string path)
+    private static void RejectDuplicates(JsonElement value, string path, string pointer, IssueSink report)
     {
         if (value.ValueKind == JsonValueKind.Object)
         {
             var names = new HashSet<string>(StringComparer.Ordinal);
             foreach (var property in value.EnumerateObject())
             {
-                if (!names.Add(property.Name)) throw new JsonException($"Duplicate JSON property {path}.{property.Name}.");
-                RejectDuplicates(property.Value, path + "." + property.Name);
+                if (!names.Add(property.Name))
+                    report(new("duplicate-property", pointer + "/" + Escape(property.Name), $"Property \"{property.Name}\" appears more than once in this object."),
+                        $"Duplicate JSON property {path}.{property.Name}.");
+                RejectDuplicates(property.Value, path + "." + property.Name, pointer + "/" + Escape(property.Name), report);
             }
         }
         else if (value.ValueKind == JsonValueKind.Array)
         {
             var index = 0;
-            foreach (var item in value.EnumerateArray()) RejectDuplicates(item, $"{path}[{index++}]");
+            foreach (var item in value.EnumerateArray())
+            {
+                RejectDuplicates(item, $"{path}[{index}]", $"{pointer}/{index}", report);
+                index++;
+            }
         }
     }
+
+    private static string Expected(Type type) =>
+        type == typeof(string) ? "a string" : type == typeof(bool) ? "a boolean" : type == typeof(int) ? "a 32-bit integer"
+        : type == typeof(long) ? "an integer" : type == typeof(double) || type == typeof(decimal) ? "a number"
+        : type.IsGenericType && type.GetGenericTypeDefinition() == typeof(List<>) ? "an array" : "an object";
+
+    private static string Article(string noun) => noun.StartsWith("integer", StringComparison.Ordinal)
+        || noun.StartsWith("array", StringComparison.Ordinal) || noun.StartsWith("object", StringComparison.Ordinal) ? "an" : "a";
+
+    private static string Describe(JsonElement value) => value.ValueKind switch
+    {
+        JsonValueKind.String => "the string " + Clip(value.GetRawText()),
+        JsonValueKind.Number => "the number " + Clip(value.GetRawText()),
+        JsonValueKind.True or JsonValueKind.False => value.GetRawText(),
+        JsonValueKind.Array => "an array",
+        JsonValueKind.Object => "an object",
+        _ => "null"
+    };
+
+    private static string Clip(string text) => text.Length <= 80 ? text : text[..77] + "...";
+
+    private static string Escape(string name) => name.Replace("~", "~0", StringComparison.Ordinal).Replace("/", "~1", StringComparison.Ordinal);
 }
+
+/// <summary>One structural problem: a stable code, the RFC 6901 pointer of the offending element, and what is wrong.</summary>
+public sealed record WorkflowAuthoringIssue(string Code, string Pointer, string Message);

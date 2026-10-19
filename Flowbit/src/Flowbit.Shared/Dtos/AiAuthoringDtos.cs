@@ -4,23 +4,40 @@ namespace Flowbit.Shared.Dtos;
 
 public sealed record AiModelDto(string Id, string Name);
 public sealed record AiProviderDto(string Id, string Name, string DefaultModelId, IReadOnlyList<AiModelDto> Models);
-public sealed record AiChatMessageDto(string Role, string Content);
 public sealed record AiSourcePageDto(string SourceName, int PageNumber, string Text);
 
 /// <summary>Transient authoring input. Provider credentials must only travel in the dedicated request header.</summary>
 public sealed record AiTurnRequestDto
 {
     public string ProviderId { get; init; } = "opencode-go";
-    public string ModelId { get; init; } = "kimi-k2.7-code";
+    public string ModelId { get; init; } = "glm-5.3-flash";
     public string ConversationId { get; init; } = string.Empty;
+    /// <summary>The user's message, sent to the model exactly as typed. Empty only with <see cref="Continue"/>.</summary>
     public string Message { get; init; } = string.Empty;
-    public IReadOnlyList<AiChatMessageDto> History { get; init; } = [];
+    /// <summary>Resume a stopped run from its last checkpoint, without a new message.</summary>
+    public bool Continue { get; init; }
     public JsonElement? CurrentWorkflow { get; init; }
     public string SnapshotId { get; init; } = string.Empty;
     public IReadOnlyList<AiSourcePageDto> Sources { get; init; } = [];
     /// <summary>Explicitly selected catalog keys. The API additionally requires shared-catalog read permission.</summary>
     public IReadOnlyList<string> SharedVariableKeys { get; init; } = [];
-    public AiCheckpointDto? Checkpoint { get; init; }
+    /// <summary>The conversation state from the previous result or checkpoint; null starts a new conversation.</summary>
+    public AiConversationStateDto? State { get; init; }
+}
+
+/// <summary>
+/// Opaque, untrusted state of an authoring conversation, kept only in the open assistant panel and validated when it returns.
+/// It holds no credentials: workflow files and the conversation carry credential placeholders only.
+/// </summary>
+public sealed record AiConversationStateDto
+{
+    public string Format { get; init; } = "";
+    public string Data { get; init; } = "";
+    /// <summary>True when a run stopped mid-turn, so Continue can resume it without a new message.</summary>
+    public bool CanContinue { get; init; }
+    public int Messages { get; init; }
+    public int? WorkflowNodes { get; init; }
+    public int? WorkflowFlows { get; init; }
 }
 
 public sealed record AiValidationResultDto(bool IsValid, IReadOnlyList<string> Errors, IReadOnlyList<string> Warnings)
@@ -31,85 +48,51 @@ public sealed record AiValidationResultDto(bool IsValid, IReadOnlyList<string> E
     public IReadOnlyList<string> PublicationBlockers { get; init; } = [];
 }
 
-public sealed record AiSourceReferenceDto(string SourceName, int PageNumber, string Requirement);
-
+/// <summary>
+/// The outcome of one turn. Kind is proposal (a validated, laid-out definition to review and apply), answer (the model replied
+/// without changing the workflow), invalid (no valid workflow after the host's nudges) or paused (the run stopped; Continue resumes it).
+/// </summary>
 public sealed record AiTurnResultDto(
     string Kind,
     string Message,
-    IReadOnlyList<string> Questions,
     JsonElement? Definition,
-    IReadOnlyList<string> Assumptions,
-    IReadOnlyList<string> Dependencies,
-    IReadOnlyList<string> ChangeSummary,
     AiValidationResultDto Validation,
     string SnapshotId,
     string ContractHash)
 {
-    public IReadOnlyList<AiSourceReferenceDto> SourceReferences { get; init; } = [];
-    public AiCheckpointDto? Checkpoint { get; init; }
+    /// <summary>Why a run stopped or ended without a proposal, such as run_budget or invalid_workflow.</summary>
+    public string? Code { get; init; }
+    /// <summary>The open questions and assumptions the model wrote to open-questions.md.</summary>
+    public string? OpenQuestions { get; init; }
+    public AiConversationStateDto? State { get; init; }
     public AiRunSummaryDto? Run { get; init; }
-    public AiRequirementsReviewDto? RequirementsReview { get; init; }
 }
 
-public sealed record AiRequirementSourceDto(string Resource, int Offset, int Count, string? SourceName, int? PageNumber);
-public sealed record AiRequirementDto(string Id, string Text, AiRequirementSourceDto Source, bool NeedsClarification);
-public sealed record AiRequirementEvidenceDto(string Target, int? Id);
-public sealed record AiRequirementCheckDto(string RequirementId, string Reviewer, string Status, string Explanation,
-    IReadOnlyList<AiRequirementEvidenceDto> Evidence);
-/// <summary>AI assessment, separate from deterministic workflow validity. Evidence belongs to this exact candidate.</summary>
-public sealed record AiRequirementsReviewDto(bool Passed, string CandidateHash,
-    IReadOnlyList<AiRequirementDto> Requirements, IReadOnlyList<AiRequirementCheckDto> Checks);
-
-/// <summary>Untrusted, bounded continuation state, retained only in the open assistant circuit.</summary>
-public sealed record AiCheckpointDto
-{
-    public int Version { get; init; } = 1;
-    public string? ExecutionVariant { get; init; }
-    public string? ReasoningEffort { get; init; }
-    public string? ModelProfileHash { get; init; }
-    public string? ReviewPolicyHash { get; init; }
-    public string InputHash { get; init; } = "";
-    public string ContractHash { get; init; } = "";
-    public JsonElement Draft { get; init; }
-    public long Revision { get; init; }
-    public string Plan { get; init; } = "";
-    public IReadOnlyList<AiBatchReceiptDto> Batches { get; init; } = [];
-    public int? OutputAllowance { get; init; }
-    public int? MaxOperations { get; init; }
-    /// <summary>Bounded read positions; excerpts are rebuilt from original inputs and verified references on resume.</summary>
-    public IReadOnlyList<AiContextReadDto> ContextReads { get; init; } = [];
-}
-
-public sealed record AiContextReadDto(string Kind, string Resource, int Offset, int Count);
-public sealed record AiBatchReceiptDto(string Id, string Hash);
 public sealed record AiRunSummaryDto(int ProviderCalls, long OutputTokens, bool UsageEstimated, double ElapsedSeconds)
 {
-    public string? ExecutionVariant { get; init; }
-    public string? ReasoningEffort { get; init; }
-    public double? FirstEditSeconds { get; init; }
-    public double LastCallSeconds { get; init; }
-    public int ContextReads { get; init; }
-    public int DuplicateReads { get; init; }
-    public int Retries { get; init; }
-    public int AcceptedBatches { get; init; }
+    public int MaxProviderCalls { get; init; }
     public long InputTokens { get; init; }
-    public int ActiveProviderCalls { get; init; }
-    public int PeakProviderCalls { get; init; }
-    public double TotalProviderSeconds { get; init; }
-    public int RepeatedDraftReads { get; init; }
+    public long CachedInputTokens { get; init; }
+    public int Nudges { get; init; }
+    public int? WorkflowNodes { get; init; }
+    public int? WorkflowFlows { get; init; }
+    public string? ReasoningEffort { get; init; }
+    public string? PromptFingerprint { get; init; }
+    public string? DocsFingerprint { get; init; }
 }
 
-/// <summary>Versioned NDJSON frame. Draft checkpoints are private state, never applicable proposals.</summary>
+/// <summary>Versioned NDJSON frame. Checkpoint states are private resume points, never applicable proposals.</summary>
 public sealed record AiRunEventDto
 {
-    public int Version { get; init; } = 1;
+    public int Version { get; init; } = 2;
     public string RunId { get; init; } = "";
     public long Sequence { get; init; }
+    /// <summary>progress, checkpoint (carries State), result or paused (carry Result), or error.</summary>
     public string Type { get; init; } = "progress";
     public string? Stage { get; init; }
     public string? Message { get; init; }
     public string? Code { get; init; }
-    public AiCheckpointDto? Checkpoint { get; init; }
     public AiTurnResultDto? Result { get; init; }
     public AiRunSummaryDto? Run { get; init; }
+    public AiConversationStateDto? State { get; init; }
 }

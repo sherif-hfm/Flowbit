@@ -101,77 +101,53 @@
                 }
             </div>
         }
-        @if (authoringRunning || checkpoint is not null)
+        @if (authoringRunning || CanContinue)
         {
             <section class="ai-progress" aria-labelledby="ai-progress-heading">
-                <h3 id="ai-progress-heading">@(authoringRunning ? "Building your workflow" : "Draft kept in this session")</h3>
+                <h3 id="ai-progress-heading">@(authoringRunning ? "Working on your workflow" : "The run stopped")</h3>
                 <p id="ai-progress-stage" role="status">@progressStage</p>
-                <p id="ai-progress-metrics" class="ai-help">@ElapsedSeconds s this run · @(runSummary?.ProviderCalls ?? 0) model calls</p>
-                @if (authoringRunning && runSummary is { ActiveProviderCalls: > 0 })
-                {
-                    <p id="ai-active-calls" class="ai-help">@runSummary.ActiveProviderCalls active AI @(runSummary.ActiveProviderCalls == 1 ? "call" : "calls")</p>
-                }
+                <p id="ai-progress-metrics" class="ai-help">@ElapsedSeconds s this run · @(runSummary?.ProviderCalls ?? 0) of @(runSummary?.MaxProviderCalls ?? 0) model calls@(runSummary is { Nudges: > 0 } nudged ? $" · {nudged.Nudges} validation {(nudged.Nudges == 1 ? "follow-up" : "follow-ups")}" : "")</p>
                 @if (authoringRunning && modelCallStarted is { } started)
                 {
-                    <p id="ai-model-wait" class="ai-help">Waiting for the model: @((int)(DateTimeOffset.UtcNow - started).TotalSeconds) s @(overlappingCalls ? "since this group of calls started" : "on this call")</p>
+                    <p id="ai-model-wait" class="ai-help">Waiting for the model: @((int)(DateTimeOffset.UtcNow - started).TotalSeconds) s on this call</p>
                 }
-                @if (checkpoint is not null)
+                @if (runSummary is { WorkflowNodes: { } nodes })
                 {
-                    <p id="ai-draft-progress" class="ai-help">@checkpoint.Revision completed draft @(checkpoint.Revision == 1 ? "step" : "steps") · @DraftCount("flowNodes") nodes · @DraftCount("sequenceFlows") connections</p>
-                    <p class="ai-help">Continue keeps this draft and its reference context. Only the run timer and call count restart. The original requirements and selected model stay the same.</p>
-                    @if (IsCheckpointStale) { <p class="ai-warning" role="status">The editor changed. Send a new request to work from the current workflow.</p> }
-                    <button type="button" id="ai-continue" class="btn btn-outline-primary" disabled="@(busy || IsCheckpointStale || string.IsNullOrWhiteSpace(apiKey))" @onclick="ContinueAsync">Continue</button>
+                    <p id="ai-draft-progress" class="ai-help">workflow.json: @nodes nodes · @(runSummary.WorkflowFlows ?? 0) connections</p>
+                }
+                @if (!authoringRunning && CanContinue)
+                {
+                    <p class="ai-help">Continue resumes from the last completed model call. The conversation, the files the assistant saved and the selected model stay the same; the run timer and call count restart.</p>
+                    @if (IsContinueStale) { <p class="ai-warning" role="status">The editor changed. Send a message to continue with the current workflow.</p> }
+                    <button type="button" id="ai-continue" class="btn btn-outline-primary" disabled="@(busy || IsContinueStale || string.IsNullOrWhiteSpace(apiKey))" @onclick="ContinueAsync">Continue</button>
                 }
             </section>
         }
         @if (result is not null)
         {
-            @if (result.RequirementsReview is { } review)
-            {
-                <details id="ai-requirements-review" class="ai-review">
-                    <summary>AI requirements review: @(review.Passed ? "passed" : "needs attention")</summary>
-                    <p class="ai-help">AI assessment of the requested behavior. Review business correctness before saving.</p>
-                    <ul>
-                        @foreach (var requirement in review.Requirements)
-                        {
-                            <li dir="auto">
-                                <strong>@requirement.Text</strong>
-                                @if (requirement.Source.SourceName is { } sourceName)
-                                { <p class="ai-help">@sourceName · page @requirement.Source.PageNumber</p> }
-                                @foreach (var check in review.Checks.Where(item => item.RequirementId == requirement.Id))
-                                {
-                                    <p class="@(check.Status == "covered" ? "ai-readiness" : "ai-warning")">@(check.Reviewer switch { "coverage" => "Coverage", "analysis" => "Requirements analysis", _ => "Routing and roles" }): @check.Status — @check.Explanation</p>
-                                }
-                            </li>
-                        }
-                    </ul>
-                </details>
-            }
-            @if (result.Questions.Count > 0)
-            {
-                <section class="ai-review"><h3>Details to clarify</h3><ul>@foreach (var question in result.Questions) { <li dir="auto">@question</li> }</ul></section>
-            }
             @if (result.Definition is not null)
             {
                 <section class="ai-review" aria-labelledby="ai-proposal-heading">
                     <h3 id="ai-proposal-heading">Review proposal</h3>
-                    @if (result.ChangeSummary.Count > 0) { <h4>Changes</h4><ul>@foreach (var item in result.ChangeSummary) { <li dir="auto">@item</li> }</ul> }
-                    @if (result.Assumptions.Count > 0) { <h4>Assumptions</h4><ul>@foreach (var item in result.Assumptions) { <li dir="auto">@item</li> }</ul> }
-                    @if (result.Dependencies.Count > 0) { <h4>Setup needed</h4><ul>@foreach (var item in result.Dependencies) { <li dir="auto">@item</li> }</ul> }
-                    @if (result.SourceReferences.Count > 0)
+                    @if (!string.IsNullOrWhiteSpace(result.OpenQuestions))
                     {
-                        <details><summary>Requirement references</summary><ul>@foreach (var item in result.SourceReferences) { <li dir="auto">@item.SourceName · page @item.PageNumber: @item.Requirement</li> }</ul></details>
+                        <h4>Open questions and assumptions</h4>
+                        <p id="ai-open-questions" class="ai-open-questions" dir="auto">@result.OpenQuestions</p>
                     }
                     <p class="ai-readiness">@(result.Validation.IsValid ? "Definition rules passed." : "Definition needs correction.") @(result.Validation.CanSave ? "Ready to save as a draft." : "Save readiness needs attention.") @(result.Validation.CanPublish ? "Publication checks passed." : "Publication needs review.")</p>
                     @foreach (var item in result.Validation.Errors.Concat(result.Validation.Warnings).Concat(result.Validation.SaveBlockers).Concat(result.Validation.PublicationBlockers).Distinct()) { <p class="ai-warning">@item</p> }
                     <details><summary>Workflow JSON</summary><pre id="ai-proposal-json">@ProposalJson</pre></details>
                     @if (IsStale) { <p class="ai-warning" role="status">The editor changed. Send another message to update this proposal before applying it.</p> }
-                    <button type="button" id="ai-apply" class="btn btn-primary" disabled="@(busy || IsStale || !result.Validation.IsValid || result.Kind != "proposal" || result.RequirementsReview is { Passed: false })" @onclick="ApplyAsync">Apply to editor</button>
+                    <button type="button" id="ai-apply" class="btn btn-primary" disabled="@(busy || IsStale || !result.Validation.IsValid || result.Kind != "proposal")" @onclick="ApplyAsync">Apply to editor</button>
                     <p class="ai-help">Applying is one undoable edit. Use Save new version, then publish separately when ready.</p>
                 </section>
             }
             else
             {
+                @if (!string.IsNullOrWhiteSpace(result.OpenQuestions))
+                {
+                    <section class="ai-review"><h3>Open questions and assumptions</h3><p id="ai-open-questions" class="ai-open-questions" dir="auto">@result.OpenQuestions</p></section>
+                }
                 @foreach (var item in result.Validation.Errors) { <p class="ai-warning">@item</p> }
             }
         }
@@ -188,6 +164,7 @@
     </div>
 </aside>
 
+
 @code {
     [Parameter, EditorRequired] public Func<Task<EditorAuthoringSnapshot>> CaptureSnapshot { get; set; } = default!;
     [Parameter, EditorRequired] public EventCallback<EditorAiProposal> ApplyProposal { get; set; }
@@ -201,8 +178,7 @@
     private DotNetObjectReference<WorkflowAiPanel>? keyboardCallback;
     private CancellationTokenSource? operation;
     private IReadOnlyList<AiProviderDto> providers = [];
-    private readonly List<AiChatMessageDto> messages = [];
-    private readonly List<AiChatMessageDto> history = [];
+    private readonly List<ChatLine> messages = [];
     private readonly List<SourcePage> sourcePages = [];
     private IReadOnlyList<SharedVariableMetadataDto> catalog = [];
     private readonly HashSet<string> selectedKeys = new(StringComparer.Ordinal);
@@ -212,15 +188,16 @@
     private IReadOnlyList<string> documentWarnings = [];
     private IBrowserFile? documentFile;
     private AiTurnResultDto? result;
-    private AiTurnRequestDto? frozenRequest;
-    private AiCheckpointDto? checkpoint;
+    // The conversation the assistant keeps across messages, Apply and stopped runs. It holds no credentials.
+    private AiConversationStateDto? conversationState;
+    // The request of the latest run, which Continue resumes when that run stopped.
+    private AiTurnRequestDto? stoppedRequest;
     private AiRunSummaryDto? runSummary;
     private bool authoringRunning;
     private string progressStage = "";
     private DateTimeOffset runStarted;
     private DateTimeOffset? modelCallStarted;
-    private bool overlappingCalls;
-    private string providerId = "opencode-go", modelId = "kimi-k2.7-code", apiKey = "", messageText = "", languages = "eng+ara";
+    private string providerId = "opencode-go", modelId = "", apiKey = "", messageText = "", languages = "eng+ara";
     private string conversationId = Guid.NewGuid().ToString("N");
     private string? error, notice;
     private bool busy, disposed;
@@ -229,10 +206,9 @@
     private string operationId = "";
     private AiProviderDto? SelectedProvider => providers.FirstOrDefault(item => item.Id == providerId);
     private bool IsStale => result is not null && EditorRevision is not null && result.SnapshotId != EditorRevision;
-    private bool IsCheckpointStale => frozenRequest is null || EditorRevision is not null && frozenRequest.SnapshotId != EditorRevision;
+    private bool CanContinue => conversationState is { CanContinue: true } && stoppedRequest is not null;
+    private bool IsContinueStale => stoppedRequest is null || EditorRevision is not null && stoppedRequest.SnapshotId != EditorRevision;
     private int ElapsedSeconds => authoringRunning ? (int)(DateTimeOffset.UtcNow - runStarted).TotalSeconds : (int)(runSummary?.ElapsedSeconds ?? 0);
-    private int DraftCount(string property) => checkpoint?.Draft is { ValueKind: JsonValueKind.Object } draft
-        && draft.TryGetProperty(property, out var items) && items.ValueKind == JsonValueKind.Array ? items.GetArrayLength() : 0;
     private string ProposalJson => result?.Definition is { } definition ? JsonSerializer.Serialize(definition, new JsonSerializerOptions { WriteIndented = true }) : "";
 
     protected override async Task OnInitializedAsync()
@@ -283,23 +259,33 @@
     }
 
     private void ClearKey() => apiKey = "";
+
+    // The conversation belongs to its model, so another model starts a new conversation; the key and selections stay.
     private void ChangeModel(ChangeEventArgs args)
     {
         modelId = args.Value?.ToString() ?? "";
-        ClearContinuation();
-        result = null;
+        ResetConversation();
     }
-    private void ClearContinuation()
+
+    private void ClearRunState()
     {
-        frozenRequest = null; checkpoint = null; runSummary = null; progressStage = ""; authoringRunning = false; modelCallStarted = null;
+        stoppedRequest = null; runSummary = null; progressStage = ""; authoringRunning = false; modelCallStarted = null;
     }
+
+    private void ResetConversation()
+    {
+        messages.Clear(); result = null; conversationState = null;
+        ClearRunState();
+        conversationId = Guid.NewGuid().ToString("N");
+    }
+
     private void ClearDocument() { documentFile = null; sourcePages.Clear(); documentWarnings = []; }
     private void NewConversation()
     {
-        messages.Clear(); history.Clear(); result = null; messageText = ""; apiKey = "";
-        ClearContinuation();
+        ResetConversation();
+        messageText = ""; apiKey = "";
         catalog = []; selectedKeys.Clear(); catalogSearch = ""; catalogPage = 0; catalogCount = 0;
-        ClearDocument(); error = notice = null; conversationId = Guid.NewGuid().ToString("N");
+        ClearDocument(); error = notice = null;
     }
 
     private void SelectCatalogKey(string key, bool selected)
@@ -377,21 +363,21 @@
         {
             var snapshot = await CaptureSnapshot();
             if (disposed || cancellationToken.IsCancellationRequested || revision != identityRevision) return;
+            // An unapplied proposal is the current workflow while the editor is unchanged since it was requested.
             var context = result?.Definition is { } proposal && result.SnapshotId == snapshot.SnapshotId ? proposal : snapshot.Definition;
             var request = new AiTurnRequestDto
             {
                 ProviderId = providerId, ModelId = modelId, ConversationId = conversationId,
-                Message = submitted, History = history.ToArray(), CurrentWorkflow = context,
-                SnapshotId = snapshot.SnapshotId,
+                Message = submitted, CurrentWorkflow = context, SnapshotId = snapshot.SnapshotId,
                 SharedVariableKeys = selectedKeys.Order(StringComparer.Ordinal).ToArray(),
-                Sources = sourcePages.Select(page => new AiSourcePageDto(documentFile?.Name ?? "Document", page.Number, page.Text)).ToArray()
+                Sources = sourcePages.Select(page => new AiSourcePageDto(documentFile?.Name ?? "Document", page.Number, page.Text)).ToArray(),
+                State = conversationState
             };
-            ClearContinuation();
-            frozenRequest = request;
+            ClearRunState();
             result = null;
             messages.Add(new("user", submitted));
             messageText = "";
-            await RunFrozenRequestAsync(request, revision, activeOperationId, cancellationToken);
+            await RunAsync(request, revision, activeOperationId, cancellationToken);
         }
         catch (OperationCanceledException) { if (IsCurrentOperation(revision, activeOperationId)) ShowAuthoringCancellation(); }
         catch (Exception exception) { if (IsCurrentOperation(revision, activeOperationId)) error = SafeError(exception); }
@@ -402,8 +388,8 @@
 
     private async Task ContinueAsync()
     {
-        if (busy || checkpoint is null || frozenRequest is null || IsCheckpointStale || string.IsNullOrWhiteSpace(apiKey)) return;
-        var request = frozenRequest with { Checkpoint = checkpoint };
+        if (busy || !CanContinue || IsContinueStale || string.IsNullOrWhiteSpace(apiKey)) return;
+        var request = stoppedRequest! with { Message = "", Continue = true, State = conversationState };
         var cancellationToken = BeginOperation();
         var revision = identityRevision;
         var activeOperationId = operationId;
@@ -413,11 +399,11 @@
             if (!IsCurrentOperation(revision, activeOperationId) || cancellationToken.IsCancellationRequested) return;
             if (snapshot.SnapshotId != request.SnapshotId)
             {
-                error = "The editor changed. Send a new request to work from the current workflow.";
+                error = "The editor changed. Send a message to continue with the current workflow.";
                 return;
             }
             result = null;
-            await RunFrozenRequestAsync(request, revision, activeOperationId, cancellationToken);
+            await RunAsync(request, revision, activeOperationId, cancellationToken);
         }
         catch (OperationCanceledException) { if (IsCurrentOperation(revision, activeOperationId)) ShowAuthoringCancellation(); }
         catch (Exception exception) { if (IsCurrentOperation(revision, activeOperationId)) error = SafeError(exception); }
@@ -431,35 +417,32 @@
             { ElapsedSeconds = (DateTimeOffset.UtcNow - runStarted).TotalSeconds };
         busy = false;
         authoringRunning = false;
+        modelCallStarted = null;
     }
 
     private void ShowAuthoringCancellation()
     {
-        notice = checkpoint is null ? "AI request cancelled." : "AI request cancelled. Continue can resume the completed draft edits.";
+        notice = CanContinue ? "AI request cancelled. Continue resumes from the last completed model call." : "AI request cancelled.";
         progressStage = notice;
     }
 
-    private async Task RunFrozenRequestAsync(AiTurnRequestDto request, long revision, string activeOperationId, CancellationToken cancellationToken)
+    private async Task RunAsync(AiTurnRequestDto request, long revision, string activeOperationId, CancellationToken cancellationToken)
     {
         authoringRunning = true;
-        progressStage = request.Checkpoint is null ? "Reading requirements" : $"Resuming the saved draft after {request.Checkpoint.Revision} completed draft steps.";
+        // Any interruption, including Cancel, leaves this run resumable from its last checkpoint.
+        stoppedRequest = request with { State = null };
+        progressStage = request.Continue ? "Continuing the stopped run." : "Sending your message to the model.";
         runSummary = null;
         runStarted = DateTimeOffset.UtcNow;
         modelCallStarted = null;
-        overlappingCalls = false;
         _ = UpdateElapsedAsync(revision, activeOperationId, cancellationToken);
         var response = await Api.SendAiTurnStreamingAsync(request, apiKey.Trim(), async frame =>
         {
             if (!IsCurrentOperation(revision, activeOperationId) || cancellationToken.IsCancellationRequested) return;
-            if (frame.Type == "checkpoint" && frame.Checkpoint is not null) checkpoint = frame.Checkpoint;
-            if (frame.Result?.Checkpoint is not null) checkpoint = frame.Result.Checkpoint;
+            if (frame.State is not null) conversationState = frame.State;
             if (frame.Run is not null) runSummary = frame.Run;
-            if (frame.Run is { ActiveProviderCalls: > 0 } active)
-            {
-                modelCallStarted ??= DateTimeOffset.UtcNow;
-                overlappingCalls |= active.ActiveProviderCalls > 1;
-            }
-            else { modelCallStarted = null; overlappingCalls = false; }
+            // A checkpoint starts a model call; waiting reports keep its timer; other stages are host work.
+            modelCallStarted = frame.Stage != "model" ? null : frame.Type == "checkpoint" ? DateTimeOffset.UtcNow : modelCallStarted ?? DateTimeOffset.UtcNow;
             if (!string.IsNullOrWhiteSpace(frame.Message)) progressStage = frame.Message;
             else if (!string.IsNullOrWhiteSpace(frame.Stage)) progressStage = frame.Stage;
             await InvokeAsync(StateHasChanged);
@@ -467,19 +450,15 @@
         if (!IsCurrentOperation(revision, activeOperationId) || cancellationToken.IsCancellationRequested) return;
         result = response;
         runSummary = response.Run ?? runSummary;
+        conversationState = response.State ?? conversationState;
         progressStage = response.Message;
-        if (response.Kind == "paused" || response.Kind == "invalid" && response.Checkpoint is not null)
+        if (response.Kind == "paused")
         {
-            checkpoint = response.Checkpoint ?? checkpoint;
             notice = response.Message;
             return;
         }
-        checkpoint = null;
-        frozenRequest = null;
+        stoppedRequest = null;
         messages.Add(new("assistant", response.Message));
-        history.Add(new("user", request.Message));
-        history.Add(new("assistant", JsonSerializer.Serialize(new { response.Message, response.Questions, response.Assumptions, response.Dependencies, response.ChangeSummary })));
-        while (history.Count > 12) history.RemoveRange(0, 2);
     }
 
     private async Task UpdateElapsedAsync(long revision, string activeOperationId, CancellationToken cancellationToken)
@@ -497,8 +476,7 @@
 
     private async Task ApplyAsync()
     {
-        if (busy || result?.Definition is not { } definition || IsStale || !result.Validation.IsValid || result.Kind != "proposal"
-            || result.RequirementsReview is { Passed: false }) return;
+        if (busy || result?.Definition is not { } definition || IsStale || !result.Validation.IsValid || result.Kind != "proposal") return;
         var cancellationToken = BeginOperation();
         var revision = identityRevision;
         try
@@ -509,8 +487,8 @@
             if (!validation.IsValid) { error = "This proposal no longer passes validation. Review the reported errors and ask AI to correct it."; return; }
             await ApplyProposal.InvokeAsync(new EditorAiProposal(definition, result.SnapshotId, operationId));
             if (disposed || revision != identityRevision) return;
+            // The conversation continues: the next message works from the applied diagram.
             result = null;
-            ClearContinuation();
             notice = "Applied to the editor. Review the diagram, use Undo if needed, and save a new version when ready.";
         }
         catch (OperationCanceledException) { if (!disposed && revision == identityRevision) notice = "Apply cancelled."; }
@@ -576,13 +554,14 @@
         disposed = true;
         Token.Changed -= IdentityChanged;
         apiKey = "";
-        ClearContinuation();
+        ClearRunState();
+        conversationState = null;
         operation?.Cancel();
         lifetime.Cancel();
         await InvalidateOperation.InvokeAsync(operationId);
         operation?.Dispose();
         lifetime.Dispose();
-        history.Clear(); messages.Clear(); sourcePages.Clear(); catalog = []; selectedKeys.Clear();
+        messages.Clear(); sourcePages.Clear(); catalog = []; selectedKeys.Clear();
         try
         {
             if (keyboard is not null) { await keyboard.InvokeVoidAsync("dispose"); await keyboard.DisposeAsync(); }
@@ -592,6 +571,7 @@
         catch (TaskCanceledException) { }
         keyboardCallback?.Dispose();
     }
+    private sealed record ChatLine(string Role, string Content);
     private sealed class SourcePage(int number, string text, bool usedOcr, IReadOnlyList<string> warnings)
     {
         public int Number { get; } = number;
