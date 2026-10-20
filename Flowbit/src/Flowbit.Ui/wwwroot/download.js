@@ -22,9 +22,10 @@ window.flowbit.scrollToSection = (sectionId) => {
     }
 };
 
-window.flowbit.downloadFileFromStream = async (fileName, contentStreamReference) => {
+// The blob type labels the saved file; callers downloading anything other than JSON pass its type.
+window.flowbit.downloadFileFromStream = async (fileName, contentStreamReference, contentType = "application/json;charset=utf-8") => {
     const arrayBuffer = await contentStreamReference.arrayBuffer();
-    const blob = new Blob([arrayBuffer], { type: "application/json;charset=utf-8" });
+    const blob = new Blob([arrayBuffer], { type: contentType });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
 

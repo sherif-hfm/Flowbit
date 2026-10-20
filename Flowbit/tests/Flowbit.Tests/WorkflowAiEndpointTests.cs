@@ -66,14 +66,16 @@ public sealed class WorkflowAiEndpointTests
         Assert.Equal(0, factory.Service.Calls);
     }
 
-    [Fact]
-    public async Task AuthoringRequiresAuthenticationAndTheConfiguredAuthorRole()
+    [Theory]
+    [InlineData("/api/workflows/ai/models")]
+    [InlineData("/api/workflows/ai/skill")]
+    public async Task AuthoringRequiresAuthenticationAndTheConfiguredAuthorRole(string path)
     {
         await using var factory = new AiFactory();
         using var client = factory.CreateClient();
-        using var anonymous = await client.GetAsync("/api/workflows/ai/models");
+        using var anonymous = await client.GetAsync(path);
         Assert.Equal(HttpStatusCode.Unauthorized, anonymous.StatusCode);
-        using var request = ApiTestAuth.Authorize(new(HttpMethod.Get, "/api/workflows/ai/models"), "reader", "reviewer");
+        using var request = ApiTestAuth.Authorize(new(HttpMethod.Get, path), "reader", "reviewer");
         using var denied = await client.SendAsync(request);
         Assert.Equal(HttpStatusCode.Forbidden, denied.StatusCode);
         Assert.Equal(0, factory.Service.Calls);
@@ -153,10 +155,15 @@ public sealed class WorkflowAiEndpointTests
         using var response = await client.SendAsync(request);
         response.EnsureSuccessStatusCode();
         Assert.Equal("application/zip", response.Content.Headers.ContentType!.MediaType);
+        var disposition = response.Content.Headers.ContentDisposition!;
+        Assert.Equal("attachment", disposition.DispositionType);
+        Assert.Equal("flowbit-authoring.zip", (disposition.FileNameStar ?? disposition.FileName)?.Trim('"'));
         using var data = new MemoryStream(await response.Content.ReadAsByteArrayAsync());
         using var zip = new System.IO.Compression.ZipArchive(data);
         Assert.NotNull(zip.GetEntry("flowbit-authoring/SKILL.md"));
         Assert.NotNull(zip.GetEntry("flowbit-authoring/references/workflow.schema.json"));
+        Assert.NotNull(zip.GetEntry("flowbit-authoring/manifest.json"));
+        Assert.DoesNotContain(zip.Entries, entry => entry.FullName.StartsWith("flowbit-authoring/references/docs/plans/", StringComparison.Ordinal));
         Assert.Equal(0, factory.Service.Calls);
     }
 

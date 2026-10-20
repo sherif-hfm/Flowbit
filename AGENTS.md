@@ -2478,10 +2478,13 @@ when extending the model so new features stay close to BPMN terminology.
 
 ## Key conventions & invariants
 
-- **Node/lane sizing**: user/automatic tasks use `NODE_W` x `NODE_H` (170 x 64)
-  rounded rectangles; start/end events use `EVENT_D` (56) circles; exclusive
-  gateways use a `GATEWAY_D` (72) diamond. Lanes have minimums `MIN_LANE_W` x
-  `MIN_LANE_H` (220 x 150).
+- **Node/lane sizing**: user/automatic/service/script tasks use `NODE_W` x
+  `NODE_H` (190 x 88) rounded rectangles; gateways use a `GATEWAY_D` (76)
+  diamond; boundary events use `BOUNDARY_D` (28) circles drawn on their host's
+  border, and all other events use `EVENT_D` (64) circles. Lanes have minimums
+  `MIN_LANE_W` x `MIN_LANE_H` (220 x 150). The portable authoring guide states
+  the same sizes for agents that place nodes themselves; a package test keeps
+  them equal.
 - **ID generation**: `nextNodeId`, `nextLaneId`, `nextFlowId`, and
   `nextVariableId` derive new ids from existing max ids (`nextFlowId` starts at
   101).

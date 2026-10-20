@@ -36,3 +36,7 @@
 .ai-progress h3 { font-size: .9rem; margin: 0 0 .5rem; }
 .ai-progress > p[role=status] { font-size: .85rem; margin-bottom: .5rem; }
 .ai-open-questions { white-space: pre-wrap; font-size: .82rem; overflow-wrap: anywhere; margin: .3rem 0 .6rem; }
+.ai-skill { margin-top: 1rem; padding-top: .75rem; border-top: 1px solid #e2e8ec; }
+.ai-skill h3 { font-size: .9rem; margin: 0 0 .35rem; }
+.ai-skill .ai-help { margin-bottom: .6rem; overflow-wrap: anywhere; }
+.ai-skill .ai-warning { margin: .5rem 0 0; }

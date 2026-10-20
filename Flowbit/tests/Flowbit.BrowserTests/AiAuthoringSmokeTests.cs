@@ -145,14 +145,21 @@ public sealed class AiAuthoringSmokeTests(BrowserStackFixture stack)
             Assert.Equal(answered.Conversation, edited[0].Conversation[..answered.Conversation.Length]);
             await page.Locator("#ai-apply").ClickAsync();
             await Assertions.Expect(page.Locator("#ai-notice")).ToContainTextAsync("Applied to the editor");
+            // The browser receives a ZIP, not JSON, and the conversation's notice stays.
+            await page.EvaluateAsync("() => { const create = URL.createObjectURL.bind(URL); window.flowbitBlobTypes = []; URL.createObjectURL = blob => { window.flowbitBlobTypes.push(blob.type); return create(blob); }; }");
             var download = await page.RunAndWaitForDownloadAsync(() => page.GetByRole(AriaRole.Button,
                 new PageGetByRoleOptions { Name = "Download Flowbit AI skill", Exact = true }).ClickAsync());
+            Assert.Equal("flowbit-authoring.zip", download.SuggestedFilename);
+            Assert.Equal(new[] { "application/zip" }, await page.EvaluateAsync<string[]>("window.flowbitBlobTypes"));
+            await Assertions.Expect(page.Locator("#ai-notice")).ToContainTextAsync("Applied to the editor");
+            await Assertions.Expect(page.Locator("#ai-skill-error")).ToHaveCountAsync(0);
             var zipPath = Path.Combine(scenario.ArtifactDirectory, "flowbit-authoring.zip");
             await download.SaveAsAsync(zipPath);
             using (var archive = ZipFile.OpenRead(zipPath))
             {
                 Assert.Contains(archive.Entries, entry => entry.FullName.EndsWith("/SKILL.md", StringComparison.Ordinal));
                 Assert.Contains(archive.Entries, entry => entry.FullName.EndsWith("/references/workflow.schema.json", StringComparison.Ordinal));
+                Assert.Contains(archive.Entries, entry => entry.FullName == "flowbit-authoring/manifest.json");
             }
             await CloseAssistantAsync(page);
             await HistoryAsync(page, "undoBtn");
@@ -289,6 +296,11 @@ public sealed class AiAuthoringSmokeTests(BrowserStackFixture stack)
             await waiting.Arrived.Task.WaitAsync(TimeSpan.FromSeconds(30));
             await Assertions.Expect(page.Locator("#ai-progress-stage")).ToBeVisibleAsync();
             await Assertions.Expect(page.Locator("#ai-model-wait")).ToContainTextAsync("Waiting for the model:");
+            // The skill download is independent of the run, which keeps waiting for the model.
+            var skill = await page.RunAndWaitForDownloadAsync(() => page.GetByRole(AriaRole.Button,
+                new PageGetByRoleOptions { Name = "Download Flowbit AI skill", Exact = true }).ClickAsync());
+            Assert.Equal("flowbit-authoring.zip", skill.SuggestedFilename);
+            await Assertions.Expect(page.Locator("#ai-model-wait")).ToBeVisibleAsync();
             await Assertions.Expect(page.Locator("#ai-continue")).ToHaveCountAsync(0);
             await Assertions.Expect(page.Locator("#ai-apply")).ToHaveCountAsync(0);
             await Assertions.Expect(page.Locator("#wfName")).ToHaveValueAsync(original.Name);

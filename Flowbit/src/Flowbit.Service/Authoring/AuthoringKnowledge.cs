@@ -92,7 +92,8 @@ public static class AuthoringPackageBuilder
                      .Where(path => Path.GetExtension(path) is ".md" or ".json").Order(StringComparer.Ordinal))
         {
             var source = Path.GetRelativePath(root, file).Replace('\\', '/');
-            if (source.StartsWith("docs/refactoring/", StringComparison.Ordinal)) continue;
+            // Internal planning records describe decisions and superseded engines, not supported behavior.
+            if (source.StartsWith("docs/refactoring/", StringComparison.Ordinal) || source.StartsWith("docs/plans/", StringComparison.Ordinal)) continue;
             Add(directory == "examples" ? source : "references/" + source, source);
         }
         Add("references/Flowbit/README.md", "Flowbit/README.md");
@@ -158,6 +159,9 @@ public static class AuthoringPackageBuilder
                     throw new InvalidOperationException("Invalid authoring export path.");
                 if (!resources.ContainsKey(Path.GetRelativePath(directory, path).Replace('\\', '/'))) File.Delete(path);
             }
+            // Folders of resources that are no longer packaged go too, deepest first.
+            foreach (var folder in Directory.GetDirectories(directory, "*", SearchOption.AllDirectories).OrderByDescending(path => path.Length))
+                if (!Directory.EnumerateFileSystemEntries(folder).Any()) Directory.Delete(folder);
         }
         foreach (var (relative, content) in resources)
         {

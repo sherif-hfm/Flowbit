@@ -122,6 +122,8 @@ public sealed partial class WorkflowApiClient
     {
         using var response = await httpClient.GetAsync("/api/workflows/ai/skill", cancellationToken);
         await EnsureSuccessAsync(response, cancellationToken);
+        if (response.Content.Headers.ContentType?.MediaType != "application/zip")
+            throw new InvalidOperationException("The API returned an unexpected skill package format.");
         return await response.Content.ReadAsByteArrayAsync(cancellationToken);
     }
 }

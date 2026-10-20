@@ -19,7 +19,7 @@ public static class WorkflowAiEndpoints
         group.MapGet("/ai/models", Models).Produces<IReadOnlyList<AiModelDto>>()
             .Produces(401).Produces(403).Produces(503);
         group.MapGet("/ai/skill", Skill).Produces(200, contentType: "application/zip")
-            .Produces(401).Produces(403).Produces(503);
+            .Produces(401).Produces(403);
         group.MapPost("/ai/extract", Extract).Accepts<IFormFile>("multipart/form-data")
             .Produces<AiDocumentExtractionDto>().Produces(400).Produces(401).Produces(403).Produces(413)
             .Produces(415).Produces(429).Produces(503).Produces(504);

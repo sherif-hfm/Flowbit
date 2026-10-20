@@ -157,6 +157,24 @@ public sealed class WorkflowAiStreamingClientTests
         Assert.Equal(1, count);
     }
 
+    [Theory]
+    [InlineData("application/zip", true)]
+    [InlineData("text/html", false)]
+    public async Task SkillDownloadAcceptsOnlyAZipPackage(string mediaType, bool accepted)
+    {
+        byte[] package = [0x50, 0x4b, 0x03, 0x04];
+        using var http = new HttpClient(new Handler(request =>
+        {
+            Assert.Equal("/api/workflows/ai/skill", request.RequestUri!.AbsolutePath);
+            var content = new ByteArrayContent(package);
+            content.Headers.ContentType = new(mediaType);
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = content });
+        })) { BaseAddress = new("https://flowbit.test") };
+        var client = new WorkflowApiClient(http);
+        if (accepted) Assert.Equal(package, await client.DownloadAiSkillAsync());
+        else Assert.Contains("unexpected skill package format", (await Assert.ThrowsAsync<InvalidOperationException>(() => client.DownloadAiSkillAsync())).Message);
+    }
+
     private static AiTurnResultDto Result(string kind = "answer") => new(kind, "Working", null, new(false, [], []), "snapshot", "contract");
     private static string Lines(params AiRunEventDto[] events) => string.Join('\n', events.Select(frame => JsonSerializer.Serialize(frame, JsonOptions))) + "\n";
     private static HttpResponseMessage StreamResponse(string content) => new(HttpStatusCode.OK) { Content = new StringContent(content, Encoding.UTF8, "application/x-ndjson") };

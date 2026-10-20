@@ -69,13 +69,13 @@ The `Flowbit.Ai.Authoring` activity source and meter record metadata only: run o
 
 The generated JSON Schema checks the structural canonical contract. It includes all current serialized model properties, rejects unknown configuration fields, and preserves arbitrary business JSON inside JSON-valued defaults. It excludes legacy document shims; ordinary editor legacy import behavior is unchanged.
 
-Schema matching alone cannot check graph semantics, expression rules, catalog existence, deployment settings, or script behavior. When you have Flowbit authorization, optional `POST /api/workflows/validate` accepts the complete workflow JSON and performs the same read-only authored/normalized validation and readiness checks used for the assistant's proposals. The endpoint requires the normal workflow-author role and calls no AI model. It does not save, publish, execute JavaScript, or call external services; the [API reference](api-guide.md) owns its exact response and status contract.
+Schema matching alone cannot check graph semantics, expression rules, catalog existence, deployment settings, or script behavior. When you have Flowbit authorization, optional `POST /api/workflows/validate` accepts the complete workflow JSON and performs the same read-only authored/normalized validation and readiness checks used for the assistant's proposals. The endpoint requires the normal workflow-author role and calls no AI model. Because that role can also create, publish, and delete definitions, give an external agent a token only for this call; the skill tells the agent to use it for nothing else and never print or store it. It does not save, publish, execute JavaScript, or call external services; the [API reference](api-guide.md) owns its exact response and status contract.
 
 Without a server, the external agent can still produce a workflow file, but must report semantic/deployment validation as pending. Import it into Flowbit for authoritative review and save validation. Missing shared-catalog contracts can block saving; Worker publication configuration can block publication. Generated scripts require behavior review even after syntax validation, and REST endpoints/configuration references must be supplied and verified by the workflow owner.
 
 ## Use the same skill in another agent
 
-Download the `flowbit-authoring.zip` package through the assistant's skill download or authenticated `GET /api/workflows/ai/skill`. Extract the **entire `flowbit-authoring` folder**, including `SKILL.md`, `references/`, `examples/`, and `manifest.json`, into the native skill location supported by your agent. Do not copy only `SKILL.md`: its schema, references, and examples are required for full coverage.
+Download the `flowbit-authoring.zip` package with **Download Flowbit AI skill** under **Use with another AI agent** at the end of the assistant panel, or with authenticated `GET /api/workflows/ai/skill`. Extract the **entire `flowbit-authoring` folder**, including `SKILL.md`, `references/`, `examples/`, and `manifest.json`, into the native skill location supported by your agent. Do not copy only `SKILL.md`: its schema, references, and examples are required for full coverage.
 
 The entrypoint uses ordinary skill frontmatter (`name` and `description`) and relative file references. These project-local installation directories are supported by the agents' documentation; the final directory must contain `SKILL.md` directly, without another nested `flowbit-authoring` folder:
 
@@ -85,6 +85,8 @@ The entrypoint uses ordinary skill frontmatter (`name` and `description`) and re
 | Cursor | `.cursor/skills/flowbit-authoring/` | [Cursor skills](https://cursor.com/docs/skills) |
 | OpenCode | `.opencode/skills/flowbit-authoring/` | [OpenCode skills](https://opencode.ai/docs/skills/) |
 | Codex | `.agents/skills/flowbit-authoring/` | [Codex skills](https://learn.chatgpt.com/docs/build-skills) |
+
+Cursor and OpenCode also read `.agents/skills/` and `.claude/skills/`, so a copy in `.agents/skills/` serves Codex, Cursor, and OpenCode, and a copy in `.claude/skills/` serves Claude Code, Cursor, and OpenCode.
 
 For a downloaded archive in your current project, this example installs the full package for Codex. Substitute the parent skill directory from the table for another agent. Review or remove an older package before extracting an update; do not combine releases.
 
@@ -106,9 +108,11 @@ Example requests:
 
 Generation with the portable package needs no Flowbit repository, running Flowbit server, or Flowbit AI-provider key. The external agent uses its own model/account and document tools. The skill does not install a model, obtain credentials, provide OCR executables, or automatically connect to OpenCode.
 
+Import the result in the workflow editor with **File → Load JSON**, review the diagram, and select **Save new version**. The editor does not lay out an imported diagram, so the skill gives the agent the editor's shape sizes and spacing to place nodes itself.
+
 ## Package maintenance and export
 
-The source entrypoint and authoring procedure live in `authoring/flowbit-authoring/`. The .NET exporter derives the schema from the actual serialized workflow model, obtains enum values from the model's constant catalogs, and copies owning developer/node/BPMN/API documentation and canonical examples into a self-contained package. Source-only links outside the package become plain labels. Historical refactoring plans are excluded. Documentation and examples remain maintained in their existing owning files; there is no separately hand-maintained AI schema or example catalog.
+The source entrypoint and authoring procedure live in `authoring/flowbit-authoring/`. The .NET exporter derives the schema from the actual serialized workflow model, obtains enum values from the model's constant catalogs, and copies the Markdown and JSON documentation under `docs/`, the [runtime reference](../Flowbit/README.md), and the canonical examples into a self-contained package. Internal planning records under `docs/plans/` are excluded, because they record decisions and superseded engines rather than supported behavior. Source-only links outside the package, including links to those records, become plain labels. Documentation and examples remain maintained in their existing owning files; there is no separately hand-maintained AI schema or example catalog.
 
 The API build and publish produce the folder and ZIP under the application output's `authoring/` directory. At startup the API verifies their schema/resource hashes against the running model, caches the same immutable content for download, and builds the assistant's documentation view from it, failing fast if one of the six guides or the examples is missing. ZIP entry order, timestamps, and text line endings are deterministic. `manifest.json` includes `FormatVersion`, `SchemaHash`, `ContractHash`, the hash of every resource, and `Compatibility` with the model type and supported node catalog. Use the skill package from your target Flowbit release; offline packages cannot automatically detect that a distant server has upgraded.
 

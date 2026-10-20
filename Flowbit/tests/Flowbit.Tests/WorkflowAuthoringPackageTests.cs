@@ -110,8 +110,12 @@ public sealed class WorkflowAuthoringPackageTests
         var original = File.ReadAllBytes(System.IO.Path.Combine(output.Path, "flowbit-authoring.zip"));
         var package = System.IO.Path.Combine(output.Path, "flowbit-authoring");
         File.WriteAllText(System.IO.Path.Combine(package, "stale-reference.md"), "Old release");
+        var staleFolder = System.IO.Path.Combine(package, "references", "docs", "plans");
+        Directory.CreateDirectory(staleFolder);
+        File.WriteAllText(System.IO.Path.Combine(staleFolder, "old-plan.md"), "Old release");
         AuthoringPackageBuilder.Export(RepositoryRoot, output.Path);
         Assert.False(File.Exists(System.IO.Path.Combine(package, "stale-reference.md")));
+        Assert.False(Directory.Exists(staleFolder));
         Assert.Equal(original, File.ReadAllBytes(System.IO.Path.Combine(output.Path, "flowbit-authoring.zip")));
         var loaded = new AuthoringKnowledge(package);
         Assert.Equal(original, loaded.GetPackageZip());
@@ -137,6 +141,25 @@ public sealed class WorkflowAuthoringPackageTests
         }
         Assert.Contains("(../../examples/README.md)", loaded.Resources["references/docs/node-reference.md"]);
         Assert.Contains("(../references/docs/getting-started.md)", loaded.Resources["examples/README.md"]);
+        // Planning records describe decisions and superseded engines; links to them become labels (checked by the loop above).
+        Assert.DoesNotContain(loaded.Resources.Keys, key => key.StartsWith("references/docs/plans/", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void AuthoringGuide_StatesTheEditorShapeSizes()
+    {
+        // The editor does not lay out an imported diagram, so agents place every shape from these sizes.
+        var editor = EditorSource.Read();
+        int Constant(string name)
+        {
+            var match = Regex.Match(editor, $@"\b{name} = (\d+)");
+            Assert.True(match.Success, $"{name} was not found in flowbit-editor.js.");
+            return int.Parse(match.Groups[1].Value);
+        }
+        var guide = new AuthoringKnowledge().Resources["references/authoring-guide.md"];
+        Assert.Contains($"are {Constant("NODE_W")} x {Constant("NODE_H")}.", guide);
+        Assert.Contains($"are {Constant("EVENT_D")} x {Constant("EVENT_D")} and gateways {Constant("GATEWAY_D")} x {Constant("GATEWAY_D")};", guide);
+        Assert.Contains($"minimum of {Constant("MIN_LANE_W")} x {Constant("MIN_LANE_H")};", guide);
     }
 
     [Fact]
