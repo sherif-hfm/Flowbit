@@ -16,6 +16,9 @@ public sealed class WorkflowAiOptions
         "MaxTruncationRecoveries", "ModelProfiles", "RequestTimeoutSeconds", "RequirementsReviewEnabled", "RetryBaseDelayMilliseconds"
     ];
 
+    /// <summary>Provider settings that moved to the AI models page (engine setting AiAuthoring.Models). They have no effect now.</summary>
+    public static readonly IReadOnlyList<string> RelocatedSettings = ["OpenCodeBaseUrl", "OpenCodeModels", "OpenCodeReasoningEfforts"];
+
     public bool Enabled { get; set; } = true;
     public int MaxInputCharacters { get; set; } = 200_000;
     public int MaxWorkflowCharacters { get; set; } = 2_097_152;
@@ -27,14 +30,13 @@ public sealed class WorkflowAiOptions
     /// <summary>How often the host sends validation errors back before a turn ends without a proposal.</summary>
     public int MaxNudges { get; set; } = 2;
     public int MaxConcurrentRequests { get; set; } = 4;
-    public string OpenCodeBaseUrl { get; set; } = "https://opencode.ai/zen/v1/";
-    public List<string> OpenCodeModels { get; set; } = ["glm-5.3-flash"];
-    public Dictionary<string, string> OpenCodeReasoningEfforts { get; set; } = [];
 
     /// <summary>Removed settings that would silently change behaviour if ignored, such as an engine selection. Set from configuration.</summary>
     public IReadOnlyList<string> UnsupportedSettings { get; set; } = [];
     /// <summary>Removed tuning settings present in configuration; they are ignored with a startup warning.</summary>
     public IReadOnlyList<string> IgnoredSettings { get; set; } = [];
+    /// <summary>Relocated provider settings present in configuration; they are ignored with a startup warning.</summary>
+    public IReadOnlyList<string> ConfiguredRelocatedSettings { get; set; } = [];
 
     /// <summary>Reject invalid server settings before spending a provider call. Values are never caller supplied.</summary>
     public void Validate()
@@ -44,13 +46,8 @@ public sealed class WorkflowAiOptions
                 $"WorkflowAi:{UnsupportedSettings[0]} is no longer supported: the AI assistant has one authoring engine. Remove the setting and restart.", 503);
         if (!InRange(MaxInputCharacters, 1, 1_000_000) || !InRange(MaxWorkflowCharacters, 1, 8_388_608)
             || !InRange(RunTimeoutSeconds, 1, AiAuthoringLimits.MaxRunTimeoutSeconds) || !InRange(MaxProviderCalls, 1, 100)
-            || !InRange(MaxModelOutputTokens, 1, 262_144) || !InRange(MaxNudges, 0, 5) || !InRange(MaxConcurrentRequests, 1, 32)
-            || OpenCodeModels is null || OpenCodeModels.Count is < 1 or > 100
-            || OpenCodeModels.Any(id => string.IsNullOrWhiteSpace(id) || id.Length > 200 || id.Any(char.IsControl))
-            || OpenCodeReasoningEfforts is null)
+            || !InRange(MaxModelOutputTokens, 1, 262_144) || !InRange(MaxNudges, 0, 5) || !InRange(MaxConcurrentRequests, 1, 32))
             throw new WorkflowAiException("provider_configuration", "The AI authoring limits are invalid. Ask your administrator to check the configuration.", 503);
-        if (OpenCodeReasoningEfforts.Values.Any(value => value is not ("low" or "medium" or "high")))
-            throw new WorkflowAiException("provider_configuration", "The configured model reasoning effort must be low, medium, or high.", 503);
     }
 
     private static bool InRange(int value, int minimum, int maximum) => value >= minimum && value <= maximum;
@@ -70,9 +67,10 @@ public sealed class WorkflowAiException(string code, string message, int statusC
 
 public interface IWorkflowAiAuthoringService
 {
-    Task<IReadOnlyList<AiProviderDto>> GetProvidersAsync(CancellationToken cancellationToken);
-    Task<AiTurnResultDto> TurnAsync(AiTurnRequestDto request, string apiKey, CancellationToken cancellationToken);
-    Task<AiTurnResultDto> RunAsync(AiTurnRequestDto request, string apiKey,
+    /// <summary>The configured models the assistant offers, by id and name only; empty when AI authoring is disabled.</summary>
+    Task<IReadOnlyList<AiModelDto>> GetModelsAsync(CancellationToken cancellationToken);
+    Task<AiTurnResultDto> TurnAsync(AiTurnRequestDto request, CancellationToken cancellationToken);
+    Task<AiTurnResultDto> RunAsync(AiTurnRequestDto request,
         Func<AiRunEventDto, CancellationToken, Task>? emit, CancellationToken cancellationToken);
     Task<AiValidationResultDto> ValidateAsync(JsonElement definition, CancellationToken cancellationToken);
 }

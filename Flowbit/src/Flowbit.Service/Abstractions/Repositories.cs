@@ -898,6 +898,10 @@ public interface IEngineSettingsRepository
         Task.FromException<IReadOnlyList<EngineSettingRecord>>(
             new NotSupportedException("This repository does not support settings management."));
 
+    Task<EngineSettingRecord?> GetByIdAsync(long id, CancellationToken cancellationToken) =>
+        Task.FromException<EngineSettingRecord?>(
+            new NotSupportedException("This repository does not support settings management."));
+
     Task<EngineSettingRecord> CreateAsync(
         string? settingNamespace,
         string key,

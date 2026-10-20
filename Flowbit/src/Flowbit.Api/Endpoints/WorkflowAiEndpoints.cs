@@ -16,7 +16,7 @@ public static class WorkflowAiEndpoints
 
     public static RouteGroupBuilder MapWorkflowAiEndpoints(this RouteGroupBuilder group)
     {
-        group.MapGet("/ai/providers", Providers).Produces<IReadOnlyList<AiProviderDto>>()
+        group.MapGet("/ai/models", Models).Produces<IReadOnlyList<AiModelDto>>()
             .Produces(401).Produces(403).Produces(503);
         group.MapGet("/ai/skill", Skill).Produces(200, contentType: "application/zip")
             .Produces(401).Produces(403).Produces(503);
@@ -34,9 +34,9 @@ public static class WorkflowAiEndpoints
         return group;
     }
 
-    public static async Task<IResult> Providers([FromServices] IWorkflowAiAuthoringService service, CancellationToken ct)
+    public static async Task<IResult> Models([FromServices] IWorkflowAiAuthoringService service, CancellationToken ct)
     {
-        try { return Results.Ok(await service.GetProvidersAsync(ct)); }
+        try { return Results.Ok(await service.GetModelsAsync(ct)); }
         catch (WorkflowAiException ex) { return Failure(ex); }
     }
 
@@ -47,19 +47,17 @@ public static class WorkflowAiEndpoints
     }
 
     public static async Task<IResult> Turn(HttpContext http, [FromServices] IWorkflowAiAuthoringService service,
-        [FromServices] IAuthorizationService authorization,
-        [FromHeader(Name = "X-Flowbit-AI-Key")] string? apiKey, CancellationToken ct)
+        [FromServices] IAuthorizationService authorization, CancellationToken ct)
     {
         http.Response.Headers.CacheControl = "no-store";
         try
         {
-            if (string.IsNullOrWhiteSpace(apiKey) || apiKey.Length > 4096 || http.Request.Headers["X-Flowbit-AI-Key"].Count != 1)
-                return Results.Json(new { code = "invalid_api_key", error = "Supply one AI provider key for this request." }, statusCode: 400);
+            if (http.Request.Headers.ContainsKey(ProviderKeyHeader)) return ProviderKeyRefused();
             var request = await ReadTurnAsync(http.Request, ct);
             if (request.SharedVariableKeys is { Count: > 0 } &&
                 !(await authorization.AuthorizeAsync(http.User, http, SharedVariableAuthorizationPolicies.Read)).Succeeded)
                 return Results.Forbid();
-            return Results.Ok(await service.TurnAsync(request, apiKey, ct));
+            return Results.Ok(await service.TurnAsync(request, ct));
         }
         catch (WorkflowAiException ex) { return Failure(ex); }
         catch (BadHttpRequestException ex) { return BodyFailure(ex); }
@@ -67,8 +65,7 @@ public static class WorkflowAiEndpoints
     }
 
     public static async Task<IResult> TurnStream(HttpContext http, [FromServices] IWorkflowAiAuthoringService service,
-        [FromServices] IAuthorizationService authorization,
-        [FromHeader(Name = "X-Flowbit-AI-Key")] string? apiKey, CancellationToken ct)
+        [FromServices] IAuthorizationService authorization, CancellationToken ct)
     {
         http.Response.Headers.CacheControl = "no-store";
         string? runId = null;
@@ -109,13 +106,12 @@ public static class WorkflowAiEndpoints
         }
         try
         {
-            if (string.IsNullOrWhiteSpace(apiKey) || apiKey.Length > 4096 || http.Request.Headers["X-Flowbit-AI-Key"].Count != 1)
-                return Results.Json(new { code = "invalid_api_key", error = "Supply one AI provider key for this request." }, statusCode: 400);
+            if (http.Request.Headers.ContainsKey(ProviderKeyHeader)) return ProviderKeyRefused();
             var request = await ReadTurnAsync(http.Request, ct);
             if (request.SharedVariableKeys is { Count: > 0 } &&
                 !(await authorization.AuthorizeAsync(http.User, http, SharedVariableAuthorizationPolicies.Read)).Succeeded)
                 return Results.Forbid();
-            var result = await service.RunAsync(request, apiKey, Emit, ct);
+            var result = await service.RunAsync(request, Emit, ct);
             if (!terminal)
                 await Emit(new() { RunId = runId ?? Guid.NewGuid().ToString("N"), Sequence = sequence + 1, Type = "result", Result = result }, ct);
             return Results.Empty;
@@ -177,6 +173,16 @@ public static class WorkflowAiEndpoints
     // A turn carries the conversation state, so it may be larger than other requests.
     private const int MaxTurnBytes = 12 * 1024 * 1024;
     private const int MaxFrameBytes = 8 * 1024 * 1024;
+
+    // Settings administrators configure provider keys on the AI models page. A caller's own key is refused rather than ignored,
+    // so it is never silently replaced by the configured one.
+    private const string ProviderKeyHeader = "X-Flowbit-AI-Key";
+
+    private static IResult ProviderKeyRefused() => Results.Json(new
+    {
+        code = "api_key_not_accepted",
+        error = "AI provider keys are configured by a settings administrator on the AI models page. Remove the X-Flowbit-AI-Key header and select a configured model."
+    }, statusCode: 400);
 
     private static async Task<AiTurnRequestDto> ReadTurnAsync(HttpRequest request, CancellationToken ct)
     {

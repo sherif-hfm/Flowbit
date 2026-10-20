@@ -602,6 +602,23 @@ public interface IEngineSettingsService
             new NotSupportedException("This service does not support settings management."));
 }
 
+/// <summary>
+/// Settings administrators' management of the editor assistant's AI models, stored in engine setting AiAuthoring.Models.
+/// Provider keys are write-only: no result carries them.
+/// </summary>
+public interface IAiModelSettingsService
+{
+    Task<IReadOnlyList<AiModelSettingDto>> ListAsync(CancellationToken cancellationToken);
+
+    Task<AiModelSettingDto> CreateAsync(CreateAiModelRequest request, CancellationToken cancellationToken);
+
+    /// <summary>Null when no model has <paramref name="id"/>.</summary>
+    Task<AiModelSettingDto?> UpdateAsync(string id, UpdateAiModelRequest request, CancellationToken cancellationToken);
+
+    /// <summary>False when no model has <paramref name="id"/>.</summary>
+    Task<bool> DeleteAsync(string id, long expectedRevision, CancellationToken cancellationToken);
+}
+
 public interface IWorkflowSettingsService
 {
     Task<IReadOnlyList<WorkflowSettingRecord>> ListAsync(CancellationToken cancellationToken);

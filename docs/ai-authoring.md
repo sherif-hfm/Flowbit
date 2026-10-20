@@ -9,12 +9,23 @@ The assistant returns a proposal for review. Applying a proposal changes the edi
 ## Use the assistant
 
 1. Open a new or existing workflow in Flowbit.Ui and select **AI assistant**.
-2. Select the configured provider/model and enter your own provider API key. OpenCode Zen is the default provider endpoint. Keys are held only for the active editor session and sent for the specific generation request; they are not saved in workflow JSON, the conversation state, or the engine settings. Closing the assistant/session clears the key.
+2. Select one of the AI models a settings administrator [configured](#configure-ai-models). The first model is selected by default. You do not enter a key: the assistant receives only each model's id and name, and the API calls the model's endpoint with the key stored for it. If no model is configured, the panel says so and links to the **AI models** page.
 3. Describe the process or requested modification. You can supply BRD/SRS text or upload a PDF. Inspect extracted text, especially scanned pages where OCR can misread identifiers, numeric thresholds, or negation.
 4. Follow progress while the assistant reads Flowbit's guides and examples, writes the workflow, checks it and corrects it. The panel shows what the assistant read, saved or checked since its previous model call, the wait for the current call, the elapsed time, and the calls used. A run lasts up to 30 minutes and 40 model calls by default. **Cancel** stops it; **Continue** resumes a stopped run from its last completed model call while this panel stays open.
 5. Review the proposal: the assistant's message, its open questions and assumptions, validation results, save and publication readiness, and the workflow JSON. Answer the open questions or ask for changes by sending another message. The assistant keeps the conversation, including what it read and the workflow it wrote.
 6. Apply the proposal to the current draft and review the diagram. Existing-workflow edits retain the family key and unchanged IDs/coordinates and apply as one undoable change. If the diagram changed while the model was working, send another message so the assistant works from the current diagram.
 7. Save the unpublished version when ready, then use the existing explicit publication flow.
+
+## Configure AI models
+
+Settings administrators (any role in `Settings.RequiredRole`) manage the models on **Manage → AI models** (`/ai-models`, see the [UI guide](ui-guide.md#ai-models)) or through the [AI models API](api-guide.md#ai-models). Each model has a display name, the base URL of an OpenAI-compatible chat-completions API, the provider's model name, an optional reasoning effort (`low`, `medium`, `high`, or not sent) and an API key. The first model in the list is the assistant's default.
+
+- **Endpoint.** The base URL must use HTTPS, except plain HTTP on a loopback address for a local server, and must not contain user information, a query or a fragment. Enter the base URL, such as `https://opencode.ai/zen/v1/`, not the `…/chat/completions` address.
+- **Key.** Keys are write-only: they are stored in the `AiAuthoring.Models` engine setting and no page or API returns them. Leave the key blank when editing to keep the stored one. A key needs 16 to 4,096 characters; for an endpoint without keys, enter a unique placeholder of at least 16 characters.
+- **Access.** Every author who can open the assistant can use every configured model, and runs are billed to the configured provider account.
+- **Compatibility.** The shipped evaluation covers GLM-5.3-Flash on OpenCode Zen with `high` reasoning. Another provider must accept OpenAI chat-completions requests with native tool calls and `max_completion_tokens`, plus `reasoning_effort` when one is configured.
+
+[Deployment and operations](deployment.md#ai-model-catalog) covers storage, upgrades and recovery.
 
 ## How the assistant works
 
@@ -28,24 +39,27 @@ One model agent controls authoring itself, the approach measured in the Flowbit 
 - **Proposal.** A valid workflow becomes a proposal: credentials are restored, the diagram is laid out (a new diagram gets a compact lane layout; an edit keeps existing positions and places additions to the right), and Flowbit validates it again, including save and publication readiness.
 - **Other outcomes.** If the model leaves an existing workflow unchanged, the result is an **answer** with no proposal. A workflow that is still invalid or unsaved after the follow-ups ends as **invalid**; the conversation continues with your next message.
 
-The engine runs on Microsoft Agent Framework 1.23.0 with Microsoft.Extensions.AI tool calling and the OpenAI .NET SDK against the configured OpenCode chat-completions endpoint. GLM reasoning is replayed on later tool requests, and tool results are sent as compact JSON.
+The engine runs on Microsoft Agent Framework 1.23.0 with Microsoft.Extensions.AI tool calling and the OpenAI .NET SDK against the selected model's OpenAI-compatible chat-completions endpoint. Compatible reasoning, such as GLM's, is replayed on later tool requests, and tool results are sent as compact JSON.
 
 ### Limits and stops
 
-The shipped limits are 40 model requests per run (request 41 is refused before it is sent), one 1,800-second deadline for the whole run, 32,768 output tokens per model call, two validation follow-ups, and `high` reasoning effort. A single model call has no separate timeout, because long reasoning calls can take several minutes.
+The shipped limits are 40 model requests per run (request 41 is refused before it is sent), one 1,800-second deadline for the whole run, 32,768 output tokens per model call, and two validation follow-ups. Each configured model sets its own reasoning effort. A single model call has no separate timeout, because long reasoning calls can take several minutes.
 
-Nothing is retried automatically. A provider error, a response truncated at the output limit, the request limit, or the deadline **pauses** the run with its reason; **Continue** resumes it. Authentication, quota, and context-size errors need attention first: fix the key, the account, or start a new conversation.
+Nothing is retried automatically. A provider error, a response truncated at the output limit, the request limit, or the deadline **pauses** the run with its reason; **Continue** resumes it. Authentication and quota errors need a settings administrator to check the model's key or provider account on the AI models page first; a context-size error needs a new conversation.
 
 ### Conversation, Cancel and Continue
 
-- **Where the conversation lives.** The conversation state (the agent session, the assistant's files and its read positions) is kept only in the open panel's Blazor Server circuit. It travels with each request as compressed, opaque state, and the API checks it whenever it returns: format, provider/model binding, message roles and content types, complete tool exchanges, size limits, and the absence of the provider key. It contains credential placeholders, never credential values. Any API replica can resume it.
+- **Where the conversation lives.** The conversation state (the agent session, the assistant's files and its read positions) is kept only in the open panel's Blazor Server circuit. It travels with each request as compressed, opaque state, and the API checks it whenever it returns: format, its binding to the selected model, message roles and content types, complete tool exchanges, size limits, and the absence of the provider key. It contains credential placeholders, never credential values. Any API replica can resume it.
+- **Model changes.** A conversation belongs to its configured model, provider model name, endpoint and reasoning effort. If an administrator changes one of them, the next message fails with `checkpoint_configuration_changed` and you start a new conversation; if the model is deleted, the panel reloads the list and starts over. Replacing only the key keeps the conversation.
 - **Checkpoints.** Each model call starts with a checkpoint. **Cancel**, a lost connection, or a stopped run keeps the last checkpoint, and **Continue** resumes with the input that call had not yet stored. Continue requires the editor to be unchanged since the run started.
 - **Diagram changes.** When you edit or apply the diagram between messages, your next message replaces `workflow.json` with the editor's diagram, and the model is told so in one line: `workflow.json now contains the current diagram from the editor.` An unapplied proposal, or an editor unchanged since the last turn, keeps the assistant's own file, including an unfinished one.
-- **Discarded.** A new conversation, a provider or model change, an identity change, closing the panel, navigation, or losing the UI circuit discards the conversation. Reloading the page cannot restore it.
+- **Discarded.** A new conversation, selecting another model, an identity change, closing the panel, navigation, or losing the UI circuit discards the conversation. Reloading the page cannot restore it.
 
 ### Credentials and privacy
 
-The provider receives your messages, document text, selected catalog contracts, the conversation, and the documentation and workflow files the model reads. Recognized workflow credential fields are replaced by location-bound placeholders before anything is sent, and stay placeholders in the conversation state. Their values come back only in the final proposal. Avoid putting unrelated confidential material in requirements; redaction cannot identify every sensitive business value inside arbitrary text or JSON.
+The provider of the selected model receives your messages, document text, selected catalog contracts, the conversation, and the documentation and workflow files the model reads. Recognized workflow credential fields are replaced by location-bound placeholders before anything is sent, and stay placeholders in the conversation state. Their values come back only in the final proposal. Avoid putting unrelated confidential material in requirements; redaction cannot identify every sensitive business value inside arbitrary text or JSON.
+
+The model's API key stays on the server: it is never sent to the browser or stored in the conversation state or workflow JSON, and the API removes it from replies and refuses a returned state that contains it. Because settings administrators choose where requests are sent and which account pays, restrict `Settings.RequiredRole` accordingly.
 
 Text extraction occurs on the Flowbit server. Scanned PDF pages use the configured local OCR tools, so scanned input does not depend on a provider-specific file/vision API. Encrypted, malformed, over-limit, or unreadable documents produce an error; review any extraction warnings before generation. See [deployment configuration](deployment.md) for OCR dependencies and limits.
 
@@ -55,7 +69,7 @@ The `Flowbit.Ai.Authoring` activity source and meter record metadata only: run o
 
 The generated JSON Schema checks the structural canonical contract. It includes all current serialized model properties, rejects unknown configuration fields, and preserves arbitrary business JSON inside JSON-valued defaults. It excludes legacy document shims; ordinary editor legacy import behavior is unchanged.
 
-Schema matching alone cannot check graph semantics, expression rules, catalog existence, deployment settings, or script behavior. When you have Flowbit authorization, optional `POST /api/workflows/validate` accepts the complete workflow JSON and performs the same read-only authored/normalized validation and readiness checks used for the assistant's proposals. The endpoint requires the normal workflow-author role and no AI-provider key. It does not save, publish, execute JavaScript, or call external services; the [API reference](api-guide.md) owns its exact response and status contract.
+Schema matching alone cannot check graph semantics, expression rules, catalog existence, deployment settings, or script behavior. When you have Flowbit authorization, optional `POST /api/workflows/validate` accepts the complete workflow JSON and performs the same read-only authored/normalized validation and readiness checks used for the assistant's proposals. The endpoint requires the normal workflow-author role and calls no AI model. It does not save, publish, execute JavaScript, or call external services; the [API reference](api-guide.md) owns its exact response and status contract.
 
 Without a server, the external agent can still produce a workflow file, but must report semantic/deployment validation as pending. Import it into Flowbit for authoritative review and save validation. Missing shared-catalog contracts can block saving; Worker publication configuration can block publication. Generated scripts require behavior review even after syntax validation, and REST endpoints/configuration references must be supplied and verified by the workflow owner.
 

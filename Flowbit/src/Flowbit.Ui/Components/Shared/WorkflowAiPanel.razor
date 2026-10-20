@@ -11,7 +11,7 @@
         <button type="button" class="btn btn-sm btn-outline-secondary" aria-label="Close AI assistant" @onclick="Close">Close</button>
     </div>
     <div class="ai-content">
-        <p class="ai-help">Requirements, document text, and the current workflow are sent to your selected AI provider. Your key is kept only in this panel's session and is cleared when you close it or change identity.</p>
+        <p class="ai-help">Requirements, document text, and the current workflow are sent to the AI provider of the model you select. Settings administrators configure the available models and their keys.</p>
         @if (!string.IsNullOrWhiteSpace(error))
         {
             <div class="alert alert-danger" role="alert" id="ai-error">@error</div>
@@ -21,18 +21,18 @@
             <div class="alert alert-info" role="status" id="ai-notice">@notice</div>
         }
         <details class="ai-settings" open>
-            <summary>Connection</summary>
-            <label for="ai-provider">Provider</label>
-            <select id="ai-provider" class="form-select" value="@providerId" @onchange="ChangeProvider" disabled="@busy">
-                @foreach (var provider in providers) { <option value="@provider.Id">@provider.Name</option> }
-            </select>
-            <label for="ai-model">Model</label>
-            <select id="ai-model" class="form-select" value="@modelId" @onchange="ChangeModel" disabled="@busy">
-                @foreach (var model in SelectedProvider?.Models ?? []) { <option value="@model.Id">@model.Name</option> }
-            </select>
-            <label for="ai-key">Your provider API key</label>
-            <input id="ai-key" class="form-control" type="password" autocomplete="off" spellcheck="false" @bind="apiKey" @bind:event="oninput" disabled="@busy" />
-            <button type="button" class="btn btn-sm btn-link" @onclick="ClearKey" disabled="@busy">Clear key</button>
+            <summary>Model</summary>
+            @if (modelsLoaded && models.Count == 0)
+            {
+                <p id="ai-no-models" class="ai-warning" role="status">No AI models are available. A settings administrator can add one on the <a href="ai-models" target="_blank" rel="noopener">AI models</a> page.</p>
+            }
+            else
+            {
+                <label for="ai-model">AI model</label>
+                <select id="ai-model" class="form-select" value="@modelId" @onchange="ChangeModel" disabled="@busy">
+                    @foreach (var model in models) { <option value="@model.Id">@model.Name</option> }
+                </select>
+            }
         </details>
 
         <details class="ai-catalog">
@@ -119,7 +119,7 @@
                 {
                     <p class="ai-help">Continue resumes from the last completed model call. The conversation, the files the assistant saved and the selected model stay the same; the run timer and call count restart.</p>
                     @if (IsContinueStale) { <p class="ai-warning" role="status">The editor changed. Send a message to continue with the current workflow.</p> }
-                    <button type="button" id="ai-continue" class="btn btn-outline-primary" disabled="@(busy || IsContinueStale || string.IsNullOrWhiteSpace(apiKey))" @onclick="ContinueAsync">Continue</button>
+                    <button type="button" id="ai-continue" class="btn btn-outline-primary" disabled="@(busy || IsContinueStale || SelectedModel is null)" @onclick="ContinueAsync">Continue</button>
                 }
             </section>
         }
@@ -155,7 +155,7 @@
             <label for="ai-message">Requirements or follow-up</label>
             <textarea id="ai-message" class="form-control" rows="5" dir="auto" placeholder="For example: employees submit a purchase request; their manager approves or rejects it…" @bind="messageText" @bind:event="oninput" disabled="@busy"></textarea>
             <div class="ai-compose-actions">
-                <button type="button" id="ai-send" class="btn btn-primary" disabled="@(busy || string.IsNullOrWhiteSpace(messageText) || string.IsNullOrWhiteSpace(apiKey) || SelectedProvider is null)" @onclick="SendAsync">@(busy ? "Working…" : "Send")</button>
+                <button type="button" id="ai-send" class="btn btn-primary" disabled="@(busy || string.IsNullOrWhiteSpace(messageText) || SelectedModel is null)" @onclick="SendAsync">@(busy ? "Working…" : "Send")</button>
                 @if (busy) { <button type="button" class="btn btn-outline-secondary" @onclick="Cancel">Cancel</button> }
                 <button type="button" class="btn btn-sm btn-link" disabled="@busy" @onclick="NewConversation">New conversation</button>
             </div>
@@ -177,7 +177,8 @@
     private IJSObjectReference? keyboardModule, keyboard;
     private DotNetObjectReference<WorkflowAiPanel>? keyboardCallback;
     private CancellationTokenSource? operation;
-    private IReadOnlyList<AiProviderDto> providers = [];
+    private IReadOnlyList<AiModelDto> models = [];
+    private bool modelsLoaded;
     private readonly List<ChatLine> messages = [];
     private readonly List<SourcePage> sourcePages = [];
     private IReadOnlyList<SharedVariableMetadataDto> catalog = [];
@@ -197,14 +198,14 @@
     private string progressStage = "";
     private DateTimeOffset runStarted;
     private DateTimeOffset? modelCallStarted;
-    private string providerId = "opencode-go", modelId = "", apiKey = "", messageText = "", languages = "eng+ara";
+    private string modelId = "", messageText = "", languages = "eng+ara";
     private string conversationId = Guid.NewGuid().ToString("N");
     private string? error, notice;
     private bool busy, disposed;
     private long identityRevision;
     private long operationIdentityRevision;
     private string operationId = "";
-    private AiProviderDto? SelectedProvider => providers.FirstOrDefault(item => item.Id == providerId);
+    private AiModelDto? SelectedModel => models.FirstOrDefault(item => item.Id == modelId);
     private bool IsStale => result is not null && EditorRevision is not null && result.SnapshotId != EditorRevision;
     private bool CanContinue => conversationState is { CanContinue: true } && stoppedRequest is not null;
     private bool IsContinueStale => stoppedRequest is null || EditorRevision is not null && stoppedRequest.SnapshotId != EditorRevision;
@@ -214,7 +215,7 @@
     protected override async Task OnInitializedAsync()
     {
         Token.Changed += IdentityChanged;
-        await LoadProvidersAsync();
+        await LoadModelsAsync();
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -234,33 +235,23 @@
     [JSInvokable]
     public Task CloseFromKeyboard() => disposed ? Task.CompletedTask : Close.InvokeAsync();
 
-    private async Task LoadProvidersAsync()
+    private async Task LoadModelsAsync()
     {
         var revision = identityRevision;
         try
         {
-            var available = await Api.GetAiProvidersAsync(lifetime.Token);
+            var available = await Api.GetAiModelsAsync(lifetime.Token);
             if (disposed || revision != identityRevision) return;
-            providers = available;
-            if (SelectedProvider is null) providerId = providers.FirstOrDefault()?.Id ?? "";
-            modelId = SelectedProvider?.DefaultModelId ?? "";
-            if (providers.Count == 0) error = "AI authoring is not configured. Ask your Flowbit administrator to enable a provider.";
+            models = available;
+            modelsLoaded = true;
+            // The selection stays while the model still exists; otherwise the first configured model is the default.
+            if (SelectedModel is null) modelId = models.FirstOrDefault()?.Id ?? "";
         }
         catch (OperationCanceledException) when (disposed) { }
         catch (Exception exception) { if (!disposed && revision == identityRevision) error = SafeError(exception); }
     }
 
-    private void ChangeProvider(ChangeEventArgs args)
-    {
-        providerId = args.Value?.ToString() ?? "";
-        modelId = SelectedProvider?.DefaultModelId ?? "";
-        apiKey = "";
-        NewConversation();
-    }
-
-    private void ClearKey() => apiKey = "";
-
-    // The conversation belongs to its model, so another model starts a new conversation; the key and selections stay.
+    // The conversation belongs to its model, so another model starts a new conversation; the selections stay.
     private void ChangeModel(ChangeEventArgs args)
     {
         modelId = args.Value?.ToString() ?? "";
@@ -283,7 +274,7 @@
     private void NewConversation()
     {
         ResetConversation();
-        messageText = ""; apiKey = "";
+        messageText = "";
         catalog = []; selectedKeys.Clear(); catalogSearch = ""; catalogPage = 0; catalogCount = 0;
         ClearDocument(); error = notice = null;
     }
@@ -354,7 +345,7 @@
 
     private async Task SendAsync()
     {
-        if (busy || string.IsNullOrWhiteSpace(apiKey) || string.IsNullOrWhiteSpace(messageText)) return;
+        if (busy || SelectedModel is null || string.IsNullOrWhiteSpace(messageText)) return;
         var cancellationToken = BeginOperation();
         var revision = identityRevision;
         var activeOperationId = operationId;
@@ -367,7 +358,7 @@
             var context = result?.Definition is { } proposal && result.SnapshotId == snapshot.SnapshotId ? proposal : snapshot.Definition;
             var request = new AiTurnRequestDto
             {
-                ProviderId = providerId, ModelId = modelId, ConversationId = conversationId,
+                ModelId = modelId, ConversationId = conversationId,
                 Message = submitted, CurrentWorkflow = context, SnapshotId = snapshot.SnapshotId,
                 SharedVariableKeys = selectedKeys.Order(StringComparer.Ordinal).ToArray(),
                 Sources = sourcePages.Select(page => new AiSourcePageDto(documentFile?.Name ?? "Document", page.Number, page.Text)).ToArray(),
@@ -380,15 +371,28 @@
             await RunAsync(request, revision, activeOperationId, cancellationToken);
         }
         catch (OperationCanceledException) { if (IsCurrentOperation(revision, activeOperationId)) ShowAuthoringCancellation(); }
+        catch (WorkflowApiException exception) when (exception.Code == "unsupported_model" && IsCurrentOperation(revision, activeOperationId))
+        {
+            await ModelRemovedAsync(exception);
+            messageText = submitted;
+        }
         catch (Exception exception) { if (IsCurrentOperation(revision, activeOperationId)) error = SafeError(exception); }
         finally { if (IsCurrentOperation(revision, activeOperationId)) EndAuthoringOperation(); }
+    }
+
+    // A settings administrator removed the selected model: the conversation belonged to it, so start over with the current list.
+    private async Task ModelRemovedAsync(Exception exception)
+    {
+        ResetConversation();
+        await LoadModelsAsync();
+        error = SafeError(exception);
     }
 
     private bool IsCurrentOperation(long revision, string id) => !disposed && revision == identityRevision && id == operationId;
 
     private async Task ContinueAsync()
     {
-        if (busy || !CanContinue || IsContinueStale || string.IsNullOrWhiteSpace(apiKey)) return;
+        if (busy || !CanContinue || IsContinueStale || SelectedModel is null) return;
         var request = stoppedRequest! with { Message = "", Continue = true, State = conversationState };
         var cancellationToken = BeginOperation();
         var revision = identityRevision;
@@ -406,6 +410,10 @@
             await RunAsync(request, revision, activeOperationId, cancellationToken);
         }
         catch (OperationCanceledException) { if (IsCurrentOperation(revision, activeOperationId)) ShowAuthoringCancellation(); }
+        catch (WorkflowApiException exception) when (exception.Code == "unsupported_model" && IsCurrentOperation(revision, activeOperationId))
+        {
+            await ModelRemovedAsync(exception);
+        }
         catch (Exception exception) { if (IsCurrentOperation(revision, activeOperationId)) error = SafeError(exception); }
         finally { if (IsCurrentOperation(revision, activeOperationId)) EndAuthoringOperation(); }
     }
@@ -436,7 +444,7 @@
         runStarted = DateTimeOffset.UtcNow;
         modelCallStarted = null;
         _ = UpdateElapsedAsync(revision, activeOperationId, cancellationToken);
-        var response = await Api.SendAiTurnStreamingAsync(request, apiKey.Trim(), async frame =>
+        var response = await Api.SendAiTurnStreamingAsync(request, async frame =>
         {
             if (!IsCurrentOperation(revision, activeOperationId) || cancellationToken.IsCancellationRequested) return;
             if (frame.State is not null) conversationState = frame.State;
@@ -514,11 +522,7 @@
         finally { if (!disposed && revision == identityRevision) busy = false; }
     }
 
-    private string SafeError(Exception exception)
-    {
-        var message = exception.Message.Split('\n', 2)[0].Trim();
-        return string.IsNullOrEmpty(apiKey) ? message : message.Replace(apiKey, "[redacted]", StringComparison.Ordinal);
-    }
+    private static string SafeError(Exception exception) => exception.Message.Split('\n', 2)[0].Trim();
     public bool CanApplyAuthoringProposal(string expectedOperationId) => !disposed && busy
         && expectedOperationId == operationId && operation is { IsCancellationRequested: false }
         && operationIdentityRevision == Interlocked.Read(ref identityRevision);
@@ -539,12 +543,12 @@
             await InvalidateOperation.InvokeAsync(operationId);
             if (disposed) return;
             busy = false;
-            apiKey = "";
             ClearDocument();
             NewConversation();
-            providers = [];
-            notice = "Identity changed. The AI key and conversation were cleared.";
-            await LoadProvidersAsync();
+            models = [];
+            modelsLoaded = false;
+            notice = "Identity changed. The conversation was cleared.";
+            await LoadModelsAsync();
             StateHasChanged();
         });
     }
@@ -553,7 +557,6 @@
         if (disposed) return;
         disposed = true;
         Token.Changed -= IdentityChanged;
-        apiKey = "";
         ClearRunState();
         conversationState = null;
         operation?.Cancel();

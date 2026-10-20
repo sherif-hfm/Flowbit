@@ -55,11 +55,7 @@ public sealed class OidcBrowserStack : IAsyncDisposable
                 ["WorkflowAi__Enabled"] = enableAi.ToString(),
                 ["Serilog__MinimumLevel__Override__Microsoft.Hosting.Lifetime"] = "Information"
             };
-        if (enableAi)
-        {
-            apiEnvironment["WorkflowAi__OpenCodeBaseUrl"] = AiProvider.BaseAddress;
-            apiEnvironment["WorkflowAi__OpenCodeModels__0"] = "glm-5.3-flash";
-        }
+        // A test that enables AI configures its model through the AI models API after signing in.
         api = HostedProcess.Start("oidc-api", Path.Combine(apiDirectory, "Flowbit.Api.dll"), apiDirectory, RunDirectory,
             apiEnvironment, new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }));
         ApiOrigin = await api.WaitForReadyAsync("/openapi/v1.json", startup.Token);

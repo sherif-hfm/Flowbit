@@ -102,6 +102,15 @@ public sealed class EngineSettingsRepository(AppDbContext dbContext) : IEngineSe
         return entities.Select(MapToRecord).ToList();
     }
 
+    public async Task<EngineSettingRecord?> GetByIdAsync(long id, CancellationToken cancellationToken)
+    {
+        var entity = await dbContext.EngineSettings
+            .AsNoTracking()
+            .SingleOrDefaultAsync(setting => setting.Id == id, cancellationToken);
+
+        return entity is null ? null : MapToRecord(entity);
+    }
+
     public async Task<EngineSettingRecord> CreateAsync(
         string? settingNamespace,
         string key,

@@ -11,18 +11,18 @@ public sealed partial class WorkflowApiClient
     public static TimeSpan AiRequestTimeout => TimeSpan.FromSeconds(AiAuthoringLimits.MaxRunTimeoutSeconds + 60);
     // A checkpoint frame carries the conversation state.
     public const int MaxAiFrameBytes = 8 * 1024 * 1024;
-    public async Task<IReadOnlyList<AiProviderDto>> GetAiProvidersAsync(CancellationToken cancellationToken = default)
+    /// <summary>The AI models configured on the AI models page, by id and name. Their endpoints and keys stay on the server.</summary>
+    public async Task<IReadOnlyList<AiModelDto>> GetAiModelsAsync(CancellationToken cancellationToken = default)
     {
-        using var response = await httpClient.GetAsync("/api/workflows/ai/providers", cancellationToken);
+        using var response = await httpClient.GetAsync("/api/workflows/ai/models", cancellationToken);
         await EnsureSuccessAsync(response, cancellationToken);
-        return await response.Content.ReadFromJsonAsync<IReadOnlyList<AiProviderDto>>(cancellationToken) ?? [];
+        return await response.Content.ReadFromJsonAsync<IReadOnlyList<AiModelDto>>(cancellationToken) ?? [];
     }
 
-    public async Task<AiTurnResultDto> SendAiTurnAsync(AiTurnRequestDto request, string apiKey, CancellationToken cancellationToken = default)
+    public async Task<AiTurnResultDto> SendAiTurnAsync(AiTurnRequestDto request, CancellationToken cancellationToken = default)
     {
         using var authoringClient = clientFactory?.CreateClient(AiClientName);
         using var message = new HttpRequestMessage(HttpMethod.Post, "/api/workflows/ai/turn");
-        message.Headers.Add("X-Flowbit-AI-Key", apiKey);
         message.Content = JsonContent.Create(request);
         using var response = await (authoringClient ?? httpClient).SendAsync(message, cancellationToken);
         await EnsureSuccessAsync(response, cancellationToken);
@@ -30,7 +30,7 @@ public sealed partial class WorkflowApiClient
             ?? throw new InvalidOperationException("The AI service returned an empty response.");
     }
 
-    public async Task<AiTurnResultDto> SendAiTurnStreamingAsync(AiTurnRequestDto request, string apiKey,
+    public async Task<AiTurnResultDto> SendAiTurnStreamingAsync(AiTurnRequestDto request,
         Func<AiRunEventDto, Task> onEvent, CancellationToken cancellationToken = default)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -38,7 +38,6 @@ public sealed partial class WorkflowApiClient
         var ct = timeout.Token;
         using var authoringClient = clientFactory?.CreateClient(AiClientName);
         using var message = new HttpRequestMessage(HttpMethod.Post, "/api/workflows/ai/turn/stream");
-        message.Headers.Add("X-Flowbit-AI-Key", apiKey);
         message.Content = JsonContent.Create(request);
         using var response = await (authoringClient ?? httpClient).SendAsync(message, HttpCompletionOption.ResponseHeadersRead, ct);
         await EnsureSuccessAsync(response, ct);
@@ -81,7 +80,7 @@ public sealed partial class WorkflowApiClient
                 await onEvent(frame);
                 ct.ThrowIfCancellationRequested();
                 if (frame.Type == "error")
-                    throw new WorkflowApiException(System.Net.HttpStatusCode.BadGateway, frame.Message ?? "AI authoring was interrupted.");
+                    throw new WorkflowApiException(System.Net.HttpStatusCode.BadGateway, frame.Message ?? "AI authoring was interrupted.", frame.Code);
                 if (frame.Type is "result" or "paused") return frame.Result!;
             }
             Append(start, count - start);

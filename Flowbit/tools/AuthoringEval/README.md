@@ -1,13 +1,15 @@
 # Authoring evaluation
 
 This opt-in tool runs the editor assistant's agent engine (the Flowbit AI Lab v3 approach) against fixed
-fixtures, with independent checkers. It uses the shipped configuration:
+fixtures, with independent checkers. It uses the evaluated configuration:
 
-- OpenCode Zen with `glm-5.3-flash` and `high` reasoning;
+- one AI model, held in memory as the AI models page would store it: OpenCode Zen (`https://opencode.ai/zen/v1/`) with
+  `glm-5.3-flash`, `high` reasoning and the key from `--key-file`;
 - the run limits of 40 model calls, 32,768 output tokens per call and two validation follow-ups;
 - a run deadline of 1,800 seconds by default.
 
-It builds the same `WorkflowAiAuthoringService` as the API. The former `current`/`optimized` variants, effort
+It builds the same `WorkflowAiAuthoringService` and `OpenAiCompatibleChatClientFactory` as the API, with a fixed
+model store instead of the `AiAuthoring.Models` engine setting, so it needs no database. The former `current`/`optimized` variants, effort
 choices and requirements review no longer exist; the tool rejects their old arguments. The
 [historical evaluation report](RESULTS.md) keeps earlier results without rewriting their outcomes; its commands
 apply only to historical builds.

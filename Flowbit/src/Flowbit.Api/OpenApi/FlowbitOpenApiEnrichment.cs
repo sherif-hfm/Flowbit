@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using Flowbit.Shared.Dtos;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.OpenApi;
 using Microsoft.OpenApi;
@@ -53,6 +54,9 @@ internal static partial class FlowbitOpenApiEnrichment
             ["expectedUpdatedAt"] = "The exact UTC updatedAt value previously read by the caller; stale values produce a conflict.",
             ["clientId"] = "The public identifier of a machine API client.",
             ["clientSecret"] = "Secret machine credential. Store it securely; secret-returning operations expose it only as documented.",
+            ["apiKey"] = "Write-only AI provider API key. It is stored on the server and never returned by any operation.",
+            ["endpoint"] = "The base URL of an OpenAI-compatible chat-completions API: HTTPS, or HTTP on a loopback host.",
+            ["reasoningEffort"] = "The reasoning effort sent with each model request: low, medium, or high; null sends none.",
             ["scopes"] = "The complete set of capabilities granted to the machine client.",
             ["code"] = "A stable machine-readable outcome or error code when this response type defines one.",
             ["error"] = "A human-readable diagnostic. Branch on HTTP status and stable code fields instead of parsing this text.",
@@ -136,6 +140,7 @@ internal static partial class FlowbitOpenApiEnrichment
             AddOrReplaceTag(document.Tags, "Instance Version Change Batches", "Durable preparation and execution of bulk running-instance version changes.");
             AddOrReplaceTag(document.Tags, "Instance Variable Update Batches", "Durable preparation and execution of bulk administrative variable updates.");
             AddOrReplaceTag(document.Tags, "Retention", "Retention policy inspection, preview, and cleanup-run control.");
+            AddOrReplaceTag(document.Tags, "AI Models", "Settings-administrator management of the AI models, endpoints, and write-only keys used by the editor assistant.");
 
             document.Components ??= new OpenApiComponents();
             document.Components.SecuritySchemes ??= new Dictionary<string, IOpenApiSecurityScheme>();
@@ -330,6 +335,8 @@ internal static partial class FlowbitOpenApiEnrichment
                 "The numeric identifier of the workflow instance.",
             "id" when operationKey.Contains("/shared-variable-clients/", StringComparison.Ordinal) =>
                 "The numeric identifier of the managed shared-variable API client.",
+            "id" when operationKey.Contains("/ai-models/", StringComparison.Ordinal) =>
+                "The server-generated identifier of the configured AI model.",
             "id" => "The numeric identifier of the resource named by this route.",
             "workflowId" => "The database identifier of one exact immutable workflow-definition version.",
             "workflowKey" => "The stable, case-sensitive key shared by every version in a workflow family.",
@@ -352,12 +359,18 @@ internal static partial class FlowbitOpenApiEnrichment
             "startEvent" => "Optional authored message-start event name or identifier. Required when event selection is otherwise ambiguous.",
             "catchEvent" => "Optional authored intermediate message-catch event name or identifier. Required when event selection is otherwise ambiguous.",
             "expectedUpdatedAt" => "Exact updatedAt value previously returned by the server for optimistic concurrency.",
+            "expectedRevision" => "Exact revision previously returned by the server for optimistic concurrency.",
             _ => $"{Humanize(name)} supplied in the {location.ToLowerInvariant()}. See the operation description and schema constraints."
         };
     }
 
     private static string DescribeSchemaProperty(Type declaringType, string propertyName)
     {
+        if (propertyName == "id" && (declaringType == typeof(AiModelDto) || declaringType == typeof(AiModelSettingDto)))
+        {
+            return "The stable server-generated identifier of the configured AI model.";
+        }
+
         if (PropertyDescriptions.TryGetValue(propertyName, out var description))
         {
             return description;

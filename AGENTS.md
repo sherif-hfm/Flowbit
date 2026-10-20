@@ -140,14 +140,21 @@ The key pieces:
   schema and migrates supported legacy documents before `loadFromObject()`
   installs the result; malformed/unsupported input preserves the current document.
 - **Seed data**: `seedSample()` builds the "Parallel Purchase Review" example.
-- **AI authoring**: the hosted Blazor assistant owns temporary provider keys, requirements, PDF extraction review,
-  the conversation state, and proposal requests.
+- **AI authoring**: the hosted Blazor assistant owns the selected AI model, requirements, PDF extraction review,
+  the conversation state, and proposal requests. It never receives provider keys.
+  - **AI models.** Settings administrators (`Settings.RequiredRole`) manage the models on `/ai-models` and
+    `/api/ai-models`. `AiModelSettingsService` stores them as one JSON array in engine setting `AiAuthoring.Models`
+    (`AiModelSettingRules` owns the field, endpoint and 16-character minimum key rules) with a revision per model, and
+    resolves a turn's `modelId` to a server-only `AiModelConnection` through `IAiModelStore`. Keys are write-only: never
+    return them in a DTO, page or log, and never log or interpolate an `AiModelConnection` beyond its printed form, which
+    omits the key. `EngineSettingsService` hides that row and refuses generic writes to it. Turns refuse a caller
+    `X-Flowbit-AI-Key` header with `api_key_not_accepted`; the removed `WorkflowAi:OpenCode*` settings only warn.
   - **Editor operations.** Dedicated snapshot/apply operations preserve undo history, the saved baseline, and the locked
     workflow-family identity, rejecting stale proposals after document changes. Do not use `load()` or file import for
     AI edits.
   - **Engine.** One model agent controls authoring (the Flowbit AI Lab v3 approach) on Microsoft Agent Framework
-    1.23.0, with Microsoft.Extensions.AI tool calling and the OpenAI .NET SDK against the configured OpenCode endpoint
-    (provider id `opencode-go`).
+    1.23.0, with Microsoft.Extensions.AI tool calling and the OpenAI .NET SDK against the selected model's
+    OpenAI-compatible endpoint (`OpenAiCompatibleChatClientFactory`).
     - `WorkflowAiAgent` owns the three-line instructions; their fingerprint changes with their wording.
     - `WorkflowAiWorkspace` owns the six tools (`get_files_list`, `get_file`, `save_append_file`, `edit_file`,
       `validate_workflow`, `validate_item`) over the `WorkflowAiDocs` view (six guides plus canonical examples from
@@ -161,14 +168,15 @@ The key pieces:
     - then the proposal: restore credentials, lay out, and validate again with readiness.
 
     The host never edits the agent's workflow. Only layout fields change before a proposal.
-  - **Limits.** 40 model requests, a 1,800-second run deadline, 32,768 output tokens per call, `high` reasoning, and
-    no automatic retries; a stopped run pauses and Continue resumes it.
+  - **Limits.** 40 model requests, a 1,800-second run deadline, 32,768 output tokens per call, the reasoning effort
+    configured per model, and no automatic retries; a stopped run pauses and Continue resumes it.
   - **Errors returned to the model** must name their code, JSON path, the element they are in, and the specific cause
     (`WorkflowAiError.Describe()`). Structural problems are all reported; definition rules give Flowbit's first error.
   - **Conversation state.** Each model call starts with a checkpoint (`WorkflowAiCheckpointingChatClient`): the stored
     session plus the not-yet-stored input. The state lives only in the open Blazor Server circuit and is untrusted when
-    it returns. It is bound to provider/model/endpoint/reasoning and holds credential placeholders, never values or the
-    provider key. Do not add a server-side session store without a request.
+    it returns. It is bound to the configured model's id, provider model name, endpoint and reasoning effort (not its
+    key) and holds credential placeholders, never values or the provider key. Do not add a server-side session store
+    without a request.
   - **Diagram changes.** A changed editor diagram replaces `workflow.json` before the next message, with the fixed sync
     line; an unchanged editor keeps the agent's file.
   - **Removed engine.** Removed engine settings (`ExecutionVariant`, enabled `RequirementsReviewEnabled`) fail with
@@ -1274,7 +1282,11 @@ Storage follows the hybrid design:
   the comma-separated `Settings.RequiredRole` engine setting (missing/blank defaults
   to `admin`). Workflow setting rows are read from PostgreSQL for each new request or
   worker scope, then snapshotted within that scope, so committed edits are visible
-  across processes without a process-local expiration delay.
+  across processes without a process-local expiration delay. The reserved
+  `AiAuthoring.Models` engine setting (matched ignoring case) holds the AI assistant's
+  models and keys; the generic engine-settings service never lists it and refuses to
+  create, update or delete it. It is managed only through `/ai-models` and
+  `/api/ai-models` with the same `Settings.RequiredRole` authorization.
 
 - **History and audit retention.** `/retention` manages seven deployment-wide
   categories through `/api/retention`, authorized by `Settings.RequiredRole`.
@@ -1378,6 +1390,11 @@ what the cross-version `workflowKey` instance search matches.
   `DELETE /{id}?expectedUpdatedAt=...`. Logical identifiers are fixed after create;
   updates change only the value/description, and stale update/delete requests return
   409. Workflow values preserve every valid JSON root type.
+- `AiModelEndpoints` (`/api/ai-models`): settings administrators can `GET /`,
+  `POST /` (201), `PUT /{id}`, and `DELETE /{id}?expectedRevision=...` the editor
+  assistant's models. Requests may carry a write-only `apiKey` (blank on update keeps
+  the stored key); responses never do. Stale revisions and duplicate names return 409.
+  The assistant reads only ids and names through `GET /api/workflows/ai/models`.
 - `TaskDistributionEndpoints`
   (`/api/task-distribution/workflows/{workflowKey}/tasks`): `GET /` returns a
   paged family-scoped list using the same task/instance/workflow-version,
@@ -1524,6 +1541,11 @@ what the cross-version `workflowKey` instance search matches.
 - `/delegation-management` (`DelegationManagement.razor`) - administrator
   search, cross-user grant creation/revocation, and per-workflow acceptance
   policy management.
+- `/ai-models` (`AiModels.razor`) - settings-administrator list, creation, editing
+  and deletion of the editor assistant's AI models with per-model revision
+  concurrency. The key input is write-only: never prefilled, cleared after save,
+  cancel, identity change and disposal. The editor's `WorkflowAiPanel` offers these
+  models by name and has no key field.
 - `/instances/{id}` (`InstanceDetail.razor`) - claim/unclaim, take available
   sequence flows, take authorized parent-level multi-instance interrupt actions,
   view variables and history (including task-assignment/reactivation audit

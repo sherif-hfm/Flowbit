@@ -14,8 +14,11 @@ internal sealed record WorkflowAiStatePayload
 {
     public int FormatVersion { get; init; } = 1;
     public string AgentId { get; init; } = "";
+    /// <summary>The id of the configured model on the AI models page.</summary>
     public string ProviderId { get; init; } = "";
+    /// <summary>The provider's model name sent with each request.</summary>
     public string ModelId { get; init; } = "";
+    /// <summary>The configured model's normalized base URL.</summary>
     public string Endpoint { get; init; } = "";
     public string? ReasoningEffort { get; init; }
     public string PromptFingerprint { get; init; } = "";

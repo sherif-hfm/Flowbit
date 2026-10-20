@@ -13,6 +13,7 @@ namespace Flowbit.Service.Ai;
 /// <summary>Transient authoring only: no definition writes, code execution, or credential persistence.</summary>
 public sealed partial class WorkflowAiAuthoringService(
     IWorkflowAiChatClientFactory clients,
+    IAiModelStore aiModels,
     IAuthoringKnowledge knowledge,
     WorkflowAiDocs docs,
     IWorkflowDefinitionValidator validator,
@@ -23,24 +24,28 @@ public sealed partial class WorkflowAiAuthoringService(
 {
     private static readonly JsonSerializerOptions CatalogOptions = new(JsonSerializerDefaults.Web) { DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull };
 
-    public Task<IReadOnlyList<AiProviderDto>> GetProvidersAsync(CancellationToken cancellationToken)
+    public async Task<IReadOnlyList<AiModelDto>> GetModelsAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        IReadOnlyList<AiProviderDto> result = options.Enabled ? [clients.Descriptor] : [];
-        return Task.FromResult(result);
+        if (!options.Enabled) return [];
+        var models = await aiModels.GetConnectionsAsync(cancellationToken);
+        return models.Select(model => new AiModelDto(model.Id, model.Name)).ToArray();
     }
 
-    public Task<AiTurnResultDto> TurnAsync(AiTurnRequestDto request, string apiKey, CancellationToken cancellationToken)
-        => RunAsync(request, apiKey, null, cancellationToken);
+    public Task<AiTurnResultDto> TurnAsync(AiTurnRequestDto request, CancellationToken cancellationToken)
+        => RunAsync(request, null, cancellationToken);
 
-    public async Task<AiTurnResultDto> RunAsync(AiTurnRequestDto request, string apiKey,
+    public async Task<AiTurnResultDto> RunAsync(AiTurnRequestDto request,
         Func<AiRunEventDto, CancellationToken, Task>? emit, CancellationToken cancellationToken)
     {
         if (!options.Enabled) throw new WorkflowAiException("ai_disabled", "AI authoring is disabled.", 503);
         options.Validate();
-        ValidateRequest(request, apiKey);
-        if (request.ProviderId != clients.Descriptor.Id) throw new WorkflowAiException("unsupported_provider", "Select an enabled AI provider.");
-        if (!clients.Descriptor.Models.Any(model => model.Id == request.ModelId)) throw new WorkflowAiException("unsupported_model", "Select an enabled model.");
+        ValidateRequest(request);
+        // The selected model brings its endpoint and key from the AI models page; callers never supply credentials.
+        var model = string.IsNullOrWhiteSpace(request.ModelId) ? null
+            : (await aiModels.GetConnectionsAsync(cancellationToken)).FirstOrDefault(item => item.Id == request.ModelId);
+        if (model is null)
+            throw new WorkflowAiException("unsupported_model", "The selected AI model is not configured. Select another model.");
         if (!await concurrency.Semaphore.WaitAsync(0, cancellationToken))
             throw new WorkflowAiException("authoring_busy", "AI authoring is busy. Try again when another request finishes.", 429);
         try
@@ -50,7 +55,7 @@ public sealed partial class WorkflowAiAuthoringService(
             var shared = catalog.Count == 0 ? null : JsonSerializer.Serialize(catalog.Select(item => new
                 { item.Key, item.DataType, item.IsArray, item.Nullable, item.Validation, item.Description }), CatalogOptions);
             var conversation = new WorkflowAiConversation(clients, docs, validator, options, knowledge.ContractHash, ValidateModelAsync);
-            return await conversation.RunAsync(request, apiKey, shared, emit, cancellationToken);
+            return await conversation.RunAsync(request, model, shared, emit, cancellationToken);
         }
         finally
         {
@@ -114,10 +119,8 @@ public sealed partial class WorkflowAiAuthoringService(
         };
     }
 
-    private void ValidateRequest(AiTurnRequestDto request, string apiKey)
+    private void ValidateRequest(AiTurnRequestDto request)
     {
-        if (string.IsNullOrWhiteSpace(apiKey) || apiKey.Length > 8192 || apiKey.Any(char.IsControl))
-            throw new WorkflowAiException("invalid_key", "Enter a valid provider API key.");
         if (!Guid.TryParse(request.ConversationId, out _) || string.IsNullOrWhiteSpace(request.SnapshotId) || request.SnapshotId.Length > 256
             || request.Message is null || request.Sources is null || request.SharedVariableKeys is null)
             throw new WorkflowAiException("invalid_request", "A conversation id, message, and editor snapshot are required.");

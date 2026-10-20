@@ -53,10 +53,15 @@ One model agent controls authoring, the approach measured in the Flowbit AI Lab 
   - paused outcomes;
   - the proposal: restore credentials, lay out, and validate again through the service's authored/normalized/readiness check.
 - **`WorkflowAiCheckpointingChatClient`** snapshots the stored session plus the not-yet-stored input at the start of every
-  model call. **`WorkflowAiConversationState`** encodes that untrusted state and checks it when it returns.
-- **Infrastructure** supplies `OpenCodeZenChatClientFactory`:
+  model call. **`WorkflowAiConversationState`** encodes that untrusted state and checks it when it returns. The state is
+  bound to the configured model's id, provider model name, endpoint and reasoning effort, not to its key.
+- **`AiModelSettingsService`** keeps the administrator-managed models as one JSON array in engine setting
+  `AiAuthoring.Models` (`AiModelSettingRules` owns the field and endpoint rules). It serves the write-only `/api/ai-models`
+  routes and, as `IAiModelStore`, resolves a turn's `modelId` to a server-only `AiModelConnection` with the key.
+  `EngineSettingsService` hides that row and refuses generic writes to it.
+- **Infrastructure** supplies `OpenAiCompatibleChatClientFactory`, which builds each run's client from the connection:
   - the OpenAI .NET SDK with no retries, no redirects, and a network timeout as long as the run;
-  - GLM reasoning replay;
+  - compatible reasoning replay, such as GLM's;
   - `WorkflowAiCaptureHandler`, which refuses requests beyond the run's cap before sending them, records usage, and stops
     the run on provider errors or a truncated response.
 
@@ -67,15 +72,16 @@ same deterministic archive, and the agent reads its guides and examples on deman
 `WorkflowDefinitionReadinessChecker` shares catalog, service durability, lock-order, and publication checks with
 `WorkflowDefinitionService`; existing lifecycle operations retain their check order. Read-only authoring never persists
 definitions, warms definition caches, calls generated REST endpoints, or executes generated JavaScript. The UI owns
-temporary credentials, proposals and the conversation state. The editor owns atomic application, undo, identity
-preservation, and snapshot guards.
+the selected model, proposals and the conversation state; it never receives provider keys. The editor owns atomic
+application, undo, identity preservation, and snapshot guards.
 
 The streamed HTTP adapter emits versioned NDJSON progress, a checkpoint with the conversation state at the start of every
 model call, and one terminal outcome; the buffered route uses the same conversation. The state is untrusted and lives only
 in the open Blazor Server circuit. It holds credential placeholders, never values, and never the provider key. API replicas
-need no shared session store, and a lost UI circuit loses the conversation. No database migration is needed. See
-[AI authoring](../docs/ai-authoring.md), [HTTP contracts](../docs/api-guide.md#ai-authoring-and-read-only-validation),
-and [OCR deployment](../docs/deployment.md#ai-authoring-and-local-ocr).
+need no shared session store, and a lost UI circuit loses the conversation. No database migration is needed: the model
+list reuses the engine-settings table. See [AI authoring](../docs/ai-authoring.md),
+[HTTP contracts](../docs/api-guide.md#ai-authoring-and-read-only-validation), [AI models](../docs/api-guide.md#ai-models),
+[OCR deployment](../docs/deployment.md#ai-authoring-and-local-ocr), and the [AI model catalog](../docs/deployment.md#ai-model-catalog).
 
 The UI uses a dedicated authoring HTTP client whose deadline covers the maximum configurable one-hour server run; normal
 API requests keep their existing timeout. `Flowbit.Ai.Authoring` spans and metrics contain only safe metadata. The

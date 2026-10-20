@@ -100,21 +100,21 @@ internal sealed class WorkflowAiCaptureHandler(WorkflowAiRunMeter meter, string 
     {
         var (code, type, message) = ReadError(bytes);
         if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
-            return new("provider_auth", "OpenCode rejected the key or account access. Check your key and account, then Continue.");
+            return new("provider_auth", "The AI provider rejected the key or account access of the selected model. Ask a settings administrator to check it on the AI models page, then Continue.");
         if (response.StatusCode == HttpStatusCode.PaymentRequired
             || IsOneOf(code, type, "insufficient_quota", "quota_exceeded", "billing_hard_limit_reached", "credit_balance_too_low", "insufficient_credits")
             || ContainsAny(message, "insufficient credits", "insufficient balance", "credit balance is too low", "quota exceeded", "billing limit"))
-            return new("provider_quota", "OpenCode account quota or credit is exhausted. Check your provider account before continuing.");
+            return new("provider_quota", "The AI provider account's quota or credit is exhausted. Ask a settings administrator to check it before continuing.");
         if (IsOneOf(code, type, "context_length_exceeded", "context_window_exceeded", "prompt_too_long", "input_too_long")
             || ContainsAny(message, "maximum context length", "context window", "context length exceeded", "too many tokens", "prompt is too long", "input is too long"))
             return new("provider_context", "The conversation exceeds the selected model's context window. Start a new conversation.");
         if (IsOneOf(code, type, "content_filter", "content_policy_violation", "safety_violation", "refusal"))
             return new("provider_refusal", "The selected model declined this request. Review the requirements before trying again.");
         if (response.StatusCode == HttpStatusCode.TooManyRequests)
-            return new("provider_throttled", "OpenCode is temporarily rate limited. Continue when the limit has passed.");
+            return new("provider_throttled", "The AI provider is temporarily rate limited. Continue when the limit has passed.");
         if (response.StatusCode == HttpStatusCode.RequestTimeout || (int)response.StatusCode >= 500)
-            return new("provider_unavailable", "OpenCode is temporarily unavailable. Continue to try again.");
-        return new("provider_invalid_response", "OpenCode rejected this request. Check the selected model and provider configuration.");
+            return new("provider_unavailable", "The AI provider is temporarily unavailable. Continue to try again.");
+        return new("provider_invalid_response", "The AI provider rejected this request. Ask a settings administrator to check the selected model's name and endpoint on the AI models page.");
     }
 
     private static (string Code, string Type, string Message) ReadError(byte[] bytes)

@@ -21,8 +21,9 @@ public sealed class WorkflowAiConversationTests
     private static readonly JsonElement EmptyDocument = JsonDocument.Parse("{\"id\":\"new-key\",\"name\":\"New workflow\",\"flowNodes\":[],\"sequenceFlows\":[]}").RootElement;
     private static readonly string[] ToolNames = ["get_files_list", "get_file", "save_append_file", "edit_file", "validate_workflow", "validate_item"];
 
-    private static Task<AiTurnResultDto> Run(ScriptedHandler handler, AiTurnRequestDto request, List<AiRunEventDto>? events = null, WorkflowAiOptions? options = null) =>
-        AgentHarness.Conversation(handler, options).RunAsync(request, AgentHarness.Key, null,
+    private static Task<AiTurnResultDto> Run(ScriptedHandler handler, AiTurnRequestDto request, List<AiRunEventDto>? events = null,
+        WorkflowAiOptions? options = null, AiModelConnection? connection = null) =>
+        AgentHarness.Conversation(handler, options).RunAsync(request, connection ?? AgentHarness.Connection, null,
             events is null ? null : (frame, _) => { events.Add(frame); return Task.CompletedTask; }, CancellationToken.None);
 
     [Fact]
@@ -258,13 +259,18 @@ public sealed class WorkflowAiConversationTests
         var proposal = await Run(new ScriptedHandler(Completions.Save("workflow.json", Example), Completions.Final("Done.")), AgentHarness.Request("Build it.", EmptyDocument));
         var untouched = new ScriptedHandler();
 
-        async Task<WorkflowAiException> Refused(AiTurnRequestDto request) =>
-            await Assert.ThrowsAsync<WorkflowAiException>(() => Run(untouched, request));
+        async Task<WorkflowAiException> Refused(AiTurnRequestDto request, AiModelConnection? connection = null) =>
+            await Assert.ThrowsAsync<WorkflowAiException>(() => Run(untouched, request, connection: connection));
 
         Assert.Equal("invalid_state", (await Refused(AgentHarness.Request("Next.", EmptyDocument, proposal.State! with { Data = "bm90IGd6aXA=" }))).Code);
         Assert.Equal("invalid_state", (await Refused(AgentHarness.Request("Next.", EmptyDocument, proposal.State, conversationId: Guid.NewGuid().ToString()))).Code);
-        Assert.Equal("checkpoint_configuration_changed",
-            (await Refused(AgentHarness.Request("Next.", EmptyDocument, proposal.State) with { ModelId = "glm-5.3" })).Code);
+        // The conversation belongs to its configured model: another model, provider model, endpoint or reasoning effort starts over.
+        foreach (var otherSettings in new[]
+        {
+            AgentHarness.Connection with { Id = "another-model" }, AgentHarness.Connection with { Model = "glm-5.3" },
+            AgentHarness.Connection with { Endpoint = "https://other.example/v1/" }, AgentHarness.Connection with { ReasoningEffort = null }
+        })
+            Assert.Equal("checkpoint_configuration_changed", (await Refused(AgentHarness.Request("Next.", EmptyDocument, proposal.State), otherSettings)).Code);
         Assert.Equal("nothing_to_continue", (await Refused(AgentHarness.Request("", EmptyDocument, proposal.State, resume: true))).Code);
 
         var paused = await Run(new ScriptedHandler(Completions.Final("x")) { Status = HttpStatusCode.ServiceUnavailable }, AgentHarness.Request("Build it.", EmptyDocument));
@@ -278,6 +284,24 @@ public sealed class WorkflowAiConversationTests
         var leaked = WorkflowAiConversationState.Decode(paused.State!, AgentHarness.Key) with { ReturnedReads = [AgentHarness.Key] };
         Assert.Equal("invalid_state", (await Refused(AgentHarness.Request("", EmptyDocument, WorkflowAiConversationState.Encode(leaked, null, null), resume: true))).Code);
         Assert.Empty(untouched.Bodies);
+    }
+
+    [Fact]
+    public async Task ARotatedKeyKeepsTheConversationAndReachesOnlyTheProvider()
+    {
+        var proposal = await Run(new ScriptedHandler(Completions.Save("workflow.json", Example), Completions.Final("Done.")),
+            AgentHarness.Request("Build the approval.", EmptyDocument));
+        const string rotated = "sk-rotated-provider-key-9876543210";
+        var handler = new ScriptedHandler(Completions.Final("Nothing to change."));
+
+        var answer = await Run(handler, AgentHarness.Request("Is anything missing?", proposal.Definition, proposal.State),
+            connection: AgentHarness.Connection with { ApiKey = rotated });
+
+        Assert.Equal("answer", answer.Kind);
+        Assert.Equal("Bearer " + rotated, Assert.Single(handler.Requests).Headers.Authorization!.ToString());
+        Assert.DoesNotContain(rotated, Assert.Single(handler.Bodies));
+        Assert.DoesNotContain(rotated, StateText(answer.State!));
+        Assert.DoesNotContain(AgentHarness.Key, StateText(answer.State!));
     }
 
     [Fact]

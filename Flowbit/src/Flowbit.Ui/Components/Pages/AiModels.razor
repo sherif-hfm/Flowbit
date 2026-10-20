@@ -1,0 +1,558 @@
+@page "/ai-models"
+@implements IDisposable
+@using System.Net
+@using Flowbit.Ui.Auth
+@inject WorkflowApiClient Api
+@inject TokenState Token
+@inject IJSRuntime JS
+
+<PageTitle>AI Models · Flowbit</PageTitle>
+
+<PageHeader Eyebrow="Manage" Title="AI models"
+            Description="Configure the models the workflow editor's AI assistant can use. Authors only pick a model; the API calls it with the key stored here.">
+    <Actions>
+        <button class="btn btn-outline-primary" @onclick="OpenCreate" disabled="@(!Token.HasToken || loading || submitting)">
+            <AppIcon Name="plus" /> Add model
+        </button>
+        <button class="btn btn-primary" @onclick="LoadAsync" disabled="@(!Token.HasToken || loading)">
+            <AppIcon Name="refresh" /> Refresh
+        </button>
+    </Actions>
+</PageHeader>
+
+@if (!string.IsNullOrWhiteSpace(error))
+{
+    <div class="alert alert-danger" role="alert">@error</div>
+}
+@if (!string.IsNullOrWhiteSpace(success))
+{
+    <div class="alert alert-success" role="status">@success</div>
+}
+
+@if (!Token.HasToken)
+{
+    <section class="panel">
+        <EmptyState Icon="token" Title="An administrative identity is required"
+                    Description="Set an identity carrying a configured settings administrator role.">
+            <IdentityAction Class="btn btn-primary" DevelopmentLabel="Set test identity" />
+        </EmptyState>
+    </section>
+}
+else
+{
+    <section class="panel mb-3" aria-label="Current settings administrator">
+        <div class="d-flex flex-wrap align-items-center justify-content-between gap-3">
+            <div>
+                <span class="data-subtitle mt-0">Managing as</span>
+                <strong class="d-block text-dark">@(Token.CurrentUser ?? "anonymous")</strong>
+            </div>
+            <div class="d-flex flex-wrap gap-2">
+                @if (Token.CurrentRoles.Count == 0)
+                {
+                    <StatusBadge Status="neutral" Text="No roles" />
+                }
+                else
+                {
+                    @foreach (var role in Token.CurrentRoles)
+                    {
+                        <StatusBadge Status="primary" Text="@role" />
+                    }
+                }
+            </div>
+        </div>
+    </section>
+
+    @if (formOpen)
+    {
+        <section class="panel mb-3" aria-labelledby="ai-model-form-heading">
+            <div class="section-heading">
+                <div>
+                    <h2 id="ai-model-form-heading">@(IsEditing ? "Edit AI model" : "Add AI model")</h2>
+                    <p>@(IsEditing
+                        ? "Leave the API key blank to keep the stored key. Changing the endpoint, model, or reasoning effort makes open assistant conversations start over."
+                        : "The API key is stored on the server and is never shown again.")</p>
+                </div>
+                <button type="button" class="btn-close" aria-label="Close AI model form" @onclick="CloseForm" disabled="@submitting"></button>
+            </div>
+
+            @if (!string.IsNullOrWhiteSpace(formError))
+            {
+                <div class="alert alert-danger" role="alert">
+                    @formError
+                    @if (editConflict)
+                    {
+                        <button type="button" class="btn btn-sm btn-outline-danger ms-2" @onclick="ReloadEditAsync" disabled="@(loading || submitting)">
+                            Reload latest
+                        </button>
+                    }
+                </div>
+            }
+
+            <div class="form-grid">
+                <div>
+                    <label class="form-label" for="ai-model-setting-name">Name</label>
+                    <input id="ai-model-setting-name" class="form-control" maxlength="100" autocomplete="off"
+                           placeholder="GLM 5.3 Flash (OpenCode Zen)" @bind="formName" @bind:event="oninput" />
+                    <div class="form-text">Shown to authors in the assistant's model list.</div>
+                </div>
+                <div>
+                    <label class="form-label" for="ai-model-setting-model">Model</label>
+                    <input id="ai-model-setting-model" class="form-control" maxlength="200" autocomplete="off" spellcheck="false"
+                           placeholder="glm-5.3-flash" @bind="formModel" @bind:event="oninput" />
+                    <div class="form-text">The provider's model name, sent with every request.</div>
+                </div>
+                <div class="full">
+                    <label class="form-label" for="ai-model-setting-endpoint">Endpoint URL</label>
+                    <input id="ai-model-setting-endpoint" class="form-control" type="url" maxlength="2000" autocomplete="off" spellcheck="false"
+                           placeholder="https://opencode.ai/zen/v1/" @bind="formEndpoint" @bind:event="oninput" />
+                    <div class="form-text">
+                        The base URL of an OpenAI-compatible API, without <span class="mono-id">chat/completions</span>.
+                        HTTPS is required, except plain HTTP on a loopback address such as 127.0.0.1.
+                    </div>
+                </div>
+                <div>
+                    <label class="form-label" for="ai-model-setting-reasoning">Reasoning effort</label>
+                    <select id="ai-model-setting-reasoning" class="form-select" @bind="formReasoning">
+                        <option value="">Not sent</option>
+                        <option value="low">Low</option>
+                        <option value="medium">Medium</option>
+                        <option value="high">High</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="form-label" for="ai-model-setting-key">@(IsEditing ? "New API key (optional)" : "API key")</label>
+                    <input id="ai-model-setting-key" class="form-control" type="password" maxlength="4096" autocomplete="new-password" spellcheck="false"
+                           placeholder="@(IsEditing ? "Leave blank to keep the stored key" : null)" @bind="formApiKey" @bind:event="oninput" />
+                    <div class="form-text">At least 16 characters. For an endpoint without keys, enter a unique placeholder.</div>
+                </div>
+            </div>
+
+            <div class="d-flex flex-wrap justify-content-end gap-2 mt-3">
+                <button type="button" class="btn btn-outline-secondary" @onclick="CloseForm" disabled="@submitting">Cancel</button>
+                <button type="button" id="ai-model-save" class="btn btn-primary" @onclick="SaveAsync" disabled="@submitting">
+                    @(submitting ? "Saving…" : IsEditing ? "Save changes" : "Add model")
+                </button>
+            </div>
+        </section>
+    }
+
+    <section class="panel panel-flush" aria-labelledby="ai-model-results-heading">
+        <div class="section-heading">
+            <div>
+                <h2 id="ai-model-results-heading">AI models</h2>
+                <p>@ResultSummary The first model is the assistant's default. Stored in engine setting <span class="mono-id">AiAuthoring.Models</span>, which the Engine settings page does not show.</p>
+            </div>
+        </div>
+
+        @if (loading && models is null)
+        {
+            <div class="p-3" role="status"><div class="skeleton"></div></div>
+        }
+        else if (loadFailed || models is null)
+        {
+            <EmptyState Icon="alert" Title="AI models unavailable"
+                        Description="Use Refresh to retry. Authorization and API errors are shown above." />
+        }
+        else if (models.Count == 0)
+        {
+            <EmptyState Icon="settings" Title="No AI models"
+                        Description="Add a model so authors can use the AI assistant in the workflow editor." />
+        }
+        else
+        {
+            <div class="table-responsive">
+                <table class="table align-middle">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Model</th>
+                            <th>Endpoint</th>
+                            <th>Reasoning</th>
+                            <th>Timestamps</th>
+                            <th><span class="visually-hidden">Actions</span></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var (item, index) in models.Select((item, index) => (item, index)))
+                        {
+                            <tr>
+                                <td>
+                                    <span class="data-title">@item.Name</span>
+                                    @if (index == 0)
+                                    {
+                                        <StatusBadge Status="primary" Text="Assistant default" />
+                                    }
+                                    <span class="data-subtitle">Revision @item.Revision · Key stored</span>
+                                </td>
+                                <td><span class="mono-id text-break">@item.Model</span></td>
+                                <td><span class="mono-id text-break">@item.Endpoint</span></td>
+                                <td>@ReasoningLabel(item.ReasoningEffort)</td>
+                                <td>
+                                    @item.UpdatedAt.ToLocalTime().ToString("g")
+                                    <span class="data-subtitle">Created @item.CreatedAt.ToLocalTime().ToString("g")</span>
+                                </td>
+                                <td class="text-end">
+                                    <div class="d-flex justify-content-end gap-2">
+                                        <button type="button" class="btn btn-sm btn-outline-primary" @onclick="() => OpenEdit(item)" disabled="@submitting">Edit</button>
+                                        <button type="button" class="btn btn-sm btn-outline-danger" @onclick="() => DeleteAsync(item)" disabled="@submitting">Delete</button>
+                                    </div>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </section>
+}
+
+@code {
+    private IReadOnlyList<AiModelSettingDto>? models;
+    private string? editingId;
+    private long? expectedRevision;
+    private string? formName;
+    private string? formEndpoint;
+    private string? formModel;
+    private string formReasoning = string.Empty;
+    // The key the administrator is typing. It is never filled from the server and is cleared once the form closes.
+    private string formApiKey = string.Empty;
+    private string? error;
+    private string? success;
+    private string? formError;
+    private bool formOpen;
+    private bool editConflict;
+    private bool loading;
+    private bool loadFailed;
+    private bool submitting;
+    private long requestVersion;
+    private long identityVersion;
+
+    private bool IsEditing => editingId is not null;
+    private string ResultSummary => models is null
+        ? loading ? "Loading AI models…" : "AI models could not be loaded."
+        : models.Count == 1 ? "1 model." : $"{models.Count:N0} models.";
+
+    protected override async Task OnInitializedAsync()
+    {
+        Token.Changed += OnTokenChanged;
+        if (Token.HasToken)
+        {
+            await LoadAsync();
+        }
+    }
+
+    private async Task LoadAsync()
+    {
+        var currentRequest = ++requestVersion;
+        if (!Token.HasToken)
+        {
+            models = null;
+            loading = false;
+            loadFailed = false;
+            error = null;
+            return;
+        }
+
+        try
+        {
+            loading = true;
+            loadFailed = false;
+            error = null;
+            var loaded = await Api.GetAiModelSettingsAsync();
+            if (currentRequest != requestVersion)
+            {
+                return;
+            }
+
+            models = loaded ?? [];
+        }
+        catch (WorkflowApiException ex) when (ex.StatusCode == HttpStatusCode.Forbidden)
+        {
+            if (currentRequest != requestVersion)
+            {
+                return;
+            }
+
+            models = [];
+            loadFailed = true;
+            error = "This identity does not have the configured settings administrator role.";
+        }
+        catch (Exception ex)
+        {
+            if (currentRequest != requestVersion)
+            {
+                return;
+            }
+
+            loadFailed = true;
+            error = ex.Message;
+        }
+        finally
+        {
+            if (currentRequest == requestVersion)
+            {
+                loading = false;
+            }
+        }
+    }
+
+    private void OpenCreate()
+    {
+        ResetForm();
+        formOpen = true;
+        success = null;
+    }
+
+    private void OpenEdit(AiModelSettingDto item)
+    {
+        editingId = item.Id;
+        expectedRevision = item.Revision;
+        formName = item.Name;
+        formEndpoint = item.Endpoint;
+        formModel = item.Model;
+        formReasoning = item.ReasoningEffort ?? string.Empty;
+        formApiKey = string.Empty;
+        formError = null;
+        editConflict = false;
+        formOpen = true;
+        success = null;
+    }
+
+    private void CloseForm()
+    {
+        if (submitting)
+        {
+            return;
+        }
+
+        ResetForm();
+    }
+
+    private async Task SaveAsync()
+    {
+        if (string.IsNullOrWhiteSpace(formName) || string.IsNullOrWhiteSpace(formEndpoint) || string.IsNullOrWhiteSpace(formModel))
+        {
+            formError = "A name, endpoint URL, and model are required.";
+            return;
+        }
+
+        if (!IsEditing && string.IsNullOrWhiteSpace(formApiKey))
+        {
+            formError = "An API key is required.";
+            return;
+        }
+
+        var currentIdentity = identityVersion;
+        var name = formName.Trim();
+        var reasoning = string.IsNullOrEmpty(formReasoning) ? null : formReasoning;
+        try
+        {
+            submitting = true;
+            formError = null;
+            editConflict = false;
+            error = success = null;
+
+            if (editingId is { } id)
+            {
+                if (expectedRevision is null)
+                {
+                    formError = "The model's revision is missing. Reload the model and try again.";
+                    return;
+                }
+
+                await Api.UpdateAiModelAsync(
+                    id,
+                    new UpdateAiModelRequest(formName, formEndpoint, formModel, reasoning,
+                        string.IsNullOrWhiteSpace(formApiKey) ? null : formApiKey, expectedRevision.Value));
+                if (currentIdentity != identityVersion)
+                {
+                    return;
+                }
+
+                success = $"AI model {name} updated.";
+            }
+            else
+            {
+                await Api.CreateAiModelAsync(new CreateAiModelRequest(formName, formEndpoint, formModel, reasoning, formApiKey));
+                if (currentIdentity != identityVersion)
+                {
+                    return;
+                }
+
+                success = $"AI model {name} added.";
+            }
+
+            ResetForm();
+            await LoadAsync();
+        }
+        catch (WorkflowApiException ex) when (ex.StatusCode == HttpStatusCode.Conflict)
+        {
+            if (currentIdentity != identityVersion)
+            {
+                return;
+            }
+
+            editConflict = IsEditing;
+            formError = $"{ex.Message} Your form is preserved.";
+        }
+        catch (WorkflowApiException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+        {
+            if (currentIdentity != identityVersion)
+            {
+                return;
+            }
+
+            formError = "This AI model no longer exists. Close the form and refresh the list.";
+        }
+        catch (WorkflowApiException ex) when (ex.StatusCode == HttpStatusCode.Forbidden)
+        {
+            if (currentIdentity != identityVersion)
+            {
+                return;
+            }
+
+            formError = "This identity does not have the configured settings administrator role.";
+        }
+        catch (Exception ex)
+        {
+            if (currentIdentity != identityVersion)
+            {
+                return;
+            }
+
+            formError = ex.Message;
+        }
+        finally
+        {
+            if (currentIdentity == identityVersion)
+            {
+                submitting = false;
+            }
+        }
+    }
+
+    private async Task ReloadEditAsync()
+    {
+        if (editingId is not { } id)
+        {
+            return;
+        }
+
+        var currentIdentity = identityVersion;
+        await LoadAsync();
+        if (currentIdentity != identityVersion)
+        {
+            return;
+        }
+
+        var latest = models?.FirstOrDefault(item => item.Id == id);
+        if (latest is null)
+        {
+            formError = "This AI model no longer exists. Close the form and refresh the list.";
+            editConflict = false;
+            return;
+        }
+
+        OpenEdit(latest);
+    }
+
+    private async Task DeleteAsync(AiModelSettingDto item)
+    {
+        var currentIdentity = identityVersion;
+        var confirmed = await JS.InvokeAsync<bool>(
+            "confirm",
+            $"Delete AI model '{item.Name}'? Authors can no longer select it, and its stored key is removed.");
+        if (!confirmed || currentIdentity != identityVersion)
+        {
+            return;
+        }
+
+        try
+        {
+            submitting = true;
+            error = success = null;
+            await Api.DeleteAiModelAsync(item.Id, item.Revision);
+            if (currentIdentity != identityVersion)
+            {
+                return;
+            }
+
+            if (editingId == item.Id)
+            {
+                ResetForm();
+            }
+            success = $"AI model {item.Name} deleted.";
+            await LoadAsync();
+        }
+        catch (WorkflowApiException ex) when (ex.StatusCode is HttpStatusCode.Conflict or HttpStatusCode.NotFound)
+        {
+            if (currentIdentity != identityVersion)
+            {
+                return;
+            }
+
+            error = "This AI model changed before it could be deleted. Refresh the list and try again.";
+        }
+        catch (WorkflowApiException ex) when (ex.StatusCode == HttpStatusCode.Forbidden)
+        {
+            if (currentIdentity != identityVersion)
+            {
+                return;
+            }
+
+            error = "This identity does not have the configured settings administrator role.";
+        }
+        catch (Exception ex)
+        {
+            if (currentIdentity != identityVersion)
+            {
+                return;
+            }
+
+            error = ex.Message;
+        }
+        finally
+        {
+            if (currentIdentity == identityVersion)
+            {
+                submitting = false;
+            }
+        }
+    }
+
+    private void ResetForm()
+    {
+        formOpen = false;
+        editingId = null;
+        expectedRevision = null;
+        formName = formEndpoint = formModel = formError = null;
+        formReasoning = string.Empty;
+        formApiKey = string.Empty;
+        editConflict = false;
+    }
+
+    private void OnTokenChanged() => _ = InvokeAsync(async () =>
+    {
+        identityVersion++;
+        requestVersion++;
+        models = null;
+        error = success = null;
+        loading = loadFailed = submitting = false;
+        ResetForm();
+        await LoadAsync();
+    });
+
+    private static string ReasoningLabel(string? effort) => effort switch
+    {
+        "low" => "Low",
+        "medium" => "Medium",
+        "high" => "High",
+        _ => "Not sent"
+    };
+
+    public void Dispose()
+    {
+        Token.Changed -= OnTokenChanged;
+        formApiKey = string.Empty;
+    }
+}

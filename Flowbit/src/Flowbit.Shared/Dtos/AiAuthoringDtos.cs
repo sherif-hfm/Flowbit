@@ -2,15 +2,15 @@ using System.Text.Json;
 
 namespace Flowbit.Shared.Dtos;
 
+/// <summary>An AI model configured on the AI models page, as offered to the assistant. Its endpoint and key stay on the server.</summary>
 public sealed record AiModelDto(string Id, string Name);
-public sealed record AiProviderDto(string Id, string Name, string DefaultModelId, IReadOnlyList<AiModelDto> Models);
 public sealed record AiSourcePageDto(string SourceName, int PageNumber, string Text);
 
-/// <summary>Transient authoring input. Provider credentials must only travel in the dedicated request header.</summary>
+/// <summary>Transient authoring input. It never carries provider credentials: the API uses the key configured for the selected model.</summary>
 public sealed record AiTurnRequestDto
 {
-    public string ProviderId { get; init; } = "opencode-go";
-    public string ModelId { get; init; } = "glm-5.3-flash";
+    /// <summary>The id of a configured model, as returned by <c>GET /api/workflows/ai/models</c>.</summary>
+    public string ModelId { get; init; } = string.Empty;
     public string ConversationId { get; init; } = string.Empty;
     /// <summary>The user's message, sent to the model exactly as typed. Empty only with <see cref="Continue"/>.</summary>
     public string Message { get; init; } = string.Empty;

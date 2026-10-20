@@ -1,9 +1,11 @@
 using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http.Headers;
+using System.Net.Http.Json;
 using System.Text.Json;
 using Flowbit.BrowserTests.Infrastructure;
 using Flowbit.BrowserTests.Support;
+using Flowbit.Shared.Dtos;
 using Microsoft.Playwright;
 using Xunit;
 
@@ -138,13 +140,14 @@ public sealed class OidcAuthenticationSmokeTests
         try
         {
             await LoginAsync(editor, stack, "alice", "/workflows/new");
+            const string providerKey = "synthetic-oidc-ai-provider-key-0123456789";
+            await ConfigureAiModelAsync(stack, "alice", providerKey);
             await Assertions.Expect(editor.Locator(".workflow-editor-page")).ToHaveAttributeAsync("data-editor-ready", "true");
             await EditorInteractions.LoadWorkflowAsync(editor, EditorInteractions.FixturePath("editor-basic.json"));
             await editor.Locator("#wfName").FillAsync("Unsaved AI OIDC draft");
             await editor.Locator("#open-ai-assistant").ClickAsync();
-            await Assertions.Expect(editor.Locator("#ai-provider")).ToHaveValueAsync("opencode-go");
-            const string providerKey = "synthetic-oidc-ai-provider-key";
-            await editor.Locator("#ai-key").FillAsync(providerKey);
+            await Assertions.Expect(editor.Locator("#ai-model option:checked")).ToHaveTextAsync("GLM-5.3-Flash");
+            await Assertions.Expect(editor.Locator("#ai-key")).ToHaveCountAsync(0);
             stack.AiProvider.EnqueueRename("Unsaved AI OIDC draft", "Proposal after token refresh");
             var refreshingStream = stack.AiProvider.EnqueueText("Renamed the workflow; its review rules are unchanged.", delayed: true);
             await editor.Locator("#ai-message").FillAsync("Rename this workflow Proposal after token refresh, keeping its review rules.");
@@ -161,7 +164,7 @@ public sealed class OidcAuthenticationSmokeTests
             if (refreshDue > DateTimeOffset.UtcNow) await Task.Delay(refreshDue - DateTimeOffset.UtcNow);
             await otherTab.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Refresh inbox" }).ClickAsync();
             await WaitUntilAsync(() => stack.Provider.RefreshCount("alice") > refreshes);
-            await Assertions.Expect(editor.Locator("#ai-key")).ToHaveValueAsync(providerKey);
+            await Assertions.Expect(editor.Locator("#ai-model option:checked")).ToHaveTextAsync("GLM-5.3-Flash");
             await Assertions.Expect(editor.Locator("#ai-draft-progress")).ToHaveTextAsync(retainedProgress);
             await Assertions.Expect(editor.Locator("#ai-model-wait")).ToBeVisibleAsync();
             Assert.False(refreshingStream.Cancelled.Task.IsCompleted);
@@ -172,7 +175,7 @@ public sealed class OidcAuthenticationSmokeTests
             });
             refreshingStream.Complete();
             await Assertions.Expect(editor.Locator("#ai-apply")).ToBeEnabledAsync();
-            await Assertions.Expect(editor.Locator("#ai-key")).ToHaveValueAsync(providerKey);
+            await Assertions.Expect(editor.Locator("#ai-model option:checked")).ToHaveTextAsync("GLM-5.3-Flash");
             await Assertions.Expect(editor.Locator("#wfName")).ToHaveValueAsync("Unsaved AI OIDC draft");
 
             stack.AiProvider.EnqueueRename("Proposal after token refresh", "Cancelled private draft");
@@ -187,7 +190,7 @@ public sealed class OidcAuthenticationSmokeTests
             await revokedStream.Cancelled.Task.WaitAsync(TimeSpan.FromSeconds(30));
             revokedStream.Complete();
             await Assertions.Expect(editor.Locator(".workflow-ai-panel")).ToHaveCountAsync(0);
-            await Assertions.Expect(editor.Locator("#ai-key, #ai-apply, #ai-continue")).ToHaveCountAsync(0);
+            await Assertions.Expect(editor.Locator("#ai-model, #ai-apply, #ai-continue")).ToHaveCountAsync(0);
             await Assertions.Expect(editor.Locator("#wfName")).ToHaveValueAsync("Unsaved AI OIDC draft");
             await Assertions.Expect(editor.Locator("#editor-status")).ToHaveTextAsync("Unsaved changes");
             await Assertions.Expect(editor.Locator("#save-workflow-version")).ToBeDisabledAsync();
@@ -198,7 +201,7 @@ public sealed class OidcAuthenticationSmokeTests
             await LoginAsync(otherTab, stack, "alice", "/workflows/new");
             await Assertions.Expect(otherTab.Locator(".workflow-editor-page")).ToHaveAttributeAsync("data-editor-ready", "true");
             await otherTab.Locator("#open-ai-assistant").ClickAsync();
-            await Assertions.Expect(otherTab.Locator("#ai-key")).ToHaveValueAsync("");
+            await Assertions.Expect(otherTab.Locator("#ai-model option:checked")).ToHaveTextAsync("GLM-5.3-Flash");
             await Assertions.Expect(otherTab.Locator("#ai-apply, #ai-continue, .ai-message")).ToHaveCountAsync(0);
             Assert.All(stack.AiProvider.Requests, request => Assert.Equal(AiProviderTestHost.HashKey(providerKey), request.KeyHash));
             Assert.Empty(errors);
@@ -469,6 +472,16 @@ public sealed class OidcAuthenticationSmokeTests
 
     private static async Task WaitInteractiveAsync(IPage page) =>
         await Assertions.Expect(page.Locator(".app-shell")).ToHaveAttributeAsync("data-interactive", "true");
+
+    // The signed-in settings administrator configures the assistant's model through the AI models API.
+    private static async Task ConfigureAiModelAsync(OidcBrowserStack stack, string user, string apiKey)
+    {
+        using var client = new HttpClient { BaseAddress = new Uri(stack.ApiOrigin) };
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", stack.Provider.LastAccessToken(user));
+        using var response = await client.PostAsJsonAsync("/api/ai-models",
+            new CreateAiModelRequest("GLM-5.3-Flash", stack.AiProvider.BaseAddress, "glm-5.3-flash", "high", apiKey));
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+    }
 
     private static async Task AssertApiActorAsync(OidcBrowserStack stack, string user)
     {

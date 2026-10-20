@@ -148,7 +148,7 @@ example is for a Linux UI deployment. DevelopmentToken load tools must target a
 Development API. A custom `LoadTest` environment is not an exemption: it requires
 OIDC configuration, and the existing HMAC-minting tools do not acquire OIDC tokens.
 
-Engine and workflow **settings stored in PostgreSQL** are distinct from host configuration. They are managed through [settings APIs](api-guide.md), not arbitrary environment variable names. Examples include `Workflow.RequiredRole`, `Settings.RequiredRole`, `WorkflowJobs.RequiredRole`, `NodeExecution.RequiredRole`, `Workflow.MultiInstance.MaxInstances`, and `Workflow.Async.MaxConsecutiveAutomaticActivations`. Missing/default management roles are generally `admin`; definition-owned permissions remain separate.
+Engine and workflow **settings stored in PostgreSQL** are distinct from host configuration. They are managed through [settings APIs](api-guide.md), not arbitrary environment variable names. Examples include `Workflow.RequiredRole`, `Settings.RequiredRole`, `WorkflowJobs.RequiredRole`, `NodeExecution.RequiredRole`, `Workflow.MultiInstance.MaxInstances`, and `Workflow.Async.MaxConsecutiveAutomaticActivations`. Missing/default management roles are generally `admin`; definition-owned permissions remain separate. The `AiAuthoring.Models` row holds the [AI model catalog](#ai-model-catalog) and is managed only through the AI models page and API.
 
 `Authentication.UserIdentityClaim` is a persisted engine setting read at API startup. Configure the intended claim before starting replicas, then restart APIs together when changing it. A nonblank configured claim is authoritative; do not assume `sub` automatically replaces the current identity selection. See the [authentication context API](api-guide.md).
 
@@ -179,10 +179,7 @@ conversation store is introduced.
 
 | API setting (`__` separates environment keys) | Default | Purpose |
 | --- | --- | --- |
-| `WorkflowAi:Enabled` | `true` | Enable provider discovery/generation. |
-| `WorkflowAi:OpenCodeBaseUrl` | `https://opencode.ai/zen/v1/` | Server-owned OpenCode endpoint. HTTPS required except loopback test servers; callers cannot supply a URL. |
-| `WorkflowAi:OpenCodeModels` | `glm-5.3-flash` | Enabled models; an explicit configured list replaces the fallback, and its first entry is the default. Only `glm-5.3-flash` has been verified with the agent's tool calls. |
-| `WorkflowAi:OpenCodeReasoningEfforts` | Shipped configuration: `{"glm-5.3-flash":"high"}`; unconfigured fallback: `{}` | Model-id-to-effort mapping. A mapped model sends `reasoning_effort` as `low`, `medium`, or `high`; any other value, including the former `max`, rejects requests with `provider_configuration` (503) before provider transport. Unmapped models omit the field. |
+| `WorkflowAi:Enabled` | `true` | Enable model discovery and generation. When `false`, the assistant offers no models even if some are configured. |
 | `WorkflowAi:MaxInputCharacters` | `200000` | Bound on the message plus attached document pages. |
 | `WorkflowAi:MaxWorkflowCharacters` | `2097152` | Bound on the editor workflow and the proposal. |
 | `WorkflowAi:RunTimeoutSeconds` | `1800` | One deadline for the whole run, follow-ups included (1–3600 seconds). There is no separate model-call timeout. Continue starts another run with fresh limits. |
@@ -194,12 +191,6 @@ conversation store is introduced.
 | `WorkflowAiDocuments:TimeoutSeconds` / `ProcessTimeoutSeconds` | `300` / `45` | Total extraction and individual raster/OCR process deadlines. |
 | `WorkflowAiDocuments:MaxRasterDimension` / `MaxConcurrentExtractions` | `4096` / `2` | Maximum raster dimension in pixels and process-local extraction concurrency. |
 | `WorkflowAiDocuments:PdfToPpmPath` / `TesseractPath` | `pdftoppm` / `tesseract` | Executable paths; arguments are passed without a shell. |
-
-The default endpoint is OpenCode Zen. Use a key/account with access to the selected Zen
-model. To use Go, set `WorkflowAi:OpenCodeBaseUrl` to `https://opencode.ai/zen/go/v1/`.
-The provider label is OpenCode Zen by default and OpenCode Go for that Go endpoint. The
-API provider id remains `opencode-go` for compatibility with existing callers. Restart
-the API after changing configuration.
 
 **How the engine calls the provider.** Requests use OpenAI-compatible chat completions with native tool calls, through the
 OpenAI .NET SDK under Microsoft Agent Framework:
@@ -217,10 +208,62 @@ OpenAI .NET SDK under Microsoft Agent Framework:
 compressed state:
 
 - Any API replica can resume it; UI restart, circuit loss, close/reset, navigation, or identity/model changes discard it.
-- The state is bound to the provider id, model, endpoint and reasoning effort. Changing any of them makes open conversations
-  return `checkpoint_configuration_changed` (409), and users start a new conversation.
+- The state is bound to the configured model's id, provider model name, endpoint and reasoning effort, not to its key.
+  Changing one of them on the AI models page makes open conversations return `checkpoint_configuration_changed` (409), and
+  users start a new conversation. Deleting the model makes the next turn return `unsupported_model` (400). Replacing only
+  the key keeps open conversations.
 - It contains the conversation, the documentation the model read, and the workflow with credential placeholders. It never
   contains credential values or the provider key, but do not log turn bodies or stream frames.
+
+### AI model catalog
+
+The models the assistant can use are runtime data, not host configuration. Settings administrators (`Settings.RequiredRole`)
+add, edit and delete them on the UI's **AI models** page or through the [AI models API](api-guide.md#ai-models). Changes
+apply to the next turn without a restart.
+
+- **Storage.** All models are one JSON array in the engine setting `AiAuthoring.Models` (namespace `AiAuthoring`, key
+  `Models`). Each entry holds an id, name, base URL, provider model name, optional reasoning effort, the API key, a revision
+  and timestamps. A missing row means no models. The generic engine-settings API and page neither list nor change this row.
+- **Keys at rest.** Keys are stored as plain text in that row, like other settings values, and are write-only through the
+  application: no API, page or log returns them. Anyone who can read `flowbit.engine_settings` or its backups can read the
+  keys, so restrict database and backup access. Rotate a key by entering a new one on the AI models page. Encryption at rest
+  is not provided.
+- **Who controls them.** Settings administrators choose where authoring requests and their content are sent and which
+  provider account pays. Every user with `Workflow.RequiredRole` can use every configured model. Grant
+  `Settings.RequiredRole` accordingly.
+- **Endpoints.** A model's base URL must use HTTPS, except plain HTTP on a loopback address, and must not contain user
+  information, a query, a fragment or a `chat/completions` suffix. The API checks the endpoint again before every run. Inside
+  a container `localhost` is the container itself, so a model server on the Docker host needs an HTTPS address that the API
+  container can reach.
+- **Compatibility.** Requests use OpenAI-compatible chat completions with native tool calls and `max_completion_tokens`,
+  plus `reasoning_effort` only when the model sets one. Only GLM-5.3-Flash on OpenCode Zen (`https://opencode.ai/zen/v1/`,
+  reasoning `high`) has been verified with the agent's tool calls; OpenCode Go uses `https://opencode.ai/zen/go/v1/`.
+  Verify any other provider with an authorized account before relying on it.
+- **Key length.** A key needs 16 to 4,096 characters. The API matches the key as text to keep it out of conversation state,
+  workflows and replies, so a short value would also match ordinary text. For a keyless local server, enter a unique
+  placeholder of at least 16 characters.
+- **Invalid stored list.** Only the AI models service writes the row. If it is edited directly in the database and no longer
+  parses, the assistant returns `provider_configuration` (503) and the AI models API returns 409. Restore the row from a
+  backup, or delete it and add the models again:
+
+  ```sql
+  DELETE FROM flowbit.engine_settings WHERE "Namespace" = 'AiAuthoring' AND "Key" = 'Models';
+  ```
+
+### Upgrading to administrator-managed AI models
+
+Users no longer enter a provider key in the assistant:
+
+- **No models after the upgrade.** The assistant offers only models configured on the AI models page and, until a settings
+  administrator adds one, says that no AI models are available. To keep the previous behavior, add GLM-5.3-Flash with the
+  endpoint `https://opencode.ai/zen/v1/` (or the Go endpoint), reasoning `high`, and an organization key.
+- **Relocated settings.** `WorkflowAi:OpenCodeBaseUrl`, `WorkflowAi:OpenCodeModels` and `WorkflowAi:OpenCodeReasoningEfforts`
+  are ignored with a startup warning. Remove them from configuration.
+- **API changes.** `GET /api/workflows/ai/models` replaces `GET /api/workflows/ai/providers`. A turn's `modelId` is a
+  configured model id and `providerId` is ignored. A turn with an `X-Flowbit-AI-Key` header returns
+  `400 api_key_not_accepted`. Conversations open during the upgrade return `409 checkpoint_configuration_changed`.
+- **Rollout.** Deploy the API and UI together. No database migration is needed: the model list uses the existing
+  `engine_settings` table.
 
 ### Upgrading from the command-loop engine
 
@@ -238,7 +281,7 @@ The assistant's former engine has been replaced:
 - **Old clients:** checkpoints and text history from older UIs are refused (`409 checkpoint_configuration_changed`,
   `400 history_unsupported`). Upgrade and restart API and UI together.
 
-No database migration or provider-key relocation is needed.
+No database migration is needed.
 
 **New dependencies.** The API, Worker and evaluation tool carry `Microsoft.Agents.AI` 1.23.0, `Microsoft.Agents.AI.OpenAI`
 1.23.0, `Microsoft.Extensions.AI` 10.10, `OpenAI` 2.14.0, and `System.ClientModel` 1.15.0. `Flowbit.Service` references
@@ -258,14 +301,16 @@ report model calls, input, cached and output tokens, follow-ups, and whether usa
 operational figures, not provider billing totals.
 
 **Headers and privacy.** The provider client sends `Flowbit/1.0` as its user-agent and the conversation id as
-`x-opencode-session`. It receives the key only for the current request, and application HTTP-client header logging is
-redacted. Do not enable proxy/APM request-body or sensitive-header capture for these routes; the application does not persist
-provider keys or conversations. Selected workflow credential fields are masked in everything the model receives, and their
-values are restored only in the final proposal. Review the provider's data handling before sending requirements or PDFs. The
-hosted UI uses per-login sessions in OpenIdConnect mode and retains the shared test identity only in DevelopmentToken mode. AI
-keys and conversations remain panel-local and are cleared on close, reset, disposal, and identity replacement. Routine
-access-token refresh does not replace the actor or clear the conversation; session or actor/role changes do. Authentication
-failures do not replay AI streams.
+`x-opencode-session` to every configured endpoint; the id is random and identifies only the conversation. For each run the
+API reads the selected model's key from the model list and sends it only to that model's endpoint; application HTTP-client
+header logging is redacted. Do not enable proxy/APM request-body or sensitive-header capture for these routes or for
+`/api/ai-models`, whose create and update requests carry keys. The application stores provider keys only in the
+`AiAuthoring.Models` engine setting and does not persist conversations. Selected workflow credential fields are masked in
+everything the model receives, and their values are restored only in the final proposal. Review each provider's data
+handling before sending requirements or PDFs. The hosted UI uses per-login sessions in OpenIdConnect mode and retains the
+shared test identity only in DevelopmentToken mode. Conversations remain panel-local and are cleared on close, reset,
+disposal, and identity replacement. Routine access-token refresh does not replace the actor or clear the conversation;
+session or actor/role changes do. Authentication failures do not replay AI streams.
 
 The API container installs Poppler, Tesseract, and English/Arabic language data.
 Text extraction uses PdfPig locally. OCR uses bounded raster sizes, process

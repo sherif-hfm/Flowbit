@@ -150,6 +150,7 @@ Paths below are relative to the UI origin, not API endpoints. Most data screens 
 | **Instance variables** | `/instance-variable-updates` | Prepare administrative raw-JSON variable updates. |
 | **Administrative actions** | `/administrative-actions` | Prepare explicit overrides of waiting task or timer-boundary positions. |
 | **Engine settings** | `/engine-settings` | Deployment-wide engine setting records. |
+| **AI models** | `/ai-models` | Models, endpoints, and write-only keys the editor's AI assistant can use. |
 | **Retention policies** | `/retention` | Preview and configure cleanup policies and inspect runs. |
 | **Workflow settings** | `/workflow-settings` | JSON settings consumed by workflow expressions/templates. |
 | **Shared variables** | `/shared-variables` | Shared catalog contracts, current values, revisions, and lifecycle. |
@@ -163,7 +164,7 @@ Overview totals and lists reflect the API's visibility rules; a restricted panel
 
 ### AI workflow assistant
 
-Open **AI assistant** in the editor to describe a new workflow or request changes to the current one. Select OpenCode Zen and an available model, then enter your provider API key. Zen is the default server endpoint; an administrator can explicitly configure the Go endpoint, which displays OpenCode Go instead. The shipped configuration selects GLM-5.3-Flash. Your messages, reviewed document text, and the current workflow are sent to that provider. Keys and the conversation live only in the open assistant panel; closing it, leaving the editor, resetting it, or changing the selected test identity clears them. Provider keys are separate from the Flowbit JWT and are not saved in workflow definitions.
+Open **AI assistant** in the editor to describe a new workflow or request changes to the current one. Choose a model under **AI model**; the list shows the models a settings administrator configured on [AI models](#ai-models), and the first one is selected by default. You never enter a provider key: the API uses the key stored for the selected model, and the panel receives only model names. If the list is empty, the panel says that no AI models are available and links to the AI models page. Your messages, reviewed document text, and the current workflow are sent to the selected model's provider. The conversation lives only in the open assistant panel; closing it, leaving the editor, resetting it, or changing the selected test identity clears it.
 
 Optionally expand **Include shared-variable metadata**, load or search active catalog keys, and select the contracts the workflow may use. This requires your existing shared-variable read permission. Only selected contracts and descriptions are included with your message; catalog values are excluded. A changed selection is sent with your next message.
 
@@ -181,13 +182,13 @@ When the run finishes, the assistant's reply appears in the conversation:
 
 Answer open questions or request changes by sending another message. The assistant keeps the whole conversation, including what it read and wrote, also after **Apply**. If you edit or apply the diagram before your next message, the assistant is told that its workflow now contains the current diagram. Editing the diagram while generation is pending makes the proposal stale, so request a fresh proposal instead of overwriting later edits. Save or cancel pending script-dialog edits before capturing or applying a proposal.
 
-The conversation lives only in this open Blazor Server panel circuit. It is cleared when you select **New conversation**, close or reset the assistant, change provider, model or identity, leave the editor, or lose the circuit; page reload and server restart do not restore it. No workflow is saved by the assistant.
+The conversation lives only in this open Blazor Server panel circuit. It is cleared when you select **New conversation**, close or reset the assistant, choose another model, change identity, leave the editor, or lose the circuit; page reload and server restart do not restore it. No workflow is saved by the assistant.
 
 Generation and application do not save, publish, or run workflows. **Save new version** retains its existing unpublished-version behavior. Structurally valid proposals may still have catalog or publication blockers and need operational setup. **Download Flowbit AI skill** provides the same self-contained knowledge package for external agents. See [AI authoring and portable skill](ai-authoring.md) and [AI deployment settings](deployment.md#ai-authoring-and-local-ocr).
 
-After an administrator changes the provider endpoint, model list or reasoning setting, open conversations cannot continue; start a new conversation. See [upgrade settings](deployment.md#ai-authoring-and-local-ocr).
+After an administrator changes the selected model's endpoint, provider model name or reasoning effort, the next message reports that the settings changed; start a new conversation. If the model was deleted, the panel reloads the model list, starts over, and keeps your unsent message. Replacing only a model's key keeps open conversations.
 
-DevelopmentToken mode retains its process-wide test identity. OpenIdConnect mode uses isolated per-login server sessions. Separate assistant panels do not share provider keys; routine access-token refresh preserves panel state, while session or actor/role changes clear it.
+DevelopmentToken mode retains its process-wide test identity. OpenIdConnect mode uses isolated per-login server sessions. Separate assistant panels keep separate model selections and conversations; routine access-token refresh preserves panel state, while session or actor/role changes clear the conversation.
 
 ### Visual editing and saving
 
@@ -337,7 +338,21 @@ Cancellation can wait for an already-running action to release its database tran
 
 Both screens require `Settings.RequiredRole` (default `admin`). **Engine settings** uses plain-text values: **Add setting**, enter namespace/key/value and optional description, then **Create setting**. **Edit → Save changes** updates a value. **Workflow settings** uses **JSON value**: numbers, booleans, arrays, objects, and quoted strings are accepted. These are settings consumed by workflows, not per-instance data.
 
-Namespace/key or namespace/name identifies the record and is not editable after creation. On a stale update use **Reload latest** before retrying. `Authentication.UserIdentityClaim` changes require restarting API replicas; changing permission settings can change your access on the next request. Follow [configuration](deployment.md#configuration) for host-level values such as connection strings, signing keys, and claim allowlists; these are not all editable engine settings.
+Namespace/key or namespace/name identifies the record and is not editable after creation. On a stale update use **Reload latest** before retrying. `Authentication.UserIdentityClaim` changes require restarting API replicas; changing permission settings can change your access on the next request. Follow [configuration](deployment.md#configuration) for host-level values such as connection strings, signing keys, and claim allowlists; these are not all editable engine settings. The `AiAuthoring.Models` engine setting, which holds the AI models and their keys, is not listed here and cannot be created, edited or deleted here; manage it on **AI models**.
+
+### AI models
+
+**AI models** (`/ai-models`) requires `Settings.RequiredRole`. It lists the models the editor's [AI assistant](#ai-workflow-assistant) offers, in order; the first is marked **Assistant default**. Each row shows the name, the provider's model name, the endpoint, the reasoning effort, and **Key stored**, never the key.
+
+Choose **Add model** and enter:
+
+- **Name**: what authors see in the assistant, unique ignoring letter case.
+- **Model**: the provider's model name sent with every request, for example `glm-5.3-flash`.
+- **Endpoint URL**: the base URL of an OpenAI-compatible API, for example `https://opencode.ai/zen/v1/`, without `chat/completions`. HTTPS is required, except plain HTTP on a loopback address such as `http://127.0.0.1:11434/v1/`.
+- **Reasoning effort**: **Not sent**, **Low**, **Medium**, or **High**.
+- **API key**: at least 16 characters. For an endpoint without keys, enter a unique placeholder of at least 16 characters.
+
+Select **Add model** in the form to save. The key field is cleared and the key is never shown again. **Edit → Save changes** updates a model; leave **New API key** blank to keep the stored key. Changing the endpoint, model, or reasoning effort makes open assistant conversations start over. **Delete** asks for confirmation and removes the model and its key. When another administrator changed the model first, use **Reload latest**. The models are stored in the `AiAuthoring.Models` engine setting; see [AI model catalog](deployment.md#ai-model-catalog).
 
 ### Shared-variable catalog
 
@@ -374,5 +389,6 @@ Saved policies apply to automatic Worker cleanup. **Run cleanup now** queues a r
 | Required or typed input rejected | Use the format shown above and the action's required values. Blank omits an input; administrative JSON fields require valid JSON. |
 | Timer, retry, or batch does not progress | Check the Worker, correct database/configuration, due times, queue, and incidents. The UI does not run durable jobs. |
 | Archive, deletion, version change, or reactivation blocked | Read the reported references/compatibility blockers; these operations have different eligibility rules. |
+| AI assistant shows no models, or a key/quota error | A settings administrator adds or fixes the model on **AI models**. If models are configured but still not offered, check that `WorkflowAi:Enabled` is not `false`. |
 
 [Documentation home](index.md) · [Developer guide](developer-guide.md) · [API reference](api-guide.md) · [Deployment](deployment.md)

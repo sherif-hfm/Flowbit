@@ -23,7 +23,13 @@ public sealed class BrowserStackFixture : IAsyncLifetime
     public static BrowserStackFixture CreateForAcceptance(BrowserAcceptanceOptions options) => new(options);
     public bool IsAcceptance => acceptance is not null;
     public bool RequiresInteractiveMarkers => acceptance?.LegacyUiWithoutInteractiveMarkers != true;
-    public string? ShippedFlashReasoning { get; private set; }
+
+    /// <summary>The key and reasoning effort of the default AI model the smoke stack configures for the editor assistant.</summary>
+    public const string FlashKey = "synthetic-browser-flash-key-0123456789";
+    public const string FlashReasoning = "high";
+    /// <summary>The configured AI model ids: GLM-5.3-Flash is the assistant's default; GLM-5.3 is for model switching.</summary>
+    public string FlashModelId { get; private set; } = "";
+    public string Glm53ModelId { get; private set; } = "";
 
     /// <summary>Set to 1 to launch Chromium headed for local diagnosis.</summary>
     public const string HeadedEnv = "FLOWBIT_BROWSER_HEADED";
@@ -131,6 +137,7 @@ public sealed class BrowserStackFixture : IAsyncLifetime
             SetupClient = new WorkflowFixtureClient(
                 ApiBaseAddress, setupToken, SetupActor, AdminRoles, "setup-client", RunDirectory);
             var workflows = await SetupClient.ListWorkflowsAsync();
+            if (aiProvider is not null) await ConfigureAiModelsAsync();
             await WriteSetupLogAsync(
                 $"Setup identity '{SetupActor}' verified: {workflows.Count} workflow(s) readable through /api/workflows/. " +
                 $"Stack ready in {startTimestamp.Elapsed.TotalSeconds:0.0}s.");
@@ -144,6 +151,19 @@ public sealed class BrowserStackFixture : IAsyncLifetime
             await DisposeAsync();
             throw;
         }
+    }
+
+    /// <summary>
+    /// Configures the assistant's models through the AI models API, as a settings administrator would: GLM-5.3-Flash with high
+    /// reasoning first, so it is the default, then two more models for switching. All use the loopback provider and their own keys.
+    /// </summary>
+    private async Task ConfigureAiModelsAsync()
+    {
+        var flash = await SetupClient.CreateAiModelAsync(new("GLM-5.3-Flash", AiProvider.BaseAddress, "glm-5.3-flash", FlashReasoning, FlashKey));
+        var glm = await SetupClient.CreateAiModelAsync(new("GLM-5.3", AiProvider.BaseAddress, "glm-5.3", null, "synthetic-browser-glm-key-0123456789"));
+        await SetupClient.CreateAiModelAsync(new("Kimi K2.7 Code", AiProvider.BaseAddress, "kimi-k2.7-code", null, "synthetic-browser-kimi-key-0123456789"));
+        (FlashModelId, Glm53ModelId) = (flash.Id, glm.Id);
+        await WriteSetupLogAsync("AI models configured through /api/ai-models: GLM-5.3-Flash (default), GLM-5.3 and Kimi K2.7 Code.");
     }
 
     /// <summary>
@@ -338,17 +358,8 @@ public sealed class BrowserStackFixture : IAsyncLifetime
         var directory = acceptance?.ApiHostDirectory ?? Path.Combine(RepositoryRoot, "artifacts", "browser", "hosts", "api");
         var environment = CreateRuntimeEnvironment();
         environment["WorkflowContext__AllowedClaims__0"] = "depId";
-        if (aiProvider is not null)
-        {
-            using var settings = JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(directory, "appsettings.json")));
-            var ai = settings.RootElement.GetProperty("WorkflowAi");
-            ShippedFlashReasoning = ai.GetProperty("OpenCodeReasoningEfforts").GetProperty("glm-5.3-flash").GetString();
-            environment["WorkflowAi__Enabled"] = "true";
-            environment["WorkflowAi__OpenCodeBaseUrl"] = aiProvider.BaseAddress;
-            environment["WorkflowAi__OpenCodeModels__0"] = "glm-5.3-flash";
-            environment["WorkflowAi__OpenCodeModels__1"] = "glm-5.3";
-            environment["WorkflowAi__OpenCodeModels__2"] = "kimi-k2.7-code";
-        }
+        // The assistant's models are configured through the AI models API once the stack is up.
+        if (aiProvider is not null) environment["WorkflowAi__Enabled"] = "true";
         api = HostedProcess.Start(
             "api",
             Path.Combine(directory, "Flowbit.Api.dll"),
@@ -494,7 +505,7 @@ public sealed class BrowserStackFixture : IAsyncLifetime
             uiBaseAddress = string.IsNullOrEmpty(UiBaseAddress) ? null : UiBaseAddress,
             editorBaseAddress = string.IsNullOrEmpty(EditorBaseAddress) ? null : EditorBaseAddress,
             initialized,
-            shippedFlashReasoning = ShippedFlashReasoning,
+            aiModels = aiProvider is null ? null : new { defaultModelId = FlashModelId, flashReasoning = FlashReasoning },
             acceptance = IsAcceptance,
             workerStarts = workerNumber,
             apiProxyBaseAddress = apiProxy?.BaseAddress,

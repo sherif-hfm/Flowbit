@@ -144,6 +144,16 @@ public sealed class WorkflowFixtureClient : IAsyncDisposable
     public Task<SharedVariableMetadataDto> CreateSharedVariableAsync(CreateSharedVariableRequest request) =>
         SendAsync<SharedVariableMetadataDto>(HttpMethod.Post, "/api/shared-variables", request);
 
+    /// <summary>Configures an AI model for the editor assistant, as a settings administrator does on the AI models page.</summary>
+    public Task<AiModelSettingDto> CreateAiModelAsync(CreateAiModelRequest request) =>
+        SendAsync<AiModelSettingDto>(HttpMethod.Post, "/api/ai-models", request);
+
+    public Task<IReadOnlyList<AiModelSettingDto>> ListAiModelsAsync() =>
+        SendAsync<IReadOnlyList<AiModelSettingDto>>(HttpMethod.Get, "/api/ai-models");
+
+    public Task DeleteAiModelAsync(string id, long expectedRevision) =>
+        SendAsync(HttpMethod.Delete, $"/api/ai-models/{Uri.EscapeDataString(id)}?expectedRevision={expectedRevision}");
+
     public Task<IReadOnlyList<UserDelegationDto>> CreateDelegationAsync(CreateUserDelegationRequest request) =>
         SendAsync<IReadOnlyList<UserDelegationDto>>(HttpMethod.Post, "/api/user-delegations", request);
 

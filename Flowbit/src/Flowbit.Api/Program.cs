@@ -335,6 +335,8 @@ try
     _ = app.Services.GetRequiredService<WorkflowAiDocs>();
     foreach (var setting in aiOptions.IgnoredSettings)
         app.Logger.LogWarning("WorkflowAi:{Setting} belongs to the replaced AI authoring engine and is ignored.", setting);
+    foreach (var setting in aiOptions.ConfiguredRelocatedSettings)
+        app.Logger.LogWarning("WorkflowAi:{Setting} is no longer used and is ignored; configure AI models, endpoints and keys on the AI models page.", setting);
 
     app.Use(async (context, next) =>
     {

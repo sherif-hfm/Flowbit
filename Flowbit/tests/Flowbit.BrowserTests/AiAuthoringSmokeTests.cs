@@ -44,9 +44,9 @@ public sealed class AiAuthoringSmokeTests(BrowserStackFixture stack)
                 await Assertions.Expect(page.Locator("#open-ai-assistant")).ToBeFocusedAsync();
                 await OpenAssistantAsync(page);
             }
-            const string key = "synthetic-browser-provider-key";
+            // The configured model's key travels only from the API to the provider; the author never types one.
+            const string key = BrowserStackFixture.FlashKey;
             const string catalogValue = "never-send-this-catalog-value";
-            await page.Locator("#ai-key").FillAsync(key);
             string? catalogKey = null;
             if (width == 1440)
             {
@@ -122,8 +122,6 @@ public sealed class AiAuthoringSmokeTests(BrowserStackFixture stack)
 
             // A new conversation about the saved diagram: a question gets an answer and no proposal.
             await OpenAssistantAsync(page);
-            await Assertions.Expect(page.Locator("#ai-key")).ToHaveValueAsync("");
-            await page.Locator("#ai-key").FillAsync(key);
             const string question = "What does this workflow do? Do not change it.";
             stack.AiProvider.EnqueueText("Each purchase request gets one Agent review and is then archived.");
             await SendAsync(page, question);
@@ -193,7 +191,6 @@ public sealed class AiAuthoringSmokeTests(BrowserStackFixture stack)
             var page = await scenario.OpenUiAsync($"workflows/{original.Id}/edit");
             await ReadyAsync(page);
             await OpenAssistantAsync(page);
-            await page.Locator("#ai-key").FillAsync("synthetic-first-session-key");
             stack.AiProvider.EnqueueRename(original.Name, "Stale proposal");
             stack.AiProvider.EnqueueText("Renamed the workflow Stale proposal.");
             await SendAsync(page, "Rename the workflow Stale proposal.");
@@ -218,21 +215,20 @@ public sealed class AiAuthoringSmokeTests(BrowserStackFixture stack)
             await other.GotoAsync(stack.UiBaseAddress + $"/workflows/{original.Id}/edit");
             await ReadyAsync(other);
             await OpenAssistantAsync(other);
-            await Assertions.Expect(other.Locator("#ai-key")).ToHaveValueAsync("");
-            await other.Locator("#ai-key").FillAsync("synthetic-second-session-key");
-            await Assertions.Expect(page.Locator("#ai-key")).ToHaveValueAsync("synthetic-first-session-key");
+            // Each open assistant keeps its own model selection and conversation.
+            await other.Locator("#ai-model").SelectOptionAsync(stack.Glm53ModelId);
+            await Assertions.Expect(page.Locator("#ai-model")).ToHaveValueAsync(stack.FlashModelId);
             var identityPage = await scenario.Context.NewPageAsync();
             var identity = new IdentityScreen(identityPage, stack.UiBaseAddress);
             await identity.GenerateAndApplyIdentityAsync("ai-other-author", ["admin"]);
-            await Assertions.Expect(page.Locator("#ai-key")).ToHaveValueAsync("");
-            await Assertions.Expect(other.Locator("#ai-key")).ToHaveValueAsync("");
+            await Assertions.Expect(page.Locator("#ai-notice")).ToContainTextAsync("The conversation was cleared");
             await Assertions.Expect(page.Locator("#ai-apply, #ai-continue")).ToHaveCountAsync(0);
             await Assertions.Expect(page.Locator(".ai-message")).ToHaveCountAsync(0);
             await identityPage.CloseAsync();
             await other.CloseAsync();
-            await page.Locator("#ai-key").FillAsync("synthetic-reset-key");
+            await page.Locator("#ai-message").FillAsync("Unsent text that a new conversation clears.");
             await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "New conversation", Exact = true }).ClickAsync();
-            await Assertions.Expect(page.Locator("#ai-key")).ToHaveValueAsync("");
+            await Assertions.Expect(page.Locator("#ai-message")).ToHaveValueAsync("");
 
             scenario.ExpectDialogOnce("confirm", "Leave the editor? Unsaved changes will be lost.", accept: true);
             if (width == 390)
@@ -248,7 +244,6 @@ public sealed class AiAuthoringSmokeTests(BrowserStackFixture stack)
             await scenario.OpenUiAsync($"workflows/{original.Id}/edit");
             await ReadyAsync(page);
             await OpenAssistantAsync(page);
-            await Assertions.Expect(page.Locator("#ai-key")).ToHaveValueAsync("");
             await Assertions.Expect(page.Locator("#wfName")).ToHaveValueAsync(original.Name);
             Assert.Equal(0, stack.AiProvider.UnexpectedRequests);
         });
@@ -268,9 +263,8 @@ public sealed class AiAuthoringSmokeTests(BrowserStackFixture stack)
             var page = await scenario.OpenUiAsync($"workflows/{original.Id}/edit");
             await ReadyAsync(page);
             await OpenAssistantAsync(page);
-            const string key = "synthetic-recovery-key";
+            const string key = BrowserStackFixture.FlashKey;
             const string requirement = "Rename this workflow Incremental recovery, keeping every review rule unchanged.";
-            await page.Locator("#ai-key").FillAsync(key);
             var start = stack.AiProvider.Requests.Count;
 
             // The model reads the docs, then its next response reaches the output limit: the run pauses.
@@ -375,7 +369,6 @@ public sealed class AiAuthoringSmokeTests(BrowserStackFixture stack)
             var page = await scenario.OpenUiAsync($"workflows/{original.Id}/edit");
             await ReadyAsync(page);
             await OpenAssistantAsync(page);
-            await page.Locator("#ai-key").FillAsync("synthetic-checkpoint-key");
             stack.AiProvider.EnqueueRename(original.Name, "Private draft only");
             stack.AiProvider.EnqueueFailure(HttpStatusCode.Unauthorized);
             await SendAsync(page, "Rename this workflow Private draft only.");
@@ -383,10 +376,10 @@ public sealed class AiAuthoringSmokeTests(BrowserStackFixture stack)
             await Assertions.Expect(page.Locator("#ai-continue")).ToBeEnabledAsync();
             await Assertions.Expect(page.Locator("#ai-apply")).ToHaveCountAsync(0);
             await Assertions.Expect(page.Locator("#wfName")).ToHaveValueAsync(original.Name);
-            await page.Locator("#ai-model").SelectOptionAsync("glm-5.3");
+            await page.Locator("#ai-model").SelectOptionAsync(stack.Glm53ModelId);
             await Assertions.Expect(page.Locator("#ai-continue")).ToHaveCountAsync(0);
-            await Assertions.Expect(page.Locator("#ai-model")).ToHaveValueAsync("glm-5.3");
-            await page.Locator("#ai-model").SelectOptionAsync("glm-5.3-flash");
+            await Assertions.Expect(page.Locator("#ai-model")).ToHaveValueAsync(stack.Glm53ModelId);
+            await page.Locator("#ai-model").SelectOptionAsync(stack.FlashModelId);
 
             stack.AiProvider.EnqueueRename(original.Name, "Fresh private draft");
             stack.AiProvider.EnqueueFailure(HttpStatusCode.Unauthorized);
@@ -412,7 +405,7 @@ public sealed class AiAuthoringSmokeTests(BrowserStackFixture stack)
 
             await page.GetByRole(AriaRole.Button, new() { Name = "New conversation", Exact = true }).ClickAsync();
             await Assertions.Expect(page.Locator("#ai-continue, .ai-message")).ToHaveCountAsync(0);
-            await Assertions.Expect(page.Locator("#ai-key")).ToHaveValueAsync("");
+            await Assertions.Expect(page.Locator("#ai-model")).ToHaveValueAsync(stack.FlashModelId);
             await CloseAssistantAsync(page);
             await HistoryAsync(page, "undoBtn");
             await Assertions.Expect(page.Locator("#wfName")).ToHaveValueAsync(original.Name);
@@ -421,14 +414,14 @@ public sealed class AiAuthoringSmokeTests(BrowserStackFixture stack)
         });
     }
 
-    /// <summary>What every agent request carries: the user's key, Flowbit's user agent, the shipped model settings and the six tools.</summary>
-    private void AssertAgentRequests(IEnumerable<AiProviderTestHost.Request> requests, string key) => Assert.All(requests, item =>
+    /// <summary>What every agent request carries: the configured model's key, Flowbit's user agent, the model's settings and the six tools.</summary>
+    private static void AssertAgentRequests(IEnumerable<AiProviderTestHost.Request> requests, string key) => Assert.All(requests, item =>
     {
         Assert.Equal(AiProviderTestHost.HashKey(key), item.KeyHash);
         Assert.Equal("Flowbit/1.0", item.UserAgent);
         Assert.Matches("^[0-9a-f]{32}$", item.Session);
         Assert.Equal("glm-5.3-flash", item.Model);
-        Assert.Equal(stack.ShippedFlashReasoning, item.ReasoningEffort);
+        Assert.Equal(BrowserStackFixture.FlashReasoning, item.ReasoningEffort);
         Assert.Equal(32_768, item.MaxTokens);
         Assert.Equal(Tools, item.ToolNames);
         Assert.StartsWith("Generate a Flowbit workflow based on these requirements.", item.Instructions);
@@ -466,12 +459,13 @@ public sealed class AiAuthoringSmokeTests(BrowserStackFixture stack)
         await RuntimeSupport.WaitUntilInteractiveAsync(page);
         await Assertions.Expect(page.Locator(".workflow-editor-page")).ToHaveAttributeAsync("data-editor-ready", "true");
     }
-    private static async Task OpenAssistantAsync(IPage page)
+    // Authors only pick a configured model: the first one is the default, and there is no provider choice or key field.
+    private async Task OpenAssistantAsync(IPage page)
     {
         await page.Locator("#open-ai-assistant").ClickAsync();
-        await Assertions.Expect(page.Locator("#ai-provider")).ToHaveValueAsync("opencode-go");
-        await Assertions.Expect(page.Locator("#ai-provider option:checked")).ToHaveTextAsync("OpenCode Zen");
-        await Assertions.Expect(page.Locator("#ai-model")).ToHaveValueAsync("glm-5.3-flash");
+        await Assertions.Expect(page.Locator("#ai-model")).ToHaveValueAsync(stack.FlashModelId);
+        await Assertions.Expect(page.Locator("#ai-model option:checked")).ToHaveTextAsync("GLM-5.3-Flash");
+        await Assertions.Expect(page.Locator("#ai-key, #ai-provider")).ToHaveCountAsync(0);
     }
     private static Task CloseAssistantAsync(IPage page) => page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Close AI assistant", Exact = true }).ClickAsync();
     private static async Task SendAsync(IPage page, string text)

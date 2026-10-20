@@ -17,14 +17,13 @@ namespace Flowbit.Tests;
 /// <summary>The authoring service around the agent: request bounds, settings, catalog context, validation, redaction and the provider client.</summary>
 public sealed class WorkflowAiAuthoringTests
 {
-    private const string Key = "test-provider-key-0123456789";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull };
 
     [Fact]
     public async Task Turn_ReturnsAValidatedProposalWithoutPersistence()
     {
         var handler = new ScriptedHandler(Completions.Save("workflow.json", Json(Model())), Completions.Final("Review this proposal."));
-        var result = await Service(handler).TurnAsync(Request(), Key, CancellationToken.None);
+        var result = await Service(handler).TurnAsync(Request(), CancellationToken.None);
         Assert.Equal(("proposal", "Review this proposal.", "snapshot-1", "test-contract"), (result.Kind, result.Message, result.SnapshotId, result.ContractHash));
         Assert.True(result.Validation.IsValid);
         Assert.True(result.Validation.CanSave);
@@ -35,18 +34,19 @@ public sealed class WorkflowAiAuthoringTests
     public async Task Requests_AreBoundedAndCheckedBeforeAnyProviderCall()
     {
         var handler = new ScriptedHandler();
-        async Task<string> Refused(AiTurnRequestDto request, WorkflowAiOptions? options = null) =>
-            (await Assert.ThrowsAsync<WorkflowAiException>(() => Service(handler, options).TurnAsync(request, Key, CancellationToken.None))).Code;
+        async Task<string> Refused(AiTurnRequestDto request, WorkflowAiOptions? options = null, IAiModelStore? models = null) =>
+            (await Assert.ThrowsAsync<WorkflowAiException>(() => Service(handler, options, models: models).TurnAsync(request, CancellationToken.None))).Code;
 
         Assert.Equal("input_too_large", await Refused(Request(), AgentHarness.Options(options => options.MaxInputCharacters = 5)));
         Assert.Equal("invalid_request", await Refused(Request() with { Message = " " }));
         Assert.Equal("invalid_request", await Refused(Request() with { Continue = true }));
         Assert.Equal("invalid_request", await Refused(Request() with { ConversationId = "not-a-guid" }));
-        Assert.Equal("unsupported_provider", await Refused(Request() with { ProviderId = "other" }));
+        // Only a model configured on the AI models page can be selected.
         Assert.Equal("unsupported_model", await Refused(Request() with { ModelId = "kimi-k2.7-code" }));
+        Assert.Equal("unsupported_model", await Refused(Request() with { ModelId = "" }));
+        Assert.Equal("unsupported_model", await Refused(Request(), models: new FixedAiModelStore()));
         foreach (var value in new[] { "42", "true", "\"unexpected\"", "[]" })
             Assert.Equal("invalid_current_workflow", await Refused(Request() with { CurrentWorkflow = JsonDocument.Parse(value).RootElement }));
-        Assert.Equal("invalid_key", (await Assert.ThrowsAsync<WorkflowAiException>(() => Service(handler).TurnAsync(Request(), "", CancellationToken.None))).Code);
         Assert.Empty(handler.Bodies);
     }
 
@@ -56,8 +56,6 @@ public sealed class WorkflowAiAuthoringTests
         new WorkflowAiOptions { RunTimeoutSeconds = 1 }.Validate();
         new WorkflowAiOptions { RunTimeoutSeconds = 3600 }.Validate();
         Assert.Equal("provider_configuration", Assert.Throws<WorkflowAiException>(() => new WorkflowAiOptions { RunTimeoutSeconds = 3601 }.Validate()).Code);
-        Assert.Equal("provider_configuration", Assert.Throws<WorkflowAiException>(() => new WorkflowAiOptions
-            { OpenCodeReasoningEfforts = new() { ["glm-5.3-flash"] = "max" } }.Validate()).Code);
 
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {
@@ -78,6 +76,22 @@ public sealed class WorkflowAiAuthoringTests
     }
 
     [Fact]
+    public void Settings_TheMovedProviderSettingsOnlyWarn()
+    {
+        var options = WorkflowAiServiceCollectionExtensions.ReadWorkflowAiOptions(new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["WorkflowAi:OpenCodeBaseUrl"] = "https://opencode.ai/zen/v1/", ["WorkflowAi:OpenCodeModels:0"] = "glm-5.3-flash",
+                ["WorkflowAi:OpenCodeReasoningEfforts:glm-5.3-flash"] = "max"
+            }).Build());
+
+        Assert.Equal(["OpenCodeBaseUrl", "OpenCodeModels", "OpenCodeReasoningEfforts"], options.ConfiguredRelocatedSettings);
+        Assert.Empty(options.UnsupportedSettings);
+        Assert.Empty(options.IgnoredSettings);
+        options.Validate();
+    }
+
+    [Fact]
     public async Task Authoring_RejectsExcessConcurrencyAndReleasesTheSlotAfterAFailure()
     {
         var options = AgentHarness.Options(configure => configure.MaxConcurrentRequests = 1);
@@ -85,14 +99,14 @@ public sealed class WorkflowAiAuthoringTests
         var handler = new ScriptedHandler(Completions.Final("x")) { Status = HttpStatusCode.BadGateway };
         var service = Service(handler, options, gate);
         Assert.True(await gate.Semaphore.WaitAsync(0));
-        Assert.Equal("authoring_busy", (await Assert.ThrowsAsync<WorkflowAiException>(() => service.TurnAsync(Request(), Key, CancellationToken.None))).Code);
+        Assert.Equal("authoring_busy", (await Assert.ThrowsAsync<WorkflowAiException>(() => service.TurnAsync(Request(), CancellationToken.None))).Code);
         Assert.Empty(handler.Bodies);
         gate.Semaphore.Release();
-        Assert.Equal("paused", (await service.TurnAsync(Request(), Key, CancellationToken.None)).Kind);
+        Assert.Equal("paused", (await service.TurnAsync(Request(), CancellationToken.None)).Kind);
         Assert.Equal(1, gate.Semaphore.CurrentCount);
         using var cancelled = new CancellationTokenSource();
         cancelled.Cancel();
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => service.TurnAsync(Request(), Key, cancelled.Token));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => service.TurnAsync(Request(), cancelled.Token));
         Assert.Equal(1, gate.Semaphore.CurrentCount);
     }
 
@@ -108,7 +122,7 @@ public sealed class WorkflowAiAuthoringTests
             ["unselected.key"] = TestSharedVariableCatalog.Active(2, "unselected.key", "string")
         };
         var handler = new ScriptedHandler(Completions.Save("workflow.json", Json(Model())), Completions.Final("Done."));
-        var result = await Service(handler, repository: repository).TurnAsync(Request() with { SharedVariableKeys = ["chosen.threshold"] }, Key, CancellationToken.None);
+        var result = await Service(handler, repository: repository).TurnAsync(Request() with { SharedVariableKeys = ["chosen.threshold"] }, CancellationToken.None);
 
         Assert.Equal("proposal", result.Kind);
         Assert.Equal(["chosen.threshold"], proxy.RequestedKeys);
@@ -129,7 +143,7 @@ public sealed class WorkflowAiAuthoringTests
         var repository = DispatchProxy.Create<ISharedVariableRepository, SelectedCatalogProxy>();
         var handler = new ScriptedHandler();
         var error = await Assert.ThrowsAsync<WorkflowAiException>(() => Service(handler, repository: repository)
-            .TurnAsync(Request() with { SharedVariableKeys = ["no-longer-active"] }, Key, CancellationToken.None));
+            .TurnAsync(Request() with { SharedVariableKeys = ["no-longer-active"] }, CancellationToken.None));
         Assert.Equal("catalog_selection_changed", error.Code);
         Assert.Empty(handler.Bodies);
     }
@@ -144,7 +158,7 @@ public sealed class WorkflowAiAuthoringTests
         var answer = await Service(first).TurnAsync(Request() with
         {
             CurrentWorkflow = JsonSerializer.SerializeToElement(current, JsonOptions), Sources = sources, Message = "Keep the numeric secret. Earlier note: 123456"
-        }, Key, CancellationToken.None);
+        }, CancellationToken.None);
         Assert.Equal("answer", answer.Kind);
         Assert.Equal("Keep the numeric secret. Earlier note: [credential removed]\n\n--- spec.pdf, page 1 ---\nManagers approve requests.\n\n--- spec.pdf, page 2 ---\nThe code is [credential removed].",
             LastUserText(first.Bodies[0]));
@@ -156,7 +170,7 @@ public sealed class WorkflowAiAuthoringTests
         {
             CurrentWorkflow = JsonSerializer.SerializeToElement(current, JsonOptions),
             Sources = [.. sources, new AiSourcePageDto("spec.pdf", 3, "Escalate after five days.")], Message = "One more page.", State = answer.State
-        }, Key, CancellationToken.None);
+        }, CancellationToken.None);
         Assert.Equal("One more page.\n\n--- spec.pdf, page 3 ---\nEscalate after five days.", LastUserText(second.Bodies[0]));
     }
 
@@ -183,13 +197,17 @@ public sealed class WorkflowAiAuthoringTests
     }
 
     [Fact]
-    public async Task Providers_DescribeTheConfiguredOpenCodeEndpointAndModels()
+    public async Task Models_ListOnlyTheIdsAndNamesOfTheConfiguredModels()
     {
-        var zen = Assert.Single(await Service(new ScriptedHandler()).GetProvidersAsync(CancellationToken.None));
-        Assert.Equal(("opencode-go", "OpenCode Zen", "glm-5.3-flash"), (zen.Id, zen.Name, zen.DefaultModelId));
-        var go = new OpenCodeZenChatClientFactory(AgentHarness.Options(options => options.OpenCodeBaseUrl = "https://opencode.example/zen/go/v1"), () => new ScriptedHandler());
-        Assert.Equal(("OpenCode Go", "https://opencode.example/zen/go/v1/chat/completions"), (go.Descriptor.Name, go.Endpoint));
-        Assert.Empty(await Service(new ScriptedHandler(), AgentHarness.Options(options => options.Enabled = false)).GetProvidersAsync(CancellationToken.None));
+        var models = new FixedAiModelStore(AgentHarness.Connection,
+            new AiModelConnection("second", "Second model", "https://other.example/v1/", "other-model", null, "second-provider-key-0123456789"));
+
+        var listed = await Service(new ScriptedHandler(), models: models).GetModelsAsync(CancellationToken.None);
+
+        Assert.Equal([new AiModelDto("test-model", "GLM-5.3-Flash"), new AiModelDto("second", "Second model")], listed);
+        Assert.DoesNotContain(AgentHarness.Key, JsonSerializer.Serialize(listed));
+        Assert.Empty(await Service(new ScriptedHandler(), AgentHarness.Options(options => options.Enabled = false), models: models)
+            .GetModelsAsync(CancellationToken.None));
     }
 
     [Theory]
@@ -200,31 +218,32 @@ public sealed class WorkflowAiAuthoringTests
     public async Task ProviderClient_RejectsUnsafeEndpointsBeforeTransport(string baseUrl)
     {
         var handler = new ScriptedHandler();
-        var error = await Assert.ThrowsAsync<WorkflowAiException>(() => Service(handler, AgentHarness.Options(options => options.OpenCodeBaseUrl = baseUrl))
-            .TurnAsync(Request(), Key, CancellationToken.None));
+        var error = await Assert.ThrowsAsync<WorkflowAiException>(() => Service(handler, models: new FixedAiModelStore(AgentHarness.Connection with { Endpoint = baseUrl }))
+            .TurnAsync(Request(), CancellationToken.None));
         Assert.Equal(("provider_configuration", 503), (error.Code, error.StatusCode));
         Assert.Empty(handler.Bodies);
     }
 
     [Fact]
-    public async Task ProviderClient_AllowsLoopbackKeepsKeysPerRequestAndSendsReasoningOnlyForItsModel()
+    public async Task ProviderClient_UsesEachModelsEndpointKeyNameAndReasoning()
     {
-        var options = AgentHarness.Options(configure =>
-        {
-            configure.OpenCodeBaseUrl = "http://127.0.0.1:5999/zen/v1";
-            configure.OpenCodeModels = ["glm-5.3-flash", "other-model"];
-        });
+        var models = new FixedAiModelStore(
+            AgentHarness.Connection with { Endpoint = "http://127.0.0.1:5999/zen/v1", ApiKey = "first-provider-key-0123456789" },
+            new AiModelConnection("other", "Other model", "https://other.example/v1/", "other-model", null, "second-provider-key-0123456789"));
         var first = new ScriptedHandler(Completions.Final("a"), Completions.Final("b"), Completions.Final("c"));
-        await Service(first, options).TurnAsync(Request(), "first-provider-key-0123456789", CancellationToken.None);
+        await Service(first, models: models).TurnAsync(Request(), CancellationToken.None);
         var second = new ScriptedHandler(Completions.Final("a"), Completions.Final("b"), Completions.Final("c"));
-        await Service(second, options).TurnAsync(Request() with { ModelId = "other-model" }, "second-provider-key-0123456789", CancellationToken.None);
+        await Service(second, models: models).TurnAsync(Request() with { ModelId = "other" }, CancellationToken.None);
 
         Assert.Equal("http://127.0.0.1:5999/zen/v1/chat/completions", first.Requests[0].RequestUri!.AbsoluteUri);
+        Assert.Equal("https://other.example/v1/chat/completions", second.Requests[0].RequestUri!.AbsoluteUri);
         Assert.Equal("Bearer first-provider-key-0123456789", first.Requests[0].Headers.Authorization!.ToString());
         Assert.Equal("Bearer second-provider-key-0123456789", second.Requests[0].Headers.Authorization!.ToString());
         using var withEffort = JsonDocument.Parse(first.Bodies[0]);
         using var withoutEffort = JsonDocument.Parse(second.Bodies[0]);
-        Assert.Equal("high", withEffort.RootElement.GetProperty("reasoning_effort").GetString());
+        Assert.Equal(("glm-5.3-flash", "high"), (withEffort.RootElement.GetProperty("model").GetString(),
+            withEffort.RootElement.GetProperty("reasoning_effort").GetString()));
+        Assert.Equal("other-model", withoutEffort.RootElement.GetProperty("model").GetString());
         Assert.False(withoutEffort.RootElement.TryGetProperty("reasoning_effort", out _));
     }
 
@@ -232,7 +251,7 @@ public sealed class WorkflowAiAuthoringTests
     public async Task ProviderErrors_NeverExposeTheResponseBody()
     {
         var handler = new ScriptedHandler("{\"error\":{\"message\":\"internal detail sk-leak-me\"}}") { Status = HttpStatusCode.InternalServerError };
-        var result = await Service(handler).TurnAsync(Request(), Key, CancellationToken.None);
+        var result = await Service(handler).TurnAsync(Request(), CancellationToken.None);
         Assert.Equal(("paused", "provider_unavailable"), (result.Kind, result.Code));
         Assert.DoesNotContain("sk-leak-me", JsonSerializer.Serialize(result));
     }
@@ -337,7 +356,7 @@ public sealed class WorkflowAiAuthoringTests
 
     private static AiTurnRequestDto Request() => new()
     {
-        ConversationId = ConversationId, Message = "Build a review workflow", SnapshotId = "snapshot-1", ModelId = AgentHarness.Model
+        ConversationId = ConversationId, Message = "Build a review workflow", SnapshotId = "snapshot-1", ModelId = AgentHarness.Connection.Id
     };
     private static readonly string ConversationId = Guid.NewGuid().ToString();
     private static string Json(WorkflowModel model) => JsonSerializer.Serialize(model, JsonOptions);
@@ -349,10 +368,11 @@ public sealed class WorkflowAiAuthoringTests
     };
 
     private static WorkflowAiAuthoringService Service(HttpMessageHandler handler, WorkflowAiOptions? configured = null,
-        WorkflowAiConcurrencyGate? gate = null, ISharedVariableRepository? repository = null)
+        WorkflowAiConcurrencyGate? gate = null, ISharedVariableRepository? repository = null, IAiModelStore? models = null)
     {
         var options = configured ?? AgentHarness.Options();
-        return new(new OpenCodeZenChatClientFactory(options, () => handler), ResourceKnowledge.Small, new WorkflowAiDocs(ResourceKnowledge.Small),
+        return new(new OpenAiCompatibleChatClientFactory(() => handler), models ?? new FixedAiModelStore(AgentHarness.Connection),
+            ResourceKnowledge.Small, new WorkflowAiDocs(ResourceKnowledge.Small),
             AgentHarness.Validator(), new WorkflowDefinitionReadinessChecker(), options, gate ?? new WorkflowAiConcurrencyGate(options), repository);
     }
 

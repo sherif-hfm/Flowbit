@@ -50,13 +50,13 @@ internal static class AgentHarness
     public const string Key = "sk-agent-test-provider-key-0123456789";
     public const string Model = "glm-5.3-flash";
 
+    /// <summary>The configured model of the tests, as the AI models page stores it.</summary>
+    public static AiModelConnection Connection { get; } =
+        new("test-model", "GLM-5.3-Flash", "https://opencode.example/zen/v1/", Model, "high", Key);
+
     public static WorkflowAiOptions Options(Action<WorkflowAiOptions>? configure = null)
     {
-        var options = new WorkflowAiOptions
-        {
-            OpenCodeBaseUrl = "https://opencode.example/zen/v1/", OpenCodeModels = [Model],
-            OpenCodeReasoningEfforts = new() { [Model] = "high" }, MaxProviderCalls = 40, RunTimeoutSeconds = 1800, MaxModelOutputTokens = 32_768, MaxNudges = 2
-        };
+        var options = new WorkflowAiOptions { MaxProviderCalls = 40, RunTimeoutSeconds = 1800, MaxModelOutputTokens = 32_768, MaxNudges = 2 };
         configure?.Invoke(options);
         return options;
     }
@@ -68,7 +68,7 @@ internal static class AgentHarness
     {
         options ??= Options();
         var validator = Validator();
-        return new(new OpenCodeZenChatClientFactory(options, () => handler), new WorkflowAiDocs(knowledge ?? ResourceKnowledge.Small), validator, options,
+        return new(new OpenAiCompatibleChatClientFactory(() => handler), new WorkflowAiDocs(knowledge ?? ResourceKnowledge.Small), validator, options,
             "test-contract", (model, _) =>
             {
                 try
@@ -85,7 +85,7 @@ internal static class AgentHarness
     public static AiTurnRequestDto Request(string message, JsonElement? current = null, AiConversationStateDto? state = null, bool resume = false,
         string? conversationId = null) => new()
     {
-        ProviderId = "opencode-go", ModelId = Model, ConversationId = conversationId ?? Conversations.Default, Message = message,
+        ModelId = Connection.Id, ConversationId = conversationId ?? Conversations.Default, Message = message,
         CurrentWorkflow = current, SnapshotId = "snapshot-1", State = state, Continue = resume
     };
 
@@ -113,7 +113,7 @@ internal sealed class ScriptedHandler(params string[] responses) : HttpMessageHa
     }
 }
 
-/// <summary>Chat-completion response bodies in the OpenCode Zen (OpenAI-compatible) format.</summary>
+/// <summary>Chat-completion response bodies in the OpenAI-compatible format, as OpenCode Zen returns them.</summary>
 internal static class Completions
 {
     private static object Usage => new { prompt_tokens = 1000, completion_tokens = 100, total_tokens = 1100, prompt_tokens_details = new { cached_tokens = 400 } };

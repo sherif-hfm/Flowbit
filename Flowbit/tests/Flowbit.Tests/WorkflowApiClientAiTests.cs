@@ -12,13 +12,12 @@ namespace Flowbit.Tests;
 public sealed class WorkflowApiClientAiTests
 {
     [Fact]
-    public async Task AiKeyIsRequestLocalAndNeverIncludedInJsonOrSubsequentValidation()
+    public async Task TurnsSendTheSelectedModelAndNoProviderKey()
     {
-        var requests = new List<(string Path, string? Key, string Body)>();
+        var requests = new List<(string Path, bool KeyHeader, string Body)>();
         using var handler = new Handler(async (request, cancellationToken) =>
         {
-            requests.Add((request.RequestUri!.AbsolutePath,
-                request.Headers.TryGetValues("X-Flowbit-AI-Key", out var values) ? values.Single() : null,
+            requests.Add((request.RequestUri!.AbsolutePath, request.Headers.Contains("X-Flowbit-AI-Key"),
                 await request.Content!.ReadAsStringAsync(cancellationToken)));
             return new(HttpStatusCode.OK)
             {
@@ -29,19 +28,35 @@ public sealed class WorkflowApiClientAiTests
         });
         using var http = new HttpClient(handler) { BaseAddress = new Uri("https://flowbit.test") };
         var client = new WorkflowApiClient(http);
-        var request = new AiTurnRequestDto { ConversationId = Guid.NewGuid().ToString(), Message = "Create approvals", SnapshotId = "snapshot" };
-        var response = await client.SendAiTurnAsync(request, "synthetic-first-key");
+        var request = new AiTurnRequestDto { ModelId = "configured-model", ConversationId = Guid.NewGuid().ToString(), Message = "Create approvals", SnapshotId = "snapshot" };
+        var response = await client.SendAiTurnAsync(request);
         Assert.Equal("answer", response.Kind);
-        await client.SendAiTurnAsync(request, "synthetic-second-key");
         var definition = JsonSerializer.SerializeToElement(new { id = "workflow", name = "Flow" });
         Assert.True((await client.ValidateAiWorkflowAsync(definition)).CanSave);
-        Assert.Equal("synthetic-first-key", requests[0].Key);
-        Assert.Equal("synthetic-second-key", requests[1].Key);
-        Assert.Null(requests[2].Key);
-        Assert.Equal("/api/workflows/validate", requests[2].Path);
-        Assert.Equal("workflow", JsonDocument.Parse(requests[2].Body).RootElement.GetProperty("id").GetString());
-        Assert.All(requests, recorded => Assert.DoesNotContain("synthetic-", recorded.Body));
-        Assert.False(http.DefaultRequestHeaders.Contains("X-Flowbit-AI-Key"));
+        Assert.Equal("/api/workflows/ai/turn", requests[0].Path);
+        Assert.Equal("configured-model", JsonDocument.Parse(requests[0].Body).RootElement.GetProperty("modelId").GetString());
+        Assert.False(JsonDocument.Parse(requests[0].Body).RootElement.TryGetProperty("providerId", out _));
+        Assert.Equal("/api/workflows/validate", requests[1].Path);
+        Assert.Equal("workflow", JsonDocument.Parse(requests[1].Body).RootElement.GetProperty("id").GetString());
+        Assert.All(requests, recorded => Assert.False(recorded.KeyHeader));
+    }
+
+    [Fact]
+    public async Task ModelsAreListedByIdAndNameAndErrorCodesReachTheCaller()
+    {
+        using var handler = new Handler((request, _) => Task.FromResult(request.RequestUri!.AbsolutePath == "/api/workflows/ai/models"
+            ? new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(new[] { new AiModelDto("first", "First model") }) }
+            : new HttpResponseMessage(HttpStatusCode.BadRequest)
+            {
+                Content = new StringContent("{\"code\":\"unsupported_model\",\"error\":\"The selected AI model is not configured.\"}", Encoding.UTF8, "application/json")
+            }));
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("https://flowbit.test") };
+        var client = new WorkflowApiClient(http);
+
+        Assert.Equal([new AiModelDto("first", "First model")], await client.GetAiModelsAsync());
+        var error = await Assert.ThrowsAsync<FlowbitUi::Flowbit.Ui.Clients.WorkflowApiException>(() =>
+            client.SendAiTurnAsync(new AiTurnRequestDto { ModelId = "removed" }));
+        Assert.Equal((HttpStatusCode.BadRequest, "unsupported_model", "The selected AI model is not configured."), (error.StatusCode, error.Code, error.Message));
     }
 
     [Fact]

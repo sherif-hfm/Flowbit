@@ -33,6 +33,7 @@ public static class FlowbitEndpointMappingExtensions
         app.MapWorkflowJobEndpoints();
         app.MapUserDelegationEndpoints();
         app.MapSettingsEndpoints();
+        app.MapAiModelEndpoints();
         app.MapRetentionEndpoints();
         app.MapSharedVariableEndpoints();
         app.MapSharedVariableClientEndpoints();

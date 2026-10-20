@@ -41,18 +41,17 @@ if (fixture is not ("simple" or "modify" or "complex")) throw new ArgumentExcept
 var key = (await File.ReadAllTextAsync(arguments["key-file"])).Trim();
 using var diagnostics = new EvaluationDiagnostics(arguments.GetValueOrDefault("diagnostics") == "true");
 using var traces = new EvaluationTraces();
-// The shipped configuration: Zen, GLM-5.3-Flash with high reasoning, and the lab's limits (40 calls, 32,768 output tokens, two follow-ups).
-var options = new WorkflowAiOptions
-{
-    RunTimeoutSeconds = timeoutSeconds, OpenCodeModels = ["glm-5.3-flash"], OpenCodeReasoningEfforts = new() { ["glm-5.3-flash"] = "high" }
-};
+// The evaluated configuration: one AI model on Zen, GLM-5.3-Flash with high reasoning, and the lab's limits (40 calls, 32,768
+// output tokens, two follow-ups). The model is held in memory, as the AI models page would store it.
+var options = new WorkflowAiOptions { RunTimeoutSeconds = timeoutSeconds };
+var evaluatedModel = new AiModelConnection("evaluation", "GLM-5.3-Flash (OpenCode Zen)", "https://opencode.ai/zen/v1/", "glm-5.3-flash", "high", key);
 Action? onHttpAttempt = null;
 using var transport = new ObservedHttpHandler(() => onHttpAttempt?.Invoke());
-var clients = new OpenCodeZenChatClientFactory(options, () => transport);
+var clients = new OpenAiCompatibleChatClientFactory(() => transport);
 using var gate = new WorkflowAiConcurrencyGate(options);
 var knowledge = new AuthoringKnowledge(arguments["package"]);
 var docs = new WorkflowAiDocs(knowledge);
-var service = new WorkflowAiAuthoringService(clients, knowledge, docs,
+var service = new WorkflowAiAuthoringService(clients, new FixedAiModelStore(evaluatedModel), knowledge, docs,
     new WorkflowDefinitionValidator(new JintScriptEvaluator(new ScriptOptions(), NullLogger<JintScriptEvaluator>.Instance), new ServiceTaskOptions()),
     new WorkflowDefinitionReadinessChecker(durableProcessingOptions: new DurableProcessingOptions { PublicationEnabled = true }), options, gate);
 var clock = Stopwatch.StartNew();
@@ -60,7 +59,7 @@ var inputPath = Path.Combine(AppContext.BaseDirectory, "fixtures", fixture + ".t
 if (!File.Exists(inputPath)) inputPath = Path.Combine(arguments["fixtures"], fixture + ".txt");
 var request = new AiTurnRequestDto
 {
-    ModelId = "glm-5.3-flash", ConversationId = Guid.NewGuid().ToString("N"), SnapshotId = "synthetic-evaluation",
+    ModelId = evaluatedModel.Id, ConversationId = Guid.NewGuid().ToString("N"), SnapshotId = "synthetic-evaluation",
     Message = await File.ReadAllTextAsync(inputPath),
     CurrentWorkflow = fixture == "modify" ? JsonSerializer.SerializeToElement(Baseline(), json) : null
 };
@@ -85,13 +84,13 @@ onHttpAttempt = () =>
 };
 try
 {
-    try { result = await service.RunAsync(request, key, Observe, cancel.Token); }
+    try { result = await service.RunAsync(request, Observe, cancel.Token); }
     catch (OperationCanceledException) when (resumeTest && !overall.IsCancellationRequested && state is { CanContinue: true })
     {
         // Continue, as the panel does: the same request with the last checkpoint and no new message.
         resumed = true;
         transport.MarkResumeStart();
-        result = await service.RunAsync(request with { Message = "", Continue = true, State = state }, key, Observe, overall.Token);
+        result = await service.RunAsync(request with { Message = "", Continue = true, State = state }, Observe, overall.Token);
     }
 }
 catch (WorkflowAiException error) { failure = error.Code; }
@@ -107,7 +106,7 @@ await Save("evidence.json", new
 {
     engine = "agent", fixture, policy, passed, failure, kind = result?.Kind, code = result?.Code, labelWarnings, resumeTest, resumed, resumeVerified,
     transport.Attempts, transport.CancelledAttempts, seconds = clock.Elapsed.TotalSeconds,
-    model = request.ModelId, endpoint = options.OpenCodeBaseUrl, knowledge.ContractHash,
+    model = evaluatedModel.Model, endpoint = evaluatedModel.Endpoint, knowledge.ContractHash,
     promptFingerprint = WorkflowAiAgent.PromptFingerprint, docsFingerprint = docs.Fingerprint, docsFiles = docs.Files.Count,
     limits = new { options.RunTimeoutSeconds, options.MaxProviderCalls, options.MaxModelOutputTokens, options.MaxNudges, reasoningEffort = "high" },
     run = lastRun, events, calls = transport.Calls, diagnostics = diagnostics.Snapshot()

@@ -26,6 +26,7 @@ All JSON property names below are the wire names. Database identifiers are integ
 - [Variable-update batches](#variable-update-batches)
 - [Delegation](#delegation)
 - [Settings](#settings)
+- [AI models](#ai-models)
 - [Shared variables](#shared-variables)
 - [Shared-variable clients](#shared-variable-clients)
 - [Retention](#retention)
@@ -43,7 +44,7 @@ With `Authentication:Mode=OpenIdConnect`, the API validates JWT access tokens ag
 | --- | --- |
 | Bearer | A valid JWT access token, plus the configured API scope in OpenIdConnect mode. Additional actor/task checks are described at the endpoint. |
 | Workflow administrator | Bearer plus any role in the comma-separated engine setting `Workflow.RequiredRole`, matched case-insensitively; missing/blank defaults to `admin`. A custom value replaces the default. Administrative-action routes also require a nonblank actor. |
-| Settings administrator | Bearer plus `Settings.RequiredRole`, default `admin`. |
+| Settings administrator | Bearer plus `Settings.RequiredRole`, default `admin`. Also manages the AI assistant's models and their keys. |
 | Job operator | Bearer plus `WorkflowJobs.RequiredRole`, default `admin`. |
 | Delegation administrator | Bearer plus `Delegation.AdminRoles`, default `admin`, and a nonblank actor identity. |
 | Shared-variable administrator | Bearer plus `SharedVariables.RequiredRole`, default `admin`. This is required for JWT reads as well as writes. |
@@ -518,26 +519,26 @@ Content-Type: application/json
 
 These operations use the same **workflow administrator** authorization as definition saves.
 They do not save, publish, start instances, run scripts, or call authored service URLs.
-Provider credentials are separate from the Flowbit bearer token. Both `/ai/turn` and `/ai/turn/stream` need
-the single `X-Flowbit-AI-Key` header; never place it in a workflow or in the request JSON.
+Callers never send a provider key: a turn names one of the models a settings administrator configured
+through the [AI models](#ai-models) routes, and the API calls that model's endpoint with the key stored for it.
+A turn that carries an `X-Flowbit-AI-Key` header is refused with `400 api_key_not_accepted` before generation.
 See [AI authoring](ai-authoring.md) for how the assistant works and the portable skill, and
-[deployment](deployment.md#ai-authoring-and-local-ocr) for limits and provider configuration.
+[deployment](deployment.md#ai-authoring-and-local-ocr) for limits and model configuration.
 
 | Method and route | Request | Response |
 | --- | --- | --- |
-| `GET /api/workflows/ai/providers` | No body or provider key. | Array of `{id,name,defaultModelId,models:[{id,name}]}` from the configured provider. Discovery does not verify an account or make a billed call. |
-| `GET /api/workflows/ai/skill` | No body or provider key. | `application/zip`, attachment `flowbit-authoring.zip`, containing the startup-verified package the assistant's documentation comes from. |
+| `GET /api/workflows/ai/models` | No body. | Array of `{id,name}` for the configured models, in order; the first is the assistant's default. Endpoints, provider model names and keys are not returned. Empty when AI authoring is disabled. Discovery does not verify an account or make a billed call. |
+| `GET /api/workflows/ai/skill` | No body. | `application/zip`, attachment `flowbit-authoring.zip`, containing the startup-verified package the assistant's documentation comes from. |
 | `POST /api/workflows/ai/extract` | `multipart/form-data`: exactly one `file`; optional `forceOcr=true` and `languages=eng`, `ara`, or `eng+ara` (default). | `{fileName,pages:[{page,text,usedOcr,warnings}],warnings}`. Pages are one-based and text remains editable before generation. |
-| `POST /api/workflows/ai/turn` | JSON described below, plus `X-Flowbit-AI-Key`. | Buffered `proposal`, `answer`, `invalid`, or `paused` result. |
-| `POST /api/workflows/ai/turn/stream` | Same JSON and header as `/ai/turn`. | `application/x-ndjson` progress and checkpoint frames followed by one `result`, `paused`, or `error` frame. |
-| `POST /api/workflows/validate` | Raw canonical workflow JSON, with no wrapper. | Structural validity and separate save/publication readiness, described below. No provider key or provider request. |
+| `POST /api/workflows/ai/turn` | JSON described below. | Buffered `proposal`, `answer`, `invalid`, or `paused` result. |
+| `POST /api/workflows/ai/turn/stream` | Same JSON as `/ai/turn`. | `application/x-ndjson` progress and checkpoint frames followed by one `result`, `paused`, or `error` frame. |
+| `POST /api/workflows/validate` | Raw canonical workflow JSON, with no wrapper. | Structural validity and separate save/publication readiness, described below. No AI model is called. |
 
 ### Turn request
 
 The turn JSON has:
 
-- `providerId`: `opencode-go`, retained for compatibility even though the endpoint defaults to OpenCode Zen.
-- `modelId`: an enabled model from provider discovery. The DTO default is `glm-5.3-flash`, which the shipped configuration enables.
+- `modelId`: the `id` of a configured model from `GET /api/workflows/ai/models`. A blank, deleted or unknown id returns `400 unsupported_model`; reload the model list.
 - `conversationId`: a stable, non-secret UUID per conversation.
 - `message`: the message for the model, sent as typed except that literal credential values of `currentWorkflow` are replaced. Required unless `continue` is true, when it must be empty.
 - `continue`: `true` resumes a stopped run without a new message (see below).
@@ -547,7 +548,16 @@ The turn JSON has:
 - `sharedVariableKeys`: up to 50 active catalog keys. This additionally requires the existing shared-variable read permission (`SharedVariables.RequiredRole` for JWT callers). Only the selected entries' contracts and descriptions are sent; current values are excluded. Unknown or inactive selections are rejected.
 - `state`: the conversation state from the previous result or from the latest checkpoint frame of the same conversation. Omit it to start a new conversation.
 
-The fields of the replaced command-loop engine are refused before generation: a non-empty `history` returns `400 history_unsupported`, and any `checkpoint` returns `409 checkpoint_configuration_changed`. The assistant keeps the conversation in `state` instead.
+The fields of the replaced command-loop engine are refused before generation: a non-empty `history` returns `400 history_unsupported`, and any `checkpoint` returns `409 checkpoint_configuration_changed`. The assistant keeps the conversation in `state` instead. The removed `providerId` field is ignored; a former OpenCode model name in `modelId` is not a configured model id and returns `400 unsupported_model`.
+
+```http
+POST /api/workflows/ai/turn HTTP/1.1
+Host: localhost:5017
+Authorization: Bearer TOKEN
+Content-Type: application/json
+
+{"modelId":"5d0c7b3e1f2a4c6e8b9d0a1b2c3d4e5f","conversationId":"0f8fad5b-d9cb-469f-a165-70867728950e","message":"Employees submit a purchase request; their manager approves or rejects it.","snapshotId":"editor-1"}
+```
 
 ### Turn result
 
@@ -564,7 +574,7 @@ Only `kind: "proposal"` with a valid definition may be offered for application.
 
 - An invalid, forged or oversized state returns `400 invalid_state`.
 - State that would exceed its size limit returns `413 state_too_large`.
-- State from another provider, model, endpoint or reasoning setting returns `409 checkpoint_configuration_changed`.
+- State from another configured model, or from a model whose endpoint, provider model name or reasoning effort changed since, returns `409 checkpoint_configuration_changed`. Replacing only a model's key keeps the state usable.
 
 There is no server-side conversation store, and any API replica can continue a conversation.
 
@@ -624,7 +634,7 @@ Failures before a run starts use `{code,error}` with sanitized diagnostics:
 
 | Status | Meaning |
 | --- | --- |
-| `400` | Invalid input, including `invalid_request`, `invalid_key`, `invalid_state`, `invalid_current_workflow` and `history_unsupported` |
+| `400` | Invalid input, including `invalid_request`, `unsupported_model`, `api_key_not_accepted`, `invalid_state`, `invalid_current_workflow` and `history_unsupported` |
 | `401` | Missing or expired Flowbit bearer authorization |
 | `403` | Authorization |
 | `409` | `checkpoint_configuration_changed`, `stale_checkpoint`, `nothing_to_continue` |
@@ -632,7 +642,7 @@ Failures before a run starts use `{code,error}` with sanitized diagnostics:
 | `415` | Media type |
 | `429` | `authoring_busy` |
 | `502` | Generation transport |
-| `503` | Disabled or misconfigured service: `ai_disabled`, `provider_configuration` |
+| `503` | Disabled or misconfigured service: `ai_disabled`, or `provider_configuration` for invalid limits, an invalid stored model list or an unsafe model endpoint |
 | `504` | Deadline |
 
 Provider failures during a run do not change the HTTP status. They return HTTP `200` with `kind: "paused"` and a provider code, and never include raw upstream response bodies. Nothing is retried automatically. Cancelling the HTTP request cancels the model call in progress. Turn, validation, and extraction responses set `Cache-Control: no-store`.
@@ -4651,7 +4661,7 @@ Content-Type: application/json
 
 ## Settings
 
-All routes require Settings administrator permission. Engine settings have a string `value`, while workflow settings have a raw JSON `value` for the workflow expression context. Creation selects namespace/key (engine) or namespace/name (workflow); updates replace value/description without renaming the setting. For update/delete round-trip the exact timestamp from the list response. Delete takes `expectedUpdatedAt` in the query, not the body. Invalid identifiers, missing values/timestamps are `400`; duplicate/stale operations are `409`. Engine values are opaque strings, preserving empty/whitespace/multiline content; each setting consumer interprets the value. Invalid actor-identity configuration can prevent the next API startup. Namespace/key/name are at most 300 characters and description at most 1,000. Changing the actor identity claim setting requires process restart because identity configuration is latched at startup. No per-ID GET route exists: retrieve settings with the list.
+All routes require Settings administrator permission. Engine settings have a string `value`, while workflow settings have a raw JSON `value` for the workflow expression context. Creation selects namespace/key (engine) or namespace/name (workflow); updates replace value/description without renaming the setting. For update/delete round-trip the exact timestamp from the list response. Delete takes `expectedUpdatedAt` in the query, not the body. Invalid identifiers, missing values/timestamps are `400`; duplicate/stale operations are `409`. Engine values are opaque strings, preserving empty/whitespace/multiline content; each setting consumer interprets the value. Invalid actor-identity configuration can prevent the next API startup. Namespace/key/name are at most 300 characters and description at most 1,000. Changing the actor identity claim setting requires process restart because identity configuration is latched at startup. No per-ID GET route exists: retrieve settings with the list. The engine setting `AiAuthoring.Models` (matched ignoring case) holds the AI assistant's models and keys: these routes do not list it, and creating, updating or deleting it returns `400`. Manage it through [AI models](#ai-models).
 
 ### GET /api/engine-settings
 
@@ -4935,6 +4945,159 @@ Delete a setting using its expected timestamp.
 
 ```http
 DELETE /api/workflow-settings/1001?expectedUpdatedAt=2026-09-09T10%3A00%3A00Z HTTP/1.1
+Host: localhost:5017
+Authorization: Bearer TOKEN
+```
+
+Response:
+
+```http
+HTTP/1.1 204 No Content
+```
+
+## AI models
+
+All routes require Settings administrator permission. They manage the models the editor's [AI assistant](#ai-authoring-and-read-only-validation) offers. Each model has a server-generated `id`, a display `name`, the base URL of an OpenAI-compatible chat-completions API (`endpoint`), the provider's model name (`model`), an optional `reasoningEffort`, and a write-only `apiKey`. Keys are accepted in create and update requests and are never returned. The list order is creation order, and the first model is the assistant's default.
+
+The models are stored as one JSON array in the engine setting `AiAuthoring.Models`. The [engine settings](#settings) routes do not list that row and refuse to create, update or delete it. Each model has its own `revision`: updates and deletes send the exact `expectedRevision` from the last list, and a stale revision returns `409`. Field rules are in [CreateAiModelRequest](#schema-createaimodelrequest); violations return `400`, a duplicate name (ignoring case) returns `409`, and an unknown `id` returns `404`. A stored list that is not valid (only possible through direct database edits) returns `409` until it is repaired. Responses set `Cache-Control: no-store`.
+
+Changing a model's `endpoint`, `model` or `reasoningEffort` makes open assistant conversations return `409 checkpoint_configuration_changed`; replacing only the key keeps them. Deleting a model makes later turns that name it return `400 unsupported_model`.
+
+### GET /api/ai-models
+
+List the configured models in order.
+
+**Access:** Settings administrator. See [authentication](#http-conventions-and-authentication).
+
+**Parameters:** none.
+
+**Body:** none.
+
+**Success:** `200` array of [AiModelSettingDto](#schema-aimodelsettingdto).
+**Errors:** `401` Unauthorized; `403` Forbidden; `409` Conflict. See [error envelopes](#errors-and-concurrency) and the family rules above.
+
+```http
+GET /api/ai-models HTTP/1.1
+Host: localhost:5017
+Authorization: Bearer TOKEN
+```
+
+Response example:
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+[
+  {
+    "id": "5d0c7b3e1f2a4c6e8b9d0a1b2c3d4e5f",
+    "name": "GLM-5.3-Flash (OpenCode Zen)",
+    "endpoint": "https://opencode.ai/zen/v1/",
+    "model": "glm-5.3-flash",
+    "reasoningEffort": "high",
+    "revision": 1,
+    "createdAt": "2026-10-19T10:00:00Z",
+    "updatedAt": "2026-10-19T10:00:00Z"
+  }
+]
+```
+
+### POST /api/ai-models
+
+Add a model. The key is stored and never returned.
+
+**Access:** Settings administrator. See [authentication](#http-conventions-and-authentication).
+
+**Parameters:** none.
+
+**JSON body:** [CreateAiModelRequest](#schema-createaimodelrequest).
+
+**Success:** `201` [AiModelSettingDto](#schema-aimodelsettingdto) with `Location: /api/ai-models/{id}`.
+**Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden; `409` Conflict. See [error envelopes](#errors-and-concurrency) and the family rules above.
+
+```http
+POST /api/ai-models HTTP/1.1
+Host: localhost:5017
+Authorization: Bearer TOKEN
+Content-Type: application/json
+
+{
+  "name": "GLM-5.3-Flash (OpenCode Zen)",
+  "endpoint": "https://opencode.ai/zen/v1/",
+  "model": "glm-5.3-flash",
+  "reasoningEffort": "high",
+  "apiKey": "PROVIDER_KEY"
+}
+```
+
+Response example:
+
+```http
+HTTP/1.1 201 Created
+Location: /api/ai-models/5d0c7b3e1f2a4c6e8b9d0a1b2c3d4e5f
+Content-Type: application/json
+
+{
+  "id": "5d0c7b3e1f2a4c6e8b9d0a1b2c3d4e5f",
+  "name": "GLM-5.3-Flash (OpenCode Zen)",
+  "endpoint": "https://opencode.ai/zen/v1/",
+  "model": "glm-5.3-flash",
+  "reasoningEffort": "high",
+  "revision": 1,
+  "createdAt": "2026-10-19T10:00:00Z",
+  "updatedAt": "2026-10-19T10:00:00Z"
+}
+```
+
+### PUT /api/ai-models/{id}
+
+Replace a model's settings. A null or blank `apiKey` keeps the stored key.
+
+**Access:** Settings administrator. See [authentication](#http-conventions-and-authentication).
+
+| Parameter | Location | Type | Required | Meaning / default |
+| --- | --- | --- | --- | --- |
+| `id` | path | string | Yes | The model's `id` from the list. |
+
+**JSON body:** [UpdateAiModelRequest](#schema-updateaimodelrequest).
+
+**Success:** `200` [AiModelSettingDto](#schema-aimodelsettingdto) with the next `revision`.
+**Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden; `404` Not Found; `409` Conflict. See [error envelopes](#errors-and-concurrency) and the family rules above.
+
+```http
+PUT /api/ai-models/5d0c7b3e1f2a4c6e8b9d0a1b2c3d4e5f HTTP/1.1
+Host: localhost:5017
+Authorization: Bearer TOKEN
+Content-Type: application/json
+
+{
+  "name": "GLM-5.3-Flash (OpenCode Zen)",
+  "endpoint": "https://opencode.ai/zen/v1/",
+  "model": "glm-5.3-flash",
+  "reasoningEffort": "medium",
+  "apiKey": null,
+  "expectedRevision": 1
+}
+```
+
+### DELETE /api/ai-models/{id}
+
+Delete a model and its stored key.
+
+**Access:** Settings administrator. See [authentication](#http-conventions-and-authentication).
+
+| Parameter | Location | Type | Required | Meaning / default |
+| --- | --- | --- | --- | --- |
+| `id` | path | string | Yes | The model's `id` from the list. |
+| `expectedRevision` | query | integer (int64) | Yes | The model's exact `revision` from the last list. |
+
+**Body:** none.
+
+**Success:** `204` without a response body.
+**Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden; `404` Not Found; `409` Conflict. See [error envelopes](#errors-and-concurrency) and the family rules above.
+
+```http
+DELETE /api/ai-models/5d0c7b3e1f2a4c6e8b9d0a1b2c3d4e5f?expectedRevision=2 HTTP/1.1
 Host: localhost:5017
 Authorization: Bearer TOKEN
 ```
@@ -6197,6 +6360,26 @@ All identifiers are positive. The server derives actor identity, roles, and audi
 
 </details>
 
+<a id="schema-aimodelsettingdto"></a>
+
+<details>
+<summary>AiModelSettingDto</summary>
+
+A configured AI model as settings administrators see it. It never contains the API key.
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `id` | string | Yes | Stable server-generated identifier; the assistant's `modelId`. |
+| `name` | string | Yes | Display name shown to authors. |
+| `endpoint` | string | Yes | Normalized base URL of the OpenAI-compatible API. |
+| `model` | string | Yes | The provider's model name. |
+| `reasoningEffort` | null or string | Yes | `low`, `medium`, `high`, or null when none is sent. |
+| `revision` | integer (int64) | Yes | Optimistic concurrency revision, starting at 1. |
+| `createdAt` | string (date-time) | Yes | Server creation timestamp. |
+| `updatedAt` | string (date-time) | Yes | Server last-change timestamp. |
+
+</details>
+
 <a id="schema-archivesharedvariablerequest"></a>
 
 <details>
@@ -6456,6 +6639,23 @@ Confirms the exact prepared population using server-returned counts and an optim
 | `variables` | null or object | No | Runtime name/value map or write array as typed here; input contracts and raw administrative writes have different rules. |
 | `selection` | [AdministrativeActionBatchSelectionDto](#schema-administrativeactionbatchselectiondto) | Yes | — |
 | `idempotencyKey` | null or string | No | Optional logical-operation retry key. Not the start-node HTTP idempotency header. |
+
+</details>
+
+<a id="schema-createaimodelrequest"></a>
+
+<details>
+<summary>CreateAiModelRequest</summary>
+
+Adds an AI model for the editor assistant.
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `name` | string | Yes | Display name shown to authors; 1–100 characters, unique ignoring case. |
+| `endpoint` | string | Yes | Base URL of an OpenAI-compatible chat-completions API, at most 2,000 characters. HTTPS, or HTTP on a loopback host; no user information, query, fragment or `chat/completions` suffix. Normalized with a trailing slash. |
+| `model` | string | Yes | The provider's model name sent with every request; 1–200 characters. |
+| `reasoningEffort` | null or string | No | `low`, `medium`, `high`; null, blank or `none` sends no reasoning effort. |
+| `apiKey` | string | Yes | Write-only provider key, 16–4,096 characters without control characters. Never returned. |
 
 </details>
 
@@ -9202,6 +9402,24 @@ Timer kinds: timeDate, timeDuration, timeCycle. Worker execution is required; se
 | --- | --- | --- | --- |
 | `expectedUpdatedAt` | string (date-time) | Yes | Exact server-returned timestamp for optimistic concurrency. |
 | `reason` | null or string | No | Human-readable audit reason; required where non-null in version-change/reactivation requests. |
+
+</details>
+
+<a id="schema-updateaimodelrequest"></a>
+
+<details>
+<summary>UpdateAiModelRequest</summary>
+
+Replaces one configured AI model's settings. The same field rules as [CreateAiModelRequest](#schema-createaimodelrequest) apply.
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `name` | string | Yes | Display name, unique ignoring case. |
+| `endpoint` | string | Yes | Base URL of an OpenAI-compatible chat-completions API. |
+| `model` | string | Yes | The provider's model name. |
+| `reasoningEffort` | null or string | No | `low`, `medium`, `high`; null, blank or `none` sends no reasoning effort. |
+| `apiKey` | null or string | No | Write-only. Null or blank keeps the stored key; a value replaces it. |
+| `expectedRevision` | integer (int64) | Yes | The model's exact `revision` from the last list. |
 
 </details>
 

@@ -1651,7 +1651,26 @@ public sealed partial class WorkflowApiClient(HttpClient httpClient, IHttpClient
         var message = string.IsNullOrWhiteSpace(text)
             ? response.ReasonPhrase
             : TryReadErrorMessage(text) ?? text;
-        throw new WorkflowApiException(response.StatusCode, message);
+        var code = string.IsNullOrWhiteSpace(text) ? null : TryReadErrorCode(text);
+        throw new WorkflowApiException(response.StatusCode, message, code);
+    }
+
+    // Flowbit's JSON errors carry a stable code beside the message; callers branch on the code, never on the text.
+    private static string? TryReadErrorCode(string text)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(text);
+            return document.RootElement.ValueKind == JsonValueKind.Object
+                && TryGetPropertyIgnoreCase(document.RootElement, "code", out var code)
+                && code.ValueKind == JsonValueKind.String
+                    ? NonEmptyString(code)
+                    : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 
     private static string? TryReadErrorMessage(string text)
@@ -1806,10 +1825,13 @@ public sealed partial class WorkflowApiClient(HttpClient httpClient, IHttpClient
     }
 }
 
-public sealed class WorkflowApiException(HttpStatusCode statusCode, string? message)
+public sealed class WorkflowApiException(HttpStatusCode statusCode, string? message, string? code = null)
     : InvalidOperationException(message)
 {
     public HttpStatusCode StatusCode { get; } = statusCode;
+
+    /// <summary>The stable machine-readable code of a Flowbit JSON error, when the response carries one.</summary>
+    public string? Code { get; } = code;
 }
 
 public sealed class NodeExecutionSearchQuery

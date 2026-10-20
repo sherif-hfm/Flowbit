@@ -1,6 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Flowbit.Service.Abstractions;
+using Flowbit.Service.Ai;
 using Flowbit.Service.Services;
 
 namespace Flowbit.Service.DependencyInjection;
@@ -53,6 +54,9 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IWorkflowJobOperationsService, WorkflowJobOperationsService>();
         services.AddScoped<INodeExecutionQueryService, NodeExecutionQueryService>();
         services.AddScoped<IEngineSettingsService, EngineSettingsService>();
+        services.AddScoped<AiModelSettingsService>();
+        services.AddScoped<IAiModelSettingsService>(provider => provider.GetRequiredService<AiModelSettingsService>());
+        services.AddScoped<IAiModelStore>(provider => provider.GetRequiredService<AiModelSettingsService>());
         services.AddScoped<IWorkflowSettingsService, WorkflowSettingsService>();
         services.AddScoped<IUserDelegationService, UserDelegationService>();
         return services;

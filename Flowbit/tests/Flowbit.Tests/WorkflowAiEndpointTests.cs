@@ -34,8 +34,14 @@ public sealed class WorkflowAiEndpointTests
         var schemas = document.Components!.Schemas!;
         Assert.Contains("state", schemas["AiTurnRequestDto"].Properties!.Keys);
         Assert.Contains("continue", schemas["AiTurnRequestDto"].Properties!.Keys);
+        Assert.Contains("modelId", schemas["AiTurnRequestDto"].Properties!.Keys);
+        Assert.DoesNotContain("providerId", schemas["AiTurnRequestDto"].Properties!.Keys);
         Assert.DoesNotContain("history", schemas["AiTurnRequestDto"].Properties!.Keys);
         Assert.DoesNotContain("checkpoint", schemas["AiTurnRequestDto"].Properties!.Keys);
+        Assert.Contains("/api/workflows/ai/models", document.Paths.Keys);
+        Assert.DoesNotContain("/api/workflows/ai/providers", document.Paths.Keys);
+        Assert.DoesNotContain(operation.Parameters ?? [], parameter => parameter.Name == "X-Flowbit-AI-Key");
+        Assert.DoesNotContain("apiKey", schemas["AiModelSettingDto"].Properties!.Keys);
         Assert.Contains("openQuestions", schemas["AiTurnResultDto"].Properties!.Keys);
         Assert.DoesNotContain("requirementsReview", schemas["AiTurnResultDto"].Properties!.Keys);
         Assert.Contains("canContinue", schemas["AiConversationStateDto"].Properties!.Keys);
@@ -54,7 +60,6 @@ public sealed class WorkflowAiEndpointTests
         using var client = factory.CreateClient();
         using var request = ApiTestAuth.Authorize(new(HttpMethod.Post, path)
         { Content = new StringContent("{\"message\":\"Build a review\",\"snapshotId\":\"revision-1\"," + field + "}", Encoding.UTF8, "application/json") });
-        request.Headers.Add("X-Flowbit-AI-Key", "synthetic-key");
         using var response = await client.SendAsync(request);
         Assert.Equal(expected, response.StatusCode);
         Assert.Contains(code, await response.Content.ReadAsStringAsync());
@@ -66,9 +71,9 @@ public sealed class WorkflowAiEndpointTests
     {
         await using var factory = new AiFactory();
         using var client = factory.CreateClient();
-        using var anonymous = await client.GetAsync("/api/workflows/ai/providers");
+        using var anonymous = await client.GetAsync("/api/workflows/ai/models");
         Assert.Equal(HttpStatusCode.Unauthorized, anonymous.StatusCode);
-        using var request = ApiTestAuth.Authorize(new(HttpMethod.Get, "/api/workflows/ai/providers"), "reader", "reviewer");
+        using var request = ApiTestAuth.Authorize(new(HttpMethod.Get, "/api/workflows/ai/models"), "reader", "reviewer");
         using var denied = await client.SendAsync(request);
         Assert.Equal(HttpStatusCode.Forbidden, denied.StatusCode);
         Assert.Equal(0, factory.Service.Calls);
@@ -93,21 +98,34 @@ public sealed class WorkflowAiEndpointTests
     [Theory]
     [InlineData("/api/workflows/ai/turn")]
     [InlineData("/api/workflows/ai/turn/stream")]
-    public async Task TurnReceivesRequestScopedKeyAndDoesNotEchoIt(string path)
+    public async Task TurnForwardsTheSelectedModelWithoutACallerKey(string path)
     {
         await using var factory = new AiFactory();
         using var client = factory.CreateClient();
-        foreach (var key in new[] { "synthetic-key-one", "synthetic-key-two" })
-        {
-            using var request = ApiTestAuth.Authorize(new(HttpMethod.Post, path)
-            { Content = JsonContent.Create(new AiTurnRequestDto { Message = "Build a review", SnapshotId = "revision-1" }) });
-            request.Headers.Add("X-Flowbit-AI-Key", key);
-            using var response = await client.SendAsync(request);
-            response.EnsureSuccessStatusCode();
-            Assert.Equal(key, factory.Service.LastKey);
-            Assert.DoesNotContain(key, await response.Content.ReadAsStringAsync());
-            Assert.True(response.Headers.CacheControl!.NoStore);
-        }
+        using var request = ApiTestAuth.Authorize(new(HttpMethod.Post, path)
+        { Content = JsonContent.Create(new AiTurnRequestDto { ModelId = "configured-model", Message = "Build a review", SnapshotId = "revision-1" }) });
+        using var response = await client.SendAsync(request);
+        response.EnsureSuccessStatusCode();
+        Assert.Equal("configured-model", factory.Service.LastModelId);
+        Assert.True(response.Headers.CacheControl!.NoStore);
+    }
+
+    [Theory]
+    [InlineData("/api/workflows/ai/turn")]
+    [InlineData("/api/workflows/ai/turn/stream")]
+    public async Task TurnRefusesAProviderKeyHeaderBeforeGeneration(string path)
+    {
+        await using var factory = new AiFactory();
+        using var client = factory.CreateClient();
+        using var request = ApiTestAuth.Authorize(new(HttpMethod.Post, path)
+        { Content = JsonContent.Create(new AiTurnRequestDto { ModelId = "configured-model", Message = "Build a review", SnapshotId = "revision-1" }) });
+        request.Headers.Add("X-Flowbit-AI-Key", "synthetic-caller-key");
+        using var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("api_key_not_accepted", body);
+        Assert.DoesNotContain("synthetic-caller-key", body);
+        Assert.Equal(0, factory.Service.Calls);
     }
 
     [Theory]
@@ -121,7 +139,6 @@ public sealed class WorkflowAiEndpointTests
         using var client = factory.CreateClient();
         using var request = ApiTestAuth.Authorize(new(HttpMethod.Post, path)
         { Content = new StringContent(body, Encoding.UTF8, contentType) });
-        request.Headers.Add("X-Flowbit-AI-Key", "synthetic-key");
         using var response = await client.SendAsync(request);
         Assert.Equal(expected, response.StatusCode);
         Assert.Equal(0, factory.Service.Calls);
@@ -176,7 +193,6 @@ public sealed class WorkflowAiEndpointTests
                 SharedVariableKeys = selectCatalog ? ["finance.limit"] : []
             })
         });
-        request.Headers.Add("X-Flowbit-AI-Key", "synthetic-key");
         using var response = await client.SendAsync(request);
         Assert.Equal(expected, response.StatusCode);
         Assert.Equal(selectCatalog ? 0 : 1, factory.Service.Calls);
@@ -213,7 +229,6 @@ public sealed class WorkflowAiEndpointTests
         using var response = await client.SendAsync(request);
         Assert.Equal(afterProgress ? HttpStatusCode.OK : HttpStatusCode.TooManyRequests, response.StatusCode);
         var body = await response.Content.ReadAsStringAsync();
-        Assert.DoesNotContain("synthetic-stream-key", body);
         if (afterProgress)
         {
             var frames = body.Split('\n', StringSplitOptions.RemoveEmptyEntries)
@@ -228,10 +243,8 @@ public sealed class WorkflowAiEndpointTests
 
     private static HttpRequestMessage StreamRequest()
     {
-        var request = ApiTestAuth.Authorize(new(HttpMethod.Post, "/api/workflows/ai/turn/stream")
+        return ApiTestAuth.Authorize(new(HttpMethod.Post, "/api/workflows/ai/turn/stream")
         { Content = JsonContent.Create(new AiTurnRequestDto { Message = "Build a review", SnapshotId = "revision-1" }) });
-        request.Headers.Add("X-Flowbit-AI-Key", "synthetic-stream-key");
-        return request;
     }
 
     private sealed class AiFactory(string? catalogRole = null) : WebApplicationFactory<Program>
@@ -274,28 +287,28 @@ public sealed class WorkflowAiEndpointTests
     private sealed class FakeAuthoring : IWorkflowAiAuthoringService
     {
         public int Calls { get; private set; }
-        public string? LastKey { get; private set; }
+        public string? LastModelId { get; private set; }
         public JsonElement? LastDefinition { get; private set; }
         public bool FailBeforeProgress { get; set; }
         public bool FailAfterProgress { get; set; }
         public TaskCompletionSource? FinishGate { get; set; }
-        public Task<IReadOnlyList<AiProviderDto>> GetProvidersAsync(CancellationToken ct)
-        { Calls++; return Task.FromResult<IReadOnlyList<AiProviderDto>>([]); }
+        public Task<IReadOnlyList<AiModelDto>> GetModelsAsync(CancellationToken ct)
+        { Calls++; return Task.FromResult<IReadOnlyList<AiModelDto>>([]); }
         public Task<AiValidationResultDto> ValidateAsync(JsonElement definition, CancellationToken ct)
         { Calls++; LastDefinition = definition.Clone(); return Task.FromResult(new AiValidationResultDto(true, [], []) { CanSave = true }); }
-        public Task<AiTurnResultDto> TurnAsync(AiTurnRequestDto request, string apiKey, CancellationToken ct)
+        public Task<AiTurnResultDto> TurnAsync(AiTurnRequestDto request, CancellationToken ct)
         {
-            Calls++; LastKey = apiKey;
+            Calls++; LastModelId = request.ModelId;
             return Task.FromResult(new AiTurnResultDto("answer", "Who reviews?", null, new(false, [], []), request.SnapshotId, "test-contract"));
         }
-        public async Task<AiTurnResultDto> RunAsync(AiTurnRequestDto request, string apiKey,
+        public async Task<AiTurnResultDto> RunAsync(AiTurnRequestDto request,
             Func<AiRunEventDto, CancellationToken, Task>? emit, CancellationToken ct)
         {
             if (FailBeforeProgress) throw new WorkflowAiException("provider_rate_limited", "Try again shortly.", 429);
             if (emit is not null) await emit(new() { RunId = "test-run", Sequence = 1, Type = "progress", Stage = "planning" }, ct);
             if (FailAfterProgress) throw new WorkflowAiException("provider_rate_limited", "Try again shortly.", 429);
             if (FinishGate is not null) await FinishGate.Task.WaitAsync(ct);
-            var result = await TurnAsync(request, apiKey, ct);
+            var result = await TurnAsync(request, ct);
             if (emit is not null) await emit(new() { RunId = "test-run", Sequence = 2, Type = "result", Result = result }, ct);
             return result;
         }

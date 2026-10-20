@@ -42,9 +42,11 @@ public sealed class WorkflowAiConversation(
     /// <summary>How often a waiting model call reports progress, so the stream stays alive through long reasoning.</summary>
     public TimeSpan WaitInterval { get; init; } = TimeSpan.FromSeconds(60);
 
-    public async Task<AiTurnResultDto> RunAsync(AiTurnRequestDto request, string apiKey, string? sharedVariables,
+    public async Task<AiTurnResultDto> RunAsync(AiTurnRequestDto request, AiModelConnection connection, string? sharedVariables,
         Func<AiRunEventDto, CancellationToken, Task>? emit, CancellationToken cancellationToken)
     {
+        // The configured key reaches only the provider; the host also uses it to keep it out of state, workflows and replies.
+        var apiKey = connection.ApiKey;
         var clock = Stopwatch.StartNew();
         var runId = Guid.NewGuid().ToString("N");
         long sequence = 0;
@@ -65,12 +67,13 @@ public sealed class WorkflowAiConversation(
             catch (JsonException) { throw new WorkflowAiException("invalid_current_workflow", "The editor workflow does not match Flowbit's canonical contract. Fix it before asking the assistant."); }
         }
 
-        var reasoning = options.OpenCodeReasoningEfforts.GetValueOrDefault(request.ModelId);
+        var reasoning = connection.ReasoningEffort;
         var saved = request.State is { } returned ? WorkflowAiConversationState.Decode(returned, apiKey) : null;
         if (saved is not null && saved.ConversationId != request.ConversationId)
             throw new WorkflowAiException("invalid_state", "The conversation state belongs to another conversation. Start a new conversation.");
-        if (saved is not null && (saved.AgentId != WorkflowAiAgent.AgentId || saved.ProviderId != clients.Descriptor.Id || saved.ModelId != request.ModelId
-            || saved.Endpoint != clients.Endpoint || saved.ReasoningEffort != reasoning))
+        // A conversation belongs to its configured model, provider model, endpoint and reasoning; a rotated key keeps it.
+        if (saved is not null && (saved.AgentId != WorkflowAiAgent.AgentId || saved.ProviderId != connection.Id || saved.ModelId != connection.Model
+            || saved.Endpoint != connection.Endpoint || saved.ReasoningEffort != reasoning))
             throw new WorkflowAiException("checkpoint_configuration_changed",
                 "The model or provider settings changed since this conversation started. Start a new conversation.", 409);
         if (request.Continue && (saved is null || saved.Pending.Count == 0))
@@ -134,8 +137,8 @@ public sealed class WorkflowAiConversation(
         deadline.CancelAfter(TimeSpan.FromSeconds(options.RunTimeoutSeconds));
         AgentSession? session = null;
         AiConversationStateDto? latest = null;
-        var agent = WorkflowAiAgent.Create(clients.Create(request.ModelId, apiKey, request.ConversationId, meter, TimeSpan.FromSeconds(options.RunTimeoutSeconds)),
-            workspace.CreateTools(), request.ModelId, reasoning, options.MaxModelOutputTokens, options.MaxProviderCalls,
+        var agent = WorkflowAiAgent.Create(clients.Create(connection, request.ConversationId, meter, TimeSpan.FromSeconds(options.RunTimeoutSeconds)),
+            workspace.CreateTools(), connection.Model, reasoning, options.MaxModelOutputTokens, options.MaxProviderCalls,
             inner => new WorkflowAiCheckpointingChatClient(inner, CallStartingAsync, WaitingAsync, WaitInterval));
         try
         {
@@ -285,7 +288,7 @@ public sealed class WorkflowAiConversation(
             var (nodes, flows) = Counts(workspace.Outputs.GetValueOrDefault(WorkflowAiAgent.WorkflowFile));
             return WorkflowAiConversationState.Encode(new WorkflowAiStatePayload
             {
-                AgentId = WorkflowAiAgent.AgentId, ProviderId = clients.Descriptor.Id, ModelId = request.ModelId, Endpoint = clients.Endpoint,
+                AgentId = WorkflowAiAgent.AgentId, ProviderId = connection.Id, ModelId = connection.Model, Endpoint = connection.Endpoint,
                 ReasoningEffort = reasoning, PromptFingerprint = WorkflowAiAgent.PromptFingerprint, DocsFingerprint = docs.Fingerprint,
                 ConversationId = request.ConversationId, RedactionNonce = redaction.Nonce, Session = sessionJson, Pending = pending,
                 HistoryMessages = session is null ? 0 : History(session).Count,
