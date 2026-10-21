@@ -27,7 +27,6 @@ Apply the additive `AddLocalIdentity` migration before enabling Local mode on de
 | `Authentication:Local:RoleClaimType` | API | `roles`. |
 | `Authentication:Local:AccessTokenLifetime` | API | `00:15:00`; permitted range 1–60 minutes. |
 | `Authentication:Local:SessionLifetime` | API | `08:00:00`; at least the access lifetime and at most 24 hours. |
-| `Authentication:Local:MinimumPasswordLength` | API | `12`; configurable from 12 to 128; passwords have a 128-character maximum. |
 | `Authentication:Local:MaxFailedAttempts` | API | `5`; allowed range 1–100. |
 | `Authentication:Local:LockoutDuration` | API | `00:05:00`; allowed range 1 second–24 hours. |
 | `Authentication:Local:BootstrapUsername` | API | Required when the directory is empty. |
@@ -37,6 +36,8 @@ Apply the additive `AddLocalIdentity` migration before enabling Local mode on de
 | `WorkflowApi:BaseUrl`, `AllowedHosts`, `ReverseProxy:KnownProxies` | UI | Configure the trusted API origin, public hostname and proxies as in the deployment guide. |
 
 Only the API receives the signing key, database connection and bootstrap password. The UI receives tokens through server-to-server HTTP. HTTPS is required for production account operations and secure UI cookies. Configure the API's trusted proxy settings when terminating TLS upstream.
+
+Passwords are required, with no minimum/maximum length or character-composition policy. This applies to bootstrap, user creation, administrator resets and password changes; login accepts the complete password without truncation. Standard HTTP request/form size limits still apply. The former `Authentication:Local:MinimumPasswordLength` setting is ignored and can be removed from existing configuration. The signing key's 32-byte minimum is separate and remains required.
 
 Bootstrap creates one active `Flowbit Administrator` account with the requested username and the current management role(s), plus `admin`. It runs under a PostgreSQL transaction lock, does nothing once any account exists, and never overwrites passwords. Remove bootstrap credentials from deployment configuration after initialization. Change the initial password through the UI. There is no anonymous setup page or recovery endpoint.
 
@@ -49,7 +50,7 @@ $env:DOTNET_ENVIRONMENT = 'Development'
 $env:Authentication__Mode = 'Local'
 $env:Authentication__Local__SigningKey = '<your-random-secret-at-least-32-bytes>'
 $env:Authentication__Local__BootstrapUsername = 'admin'
-$env:Authentication__Local__BootstrapPassword = '<your-initial-password-at-least-12-characters>'
+$env:Authentication__Local__BootstrapPassword = '<your-initial-password>'
 dotnet run --project Flowbit/src/Flowbit.Api --launch-profile https
 ```
 
@@ -69,7 +70,7 @@ export DOTNET_ENVIRONMENT=Development
 export Authentication__Mode=Local
 export Authentication__Local__SigningKey='<your-random-secret-at-least-32-bytes>'
 export Authentication__Local__BootstrapUsername=admin
-export Authentication__Local__BootstrapPassword='<your-initial-password-at-least-12-characters>'
+export Authentication__Local__BootstrapPassword='<your-initial-password>'
 dotnet run --project Flowbit/src/Flowbit.Api --launch-profile https
 ```
 

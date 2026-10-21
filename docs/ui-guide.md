@@ -60,6 +60,8 @@ refresh and error behavior. The response contains a credential, so do not share 
 
 In `Authentication:Mode=Local`, **Sign in** opens Flowbit's username/password form. Each browser has its own session. The exact `Username` JWT claim identifies your workflow actor. Use **Change password** to update your password; doing so ends all local sessions. `/_info` shows your own current API access token.
 
+Passwords are required but have no length or character-composition policy. This applies when adding a user, resetting a password and changing your own password. Password confirmation must match when changing your own password.
+
 Administrators matching `Users.RequiredRole` (default `admin`) use **Users** to add/edit accounts, assign roles and repeated claims, activate/deactivate users, and reset passwords. Usernames are fixed after creation. **User attributes** defines typed fields, required validation and optional JWT claim mapping. Required fields apply when creating or editing profiles; older incomplete profiles may still log in. Deactivation/reset ends local sessions while existing access tokens remain valid until expiry. See [Local authentication](local-authentication.md) for permissions, limits and setup.
 
 ## Set your development identity

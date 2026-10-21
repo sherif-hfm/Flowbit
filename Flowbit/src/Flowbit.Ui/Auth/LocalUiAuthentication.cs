@@ -80,7 +80,7 @@ public static class LocalUiAuthentication
             <input type="hidden" name="{E(tokens.FormFieldName)}" value="{E(tokens.RequestToken)}">
             <input type="hidden" name="returnUrl" value="{E(UiAuthentication.LocalReturnUrl(returnUrl))}">
             <label class="form-label" for="username">Username</label><input class="form-control mb-3" id="username" name="username" autocomplete="username" maxlength="300" required autofocus>
-            <label class="form-label" for="password">Password</label><input class="form-control mb-4" id="password" name="password" type="password" autocomplete="current-password" maxlength="128" required>
+            <label class="form-label" for="password">Password</label><input class="form-control mb-4" id="password" name="password" type="password" autocomplete="current-password" required>
             <button class="btn btn-primary" type="submit">Sign in</button></form>
             """;
         return Results.Content(Page("Sign in", form), "text/html");

@@ -34,7 +34,7 @@ public sealed class LocalIdentityTests
         var key = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32));
         await using var factory = new LocalFactory(postgres.GetConnectionString(), key);
         using var client = factory.CreateClient(new WebApplicationFactoryClientOptions { BaseAddress = new("https://localhost"), AllowAutoRedirect = false });
-        var admin = await Login(client, "admin", "Local-admin-password-2026!");
+        var admin = await Login(client, "admin", "a");
         client.DefaultRequestHeaders.Authorization = new("Bearer", admin.AccessToken);
         var jwt = new JwtSecurityTokenHandler().ReadJwtToken(admin.AccessToken);
         Assert.Equal("admin", jwt.Claims.Single(c => c.Type == "Username").Value);
@@ -54,8 +54,15 @@ public sealed class LocalIdentityTests
         var values = new Dictionary<string, JsonElement> { ["department"] = JsonSerializer.SerializeToElement("Finance"),
             ["amount"] = JsonSerializer.SerializeToElement(0), ["approved"] = JsonSerializer.SerializeToElement(false),
             ["birthday"] = JsonSerializer.SerializeToElement("2000-01-01"), ["region"] = JsonSerializer.SerializeToElement("East") };
-        var create = new CreateLocalUserRequest("Alice", "Alice", "Example", "Local-user-password-2026!", true, ["Reviewer"],
+        var create = new CreateLocalUserRequest("Alice", "Alice", "Example", "a", true, ["Reviewer"],
             [new("team", "one"), new("team", "two")], values);
+        foreach (var missingPassword in new string?[] { null, "" })
+        {
+            using var invalidPassword = await client.PostAsJsonAsync("/api/users", create with { Password = missingPassword! });
+            Assert.Equal(HttpStatusCode.BadRequest, invalidPassword.StatusCode);
+            Assert.Contains("Password is required.", await invalidPassword.Content.ReadAsStringAsync());
+            Assert.Equal(HttpStatusCode.Unauthorized, (await client.PostAsJsonAsync("/api/auth/token", new LocalLoginRequest("admin", missingPassword!))).StatusCode);
+        }
         Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsJsonAsync("/api/users", create with { Attributes = [] })).StatusCode);
         Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsJsonAsync("/api/users", create with { Roles = Enumerable.Range(0, 100).Select(i => i + new string('r', 290)).ToArray() })).StatusCode);
         Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsJsonAsync("/api/users", create with { Username = string.Concat(Enumerable.Repeat("\U0001F600", 151)) })).StatusCode);
@@ -101,25 +108,29 @@ public sealed class LocalIdentityTests
             Assert.Equal(HttpStatusCode.Unauthorized, (await old.GetAsync("/api/auth/session")).StatusCode);
         }
         user = await Post<LocalUserDto>(client, $"/api/users/{user.Id}/status", new SetLocalUserStatusRequest(true, user.Revision));
-        (await client.PostAsJsonAsync($"/api/users/{user.Id}/password", new ResetLocalPasswordRequest("Reset-password-2026!", user.Revision))).EnsureSuccessStatusCode();
+        Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsJsonAsync($"/api/users/{user.Id}/password", new ResetLocalPasswordRequest("", user.Revision))).StatusCode);
+        var longPassword = new string('x', 257);
+        (await client.PostAsJsonAsync($"/api/users/{user.Id}/password", new ResetLocalPasswordRequest(longPassword, user.Revision))).EnsureSuccessStatusCode();
         Assert.Equal(HttpStatusCode.Unauthorized, (await client.PostAsJsonAsync("/api/auth/token", new LocalLoginRequest("Alice", create.Password))).StatusCode);
-        alice = await Login(client, "Alice", "Reset-password-2026!");
+        alice = await Login(client, "Alice", longPassword);
         using (var own = factory.CreateClient(new WebApplicationFactoryClientOptions { BaseAddress = new("https://localhost") }))
         {
             own.DefaultRequestHeaders.Authorization = new("Bearer", alice.AccessToken);
-            (await own.PostAsJsonAsync("/api/auth/change-password", new ChangeLocalPasswordRequest("Reset-password-2026!", "Changed-password-2026!"))).EnsureSuccessStatusCode();
+            Assert.Equal(HttpStatusCode.BadRequest, (await own.PostAsJsonAsync("/api/auth/change-password", new ChangeLocalPasswordRequest(longPassword, ""))).StatusCode);
+            (await own.PostAsJsonAsync("/api/auth/change-password", new ChangeLocalPasswordRequest(longPassword, "1"))).EnsureSuccessStatusCode();
             Assert.Equal(HttpStatusCode.OK, (await own.GetAsync("/api/auth/context")).StatusCode);
             Assert.Equal(HttpStatusCode.Unauthorized, (await own.GetAsync("/api/auth/session")).StatusCode);
         }
-        alice = await Login(client, "Alice", "Changed-password-2026!");
+        alice = await Login(client, "Alice", "1");
         (await client.PostAsJsonAsync("/api/auth/logout", new LocalRefreshRequest(alice.RefreshToken))).EnsureSuccessStatusCode();
         Assert.Equal(HttpStatusCode.Unauthorized, (await client.PostAsJsonAsync("/api/auth/refresh", new LocalRefreshRequest(alice.RefreshToken))).StatusCode);
-        await Post<LocalUserDto>(client, "/api/users", create with { Username = "locked" });
+        await Post<LocalUserDto>(client, "/api/users", create with { Username = "locked", Password = longPassword });
+        _ = await Login(client, "locked", longPassword);
         for (var attempt = 0; attempt < 5; attempt++)
             Assert.Equal(HttpStatusCode.Unauthorized, (await client.PostAsJsonAsync("/api/auth/token", new LocalLoginRequest("locked", "wrong"))).StatusCode);
-        Assert.Equal(HttpStatusCode.Unauthorized, (await client.PostAsJsonAsync("/api/auth/token", new LocalLoginRequest("locked", create.Password))).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await client.PostAsJsonAsync("/api/auth/token", new LocalLoginRequest("locked", longPassword))).StatusCode);
         await Post<UserAttributeDto>(client, "/api/user-attributes", new SaveUserAttributeRequest("new_required", "text", "New required", true, [], null));
-        _ = await Login(client, "Alice", "Changed-password-2026!");
+        _ = await Login(client, "Alice", "1");
         Assert.Equal(HttpStatusCode.BadRequest, (await client.PutAsJsonAsync($"/api/user-attributes/{field.Id}", new SaveUserAttributeRequest(field.Key, field.Type, field.Label, true, [], "Username", field.Revision))).StatusCode);
 
         // External tokens need no directory account and keep their own permissions.
@@ -151,7 +162,9 @@ public sealed class LocalIdentityTests
             builder.ConfigureAppConfiguration((_, config) => config.AddInMemoryCollection(new Dictionary<string, string?>
             {
                 ["Authentication:Mode"] = "Local", ["Authentication:Local:SigningKey"] = key,
-                ["Authentication:Local:BootstrapUsername"] = "admin", ["Authentication:Local:BootstrapPassword"] = "Local-admin-password-2026!",
+                ["Authentication:Local:BootstrapUsername"] = "admin", ["Authentication:Local:BootstrapPassword"] = "a",
+                // Old deployments may still supply this removed setting; it must not impose a policy.
+                ["Authentication:Local:MinimumPasswordLength"] = "12",
                 ["ConnectionStrings:Flowbit"] = connection, ["WorkflowAi:Enabled"] = "false", ["WorkflowDurableProcessing:PublicationEnabled"] = "false"
             }));
         }

@@ -20,8 +20,12 @@ public sealed class LocalAuthenticationSmokeTests
         await using var context = await stack.CreateContextAsync(width, height);
         var page = await context.NewPageAsync();
         var errors = new ConcurrentQueue<string>();
-        page.PageError += (_, message) => errors.Enqueue(message);
-        page.Console += (_, message) => { if (message.Type is "error" or "warning") errors.Enqueue(message.Text); };
+        void CaptureDiagnostics(IPage target)
+        {
+            target.PageError += (_, message) => errors.Enqueue(message);
+            target.Console += (_, message) => { if (message.Type is "error" or "warning") errors.Enqueue(message.Text); };
+        }
+        CaptureDiagnostics(page);
         try
         {
             await page.GotoAsync(stack.UiOrigin + "/auth/login?returnUrl=/users");
@@ -43,7 +47,7 @@ public sealed class LocalAuthenticationSmokeTests
             await page.GetByLabel("Username", new() { Exact = true }).FillAsync("alice");
             await page.GetByLabel("First name", new() { Exact = true }).FillAsync("Alice");
             await page.GetByLabel("Last name", new() { Exact = true }).FillAsync("Example");
-            await page.GetByLabel("Password", new() { Exact = true }).FillAsync("Local-alice-password-2026!");
+            await page.GetByLabel("Password", new() { Exact = true }).FillAsync("a");
             await page.GetByLabel("Roles", new() { Exact = true }).FillAsync("Reviewer");
             await page.GetByRole(AriaRole.Button, new() { Name = "Save user", Exact = true }).ClickAsync();
             await Assertions.Expect(page.GetByRole(AriaRole.Heading, new() { Name = "Add user", Exact = true })).ToBeVisibleAsync();
@@ -62,8 +66,9 @@ public sealed class LocalAuthenticationSmokeTests
             await Screenshot(page, stack, "local-users");
             await using var other = await stack.CreateContextAsync(width, height);
             var alice = await other.NewPageAsync();
+            CaptureDiagnostics(alice);
             await alice.GotoAsync(stack.UiOrigin + "/auth/login?returnUrl=/inbox");
-            await Login(alice, "alice", "Local-alice-password-2026!"); await Interactive(alice);
+            await Login(alice, "alice", "a"); await Interactive(alice);
             await Assertions.Expect(alice.Locator(".topbar-profile")).ToContainTextAsync("alice");
             await Assertions.Expect(page.Locator(".topbar-profile")).ToContainTextAsync("admin");
             var tokenPage = await other.NewPageAsync(); await tokenPage.GotoAsync(stack.UiOrigin + "/_info");
@@ -80,16 +85,21 @@ public sealed class LocalAuthenticationSmokeTests
             await Assertions.Expect(alice.GetByRole(AriaRole.Heading, new() { Name = "Sign in", Exact = true })).ToBeVisibleAsync();
             await aliceRow.GetByRole(AriaRole.Button, new() { Name = "Activate", Exact = true }).ClickAsync();
             await aliceRow.GetByRole(AriaRole.Button, new() { Name = "Edit", Exact = true }).ClickAsync();
-            await page.GetByLabel("New password", new() { Exact = true }).FillAsync("Local-reset-password-2026!");
+            var longPassword = new string('x', 257);
+            await page.GetByLabel("New password", new() { Exact = true }).FillAsync(longPassword);
+            await Assertions.Expect(page.GetByLabel("New password", new() { Exact = true })).ToHaveValueAsync(longPassword);
             await page.GetByRole(AriaRole.Button, new() { Name = "Reset password", Exact = true }).ClickAsync();
             await Assertions.Expect(page.GetByRole(AriaRole.Status)).ToContainTextAsync("Password reset");
-            await Login(alice, "alice", "Local-reset-password-2026!"); await Interactive(alice);
+            await Login(alice, "alice", longPassword); await Interactive(alice);
             await alice.GotoAsync(stack.UiOrigin + "/change-password"); await Interactive(alice);
-            await alice.GetByLabel("Current password", new() { Exact = true }).FillAsync("Local-reset-password-2026!");
-            await alice.GetByLabel("New password", new() { Exact = true }).FillAsync("Local-changed-password-2026!");
-            await alice.GetByLabel("Confirm new password", new() { Exact = true }).FillAsync("Local-changed-password-2026!");
+            await alice.GetByLabel("Current password", new() { Exact = true }).FillAsync(longPassword);
+            await alice.GetByLabel("New password", new() { Exact = true }).FillAsync("1");
+            await alice.GetByLabel("Confirm new password", new() { Exact = true }).FillAsync("1");
             await alice.GetByRole(AriaRole.Button, new() { Name = "Change password", Exact = true }).ClickAsync();
             await Assertions.Expect(alice.GetByRole(AriaRole.Heading)).ToHaveTextAsync("Signed out");
+            await alice.GotoAsync(stack.UiOrigin + "/auth/login?returnUrl=/inbox");
+            await Login(alice, "alice", "1"); await Interactive(alice);
+            await Assertions.Expect(alice.Locator(".topbar-profile")).ToContainTextAsync("alice");
             await page.Locator(".topbar-actions").GetByRole(AriaRole.Button, new() { Name = "Sign out", Exact = true }).ClickAsync();
             await Assertions.Expect(page.GetByRole(AriaRole.Heading)).ToHaveTextAsync("Signed out");
             Assert.Empty(errors);

@@ -24,10 +24,10 @@ public sealed class LocalIdentityService(ILocalIdentityRepository repository, IL
             throw Invalid($"{field} must contain 1–{max} characters without control characters.");
         return value;
     }
-    private void Password(string? value)
+    private static void Password(string? value)
     {
-        if (value is null || value.Length < options.MinimumPasswordLength || value.Length > 128)
-            throw Invalid($"Password must contain {options.MinimumPasswordLength}–128 characters.");
+        if (string.IsNullOrEmpty(value))
+            throw Invalid("Password is required.");
     }
     public async Task<string[]> ManagementRolesAsync(CancellationToken ct)
     {
@@ -123,7 +123,7 @@ public sealed class LocalIdentityService(ILocalIdentityRepository repository, IL
     }
     public async Task<LocalTokenPairDto> LoginAsync(LocalLoginRequest request, CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(request.Username) || request.Username.Length > 600 || request.Password is null || request.Password.Length > 128)
+        if (string.IsNullOrWhiteSpace(request.Username) || request.Username.Length > 600 || string.IsNullOrEmpty(request.Password))
             throw Unauthorized();
         await using var transaction = await repository.BeginAsync(ct);
         var user = await repository.FindUsernameAsync(request.Username.Trim(), ct);

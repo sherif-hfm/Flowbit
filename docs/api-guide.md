@@ -174,6 +174,8 @@ Content-Type: application/json
 
 These operations require `Authentication:Mode=Local`; deployed account operations require HTTPS. Token/refresh/logout use their supplied credentials without bearer authentication. User/attribute administration requires a role matching dynamic `Users.RequiredRole` (default `admin`). Other authenticated modes return `404` for these routes. See the [complete Local request/response contracts](local-authentication.md#http-contracts), configuration and bootstrap procedure.
 
+Passwords must be supplied but have no minimum/maximum length or character-composition policy. Creation, resets and changes reject missing/empty passwords with `400`; login returns generic `401` for invalid credentials. Standard HTTP request size limits still apply.
+
 | Method and path | Input / result |
 |---|---|
 | `POST /api/auth/token` | `username`, `password` → token pair with `accessToken`, `tokenType`, `expiresAt`, `refreshToken`, `refreshExpiresAt`, `actor`. |

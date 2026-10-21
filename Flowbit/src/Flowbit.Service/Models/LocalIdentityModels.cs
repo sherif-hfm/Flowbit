@@ -7,7 +7,6 @@ public class LocalIdentityOptions
 {
     public TimeSpan AccessTokenLifetime { get; set; } = TimeSpan.FromMinutes(15);
     public TimeSpan SessionLifetime { get; set; } = TimeSpan.FromHours(8);
-    public int MinimumPasswordLength { get; set; } = 12;
     public int MaxFailedAttempts { get; set; } = 5;
     public TimeSpan LockoutDuration { get; set; } = TimeSpan.FromMinutes(5);
     public string? BootstrapUsername { get; set; }
@@ -16,9 +15,9 @@ public class LocalIdentityOptions
     {
         if (AccessTokenLifetime < TimeSpan.FromMinutes(1) || AccessTokenLifetime > TimeSpan.FromHours(1)
             || SessionLifetime < AccessTokenLifetime || SessionLifetime > TimeSpan.FromDays(1)
-            || MinimumPasswordLength is < 12 or > 128 || MaxFailedAttempts is < 1 or > 100
+            || MaxFailedAttempts is < 1 or > 100
             || LockoutDuration < TimeSpan.FromSeconds(1) || LockoutDuration > TimeSpan.FromDays(1))
-            throw new InvalidOperationException("Invalid Authentication:Local password or lifetime limits.");
+            throw new InvalidOperationException("Invalid Authentication:Local lockout or lifetime limits.");
     }
 }
 

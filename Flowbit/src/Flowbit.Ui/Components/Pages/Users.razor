@@ -23,7 +23,7 @@
                 <div class="col-12 col-md-6"><label class="form-label" for="user-last">Last name</label><input id="user-last" class="form-control" @bind="last" required maxlength="300" /></div>
                 @if (selected is null)
                 {
-                    <div class="col-12 col-md-6"><label class="form-label" for="user-password">Password</label><input id="user-password" class="form-control" @bind="password" type="password" required maxlength="128" autocomplete="new-password" /></div>
+                    <div class="col-12 col-md-6"><label class="form-label" for="user-password">Password</label><input id="user-password" class="form-control" @bind="password" type="password" required autocomplete="new-password" /></div>
                     <div class="col-12 col-md-6"><label class="form-check mt-md-4"><input class="form-check-input" type="checkbox" @bind="active" /> Active</label></div>
                 }
                 <UserProfileAttributes Definitions="definitions" Values="values" />
@@ -45,7 +45,7 @@
         @if (selected is not null)
         {
             <hr /><form @onsubmit="ResetPassword" @onsubmit:preventDefault>
-                <label class="form-label" for="reset-password">New password</label><input id="reset-password" class="form-control" type="password" @bind="resetPassword" required maxlength="128" autocomplete="new-password" />
+                <label class="form-label" for="reset-password">New password</label><input id="reset-password" class="form-control" type="password" @bind="resetPassword" required autocomplete="new-password" />
                 <button class="btn btn-outline-danger mt-3" type="submit" disabled="@busy">Reset password</button>
                 <p class="form-text">Ends this user's local sessions. Existing API tokens remain valid until expiry.</p>
             </form>
