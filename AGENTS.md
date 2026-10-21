@@ -1274,9 +1274,12 @@ Storage follows the hybrid design:
   The canonical workflow actor may be selected with the process-latched
   `flowbit.engine_settings` row `Authentication.UserIdentityClaim` (namespace
   `Authentication`, key `UserIdentityClaim`, value such as `sub` or `oid`). The
-  setting is loaded at API startup; when absent, identity retains the legacy
-  `Identity.Name` then `NameIdentifier` behavior, with the OIDC name-claim type
-  defaulting to `flowbit_user`. Preserve existing actor strings at provider
+  setting is loaded at API startup and is a strict override. A non-default OIDC
+  name-claim setting is the next strict override; otherwise every mode uses
+  `Username`, then the literal `ClaimTypes.Name` URI, then `sub`/mapped
+  `NameIdentifier`. Only absent claims fall through, never invalid present values.
+  Bare JWT `name`, `preferred_username` and `flowbit_user` are not default aliases.
+  Development and Local issuers emit exact-case `Username`. Preserve actor strings at provider
   provisioning; no automatic ownership migration changes them. When configured, the token must
   contain one nonblank, unambiguous value no longer than 300 characters or the
   request fails with 401. That identity drives `sys.user`, inbox/assignee matching,

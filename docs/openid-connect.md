@@ -14,14 +14,14 @@ JSON keys use colons below; environment variables replace each colon with `__`. 
 
 | Setting | Host | Value / behavior |
 | --- | --- | --- |
-| `Authentication:Mode` | API, UI | `OpenIdConnect`, `Local`, or development-only `DevelopmentToken`. This guide covers OIDC; see [Local configuration](local-authentication.md#configuration-and-first-administrator). Checked-in Development settings select OIDC; ordinary Compose overrides to DevelopmentToken. |
+| `Authentication:Mode` | API, UI | `OpenIdConnect`, `Local`, or development-only `DevelopmentToken`. This guide explicitly selects OIDC; see [Local configuration](local-authentication.md#configuration-and-first-administrator). Ordinary Compose overrides to DevelopmentToken. |
 | `Authentication:Oidc:Authority` | API, UI | Exact trusted issuer base URL used for discovery; normally HTTPS. |
 | `Authentication:Oidc:ClientId` | UI | Confidential web-client registration, distinct from the API audience. |
 | `Authentication:Oidc:ClientSecret` | UI | Server-held client secret for both PKCE and compatibility code flows. |
 | `Authentication:Oidc:UsePkce` | UI | `true` by default; S256. Set `false` only for an explicitly configured confidential compatibility client. There is no automatic downgrade. |
 | `Authentication:Oidc:Scopes` | UI | Requested scopes, including `openid`, `profile`, and the provider's API scope. Request `email` for email claims; include `offline_access` when the provider uses it to issue refresh tokens. The local Development settings request all five. |
 | `Authentication:Oidc:Audience` | API | Expected API access-token audience, for example `flowbit-api`. |
-| `Authentication:Oidc:NameClaimType` | API | `flowbit_user` by default. The canonical actor contract is described below. |
+| `Authentication:Oidc:NameClaimType` | API | `Username` enables the shared default fallback chain. A different value is a strict identity override unless the database override is set. |
 | `Authentication:Oidc:RoleClaimType` | API | `roles` by default; emit a flat string/array claim rather than provider-specific nested role JSON. |
 | `Authentication:Oidc:RequiredScope` | API | `flowbit.api` by default; required for user bearer access in addition to existing endpoint/task permissions. |
 | `Authentication:Oidc:ScopeClaimType` | API | `scope` by default; set `scp` for a provider that uses that claim. |
@@ -47,7 +47,9 @@ Register the UI as a confidential web application with authorization code enable
 - API resource audience: a separate identifier such as `flowbit-api`.
 - Delegated API scope: `flowbit.api`, or the configured equivalent.
 
-Issue a provider-controlled `flowbit_user` value matching the actor strings already stored in Flowbit assignments, claims, delegations, and history. Do not switch existing installations from usernames to provider-generated `sub` values inadvertently. Display names and email addresses are not an automatic identity migration. The optional database engine setting `Authentication.UserIdentityClaim` remains authoritative when configured; changing it requires restarting every API replica and reconciling existing ownership. `GET /api/auth/context` is the authoritative HTTP check for the resolved actor and roles.
+Issue a provider-controlled `Username` value matching the actor strings already stored in Flowbit assignments, claims, delegations, and history. Do not switch existing installations from usernames to provider-generated `sub` values inadvertently. Display names and email addresses are not an automatic identity migration. The optional database engine setting `Authentication.UserIdentityClaim` remains authoritative when configured; changing it requires restarting every API replica and reconciling existing ownership. `GET /api/auth/context` is the authoritative HTTP check for the resolved actor and roles.
+
+All modes resolve the first present identity group: `Username`, then `ClaimTypes.Name` (`http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name`), then `sub` or its mapped `ClaimTypes.NameIdentifier`. Blank, non-string, conflicting or longer-than-300-character selected values fail with `401`; they never fall through. Values are trimmed and repeated case-equivalent values are accepted. Bare JWT `name`, `preferred_username` and the former `flowbit_user` claim are not automatic fallbacks. An explicit database identity setting is strict, including when set to `Username`; a non-default OIDC `NameClaimType` is the next strict override.
 
 Map relevant provider roles into the configured flat role claim in **access tokens**. UI display is not an authorization decision: the API still enforces workflow roles, administrative settings, inbox visibility, assignment, delegation, and claim rules. `admin` does not automatically grant workflow roles. `WorkflowContext:AllowedClaims` and `WorkflowAudit:AllowedClaims` retain their independent expression and audit meanings.
 
@@ -57,7 +59,7 @@ Issuer, signature, audience, lifetime, required API scope, and actor validation 
 
 This optional setup runs Keycloak in Docker and runs the API/UI on the host using their HTTPS launch profiles. Use the same `localhost` spelling throughout. Docker-internal names are not interchangeable with the public issuer URL.
 
-The [API Development settings](../Flowbit/src/Flowbit.Api/appsettings.Development.json) and [UI Development settings](../Flowbit/src/Flowbit.Ui/appsettings.Development.json) already select `OpenIdConnect` and authority `http://localhost:18080/realms/flowbit`. The API expects audience `flowbit-api`, scope `flowbit.api`, actor claim `flowbit_user`, and flat `roles`. The UI uses client `flowbit-ui`, the public local secret `flowbit-ui-local-only`, S256 PKCE, scopes `openid profile email offline_access flowbit.api`, and API base URL `https://localhost:7291`. HTTP provider metadata is enabled only in these Development files; production configuration must supply its own HTTPS authority and protected client secret.
+The commands below explicitly select `OpenIdConnect` without editing the deployment's selected mode. The API expects authority `http://localhost:18080/realms/flowbit`, audience `flowbit-api`, scope `flowbit.api`, actor claim `Username`, and flat `roles`. The UI uses client `flowbit-ui`, the public local secret `flowbit-ui-local-only`, S256 PKCE, scopes `openid profile email offline_access flowbit.api`, and API base URL `https://localhost:7291`. Loopback HTTP metadata is permitted only in Development; production configuration must supply its own HTTPS authority and protected client secret.
 
 Use `--launch-profile https` for both projects: the realm registers the UI callback at `https://localhost:7019/signin-oidc`, not the HTTP profile's port. Existing environment variables or user secrets take precedence over appsettings; remove stale authentication/API overrides before following these commands. Database configuration remains independent.
 
@@ -78,6 +80,11 @@ PowerShell:
 
 ```powershell
 $env:ConnectionStrings__Flowbit = 'Host=127.0.0.1;Port=55439;Database=flowbit;Username=flowbit;Password=flowbit-local-only'
+$env:Authentication__Mode = 'OpenIdConnect'
+$env:Authentication__Oidc__Authority = 'http://localhost:18080/realms/flowbit'
+$env:Authentication__Oidc__Audience = 'flowbit-api'
+$env:Authentication__Oidc__NameClaimType = 'Username'
+$env:Authentication__Oidc__AllowHttpMetadata = 'true'
 dotnet run --project Flowbit/src/Flowbit.Api --launch-profile https
 ```
 
@@ -85,6 +92,11 @@ Bash:
 
 ```bash
 export ConnectionStrings__Flowbit='Host=127.0.0.1;Port=55439;Database=flowbit;Username=flowbit;Password=flowbit-local-only'
+export Authentication__Mode=OpenIdConnect
+export Authentication__Oidc__Authority=http://localhost:18080/realms/flowbit
+export Authentication__Oidc__Audience=flowbit-api
+export Authentication__Oidc__NameClaimType=Username
+export Authentication__Oidc__AllowHttpMetadata=true
 dotnet run --project Flowbit/src/Flowbit.Api --launch-profile https
 ```
 
@@ -93,12 +105,36 @@ Start the UI in a second terminal:
 PowerShell:
 
 ```powershell
+$env:Authentication__Mode = 'OpenIdConnect'
+$env:Authentication__Oidc__Authority = 'http://localhost:18080/realms/flowbit'
+$env:Authentication__Oidc__ClientId = 'flowbit-ui'
+$env:Authentication__Oidc__ClientSecret = 'flowbit-ui-local-only'
+$env:Authentication__Oidc__UsePkce = 'true'
+$env:Authentication__Oidc__AllowHttpMetadata = 'true'
+$env:Authentication__Oidc__Scopes__0 = 'openid'
+$env:Authentication__Oidc__Scopes__1 = 'profile'
+$env:Authentication__Oidc__Scopes__2 = 'email'
+$env:Authentication__Oidc__Scopes__3 = 'offline_access'
+$env:Authentication__Oidc__Scopes__4 = 'flowbit.api'
+$env:WorkflowApi__BaseUrl = 'https://localhost:7291'
 dotnet run --project Flowbit/src/Flowbit.Ui --launch-profile https
 ```
 
 Bash:
 
 ```bash
+export Authentication__Mode=OpenIdConnect
+export Authentication__Oidc__Authority=http://localhost:18080/realms/flowbit
+export Authentication__Oidc__ClientId=flowbit-ui
+export Authentication__Oidc__ClientSecret=flowbit-ui-local-only
+export Authentication__Oidc__UsePkce=true
+export Authentication__Oidc__AllowHttpMetadata=true
+export Authentication__Oidc__Scopes__0=openid
+export Authentication__Oidc__Scopes__1=profile
+export Authentication__Oidc__Scopes__2=email
+export Authentication__Oidc__Scopes__3=offline_access
+export Authentication__Oidc__Scopes__4=flowbit.api
+export WorkflowApi__BaseUrl=https://localhost:7291
 dotnet run --project Flowbit/src/Flowbit.Ui --launch-profile https
 ```
 
@@ -113,7 +149,7 @@ Open [Flowbit.Ui](https://localhost:7019) and sign in with one of these developm
 | `finance` | `111` | `Finance` |
 | `manager` | `111` | `Manager`, `RoleManager` |
 
-The realm maps the non-self-editable username to `flowbit_user`, emits a flat `roles` claim, and puts audience `flowbit-api` and scope `flowbit.api` in the access token. All six users also have Keycloak's `offline_access` role so the sample can obtain refresh tokens; this role grants no built-in Flowbit administration permission. Alice can follow the [UI approval walkthrough](ui-guide.md#complete-your-first-approval); the actor shown will be `alice`, not the tutorial's `docs.reviewer`. Only Alice has Flowbit's default administrative `admin` role. The other roles grant the permissions authored into each workflow, not global administration: Carol can start the [roles, claim, and bypass example](../examples/user-tasks/01-roles-claim-and-bypass.json), Bob can claim its review, Supervisor can use its protected bypass, and Alice's `WorkflowAdministrator` role permits its cancellation. Finance can approve the [variable-role example](../examples/user-tasks/05-variable-roles-and-role-management.json); Manager can view that task and manage its captured roles through `RoleManager`, but initially cannot use its Finance-only approval action. Separate browser profiles or private windows demonstrate isolated sessions. Use the authenticated UI `/_info` endpoint to inspect your current access token; see [token diagnostics](#view-your-current-access-token). External HTTP integrations should obtain their own delegated access tokens through their registered authorization-code flow.
+The realm maps the non-self-editable username to `Username`, emits a flat `roles` claim, and puts audience `flowbit-api` and scope `flowbit.api` in the access token. All six users also have Keycloak's `offline_access` role so the sample can obtain refresh tokens; this role grants no built-in Flowbit administration permission. Alice can follow the [UI approval walkthrough](ui-guide.md#complete-your-first-approval); the actor shown will be `alice`, not the tutorial's `docs.reviewer`. Only Alice has Flowbit's default administrative `admin` role. The other roles grant the permissions authored into each workflow, not global administration: Carol can start the [roles, claim, and bypass example](../examples/user-tasks/01-roles-claim-and-bypass.json), Bob can claim its review, Supervisor can use its protected bypass, and Alice's `WorkflowAdministrator` role permits its cancellation. Finance can approve the [variable-role example](../examples/user-tasks/05-variable-roles-and-role-management.json); Manager can view that task and manage its captured roles through `RoleManager`, but initially cannot use its Finance-only approval action. Separate browser profiles or private windows demonstrate isolated sessions. Use the authenticated UI `/_info` endpoint to inspect your current access token; see [token diagnostics](#view-your-current-access-token). External HTTP integrations should obtain their own delegated access tokens through their registered authorization-code flow.
 
 To exercise explicit code flow without PKCE, stop only the UI, change `Authentication__Oidc__ClientId` to `flowbit-ui-no-pkce`, `Authentication__Oidc__ClientSecret` to `flowbit-ui-legacy-local-only`, and `Authentication__Oidc__UsePkce` to `false` in the same shell, then start it again. The API settings are unchanged. Restore all three values to use the PKCE-enforcing client. Setting `UsePkce=false` against `flowbit-ui` must be rejected by Keycloak.
 
@@ -137,8 +173,8 @@ populated:
 
 In the admin console, select **flowbit → Client scopes → profile (or email) →
 Mappers** to inspect these mappings. Edit profile values under **Users → select
-user → Details**. `flowbit_user` and flat `roles` remain in the `flowbit.api`
-scope; Flowbit continues using `flowbit_user` as its actor identity. Profile
+user → Details**. `Username` and flat `roles` remain in the `flowbit.api`
+scope; Flowbit continues using `Username` as its actor identity. Profile
 claims do not automatically grant workflow permissions or enable expression or
 audit claim allowlists.
 
@@ -147,13 +183,56 @@ predefined mappers to `profile`, create the OpenID Connect `email` client scope
 with its two predefined mappers, and assign both scopes as **Default** under each
 Flowbit client's **Client scopes** tab. Enable access-token, ID-token and UserInfo
 output on each mapper, as in [the realm configuration](../dev/keycloak/flowbit-realm.json).
-Startup import does not apply these changes to an existing realm.
+Startup import does not apply these changes to an existing realm. For the identity mapper, use the in-place update below.
 
 Previously issued JWTs do not change. Sign out and sign in again to obtain the
 new claims, then inspect the JWT payload in `accessToken` from
 [`/_info`](#view-your-current-access-token). The endpoint's outer JSON fields are
 unchanged. A later token refresh also re-reads mapped profile fields for the
 session's granted scopes; a fresh sign-in ensures newly added scopes are granted.
+
+### Update an existing Keycloak identity mapper
+
+For an older local realm, update only `flowbit.api`'s `flowbit-actor` mapper from `flowbit_user` to exact-case `Username`. These commands save the previous mapper and preserve its ID, users, passwords, roles, clients and volume. They use the public local development administrator credentials; use protected credentials for any other installation. Bash requires `curl` and `jq`.
+
+PowerShell, from the repository root:
+
+```powershell
+$adminBase = 'http://localhost:18080/admin/realms/flowbit'
+$adminToken = Invoke-RestMethod -Method Post -Uri 'http://localhost:18080/realms/master/protocol/openid-connect/token' -ContentType 'application/x-www-form-urlencoded' -Body @{client_id='admin-cli';grant_type='password';username='flowbit-admin';password='flowbit-keycloak-local-only'}
+$headers = @{Authorization='Bearer ' + $adminToken.access_token}
+$scopes = Invoke-RestMethod -Uri "$adminBase/client-scopes" -Headers $headers
+$scopeId = ($scopes | Where-Object name -eq 'flowbit.api').id
+$mappers = Invoke-RestMethod -Uri "$adminBase/client-scopes/$scopeId/protocol-mappers/models" -Headers $headers
+$mapper = $mappers | Where-Object name -eq 'flowbit-actor'
+if (@($mapper).Count -ne 1 -or $mapper.config.'user.attribute' -ne 'username') { throw 'Unexpected identity mapper' }
+New-Item -ItemType Directory -Path artifacts/identity-claims -Force | Out-Null
+$backup = 'artifacts/identity-claims/keycloak-flowbit-actor.before.json'
+if (!(Test-Path $backup)) { $mapper | ConvertTo-Json -Depth 15 | Set-Content -Encoding utf8 $backup }
+$mapper.config.'claim.name' = 'Username'
+Invoke-RestMethod -Method Put -Uri "$adminBase/client-scopes/$scopeId/protocol-mappers/models/$($mapper.id)" -Headers $headers -ContentType 'application/json' -Body ($mapper | ConvertTo-Json -Depth 15)
+$updated = Invoke-RestMethod -Uri "$adminBase/client-scopes/$scopeId/protocol-mappers/models/$($mapper.id)" -Headers $headers
+if ($updated.config.'claim.name' -cne 'Username') { throw 'Identity mapper update failed' }
+```
+
+Bash, from the repository root:
+
+```bash
+set -euo pipefail
+admin_base=http://localhost:18080/admin/realms/flowbit
+admin_token=$(curl --fail --silent --show-error http://localhost:18080/realms/master/protocol/openid-connect/token --data-urlencode client_id=admin-cli --data-urlencode grant_type=password --data-urlencode username=flowbit-admin --data-urlencode password=flowbit-keycloak-local-only | jq -er .access_token)
+scope_id=$(curl --fail --silent --show-error -H "Authorization: Bearer $admin_token" "$admin_base/client-scopes" | jq -er '.[] | select(.name == "flowbit.api") | .id')
+mapper=$(curl --fail --silent --show-error -H "Authorization: Bearer $admin_token" "$admin_base/client-scopes/$scope_id/protocol-mappers/models" | jq -ec '[.[] | select(.name == "flowbit-actor")] | if length == 1 and .[0].config["user.attribute"] == "username" then .[0] else error("Unexpected identity mapper") end')
+mapper_id=$(jq -er .id <<< "$mapper")
+mkdir -p artifacts/identity-claims
+backup=artifacts/identity-claims/keycloak-flowbit-actor.before.json
+if [ ! -f "$backup" ]; then jq . <<< "$mapper" > "$backup"; fi
+jq '.config["claim.name"] = "Username"' <<< "$mapper" > artifacts/identity-claims/keycloak-flowbit-actor.updated.json
+curl --fail --silent --show-error -X PUT -H "Authorization: Bearer $admin_token" -H 'Content-Type: application/json' --data-binary @artifacts/identity-claims/keycloak-flowbit-actor.updated.json "$admin_base/client-scopes/$scope_id/protocol-mappers/models/$mapper_id"
+curl --fail --silent --show-error -H "Authorization: Bearer $admin_token" "$admin_base/client-scopes/$scope_id/protocol-mappers/models/$mapper_id" | jq -e '.config["claim.name"] == "Username"'
+```
+
+Update the provider mapper before restarting upgraded API/UI hosts. Keep explicit database/custom OIDC overrides if they are intentional; a deployment still overriding to `flowbit_user` must change that configuration before removing its provider claim. Restart the UI to end its old sessions, then sign in again; reissue external tokens too. Existing JWTs retain their old claims and can otherwise fall back to a provider-generated `sub`, changing the actor string. No ownership migration is performed. `/_info` should contain an access token with `Username=alice`, while `GET /api/auth/context` resolves `alice`.
 
 ### Flowbit login branding
 
@@ -249,6 +328,7 @@ Before changing an existing deployment, inventory the effective actor setting an
 | --- | --- |
 | Startup refuses DevelopmentToken | Use Development only for the local utility; configure OpenIdConnect for deployed hosts. |
 | Issuer/discovery or callback failure | Exact authority spelling, provider availability, HTTPS trust, registered callback URL, and trusted proxy scheme. |
+| Sign-in unavailable after switching Keycloak to `Username` | If API logs show `GET /api/auth/context` returning `401`, check the effective `Authentication:Oidc:NameClaimType`, including `appsettings.Development.json`, environment variables and secrets. A stale `flowbit_user` value is a strict override; change it to `Username`, check any database `Authentication.UserIdentityClaim` override, restart API/UI, then sign in again. |
 | `401` from the API | Token issuer/audience/signature/lifetime, access-token rather than ID-token use, and canonical actor claim. |
 | `403` from the API | Required API scope first, then the endpoint's actual role/task authorization. |
 | UI signs out after restart | Expected: the single-process session store was lost. |

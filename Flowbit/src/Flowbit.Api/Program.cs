@@ -445,7 +445,7 @@ try
         Log.Information(
             "Workflow actor identity initialized from {Source}.",
             actorIdentityConfiguration.ClaimType is null
-                ? "legacy Identity.Name/NameIdentifier selection"
+                ? "default Username/ClaimTypes.Name/sub selection"
                 : $"engine setting '{ActorIdentityConfiguration.SettingKey}'");
     }
 

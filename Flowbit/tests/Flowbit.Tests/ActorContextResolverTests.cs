@@ -17,8 +17,19 @@ namespace Flowbit.Tests;
 
 public sealed class ActorContextResolverTests
 {
+    [Theory]
+    [MemberData(nameof(DefaultIdentityBearerTests.IdentityCases), MemberType = typeof(DefaultIdentityBearerTests))]
+    public void Default_chain_uses_only_the_first_present_identity_group(string scenario, Claim[] claims, string? expected)
+    {
+        var resolver = CreateResolver();
+        if (expected is not null) Assert.Equal(expected, resolver.Resolve(Principal(claims)).User);
+        else if (scenario is "no-identity" or "display-name-only" or "preferred-only" or "legacy-only")
+            Assert.Null(resolver.Resolve(Principal(claims)).User);
+        else Assert.Throws<WorkflowUnauthorizedException>(() => resolver.Resolve(Principal(claims)));
+    }
+
     [Fact]
-    public void Legacy_configuration_uses_identity_name_and_preserves_roles_and_claims()
+    public void Default_configuration_falls_back_to_name_and_preserves_roles_and_claims()
     {
         var resolver = CreateResolver();
         var principal = Principal(
@@ -35,7 +46,7 @@ public sealed class ActorContextResolverTests
     }
 
     [Fact]
-    public void Legacy_configuration_falls_back_to_name_identifier()
+    public void Default_configuration_falls_back_to_mapped_sub()
     {
         var resolver = CreateResolver();
         var principal = Principal(new Claim(ClaimTypes.NameIdentifier, "subject-user"));

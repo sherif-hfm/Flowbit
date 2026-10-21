@@ -24,6 +24,8 @@ public sealed class DevTokenFactoryTests
 
         var token = new JwtSecurityTokenHandler().ReadJwtToken(raw);
 
+        Assert.Equal("sherif", token.Claims.Single(claim => claim.Type == "Username").Value);
+        Assert.Contains(token.Claims, claim => claim.Type == ClaimTypes.Name && claim.Value == "sherif");
         Assert.Contains(token.Claims, claim => claim.Type == JwtRegisteredClaimNames.Sub && claim.Value == "sherif");
         Assert.Single(token.Claims, claim => claim.Value == "Manager");
         Assert.Equal("10", token.Claims.Single(claim => claim.Type == "depId").Value);
@@ -44,6 +46,8 @@ public sealed class DevTokenFactoryTests
 
     [Theory]
     [InlineData("sub")]
+    [InlineData("Username")]
+    [InlineData("USERNAME")]
     [InlineData("role")]
     [InlineData("exp")]
     [InlineData("http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name")]

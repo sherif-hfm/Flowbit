@@ -58,7 +58,7 @@ Once startup succeeds, skip the host database/API/UI startup commands below and 
 
 The following database and application commands run the .NET hosts on your machine. Confirm `dotnet --version` reports a .NET 10 SDK before continuing. Compose users can skip to [Generate the token](#generate-the-token).
 
-The projects' checked-in Development settings use the [local Keycloak realm](openid-connect.md#local-keycloak-walkthrough). This tutorial explicitly overrides both hosts to `DevelopmentToken` and supplies its own API URL so the shared test-identity walkthrough below remains self-contained. For Keycloak sign-in, use the HTTPS launch profiles and startup commands in the OIDC guide instead.
+This tutorial explicitly overrides both hosts to `DevelopmentToken` and supplies its own API URL so the shared test-identity walkthrough below remains self-contained regardless of the selected development mode. For [local Keycloak sign-in](openid-connect.md#local-keycloak-walkthrough), use the explicit OIDC settings, HTTPS launch profiles and startup commands in that guide instead.
 
 ## Start an isolated PostgreSQL database
 
@@ -154,7 +154,7 @@ dotnet run --no-launch-profile --project ./Flowbit/src/Flowbit.Ui/Flowbit.Ui.csp
 4. Leave custom claims empty and click **Generate and apply**.
 5. Copy the value from **Raw JWT**. Paste only the token when the shell walkthrough prompts for it, without the `Bearer ` prefix.
 
-There is **no token-issuance HTTP endpoint in DevelopmentToken mode**. The local UI server generates this development JWT using its configured symmetric key. The selected test identity is process-wide: another visitor changing it changes the identity used by that UI process. This utility requires both Development and `Authentication:Mode=DevelopmentToken`; it is unavailable in OpenIdConnect and Local modes. For deployed hosts, choose [OIDC sign-in](openid-connect.md) or [database-backed Local authentication](local-authentication.md). Local has its own `POST /api/auth/token` endpoint and uses the exact `Username` identity claim.
+There is **no token-issuance HTTP endpoint in DevelopmentToken mode**. The local UI server generates this development JWT using its configured symmetric key, with exact-case `Username` and matching `sub`; it retains the .NET name claim for compatibility. All modes default to `Username`, then the .NET name-claim URI, then `sub`/mapped `NameIdentifier`; only absent claims fall through. The selected test identity is process-wide: another visitor changing it changes the identity used by that UI process. This utility requires both Development and `Authentication:Mode=DevelopmentToken`; it is unavailable in OpenIdConnect and Local modes. For deployed hosts, choose [OIDC sign-in](openid-connect.md) or [database-backed Local authentication](local-authentication.md). Local has its own `POST /api/auth/token` endpoint.
 
 All remaining approval steps use HTTP. Once a token is copied, the UI need not remain running for those requests; the token remains usable until its expiry if the API configuration stays the same.
 

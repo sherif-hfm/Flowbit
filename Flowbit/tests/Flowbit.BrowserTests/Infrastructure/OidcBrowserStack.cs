@@ -48,7 +48,7 @@ public sealed class OidcBrowserStack : IAsyncDisposable
                 ["Authentication__Local__BootstrapPassword"] = useLocal ? "Local-browser-password-2026!" : null,
                 ["Authentication__Oidc__Authority"] = Provider.Authority,
                 ["Authentication__Oidc__Audience"] = OidcProviderTestHost.Audience,
-                ["Authentication__Oidc__NameClaimType"] = "flowbit_user",
+                ["Authentication__Oidc__NameClaimType"] = "Username",
                 ["Authentication__Oidc__RoleClaimType"] = "roles",
                 ["Authentication__Oidc__ScopeClaimType"] = "scope",
                 ["Authentication__Oidc__RequiredScope"] = "flowbit.api",

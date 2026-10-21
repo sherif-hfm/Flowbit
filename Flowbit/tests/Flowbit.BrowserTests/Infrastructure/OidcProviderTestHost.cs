@@ -174,7 +174,7 @@ public sealed class OidcProviderTestHost : IAsyncDisposable
         var signingKey = new RsaSecurityKey(rsa) { KeyId = "browser-oidc-key" };
         var credentials = new SigningCredentials(signingKey, SecurityAlgorithms.RsaSha256);
         var access = new JwtSecurityToken(Authority, Audience,
-            [new("sub", user), new("flowbit_user", user), new("roles", "admin"),
+            [new("sub", user), new("Username", user), new("roles", "admin"),
              new("scope", "openid profile offline_access flowbit.api"), new("jti", Guid.NewGuid().ToString("N"))],
             now.AddSeconds(-1).UtcDateTime, expires.UtcDateTime, credentials);
         var identity = new JwtSecurityToken(failure == AuthorizationFailure.WrongIssuer ? Authority + "/wrong-issuer" : Authority, ClientId,

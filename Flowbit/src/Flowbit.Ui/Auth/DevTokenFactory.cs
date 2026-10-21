@@ -32,6 +32,7 @@ public sealed class DevTokenFactory(IConfiguration configuration, ILogger<DevTok
         var normalizedCustomClaims = DevTokenClaimRules.Normalize(customClaims);
         var claims = new List<Claim>
         {
+            new("Username", name),
             new(ClaimTypes.Name, name),
             new(JwtRegisteredClaimNames.Sub, name)
         };
@@ -77,6 +78,7 @@ internal static class DevTokenClaimRules
 
     private static readonly HashSet<string> ReservedClaimNames = new(StringComparer.OrdinalIgnoreCase)
     {
+        "Username",
         JwtRegisteredClaimNames.Iss,
         JwtRegisteredClaimNames.Aud,
         JwtRegisteredClaimNames.Exp,

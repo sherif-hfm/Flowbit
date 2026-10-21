@@ -1,10 +1,13 @@
 using System.Text;
 using System.Security.Claims;
+using System.IdentityModel.Tokens.Jwt;
+using System.Text.Json;
 using Flowbit.Service.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
+using JsonWebToken = Microsoft.IdentityModel.JsonWebTokens.JsonWebToken;
 
 namespace Flowbit.Api.Auth;
 
@@ -33,21 +36,8 @@ public static class FlowbitAuthenticationExtensions
                     options.TokenValidationParameters.ValidAudience = settings.Local.Audience;
                     options.TokenValidationParameters.IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(settings.Local.SigningKey));
                     options.TokenValidationParameters.ValidAlgorithms = [SecurityAlgorithms.HmacSha256];
-                    options.TokenValidationParameters.NameClaimType = "Username";
                     options.TokenValidationParameters.RoleClaimType = settings.Local.RoleClaimType;
-                    options.Events = new JwtBearerEvents { OnTokenValidated = context =>
-                    {
-                        try
-                        {
-                            if (context.Principal!.Identities.SelectMany(i => i.FindAll(i.RoleClaimType))
-                                .Any(c => c.ValueType != ClaimValueTypes.String || string.IsNullOrWhiteSpace(c.Value)))
-                                context.Fail("Token roles must be nonblank strings.");
-                            var actor = context.HttpContext.RequestServices.GetRequiredService<IActorContextResolver>().Resolve(context.Principal!);
-                            if (string.IsNullOrWhiteSpace(actor.User)) context.Fail("The token must identify an actor.");
-                        }
-                        catch (WorkflowUnauthorizedException) { context.Fail("Invalid actor identity."); }
-                        return Task.CompletedTask;
-                    }};
+                    options.Events = new JwtBearerEvents { OnTokenValidated = context => ValidateActor(context) };
                     return;
                 }
                 if (settings.Mode == FlowbitAuthenticationOptions.DevelopmentTokenMode)
@@ -62,6 +52,7 @@ public static class FlowbitAuthenticationExtensions
                     options.TokenValidationParameters.ValidAudience = audience;
                     options.TokenValidationParameters.IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(key));
                     options.TokenValidationParameters.ValidAlgorithms = [SecurityAlgorithms.HmacSha256];
+                    options.Events = new JwtBearerEvents { OnTokenValidated = context => ValidateActor(context, validateRoles: false) };
                     return;
                 }
                 options.Authority = settings.Oidc.Authority;
@@ -94,31 +85,11 @@ public static class FlowbitAuthenticationExtensions
                         FlowbitAuthenticationDiagnostics.InvalidToken();
                         return Task.CompletedTask;
                     },
-                    OnTokenValidated = context =>
+                    OnTokenValidated = async context =>
                     {
-                        try
-                        {
-                            if (context.Principal!.Identities
-                                .SelectMany(identity => identity.FindAll(identity.RoleClaimType))
-                                .Any(claim => claim.ValueType != ClaimValueTypes.String
-                                    || string.IsNullOrWhiteSpace(claim.Value)))
-                            {
-                                context.Fail("Access token roles must be nonblank strings.");
-                                FlowbitAuthenticationDiagnostics.InvalidToken();
-                                return Task.CompletedTask;
-                            }
-                            var actor = context.HttpContext.RequestServices
-                                .GetRequiredService<IActorContextResolver>().Resolve(context.Principal!);
-                            if (string.IsNullOrWhiteSpace(actor.User))
-                                context.Fail("The access token does not identify a workflow actor.");
-                        }
-                        catch (WorkflowUnauthorizedException)
-                        {
-                            context.Fail("The access token does not contain one valid workflow actor identity.");
-                        }
+                        await ValidateActor(context);
                         if (context.Result?.Failure is not null) FlowbitAuthenticationDiagnostics.InvalidToken();
                         else FlowbitAuthenticationDiagnostics.ValidToken();
-                        return Task.CompletedTask;
                     }
                 };
             }).ValidateOnStart();
@@ -143,9 +114,61 @@ public static class FlowbitAuthenticationExtensions
         return services;
     }
 
+    private static Task ValidateActor(TokenValidatedContext context, bool validateRoles = true)
+    {
+        try
+        {
+            PreserveSubjectValueType(context);
+            if (validateRoles && context.Principal!.Identities
+                .SelectMany(identity => identity.FindAll(identity.RoleClaimType))
+                .Any(claim => claim.ValueType != ClaimValueTypes.String || string.IsNullOrWhiteSpace(claim.Value)))
+            {
+                context.Fail("Access token roles must be nonblank strings.");
+                return Task.CompletedTask;
+            }
+            var actor = context.HttpContext.RequestServices.GetRequiredService<IActorContextResolver>().Resolve(context.Principal!);
+            if (string.IsNullOrWhiteSpace(actor.User)) context.Fail("The access token does not identify a workflow actor.");
+        }
+        catch (WorkflowUnauthorizedException)
+        {
+            context.Fail("The access token does not contain one valid workflow actor identity.");
+        }
+        return Task.CompletedTask;
+    }
+
+    private static void PreserveSubjectValueType(TokenValidatedContext context)
+    {
+        // The token handlers coerce the registered "sub" claim to a string even
+        // when its signed JSON value was numeric. Preserve that distinction so
+        // the resolver can reject it if this fallback/override is selected.
+        var payload = context.SecurityToken switch
+        {
+            JsonWebToken token => token.EncodedPayload,
+            JwtSecurityToken token => token.RawPayload,
+            _ => null
+        };
+        if (string.IsNullOrEmpty(payload)) return;
+        using var document = JsonDocument.Parse(Base64UrlEncoder.DecodeBytes(payload));
+        if (!document.RootElement.TryGetProperty("sub", out var subject)
+            || subject.ValueKind == JsonValueKind.String
+            || (subject.ValueKind == JsonValueKind.Array && subject.EnumerateArray().All(value => value.ValueKind == JsonValueKind.String))) return;
+        foreach (var identity in context.Principal!.Identities)
+        {
+            foreach (var claim in identity.Claims.Where(claim => claim.Type == "sub"
+                || (context.Options.MapInboundClaims && claim.Type == ClaimTypes.NameIdentifier)).ToArray())
+            {
+                identity.RemoveClaim(claim);
+                var replacement = new Claim(claim.Type, claim.Value, JsonClaimValueTypes.Json, claim.Issuer, claim.OriginalIssuer);
+                foreach (var property in claim.Properties) replacement.Properties.Add(property);
+                identity.AddClaim(replacement);
+            }
+        }
+    }
+
     private static TokenValidationParameters ValidationParameters() => new()
     {
         AuthenticationType = JwtBearerDefaults.AuthenticationScheme,
+        NameClaimType = ActorIdentityConfiguration.DefaultClaimType,
         ValidateIssuer = true,
         ValidateAudience = true,
         ValidateLifetime = true,

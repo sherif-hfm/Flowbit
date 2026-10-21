@@ -10,13 +10,14 @@ namespace Flowbit.Api.Auth;
 public sealed class ActorIdentityConfiguration
 {
     public const string SettingKey = "Authentication.UserIdentityClaim";
+    public const string DefaultClaimType = "Username";
 
     private string? claimType;
     private bool initialized;
 
     /// <summary>
-    /// The configured claim type, or <see langword="null"/> when the legacy
-    /// <c>Identity.Name</c>/<c>NameIdentifier</c> selection should be used.
+    /// The configured claim type, or <see langword="null"/> for the default
+    /// Username, ClaimTypes.Name, then sub/NameIdentifier fallback chain.
     /// </summary>
     public string? ClaimType => initialized
         ? claimType

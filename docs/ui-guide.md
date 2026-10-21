@@ -50,6 +50,8 @@ Use **Sign out** to end the local session and initiate provider logout where sup
 
 The API remains authoritative for your workflow identity, roles, and actions. A successful provider login does not grant administration or task access. If authentication expires while working, sign in again and inspect the current workflow/task state before resubmitting an action; commands and AI streams are not automatically replayed. Export or save local editor work before deliberately navigating away. See [session behavior](openid-connect.md#session-behavior-and-operations) for deployment limits and the local Keycloak users.
 
+All modes use the API's default actor order: `Username`, the .NET `ClaimTypes.Name` URI, then `sub`/mapped `NameIdentifier`. Explicit identity overrides remain supported. The local Keycloak realm maps the login username to `Username`; its separate `name` profile claim is a display name. After upgrading an older realm/host, sign out and sign in again to obtain the new claim.
+
 To view your own current access token, open `/_info` on the UI origin
 (for the local Keycloak setup, `https://localhost:7019/_info`). It displays JSON
 with your username, roles, Bearer access token, and expiry. Sign-in is required;

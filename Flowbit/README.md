@@ -1280,10 +1280,11 @@ provider. See [configuration, local Keycloak, and operations](../docs/openid-con
 The JWT claim used as the canonical workflow actor can be configured in
 `flowbit.engine_settings` with namespace `Authentication`, key
 `UserIdentityClaim`, and a stable claim name such as `sub` or `oid`. The value is
-loaded once at API startup. If the row is absent, the API retains the legacy
-`Identity.Name`/`NameIdentifier` selection, with OIDC's configured name claim
-defaulting to `flowbit_user`; a configured claim that is missing or
-invalid causes a 401. Restart all API replicas after changing it, and migrate or
+loaded once at API startup. The configured claim is strict; a non-default OIDC
+name-claim setting is the next strict override. Otherwise all three modes use
+`Username`, then the `ClaimTypes.Name` URI, then `sub`/mapped `NameIdentifier`.
+Only absent claims fall through; an invalid present claim or missing configured
+claim causes a 401. Restart all API replicas after changing it, and migrate or
 drain active assignments and claims before switching identity formats.
 
 ## Verification

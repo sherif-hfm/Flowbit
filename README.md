@@ -10,7 +10,7 @@ From a two-step approval to parallel departmental reviews, quorum voting, webhoo
 
 **Visual editor · .NET 10 · PostgreSQL · Blazor Server · REST API · BPMN-aligned**
 
-Choose provider-managed [OpenID Connect](docs/openid-connect.md) or [Local user management and shared-key login](docs/local-authentication.md). Local mode stores users and typed profile fields in PostgreSQL and issues HS256 API tokens using the exact `Username` identity claim.
+Choose provider-managed [OpenID Connect](docs/openid-connect.md) or [Local user management and shared-key login](docs/local-authentication.md). Local mode stores users and typed profile fields in PostgreSQL and issues HS256 API tokens. All modes default to `Username`, then the .NET name-claim URI, then `sub`; Local, development tokens and the sample Keycloak realm emit exact-case `Username`.
 
 [Developer documentation](docs/index.md) · [HTTP quickstart](docs/getting-started.md) · [Explore features](#what-you-can-build) · [Browse examples](examples/README.md) · [Architecture](#architecture) · [Runtime reference](Flowbit/README.md)
 

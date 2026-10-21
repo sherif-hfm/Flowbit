@@ -73,7 +73,7 @@ public sealed class FlowbitOidcBearerOptions
 {
     public string Authority { get; set; } = "";
     public string Audience { get; set; } = "flowbit-api";
-    public string NameClaimType { get; set; } = "flowbit_user";
+    public string NameClaimType { get; set; } = ActorIdentityConfiguration.DefaultClaimType;
     public string RoleClaimType { get; set; } = "roles";
     public string ScopeClaimType { get; set; } = "scope";
     public string RequiredScope { get; set; } = "flowbit.api";

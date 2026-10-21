@@ -89,10 +89,10 @@ public sealed class OidcBearerAuthenticationTests
             "expired" => host.Token(expires: DateTime.UtcNow.AddMinutes(-5)),
             "future" => host.Token(notBefore: DateTime.UtcNow.AddMinutes(5)),
             "signature" => host.Token(key: new RsaSecurityKey(untrusted) { KeyId = "untrusted" }),
-            "missing_actor" => host.Token(actor: null),
-            "ambiguous_actor" => host.Token(extraClaims: [new("flowbit_user", "bob")]),
+            "missing_actor" => host.Token(actor: null, includeSubject: false),
+            "ambiguous_actor" => host.Token(extraClaims: [new("Username", "bob")]),
             "oversized_actor" => host.Token(actor: new string('a', 301)),
-            "numeric_actor" => host.Token(actor: null, extraClaims: [new("flowbit_user", "42", ClaimValueTypes.Integer)]),
+            "numeric_actor" => host.Token(actor: null, extraClaims: [new("Username", "42", ClaimValueTypes.Integer)]),
             "numeric_role" => host.Token(extraClaims: [new("roles", "42", ClaimValueTypes.Integer)]),
             "nested_role" => host.Token(extraClaims: [new("roles", "{\"admin\":true}", JsonClaimValueTypes.Json)]),
             "blank_role" => host.Token(extraClaims: [new("roles", " ")]),
@@ -190,6 +190,40 @@ public sealed class OidcBearerAuthenticationTests
 
     private sealed record ActorResponse(string? User, string[] Roles, Dictionary<string, string[]>? AuditClaims);
 
+    [Theory]
+    [MemberData(nameof(DefaultIdentityBearerTests.IdentityCases), MemberType = typeof(DefaultIdentityBearerTests))]
+    public async Task Oidc_uses_the_default_identity_chain(string scenario, Claim[] claims, string? expected)
+    {
+        await using var host = await BearerHost.CreateAsync();
+        using var response = await host.SendAsync(host.Token(actor: null, includeSubject: false, extraClaims: claims));
+        Assert.True(response.StatusCode == (expected is null ? HttpStatusCode.Unauthorized : HttpStatusCode.OK), $"{scenario}: unexpected {response.StatusCode}");
+        if (expected is not null) Assert.Equal(expected, (await response.Content.ReadFromJsonAsync<ActorResponse>())!.User);
+        Assert.Null(response.Headers.Location);
+    }
+
+    [Theory]
+    [InlineData("flowbit_user")]
+    [InlineData(ClaimTypes.Name)]
+    [InlineData("sub")]
+    public async Task Oidc_name_override_is_strict_even_when_default_claims_are_available(string claimType)
+    {
+        await using var host = await BearerHost.CreateAsync(nameClaim: claimType);
+        using var accepted = await host.SendAsync(host.Token(includeSubject: false, extraClaims: [new("Username", "different-user")]));
+        Assert.Equal("alice", (await accepted.Content.ReadFromJsonAsync<ActorResponse>())!.User);
+        using var rejected = await host.SendAsync(host.Token(actor: null, includeSubject: false, extraClaims: [new("Username", "alice")]));
+        Assert.Equal(HttpStatusCode.Unauthorized, rejected.StatusCode);
+    }
+
+    [Fact]
+    public async Task Database_override_has_precedence_over_the_oidc_name_override_and_does_not_fall_back()
+    {
+        await using var host = await BearerHost.CreateAsync(nameClaim: "flowbit_user", actorClaim: "employee_id");
+        using var accepted = await host.SendAsync(host.Token(extraClaims: [new("Username", "different-user"), new("employee_id", "employee-user")]));
+        Assert.Equal("employee-user", (await accepted.Content.ReadFromJsonAsync<ActorResponse>())!.User);
+        using var rejected = await host.SendAsync(host.Token(extraClaims: [new("Username", "different-user")]));
+        Assert.Equal(HttpStatusCode.Unauthorized, rejected.StatusCode);
+    }
+
     private sealed class BearerHost : IAsyncDisposable
     {
         private readonly List<RSA> keys = [];
@@ -197,7 +231,7 @@ public sealed class OidcBearerAuthenticationTests
         private string keyId = "";
         private WebApplication issuerApp = null!;
         private string authority = "";
-        private string nameClaim = "flowbit_user";
+        private string nameClaim = "Username";
         private string roleClaim = "roles";
         private string scopeClaim = "scope";
         public WebApplication App { get; private set; } = null!;
@@ -206,7 +240,7 @@ public sealed class OidcBearerAuthenticationTests
         public int JwksRequests;
 
         public static async Task<BearerHost> CreateAsync(
-            string nameClaim = "flowbit_user", string roleClaim = "roles", string scopeClaim = "scope", string? actorClaim = null)
+            string nameClaim = "Username", string roleClaim = "roles", string scopeClaim = "scope", string? actorClaim = null)
         {
             var host = new BearerHost { nameClaim = nameClaim, roleClaim = roleClaim, scopeClaim = scopeClaim };
             host.RotateKey();
@@ -282,9 +316,10 @@ public sealed class OidcBearerAuthenticationTests
         public string Token(string? issuer = null, string audience = "flowbit-api", string? actor = "alice",
             string? scope = "openid flowbit.api", IEnumerable<Claim>? extraClaims = null,
             DateTime? expires = null, DateTime? notBefore = null, SecurityKey? key = null,
-            string algorithm = SecurityAlgorithms.RsaSha256)
+            string algorithm = SecurityAlgorithms.RsaSha256, bool includeSubject = true)
         {
-            var claims = new List<Claim> { new("sub", "opaque-subject"), new(roleClaim, "admin") };
+            var claims = new List<Claim> { new(roleClaim, "admin") };
+            if (includeSubject) claims.Add(new("sub", "opaque-subject"));
             if (actor is not null) claims.Add(new(nameClaim, actor));
             if (scope is not null) claims.Add(new(scopeClaim, scope));
             if (extraClaims is not null) claims.AddRange(extraClaims);

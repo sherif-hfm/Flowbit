@@ -18,19 +18,20 @@ public interface IActorContextResolver
 /// </summary>
 public sealed class ActorContextResolver(
     ActorIdentityConfiguration configuration,
-    WorkflowAuditOptions? auditOptions = null)
+    WorkflowAuditOptions? auditOptions = null,
+    FlowbitAuthenticationOptions? authentication = null)
     : IActorContextResolver
 {
     public ActorContext Resolve(ClaimsPrincipal principal)
     {
         var configuredClaimType = configuration.ClaimType;
-        if (configuredClaimType is null && principal.Identity is ClaimsIdentity identity
-            && identity.NameClaimType != ClaimTypes.Name)
+        if (configuredClaimType is null && authentication?.Mode == FlowbitAuthenticationOptions.OpenIdConnectMode
+            && !string.Equals(authentication.Oidc.NameClaimType, ActorIdentityConfiguration.DefaultClaimType, StringComparison.OrdinalIgnoreCase))
         {
-            configuredClaimType = identity.NameClaimType;
+            configuredClaimType = authentication.Oidc.NameClaimType;
         }
         var user = configuredClaimType is null
-            ? principal.Identity?.Name ?? principal.FindFirstValue(ClaimTypes.NameIdentifier)
+            ? ResolveDefaultIdentity(principal)
             : ResolveConfiguredIdentity(principal, configuredClaimType);
 
         var roles = principal.Identities.SelectMany(identity => identity.FindAll(identity.RoleClaimType))
@@ -94,6 +95,19 @@ public sealed class ActorContextResolver(
         return snapshot;
     }
 
+    private static string? ResolveDefaultIdentity(ClaimsPrincipal principal)
+    {
+        // These are explicit fallback groups, not Identity.Name or arbitrary JWT
+        // aliases: a provider's bare "name" is often a mutable display name.
+        string[][] groups = [[ActorIdentityConfiguration.DefaultClaimType], [ClaimTypes.Name], ["sub", ClaimTypes.NameIdentifier]];
+        foreach (var group in groups)
+        {
+            var matchingClaims = principal.Claims.Where(claim => group.Contains(claim.Type, StringComparer.OrdinalIgnoreCase)).ToList();
+            if (matchingClaims.Count != 0) return ValidateIdentity(matchingClaims, group[0]);
+        }
+        return null;
+    }
+
     private static string ResolveConfiguredIdentity(ClaimsPrincipal principal, string configuredClaimType)
     {
         var candidateTypes = ClaimTypeCandidates(configuredClaimType);
@@ -101,6 +115,11 @@ public sealed class ActorContextResolver(
             .Where(claim => candidateTypes.Contains(claim.Type))
             .ToList();
 
+        return ValidateIdentity(matchingClaims, configuredClaimType);
+    }
+
+    private static string ValidateIdentity(List<Claim> matchingClaims, string configuredClaimType)
+    {
         if (matchingClaims.Count == 0 || matchingClaims.Any(claim =>
                 claim.ValueType != ClaimValueTypes.String || string.IsNullOrWhiteSpace(claim.Value)))
         {

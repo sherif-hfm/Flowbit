@@ -46,6 +46,7 @@ public sealed class ActorAuditClaimsTests
     public void Known_inbound_mappings_are_supported_without_matching_arbitrary_uri_suffixes()
     {
         var actor = Resolver("sub", "email", "department").Resolve(Principal(
+            new Claim("Username", "audit-user"),
             new Claim(ClaimTypes.NameIdentifier, "subject-id"),
             new Claim("sub", "other-subject"),
             new Claim(ClaimTypes.Email, "person@example.test"),
