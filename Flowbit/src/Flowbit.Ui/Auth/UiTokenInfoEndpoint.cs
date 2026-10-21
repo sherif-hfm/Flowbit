@@ -9,7 +9,7 @@ public static class UiTokenInfoEndpoint
 
     public static void MapCurrentUserTokenInfo(this IEndpointRouteBuilder endpoints)
     {
-        endpoints.MapGet("/_info", async (HttpContext context, OidcAccessTokenProvider tokens) =>
+        endpoints.MapGet("/_info", async (HttpContext context, IUiTokenInfoProvider tokens) =>
         {
             context.Response.Headers.CacheControl = "no-store, private";
             context.Response.Headers.Pragma = "no-cache";

@@ -1,0 +1,51 @@
+@page "/user-attributes"
+@using Flowbit.Shared.Dtos
+@inject WorkflowApiClient Api
+@inject Flowbit.Ui.Auth.UiAuthenticationOptions Authentication
+
+<PageTitle>User Attributes · Flowbit</PageTitle>
+<PageHeader Eyebrow="Manage" Title="User attributes" Description="Define profile fields and optionally include their values as JWT claims.">
+    <Actions><button class="btn btn-primary" @onclick="New" disabled="@(busy || !allowed)">Add attribute</button></Actions>
+</PageHeader>
+@if (error is not null) { <div class="alert alert-danger" role="alert">@error</div> }
+@if (success is not null) { <div class="alert alert-success" role="status">@success</div> }
+@if (editing)
+{
+    <section class="panel mb-4"><h2>@(selected is null ? "Add attribute" : "Edit attribute")</h2>
+        <form @onsubmit="Save" @onsubmit:preventDefault><div class="row g-3">
+            <div class="col-12 col-md-6"><label class="form-label" for="attribute-key">Key</label><input id="attribute-key" class="form-control" @bind="key" required maxlength="100" readonly="@(selected is not null)" /></div>
+            <div class="col-12 col-md-6"><label class="form-label" for="attribute-type">Type</label><select id="attribute-type" class="form-select" @bind="type" disabled="@(selected is not null)"><option value="text">Text</option><option value="number">Number</option><option value="boolean">Boolean</option><option value="date">Date</option><option value="dropdown">Dropdown</option></select></div>
+            <div class="col-12 col-md-6"><label class="form-label" for="attribute-label">Label</label><input id="attribute-label" class="form-control" @bind="label" required maxlength="300" /></div>
+            <div class="col-12 col-md-6"><label class="form-label" for="attribute-claim">JWT claim name (optional)</label><input id="attribute-claim" class="form-control" @bind="claim" maxlength="300" /></div>
+            <div class="col-12"><label class="form-check"><input class="form-check-input" type="checkbox" @bind="required" /> Required when creating or editing a user</label></div>
+            @if (type == "dropdown") { <div class="col-12"><label class="form-label" for="attribute-choices">Choices (one per line)</label><textarea id="attribute-choices" class="form-control" @bind="choices" rows="4" required></textarea></div> }
+        </div><div class="d-flex gap-2 mt-4"><button class="btn btn-primary" type="submit" disabled="@busy">Save attribute</button><button class="btn btn-outline-secondary" type="button" @onclick="() => editing = false" disabled="@busy">Cancel</button></div></form>
+    </section>
+}
+<section class="panel"><div class="table-responsive"><table class="table"><thead><tr><th>Label</th><th>Key</th><th>Type</th><th>Required</th><th>JWT claim</th><th>Actions</th></tr></thead><tbody>
+    @foreach (var attribute in attributes) { <tr @key="attribute.Id"><td>@(attribute.Label)</td><td>@(attribute.Key)</td><td>@(attribute.Type)</td><td>@(attribute.Required ? "Yes" : "No")</td><td>@(attribute.ClaimType ?? "—")</td><td><button class="btn btn-sm btn-outline-primary" @onclick="() => Edit(attribute)" disabled="@busy">Edit</button></td></tr> }
+</tbody></table></div>@if (attributes.Length == 0) { <p class="text-muted">No custom attributes defined.</p> }</section>
+
+@code {
+    private UserAttributeDto[] attributes = [];
+    private UserAttributeDto? selected;
+    private string key = "", type = "text", label = "", claim = "", choices = "";
+    private string? error, success;
+    private bool editing, required, busy, allowed;
+    protected override async Task OnInitializedAsync() => await Load();
+    private async Task Load()
+    {
+        if (!Authentication.IsLocal) { error = "Local user attributes are unavailable in this authentication mode."; return; }
+        busy = true;
+        try { attributes = await Api.GetUserAttributesAsync(); allowed = true; }
+        catch (Exception e) { error = e.Message; allowed = false; } finally { busy = false; }
+    }
+    private void New() { selected = null; key = label = claim = choices = ""; type = "text"; required = false; editing = true; error = success = null; }
+    private void Edit(UserAttributeDto item) { selected = item; key = item.Key; type = item.Type; label = item.Label; claim = item.ClaimType ?? ""; choices = string.Join("\n", item.Choices); required = item.Required; editing = true; error = success = null; }
+    private async Task Save()
+    {
+        busy = true; error = success = null;
+        try { await Api.SaveUserAttributeAsync(selected?.Id, new(key, type, label, required, choices.Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries), claim, selected?.Revision)); editing = false; success = "Attribute saved."; await Load(); }
+        catch (Exception e) { error = e.Message; } finally { busy = false; }
+    }
+}

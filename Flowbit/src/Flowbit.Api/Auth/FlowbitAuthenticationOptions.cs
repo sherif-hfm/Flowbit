@@ -6,12 +6,26 @@ public sealed class FlowbitAuthenticationOptions
     public const string SectionName = "Authentication";
     public const string OpenIdConnectMode = "OpenIdConnect";
     public const string DevelopmentTokenMode = "DevelopmentToken";
+    public const string LocalMode = "Local";
 
     public string Mode { get; set; } = OpenIdConnectMode;
     public FlowbitOidcBearerOptions Oidc { get; set; } = new();
+    public FlowbitLocalAuthenticationOptions Local { get; set; } = new();
 
     public void Validate(IHostEnvironment environment)
     {
+        if (Mode == LocalMode)
+        {
+            if (Local is null) throw new InvalidOperationException("Authentication:Local is required.");
+            Local.Validate();
+            if (string.IsNullOrWhiteSpace(Local.Issuer) || string.IsNullOrWhiteSpace(Local.Audience)
+                || Local.Issuer.Any(char.IsWhiteSpace) || Local.Audience.Any(char.IsWhiteSpace)
+                || string.IsNullOrWhiteSpace(Local.SigningKey) || System.Text.Encoding.UTF8.GetByteCount(Local.SigningKey) < 32
+                || string.IsNullOrWhiteSpace(Local.RoleClaimType) || Local.RoleClaimType.Any(char.IsWhiteSpace)
+                || new[] { "Username", "sub", "iss", "aud", "exp", "iat", "nbf", "jti", "sid", "given_name", "family_name" }.Contains(Local.RoleClaimType, StringComparer.OrdinalIgnoreCase))
+                throw new InvalidOperationException("Local authentication requires issuer, audience, role claim name and a signing key of at least 32 UTF-8 bytes.");
+            return;
+        }
         if (Mode == DevelopmentTokenMode)
         {
             if (!environment.IsDevelopment())
@@ -19,7 +33,7 @@ public sealed class FlowbitAuthenticationOptions
             return;
         }
         if (Mode != OpenIdConnectMode)
-            throw new InvalidOperationException("Authentication:Mode must be OpenIdConnect or DevelopmentToken.");
+            throw new InvalidOperationException("Authentication:Mode must be OpenIdConnect, Local or DevelopmentToken.");
         if (Oidc is null)
             throw new InvalidOperationException("Authentication:Oidc must be a configured object.");
         if (!Uri.TryCreate(Oidc.Authority, UriKind.Absolute, out var authority)
@@ -45,6 +59,14 @@ public sealed class FlowbitAuthenticationOptions
                 throw new InvalidOperationException($"Authentication:Oidc:{name} must contain one nonblank value without whitespace.");
         }
     }
+}
+
+public sealed class FlowbitLocalAuthenticationOptions : Flowbit.Service.Models.LocalIdentityOptions
+{
+    public string Issuer { get; set; } = "flowbit-local";
+    public string Audience { get; set; } = "flowbit-api";
+    public string SigningKey { get; set; } = "";
+    public string RoleClaimType { get; set; } = "roles";
 }
 
 public sealed class FlowbitOidcBearerOptions

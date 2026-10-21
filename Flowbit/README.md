@@ -6,6 +6,8 @@ Start with the [developer documentation](../docs/index.md) for HTTP onboarding, 
 
 ## Projects
 
+Authentication supports provider-managed OpenID Connect or [Local database-backed users](../docs/local-authentication.md). Local mode signs HS256 tokens with exact-case `Username` identity, accepts trusted external tokens without a directory lookup, and persists account/attribute/hashed-refresh state in the `flowbit` schema. `LocalIdentityService` owns account validation and session behavior behind `ILocalIdentityRepository`; the API owns signing and the UI owns per-browser protected session storage. Directory writes/refresh rotation use an independent transaction advisory lock; they do not change workflow actor storage or locking. Apply the additive migration before enabling Local mode. DevelopmentToken remains development-only.
+
 - `src/Flowbit.Api` - ASP.NET Core Web API, endpoints and composition root.
 - `src/Flowbit.Service` - engine logic, service interfaces, repository ports.
 - `src/Flowbit.Infrastructure` - EF Core, PostgreSQL, migrations, repositories.

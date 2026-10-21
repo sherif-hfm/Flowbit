@@ -13,6 +13,7 @@ Flowbit is a **BPMN-aligned JSON workflow engine** with a visual editor, an HTTP
 7. [Deployment and operations](deployment.md) — configure, publish, migrate, monitor, and recover the runtime.
 8. [AI authoring and portable skill](ai-authoring.md) — generate and modify Flowbit JSON in the UI or install the self-contained authoring package in an external agent.
 9. [OpenID Connect](openid-connect.md) — configure provider sign-in, PKCE, API access tokens, actor continuity, and the local Keycloak walkthrough.
+10. [Local users and shared-key authentication](local-authentication.md) — configure database-backed login, manage users and typed attributes, and integrate HS256 tokens using `Username` identity.
 
 [Branding reference](branding.md) — shared logo assets, palette, themes, and contributor maintenance.
 

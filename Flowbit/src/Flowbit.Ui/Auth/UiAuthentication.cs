@@ -31,7 +31,7 @@ public static class UiAuthentication
             .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         if (!options.IsDevelopmentToken && !builder.Environment.IsDevelopment()
             && (allowedHosts.Length == 0 || allowedHosts.Contains("*", StringComparer.Ordinal)))
-            throw new InvalidOperationException("Deployed OIDC requires explicit AllowedHosts for its public UI hostname.");
+            throw new InvalidOperationException("Deployed authentication requires explicit AllowedHosts for its public UI hostname.");
         var services = builder.Services;
         services.AddSingleton(options);
         services.AddSingleton(TimeProvider.System);
@@ -68,31 +68,48 @@ public static class UiAuthentication
         services.AddScoped(_ => { var state = new TokenState(); state.ConfigureOidcMode(); return state; });
         services.AddScoped<AuthenticationStateProvider, OidcSessionAuthenticationStateProvider>();
         services.AddCascadingAuthenticationState();
-        services.AddScoped<OidcAccessTokenProvider>();
-        services.AddScoped<IUiAccessTokenProvider>(sp => sp.GetRequiredService<OidcAccessTokenProvider>());
+        if (options.IsLocal) services.AddScoped<LocalAccessTokenProvider>();
+        else services.AddScoped<OidcAccessTokenProvider>();
+        services.AddScoped<IUiAccessTokenProvider>(sp => options.IsLocal
+            ? sp.GetRequiredService<LocalAccessTokenProvider>() : sp.GetRequiredService<OidcAccessTokenProvider>());
+        services.AddScoped<IUiTokenInfoProvider>(sp => options.IsLocal
+            ? sp.GetRequiredService<LocalAccessTokenProvider>() : sp.GetRequiredService<OidcAccessTokenProvider>());
         services.AddScoped<ApiActorContextClient>();
 
-        services.AddAuthentication(authentication =>
+        var authenticationBuilder = services.AddAuthentication(authentication =>
         {
             authentication.DefaultScheme = CookieScheme;
-            authentication.DefaultChallengeScheme = OidcScheme;
+            authentication.DefaultChallengeScheme = options.IsLocal ? CookieScheme : OidcScheme;
         }).AddCookie(CookieScheme, cookie =>
         {
             cookie.Cookie.Name = "__Host-Flowbit.Session";
+            cookie.LoginPath = "/auth/login";
             cookie.Cookie.HttpOnly = true;
             cookie.Cookie.SecurePolicy = CookieSecurePolicy.Always;
             cookie.Cookie.SameSite = SameSiteMode.Lax;
             cookie.Cookie.Path = "/";
             cookie.SlidingExpiration = false;
             cookie.ExpireTimeSpan = options.Session.AbsoluteLifetime;
-            cookie.Events.OnValidatePrincipal = context =>
+            cookie.Events.OnValidatePrincipal = async context =>
             {
                 var store = context.HttpContext.RequestServices.GetRequiredService<UiSessionStore>();
                 if (context.Principal is null || store.Find(UiSessionStore.SessionId(context.Principal)) is null)
                     context.RejectPrincipal();
-                return Task.CompletedTask;
+                else if (options.IsLocal)
+                {
+                    try { await context.HttpContext.RequestServices.GetRequiredService<LocalAccessTokenProvider>()
+                        .GetTokenInfoAsync(context.Principal, context.HttpContext.RequestAborted); }
+                    catch (UiSessionExpiredException) { context.RejectPrincipal(); }
+                    catch (UiAuthenticationUnavailableException) { context.RejectPrincipal(); }
+                }
             };
-        }).AddOpenIdConnect(OidcScheme, oidc =>
+        });
+        if (options.IsLocal)
+        {
+            services.AddOptions<CookieAuthenticationOptions>(CookieScheme).Configure<UiSessionStore>((cookie, store) => cookie.SessionStore = store);
+            return options;
+        }
+        authenticationBuilder.AddOpenIdConnect(OidcScheme, oidc =>
         {
             oidc.SignInScheme = CookieScheme;
             oidc.Authority = options.Oidc.Authority;
@@ -190,6 +207,7 @@ public static class UiAuthentication
         app.MapGet("/health/live", () => Results.Ok(new { status = "ok" })).AllowAnonymous();
         if (options.IsDevelopmentToken) return;
         app.MapCurrentUserTokenInfo();
+        if (options.IsLocal) { app.MapLocalUiAuthentication(); return; }
         app.MapGet("/auth/login", (string? returnUrl) => Results.Challenge(
             new AuthenticationProperties { RedirectUri = LocalReturnUrl(returnUrl) }, [OidcScheme])).AllowAnonymous();
         app.MapPost("/auth/logout", async (HttpContext context, IAntiforgery antiforgery,

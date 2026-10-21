@@ -25,6 +25,31 @@ public static class FlowbitAuthenticationExtensions
             {
                 var settings = configured.Value;
                 options.TokenValidationParameters = ValidationParameters();
+                if (settings.Mode == FlowbitAuthenticationOptions.LocalMode)
+                {
+                    options.MapInboundClaims = false;
+                    options.IncludeErrorDetails = false;
+                    options.TokenValidationParameters.ValidIssuer = settings.Local.Issuer;
+                    options.TokenValidationParameters.ValidAudience = settings.Local.Audience;
+                    options.TokenValidationParameters.IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(settings.Local.SigningKey));
+                    options.TokenValidationParameters.ValidAlgorithms = [SecurityAlgorithms.HmacSha256];
+                    options.TokenValidationParameters.NameClaimType = "Username";
+                    options.TokenValidationParameters.RoleClaimType = settings.Local.RoleClaimType;
+                    options.Events = new JwtBearerEvents { OnTokenValidated = context =>
+                    {
+                        try
+                        {
+                            if (context.Principal!.Identities.SelectMany(i => i.FindAll(i.RoleClaimType))
+                                .Any(c => c.ValueType != ClaimValueTypes.String || string.IsNullOrWhiteSpace(c.Value)))
+                                context.Fail("Token roles must be nonblank strings.");
+                            var actor = context.HttpContext.RequestServices.GetRequiredService<IActorContextResolver>().Resolve(context.Principal!);
+                            if (string.IsNullOrWhiteSpace(actor.User)) context.Fail("The token must identify an actor.");
+                        }
+                        catch (WorkflowUnauthorizedException) { context.Fail("Invalid actor identity."); }
+                        return Task.CompletedTask;
+                    }};
+                    return;
+                }
                 if (settings.Mode == FlowbitAuthenticationOptions.DevelopmentTokenMode)
                 {
                     var issuer = finalConfiguration["Jwt:Issuer"];
@@ -139,6 +164,7 @@ public sealed class FlowbitBearerScopeHandler(FlowbitAuthenticationOptions setti
     protected override Task HandleRequirementAsync(AuthorizationHandlerContext context, FlowbitBearerScopeRequirement requirement)
     {
         if (settings.Mode == FlowbitAuthenticationOptions.DevelopmentTokenMode
+            || settings.Mode == FlowbitAuthenticationOptions.LocalMode
             || context.User.Identities.Any(identity => identity.IsAuthenticated
                 && identity.AuthenticationType == SharedVariableClientAuthenticationDefaults.Scheme)
             || context.User.Identities.Where(identity => identity.IsAuthenticated

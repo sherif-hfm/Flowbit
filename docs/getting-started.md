@@ -154,7 +154,7 @@ dotnet run --no-launch-profile --project ./Flowbit/src/Flowbit.Ui/Flowbit.Ui.csp
 4. Leave custom claims empty and click **Generate and apply**.
 5. Copy the value from **Raw JWT**. Paste only the token when the shell walkthrough prompts for it, without the `Bearer ` prefix.
 
-There is **no token-issuance HTTP endpoint**. The local UI server generates this development JWT using its configured symmetric key. The selected test identity is process-wide: another visitor changing it changes the identity used by that UI process. This utility requires both Development and `Authentication:Mode=DevelopmentToken`; it is unavailable in OpenIdConnect mode. See [authentication boundaries](deployment.md#authentication-boundaries) and [OIDC sign-in](openid-connect.md) for deployed hosts.
+There is **no token-issuance HTTP endpoint in DevelopmentToken mode**. The local UI server generates this development JWT using its configured symmetric key. The selected test identity is process-wide: another visitor changing it changes the identity used by that UI process. This utility requires both Development and `Authentication:Mode=DevelopmentToken`; it is unavailable in OpenIdConnect and Local modes. For deployed hosts, choose [OIDC sign-in](openid-connect.md) or [database-backed Local authentication](local-authentication.md). Local has its own `POST /api/auth/token` endpoint and uses the exact `Username` identity claim.
 
 All remaining approval steps use HTTP. Once a token is copied, the UI need not remain running for those requests; the token remains usable until its expiry if the API configuration stays the same.
 

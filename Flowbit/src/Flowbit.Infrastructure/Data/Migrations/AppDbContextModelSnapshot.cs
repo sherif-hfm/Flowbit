@@ -1414,6 +1414,102 @@ namespace Flowbit.Infrastructure.Data.Migrations
                         });
                 });
 
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.LocalRefreshSessionEntity", b =>
+                {
+                    b.Property<string>("Hash")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<DateTimeOffset>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("FamilyId")
+                        .HasColumnType("uuid");
+
+                    b.Property<bool>("Revoked")
+                        .HasColumnType("boolean");
+
+                    b.Property<bool>("Used")
+                        .HasColumnType("boolean");
+
+                    b.Property<long>("UserId")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("Hash");
+
+                    b.HasIndex("ExpiresAt");
+
+                    b.HasIndex("FamilyId");
+
+                    b.HasIndex("UserId");
+
+                    b.ToTable("local_refresh_sessions", "flowbit");
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.LocalUserEntity", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("AttributesJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
+
+                    b.Property<string>("ClaimsJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("FailedAttempts")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("FirstName")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("LastName")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTimeOffset?>("LockedUntil")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("PasswordHash")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<long>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("RolesJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Username")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("citext");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Username")
+                        .IsUnique();
+
+                    b.ToTable("local_users", "flowbit");
+                });
+
             modelBuilder.Entity("Flowbit.Infrastructure.Entities.MessageDeliveryReceiptEntity", b =>
                 {
                     b.Property<long>("InstanceId")
@@ -2631,6 +2727,49 @@ namespace Flowbit.Infrastructure.Data.Migrations
 
                             t.HasCheckConstraint("CK_timer_subscriptions_terminal_time", "(\"Status\" IN ('active', 'paused') AND \"CompletedAt\" IS NULL) OR (\"Status\" IN ('completed', 'cancelled') AND \"CompletedAt\" IS NOT NULL)");
                         });
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.UserAttributeEntity", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("ChoicesJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
+
+                    b.Property<string>("ClaimType")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Key")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("citext");
+
+                    b.Property<string>("Label")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<bool>("Required")
+                        .HasColumnType("boolean");
+
+                    b.Property<long>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("Type")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Key")
+                        .IsUnique();
+
+                    b.ToTable("user_attribute_definitions", "flowbit");
                 });
 
             modelBuilder.Entity("Flowbit.Infrastructure.Entities.UserDelegationEntity", b =>
@@ -4408,6 +4547,15 @@ namespace Flowbit.Infrastructure.Data.Migrations
                     b.Navigation("Job");
 
                     b.Navigation("WorkflowDefinition");
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.LocalRefreshSessionEntity", b =>
+                {
+                    b.HasOne("Flowbit.Infrastructure.Entities.LocalUserEntity", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("Flowbit.Infrastructure.Entities.MessageDeliveryReceiptEntity", b =>

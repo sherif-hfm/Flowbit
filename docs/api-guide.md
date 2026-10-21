@@ -9,6 +9,7 @@ All JSON property names below are the wire names. Database identifiers are integ
 ## Contents
 
 - [HTTP conventions and authentication](#http-conventions-and-authentication)
+- [Local authentication and user management](#local-authentication-and-user-management)
 - [Errors and concurrency](#errors-and-concurrency)
 - [Filtering and pagination](#filtering-and-pagination)
 - [Authentication context](#authentication-context)
@@ -38,7 +39,7 @@ All JSON property names below are the wire names. Database identifiers are integ
 
 The examples use `Host: localhost:5017`; replace it with your API origin. Send `Content-Type: application/json` when sending a JSON body. `TOKEN`, client credentials, IDs, timestamps, and sample results are illustrative. Copy IDs, revision numbers, capability flags, and timestamps from actual preceding responses. A successful request may finish automatic routing before it responds, so its representative current node can already be an end event.
 
-With `Authentication:Mode=OpenIdConnect`, the API validates JWT access tokens against the trusted authority's discovery/signing keys, expected audience, and lifetime, and requires `Authentication:Oidc:RequiredScope` (default `flowbit.api`). It does not expose a login or token-issuance endpoint, accept ID tokens, or redirect API callers to sign-in. `DevelopmentToken` retains symmetric `Jwt:Key` validation only in Development; the UI's `/token` utility is available only in that mode. See [OIDC configuration](openid-connect.md). The canonical actor claim is selected at API startup by `Authentication.UserIdentityClaim`, or the configured OIDC name claim when that engine setting is absent; roles are normalized server-side. Call `GET /api/auth/context` to see the resulting identity.
+With `Authentication:Mode=OpenIdConnect`, the API validates JWT access tokens against trusted discovery/signing keys, expected audience and lifetime, and requires `Authentication:Oidc:RequiredScope` (default `flowbit.api`). OIDC does not issue tokens or accept ID tokens. `Local` provides password login and HS256 tokens using `Authentication:Local:*`; it accepts trusted external usernames without a directory lookup and requires no delegated scope. `DevelopmentToken` retains symmetric `Jwt:Key` validation only in Development. `/token` is available only in DevelopmentToken mode. See [OIDC configuration](openid-connect.md) and [Local authentication](local-authentication.md). `Authentication.UserIdentityClaim` selects the canonical actor at startup when present; defaults are `Username` for Local and `flowbit_user` for OIDC. `GET /api/auth/context` returns the resulting actor and roles.
 
 | Permission name in this reference | Actual authorization |
 | --- | --- |
@@ -168,6 +169,31 @@ Content-Type: application/json
   ]
 }
 ```
+
+## Local authentication and user management
+
+These operations require `Authentication:Mode=Local`; deployed account operations require HTTPS. Token/refresh/logout use their supplied credentials without bearer authentication. User/attribute administration requires a role matching dynamic `Users.RequiredRole` (default `admin`). Other authenticated modes return `404` for these routes. See the [complete Local request/response contracts](local-authentication.md#http-contracts), configuration and bootstrap procedure.
+
+| Method and path | Input / result |
+|---|---|
+| `POST /api/auth/token` | `username`, `password` → token pair with `accessToken`, `tokenType`, `expiresAt`, `refreshToken`, `refreshExpiresAt`, `actor`. |
+| `POST /api/auth/refresh` | `refreshToken` → rotated pair with current roles/claims and the original session deadline. |
+| `POST /api/auth/logout` | `refreshToken` → `204`; revokes its refresh family. |
+| `GET /api/auth/session` | Local bearer with `sid` → active database session's actor; external-only tokens cannot establish a local session. |
+| `POST /api/auth/change-password` | Local bearer plus `currentPassword`, `newPassword` → `204`; revokes local sessions. |
+| `GET /api/users` | `search`, `active`, `page`, `pageSize` → `PagedResult<LocalUserDto>`; exact SQL count, username/id ordering, default size 50, max 200. |
+| `POST /api/users` | `username`, `firstName`, `lastName`, `password`, `isActive`, `roles`, `claims`, `attributes` → `201` profile and Location. |
+| `GET /api/users/{id}` | Returns profile without password/hash. |
+| `PUT /api/users/{id}` | `firstName`, `lastName`, `roles`, `claims`, `attributes`, `expectedRevision` → updated profile. Username is immutable. |
+| `POST /api/users/{id}/status` | `isActive`, `expectedRevision` → updated profile. |
+| `POST /api/users/{id}/password` | `newPassword`, `expectedRevision` → `204`; reload for the new revision. |
+| `GET /api/user-attributes` | Returns definitions in id order. |
+| `POST /api/user-attributes` | `key`, `type`, `label`, `required`, `choices`, `claimType` → `201` definition and Location. |
+| `PUT /api/user-attributes/{id}` | Same definition fields plus `expectedRevision` → updated definition. Key/type are immutable. |
+
+Claims are arrays of `{ "type": "team", "value": "one" }`; repeated types are allowed. Attributes are typed JSON objects keyed by definition key. Profiles include `id`, `username`, names, active status, roles, claims, attributes, `revision`, and creation/update timestamps. Definitions include `id`, field configuration and `revision`. Required attributes apply on create/profile edit; older incomplete profiles can still log in. Zero and false satisfy required fields. Reserved token claims and duplicate mapping targets are rejected.
+
+Standard errors include configuration `400`, credentials/session `401`, permission `403`, missing record/mode `404`, duplicate/revision `409`, and per-IP throttling `429`. Local service errors use `{ "code": "...", "error": "..." }`; framework errors may differ. Token/refresh/logout share 30 requests/minute per API process/IP. Deactivation/reset/change revoke refresh sessions, while already issued access tokens remain valid until expiry. Existing workflow permissions and claim allowlists still apply to both local and external tokens.
 
 ## Workflow definitions
 

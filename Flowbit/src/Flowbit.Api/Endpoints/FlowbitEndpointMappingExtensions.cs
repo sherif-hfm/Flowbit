@@ -19,6 +19,7 @@ public static class FlowbitEndpointMappingExtensions
             .Produces(StatusCodes.Status302Found);
 
         app.MapAuthenticationEndpoints();
+        app.MapLocalIdentityEndpoints();
         app.MapWorkflowDefinitionEndpoints();
         app.MapWorkflowInstanceEndpoints();
         app.MapUserTaskEndpoints();

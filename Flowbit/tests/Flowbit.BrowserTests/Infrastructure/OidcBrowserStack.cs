@@ -25,7 +25,7 @@ public sealed class OidcBrowserStack : IAsyncDisposable
     public string UiBackendOrigin { get; private set; } = "";
     public string BrowserVersion => browser?.Version ?? "";
 
-    public async Task StartAsync(bool usePkce, bool enableAi = false, bool useTrustedProxy = false)
+    public async Task StartAsync(bool usePkce, bool enableAi = false, bool useTrustedProxy = false, bool useLocal = false)
     {
         var root = DiscoverRoot();
         RunDirectory = Path.Combine(root, "artifacts", "browser", "oidc", DateTime.UtcNow.ToString("yyyyMMdd-HHmmss")
@@ -42,7 +42,10 @@ public sealed class OidcBrowserStack : IAsyncDisposable
         var apiDirectory = Path.Combine(root, "artifacts", "browser", "hosts", "api");
         var apiEnvironment = new Dictionary<string, string?>
             {
-                ["Authentication__Mode"] = "OpenIdConnect",
+                ["Authentication__Mode"] = useLocal ? "Local" : "OpenIdConnect",
+                ["Authentication__Local__SigningKey"] = useLocal ? Convert.ToHexString(RandomNumberGenerator.GetBytes(32)) : null,
+                ["Authentication__Local__BootstrapUsername"] = useLocal ? "admin" : null,
+                ["Authentication__Local__BootstrapPassword"] = useLocal ? "Local-browser-password-2026!" : null,
                 ["Authentication__Oidc__Authority"] = Provider.Authority,
                 ["Authentication__Oidc__Audience"] = OidcProviderTestHost.Audience,
                 ["Authentication__Oidc__NameClaimType"] = "flowbit_user",
@@ -78,7 +81,7 @@ public sealed class OidcBrowserStack : IAsyncDisposable
         ui = HostedProcess.Start("oidc-ui", Path.Combine(uiDirectory, "Flowbit.Ui.dll"), uiDirectory, RunDirectory,
             new Dictionary<string, string?>
             {
-                ["Authentication__Mode"] = "OpenIdConnect",
+                ["Authentication__Mode"] = useLocal ? "Local" : "OpenIdConnect",
                 ["Authentication__Oidc__Authority"] = Provider.Authority,
                 ["Authentication__Oidc__ClientId"] = OidcProviderTestHost.ClientId,
                 ["Authentication__Oidc__ClientSecret"] = Provider.ClientSecret,
@@ -115,7 +118,7 @@ public sealed class OidcBrowserStack : IAsyncDisposable
         await File.WriteAllTextAsync(Path.Combine(RunDirectory, "manifest.json"), JsonSerializer.Serialize(new
         {
             ui = UiOrigin, uiBackend = UiBackendOrigin, useTrustedProxy, api = ApiOrigin, authority = Provider.Authority,
-            browser = browser.Version, usePkce, enableAi, apiMode = "OpenIdConnect", uiMode = "OpenIdConnect",
+            browser = browser.Version, usePkce, enableAi, apiMode = useLocal ? "Local" : "OpenIdConnect", uiMode = useLocal ? "Local" : "OpenIdConnect",
             database = "disposable PostgreSQL", session = "server store, browser cookie only"
         }, new JsonSerializerOptions { WriteIndented = true }), startup.Token);
     }

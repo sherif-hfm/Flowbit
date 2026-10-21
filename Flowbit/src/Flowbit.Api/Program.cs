@@ -30,6 +30,16 @@ try
         .ReadFrom.Services(services));
 
     builder.Services.AddFlowbitAuthentication(builder.Configuration, builder.Environment);
+    builder.Services.AddSingleton<Flowbit.Service.Models.LocalIdentityOptions>(sp => sp.GetRequiredService<FlowbitAuthenticationOptions>().Local);
+    builder.Services.AddSingleton<ILocalTokenIssuer, LocalTokenIssuer>();
+    builder.Services.AddScoped<LocalIdentityService>();
+    builder.Services.AddRateLimiter(limiter =>
+    {
+        limiter.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+        limiter.AddPolicy("local-login", context => System.Threading.RateLimiting.RateLimitPartition.GetFixedWindowLimiter(
+            context.Connection.RemoteIpAddress?.ToString() ?? "unknown", _ => new System.Threading.RateLimiting.FixedWindowRateLimiterOptions
+            { PermitLimit = 30, Window = TimeSpan.FromMinutes(1), QueueLimit = 0, AutoReplenishment = true }));
+    });
     builder.Services.AddFlowbitForwardedHeaders(builder.Configuration);
 
     builder.Services.AddOpenApi(options =>
@@ -74,10 +84,11 @@ try
 
                     ## Authentication
                     The `/api/instances` and `/api/workflows` groups require a bearer JWT
-                    validated against the configured OpenID Connect authority and API audience.
-                    User tokens require the configured delegated API scope; roles and actor claims
-                    retain the workflow authorization rules. Flowbit.Ui signs in through authorization
-                    code with PKCE and sends access tokens from its server session. DevelopmentToken
+                    validated against the configured authentication mode. OpenIdConnect uses trusted
+                    provider keys, audience and delegated scope. Local uses HS256, its configured
+                    issuer/audience/key and Username identity, including external users without a
+                    directory account. Roles retain workflow authorization rules. Flowbit.Ui uses
+                    provider sign-in or local username/password and server-held per-user tokens. DevelopmentToken
                     mode uses `Jwt:Key` only in Development. The two message endpoints
                     (`POST /api/instances/{id}/message` and `POST /api/workflows/{workflowKey}/message-start`)
                     are `AllowAnonymous` - they authenticate the caller against the node's
@@ -175,6 +186,8 @@ try
                 BearerFormat = "JWT",
                 Description = authenticationSettings.Mode == FlowbitAuthenticationOptions.OpenIdConnectMode
                     ? $"JWT access token from the configured authority, for API audience '{authenticationSettings.Oidc.Audience}', with scope '{authenticationSettings.Oidc.RequiredScope}'. ID tokens are not API credentials."
+                    : authenticationSettings.Mode == FlowbitAuthenticationOptions.LocalMode
+                    ? "HS256 JWT validated against Authentication:Local issuer, audience and signing key; Username identifies the actor by default. External users need no directory account."
                     : "Development-only JWT bearer token validated against the configured Jwt:Issuer, Jwt:Audience, and Jwt:Key."
             };
             document.Components.SecuritySchemes = document.Components.SecuritySchemes ?? new Dictionary<string, IOpenApiSecurityScheme>();
@@ -420,6 +433,14 @@ try
             ActorIdentityConfiguration.SettingKey,
             CancellationToken.None);
         actorIdentityConfiguration.Initialize(identitySetting);
+        var localAuthentication = app.Services.GetRequiredService<FlowbitAuthenticationOptions>();
+        if (localAuthentication.Mode == FlowbitAuthenticationOptions.LocalMode)
+        {
+            if (actorIdentityConfiguration.ClaimType is { } claim && new[] { "iss", "aud", "exp", "nbf", "iat", "jti", "sid",
+                "given_name", "family_name", localAuthentication.Local.RoleClaimType }.Contains(claim, StringComparer.OrdinalIgnoreCase))
+                throw new InvalidOperationException("Authentication.UserIdentityClaim conflicts with a reserved local token field. Use Username or a custom identity claim.");
+            await scope.ServiceProvider.GetRequiredService<LocalIdentityService>().BootstrapAsync(CancellationToken.None);
+        }
 
         Log.Information(
             "Workflow actor identity initialized from {Source}.",
@@ -433,6 +454,7 @@ try
     app.UseMiddleware<SharedVariableCredentialSourceMiddleware>();
     app.UseAuthentication();
     app.UseAuthorization();
+    app.UseRateLimiter();
 
     app.MapFlowbitApiEndpoints();
 

@@ -38,9 +38,14 @@ public sealed class ApiActorContextClient(IHttpClientFactory clients)
     }
 }
 
+internal interface IUiTokenInfoProvider
+{
+    Task<UiTokenInfo> GetTokenInfoAsync(ClaimsPrincipal principal, CancellationToken cancellationToken);
+}
+
 public sealed class OidcAccessTokenProvider(AuthenticationStateProvider authentication, UiSessionStore sessions,
     IUserTokenManager manager, ApiActorContextClient actorClient, TimeProvider clock,
-    ILogger<OidcAccessTokenProvider> logger) : IUiAccessTokenProvider
+    ILogger<OidcAccessTokenProvider> logger) : IUiAccessTokenProvider, IUiTokenInfoProvider
 {
     private string? sessionId;
     public async Task<string?> GetAccessTokenAsync(CancellationToken cancellationToken)
@@ -104,6 +109,8 @@ public sealed class OidcAccessTokenProvider(AuthenticationStateProvider authenti
         finally { record.RefreshLock.Release(); }
     }
     public void RejectSession() => sessions.Revoke(sessionId);
+    Task<UiTokenInfo> IUiTokenInfoProvider.GetTokenInfoAsync(ClaimsPrincipal principal, CancellationToken cancellationToken)
+        => GetTokenInfoAsync(principal, cancellationToken);
 }
 
 internal sealed record UiTokenInfo(string? User, IReadOnlyList<string> Roles,

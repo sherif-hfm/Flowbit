@@ -7,6 +7,9 @@ namespace Flowbit.Infrastructure.Data;
 
 public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(options)
 {
+    public DbSet<LocalUserEntity> LocalUsers => Set<LocalUserEntity>();
+    public DbSet<UserAttributeEntity> UserAttributes => Set<UserAttributeEntity>();
+    public DbSet<LocalRefreshSessionEntity> LocalRefreshSessions => Set<LocalRefreshSessionEntity>();
     public DbSet<WorkflowDefinitionEntity> WorkflowDefinitions => Set<WorkflowDefinitionEntity>();
 
     public DbSet<WorkflowDefinitionUserTaskConditionEntity> WorkflowDefinitionUserTaskConditions =>
@@ -117,6 +120,32 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     {
         modelBuilder.HasDefaultSchema(FlowbitDatabase.Schema);
         modelBuilder.HasPostgresExtension("citext");
+
+        modelBuilder.Entity<LocalUserEntity>(e =>
+        {
+            e.ToTable("local_users"); e.HasKey(u => u.Id);
+            e.Property(u => u.Username).HasColumnType("citext").HasMaxLength(300);
+            e.HasIndex(u => u.Username).IsUnique();
+            e.Property(u => u.RolesJson).HasColumnType("jsonb");
+            e.Property(u => u.ClaimsJson).HasColumnType("jsonb");
+            e.Property(u => u.AttributesJson).HasColumnType("jsonb");
+            e.Property(u => u.Revision).IsConcurrencyToken();
+        });
+        modelBuilder.Entity<UserAttributeEntity>(e =>
+        {
+            e.ToTable("user_attribute_definitions"); e.HasKey(a => a.Id);
+            e.Property(a => a.Key).HasColumnType("citext").HasMaxLength(100);
+            e.HasIndex(a => a.Key).IsUnique();
+            e.Property(a => a.ChoicesJson).HasColumnType("jsonb");
+            e.Property(a => a.Revision).IsConcurrencyToken();
+        });
+        modelBuilder.Entity<LocalRefreshSessionEntity>(e =>
+        {
+            e.ToTable("local_refresh_sessions"); e.HasKey(s => s.Hash);
+            e.Property(s => s.Hash).HasMaxLength(64);
+            e.HasIndex(s => s.FamilyId); e.HasIndex(s => s.ExpiresAt); e.HasIndex(s => s.UserId);
+            e.HasOne<LocalUserEntity>().WithMany().HasForeignKey(s => s.UserId).OnDelete(DeleteBehavior.Cascade);
+        });
 
         modelBuilder.Entity<RetentionPolicyEntity>(entity =>
         {

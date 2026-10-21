@@ -9,14 +9,16 @@ public sealed class OidcSessionAuthenticationStateProvider : RevalidatingServerA
     private readonly UiSessionStore sessions;
     private readonly TokenState state;
     private readonly UiAuthenticationOptions options;
+    private readonly LocalAccessTokenProvider? local;
     private string? currentSessionId;
 
     public OidcSessionAuthenticationStateProvider(ILoggerFactory loggerFactory, UiSessionStore sessions,
-        TokenState state, UiAuthenticationOptions options) : base(loggerFactory)
+        TokenState state, UiAuthenticationOptions options, LocalAccessTokenProvider? local = null) : base(loggerFactory)
     {
         this.sessions = sessions;
         this.state = state;
         this.options = options;
+        this.local = local;
         sessions.Changed += SessionChanged;
     }
 
@@ -30,8 +32,16 @@ public sealed class OidcSessionAuthenticationStateProvider : RevalidatingServerA
         return new AuthenticationState(new ClaimsPrincipal(new ClaimsIdentity()));
     }
 
-    protected override Task<bool> ValidateAuthenticationStateAsync(AuthenticationState authenticationState, CancellationToken cancellationToken)
-        => Task.FromResult(ApplySession());
+    protected override async Task<bool> ValidateAuthenticationStateAsync(AuthenticationState authenticationState, CancellationToken cancellationToken)
+    {
+        if (options.IsLocal && local is not null)
+        {
+            try { await local.GetTokenInfoAsync(authenticationState.User, cancellationToken); }
+            catch (UiSessionExpiredException) { return false; }
+            catch (UiAuthenticationUnavailableException) { return true; }
+        }
+        return ApplySession();
+    }
 
     private bool ApplySession()
     {

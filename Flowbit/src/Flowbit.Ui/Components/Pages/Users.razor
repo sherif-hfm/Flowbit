@@ -1,0 +1,138 @@
+@page "/users"
+@using System.Globalization
+@using System.Text.Json
+@using Flowbit.Shared.Dtos
+@inject WorkflowApiClient Api
+@inject Flowbit.Ui.Auth.UiAuthenticationOptions Authentication
+
+<PageTitle>Users · Flowbit</PageTitle>
+<PageHeader Eyebrow="Manage" Title="Users" Description="Manage local accounts, roles, claims, and profile attributes.">
+    <Actions><button class="btn btn-primary" @onclick="New" disabled="@(busy || !allowed)">Add user</button></Actions>
+</PageHeader>
+@if (error is not null) { <div class="alert alert-danger" role="alert">@error</div> }
+@if (success is not null) { <div class="alert alert-success" role="status">@success</div> }
+@if (editing)
+{
+    <section class="panel mb-4">
+        <h2>@(selected is null ? "Add user" : "Edit user")</h2>
+        <form @onsubmit="Save" @onsubmit:preventDefault>
+            <div class="row g-3">
+                <div class="col-12 col-md-6"><label class="form-label" for="user-username">Username</label><input id="user-username" class="form-control" @bind="username" readonly="@(selected is not null)" required maxlength="300" autocomplete="off" /></div>
+                <div class="col-12 col-md-6"><label class="form-label" for="user-roles">Roles</label><input id="user-roles" class="form-control" @bind="roles" placeholder="admin, Reviewer" /><div class="form-text">Comma-separated role names.</div></div>
+                <div class="col-12 col-md-6"><label class="form-label" for="user-first">First name</label><input id="user-first" class="form-control" @bind="first" required maxlength="300" /></div>
+                <div class="col-12 col-md-6"><label class="form-label" for="user-last">Last name</label><input id="user-last" class="form-control" @bind="last" required maxlength="300" /></div>
+                @if (selected is null)
+                {
+                    <div class="col-12 col-md-6"><label class="form-label" for="user-password">Password</label><input id="user-password" class="form-control" @bind="password" type="password" required maxlength="128" autocomplete="new-password" /></div>
+                    <div class="col-12 col-md-6"><label class="form-check mt-md-4"><input class="form-check-input" type="checkbox" @bind="active" /> Active</label></div>
+                }
+                <UserProfileAttributes Definitions="definitions" Values="values" />
+                <div class="col-12">
+                    <h3>Claims</h3><p class="text-muted">Repeated claim names are allowed. Identity and token claims are reserved.</p>
+                    @foreach (var claim in claims)
+                    {
+                        <div class="row g-2 mb-2" @key="claim">
+                            <div class="col-12 col-md-4"><label class="visually-hidden" for="@($"claim-name-{claim.Id}")">Claim name</label><input id="@($"claim-name-{claim.Id}")" class="form-control" @bind="claim.Type" placeholder="Claim name" required maxlength="300" /></div>
+                            <div class="col-9 col-md-6"><label class="visually-hidden" for="@($"claim-value-{claim.Id}")">Claim value</label><input id="@($"claim-value-{claim.Id}")" class="form-control" @bind="claim.Value" placeholder="Claim value" maxlength="1000" /></div>
+                            <div class="col-3 col-md-2"><button class="btn btn-outline-danger w-100" type="button" @onclick="() => claims.Remove(claim)" aria-label="Remove claim">Remove</button></div>
+                        </div>
+                    }
+                    <button class="btn btn-outline-secondary" type="button" @onclick="() => claims.Add(new())" disabled="@(claims.Count >= 32)">Add claim</button>
+                </div>
+            </div>
+            <div class="d-flex flex-wrap gap-2 mt-4"><button class="btn btn-primary" type="submit" disabled="@busy">Save user</button><button class="btn btn-outline-secondary" type="button" @onclick="Close" disabled="@busy">Cancel</button></div>
+        </form>
+        @if (selected is not null)
+        {
+            <hr /><form @onsubmit="ResetPassword" @onsubmit:preventDefault>
+                <label class="form-label" for="reset-password">New password</label><input id="reset-password" class="form-control" type="password" @bind="resetPassword" required maxlength="128" autocomplete="new-password" />
+                <button class="btn btn-outline-danger mt-3" type="submit" disabled="@busy">Reset password</button>
+                <p class="form-text">Ends this user's local sessions. Existing API tokens remain valid until expiry.</p>
+            </form>
+        }
+    </section>
+}
+<section class="panel">
+    <form class="row g-2 mb-3" @onsubmit="Search" @onsubmit:preventDefault>
+        <div class="col-12 col-md-6"><label class="visually-hidden" for="users-search">Search users</label><input id="users-search" class="form-control" @bind="search" placeholder="Search username or name" /></div>
+        <div class="col-8 col-md-4"><label class="visually-hidden" for="users-status">Status</label><select id="users-status" class="form-select" @bind="status"><option value="">All statuses</option><option value="true">Active</option><option value="false">Inactive</option></select></div>
+        <div class="col-4 col-md-2"><button class="btn btn-outline-primary w-100" type="submit" disabled="@busy">Search</button></div>
+    </form>
+    <div class="table-responsive"><table class="table align-middle"><thead><tr><th>Username</th><th>Name</th><th>Status</th><th>Roles</th><th>Actions</th></tr></thead><tbody>
+        @foreach (var user in users)
+        {
+            <tr @key="user.Id"><td>@user.Username</td><td>@user.FirstName @user.LastName</td><td>@(user.IsActive ? "Active" : "Inactive")</td><td>@string.Join(", ", user.Roles)</td>
+                <td><div class="d-flex gap-2"><button class="btn btn-sm btn-outline-primary" @onclick="() => Edit(user)" disabled="@busy">Edit</button><button class="btn btn-sm btn-outline-secondary" @onclick="() => Toggle(user)" disabled="@busy">@(user.IsActive ? "Deactivate" : "Activate")</button></div></td></tr>
+        }
+    </tbody></table></div>
+    @if (users.Count == 0) { <p class="text-muted">No users to display.</p> }
+    <div class="d-flex flex-wrap align-items-center gap-3"><button class="btn btn-outline-secondary" @onclick="Previous" disabled="@(busy || page == 1)">Previous</button><span>Page @(page) · @total users</span><button class="btn btn-outline-secondary" @onclick="Next" disabled="@(busy || page * 25 >= total)">Next</button></div>
+</section>
+
+@code {
+    private IReadOnlyList<LocalUserDto> users = [];
+    private UserAttributeDto[] definitions = [];
+    private LocalUserDto? selected;
+    private bool editing, busy, allowed;
+    private string? error, success;
+    private string username = "", first = "", last = "", roles = "", password = "", resetPassword = "", search = "", status = "";
+    private bool active = true;
+    private int page = 1;
+    private long total;
+    private Dictionary<string, string> values = [];
+    private List<ClaimRow> claims = [];
+    protected override async Task OnInitializedAsync() => await Load();
+    private async Task Load()
+    {
+        if (!Authentication.IsLocal) { error = "Local user management is unavailable in this authentication mode."; return; }
+        busy = true;
+        try { definitions = await Api.GetUserAttributesAsync(); var result = await Api.GetUsersAsync(search, page, status); users = result.Items.ToArray(); total = result.TotalCount; allowed = true; }
+        catch (Exception e) { error = e.Message; allowed = false; }
+        finally { busy = false; }
+    }
+    private void New() { selected = null; username = first = last = roles = password = resetPassword = ""; active = true; values = []; claims = []; editing = true; error = success = null; }
+    private void Edit(LocalUserDto user)
+    {
+        selected = user; username = user.Username; first = user.FirstName; last = user.LastName; roles = string.Join(", ", user.Roles);
+        values = user.Attributes.ToDictionary(p => p.Key, p => p.Value.ValueKind == JsonValueKind.String ? p.Value.GetString()! : p.Value.GetRawText());
+        claims = user.Claims.Select(c => new ClaimRow { Type = c.Type, Value = c.Value }).ToList(); password = resetPassword = ""; editing = true; error = success = null;
+    }
+    private void Close() { editing = false; password = resetPassword = ""; }
+    private async Task Save()
+    {
+        busy = true; error = success = null;
+        try
+        {
+            var attributes = new Dictionary<string, JsonElement>();
+            foreach (var definition in definitions)
+            {
+                if (!values.TryGetValue(definition.Key, out var text) || string.IsNullOrWhiteSpace(text)) continue;
+                attributes[definition.Key] = definition.Type switch { "boolean" => JsonSerializer.SerializeToElement(bool.Parse(text)),
+                    "number" => JsonSerializer.SerializeToElement(decimal.Parse(text, CultureInfo.InvariantCulture)), _ => JsonSerializer.SerializeToElement(text) };
+            }
+            var roleList = roles.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+            var claimList = claims.Select(c => new UserClaimDto(c.Type, c.Value)).ToArray();
+            if (selected is null) await Api.CreateUserAsync(new(username, first, last, password, active, roleList, claimList, attributes));
+            else await Api.UpdateUserAsync(selected.Id, new(first, last, roleList, claimList, attributes, selected.Revision));
+            Close(); success = "User saved."; await Load();
+        }
+        catch (Exception e) { error = e.Message; }
+        finally { password = ""; busy = false; }
+    }
+    private async Task Toggle(LocalUserDto user)
+    {
+        busy = true; error = success = null;
+        try { await Api.SetUserStatusAsync(user.Id, new(!user.IsActive, user.Revision)); Close(); success = "User status updated."; await Load(); }
+        catch (Exception e) { error = e.Message; } finally { busy = false; }
+    }
+    private async Task ResetPassword()
+    {
+        busy = true; error = success = null;
+        try { await Api.ResetUserPasswordAsync(selected!.Id, new(resetPassword, selected.Revision)); Close(); success = "Password reset. Local sessions ended."; await Load(); }
+        catch (Exception e) { error = e.Message; } finally { resetPassword = ""; busy = false; }
+    }
+    private async Task Search() { page = 1; await Load(); }
+    private async Task Previous() { page--; await Load(); }
+    private async Task Next() { page++; await Load(); }
+    private sealed class ClaimRow { public Guid Id { get; } = Guid.NewGuid(); public string Type { get; set; } = ""; public string Value { get; set; } = ""; }
+}

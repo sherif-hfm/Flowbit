@@ -1,0 +1,30 @@
+@using Flowbit.Shared.Dtos
+
+@foreach (var field in Definitions)
+{
+    <div class="col-12 col-md-6" @key="field.Id">
+        <label class="form-label" for="@($"user-attribute-{field.Id}")">@field.Label @(field.Required ? "*" : "")</label>
+        @if (field.Type is "dropdown" or "boolean")
+        {
+            <select class="form-select" id="@($"user-attribute-{field.Id}")" required="@field.Required"
+                    value="@Values.GetValueOrDefault(field.Key, "")" @onchange="e => Values[field.Key] = e.Value?.ToString() ?? string.Empty">
+                <option value="">Choose a value</option>
+                @foreach (var choice in field.Type == "boolean" ? new[] { "true", "false" } : field.Choices)
+                {
+                    <option value="@choice">@choice</option>
+                }
+            </select>
+        }
+        else
+        {
+            <input class="form-control" id="@($"user-attribute-{field.Id}")" type="@(field.Type == "number" ? "number" : field.Type == "date" ? "date" : "text")"
+                   step="any" maxlength="1000" required="@field.Required" value="@Values.GetValueOrDefault(field.Key, "")"
+                   @oninput="e => Values[field.Key] = e.Value?.ToString() ?? string.Empty" />
+        }
+    </div>
+}
+
+@code {
+    [Parameter, EditorRequired] public IReadOnlyList<UserAttributeDto> Definitions { get; set; } = [];
+    [Parameter, EditorRequired] public Dictionary<string, string> Values { get; set; } = [];
+}

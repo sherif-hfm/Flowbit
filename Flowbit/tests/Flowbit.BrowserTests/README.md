@@ -51,6 +51,8 @@ The separate [OpenID Connect browser scenarios](#openid-connect-browser-acceptan
 exercise authorization code with and without PKCE, session isolation, refresh,
 logout, and protocol failures through a fixture-owned identity provider.
 
+`LocalAuthenticationSmokeTests` uses the same real published hosts with Local mode and a disposable database. At 1440x900, 1024x768 and 390x844 it drives password login, attribute definition/required validation, user create/edit/activation, password reset/change, current-token inspection, browser-session isolation and logout. Tokens are obtained through actual login and checked for exact-case `Username`. Screenshots and console diagnostics are saved in each run directory; no application state or database rows are injected. Run it after publishing/building with `dotnet test Flowbit/tests/Flowbit.BrowserTests/Flowbit.BrowserTests.csproj -c Release --no-build --no-restore --filter FullyQualifiedName~LocalAuthenticationSmokeTests`.
+
 ## Prerequisites
 
 The AI scenarios H6–H10 run at 1440x900, 1024x768 and 390x844. H8 also checks the

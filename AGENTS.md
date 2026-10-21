@@ -1244,6 +1244,17 @@ Storage follows the hybrid design:
   unassigned `requiresAssignment` work even though regular inboxes omit it.
   Instance-facing workflow details redact `taskDistribution.clientSecret`.
 - Authentication: `Authentication:Mode=OpenIdConnect` uses a confidential
+  client; alternatively `Local` provides production-supported database-backed
+  password login and HS256 tokens with exact-case `Username` as the default
+  identity claim. `LocalIdentityService` owns users, attributes, lockout and
+  rotating hashed refresh sessions through `ILocalIdentityRepository`; only
+  the API holds the signing key. External tokens are validated without a
+  directory lookup and retain their own roles/claims. Deactivation/password
+  changes revoke refresh/UI sessions, while issued access tokens remain valid
+  until expiry. Directory writes use an independent PostgreSQL transaction
+  advisory lock, including bootstrap and last-administrator checks. Apply the
+  additive migration before selecting Local. See [Local authentication](docs/local-authentication.md).
+  OpenIdConnect uses a confidential
   authorization-code UI client with S256 PKCE by default; `UsePkce=false` is an
   explicit confidential-client compatibility option. The API validates JWT
   access tokens using trusted discovery/JWKS, audience and lifetime, and

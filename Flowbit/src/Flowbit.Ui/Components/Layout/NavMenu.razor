@@ -1,5 +1,6 @@
 @inject IWebHostEnvironment HostEnvironment
 @inject Flowbit.Ui.Auth.TokenState Token
+@inject Flowbit.Ui.Auth.UiAuthenticationOptions Authentication
 
 <nav class="nav-groups">
     <div class="nav-group">
@@ -64,6 +65,12 @@
             <AppIcon Name="settings" />
             <span>Engine settings</span>
         </NavLink>
+        @if (Authentication.IsLocal)
+        {
+            <NavLink class="nav-link" href="users" @onclick="OnNavigate"><AppIcon Name="assignments" /><span>Users</span></NavLink>
+            <NavLink class="nav-link" href="user-attributes" @onclick="OnNavigate"><AppIcon Name="settings" /><span>User attributes</span></NavLink>
+            <NavLink class="nav-link" href="change-password" @onclick="OnNavigate"><AppIcon Name="token" /><span>Change password</span></NavLink>
+        }
         <NavLink class="nav-link" href="ai-models" @onclick="OnNavigate">
             <AppIcon Name="settings" />
             <span>AI models</span>

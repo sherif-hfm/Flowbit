@@ -22,7 +22,10 @@ public sealed class DatabaseSchemaTests(PostgresApiFixture fixture)
             .Distinct()
             .ToArray();
 
-        Assert.Equal(50, mappedTables.Length);
+        Assert.Equal(53, mappedTables.Length);
+        Assert.Contains(mappedTables, table => table.Name == "local_users");
+        Assert.Contains(mappedTables, table => table.Name == "user_attribute_definitions");
+        Assert.Contains(mappedTables, table => table.Name == "local_refresh_sessions");
         Assert.All(mappedTables, table => Assert.Equal(FlowbitDatabase.Schema, table.Schema));
         Assert.Contains(mappedTables, table => table.Name == "instance_variable_current_values");
         Assert.Contains(mappedTables, table => table.Name == "gateway_executions");

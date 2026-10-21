@@ -2,19 +2,19 @@
 
 [Documentation home](index.md) · [Deployment](deployment.md#authentication-boundaries) · [UI guide](ui-guide.md) · [API reference](api-guide.md#http-conventions-and-authentication)
 
-Flowbit.Ui signs users in through an external OpenID Connect provider using the authorization-code flow. PKCE with S256 is enabled by default; an explicit compatibility option permits confidential authorization code without PKCE. Flowbit.Api validates the resulting JWT access token using the provider's discovery document and signing keys. The API does not perform browser redirects or issue tokens, and never accepts an ID token as an API credential.
+In OpenIdConnect mode, Flowbit.Ui signs users in through an external provider using the authorization-code flow. PKCE with S256 is enabled by default; an explicit compatibility option permits confidential authorization code without PKCE. Flowbit.Api validates the resulting JWT access token using the provider's discovery document and signing keys. In this mode the API does not issue tokens, perform browser redirects, or accept ID tokens as API credentials. [Local authentication](local-authentication.md) is the separate production-supported option for database-backed users and shared-key tokens.
 
 The UI remains a Blazor Server application. The browser receives an HttpOnly session cookie; access and refresh tokens are stored in the UI server's protected in-memory session store. API calls, including AI authoring streams, attach the current user's access token server-side. The authenticated [`/_info` diagnostic endpoint](#view-your-current-access-token) explicitly returns the current access token to its owner; refresh and ID tokens remain server-side. A request is sent once: authentication refresh does not replay workflow commands or AI requests.
 
 ## Modes and configuration
 
-Set `Authentication:Mode` consistently on the UI and API. `OpenIdConnect` uses the external provider. `DevelopmentToken` enables the existing symmetric JWT test-identity workflow **only in the Development environment**. A non-Development host configured for `DevelopmentToken` fails startup. In OIDC mode `/token` is unavailable and the development signing key is not a fallback trust source.
+Set `Authentication:Mode` consistently on the UI and API. `OpenIdConnect` uses the external provider; `Local` uses [database-backed login and HS256 tokens](local-authentication.md), with `Username` as its default identity claim. Select one mode per deployment. `DevelopmentToken` enables the test-identity workflow **only in Development** and fails startup elsewhere. In OIDC mode `/token` is unavailable and neither the development key nor the Local key is a fallback trust source.
 
 JSON keys use colons below; environment variables replace each colon with `__`. Keep client secrets, certificate passwords, and production keys in protected deployment configuration, not source control.
 
 | Setting | Host | Value / behavior |
 | --- | --- | --- |
-| `Authentication:Mode` | API, UI | `OpenIdConnect` or `DevelopmentToken`. Checked-in Development settings select OpenIdConnect with the local Keycloak realm; ordinary Compose explicitly overrides this to DevelopmentToken. |
+| `Authentication:Mode` | API, UI | `OpenIdConnect`, `Local`, or development-only `DevelopmentToken`. This guide covers OIDC; see [Local configuration](local-authentication.md#configuration-and-first-administrator). Checked-in Development settings select OIDC; ordinary Compose overrides to DevelopmentToken. |
 | `Authentication:Oidc:Authority` | API, UI | Exact trusted issuer base URL used for discovery; normally HTTPS. |
 | `Authentication:Oidc:ClientId` | UI | Confidential web-client registration, distinct from the API audience. |
 | `Authentication:Oidc:ClientSecret` | UI | Server-held client secret for both PKCE and compatibility code flows. |
@@ -191,7 +191,7 @@ messages, successful sign-in/sign-out, and narrow-screen layout against the new 
 
 ## View your current access token
 
-In OpenIdConnect mode, open `https://<ui-host>/_info` in the browser used to sign in
+In OpenIdConnect or Local mode, open `https://<ui-host>/_info` in the browser used to sign in
 (locally, `https://localhost:7019/_info`). This UI Minimal API endpoint returns the
 current login's access token and API-resolved actor as JSON:
 

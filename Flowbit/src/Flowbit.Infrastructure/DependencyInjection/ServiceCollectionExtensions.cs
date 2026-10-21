@@ -36,6 +36,8 @@ public static class ServiceCollectionExtensions
         services.AddDbContext<AppDbContext>(options =>
             options.UseNpgsql(dataSource, FlowbitDatabase.ConfigureProvider));
         services.AddMemoryCache();
+        services.AddScoped<ILocalIdentityRepository, LocalIdentityRepository>();
+        services.AddSingleton<ILocalPasswordHasher, LocalPasswordHasher>();
         services.AddScoped<IWorkflowDefinitionRepository, WorkflowDefinitionRepository>();
         // One scoped concrete repository instance serves both the full runtime
         // port and the narrow instance-query port, preserving a shared DbContext

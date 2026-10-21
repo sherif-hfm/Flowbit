@@ -4,6 +4,7 @@ public sealed class UiAuthenticationOptions
 {
     public string Mode { get; set; } = "OpenIdConnect";
     public bool IsDevelopmentToken => Mode == "DevelopmentToken";
+    public bool IsLocal => Mode == "Local";
     public UiOidcOptions Oidc { get; set; } = new();
     public UiSessionOptions Session { get; set; } = new();
     public string? DataProtectionKeysPath { get; set; }
@@ -12,14 +13,21 @@ public sealed class UiAuthenticationOptions
 
     public void Validate(IHostEnvironment environment)
     {
-        if (Mode is not ("OpenIdConnect" or "DevelopmentToken"))
-            throw new InvalidOperationException("Authentication:Mode must be OpenIdConnect or DevelopmentToken.");
+        if (Mode is not ("OpenIdConnect" or "Local" or "DevelopmentToken"))
+            throw new InvalidOperationException("Authentication:Mode must be OpenIdConnect, Local or DevelopmentToken.");
         if (IsDevelopmentToken)
         {
             if (!environment.IsDevelopment())
                 throw new InvalidOperationException("DevelopmentToken authentication requires the Development environment.");
             return;
         }
+        if (Session is null || Session.AbsoluteLifetime < TimeSpan.FromMinutes(1) || Session.AbsoluteLifetime > TimeSpan.FromDays(1)
+            || Session.RevalidationInterval < TimeSpan.FromSeconds(1) || Session.RevalidationInterval > TimeSpan.FromMinutes(IsLocal ? 1 : 5))
+            throw new InvalidOperationException("Authentication:Session lifetime must be 1 minute–24 hours; revalidation must be 1–60 seconds for Local or 1–300 seconds for OIDC.");
+        if (!environment.IsDevelopment() && (string.IsNullOrWhiteSpace(DataProtectionKeysPath)
+            || !OperatingSystem.IsWindows() && string.IsNullOrWhiteSpace(DataProtectionCertificatePath)))
+            throw new InvalidOperationException("Deployed authentication requires DataProtectionKeysPath and, outside Windows, DataProtectionCertificatePath.");
+        if (IsLocal) return;
         if (Oidc is null || Session is null)
             throw new InvalidOperationException("Authentication:Oidc and Authentication:Session must be configured objects.");
         if (!Uri.TryCreate(Oidc.Authority, UriKind.Absolute, out var authority)
@@ -34,12 +42,6 @@ public sealed class UiAuthenticationOptions
         if (Oidc.Scopes is null || !Oidc.Scopes.Contains("openid", StringComparer.Ordinal)
             || Oidc.Scopes.Any(scope => string.IsNullOrWhiteSpace(scope) || scope.Any(char.IsWhiteSpace)))
             throw new InvalidOperationException("Authentication:Oidc:Scopes must include openid; each scope must be one nonblank value without whitespace.");
-        if (Session.AbsoluteLifetime < TimeSpan.FromMinutes(1) || Session.AbsoluteLifetime > TimeSpan.FromDays(1)
-            || Session.RevalidationInterval < TimeSpan.FromSeconds(1) || Session.RevalidationInterval > TimeSpan.FromMinutes(5))
-            throw new InvalidOperationException("Authentication session lifetime must be 1 minute–24 hours; revalidation interval must be 1 second–5 minutes.");
-        if (!environment.IsDevelopment() && (string.IsNullOrWhiteSpace(DataProtectionKeysPath)
-            || !OperatingSystem.IsWindows() && string.IsNullOrWhiteSpace(DataProtectionCertificatePath)))
-            throw new InvalidOperationException("Deployed OIDC requires Authentication:DataProtectionKeysPath and, outside Windows, DataProtectionCertificatePath.");
     }
 }
 
