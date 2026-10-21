@@ -19,6 +19,8 @@ public sealed class AiAuthoringSmokeTests(BrowserStackFixture stack)
 {
     private static readonly string[] Tools = ["get_files_list", "get_file", "save_append_file", "edit_file", "validate_workflow", "validate_item"];
     private const string SyncNote = "workflow.json now contains the current diagram from the editor.";
+    // Records the type of every blob the page turns into a download URL.
+    private const string RecordBlobTypes = "() => { const create = URL.createObjectURL.bind(URL); window.flowbitBlobTypes = []; URL.createObjectURL = blob => { window.flowbitBlobTypes.push(blob.type); return create(blob); }; }";
 
     [Theory]
     [InlineData(1440, 900)]
@@ -30,7 +32,17 @@ public sealed class AiAuthoringSmokeTests(BrowserStackFixture stack)
         await scenario.RunAsync("ai-authoring", async () =>
         {
             await RuntimeSupport.ApplyIdentityAsync(scenario, "ai-author", ["admin"]);
-            var page = await scenario.OpenUiAsync("workflows/new");
+            // The Workflows page offers the same skill download as the panel, for authors who use an outside agent.
+            var page = await scenario.OpenUiAsync("workflows");
+            await Assertions.Expect(page.Locator("#definitions-heading + p")).ToHaveTextAsync(new Regex(@"^[\d,]+ workflow families$"));
+            await page.EvaluateAsync(RecordBlobTypes);
+            var fromWorkflows = await page.RunAndWaitForDownloadAsync(() => page.Locator("#ai-skill").GetByRole(AriaRole.Button,
+                new LocatorGetByRoleOptions { Name = "Download Flowbit AI skill", Exact = true }).ClickAsync());
+            Assert.Equal("flowbit-authoring.zip", fromWorkflows.SuggestedFilename);
+            Assert.Equal(new[] { "application/zip" }, await page.EvaluateAsync<string[]>("window.flowbitBlobTypes"));
+            await Assertions.Expect(page.Locator("#ai-skill-error")).ToHaveCountAsync(0);
+            await page.Locator("#ai-skill").ScreenshotAsync(new LocatorScreenshotOptions { Path = Path.Combine(scenario.ArtifactDirectory, "ai-skill-workflows.png") });
+            page = await scenario.OpenUiAsync("workflows/new");
             await ReadyAsync(page);
             await OpenAssistantAsync(page);
             await page.ScreenshotAsync(new PageScreenshotOptions { Path = Path.Combine(scenario.ArtifactDirectory, "ai-connection.png"), FullPage = true });
@@ -146,7 +158,7 @@ public sealed class AiAuthoringSmokeTests(BrowserStackFixture stack)
             await page.Locator("#ai-apply").ClickAsync();
             await Assertions.Expect(page.Locator("#ai-notice")).ToContainTextAsync("Applied to the editor");
             // The browser receives a ZIP, not JSON, and the conversation's notice stays.
-            await page.EvaluateAsync("() => { const create = URL.createObjectURL.bind(URL); window.flowbitBlobTypes = []; URL.createObjectURL = blob => { window.flowbitBlobTypes.push(blob.type); return create(blob); }; }");
+            await page.EvaluateAsync(RecordBlobTypes);
             var download = await page.RunAndWaitForDownloadAsync(() => page.GetByRole(AriaRole.Button,
                 new PageGetByRoleOptions { Name = "Download Flowbit AI skill", Exact = true }).ClickAsync());
             Assert.Equal("flowbit-authoring.zip", download.SuggestedFilename);

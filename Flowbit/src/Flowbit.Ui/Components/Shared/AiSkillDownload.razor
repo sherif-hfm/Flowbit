@@ -1,0 +1,68 @@
+@using Flowbit.Ui.Auth
+@implements IDisposable
+@inject WorkflowApiClient Api
+@inject IJSRuntime JS
+@inject TokenState Token
+@* Rendered at most once per page: aria-describedby and the browser tests use these fixed ids. *@
+
+<p id="ai-skill-help" class="skill-help">Flowbit's authoring guides, schema and examples, packaged as a skill for Claude Code, Cursor, Codex or OpenCode, which use their own model. Extract the whole flowbit-authoring folder into the agent's skills folder, such as .claude/skills or .agents/skills, and download it again after Flowbit is upgraded.</p>
+<button type="button" id="ai-skill-download" class="btn btn-sm btn-outline-secondary" aria-describedby="ai-skill-help" @onclick="DownloadAsync">Download Flowbit AI skill</button>
+@if (!string.IsNullOrWhiteSpace(error))
+{
+    <p id="ai-skill-error" class="skill-error" role="alert">@error</p>
+}
+
+@code {
+    private readonly CancellationTokenSource lifetime = new();
+    private string? error;
+    private bool downloading, disposed;
+    private long identityRevision;
+
+    protected override void OnInitialized() => Token.Changed += IdentityChanged;
+
+    // The package does not depend on the page or a conversation. The button stays enabled to keep focus, so a second click
+    // while one download is running is ignored.
+    private async Task DownloadAsync()
+    {
+        if (downloading || disposed) return;
+        downloading = true;
+        error = null;
+        var revision = Interlocked.Read(ref identityRevision);
+        try
+        {
+            var content = await Api.DownloadAiSkillAsync(lifetime.Token);
+            if (disposed || revision != Interlocked.Read(ref identityRevision)) return;
+            await using var stream = new MemoryStream(content);
+            using var reference = new DotNetStreamReference(stream);
+            await JS.InvokeVoidAsync("flowbit.downloadFileFromStream", lifetime.Token, "flowbit-authoring.zip", reference, "application/zip");
+        }
+        catch (OperationCanceledException) when (disposed) { }
+        catch (JSDisconnectedException) when (disposed) { }
+        catch (Exception exception)
+        {
+            if (!disposed && revision == Interlocked.Read(ref identityRevision)) error = exception.Message.Split('\n', 2)[0].Trim();
+        }
+        finally { downloading = false; }
+    }
+
+    // A download requested by the previous identity is dropped, and its error belonged to that identity.
+    private void IdentityChanged()
+    {
+        Interlocked.Increment(ref identityRevision);
+        _ = InvokeAsync(() =>
+        {
+            if (disposed) return;
+            error = null;
+            StateHasChanged();
+        });
+    }
+
+    public void Dispose()
+    {
+        if (disposed) return;
+        disposed = true;
+        Token.Changed -= IdentityChanged;
+        lifetime.Cancel();
+        lifetime.Dispose();
+    }
+}

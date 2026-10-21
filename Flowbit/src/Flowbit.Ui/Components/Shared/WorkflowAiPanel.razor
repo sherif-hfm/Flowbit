@@ -162,12 +162,7 @@
         </div>
         <section class="ai-skill" aria-labelledby="ai-skill-heading">
             <h3 id="ai-skill-heading">Use with another AI agent</h3>
-            <p id="ai-skill-help" class="ai-help">This assistant's guides and examples, packaged as a skill for Claude Code, Cursor, Codex or OpenCode, which use their own model. Extract the whole flowbit-authoring folder into the agent's skills folder, such as .claude/skills or .agents/skills, and download it again after Flowbit is upgraded.</p>
-            <button type="button" id="ai-skill-download" class="btn btn-sm btn-outline-secondary" aria-describedby="ai-skill-help" @onclick="DownloadSkillAsync">Download Flowbit AI skill</button>
-            @if (!string.IsNullOrWhiteSpace(skillError))
-            {
-                <p id="ai-skill-error" class="ai-warning" role="alert">@skillError</p>
-            }
+            <AiSkillDownload />
         </section>
     </div>
 </aside>
@@ -208,8 +203,8 @@
     private DateTimeOffset? modelCallStarted;
     private string modelId = "", messageText = "", languages = "eng+ara";
     private string conversationId = Guid.NewGuid().ToString("N");
-    private string? error, notice, skillError;
-    private bool busy, disposed, downloadingSkill;
+    private string? error, notice;
+    private bool busy, disposed;
     private long identityRevision;
     private long operationIdentityRevision;
     private string operationId = "";
@@ -284,7 +279,7 @@
         ResetConversation();
         messageText = "";
         catalog = []; selectedKeys.Clear(); catalogSearch = ""; catalogPage = 0; catalogCount = 0;
-        ClearDocument(); error = notice = skillError = null;
+        ClearDocument(); error = notice = null;
     }
 
     private void SelectCatalogKey(string key, bool selected)
@@ -510,27 +505,6 @@
         catch (OperationCanceledException) { if (!disposed && revision == identityRevision) notice = "Apply cancelled."; }
         catch (Exception exception) { if (!disposed && revision == identityRevision) error = SafeError(exception); }
         finally { if (!disposed && revision == identityRevision) busy = false; }
-    }
-
-    // The package does not depend on the conversation, so its download leaves runs and notices alone; the button stays enabled to keep focus.
-    private async Task DownloadSkillAsync()
-    {
-        if (downloadingSkill || disposed) return;
-        downloadingSkill = true;
-        skillError = null;
-        var revision = identityRevision;
-        try
-        {
-            var content = await Api.DownloadAiSkillAsync(lifetime.Token);
-            if (disposed || revision != identityRevision) return;
-            await using var stream = new MemoryStream(content);
-            using var reference = new DotNetStreamReference(stream);
-            await JS.InvokeVoidAsync("flowbit.downloadFileFromStream", lifetime.Token, "flowbit-authoring.zip", reference, "application/zip");
-        }
-        catch (OperationCanceledException) when (disposed) { }
-        catch (JSDisconnectedException) when (disposed) { }
-        catch (Exception exception) { if (!disposed && revision == identityRevision) skillError = SafeError(exception); }
-        finally { downloadingSkill = false; }
     }
 
     private static string SafeError(Exception exception) => exception.Message.Split('\n', 2)[0].Trim();

@@ -75,7 +75,7 @@ Without a server, the external agent can still produce a workflow file, but must
 
 ## Use the same skill in another agent
 
-Download the `flowbit-authoring.zip` package with **Download Flowbit AI skill** under **Use with another AI agent** at the end of the assistant panel, or with authenticated `GET /api/workflows/ai/skill`. Extract the **entire `flowbit-authoring` folder**, including `SKILL.md`, `references/`, `examples/`, and `manifest.json`, into the native skill location supported by your agent. Do not copy only `SKILL.md`: its schema, references, and examples are required for full coverage.
+Download the `flowbit-authoring.zip` package with **Download Flowbit AI skill** under **Use with another AI agent**, on the **Workflows** page or at the end of the editor's AI assistant panel, or with authenticated `GET /api/workflows/ai/skill`. Extract the **entire `flowbit-authoring` folder**, including `SKILL.md`, `references/`, `examples/`, and `manifest.json`, into the native skill location supported by your agent. Do not copy only `SKILL.md`: its schema, references, and examples are required for full coverage.
 
 The entrypoint uses ordinary skill frontmatter (`name` and `description`) and relative file references. These project-local installation directories are supported by the agents' documentation; the final directory must contain `SKILL.md` directly, without another nested `flowbit-authoring` folder:
 
@@ -108,7 +108,7 @@ Example requests:
 
 Generation with the portable package needs no Flowbit repository, running Flowbit server, or Flowbit AI-provider key. The external agent uses its own model/account and document tools. The skill does not install a model, obtain credentials, provide OCR executables, or automatically connect to OpenCode.
 
-Import the result in the workflow editor with **File → Load JSON**, review the diagram, and select **Save new version**. The editor does not lay out an imported diagram, so the skill gives the agent the editor's shape sizes and spacing to place nodes itself.
+Import the result in the workflow editor with **File → Load JSON**, review the diagram, and select **Save new version**. **Import editor JSON** on **Workflows** also accepts it; clear **Publish on import**, which is checked by default, so the version is reviewed before it can start instances. The editor does not lay out an imported diagram, so the skill gives the agent the editor's shape sizes and spacing to place nodes itself.
 
 ## Package maintenance and export
 

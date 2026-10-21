@@ -144,7 +144,7 @@ Paths below are relative to the UI origin, not API endpoints. Most data screens 
 | **Jobs & incidents** | `/operations` | Durable queue metrics, failures, and retry operations. |
 | **Task management** | `/task-management` | Assign waiting work and manage captured task/action roles. |
 | **User delegations** | `/delegation-management` | Administer delegation grants and family acceptance policies. |
-| **Workflows** | `/workflows` | Create, edit, import, publish, download, and manage definition versions. |
+| **Workflows** | `/workflows` | Create, edit, import, publish, download, and manage definition versions, and download the portable AI skill. |
 | **Workflow editor** | `/workflows/new` | Create a workflow using the shared visual editor. |
 | **Batch version changes** | `/instance-version-changes` | Prepare compatible version switches for multiple instances. |
 | **Instance variables** | `/instance-variable-updates` | Prepare administrative raw-JSON variable updates. |
@@ -186,7 +186,7 @@ The conversation lives only in this open Blazor Server panel circuit. It is clea
 
 Generation and application do not save, publish, or run workflows. **Save new version** retains its existing unpublished-version behavior. Structurally valid proposals may still have catalog or publication blockers and need operational setup. See [AI authoring and portable skill](ai-authoring.md) and [AI deployment settings](deployment.md#ai-authoring-and-local-ocr).
 
-At the end of the panel, **Use with another AI agent** offers **Download Flowbit AI skill**. It downloads `flowbit-authoring.zip`: the guides and examples the assistant reads, plus the workflow schema and authoring procedure, packaged as a skill for Claude Code, Cursor, Codex, or OpenCode, which use their own model. The download needs no configured model, works while a run is in progress, and leaves the conversation and its notices unchanged; a failed download is reported below the button. Extract the whole folder as described in [Use the same skill in another agent](ai-authoring.md#use-the-same-skill-in-another-agent), and download it again after Flowbit is upgraded.
+At the end of the panel, **Use with another AI agent** offers **Download Flowbit AI skill**; the same section also appears on [Workflows](#manage-workflow-versions). It downloads `flowbit-authoring.zip`: the guides and examples the assistant reads, plus the workflow schema and authoring procedure, packaged as a skill for Claude Code, Cursor, Codex, or OpenCode, which use their own model. The download needs no configured model, works while a run is in progress, and leaves the conversation and its notices unchanged; a failed download is reported below the button. Extract the whole folder as described in [Use the same skill in another agent](ai-authoring.md#use-the-same-skill-in-another-agent), and download it again after Flowbit is upgraded.
 
 After an administrator changes the selected model's endpoint, provider model name or reasoning effort, the next message reports that the settings changed; start a new conversation. If the model was deleted, the panel reloads the model list, starts over, and keeps your unsent message. Replacing only a model's key keeps open conversations.
 
@@ -207,6 +207,8 @@ The editor mounts directly into the page using the same template, CSS, and JavaS
 ## Manage workflow versions
 
 Expand a family in **Workflows** to see its version rows. Importing another document with the same authored workflow key creates a new immutable version; running instances retain their existing version until an explicit compatible switch.
+
+Below **Import editor JSON**, **Use with another AI agent** offers **Download Flowbit AI skill**, the portable authoring package for Claude Code, Cursor, Codex, or OpenCode described under [AI workflow assistant](#ai-workflow-assistant). Import the JSON such an agent returns here, clearing **Publish on import** so you can review the version first, or open it with **File → Load JSON** in the editor. A failed download is reported below the button.
 
 | Action | Effect |
 | --- | --- |

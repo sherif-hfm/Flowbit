@@ -22,7 +22,7 @@
 
 <section id="import-workflow" class="panel mb-3" aria-labelledby="import-workflow-heading">
     <div class="section-heading">
-        <div><h2 id="import-workflow-heading">Import editor JSON</h2><p>Select a workflow exported by <code>flowbit-editor.html</code>. Files are limited to 2 MB.</p></div>
+        <div><h2 id="import-workflow-heading">Import editor JSON</h2><p>Select a workflow JSON file, such as one exported by <code>flowbit-editor.html</code> or written by an AI agent with the Flowbit skill. Files are limited to 2 MB.</p></div>
     </div>
     <label class="form-label" for="workflow-json-file">Workflow definition file</label>
     <InputFile id="workflow-json-file" @key="inputFileKey" OnChange="OnInputFileChange" class="form-control" accept=".json,application/json" />
@@ -43,6 +43,13 @@
             <label class="form-check-label" for="publishOnImport">Publish on import</label>
         </div>
     </div>
+</section>
+
+<section id="ai-skill" class="panel mb-3" aria-labelledby="ai-skill-heading">
+    <div class="section-heading">
+        <div><h2 id="ai-skill-heading">Use with another AI agent</h2><p>Generate or change workflows with an outside agent, then import its JSON above or review it in the editor first.</p></div>
+    </div>
+    <AiSkillDownload />
 </section>
 
 <section aria-labelledby="definitions-heading">

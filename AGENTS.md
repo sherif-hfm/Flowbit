@@ -1495,8 +1495,10 @@ what the cross-version `workflowKey` instance search matches.
 
 ### Blazor UI pages
 
-- `/workflows` (`Workflows.razor`) - list definitions, create workflows, and open
-  an exact version for editing.
+- `/workflows` (`Workflows.razor`) - list definitions, create workflows, import
+  editor JSON, open an exact version for editing, and download the portable AI
+  skill through the shared `AiSkillDownload` component, which the editor's
+  `WorkflowAiPanel` also renders.
 - `/workflows/new` and `/workflows/{id}/edit` (`WorkflowEditor.razor`) - host the
   canonical editor inline in the available workspace. API saves create unpublished versions
   through the existing typed client; saved-version keys are read-only. JSON uses
