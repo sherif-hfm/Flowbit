@@ -60,6 +60,7 @@ Use this ownership map to select the relevant pages; update only those affected:
 | Configuration, authentication boundaries, migrations, upgrades, Worker operation, monitoring, or recovery | [Deployment and operations](docs/deployment.md). |
 | Sample definitions, required actors/inputs, or expected outcomes | [Example catalog](examples/README.md) and the affected example JSON. |
 | Runtime architecture, persistence, or implementation invariants | [Runtime reference](Flowbit/README.md) and the relevant sections of this file. |
+| Database tables, columns, keys, foreign keys, triggers, or other migration-created objects | [Database schema reference](docs/database-schema.md). |
 | Product capabilities or screenshots that no longer represent the product | [Root README](README.md) and affected documentation images. |
 | New, renamed, or removed guides | [Documentation home](docs/index.md) and incoming links. |
 

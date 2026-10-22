@@ -277,6 +277,9 @@ Mixed legacy and policy-aware replicas are unsupported. See the
 
 ### Tables
 
+For every table's purpose, key columns, foreign keys, and relationship
+diagrams, see the [database schema reference](../docs/database-schema.md).
+
 - All Flowbit tables, owned sequences, indexes, constraints, and EF migration
   history live in the fixed PostgreSQL `flowbit` schema.
 - Workflow definitions are versioned JSONB snapshots in
@@ -293,11 +296,15 @@ Mixed legacy and policy-aware replicas are unsupported. See the
 - Durable work is stored in `flowbit.workflow_jobs`,
   `flowbit.workflow_job_attempts`, `flowbit.workflow_job_snapshots`,
   `flowbit.workflow_incidents`, and `flowbit.timer_subscriptions`.
-- Deployment-wide shared-variable catalog, current-value, immutable revision,
-  definition binding/dependency, wake outbox, delivery, and incident state is
-  stored in the corresponding `flowbit.shared_variable_*` tables. Catalog rows
-  use `Revision` for API compare-and-swap; `ValueRevision` changes only when the
-  effective value changes and is the precise durable-job output fence.
+- The deployment-wide shared-variable catalog, current values, immutable
+  revisions, revision-allocator state, request ledger, and API clients and
+  secrets are stored in the `flowbit.shared_variable_*` tables. Definition
+  bindings are in `flowbit.workflow_definition_shared_variable_bindings`. The
+  former dependency, wake, delivery, and wake-incident tables were removed by
+  the guarded hard-cut migration described under
+  [Shared variables](#shared-variables). Catalog rows use `Revision` for API
+  compare-and-swap; `ValueRevision` changes only when the effective value
+  changes and is the precise durable-job output fence.
 - Runtime mutations use one lock order: instance, active gateway
   executions/states/branches, active tokens, active multi-instance executions,
   then active/pending user tasks; rows are ordered by ID within each group.
