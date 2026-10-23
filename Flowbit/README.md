@@ -728,10 +728,23 @@ overwriting it.
 Worker defaults are eight total slots, six activity slots, and four concurrent
 activity jobs per instance. Two slots therefore remain available for
 timer/control work. PostgreSQL notifications are wake-up hints; one-second
-polling remains authoritative, and an idle dispatcher shortens its backoff to
-the next persisted due or lease-expiry deadline. Calls have at-least-once
+polling remains authoritative, a finished job immediately wakes its dispatcher
+to refill the slot, and an idle dispatcher shortens its backoff to the next
+persisted due or lease-expiry deadline. Calls have at-least-once
 external semantics and receive stable `sys.jobId` and `sys.jobAttempt` values,
-so downstream services should use `sys.jobId` as an idempotency key.
+so downstream services should use `sys.jobId` as an idempotency key. If
+finalizing a captured result fails unexpectedly, the worker retries the
+finalization after a five-second, database-timed delay and never repeats the
+call. Durable job payloads keep only the caller claims that
+`WorkflowContext:AllowedClaims` names resolve to on the enqueuing host.
+
+Stopping a worker ends acquisition while running jobs keep their leases and may
+finish within `FlowbitWorker:ShutdownDrainSeconds`. Jobs still running after
+that window are cancelled and their leases released, so another replica
+recovers them immediately instead of after lease expiry; their attempts record
+the failure code `workerShutdown`. A worker whose build
+contains migrations the database lacks stays not ready and processes no
+durable work, timer-start reconciliation, or retention until they are applied.
 
 Durable automatic activity lineages are bounded by the shared engine setting
 `Workflow.Async.MaxConsecutiveAutomaticActivations` (default `1000`; missing,
@@ -754,21 +767,26 @@ For an additive rollout, first deploy the schema and API with
 `WorkflowDurableProcessing:PublicationEnabled=false`. Draft definitions may
 still be saved, but publishing or making an async, timer, or durable-conditional
 definition the default is rejected. Start at least one worker and confirm
-`/health/ready` returns 200
-after its first successful durable-queue query, then set the gate to `true`.
+`/health/ready` returns 200, which requires every migration in the worker build
+and a successful durable-queue query, then set the gate to `true`.
 Existing definitions and running instances remain synchronous and require no
 backfill.
 
 Standard .NET meters publish worker and engine signals under `Flowbit.Worker`
 and `Flowbit.Runtime.Jobs`. They include queue depth/age, timer lateness,
-acquisition and instance-lock wait latency, lease loss, retries, output
-conflicts, incidents, and cleanup volume. The worker also exposes these signals
-in Prometheus text format at `/metrics`; `/health/live` is its process liveness
-probe. These operational endpoints listen on `FlowbitWorker:HealthListenUrl`
+acquisition and instance-lock wait latency, lease loss, retries, finalization
+retries, output conflicts, incidents, and cleanup volume. The worker also
+exposes these signals in Prometheus text format at `/metrics`; `/health/live` is
+its process liveness probe. These operational endpoints listen on `FlowbitWorker:HealthListenUrl`
 (`http://0.0.0.0:8081` by default). Timer-start reconciliation uses one
 transaction-scoped advisory leader and processes at most
 `FlowbitWorker:TimerStartReconcileBatchSize` workflow families per pass, so
-additional replicas provide failover without duplicating the full scan.
+additional replicas provide failover without duplicating the full scan. It only
+scans families whose published default contains a timer start or that still
+own an open timer-start subscription, and it share-locks those default rows so
+runtime writes referencing them are never blocked. Each worker checks an
+immutable default version for timer starts once, so later passes read only key
+columns rather than definition documents.
 
 ## History and audit retention
 

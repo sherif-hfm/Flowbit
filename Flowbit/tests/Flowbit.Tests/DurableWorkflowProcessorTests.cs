@@ -564,6 +564,41 @@ public sealed class DurableWorkflowProcessorTests(PostgresApiFixture fixture)
         }
     }
 
+    [Fact]
+    public async Task DurableJobPayloadPersistsOnlyAllowlistedContextClaims()
+    {
+        var workflowKey = $"durable-context-claims-{Guid.NewGuid():N}";
+        try
+        {
+            // The fixture allowlists only "department" for sys.claim.*.
+            var actor = new ActorContext("claims-starter", ["admin"],
+                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["email"] = "claims-starter@example.test",
+                    ["http://schemas.example.test/claims/department"] = "Finance",
+                    ["sid"] = "session-7"
+                });
+            var instanceId = await InsertAndStartAsync(workflowKey,
+                CreateAsyncServiceWorkflow(workflowKey, new JobPolicyModel { RetryDelays = [] }), actor);
+
+            await using var inspect = fixture.CreateDbContext();
+            var job = await inspect.WorkflowJobs
+                .AsNoTracking()
+                .SingleAsync(item => item.InstanceId == instanceId);
+            var claims = job.PayloadJson!.RootElement.GetProperty("Claims");
+            // The URI-style claim keeps its original key, so the Worker resolves
+            // sys.claim.department exactly as the API would.
+            var claim = Assert.Single(claims.EnumerateObject());
+            Assert.Equal("http://schemas.example.test/claims/department", claim.Name);
+            Assert.Equal("Finance", claim.Value.GetString());
+        }
+        finally
+        {
+            fixture.ServiceInvocations.Reset();
+            await DeleteWorkflowAsync(workflowKey);
+        }
+    }
+
     private async Task<long> InsertAndStartAsync(
         string workflowKey,
         WorkflowModel definition,

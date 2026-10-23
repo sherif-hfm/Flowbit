@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Flowbit.Infrastructure.Data;
 using Flowbit.Service.Abstractions;
 using Flowbit.Service.Models;
@@ -12,13 +13,31 @@ public sealed class TimerStartReconciliationService(
     WorkerOptions options,
     TimeProvider timeProvider,
     WorkerTelemetry telemetry,
-    ILogger<TimerStartReconciliationService> logger) : BackgroundService
+    ILogger<TimerStartReconciliationService> logger,
+    DatabaseSchemaGate? schemaGate = null) : BackgroundService
 {
     private static readonly TimeSpan MisfireGrace = TimeSpan.FromMinutes(1);
+    private const int ClassificationBatchSize = 500;
+
+    // JSON containment document matching any definition with a timer start.
+    // Evaluating it decompresses the definition document, so it runs only for
+    // newly observed defaults and for the bounded, locked batch of a pass.
+    private static readonly string TimerStartContainment = JsonSerializer.Serialize(
+        new { flowNodes = new[] { new { type = BpmnFlowNodeTypes.TimerStartEvent } } });
+
+    // Definitions are immutable, so whether a version declares a timer start
+    // never changes. Published defaults are classified once per process and
+    // the cache follows the current default set.
+    private readonly Dictionary<long, bool> _timerStartDefinitions = new();
     private string? _familyCursor;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        if (schemaGate is not null)
+        {
+            await schemaGate.WaitUntilReadyAsync(stoppingToken);
+        }
+
         using var timer = new PeriodicTimer(
             TimeSpan.FromSeconds(options.TimerStartReconcileSeconds));
         while (!stoppingToken.IsCancellationRequested)
@@ -73,19 +92,14 @@ public sealed class TimerStartReconciliationService(
             return;
         }
 
-        var familyKeys = await ReadFamilyBatchAsync(
-            dbContext,
-            _familyCursor,
-            cancellationToken);
+        var families = await ReadTimerStartFamiliesAsync(dbContext, cancellationToken);
+        var familyKeys = NextFamilyBatch(families, _familyCursor);
         if (familyKeys.Length == 0 && _familyCursor is not null)
         {
-            // Wrap after the lexicographic tail. The cursor is deliberately
+            // Wrap after the ordinal tail. The cursor is deliberately
             // replica-local; a failover replica safely begins at the head and
             // repairs every family in bounded batches.
-            familyKeys = await ReadFamilyBatchAsync(
-                dbContext,
-                cursor: null,
-                cancellationToken);
+            familyKeys = NextFamilyBatch(families, cursor: null);
         }
         if (familyKeys.Length == 0)
         {
@@ -100,11 +114,18 @@ public sealed class TimerStartReconciliationService(
                 cancellationToken);
         }
 
-        // Lock current default rows in deterministic order. This makes the
-        // subscription-existence check and subscription/job creation one
-        // mutation batch across worker replicas. A concurrent default switch
-        // may be observed on the next reconciliation; timer firing separately
-        // revalidates default ownership.
+        // Lock current timer-start defaults in deterministic order. Together
+        // with the shared family locks, this makes the subscription-existence
+        // check and subscription/job creation one mutation batch: publish and
+        // default switches hold the exclusive family lock and update these
+        // rows. FOR SHARE, unlike FOR UPDATE, stays compatible with the KEY
+        // SHARE locks that foreign-key checks take when runtime writes insert
+        // rows referencing a definition, so instance starts and transitions
+        // on these versions never wait for reconciliation. The containment
+        // test here is authoritative under the family locks and only touches
+        // this batch's rows. A concurrent default switch may be observed on
+        // the next reconciliation; timer firing separately revalidates
+        // default ownership.
         var definitions = await dbContext.WorkflowDefinitions
             .FromSqlInterpolated(
                 $"""
@@ -113,8 +134,9 @@ public sealed class TimerStartReconciliationService(
                 WHERE "IsPublished" = TRUE
                   AND "IsDefault" = TRUE
                   AND "WorkflowKey" = ANY ({familyKeys})
+                  AND "Definition" @> {TimerStartContainment}::jsonb
                 ORDER BY "Id"
-                FOR UPDATE
+                FOR SHARE
                 """)
             .ToListAsync(cancellationToken);
         var expected = definitions
@@ -197,34 +219,81 @@ public sealed class TimerStartReconciliationService(
             : familyKeys[^1];
     }
 
-    private async Task<string[]> ReadFamilyBatchAsync(
+    // Only families whose published default declares a timer start, or that
+    // still own an open timer-start subscription, can need repair. Each pass
+    // reads only narrow key columns; workflows without timer starts are never
+    // locked, so a pass cycle grows with timer-start families alone.
+    private async Task<string[]> ReadTimerStartFamiliesAsync(
         AppDbContext dbContext,
-        string? cursor,
         CancellationToken cancellationToken)
     {
-        var query = dbContext.WorkflowDefinitions
+        var defaults = await dbContext.WorkflowDefinitions
             .AsNoTracking()
             .Where(definition => definition.IsPublished && definition.IsDefault)
+            .Select(definition => new { definition.Id, definition.WorkflowKey })
+            .ToListAsync(cancellationToken);
+        await ClassifyTimerStartDefinitionsAsync(
+            dbContext,
+            defaults.Select(definition => definition.Id).ToHashSet(),
+            cancellationToken);
+        var subscribedFamilies = await dbContext.TimerSubscriptions
+            .AsNoTracking()
+            .Where(subscription =>
+                subscription.InstanceId == null
+                && (subscription.Status == TimerSubscriptionStatuses.Active
+                    || subscription.Status == TimerSubscriptionStatuses.Paused))
+            .Select(subscription => subscription.WorkflowKey)
+            .Distinct()
+            .ToListAsync(cancellationToken);
+        return defaults
+            .Where(definition => _timerStartDefinitions[definition.Id])
             .Select(definition => definition.WorkflowKey)
-            .Concat(dbContext.TimerSubscriptions
-                .AsNoTracking()
-                .Where(subscription =>
-                    subscription.InstanceId == null
-                    && (subscription.Status == TimerSubscriptionStatuses.Active
-                        || subscription.Status == TimerSubscriptionStatuses.Paused))
-                .Select(subscription => subscription.WorkflowKey))
-            .Distinct();
-        if (cursor is not null)
-        {
-            query = query.Where(workflowKey => string.Compare(workflowKey, cursor) > 0);
-        }
-
-        return (await query
-                .OrderBy(workflowKey => workflowKey)
-                .Take(options.TimerStartReconcileBatchSize)
-                .ToListAsync(cancellationToken))
+            .Concat(subscribedFamilies)
+            .Distinct(StringComparer.Ordinal)
+            .Order(StringComparer.Ordinal)
             .ToArray();
     }
+
+    private async Task ClassifyTimerStartDefinitionsAsync(
+        AppDbContext dbContext,
+        HashSet<long> defaultIds,
+        CancellationToken cancellationToken)
+    {
+        foreach (var retired in _timerStartDefinitions.Keys
+                     .Where(id => !defaultIds.Contains(id))
+                     .ToArray())
+        {
+            _timerStartDefinitions.Remove(retired);
+        }
+
+        var unclassified = defaultIds
+            .Where(id => !_timerStartDefinitions.ContainsKey(id))
+            .ToArray();
+        foreach (var batch in unclassified.Chunk(ClassificationBatchSize))
+        {
+            var withTimerStart = (await dbContext.Database
+                    .SqlQuery<long>(
+                        $"""
+                        SELECT "Id" AS "Value"
+                        FROM flowbit.workflow_definitions
+                        WHERE "Id" = ANY ({batch})
+                          AND "Definition" @> {TimerStartContainment}::jsonb
+                        """)
+                    .ToListAsync(cancellationToken))
+                .ToHashSet();
+            foreach (var id in batch)
+            {
+                _timerStartDefinitions[id] = withTimerStart.Contains(id);
+            }
+        }
+    }
+
+    private string[] NextFamilyBatch(string[] families, string? cursor) =>
+        families
+            .Where(workflowKey => cursor is null
+                || string.CompareOrdinal(workflowKey, cursor) > 0)
+            .Take(options.TimerStartReconcileBatchSize)
+            .ToArray();
 
     private async Task EnsureTimerStartAsync(
         long definitionId,

@@ -837,7 +837,7 @@ Attempt history for retries, incidents, and the Operations UI.
 | `JobId`, `AttemptNumber` | Unique together. |
 | `LeaseGeneration`, `WorkerId` | The lease and worker that ran the attempt. |
 | `Status` | `running`, `resultReady`, `completed`, `failed`, `leaseLost`, or `cancelled`. |
-| `FailureCode`, `FailureDescription`, `StartedAt`, `FinishedAt` | Outcome details. |
+| `FailureCode`, `FailureDescription`, `StartedAt`, `FinishedAt` | Outcome details. A `leaseLost` attempt has `FailureCode` `leaseExpired` when its lease expired, or `workerShutdown` when a stopping Worker released the lease after its drain window. |
 
 - **Primary key:** `Id`
 - **References:** `JobId` → [`workflow_jobs`](#workflow_jobs) (required, `CASCADE`)

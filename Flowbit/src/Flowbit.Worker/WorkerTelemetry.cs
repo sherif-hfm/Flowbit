@@ -18,6 +18,7 @@ public sealed class WorkerTelemetry : IDisposable
     private readonly Counter<long> _failed;
     private readonly Counter<long> _leaseLost;
     private readonly Counter<long> _retries;
+    private readonly Counter<long> _finalizationRetries;
     private readonly Counter<long> _cleanupJobs;
     private readonly Counter<long> _cleanupAttempts;
     private readonly Counter<long> _cleanupSnapshots;
@@ -42,6 +43,7 @@ public sealed class WorkerTelemetry : IDisposable
     private long _failedTotal;
     private long _leaseLostTotal;
     private long _retriesTotal;
+    private long _finalizationRetriesTotal;
     private long _cleanupJobsTotal;
     private long _cleanupAttemptsTotal;
     private long _cleanupSnapshotsTotal;
@@ -95,6 +97,9 @@ public sealed class WorkerTelemetry : IDisposable
         _retries = _meter.CreateCounter<long>(
             "flowbit.worker.retries.scheduled",
             description: "Unhandled worker failures scheduled for retry.");
+        _finalizationRetries = _meter.CreateCounter<long>(
+            "flowbit.worker.finalization.retries",
+            description: "Captured results whose finalization failed and was rescheduled without repeating the external call.");
         _cleanupJobs = _meter.CreateCounter<long>(
             "flowbit.worker.cleanup.jobs",
             description: "Terminal jobs removed by retention cleanup.");
@@ -245,6 +250,12 @@ public sealed class WorkerTelemetry : IDisposable
         Interlocked.Increment(ref _retriesTotal);
     }
 
+    public void RecordFinalizationRetry()
+    {
+        _finalizationRetries.Add(1);
+        Interlocked.Increment(ref _finalizationRetriesTotal);
+    }
+
     public void RecordCleanup(
         long jobs,
         long incidents,
@@ -353,6 +364,10 @@ public sealed class WorkerTelemetry : IDisposable
         WriteCounter(output, "flowbit_worker_jobs_failed_total", _failedTotal);
         WriteCounter(output, "flowbit_worker_leases_lost_total", _leaseLostTotal);
         WriteCounter(output, "flowbit_worker_retries_scheduled_total", _retriesTotal);
+        WriteCounter(
+            output,
+            "flowbit_worker_finalization_retries_total",
+            _finalizationRetriesTotal);
         WriteCounter(output, "flowbit_worker_cleanup_jobs_total", _cleanupJobsTotal);
         WriteCounter(output, "flowbit_worker_cleanup_attempts_total", _cleanupAttemptsTotal);
         WriteCounter(output, "flowbit_worker_cleanup_snapshots_total", _cleanupSnapshotsTotal);

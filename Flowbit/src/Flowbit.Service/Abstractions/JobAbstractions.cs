@@ -88,7 +88,24 @@ public interface IWorkflowJobRepository
         WorkflowJobResultRecord result,
         CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Expires a result-ready lease after <paramref name="retryAfter"/>, using
+    /// the database clock, so any replica can finalize the captured result
+    /// without repeating the external call. A positive delay bounds a
+    /// finalization failure that keeps recurring.
+    /// </summary>
     Task<bool> ReleaseResultReadyLeaseAsync(
+        WorkflowJobFence fence,
+        TimeSpan retryAfter,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Expires the current running or result-ready lease after its local
+    /// invocation has stopped, so another replica can recover the job without
+    /// waiting for the full lease duration. A running attempt is recorded as
+    /// <c>leaseLost</c> with failure code <c>workerShutdown</c>.
+    /// </summary>
+    Task<bool> ReleaseLeaseAsync(
         WorkflowJobFence fence,
         CancellationToken cancellationToken);
 

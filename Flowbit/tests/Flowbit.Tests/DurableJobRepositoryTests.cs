@@ -1,9 +1,12 @@
+using System.Data.Common;
 using System.Text.Json;
+using Flowbit.Infrastructure.Data;
 using Flowbit.Infrastructure.Entities;
 using Flowbit.Infrastructure.Repositories;
 using Flowbit.Service.Models;
 using Flowbit.Shared.Models;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Xunit;
 
 namespace Flowbit.Tests;
@@ -910,12 +913,15 @@ public sealed class DurableJobRepositoryTests(PostgresApiFixture fixture)
                         workerId,
                         leaseToken,
                         leaseGeneration + 1),
+                    TimeSpan.Zero,
                     CancellationToken.None));
                 Assert.True(await repository.ReleaseResultReadyLeaseAsync(
                     new WorkflowJobFence(jobId, workerId, leaseToken, leaseGeneration),
+                    TimeSpan.Zero,
                     CancellationToken.None));
                 Assert.False(await repository.ReleaseResultReadyLeaseAsync(
                     new WorkflowJobFence(jobId, workerId, leaseToken, leaseGeneration),
+                    TimeSpan.Zero,
                     CancellationToken.None));
             }
 
@@ -943,6 +949,299 @@ public sealed class DurableJobRepositoryTests(PostgresApiFixture fixture)
             Assert.Equal(workerId, attempt.WorkerId);
             Assert.Equal(leaseGeneration, attempt.LeaseGeneration);
             Assert.Null(attempt.FinishedAt);
+        }
+        finally
+        {
+            await DeleteWorkflowAsync(suffix);
+        }
+    }
+
+    [Fact]
+    public async Task DelayedResultReadyReleaseHoldsTheLeaseUntilItsRetryDeadline()
+    {
+        var suffix = $"release-result-delay-{Guid.NewGuid():N}";
+        var workerId = $"result-worker-{suffix}";
+        var leaseToken = Guid.NewGuid();
+        const long leaseGeneration = 3;
+        long jobId = 0;
+        try
+        {
+            await using (var setup = fixture.CreateDbContext())
+            {
+                var definition = NewDefinition(suffix);
+                setup.WorkflowDefinitions.Add(definition);
+                await setup.SaveChangesAsync();
+
+                var job = NewJob(definition, null, suffix, 0, priority: 100);
+                job.Status = WorkflowJobStatuses.ResultReady;
+                job.AttemptCount = 1;
+                job.WorkerId = workerId;
+                job.LeaseToken = leaseToken;
+                job.LeaseGeneration = leaseGeneration;
+                job.LeaseExpiresAt = DateTimeOffset.UtcNow.AddMinutes(10);
+                job.HeartbeatAt = DateTimeOffset.UtcNow;
+                job.StartedAt = DateTimeOffset.UtcNow.AddMinutes(-1);
+                job.ResultReadyAt = DateTimeOffset.UtcNow;
+                job.ResultJson = JsonDocument.Parse("""{"outcome":"captured"}""");
+                setup.WorkflowJobs.Add(job);
+                await setup.SaveChangesAsync();
+                jobId = job.Id;
+            }
+
+            var fence = new WorkflowJobFence(jobId, workerId, leaseToken, leaseGeneration);
+            var releasedAt = DateTimeOffset.UtcNow;
+            await using (var db = fixture.CreateDbContext())
+            {
+                var repository = new WorkflowJobRepository(db, fixture.DataSource);
+                await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+                    repository.ReleaseResultReadyLeaseAsync(
+                        fence,
+                        TimeSpan.FromSeconds(-1),
+                        CancellationToken.None));
+                Assert.True(await repository.ReleaseResultReadyLeaseAsync(
+                    fence,
+                    TimeSpan.FromSeconds(30),
+                    CancellationToken.None));
+                // The captured result stays unrunnable until the retry
+                // deadline, so a failing finalizer cannot loop immediately.
+                Assert.True(await repository.IsLeaseAliveAsync(fence, CancellationToken.None));
+            }
+
+            await using var verification = fixture.CreateDbContext();
+            var stored = await verification.WorkflowJobs
+                .AsNoTracking()
+                .SingleAsync(job => job.Id == jobId);
+            Assert.Equal(WorkflowJobStatuses.ResultReady, stored.Status);
+            Assert.Equal(1, stored.AttemptCount);
+            Assert.NotNull(stored.LeaseExpiresAt);
+            Assert.InRange(
+                stored.LeaseExpiresAt.Value,
+                releasedAt.AddSeconds(25),
+                DateTimeOffset.UtcNow.AddSeconds(35));
+            Assert.Equal(
+                "captured",
+                stored.ResultJson!.RootElement.GetProperty("outcome").GetString());
+        }
+        finally
+        {
+            await DeleteWorkflowAsync(suffix);
+        }
+    }
+
+    [Fact]
+    public async Task ReleaseLeaseExpiresOnlyTheMatchingFenceAndRecordsAWorkerShutdown()
+    {
+        var suffix = $"release-running-{Guid.NewGuid():N}";
+        // One acquisition round takes one job per workflow family, so the two
+        // released jobs belong to different families.
+        var runningKey = suffix + "-running";
+        var resultKey = suffix + "-result";
+        var workerId = $"running-worker-{suffix}";
+        var runningToken = Guid.NewGuid();
+        var resultToken = Guid.NewGuid();
+        const long runningGeneration = 5;
+        const long resultGeneration = 7;
+        var originalExpiry = DateTimeOffset.UtcNow.AddMinutes(10);
+        long runningJobId = 0;
+        long resultJobId = 0;
+        try
+        {
+            await using (var setup = fixture.CreateDbContext())
+            {
+                var runningDefinition = NewDefinition(runningKey);
+                var resultDefinition = NewDefinition(resultKey);
+                setup.WorkflowDefinitions.AddRange(runningDefinition, resultDefinition);
+                await setup.SaveChangesAsync();
+
+                var running = NewJob(runningDefinition, null, runningKey, 0, priority: 100);
+                running.Status = WorkflowJobStatuses.Running;
+                running.AttemptCount = 2;
+                running.WorkerId = workerId;
+                running.LeaseToken = runningToken;
+                running.LeaseGeneration = runningGeneration;
+                running.LeaseExpiresAt = originalExpiry;
+                running.HeartbeatAt = DateTimeOffset.UtcNow;
+                running.StartedAt = DateTimeOffset.UtcNow.AddMinutes(-1);
+                var result = NewJob(resultDefinition, null, resultKey, 1, priority: 100);
+                result.Status = WorkflowJobStatuses.ResultReady;
+                result.AttemptCount = 1;
+                result.WorkerId = workerId;
+                result.LeaseToken = resultToken;
+                result.LeaseGeneration = resultGeneration;
+                result.LeaseExpiresAt = originalExpiry;
+                result.HeartbeatAt = DateTimeOffset.UtcNow;
+                result.StartedAt = DateTimeOffset.UtcNow.AddMinutes(-1);
+                result.ResultReadyAt = DateTimeOffset.UtcNow;
+                result.ResultJson = JsonDocument.Parse("""{"outcome":"captured"}""");
+                setup.WorkflowJobs.AddRange(running, result);
+                await setup.SaveChangesAsync();
+                runningJobId = running.Id;
+                resultJobId = result.Id;
+
+                setup.WorkflowJobAttempts.AddRange(
+                    new WorkflowJobAttemptEntity
+                    {
+                        JobId = running.Id,
+                        AttemptNumber = 2,
+                        Status = WorkflowJobAttemptStatuses.Running,
+                        WorkerId = workerId,
+                        LeaseGeneration = runningGeneration,
+                        StartedAt = running.StartedAt.Value
+                    },
+                    new WorkflowJobAttemptEntity
+                    {
+                        JobId = result.Id,
+                        AttemptNumber = 1,
+                        Status = WorkflowJobAttemptStatuses.ResultReady,
+                        WorkerId = workerId,
+                        LeaseGeneration = resultGeneration,
+                        StartedAt = result.StartedAt.Value
+                    });
+                await setup.SaveChangesAsync();
+            }
+
+            var runningFence = new WorkflowJobFence(
+                runningJobId,
+                workerId,
+                runningToken,
+                runningGeneration);
+            var resultFence = new WorkflowJobFence(
+                resultJobId,
+                workerId,
+                resultToken,
+                resultGeneration);
+            await using (var db = fixture.CreateDbContext())
+            {
+                var repository = new WorkflowJobRepository(db, fixture.DataSource);
+                Assert.False(await repository.ReleaseLeaseAsync(
+                    runningFence with { LeaseGeneration = runningGeneration + 1 },
+                    CancellationToken.None));
+                Assert.False(await repository.ReleaseLeaseAsync(
+                    runningFence with { WorkerId = "another-worker" },
+                    CancellationToken.None));
+                Assert.True(await repository.ReleaseLeaseAsync(runningFence, CancellationToken.None));
+                Assert.False(await repository.ReleaseLeaseAsync(runningFence, CancellationToken.None));
+                Assert.False(await repository.IsLeaseAliveAsync(runningFence, CancellationToken.None));
+                Assert.True(await repository.ReleaseLeaseAsync(resultFence, CancellationToken.None));
+            }
+
+            await using (var released = fixture.CreateDbContext())
+            {
+                var stored = await released.WorkflowJobs
+                    .AsNoTracking()
+                    .SingleAsync(job => job.Id == runningJobId);
+                // Only the lease expires; the consumed attempt and fence identity
+                // stay intact for the normal expired-lease recovery path.
+                Assert.Equal(WorkflowJobStatuses.Running, stored.Status);
+                Assert.Equal(2, stored.AttemptCount);
+                Assert.Equal(workerId, stored.WorkerId);
+                Assert.Equal(runningGeneration, stored.LeaseGeneration);
+                Assert.NotNull(stored.LeaseExpiresAt);
+                Assert.True(stored.LeaseExpiresAt < originalExpiry);
+                Assert.True(stored.LeaseExpiresAt <= DateTimeOffset.UtcNow.AddSeconds(1));
+
+                var shutdownAttempt = await released.WorkflowJobAttempts
+                    .AsNoTracking()
+                    .SingleAsync(attempt => attempt.JobId == runningJobId);
+                Assert.Equal(WorkflowJobAttemptStatuses.LeaseLost, shutdownAttempt.Status);
+                Assert.Equal("workerShutdown", shutdownAttempt.FailureCode);
+                Assert.NotNull(shutdownAttempt.FinishedAt);
+                // A captured result stays open so the next lease finalizes it.
+                var resultAttempt = await released.WorkflowJobAttempts
+                    .AsNoTracking()
+                    .SingleAsync(attempt => attempt.JobId == resultJobId);
+                Assert.Equal(WorkflowJobAttemptStatuses.ResultReady, resultAttempt.Status);
+                Assert.Null(resultAttempt.FailureCode);
+                Assert.Null(resultAttempt.FinishedAt);
+            }
+
+            await using (var recovery = fixture.CreateDbContext())
+            {
+                var repository = new WorkflowJobRepository(recovery, fixture.DataSource);
+                var leases = await repository.LeaseRunnableAsync(
+                    new WorkflowJobLeaseRequest(
+                        $"recovering-worker-{suffix}",
+                        MaxCount: 10,
+                        MaxActivityCount: 0,
+                        MaxPerInstance: 4,
+                        LeaseDuration: TimeSpan.FromMinutes(1)),
+                    CancellationToken.None);
+                Assert.Equal(3, Assert.Single(leases, lease => lease.Job.Id == runningJobId).AttemptNumber);
+                Assert.Equal(1, Assert.Single(leases, lease => lease.Job.Id == resultJobId).AttemptNumber);
+            }
+
+            // Recovery opens the next attempt without relabelling the shutdown.
+            await using var verification = fixture.CreateDbContext();
+            var attempts = await verification.WorkflowJobAttempts
+                .AsNoTracking()
+                .Where(attempt => attempt.JobId == runningJobId)
+                .OrderBy(attempt => attempt.AttemptNumber)
+                .ToListAsync();
+            Assert.Collection(
+                attempts,
+                attempt =>
+                {
+                    Assert.Equal(2, attempt.AttemptNumber);
+                    Assert.Equal(WorkflowJobAttemptStatuses.LeaseLost, attempt.Status);
+                    Assert.Equal("workerShutdown", attempt.FailureCode);
+                },
+                attempt =>
+                {
+                    Assert.Equal(3, attempt.AttemptNumber);
+                    Assert.Equal(WorkflowJobAttemptStatuses.Running, attempt.Status);
+                });
+        }
+        finally
+        {
+            await DeleteWorkflowAsync(runningKey);
+            await DeleteWorkflowAsync(resultKey);
+        }
+    }
+
+    [Fact]
+    public async Task AcquisitionReturnsCommittedLeasesWhenCancelledAfterCommit()
+    {
+        var suffix = $"lease-after-commit-{Guid.NewGuid():N}";
+        var workerId = $"stopping-worker-{suffix}";
+        try
+        {
+            long jobId;
+            await using (var setup = fixture.CreateDbContext())
+            {
+                var definition = NewDefinition(suffix);
+                setup.WorkflowDefinitions.Add(definition);
+                await setup.SaveChangesAsync();
+                var job = NewJob(definition, null, suffix, 0, priority: 1_000_000);
+                setup.WorkflowJobs.Add(job);
+                await setup.SaveChangesAsync();
+                jobId = job.Id;
+            }
+
+            // Acquisition's only EF command is the load after the lease commit.
+            // Cancelling there simulates shutdown arriving once the job is
+            // already leased to this worker.
+            using var stopping = new CancellationTokenSource();
+            var options = new DbContextOptionsBuilder<AppDbContext>()
+                .UseNpgsql(fixture.DataSource, FlowbitDatabase.ConfigureProvider)
+                .AddInterceptors(new CancelBeforeReader(stopping))
+                .Options;
+            await using var db = new AppDbContext(options);
+            var repository = new WorkflowJobRepository(db, fixture.DataSource);
+
+            var lease = Assert.Single(await repository.LeaseRunnableAsync(
+                new WorkflowJobLeaseRequest(
+                    workerId,
+                    MaxCount: 1,
+                    MaxActivityCount: 0,
+                    MaxPerInstance: 4,
+                    LeaseDuration: TimeSpan.FromMinutes(1)),
+                stopping.Token));
+
+            Assert.True(stopping.IsCancellationRequested);
+            Assert.Equal(jobId, lease.Job.Id);
+            Assert.Equal(WorkflowJobStatuses.Running, lease.Job.Status);
+            Assert.Equal(workerId, lease.Job.WorkerId);
+            Assert.Equal(1, lease.AttemptNumber);
         }
         finally
         {
@@ -1681,5 +1980,18 @@ public sealed class DurableJobRepositoryTests(PostgresApiFixture fixture)
         await cleanup.WorkflowDefinitions
             .Where(definition => definition.WorkflowKey == workflowKey)
             .ExecuteDeleteAsync();
+    }
+
+    private sealed class CancelBeforeReader(CancellationTokenSource source) : DbCommandInterceptor
+    {
+        public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<DbDataReader> result,
+            CancellationToken cancellationToken = default)
+        {
+            source.Cancel();
+            return ValueTask.FromResult(result);
+        }
     }
 }

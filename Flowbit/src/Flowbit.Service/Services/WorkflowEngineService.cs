@@ -9739,6 +9739,40 @@ public sealed partial class WorkflowEngineService(
         return false;
     }
 
+    // Keeps only the raw claims an allowlisted sys.claim.* name can resolve to
+    // through TryResolveClaim, with their original keys and order. Durable
+    // jobs therefore resolve the same values without persisting the rest of
+    // the caller's token in workflow_jobs.
+    private static Dictionary<string, string> SelectContextClaims(
+        IReadOnlyDictionary<string, string> claims,
+        IReadOnlyCollection<string>? allowedClaims)
+    {
+        var selected = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var allowed = (allowedClaims ?? [])
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .ToArray();
+        if (allowed.Length == 0)
+        {
+            return selected;
+        }
+
+        foreach (var pair in claims)
+        {
+            var slash = pair.Key.LastIndexOf('/');
+            var lastSegment = slash >= 0 && slash < pair.Key.Length - 1
+                ? pair.Key[(slash + 1)..]
+                : null;
+            if (allowed.Any(name =>
+                    string.Equals(pair.Key, name, StringComparison.OrdinalIgnoreCase)
+                    || lastSegment is not null
+                    && string.Equals(lastSegment, name, StringComparison.OrdinalIgnoreCase)))
+            {
+                selected.TryAdd(pair.Key, pair.Value);
+            }
+        }
+        return selected;
+    }
+
     // Resolves the final value for each scope variable and validates it: a supplied
     // value wins; otherwise a templated/coerced default is applied when present.
     // String defaults may carry ${...} placeholders resolved against the running map

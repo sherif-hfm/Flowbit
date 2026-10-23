@@ -11,23 +11,42 @@ public sealed class JobDispatcher(
     WorkerOptions options,
     TimeProvider timeProvider,
     WorkerTelemetry telemetry,
-    ILogger<JobDispatcher> logger) : BackgroundService
+    ILogger<JobDispatcher> logger,
+    DatabaseSchemaGate? schemaGate = null) : BackgroundService
 {
+    // A captured result is finalized again after this database-timed delay
+    // when finalization escapes an unexpected exception. The delay bounds a
+    // failure that keeps recurring without ever repeating the external call.
+    private static readonly TimeSpan ResultFinalizationRetryDelay = TimeSpan.FromSeconds(5);
+
+    // After the drain window, cancelled jobs get this long to unwind and
+    // release their leases. The host shutdown timeout leaves room for it.
+    private static readonly TimeSpan HardStopGrace = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan LeaseReleaseTimeout = TimeSpan.FromSeconds(2);
+
     private readonly ConcurrentDictionary<RunningKey, RunningJob> _running = new();
+    // Running jobs observe this source instead of the host stopping token, so
+    // shutdown stops acquisition while in-flight work may still finish.
+    private readonly CancellationTokenSource _hardStop = new();
     private readonly string _workerId =
         $"{Environment.MachineName}:{Environment.ProcessId}:{Guid.NewGuid():N}";
     private int _readyLogged;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        logger.LogInformation(
-            "Flowbit worker {WorkerId} started with concurrency {Concurrency} ({ActivityConcurrency} activity slots).",
-            _workerId,
-            options.MaxConcurrency,
-            options.ActivityConcurrency);
-
         try
         {
+            if (schemaGate is not null)
+            {
+                await schemaGate.WaitUntilReadyAsync(stoppingToken);
+            }
+
+            logger.LogInformation(
+                "Flowbit worker {WorkerId} started with concurrency {Concurrency} ({ActivityConcurrency} activity slots).",
+                _workerId,
+                options.MaxConcurrency,
+                options.ActivityConcurrency);
+
             // Startup jitter avoids a polling herd when many replicas deploy together.
             await Task.Delay(
                 Random.Shared.Next(0, Math.Max(1, options.PollMilliseconds)),
@@ -93,7 +112,7 @@ public sealed class JobDispatcher(
                     // complete fence identity so the fresh generation is never
                     // leased and then accidentally dropped.
                     var key = new RunningKey(lease.Job.Id, lease.LeaseGeneration);
-                    var running = new RunningJob(lease.Job.QueueClass, stoppingToken);
+                    var running = new RunningJob(lease.Job.QueueClass, _hardStop.Token);
                     if (!_running.TryAdd(key, running))
                     {
                         running.Dispose();
@@ -101,7 +120,16 @@ public sealed class JobDispatcher(
                     }
                     var isActivity = lease.Job.QueueClass == WorkflowJobClasses.Activity;
                     telemetry.JobStarted(isActivity);
-                    running.Task = ProcessLeaseAsync(lease, running, stoppingToken);
+                    running.Task = ProcessLeaseAsync(lease, running);
+                    // Refill the slot as soon as the job finishes instead of
+                    // waiting for the next poll. The continuation runs only
+                    // after the task has completed, which ReapCompleted needs.
+                    _ = running.Task.ContinueWith(
+                        static (_, signal) => ((IJobWakeupSignal)signal!).Signal(),
+                        wakeupSignal,
+                        CancellationToken.None,
+                        TaskContinuationOptions.ExecuteSynchronously,
+                        TaskScheduler.Default);
                 }
 
                 // One acquisition round intentionally returns at most one job
@@ -145,14 +173,13 @@ public sealed class JobDispatcher(
 
     private async Task ProcessLeaseAsync(
         WorkflowJobLeaseRecord lease,
-        RunningJob running,
-        CancellationToken stoppingToken)
+        RunningJob running)
     {
         var started = Stopwatch.GetTimestamp();
         var isActivity = lease.Job.QueueClass == WorkflowJobClasses.Activity;
         var succeeded = false;
         var leaseCancellation = running.LeaseCancellation;
-        var heartbeat = GuardLeaseAsync(lease, leaseCancellation);
+        var heartbeat = GuardLeaseAsync(lease, running);
         Exception? unhandled = null;
         try
         {
@@ -163,7 +190,7 @@ public sealed class JobDispatcher(
         }
         catch (OperationCanceledException) when (leaseCancellation.IsCancellationRequested)
         {
-            // Host shutdown, instance cancellation, or lease loss.
+            // Drain timeout, instance cancellation, or lease loss.
         }
         catch (Exception ex)
         {
@@ -195,30 +222,50 @@ public sealed class JobDispatcher(
                 Stopwatch.GetElapsedTime(started));
         }
 
-        if (unhandled is not null && !stoppingToken.IsCancellationRequested)
+        if (succeeded)
         {
-            try
+            return;
+        }
+
+        if (_hardStop.IsCancellationRequested)
+        {
+            // The drain window ended before this job finished. Its local
+            // invocation has stopped, so another replica may recover it now
+            // instead of after lease expiry. A lost fence is left untouched.
+            if (!running.LeaseLost)
             {
-                await RecoverUnhandledFailureAsync(lease, unhandled, stoppingToken);
+                await ReleaseStoppedLeaseAsync(lease);
             }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-            {
-                // Host shutdown leaves the lease for another replica to recover.
-            }
-            catch (Exception ex)
-            {
-                logger.LogError(
-                    ex,
-                    "Could not persist recovery for job {JobId}; its durable lease will recover after expiry.",
-                    lease.Job.Id);
-            }
+            return;
+        }
+
+        if (unhandled is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await RecoverUnhandledFailureAsync(lease, unhandled, _hardStop.Token);
+        }
+        catch (OperationCanceledException) when (_hardStop.IsCancellationRequested)
+        {
+            // A hard stop leaves the lease for another replica to recover.
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(
+                ex,
+                "Could not persist recovery for job {JobId}; its durable lease will recover after expiry.",
+                lease.Job.Id);
         }
     }
 
     private async Task GuardLeaseAsync(
         WorkflowJobLeaseRecord lease,
-        CancellationTokenSource leaseCancellation)
+        RunningJob running)
     {
+        var leaseCancellation = running.LeaseCancellation;
         var localLeaseDeadline = lease.Job.LeaseExpiresAt
             ?? timeProvider.GetUtcNow() + options.LeaseDuration;
         var nextHeartbeatAt = timeProvider.GetUtcNow() + options.HeartbeatInterval;
@@ -269,6 +316,7 @@ public sealed class JobDispatcher(
                     _workerId,
                     lease.Job.Id,
                     lease.LeaseGeneration);
+                running.MarkLeaseLost();
                 await leaseCancellation.CancelAsync();
                 return;
             }
@@ -293,6 +341,7 @@ public sealed class JobDispatcher(
                     "Worker {WorkerId} could not renew job {JobId} before its local lease deadline; cancelling local execution.",
                     _workerId,
                     lease.Job.Id);
+                running.MarkLeaseLost();
                 await leaseCancellation.CancelAsync();
                 return;
             }
@@ -317,12 +366,15 @@ public sealed class JobDispatcher(
             description);
         // A captured result is the durable invocation boundary. Never turn a
         // finalization/DB exception back into an activity retry, which would
-        // repeat an already completed external call. Expire only the lease so a
-        // replica can recover the result-ready attempt immediately.
+        // repeat an already completed external call. Keep only a short,
+        // database-timed lease so a replica recovers the result-ready attempt
+        // soon, without a hot loop when finalization keeps failing.
         if (await repository.ReleaseResultReadyLeaseAsync(
                 fence,
+                ResultFinalizationRetryDelay,
                 cancellationToken))
         {
+            telemetry.RecordFinalizationRetry();
             return;
         }
         var retryIndex = Math.Max(0, lease.AttemptNumber - 1);
@@ -331,7 +383,7 @@ public sealed class JobDispatcher(
         {
             var baseDelay = lease.Job.RetryDelays[retryIndex];
             var jitterFactor = 0.9 + Random.Shared.NextDouble() * 0.2;
-            var dueAt = DateTimeOffset.UtcNow
+            var dueAt = timeProvider.GetUtcNow()
                 + TimeSpan.FromTicks((long)(baseDelay.Ticks * jitterFactor));
             if (await repository.ScheduleRetryAsync(
                     fence,
@@ -350,6 +402,30 @@ public sealed class JobDispatcher(
             $"Job #{lease.Job.Id} exhausted worker recovery.",
             description,
             cancellationToken);
+    }
+
+    private async Task ReleaseStoppedLeaseAsync(WorkflowJobLeaseRecord lease)
+    {
+        try
+        {
+            using var timeout = new CancellationTokenSource(LeaseReleaseTimeout);
+            await using var scope = scopeFactory.CreateAsyncScope();
+            var repository = scope.ServiceProvider.GetRequiredService<IWorkflowJobRepository>();
+            if (await repository.ReleaseLeaseAsync(Fence(lease), timeout.Token))
+            {
+                logger.LogInformation(
+                    "Released job {JobId} generation {LeaseGeneration} after the shutdown drain window so another replica can recover it.",
+                    lease.Job.Id,
+                    lease.LeaseGeneration);
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(
+                ex,
+                "Could not release job {JobId} after the shutdown drain window; its lease recovers after expiry.",
+                lease.Job.Id);
+        }
     }
 
     private WorkflowJobFence Fence(WorkflowJobLeaseRecord lease) =>
@@ -395,40 +471,75 @@ public sealed class JobDispatcher(
             return;
         }
 
-        var all = Task.WhenAll(tasks);
-        var timeout = Task.Delay(TimeSpan.FromSeconds(options.ShutdownDrainSeconds));
-        if (await Task.WhenAny(all, timeout) == all)
+        // Acquisition has stopped. Leases keep their heartbeats, so running
+        // jobs may finish normally within the drain window.
+        logger.LogInformation(
+            "Worker {WorkerId} stopped acquiring jobs; waiting up to {TimeoutSeconds}s for {Count} running jobs to finish.",
+            _workerId,
+            options.ShutdownDrainSeconds,
+            tasks.Length);
+        if (!await WaitForRunningAsync(tasks, TimeSpan.FromSeconds(options.ShutdownDrainSeconds)))
         {
-            try
+            logger.LogWarning(
+                "Worker shutdown reached its {TimeoutSeconds}s drain bound with {Count} jobs still running; cancelling them and releasing their leases.",
+                options.ShutdownDrainSeconds,
+                tasks.Count(task => !task.IsCompleted));
+            await _hardStop.CancelAsync();
+            if (!await WaitForRunningAsync(tasks, HardStopGrace))
             {
-                await all;
+                logger.LogWarning(
+                    "{Count} cancelled jobs did not stop within {GraceSeconds}s. Their leases remain durable and recover after expiry.",
+                    tasks.Count(task => !task.IsCompleted),
+                    HardStopGrace.TotalSeconds);
+                return;
             }
-            catch (Exception ex)
-            {
-                logger.LogWarning(ex, "One or more jobs faulted while the worker drained.");
-            }
-            ReapCompleted();
-            return;
         }
 
-        logger.LogWarning(
-            "Worker shutdown reached its {TimeoutSeconds}s drain bound with {Count} jobs still stopping. Their leases remain durable and recover after expiry.",
-            options.ShutdownDrainSeconds,
-            tasks.Count(task => !task.IsCompleted));
+        ReapCompleted();
+    }
+
+    private async Task<bool> WaitForRunningAsync(Task[] tasks, TimeSpan timeout)
+    {
+        var all = Task.WhenAll(tasks);
+        if (await Task.WhenAny(all, Task.Delay(timeout)) != all)
+        {
+            return false;
+        }
+
+        try
+        {
+            await all;
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "One or more jobs faulted while the worker drained.");
+        }
+        return true;
+    }
+
+    public override void Dispose()
+    {
+        base.Dispose();
+        _hardStop.Dispose();
     }
 
     private sealed class RunningJob : IDisposable
     {
-        public RunningJob(string queueClass, CancellationToken stoppingToken)
+        private int _leaseLost;
+
+        public RunningJob(string queueClass, CancellationToken hardStopToken)
         {
             QueueClass = queueClass;
             LeaseCancellation = CancellationTokenSource
-                .CreateLinkedTokenSource(stoppingToken);
+                .CreateLinkedTokenSource(hardStopToken);
         }
 
         public string QueueClass { get; }
         public CancellationTokenSource LeaseCancellation { get; }
         public Task? Task { get; set; }
+        public bool LeaseLost => Volatile.Read(ref _leaseLost) == 1;
+
+        public void MarkLeaseLost() => Volatile.Write(ref _leaseLost, 1);
 
         public void Dispose() => LeaseCancellation.Dispose();
     }

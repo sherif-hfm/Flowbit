@@ -11,7 +11,8 @@ public sealed class RetentionCleanupService(
     WorkerOptions options,
     TimeProvider timeProvider,
     WorkerTelemetry telemetry,
-    ILogger<RetentionCleanupService> logger) : BackgroundService
+    ILogger<RetentionCleanupService> logger,
+    DatabaseSchemaGate? schemaGate = null) : BackgroundService
 {
     private readonly string workerId =
         $"{Environment.MachineName}:{Environment.ProcessId}:{Guid.NewGuid():N}";
@@ -30,6 +31,11 @@ public sealed class RetentionCleanupService(
 
         try
         {
+            if (schemaGate is not null)
+            {
+                await schemaGate.WaitUntilReadyAsync(stoppingToken);
+            }
+
             while (!stoppingToken.IsCancellationRequested)
             {
                 var delay = TimeSpan.FromMilliseconds(options.RetentionIdleDelayMilliseconds);

@@ -511,9 +511,7 @@ public sealed partial class WorkflowEngineService
                 new DurableJobPayload(
                     actor.User,
                     SnapshotRoles(actor.Roles),
-                    new Dictionary<string, string>(
-                    actor.Claims,
-                    StringComparer.OrdinalIgnoreCase),
+                    SelectContextClaims(actor.Claims, contextOptions.AllowedClaims),
                     actor.ActingFor,
                     actor.DelegationId,
                     selectedFlowId,

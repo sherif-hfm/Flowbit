@@ -229,4 +229,230 @@ public sealed class TimerStartReconciliationServiceTests(PostgresApiFixture fixt
                 .ExecuteDeleteAsync();
         }
     }
+
+    [Fact]
+    public async Task ReconciliationScansOnlyFamiliesThatCanOwnTimerStarts()
+    {
+        // Lowercase alphanumeric keys sort the same under every collation.
+        var prefix = $"zztimerscan{Guid.NewGuid():N}";
+        var manualKey = prefix + "a";
+        var timerKey = prefix + "b";
+        try
+        {
+            await AddPublishedDefinitionAsync(manualKey, ManualStartNode());
+            await AddPublishedDefinitionAsync(timerKey, TimerStartNode());
+            using var telemetry = new WorkerTelemetry();
+            var service = NewService(batchSize: 1, telemetry);
+
+            // One family per pass, starting just before both keys. The manual
+            // family sorts first but cannot own a timer start, so it must not
+            // consume the pass.
+            SetCursor(service, prefix);
+            await ReconcileOnceAsync(service);
+
+            await using var verification = fixture.CreateDbContext();
+            var subscription = await verification.TimerSubscriptions
+                .AsNoTracking()
+                .SingleAsync(row => row.WorkflowKey == timerKey);
+            Assert.Equal(TimerSubscriptionStatuses.Active, subscription.Status);
+            Assert.False(await verification.TimerSubscriptions
+                .AnyAsync(row => row.WorkflowKey == manualKey));
+            Assert.Equal(timerKey, CursorField.GetValue(service));
+        }
+        finally
+        {
+            await DeleteFamiliesAsync(manualKey, timerKey);
+        }
+    }
+
+    [Fact]
+    public async Task ReconciliationCancelsATimerStartWhoseDefaultNoLongerHasOne()
+    {
+        var prefix = $"zztimerstale{Guid.NewGuid():N}";
+        var workflowKey = prefix + "a";
+        try
+        {
+            var timerVersionId = await AddPublishedDefinitionAsync(workflowKey, TimerStartNode());
+            using var telemetry = new WorkerTelemetry();
+            var service = NewService(batchSize: 1, telemetry);
+            SetCursor(service, prefix);
+            await ReconcileOnceAsync(service);
+
+            long subscriptionId;
+            await using (var armed = fixture.CreateDbContext())
+            {
+                var subscription = await armed.TimerSubscriptions
+                    .AsNoTracking()
+                    .SingleAsync(row => row.WorkflowKey == workflowKey);
+                Assert.Equal(TimerSubscriptionStatuses.Active, subscription.Status);
+                subscriptionId = subscription.Id;
+                Assert.True(await armed.WorkflowJobs.AnyAsync(job =>
+                    job.TimerSubscriptionId == subscriptionId
+                    && job.Status == WorkflowJobStatuses.Queued));
+            }
+
+            // Switch the default without the repository's timer-start
+            // retirement, as in the crash window reconciliation repairs. The
+            // new default has no timer start, so only the open subscription
+            // keeps this family in the reconciliation scan.
+            var manualVersionId = await AddPublishedDefinitionAsync(workflowKey, ManualStartNode());
+            await using (var switchDefault = fixture.CreateDbContext())
+            {
+                var activationId = Guid.NewGuid();
+                var activatedAt = DateTimeOffset.UtcNow;
+                await switchDefault.WorkflowDefinitions
+                    .Where(row => row.Id == timerVersionId)
+                    .ExecuteUpdateAsync(setters => setters
+                        .SetProperty(row => row.IsDefault, false)
+                        .SetProperty(row => row.DefaultActivationId, (Guid?)null)
+                        .SetProperty(row => row.DefaultActivatedAt, (DateTimeOffset?)null));
+                await switchDefault.WorkflowDefinitions
+                    .Where(row => row.Id == manualVersionId)
+                    .ExecuteUpdateAsync(setters => setters
+                        .SetProperty(row => row.IsDefault, true)
+                        .SetProperty(row => row.DefaultActivationId, (Guid?)activationId)
+                        .SetProperty(row => row.DefaultActivatedAt, (DateTimeOffset?)activatedAt));
+            }
+
+            SetCursor(service, prefix);
+            await ReconcileOnceAsync(service);
+
+            await using var verification = fixture.CreateDbContext();
+            var stale = await verification.TimerSubscriptions
+                .AsNoTracking()
+                .SingleAsync(row => row.Id == subscriptionId);
+            Assert.Equal(TimerSubscriptionStatuses.Cancelled, stale.Status);
+            Assert.False(await verification.WorkflowJobs.AnyAsync(job =>
+                job.TimerSubscriptionId == subscriptionId
+                && job.Status != WorkflowJobStatuses.Cancelled));
+            Assert.False(await verification.TimerSubscriptions.AnyAsync(row =>
+                row.WorkflowKey == workflowKey
+                && row.Status == TimerSubscriptionStatuses.Active));
+        }
+        finally
+        {
+            await DeleteFamiliesAsync(workflowKey);
+        }
+    }
+
+    [Fact]
+    public async Task LaterPassesReadOnlyKeyColumnsForAlreadyClassifiedDefaults()
+    {
+        var prefix = $"zztimerclassify{Guid.NewGuid():N}";
+        var timerKey = prefix + "a";
+        try
+        {
+            await AddPublishedDefinitionAsync(timerKey, TimerStartNode());
+            using var telemetry = new WorkerTelemetry();
+            var service = NewService(batchSize: 1, telemetry);
+
+            fixture.CommandCounter.Reset(captureReaderCommandTexts: true);
+            SetCursor(service, prefix);
+            await ReconcileOnceAsync(service);
+            var firstPass = fixture.CommandCounter.ReaderCommandTexts;
+            fixture.CommandCounter.Reset(captureReaderCommandTexts: true);
+            SetCursor(service, prefix);
+            await ReconcileOnceAsync(service);
+            var secondPass = fixture.CommandCounter.ReaderCommandTexts;
+            fixture.CommandCounter.Reset();
+
+            // Reading a definition document decompresses it. The first pass
+            // classifies each newly observed default once; afterwards only the
+            // bounded batch query, which locks its rows, reads documents.
+            Assert.Contains(firstPass, ReadsDefinitionOutsideLockedBatch);
+            Assert.DoesNotContain(secondPass, ReadsDefinitionOutsideLockedBatch);
+            Assert.Contains(
+                secondPass,
+                text => text.Contains("FOR SHARE", StringComparison.Ordinal));
+            await using var verification = fixture.CreateDbContext();
+            Assert.Equal(
+                TimerSubscriptionStatuses.Active,
+                (await verification.TimerSubscriptions
+                    .AsNoTracking()
+                    .SingleAsync(row => row.WorkflowKey == timerKey)).Status);
+        }
+        finally
+        {
+            await DeleteFamiliesAsync(timerKey);
+        }
+    }
+
+    private static bool ReadsDefinitionOutsideLockedBatch(string commandText) =>
+        commandText.Contains("\"Definition\"", StringComparison.Ordinal)
+        && !commandText.Contains("FOR SHARE", StringComparison.Ordinal);
+
+    private static readonly MethodInfo ReconcileMethod =
+        typeof(TimerStartReconciliationService).GetMethod(
+            "ReconcileAsync",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+        ?? throw new InvalidOperationException("ReconcileAsync was not found.");
+
+    private static readonly FieldInfo CursorField =
+        typeof(TimerStartReconciliationService).GetField(
+            "_familyCursor",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+        ?? throw new InvalidOperationException("_familyCursor was not found.");
+
+    private TimerStartReconciliationService NewService(
+        int batchSize,
+        WorkerTelemetry telemetry) =>
+        new(
+            fixture.Factory.Services.GetRequiredService<IServiceScopeFactory>(),
+            new WorkerOptions { TimerStartReconcileBatchSize = batchSize },
+            TimeProvider.System,
+            telemetry,
+            NullLogger<TimerStartReconciliationService>.Instance);
+
+    private static void SetCursor(TimerStartReconciliationService service, string cursor) =>
+        CursorField.SetValue(service, cursor);
+
+    private static Task ReconcileOnceAsync(TimerStartReconciliationService service) =>
+        Assert.IsAssignableFrom<Task>(ReconcileMethod.Invoke(service, [CancellationToken.None]));
+
+    private async Task<long> AddPublishedDefinitionAsync(string workflowKey, FlowNodeModel entry)
+    {
+        await using var context = fixture.CreateDbContext();
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var definitions = new WorkflowDefinitionRepository(context, cache);
+        var record = await definitions.AddAsync(
+            workflowKey,
+            new WorkflowModel
+            {
+                Id = workflowKey,
+                Name = workflowKey,
+                FlowNodes = [entry]
+            },
+            true,
+            CancellationToken.None);
+        return record.Id;
+    }
+
+    private static FlowNodeModel TimerStartNode() => new()
+    {
+        Id = 1,
+        Name = "Scheduled start",
+        Type = BpmnFlowNodeTypes.TimerStartEvent,
+        Timer = new TimerDefinitionModel { TimeDuration = "PT1H" }
+    };
+
+    private static FlowNodeModel ManualStartNode() => new()
+    {
+        Id = 1,
+        Name = "Manual start",
+        Type = BpmnFlowNodeTypes.StartEvent
+    };
+
+    private async Task DeleteFamiliesAsync(params string[] workflowKeys)
+    {
+        await using var cleanup = fixture.CreateDbContext();
+        await cleanup.WorkflowJobs
+            .Where(job => workflowKeys.Contains(job.WorkflowKey))
+            .ExecuteDeleteAsync();
+        await cleanup.TimerSubscriptions
+            .Where(subscription => workflowKeys.Contains(subscription.WorkflowKey))
+            .ExecuteDeleteAsync();
+        await cleanup.WorkflowDefinitions
+            .Where(definition => workflowKeys.Contains(definition.WorkflowKey))
+            .ExecuteDeleteAsync();
+    }
 }

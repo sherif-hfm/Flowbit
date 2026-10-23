@@ -7,6 +7,8 @@ using Flowbit.Shared.Dtos;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
+using DatabaseSchemaGate = FlowbitWorker::Flowbit.Worker.DatabaseSchemaGate;
+using DatabaseSchemaStatus = FlowbitWorker::Flowbit.Worker.DatabaseSchemaStatus;
 using RetentionCleanupService = FlowbitWorker::Flowbit.Worker.RetentionCleanupService;
 using WorkerOptions = FlowbitWorker::Flowbit.Worker.WorkerOptions;
 using WorkerTelemetry = FlowbitWorker::Flowbit.Worker.WorkerTelemetry;
@@ -63,6 +65,40 @@ public sealed class RetentionWorkerTests
         await worker.StopAsync(CancellationToken.None);
         Assert.True(worker.ExecuteTask!.IsCompletedSuccessfully);
         Assert.Equal(3, repository.BatchCalls);
+    }
+
+    [Fact]
+    public async Task CleanupWaitsForTheSchemaGate()
+    {
+        var schemaReady = 0;
+        using var gate = new DatabaseSchemaGate(
+            _ => Task.FromResult(Volatile.Read(ref schemaReady) == 1
+                ? new DatabaseSchemaStatus([], [])
+                : new DatabaseSchemaStatus(["20990101000000_Pending"], [])),
+            TimeProvider.System,
+            NullLogger<DatabaseSchemaGate>.Instance,
+            TimeSpan.FromMilliseconds(20));
+        var repository = new StubRepository(new RetentionTickResult(false, false, false));
+        var clock = new ControlledTimeProvider();
+        await using var services = new ServiceCollection()
+            .AddSingleton<IRetentionRepository>(repository)
+            .BuildServiceProvider();
+        using var telemetry = new WorkerTelemetry();
+        using var worker = NewWorker(services, new WorkerOptions(), clock, telemetry, gate);
+
+        await gate.StartAsync(CancellationToken.None);
+        await worker.StartAsync(CancellationToken.None);
+        await Task.Delay(TimeSpan.FromMilliseconds(300));
+        Assert.Equal(0, repository.InitializeCalls);
+        Assert.Equal(0, repository.BatchCalls);
+
+        Volatile.Write(ref schemaReady, 1);
+        _ = await clock.NextAsync();
+        Assert.Equal(1, repository.InitializeCalls);
+        Assert.Equal(1, repository.BatchCalls);
+        await worker.StopAsync(CancellationToken.None);
+        await gate.StopAsync(CancellationToken.None);
+        Assert.True(worker.ExecuteTask!.IsCompletedSuccessfully);
     }
 
     [Fact]
@@ -220,9 +256,10 @@ public sealed class RetentionWorkerTests
         ServiceProvider services,
         WorkerOptions options,
         TimeProvider clock,
-        WorkerTelemetry telemetry) => new(
+        WorkerTelemetry telemetry,
+        DatabaseSchemaGate? schemaGate = null) => new(
         services.GetRequiredService<IServiceScopeFactory>(),
-        options, clock, telemetry, NullLogger<RetentionCleanupService>.Instance);
+        options, clock, telemetry, NullLogger<RetentionCleanupService>.Instance, schemaGate);
 
     private sealed class StubRepository(params RetentionTickResult[] results) : IRetentionRepository
     {

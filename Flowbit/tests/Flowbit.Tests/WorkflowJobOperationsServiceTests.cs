@@ -318,6 +318,10 @@ public sealed class WorkflowJobOperationsServiceTests
             CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<bool> ReleaseResultReadyLeaseAsync(
             WorkflowJobFence fence,
+            TimeSpan retryAfter,
+            CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<bool> ReleaseLeaseAsync(
+            WorkflowJobFence fence,
             CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<bool> CompleteAsync(
             WorkflowJobFence fence,

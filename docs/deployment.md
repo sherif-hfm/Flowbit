@@ -54,7 +54,7 @@ docker compose logs --tail=100 api worker ui
 | Worker | [Readiness](http://127.0.0.1:18081/health/ready), [liveness](http://127.0.0.1:18081/health/live), and [metrics](http://127.0.0.1:18081/metrics) | `http://worker:8081` |
 | PostgreSQL | `127.0.0.1:55439` | `postgres:5432` |
 
-Startup waits for PostgreSQL's `pg_isready` health check before creating the API. The API applies migrations before accepting HTTP requests; a successful `/openapi/v1.json` check then allows the UI and Worker to start. Compose uses `depends_on` with `service_healthy` for this ordering, as described in the [Docker startup-order documentation](https://docs.docker.com/compose/how-tos/startup-order/). The Worker readiness check becomes healthy after its first successful durable-queue query and remains latched; it does not continuously verify database availability. Compose allows 45 seconds for Worker shutdown, covering its default 30-second drain and host shutdown allowance.
+Startup waits for PostgreSQL's `pg_isready` health check before creating the API. The API applies migrations before accepting HTTP requests; a successful `/openapi/v1.json` check then allows the UI and Worker to start. Compose uses `depends_on` with `service_healthy` for this ordering, as described in the [Docker startup-order documentation](https://docs.docker.com/compose/how-tos/startup-order/). The Worker readiness check becomes healthy once no migration from its build is pending and its first durable-queue query succeeds, and remains latched; it does not continuously verify database availability. Compose allows 45 seconds for Worker shutdown, covering its default 30-second drain plus the 10-second allowance for cancelling and releasing unfinished jobs.
 
 The UI calls the API through `http://api:8080`; application database connections use `postgres:5432`. Host port changes do not change these internal addresses. The API and UI receive matching JWT configuration. Both execution hosts allow the sample `depId` claim; supply any additional workflow context values consistently to API and Worker as described under [Configuration](#configuration).
 
@@ -115,7 +115,7 @@ ASP.NET Core configuration accepts JSON and environment variables. Use `__` to s
 | `Jwt:Issuer`, `Jwt:Audience`, `Jwt:Key` | API; matching values for development UI | Symmetric test-token validation only in DevelopmentToken mode. No fallback in OpenIdConnect mode. |
 | `WorkflowApi:BaseUrl` / `WorkflowApi__BaseUrl` | UI | Server-to-server API address, default `http://localhost:5017`. |
 | `WorkflowContext:Config:<name>` / `WorkflowContext__Config__<name>` | API and Worker | Trusted `config.<name>` values for expressions and placeholders, including integration endpoints/credentials. Supply the same required values to both execution hosts. |
-| `WorkflowContext:AllowedClaims` / `WorkflowContext__AllowedClaims__0` etc. | API and Worker | Allowlist for `sys.claim.*`. API sample configuration allows `depId`; Worker does not automatically inherit it. |
+| `WorkflowContext:AllowedClaims` / `WorkflowContext__AllowedClaims__0` etc. | API and Worker | Allowlist for `sys.claim.*`. API sample configuration allows `depId`; Worker does not automatically inherit it. Durable jobs store only the caller claims these names resolve to on the enqueuing host, so a claim must be allowed on both hosts to reach Worker-side expressions. |
 | `WorkflowAudit:AllowedClaims` / `WorkflowAudit__AllowedClaims__0` etc. | API and Worker | Selected JWT claims captured in history and node detail. Default `[]` disables capture; independent of expression access. See [selected-claim audit](#selected-claim-audit). |
 | `WorkflowDurableProcessing:PublicationEnabled` | API | Blocks publication/default selection of definitions requiring durable processing when false. The checked-in API value is true; set false explicitly during a gated rollout. It is not a Worker pause switch. |
 | `WorkflowMessageDelivery:MaxPayloadBytes` | API | Message request limit, default 1,048,576 bytes. |
@@ -438,7 +438,7 @@ Use a separate process rooted at the Worker publish directory with `dotnet Flowb
 
 ## Database migrations
 
-**Apply reviewed migrations before starting upgraded API/Worker replicas.** Only Development API startup automatically migrates. Production API startup reads persisted settings, so an unmigrated database cannot be treated as an empty ready service. Worker startup does not apply migrations.
+**Apply reviewed migrations before starting upgraded API/Worker replicas.** Only Development API startup automatically migrates. Production API startup reads persisted settings, so an unmigrated database cannot be treated as an empty ready service. Worker startup does not apply migrations: while migrations included in its build are pending, the Worker logs them, reports not ready, and runs no durable work, timer-start reconciliation, or retention cleanup.
 
 Use a migration identity with DDL permission for the `flowbit` schema and a separate runtime identity with the permissions required by runtime queries, sequences, triggers, and functions. Provision database connectivity before migration; migrations do not provision your database host, backups, or service credentials.
 
@@ -562,15 +562,17 @@ The Worker claims available queue rows using PostgreSQL `FOR UPDATE SKIP LOCKED`
 | `HeartbeatSeconds` | 20 | Renewal interval; must be less than half the lease. |
 | `LeaseCheckMilliseconds` | 1000 | Local lease check frequency. |
 | `HeartbeatCommandTimeoutMilliseconds` | 2000 | Bounded renewal command timeout; validation reserves time for retry before expiry. |
-| `PollMilliseconds` | 1000 | Authoritative queue polling interval. PostgreSQL notifications are wake-up hints. |
+| `PollMilliseconds` | 1000 | Authoritative queue polling interval. PostgreSQL notifications are wake-up hints, and a finished job refills its slot without waiting for the next poll. |
 | `IdleBackoffMilliseconds` | 5000 | Idle backoff bound; persisted due/lease deadlines can shorten it. |
-| `TimerStartReconcileSeconds` / `TimerStartReconcileBatchSize` | 1 / 100 | Reconcile bounded workflow-family schedule batches under a PostgreSQL advisory leader. |
-| `ShutdownDrainSeconds` | 30 | Graceful drain; host shutdown timeout adds five seconds. |
+| `TimerStartReconcileSeconds` / `TimerStartReconcileBatchSize` | 1 / 100 | Reconcile bounded batches of workflow families whose published default has a timer start, or that still own an open timer-start subscription, under a PostgreSQL advisory leader. Each Worker checks an immutable default version for timer starts once; later passes read only key columns. |
+| `ShutdownDrainSeconds` | 30 | Graceful drain: stopping ends acquisition while running jobs keep their leases and may finish. Jobs still running afterward are cancelled and their leases released for immediate recovery. The host shutdown timeout adds ten seconds; allow the process supervisor at least that much stop time. |
 | `HealthListenUrl` | `http://0.0.0.0:8081` | Unauthenticated operational listener. Bind deliberately. |
 
-Worker option validation rejects inconsistent or out-of-range values at startup. Its runtime connection pool is capped at **16 connections per process**, including when a larger pool was configured. Retention uses a separate pool capped at two. Size PostgreSQL connection capacity for every API/Worker replica and administrative connection, not just the dispatcher slot count.
+Worker option validation rejects inconsistent or out-of-range values at startup. Its runtime connection pool is capped at **the larger of 16 and `MaxConcurrency` + 8 connections per process**, and never exceeds the configured `Maximum Pool Size`. A configured maximum below `MaxConcurrency` + 8 logs a startup warning, because lease checks can then time out under load. Retention uses a separate pool capped at two. Size PostgreSQL connection capacity for every API/Worker replica and administrative connection, not just the dispatcher slot count.
 
 External HTTP effects have **at-least-once** semantics. Retries may repeat a call after failure or lease loss; use the stable job ID as the remote service's idempotency key. Variable-version conflicts prevent silent overwrite and can open incidents. A timed-out caller, cancelled host, or database rollback cannot undo a remote side effect.
+
+A captured result is the invocation boundary. If finalizing it fails unexpectedly, the Worker keeps the result and retries finalization after a five-second, database-timed delay without repeating the external call. `flowbit_worker_finalization_retries_total` counts these retries; a steadily rising value indicates a persistent finalization defect to investigate in the Worker logs.
 
 ## Monitoring and recovery
 
@@ -581,7 +583,7 @@ These endpoints belong to the **Worker listener**, not the main API:
 | Endpoint | Result | Meaning and limits |
 | --- | --- | --- |
 | `GET /health/live` | 200 `Healthy` while the host responds. | Process self-check; no database check. |
-| `GET /health/ready` | 503 `Unhealthy` until the first successful queue acquisition query, then 200 `Healthy`. | Readiness is latched. It does not revert after later database outages and does not prove continuing queue progress. |
+| `GET /health/ready` | 503 `Unhealthy` while migrations included in this Worker build are pending, and until the first successful queue acquisition query; then 200 `Healthy`. | Readiness is latched once both hold. It does not revert after later database outages and does not prove continuing queue progress. |
 | `GET /metrics` | 200 Prometheus text. | Queue/lease/attempt/incident and runtime measurements; restrict exposure. |
 
 PowerShell:
@@ -604,7 +606,7 @@ The API has no dedicated production health endpoint in this checkout. `/` redire
 
 ### Signals and actions
 
-Observe queue depth and oldest age, timer lateness, acquisition/instance-lock latency, lease loss, retries, output conflicts, open incidents, and retention work. .NET meters are named `Flowbit.Worker` and `Flowbit.Runtime.Jobs`. A successful startup readiness response alone cannot detect a stuck queue; compare these signals over time and inspect Worker logs.
+Observe queue depth and oldest age, timer lateness, acquisition/instance-lock latency, lease loss, retries, finalization retries, output conflicts, open incidents, and retention work. .NET meters are named `Flowbit.Worker` and `Flowbit.Runtime.Jobs`. A successful startup readiness response alone cannot detect a stuck queue; compare these signals over time and inspect Worker logs.
 
 Use the UI Operations page or the role-protected jobs/incidents APIs. `WorkflowJobs.RequiredRole` defaults to `admin`. Collection endpoints use opaque keyset cursors; use detail/attempt endpoints to inspect evidence rather than expecting large execution snapshots in every list row.
 
@@ -621,7 +623,7 @@ complete.
 | REST failure or exhausted retries | Inspect the incident/attempt, correct the integration, then use the fenced retry endpoint. Account for any remote effect already performed. |
 | Output-version conflict | Inspect intervening variable/shared-value changes and the failed attempt. Resolve the business state before requesting a new attempt. |
 | `automatic_loop_limit` incident | Fix or review the automatic loop. A manual retry grants a fresh bounded allowance to the same stable job; it is not an unlimited retry exemption. |
-| Worker stops during execution | Allow lease expiry/recovery by a healthy replica. Do not clear job or lease rows manually; execution fences determine whether a result is still valid. |
+| Worker stops during execution | A graceful stop lets running jobs finish within `ShutdownDrainSeconds`, then releases unfinished leases so a healthy replica recovers them at once; the interrupted attempt is recorded as `leaseLost` with failure code `workerShutdown`. After a crash or forced kill, recovery waits for lease expiry. Do not clear job or lease rows manually; execution fences determine whether a result is still valid. |
 | Stale task/action/version operation returns 409 | Reload current state and follow compatibility/action discovery; do not force IDs or rewrite database state. |
 
 See the [complete API reference](api-guide.md) for retry request fields and endpoint-specific 400/401/403/404/409 responses. Workflow-version changes have preview/compatibility surfaces, and terminal reactivation has explicit blockers; neither is a general repair command for arbitrary database state.

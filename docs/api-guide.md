@@ -9962,7 +9962,7 @@ These endpoints belong to **Flowbit.Worker**, on its configured operational list
 | Method and path | Purpose and response | Parameters/body | Failure behavior |
 | --- | --- | --- | --- |
 | `GET /health/live` | Process liveness; `200 text/plain` with `Healthy` when live. | None. | Health-check failures return `503` with health status text. |
-| `GET /health/ready` | Reports whether the Worker has completed its first successful durable-queue query. | None. | Before that first success it returns `503`. The readiness flag stays set: it is not a continuous database connectivity check or proof that the queue is empty. |
+| `GET /health/ready` | Reports whether every migration in the Worker build has been applied and the Worker has completed its first successful durable-queue query. | None. | Before both hold it returns `503`; the Worker log lists any pending migrations. The readiness flag then stays set: it is not a continuous database connectivity check or proof that the queue is empty. |
 | `GET /metrics` | Prometheus exposition; `200 text/plain; version=0.0.4; charset=utf-8`. | None. | No custom JSON error contract. |
 
 ```http

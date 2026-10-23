@@ -6,22 +6,24 @@ using Flowbit.Worker;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
-using Npgsql;
 
 var builder = WebApplication.CreateBuilder(args);
-
-CapWorkerPool(builder.Configuration);
 
 var workerOptions = builder.Configuration
     .GetSection(WorkerOptions.SectionName)
     .Get<WorkerOptions>() ?? new WorkerOptions();
 workerOptions.Validate();
+var connectionPool = WorkerConnectionPool.Apply(
+    builder.Configuration,
+    workerOptions.MaxConcurrency);
 builder.WebHost.UseUrls(workerOptions.HealthListenUrl);
 builder.Services.AddSingleton(workerOptions);
 builder.Services.AddSingleton(TimeProvider.System);
+// Running jobs may finish during the drain window; jobs still running then
+// get a bounded grace period to unwind and release their leases.
 builder.Services.Configure<HostOptions>(options =>
     options.ShutdownTimeout = TimeSpan.FromSeconds(
-        workerOptions.ShutdownDrainSeconds + 5));
+        workerOptions.ShutdownDrainSeconds + 10));
 
 var contextOptions = builder.Configuration
     .GetSection(WorkflowContextOptions.SectionName)
@@ -51,6 +53,15 @@ builder.Services
     .AddServiceLayer()
     .AddInfrastructure(builder.Configuration);
 
+// Durable processing waits until every migration in this build is applied.
+builder.Services.AddSingleton(provider => new DatabaseSchemaGate(
+    cancellationToken => DatabaseSchemaGate.ReadMigrationStatusAsync(
+        provider.GetRequiredService<IServiceScopeFactory>(),
+        cancellationToken),
+    provider.GetRequiredService<TimeProvider>(),
+    provider.GetRequiredService<ILogger<DatabaseSchemaGate>>()));
+builder.Services.AddHostedService(provider =>
+    provider.GetRequiredService<DatabaseSchemaGate>());
 builder.Services.AddSingleton<PostgresJobWakeupSignal>();
 builder.Services.AddSingleton<IJobWakeupSignal>(provider =>
     provider.GetRequiredService<PostgresJobWakeupSignal>());
@@ -69,22 +80,14 @@ builder.Services.AddHealthChecks()
     .AddCheck<WorkerReadinessHealthCheck>("durable-queue", tags: ["ready"]);
 
 var app = builder.Build();
+if (connectionPool.IsConstrained)
+{
+    app.Logger.LogWarning(
+        "The configured connection pool maximum ({MaxPoolSize}) is below FlowbitWorker:MaxConcurrency + {Reserved} ({Recommended}). Lease checks may time out under load; raise Maximum Pool Size or lower MaxConcurrency.",
+        connectionPool.MaxPoolSize,
+        WorkerConnectionPool.ReservedConnections,
+        connectionPool.RecommendedMaxPoolSize);
+}
 app.MapWorkerOperationalEndpoints();
 
 await app.RunAsync();
-
-static void CapWorkerPool(ConfigurationManager configuration)
-{
-    var key = configuration.GetConnectionString("Flowbit") is not null
-        ? "Flowbit"
-        : "WorkflowEngine";
-    var configured = configuration.GetConnectionString(key)
-        ?? throw new InvalidOperationException(
-            "Connection string 'Flowbit' is missing (legacy key 'WorkflowEngine' is also supported).");
-    var builder = new NpgsqlConnectionStringBuilder(configured);
-    var maximum = Math.Min(builder.MaxPoolSize, 16);
-    builder.MinPoolSize = Math.Min(builder.MinPoolSize, maximum);
-    builder.MaxPoolSize = maximum;
-    builder.ApplicationName = "Flowbit.Worker";
-    configuration[$"ConnectionStrings:{key}"] = builder.ConnectionString;
-}

@@ -323,7 +323,11 @@ public sealed class WorkflowJobRepository(
                 cancellationToken);
         }
 
-        await transaction.CommitAsync(cancellationToken);
+        // Cancellation before this point rolls the leases back. Once they are
+        // committed, finish loading them even if the caller is stopping, so a
+        // draining worker runs or releases every lease it owns instead of
+        // orphaning it until expiry.
+        await transaction.CommitAsync(CancellationToken.None);
         if (selected.Count == 0)
         {
             return [];
@@ -335,7 +339,7 @@ public sealed class WorkflowJobRepository(
             .Include(job => job.Incidents.Where(incident =>
                 incident.Status == WorkflowIncidentStatuses.Open))
             .Where(job => ids.Contains(job.Id))
-            .ToListAsync(cancellationToken);
+            .ToListAsync(CancellationToken.None);
         var byId = entities.ToDictionary(job => job.Id);
 
         return selected
@@ -1027,12 +1031,14 @@ public sealed class WorkflowJobRepository(
 
     public async Task<bool> ReleaseResultReadyLeaseAsync(
         WorkflowJobFence fence,
+        TimeSpan retryAfter,
         CancellationToken cancellationToken)
     {
+        ArgumentOutOfRangeException.ThrowIfLessThan(retryAfter, TimeSpan.Zero);
         var affected = await dbContext.Database.ExecuteSqlInterpolatedAsync(
             $"""
             UPDATE flowbit.workflow_jobs
-            SET "LeaseExpiresAt" = clock_timestamp(),
+            SET "LeaseExpiresAt" = clock_timestamp() + {retryAfter},
                 "HeartbeatAt" = clock_timestamp(),
                 "UpdatedAt" = clock_timestamp()
             WHERE "Id" = {fence.JobId}
@@ -1041,6 +1047,62 @@ public sealed class WorkflowJobRepository(
               AND "LeaseGeneration" = {fence.LeaseGeneration}
               AND "Status" = 'resultReady'
               AND "LeaseExpiresAt" > clock_timestamp()
+            """,
+            cancellationToken);
+        // A delayed release becomes runnable at its persisted deadline, which
+        // idle dispatchers already observe through GetNextWakeAtAsync.
+        if (affected == 1 && retryAfter == TimeSpan.Zero)
+        {
+            await dbContext.Database.ExecuteSqlRawAsync(
+                "SELECT pg_notify('flowbit_jobs', '')",
+                cancellationToken);
+        }
+        return affected == 1;
+    }
+
+    public async Task<bool> ReleaseLeaseAsync(
+        WorkflowJobFence fence,
+        CancellationToken cancellationToken)
+    {
+        // The attempt was counted when the lease was taken, so recovery by
+        // another replica follows the same attempt rules as lease expiry. A
+        // running attempt is closed as a worker shutdown, so its history does
+        // not read as an expired lease; a result-ready attempt stays open for
+        // finalization by the next lease.
+        var affected = await dbContext.Database.ExecuteSqlInterpolatedAsync(
+            $"""
+            WITH fenced AS
+            (
+                SELECT "Id", "Status", "AttemptCount"
+                FROM flowbit.workflow_jobs
+                WHERE "Id" = {fence.JobId}
+                  AND "WorkerId" = {fence.WorkerId}
+                  AND "LeaseToken" = {fence.LeaseToken}
+                  AND "LeaseGeneration" = {fence.LeaseGeneration}
+                  AND "Status" IN ('running', 'resultReady')
+                  AND "LeaseExpiresAt" > clock_timestamp()
+                FOR UPDATE
+            ),
+            closed_attempt AS
+            (
+                UPDATE flowbit.workflow_job_attempts AS a
+                SET "Status" = 'leaseLost',
+                    "FinishedAt" = clock_timestamp(),
+                    "FailureCode" = 'workerShutdown',
+                    "FailureDescription" = 'The worker stopped before the attempt finished and released its lease.'
+                FROM fenced
+                WHERE fenced."Status" = 'running'
+                  AND a."JobId" = fenced."Id"
+                  AND a."AttemptNumber" = fenced."AttemptCount"
+                  AND a."LeaseGeneration" = {fence.LeaseGeneration}
+                  AND a."Status" = 'running'
+            )
+            UPDATE flowbit.workflow_jobs AS j
+            SET "LeaseExpiresAt" = clock_timestamp(),
+                "HeartbeatAt" = clock_timestamp(),
+                "UpdatedAt" = clock_timestamp()
+            FROM fenced
+            WHERE j."Id" = fenced."Id"
             """,
             cancellationToken);
         if (affected == 1)

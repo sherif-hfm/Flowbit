@@ -6,19 +6,29 @@ namespace Flowbit.Worker;
 public interface IJobWakeupSignal
 {
     Task WaitAsync(TimeSpan timeout, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Wakes a waiting dispatcher without a database round trip, for example
+    /// when a local job finishes and frees its slot.
+    /// </summary>
+    void Signal();
 }
 
 public sealed class PostgresJobWakeupSignal(
     NpgsqlDataSource dataSource,
     ILogger<PostgresJobWakeupSignal> logger) : BackgroundService, IJobWakeupSignal
 {
+    // One pending signal is enough: the dispatcher polls PostgreSQL
+    // authoritatively whenever it wakes.
     private readonly Channel<bool> _signals = Channel.CreateBounded<bool>(
         new BoundedChannelOptions(1)
         {
             FullMode = BoundedChannelFullMode.DropWrite,
             SingleReader = false,
-            SingleWriter = true
+            SingleWriter = false
         });
+
+    public void Signal() => _signals.Writer.TryWrite(true);
 
     public async Task WaitAsync(TimeSpan timeout, CancellationToken cancellationToken)
     {
@@ -41,7 +51,7 @@ public sealed class PostgresJobWakeupSignal(
             try
             {
                 await using var connection = await dataSource.OpenConnectionAsync(stoppingToken);
-                connection.Notification += (_, _) => _signals.Writer.TryWrite(true);
+                connection.Notification += (_, _) => Signal();
                 await using (var listen = new NpgsqlCommand("LISTEN flowbit_jobs", connection))
                 {
                     await listen.ExecuteNonQueryAsync(stoppingToken);
