@@ -14,6 +14,7 @@ Flowbit is a **BPMN-aligned JSON workflow engine** with a visual editor, an HTTP
 8. [AI authoring and portable skill](ai-authoring.md) — generate and modify Flowbit JSON in the UI or install the self-contained authoring package in an external agent.
 9. [OpenID Connect](openid-connect.md) — configure provider sign-in, PKCE, API access tokens, actor continuity, and the local Keycloak walkthrough.
 10. [Local users and shared-key authentication](local-authentication.md) — configure database-backed login, manage users and typed attributes, and integrate HS256 tokens using `Username` identity.
+11. [Built-in engine settings reference](engine-settings.md) — look up every persisted built-in setting, its format, defaults, seed migration, and when changes take effect.
 
 [Branding reference](branding.md) — shared logo assets, palette, themes, and contributor maintenance.
 
@@ -24,7 +25,7 @@ Flowbit is a **BPMN-aligned JSON workflow engine** with a visual editor, an HTTP
 | Embed workflow behavior in an application | Getting started → Developer guide → API reference. Your application calls HTTP endpoints; Flowbit.Ui is optional. |
 | Use the operations UI | Getting started setup → [Flowbit.Ui guide](ui-guide.md) → Deployment for operational requirements. |
 | Model a business process | BPMN support → [node and property reference](node-reference.md) → [example catalog](../examples/README.md) → use the [standalone editor](../flowbit-editor.html) or [visual authoring in Flowbit.Ui](ui-guide.md#design-workflows-in-the-ui). |
-| Deploy or operate Flowbit | Deployment → API operational sections → [detailed runtime reference](../Flowbit/README.md). |
+| Deploy or operate Flowbit | Deployment → [built-in engine settings](engine-settings.md) → API operational sections → [detailed runtime reference](../Flowbit/README.md). |
 | Contribute to the engine | Developer guide → runtime reference → [database schema reference](database-schema.md) → [repository architecture and contributor instructions](../AGENTS.md). |
 
 ## Components
@@ -112,7 +113,7 @@ error-boundary precedence, attempts, and incident recovery with a local mock.
 
 ## Reference ownership
 
-The [node and property reference](node-reference.md) owns the consolidated authoring tables for nodes and their nested configuration. The [example catalog](../examples/README.md) owns each sample's prerequisites, actors, inputs, and expected outcome. The [runtime README](../Flowbit/README.md) remains the detailed implementation reference for database behavior and individual features. The [database schema reference](database-schema.md) owns the table-by-table description of the `flowbit` schema: each table's purpose, key columns, keys, and relationships. These guides explain the developer and operator workflows and link to those sources for deeper details.
+The [node and property reference](node-reference.md) owns the consolidated authoring tables for nodes and their nested configuration. The [built-in engine settings reference](engine-settings.md) owns the complete persisted-setting inventory, value rules, runtime defaults, seed migrations, and change timing; [deployment configuration](deployment.md#configuration) owns host-level configuration. The [example catalog](../examples/README.md) owns each sample's prerequisites, actors, inputs, and expected outcome. The [runtime README](../Flowbit/README.md) remains the detailed implementation reference for database behavior and individual features. The [database schema reference](database-schema.md) owns the table-by-table description of the `flowbit` schema: each table's purpose, key columns, keys, and relationships. These guides explain the developer and operator workflows and link to those sources for deeper details.
 
 The [root README](../README.md) introduces Flowbit's features and includes editor and operations screenshots. This folder is ordinary GitHub-readable Markdown; no documentation website or Wiki setup is required.
 

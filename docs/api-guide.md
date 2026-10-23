@@ -4691,6 +4691,8 @@ Content-Type: application/json
 
 ## Settings
 
+The [built-in engine settings reference](engine-settings.md) describes every recognized engine key, value format, default, seed migration, and change timing. This section owns the management HTTP contracts.
+
 All routes require Settings administrator permission. Engine settings have a string `value`, while workflow settings have a raw JSON `value` for the workflow expression context. Creation selects namespace/key (engine) or namespace/name (workflow); updates replace value/description without renaming the setting. For update/delete round-trip the exact timestamp from the list response. Delete takes `expectedUpdatedAt` in the query, not the body. Invalid identifiers, missing values/timestamps are `400`; duplicate/stale operations are `409`. Engine values are opaque strings, preserving empty/whitespace/multiline content; each setting consumer interprets the value. Invalid actor-identity configuration can prevent the next API startup. Namespace/key/name are at most 300 characters and description at most 1,000. Changing the actor identity claim setting requires process restart because identity configuration is latched at startup. No per-ID GET route exists: retrieve settings with the list. The engine setting `AiAuthoring.Models` (matched ignoring case) holds the AI assistant's models and keys: these routes do not list it, and creating, updating or deleting it returns `400`. Manage it through [AI models](#ai-models).
 
 ### GET /api/engine-settings

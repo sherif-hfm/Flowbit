@@ -18,6 +18,8 @@ All modes default to `Username`, then `ClaimTypes.Name` (`http://schemas.xmlsoap
 
 Apply the additive `AddLocalIdentity` migration before enabling Local mode on deployed hosts. Development startup applies migrations automatically. All new tables live in `flowbit`: `local_users`, `user_attribute_definitions`, and `local_refresh_sessions`. The migration seeds `Users.RequiredRole=admin` only when missing.
 
+The [built-in engine settings reference](engine-settings.md) owns the full rules for [`Users.RequiredRole`](engine-settings.md#usersrequiredrole) and [`Authentication.UserIdentityClaim`](engine-settings.md#authenticationuseridentityclaim), including role replacement, defaults, startup restrictions, and restart requirements. The table below describes host configuration, not engine-setting rows.
+
 | Setting | Host | Default / requirement |
 |---|---|---|
 | `Authentication:Mode` | API, UI | Set to `Local`. |

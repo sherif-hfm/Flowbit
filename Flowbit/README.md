@@ -889,21 +889,20 @@ For an existing database, use [deployment and migration guidance](../docs/deploy
 and the compatibility notes below. Development API startup applies migrations;
 it does not import workflow definitions automatically.
 
-The additive `SeedDefaultSettings` migration inserts these baseline settings
-when they are missing in any environment where migrations are applied:
+The [built-in engine settings reference](../docs/engine-settings.md) owns the
+complete persisted-setting inventory, formats, runtime defaults, seed migrations,
+and change timing. `SeedDefaultSettings` seeds the original five permission
+settings (`admin`) and three execution limits (`1000`), plus workflow-context
+`setting.examples.messageClientId` (JSON string `"example-message-client"`) and
+`setting.examples.messageCorrelation` (JSON string `"orders:inbound"`). Later
+feature migrations seed settings management, shared-variable and local-user
+permissions, and the three batch limits; `WorkflowVariableUpdates.MaxBatchInstances`
+is seeded by `AddInstanceVariableUpdates`, not `SeedDefaultSettings`.
 
-| Store | Logical keys | Seed value |
-| --- | --- | --- |
-| Engine | `Workflow.RequiredRole`, `WorkflowInstances.RequiredRole`, `NodeExecution.RequiredRole`, `WorkflowJobs.RequiredRole`, `Delegation.AdminRoles` | `admin` |
-| Engine | `Workflow.Gateway.MaxActiveTokens`, `Workflow.MultiInstance.MaxInstances`, `Workflow.Async.MaxConsecutiveAutomaticActivations` | `1000` |
-| Engine | `WorkflowVariableUpdates.MaxBatchInstances` | `10000` (hard cap) |
-| Workflow context | `setting.examples.messageClientId` | JSON string `"example-message-client"` |
-| Workflow context | `setting.examples.messageCorrelation` | JSON string `"orders:inbound"` |
-
-The migration never overwrites existing settings. It deliberately does not seed
-`Authentication.UserIdentityClaim`, task-distribution credentials, or secrets;
-keep deployment secrets in `WorkflowContext:Config` or another secret-backed
-configuration provider.
+Seeds preserve recognized existing overrides. `Authentication.UserIdentityClaim`
+and `AiAuthoring.Models` are unseeded; manage the latter only through the AI-model
+page/API. Task-distribution credentials and other deployment secrets belong in
+`WorkflowContext:Config` or another secret-backed configuration provider.
 
 ### Gateway migration rollout
 
