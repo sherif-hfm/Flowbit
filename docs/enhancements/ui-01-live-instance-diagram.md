@@ -13,7 +13,7 @@
 
 ## Summary
 
-Show the instance's exact workflow version as a read-only diagram on instance detail, highlighting where the instance is and what work is waiting. Selecting a node links to its execution detail. The path the instance took is added in later releases, once its evidence is complete.
+Show the instance's exact workflow version as a read-only diagram on instance detail, highlighting where the instance is and what work is waiting. Selecting a node links to its execution detail. The path the instance took is added in a later release.
 
 ## Why it adds value
 
@@ -29,8 +29,8 @@ Show the instance's exact workflow version as a read-only diagram on instance de
 
 ## Later releases
 
-- Visited nodes from `node_executions`, with a notice that visits before that table's deployment, and pruned history, are missing.
-- Flows taken, once every traversed flow is recorded for all workflows.
+- Visited nodes from `node_executions`, with a notice when an instance's visits are incomplete: it started before that table's migration, or retention removed its visits.
+- Flows taken, from the same rows: each visit's `EnteredViaFlowId` is one traversal. Multi-instance child visits all repeat their task's entry flow, so count it once per multi-instance execution.
 - Markers for open incidents.
 
 ## Current state
@@ -39,7 +39,9 @@ Verified on 2026-10-24: not implemented.
 
 - Instance detail renders execution positions, variables, history, gateway scopes, multi-instance results, and other lists ([`Components/Shared/InstanceDetails/`](../../Flowbit/src/Flowbit.Ui/Components/Shared/InstanceDetails/)), but no diagram.
 - The shared editor has no read-only or viewer mode ([flowbit-editor.js](../../Flowbit/src/Flowbit.Ui/wwwroot/editor/flowbit-editor.js) has no `readOnly` handling).
-- Path evidence is incomplete today: `node_executions` covers visits only from its deployment onward and retention can prune it; complete flow-traversal evidence exists only for workflows that use `FlowInfo`; and `instance_history` is documented as not a complete ledger.
+- Path evidence exists for every workflow, whether or not it uses `FlowInfo`. [`node_executions`](../database-schema.md#node_executions) records each committed visit with its entry, selected, and exit flows (`EnteredViaFlowId`, `SelectedFlowId`, `ExitedViaFlowId`). The entry flow is empty only where no sequence flow was taken: start events, boundary events, extra tokens created at a fork, Complex gateway resets, and reactivation. A comparison of ten workflow shapes against PostgreSQL found the same traversals in `node_executions` with and without `FlowInfo`.
+- Two limits remain. Visits that ended before the `AddNodeExecutions` migration were not backfilled; only work open at that moment was seeded and marked `IsCutoverSeeded`. [Retention](../ui-guide.md#manage-retention) of node activity, which keeps everything by default, can delete the visits of finished instances but never of running ones.
+- `instance_history` is an audit trail, not a complete node-lifecycle ledger ([database schema](../database-schema.md#instance_history)); it is not needed for the path.
 
 ## Builds on
 

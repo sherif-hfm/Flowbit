@@ -28,7 +28,7 @@ Per workflow family and version: throughput, cycle times, visit counts and durat
 
 ## Later releases
 
-- Flow-level counts and path frequency, once traversed flows are recorded for every workflow.
+- Flow-level counts and path frequency, derived from the entry flows in `node_executions`.
 - Deadline breaches, after [UI-04](ui-04-task-due-date-and-priority.md).
 - Throughput trends.
 
@@ -41,14 +41,14 @@ Verified on 2026-10-24: not implemented.
 
 ## Builds on
 
-- `node_executions`, which records each visit's start, completion, status, and actors.
+- [`node_executions`](../database-schema.md#node_executions), which records each visit's start, completion, status, actors, and entry, selected, and exit flows for every workflow. Each visit's `EnteredViaFlowId` is one traversal; multi-instance child visits repeat their task's entry flow, so count it once per multi-instance execution.
 - The [UI-01](ui-01-live-instance-diagram.md) viewer for the heatmap.
-- Note: `sequence_flow_summaries` is written only for definitions that reference `FlowInfo`, so flow counts for every workflow need another source.
+- Note: `sequence_flow_occurrences` and `sequence_flow_summaries` are written only for definitions that reference `FlowInfo` and for administrative actions, so they are not a source for every workflow.
 
 ## Open questions
 
 - Live SQL aggregation or pre-computed rollups, given table sizes and retention cleanup.
-- Flow-level counts for all workflows: always record them, or derive them from history?
+- Instances that were running before the `node_executions` migration have incomplete visits: exclude them from metrics, or include them with a notice?
 - Charting approach in Flowbit.Ui: inline SVG or a charting library.
 
 ## Plan
