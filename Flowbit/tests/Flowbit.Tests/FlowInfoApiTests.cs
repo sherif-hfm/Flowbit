@@ -1,9 +1,12 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using Flowbit.Service.Abstractions;
+using Flowbit.Service.Models;
 using Flowbit.Shared.Dtos;
 using Flowbit.Shared.Models;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
 namespace Flowbit.Tests;
@@ -217,6 +220,78 @@ public sealed class FlowInfoApiTests(PostgresApiFixture fixture)
         Assert.Equal("multiInstanceOutcome", summary.LastTraversalKind);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AsyncAfterContinuation_RecordsDeferredTraversalOnce(bool multiInstance)
+    {
+        var workflowId = await CreateWorkflowAsync(CreateAsyncAfterFlowInfoModel(multiInstance));
+        var started = await StartAsync(workflowId);
+        var task = await GetSingleActiveTaskAsync(started.Id, "reviewer", "User");
+
+        using var response = await SendAsync(
+            HttpMethod.Post,
+            $"/api/user-tasks/{task.Id}/flows/201",
+            new TakeFlowRequest(null),
+            "reviewer",
+            ["User"]);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("running", (await ReadAsync<UserTaskActionAckDto>(response)).InstanceStatus);
+
+        long jobId;
+        long? jobMultiInstanceExecutionId;
+        await using (var db = fixture.CreateDbContext())
+        {
+            var job = await db.WorkflowJobs.SingleAsync(row => row.InstanceId == started.Id);
+            Assert.Equal("queued", job.Status);
+            Assert.Equal(task.Id, job.UserTaskId);
+            jobId = job.Id;
+            jobMultiInstanceExecutionId = job.MultiInstanceExecutionId;
+            Assert.Equal(multiInstance, jobMultiInstanceExecutionId is not null);
+
+            // The action is recorded on completion; the traversal waits for the job.
+            Assert.False(await db.SequenceFlowOccurrences.AnyAsync(row =>
+                row.InstanceId == started.Id && row.SequenceFlowId == 201 && row.IsTraversal));
+        }
+
+        await ProcessJobAsync(jobId);
+
+        var expectedKind = multiInstance ? "multiInstanceAsyncAfter" : "userTaskAsyncAfter";
+        await using (var db = fixture.CreateDbContext())
+        {
+            Assert.Equal("completed", (await db.WorkflowInstances.SingleAsync(row =>
+                row.Id == started.Id)).Status);
+            Assert.Equal("completed", (await db.WorkflowJobs.SingleAsync(row =>
+                row.Id == jobId)).Status);
+
+            var traversal = await db.SequenceFlowOccurrences.SingleAsync(row =>
+                row.InstanceId == started.Id && row.SequenceFlowId == 201 && row.IsTraversal);
+            Assert.False(traversal.IsAction);
+            Assert.Equal(expectedKind, traversal.Kind);
+            Assert.Equal("reviewer", traversal.User);
+            Assert.Equal(task.Id, traversal.UserTaskId);
+            Assert.Equal(jobMultiInstanceExecutionId, traversal.MultiInstanceExecutionId);
+
+            var summary = await db.SequenceFlowSummaries.SingleAsync(row =>
+                row.InstanceId == started.Id && row.SequenceFlowId == 201);
+            Assert.Equal(1, summary.ActionCount);
+            Assert.Equal(1, summary.TraversalCount);
+            Assert.Equal(expectedKind, summary.LastTraversalKind);
+        }
+
+        // The gateway after the continuation saw one action and one traversal.
+        using var detailResponse = await SendAsync(
+            HttpMethod.Get,
+            $"/api/instances/{started.Id}",
+            user: "reviewer",
+            roles: ["User"]);
+        Assert.Equal(HttpStatusCode.OK, detailResponse.StatusCode);
+        var detail = await ReadAsync<InstanceDetailDto>(detailResponse);
+        Assert.Equal("completed", detail.Status);
+        Assert.Equal(4, detail.CurrentNodeId);
+    }
+
     private async Task<long> CreateWorkflowAsync(WorkflowModel model)
     {
         using var response = await SendAsync(
@@ -253,6 +328,33 @@ public sealed class FlowInfoApiTests(PostgresApiFixture fixture)
             roles: roles);
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         return Assert.Single((await ReadAsync<PagedResult<UserTaskDto>>(response)).Items);
+    }
+
+    private async Task ProcessJobAsync(long jobId)
+    {
+        await using (var db = fixture.CreateDbContext())
+        {
+            var job = await db.WorkflowJobs.SingleAsync(entity => entity.Id == jobId);
+            job.Priority = 10_000;
+            job.DueAt = DateTimeOffset.UtcNow.AddSeconds(-1);
+            await db.SaveChangesAsync();
+        }
+
+        await using var scope = fixture.Factory.Services.CreateAsyncScope();
+        var repository = scope.ServiceProvider.GetRequiredService<IWorkflowJobRepository>();
+        var leases = await repository.LeaseRunnableAsync(
+            new WorkflowJobLeaseRequest(
+                $"flow-info-async-after-{Guid.NewGuid():N}",
+                MaxCount: 1,
+                MaxActivityCount: 1,
+                MaxPerInstance: 1,
+                LeaseDuration: TimeSpan.FromMinutes(2)),
+            CancellationToken.None);
+        var lease = Assert.Single(leases);
+        Assert.Equal(jobId, lease.Job.Id);
+        await scope.ServiceProvider
+            .GetRequiredService<IWorkflowJobProcessor>()
+            .ProcessAsync(lease, CancellationToken.None);
     }
 
     private async Task<HttpResponseMessage> SendAsync(
@@ -457,6 +559,110 @@ public sealed class FlowInfoApiTests(PostgresApiFixture fixture)
                 new SequenceFlowModel { Id = 301, Name = "Done", SourceRef = 3, TargetRef = 4 }
             ]
         };
+    }
+
+    private static WorkflowModel CreateAsyncAfterFlowInfoModel(bool multiInstance)
+    {
+        var suffix = Guid.NewGuid().ToString("N");
+        // A gateway, unlike a script task, routes inline after the continuation,
+        // so the end event reached shows the counts the downstream logic saw.
+        var model = new WorkflowModel
+        {
+            Id = "flow-info-async-after-" + suffix,
+            Name = "FlowInfo async after " + suffix,
+            InitialEventId = 1,
+            FlowNodes =
+            [
+                new FlowNodeModel { Id = 1, Name = "Start", Type = BpmnFlowNodeTypes.StartEvent },
+                new FlowNodeModel
+                {
+                    Id = 2,
+                    Name = "Review",
+                    Type = BpmnFlowNodeTypes.UserTask,
+                    Roles = ["User"],
+                    AsyncAfter = true
+                },
+                new FlowNodeModel
+                {
+                    Id = 3,
+                    Name = "Check evidence",
+                    Type = BpmnFlowNodeTypes.ExclusiveGateway
+                },
+                new FlowNodeModel { Id = 4, Name = "Counted once", Type = BpmnFlowNodeTypes.EndEvent },
+                new FlowNodeModel { Id = 5, Name = "Miscounted", Type = BpmnFlowNodeTypes.EndEvent }
+            ],
+            SequenceFlows =
+            [
+                new SequenceFlowModel { Id = 101, Name = "Begin", SourceRef = 1, TargetRef = 2 },
+                new SequenceFlowModel
+                {
+                    Id = 201,
+                    Name = "Approve",
+                    SourceRef = 2,
+                    TargetRef = 3,
+                    Roles = ["User"]
+                },
+                new SequenceFlowModel
+                {
+                    Id = 301,
+                    Name = "Counted once",
+                    SourceRef = 3,
+                    TargetRef = 4,
+                    Condition = "FlowInfo(201, 'actions.count') == 1 and " +
+                                "FlowInfo(201, 'traversals.count') == 1",
+                    ConditionPriority = 1
+                },
+                new SequenceFlowModel
+                {
+                    Id = 302,
+                    Name = "Miscounted",
+                    SourceRef = 3,
+                    TargetRef = 5,
+                    IsDefault = true
+                }
+            ]
+        };
+        if (!multiInstance)
+        {
+            return model;
+        }
+
+        model.Variables.Add(new VariableModel
+        {
+            Id = 1,
+            Name = "voteResult",
+            DataType = WorkflowVariableTypes.Json,
+            DefaultValue = JsonSerializer.SerializeToElement(Array.Empty<object>())
+        });
+        model.FlowNodes.Single(node => node.Id == 2).MultiInstance = new MultiInstanceModel
+        {
+            Mode = MultiInstanceModes.Parallel,
+            Source = MultiInstanceSources.Cardinality,
+            CardinalityExpression = "1",
+            OnePerActor = false,
+            CompletionEvaluation = MultiInstanceCompletionEvaluations.AfterAll,
+            ResultVariable = "voteResult"
+        };
+        model.FlowNodes.Add(new FlowNodeModel
+        {
+            Id = 6,
+            Name = "No outcome",
+            Type = BpmnFlowNodeTypes.ErrorEndEvent,
+            ErrorCode = "NO_OUTCOME"
+        });
+        var approve = model.SequenceFlows.Single(flow => flow.Id == 201);
+        approve.CompletionCondition = "CountFlow(201) == 1";
+        approve.CompletionPriority = 10;
+        model.SequenceFlows.Add(new SequenceFlowModel
+        {
+            Id = 205,
+            Name = "No outcome",
+            SourceRef = 2,
+            TargetRef = 6,
+            IsDefault = true,
+            IsSelectable = false
+        });
+        return model;
     }
 
     private static WorkflowModel CreateMultiInstanceFlowInfoModel()

@@ -535,7 +535,9 @@ Storage follows the hybrid design:
   `actions` are explicit actor selections, while `traversals` are token movement:
   a normal user-task action and parent MI interrupt are both; an MI child vote is
   action-only; the aggregate outcome/default is traversal-only; and automatic
-  routing is traversal-only. Evidence snapshots the validated actor and all roles
+  routing is traversal-only. An `asyncAfter` user task records that traversal
+  exactly once, in its durable continuation, with the task/MI-execution
+  correlation. Evidence snapshots the validated actor and all roles
   at action time, and staged evidence is visible to a downstream gateway/script
   in the same transaction. `FlowInfo` is allowed in non-default Exclusive,
   Inclusive, and Complex outgoing conditions, MI completion conditions, NCalc
