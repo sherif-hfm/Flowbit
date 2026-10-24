@@ -8,6 +8,7 @@
 | Category | New events |
 | Effort | M–L |
 | Priority | Not ranked |
+| Depends on | None |
 | Related | [EVENT-02](event-02-message-correlation-by-business-key.md), [EVENT-03](event-03-event-based-gateway.md) |
 
 ## Summary
@@ -17,6 +18,18 @@ Signal start, intermediate catch, boundary, intermediate throw, and end events. 
 ## Why it adds value
 
 - Broadcast situations such as "policy changed", "product recall", or "fiscal year closed", where many open instances must react at once.
+
+## First release acceptance criteria
+
+- [ ] Intermediate signal catch and signal boundary events subscribe by signal name while they are active.
+- [ ] An authenticated API call broadcasts a signal by name, optionally limited to one workflow family.
+- [ ] The Worker delivers the signal through paged durable jobs; every subscription that existed when the signal was thrown receives it once, and delivery progress is visible.
+- [ ] The signal payload maps into each receiving instance through typed mappings.
+
+## Later releases
+
+- Signal start, intermediate throw, and end events.
+- Limiting a signal to one business key.
 
 ## Current state
 
@@ -32,10 +45,9 @@ Verified on 2026-10-24: not implemented.
 
 ## Open questions
 
-- Delivery guarantees: are subscribers captured at throw time, and what happens to an instance that subscribes during fan-out?
-- Authorization for throwing signals through the API, including machine-client scopes.
-- Mapping the signal payload into each receiving instance.
-- Fan-out limits and progress visibility in Flowbit.Ui.
+- What happens to an instance that subscribes while a fan-out is in progress?
+- Which machine-client scopes allow throwing signals?
+- Fan-out limits.
 
 ## Plan
 

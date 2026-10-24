@@ -8,15 +8,27 @@
 | Category | Flowbit.Ui feature |
 | Effort | S |
 | Priority | Not ranked |
+| Depends on | None |
 | Related | [UI-02](ui-02-process-analytics-heatmap.md), [UI-10](ui-10-bulk-task-actions.md) |
 
 ## Summary
 
-Per-user saved filter and sort combinations on My work, Instances, Task management, and Activity, and CSV export of the current results.
+Per-user saved filter and sort combinations on My work, Instances, Task management, and Activity, and CSV export of search results.
 
 ## Why it adds value
 
 - Repeated searches take one click, and results reach spreadsheets without API scripting.
+
+## First release acceptance criteria
+
+- [ ] My work and Instances can save, apply, rename, and delete personal views of their filters and sorting, stored in the browser.
+- [ ] My work and Instances export all matching results to CSV, up to a row limit, through the same authorized search.
+- [ ] An export that reaches the row limit says so.
+
+## Later releases
+
+- Views for Task management and Activity.
+- Views stored on the server that follow a user across browsers, and views shared with a team.
 
 ## Current state
 
@@ -31,9 +43,8 @@ Verified on 2026-10-24: not implemented.
 
 ## Open questions
 
-- Store views on the server per user, or in browser storage?
-- Export limits (row count, streaming) and identical authorization to the search.
-- Views shared with a team?
+- The row limit.
+- Which columns, including returned variables, an export contains.
 
 ## Plan
 

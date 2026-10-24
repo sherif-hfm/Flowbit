@@ -8,6 +8,7 @@
 | Category | Documentation housekeeping |
 | Effort | S |
 | Priority | Not ranked |
+| Depends on | None |
 | Related | None |
 
 ## Summary
@@ -17,6 +18,16 @@ Commit `87a649c` deliberately removed `docs/refactoring/` as outdated, but track
 ## Why it adds value
 
 - Readers and agents who follow these links reach missing pages. AGENTS.md asks contributors to validate relative links when documentation changes.
+
+## First release acceptance criteria
+
+- [x] No tracked document links to `docs/refactoring/`.
+- [x] Each affected document keeps its own explanation and points to current code, tests, or the docs/index.md refactoring history where context helps.
+- [x] Changed relative links and anchors resolve.
+
+## Later releases
+
+None.
 
 ## Current state
 

@@ -8,16 +8,30 @@
 | Category | Flowbit.Ui feature (with engine changes) |
 | Effort | L |
 | Priority | Not ranked |
+| Depends on | None |
 | Related | [TASK-03](task-03-business-rule-task-decision-table.md), [UI-01](ui-01-live-instance-diagram.md) |
 
 ## Summary
 
-Step through a workflow from the editor with sample start inputs, mocked REST responses, chosen user actions, and a simulated clock for timers, while seeing the path taken and every variable change. Scenarios can optionally be saved and rerun as regression tests.
+Step through a workflow from the editor with sample start inputs, mocked REST responses, chosen user actions, and later a simulated clock for timers, while seeing the path taken and every variable change. Scenarios can later be saved and rerun as regression tests.
 
 ## Why it adds value
 
 - Authors find logic errors before publishing.
 - AI-generated workflows can be checked by behavior, not only by structural validation.
+
+## First release acceptance criteria
+
+- [ ] From the editor, an author runs the current workflow, saved or not, with sample start inputs and without publishing it.
+- [ ] Service tasks use mock responses supplied by the author; no real HTTP request is sent.
+- [ ] The author chooses user actions step by step and sees the path, positions, and variable changes.
+- [ ] A test run leaves no runtime data behind and changes no shared variable.
+
+## Later releases
+
+- A simulated clock for timers, and simulated message deliveries.
+- Saved scenarios rerun as regression tests.
+- Test runs offered to the AI assistant as a tool, which AGENTS.md reserves for an explicit user decision.
 
 ## Current state
 
@@ -34,9 +48,7 @@ Verified on 2026-10-24: not implemented.
 ## Open questions
 
 - Execution environment: an isolated schema, rolled-back transactions, or an in-memory engine adapter?
-- How to mock REST calls, message deliveries, and timers.
-- Where scenarios are stored: with the definition, or separately.
-- Offering test runs to the AI assistant as a tool is a user decision under AGENTS.md and needs an explicit request.
+- How shared-variable reads work in a test run without exposing real catalog values.
 
 ## Plan
 

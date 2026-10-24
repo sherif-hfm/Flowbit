@@ -8,6 +8,7 @@
 | Category | New events |
 | Effort | L |
 | Priority | Not ranked |
+| Depends on | None |
 | Related | [TASK-01](task-01-call-activity.md), [TASK-04](task-04-email-and-chat-send.md) |
 
 ## Summary
@@ -17,6 +18,18 @@ Compensation handlers attached to activities that completed, typically REST serv
 ## Why it adds value
 
 - Undo distributed side effects, such as cancelling a reservation or refunding a payment, when a later step fails or the instance is cancelled.
+
+## First release acceptance criteria
+
+- [ ] A REST service task can name a compensation handler, which is itself a REST call.
+- [ ] A compensation throw or end event runs the handlers of completed activities in reverse completion order, each as a durable job with retries and incidents.
+- [ ] Each handler receives the outputs its activity produced.
+- [ ] Instance detail shows each handler's progress and outcome.
+
+## Later releases
+
+- Compensation triggered by cancellation or `errorEndEvent`.
+- Compensation scopes narrower than the whole instance.
 
 ## Current state
 
@@ -32,10 +45,8 @@ Verified on 2026-10-24: not implemented.
 
 ## Open questions
 
-- Without subprocesses, compensation scope is the whole instance; is that enough?
-- Which data a handler sees: the completed activity's outputs as they were, or current values?
-- When a compensation handler fails: incident, retry, or stop compensating?
-- Triggers: explicit throw only, or also cancellation and `errorEndEvent`?
+- Should a failed handler stop the remaining handlers?
+- Without subprocesses, compensation applies to the whole instance; is that enough?
 
 ## Plan
 

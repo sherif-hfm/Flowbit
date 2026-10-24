@@ -8,7 +8,8 @@
 | Category | Flowbit.Ui feature (with engine changes) |
 | Effort | M–L |
 | Priority | Not ranked |
-| Related | [UI-03](ui-03-rich-task-forms.md), [UI-05](ui-05-notification-center-live-refresh.md), [TASK-04](task-04-email-and-chat-send.md) |
+| Depends on | None |
+| Related | [UI-13](ui-13-notification-center.md), [UI-03](ui-03-rich-task-forms.md), [TASK-04](task-04-email-and-chat-send.md) |
 
 ## Summary
 
@@ -17,6 +18,20 @@ A discussion thread with @mentions on each instance and task, and file attachmen
 ## Why it adds value
 
 - Document-centric processes keep files and discussion next to the work, with an audit trail.
+
+## First release acceptance criteria
+
+- [ ] Plain-text comments on an instance are attributed to their author and cannot be edited or deleted.
+- [ ] Files can be attached to an instance within configured size and type limits.
+- [ ] Comments and files are visible only to users allowed to see the instance, and adding them requires a permission decided in the plan.
+- [ ] Retention policies cover comments and attachments.
+
+## Later releases
+
+- Comment threads on tasks.
+- @mentions that notify people, after [UI-13](ui-13-notification-center.md).
+- A `file` variable type in forms.
+- A malware-scanning hook.
 
 ## Current state
 
@@ -32,10 +47,8 @@ Verified on 2026-10-24: not implemented.
 
 ## Open questions
 
-- Storage: PostgreSQL or a configurable blob store; size limits; a malware-scanning hook.
-- Visibility: everyone who can see the instance, or limited to a task?
-- Editable and deletable comments, or an immutable audit record?
-- Mentions as notifications through [UI-05](ui-05-notification-center-live-refresh.md).
+- Storage: PostgreSQL or a configurable blob store?
+- The instance-detail API requires authentication but does not apply personal task visibility. Which narrower permission should adding comments and files require?
 
 ## Plan
 

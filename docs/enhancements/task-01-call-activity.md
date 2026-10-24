@@ -7,7 +7,8 @@
 | Status | Not started |
 | Category | New task type |
 | Effort | L |
-| Priority | Recommended order #3 |
+| Priority | Conditional: schedule when a concrete reuse case justifies its lifecycle complexity |
+| Depends on | None |
 | Related | [TASK-05](task-05-multi-instance-automatic-activities.md), [EVENT-05](event-05-error-code-boundaries.md), [EVENT-07](event-07-compensation.md) |
 
 ## Summary
@@ -19,6 +20,23 @@ A `callActivity` node starts a child instance of another workflow family and wai
 - Shared fragments, such as a manager approval chain, a KYC check, or a payment step, are modeled once and reused instead of copied into every workflow.
 - Diagrams stay smaller, and each fragment is versioned and published on its own.
 - It is the most commonly used BPMN capability that Flowbit lacks.
+
+## First release acceptance criteria
+
+- [ ] A `callActivity` node names a target workflow key and starts a child instance of that family's published default version, resolved and saved when the call starts.
+- [ ] Typed input mappings fill the child's start variables, and typed output mappings write the child's results to the parent when the child completes, all-or-nothing.
+- [ ] The parent token waits while the child runs and advances exactly once when the child completes.
+- [ ] Cancelling the parent, or reaching a `terminateEndEvent` in the parent, cancels the running child in the same transaction.
+- [ ] A child that faults follows an error boundary attached to the call activity, or faults the parent when none is attached.
+- [ ] Calls nested deeper than a configured limit fail with a clear error.
+- [ ] Instance detail links a parent to its children and each child to its parent.
+
+## Later releases
+
+- Latest-published and exact version bindings.
+- Timer and conditional boundaries on a call activity.
+- Multi-instance call activities ([TASK-05](task-05-multi-instance-automatic-activities.md)).
+- Error-code matching for child faults ([EVENT-05](event-05-error-code-boundaries.md)).
 
 ## Current state
 
@@ -36,12 +54,11 @@ Verified on 2026-10-24: not implemented.
 
 ## Open questions
 
-- Is the child version resolved and saved when the call starts, and how does that interact with instance version changes on the parent or the child?
-- Does a faulted child fault the parent, follow an error boundary on the call activity, or open an incident?
-- Do parent cancellation and `terminateEndEvent` cancel the child in the same transaction?
+- How does the saved child version interact with instance version changes on the parent or the child?
 - Which identity starts the child (the triggering user or a system actor), and do the child's start roles apply?
-- Can timer, conditional, and error boundaries attach to a call activity, and can it be multi-instance ([TASK-05](task-05-multi-instance-automatic-activities.md))?
-- How do instance detail and instance search link a parent and its children?
+- What does the parent's error boundary receive from a faulted child: its fault code and description?
+- What call depth limit applies, and where is it configured?
+- How does instance search show parent and child relationships?
 
 ## Plan
 

@@ -8,7 +8,8 @@
 | Category | New task type |
 | Effort | M–L |
 | Priority | Not ranked |
-| Related | [TASK-01](task-01-call-activity.md), [TASK-02](task-02-external-task.md) |
+| Depends on | None |
+| Related | [TASK-01](task-01-call-activity.md) |
 
 ## Summary
 
@@ -17,6 +18,19 @@ Allow `multiInstance` on `serviceTask`, `scriptTask`, and the proposed `callActi
 ## Why it adds value
 
 - Batch integrations without hand-built loops of gateways and counters.
+
+## First release acceptance criteria
+
+- [ ] `multiInstance` with a `collection` source works on `serviceTask` and `scriptTask`, in parallel and sequential modes.
+- [ ] Each child can read its item and index, and its result lands in the ordered result collection.
+- [ ] Each REST child runs as its own durable job with retries, and a configurable limit bounds how many run at once.
+- [ ] A failed child follows the node's error boundary and cancels unfinished children; without a boundary, it opens an incident and the parent waits.
+- [ ] Fan-out obeys `Workflow.MultiInstance.MaxInstances`.
+
+## Later releases
+
+- The `cardinality` source and early-completion conditions.
+- Multi-instance call activities, after [TASK-01](task-01-call-activity.md).
 
 ## Current state
 
@@ -32,10 +46,9 @@ Verified on 2026-10-24: not implemented.
 
 ## Open questions
 
-- How each child sees its item and index, and where it writes its local result.
-- Failure semantics: one failed item fails the node, the others continue and errors are collected, or a boundary handles it.
-- Concurrency limits for parallel REST calls.
-- Completion rules for automatic children: always all items, or an early-stop condition?
+- Names for the item and index in expressions and scripts.
+- Where a child writes a local result versus a process variable.
+- The default concurrency limit.
 
 ## Plan
 

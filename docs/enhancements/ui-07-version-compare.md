@@ -6,17 +6,29 @@
 | --- | --- |
 | Status | Not started |
 | Category | Flowbit.Ui feature |
-| Effort | S–M |
-| Priority | Not ranked |
-| Related | [UI-01](ui-01-live-instance-diagram.md) |
+| Effort | M |
+| Priority | Recommended order #5 |
+| Depends on | [UI-01](ui-01-live-instance-diagram.md) |
+| Related | None |
 
 ## Summary
 
-Compare two versions of a workflow family: added, removed, and changed nodes, flows, and variables highlighted on the diagram, plus a JSON diff, with a flag on changes that would block moving running instances to the newer version.
+Compare two versions of a workflow family: added, removed, and changed nodes, flows, and variables listed and highlighted on the diagram, and later a flag on changes that would block moving running instances to the newer version.
 
 ## Why it adds value
 
-- Reviews before publishing become safer, and the effect on running instances is clear up front.
+- Reviews before publishing become safer, and the effect on running instances becomes clear up front.
+
+## First release acceptance criteria
+
+- [ ] On Workflows, a user picks two versions of a family and sees the nodes, flows, and variables added, removed, or changed, matched by ID.
+- [ ] The same differences are highlighted on the [UI-01](ui-01-live-instance-diagram.md) diagram.
+- [ ] Comparing needs only permission to read the definitions and changes nothing.
+
+## Later releases
+
+- Flags for changes that would block in-place version switching, from compatibility checks that need no specific instance.
+- Matching by `externalId`.
 
 ## Current state
 
@@ -32,8 +44,8 @@ Verified on 2026-10-24: not implemented.
 
 ## Open questions
 
-- Match nodes and flows by ID, by `externalId`, or both?
-- Which compatibility checks can run on two definitions alone, without a specific instance?
+- Which version-change compatibility checks can run on two definitions alone?
+- How to show attribute-only changes, which never block version switching.
 
 ## Plan
 

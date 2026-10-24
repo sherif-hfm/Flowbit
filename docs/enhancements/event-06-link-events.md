@@ -6,8 +6,9 @@
 | --- | --- |
 | Status | Not started |
 | Category | New events |
-| Effort | S |
+| Effort | M |
 | Priority | Not ranked |
+| Depends on | None |
 | Related | [UI-01](ui-01-live-instance-diagram.md) |
 
 ## Summary
@@ -17,6 +18,17 @@ Intermediate link throw and catch events, paired by name, that act as "go to" co
 ## Why it adds value
 
 - Large diagrams, especially AI-generated ones, become easier to read without long crossing edges.
+
+## First release acceptance criteria
+
+- [ ] Intermediate link throw and catch events pair by name within one workflow.
+- [ ] Validation in the editor and the API requires unique catch names, a catch for every throw, no incoming flow on a catch, and no outgoing flow on a throw.
+- [ ] Execution from a throw to its catch behaves like the equivalent sequence flow.
+- [ ] The editor draws both shapes and highlights the paired event when either one is selected.
+
+## Later releases
+
+None planned.
 
 ## Current state
 
@@ -30,9 +42,7 @@ Verified on 2026-10-24: not implemented.
 
 ## Open questions
 
-- Resolve each pair to a virtual flow when the definition loads, or execute both as pass-through nodes with their own history rows?
-- Validation: unique catch names, at least one throw per catch, and a single catch per name.
-- Editor rendering and navigation from a throw to its catch.
+- Resolve each pair to a virtual flow when the definition loads, or record both events in history and node executions?
 
 ## Plan
 

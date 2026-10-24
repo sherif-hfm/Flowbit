@@ -8,6 +8,7 @@
 | Category | Flowbit.Ui feature |
 | Effort | S–M |
 | Priority | Not ranked |
+| Depends on | None |
 | Related | [UI-09](ui-09-saved-views-csv-export.md) |
 
 ## Summary
@@ -17,6 +18,17 @@ Select several tasks in My work that offer the same action and take it on each o
 ## Why it adds value
 
 - High-volume approvers can handle many similar tasks at once.
+
+## First release acceptance criteria
+
+- [ ] My work lets a user select several tasks and take an action that all of them offer and that has no required inputs.
+- [ ] Each task is processed with its normal authorization, and a result list shows success or the error for each task.
+- [ ] Tasks that need a claim the user does not hold are skipped with a clear reason.
+
+## Later releases
+
+- One shared set of inputs for actions with required inputs.
+- A bulk API endpoint with per-item results.
 
 ## Current state
 
@@ -32,9 +44,8 @@ Verified on 2026-10-24: not implemented.
 
 ## Open questions
 
-- Allow only actions without required inputs, or collect one shared set of inputs?
-- Loop over existing endpoints in the UI, or add a bulk endpoint that returns per-item results?
-- Tasks that require a claim: claim as part of the bulk action?
+- How to recognize "the same action" on tasks from different workflow versions: by flow ID, external ID, or name?
+- Should claimable tasks be claimed as part of the bulk action?
 
 ## Plan
 

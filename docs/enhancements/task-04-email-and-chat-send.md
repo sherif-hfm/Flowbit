@@ -6,9 +6,10 @@
 | --- | --- |
 | Status | Not started |
 | Category | New task type |
-| Effort | S–M |
-| Priority | Recommended order #5, with [UI-05](ui-05-notification-center-live-refresh.md) |
-| Related | [UI-05](ui-05-notification-center-live-refresh.md), [INT-01](int-01-outbound-lifecycle-webhooks.md), [UI-11](ui-11-localization-rtl.md) |
+| Effort | M |
+| Priority | Not ranked |
+| Depends on | None |
+| Related | [UI-13](ui-13-notification-center.md), [INT-01](int-01-outbound-lifecycle-webhooks.md), [UI-06](ui-06-comments-and-attachments.md), [UI-11](ui-11-localization-rtl.md) |
 
 ## Summary
 
@@ -17,6 +18,20 @@ New connectors that send notifications from a workflow: `service.type: "email"` 
 ## Why it adds value
 
 - Almost every business process notifies people, and today each deployment needs its own REST endpoint for a service task to call.
+
+## First release acceptance criteria
+
+- [ ] `service.type: "email"` sends a plain-text or HTML email over SMTP, through a server configured by the host; credentials never appear in the definition.
+- [ ] Subject, body, and recipient addresses support `${var}` templates.
+- [ ] Email tasks require `asyncBefore` and use the existing retries and incidents, so SMTP latency never holds a workflow transaction.
+- [ ] Definition validation, in the editor and the API, rejects a missing recipient, subject, or body.
+- [ ] The editor offers the email connector and its fields.
+
+## Later releases
+
+- Microsoft Teams and Slack webhooks.
+- Recipients resolved from user IDs.
+- Attachments ([UI-06](ui-06-comments-and-attachments.md)) and localized templates ([UI-11](ui-11-localization-rtl.md)).
 
 ## Current state
 
@@ -35,10 +50,9 @@ Verified on 2026-10-24: not implemented.
 
 ## Open questions
 
-- Recipients: email addresses held in variables, or user IDs resolved through the Local identity directory or OIDC claims?
-- Should sends require `asyncBefore`, so SMTP latency never holds a workflow transaction?
-- HTML or plain-text templates, attachments ([UI-06](ui-06-comments-and-attachments.md)), and localized templates ([UI-11](ui-11-localization-rtl.md)).
-- Should workflow sends and the system notifications in [UI-05](ui-05-notification-center-live-refresh.md) share one delivery pipeline?
+- Recipients beyond plain addresses: user IDs resolved through the Local identity directory or OIDC claims?
+- Should workflow email and [UI-13](ui-13-notification-center.md) notification email share one delivery pipeline?
+- How to avoid duplicate emails when a send is retried after an unknown SMTP outcome.
 
 ## Plan
 

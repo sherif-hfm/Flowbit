@@ -8,6 +8,7 @@
 | Category | New task type |
 | Effort | M |
 | Priority | Not ranked |
+| Depends on | None |
 | Related | [UI-08](ui-08-editor-test-run.md) |
 
 ## Summary
@@ -18,6 +19,20 @@ A `businessRuleTask` evaluates a decision table: NCalc input expressions, rules 
 
 - Business users maintain rules such as approval limits, discount tiers, and routing matrices in a table instead of chains of exclusive gateways and long conditions.
 - Rules are versioned with the workflow and can be checked against sample inputs before publishing.
+
+## First release acceptance criteria
+
+- [ ] A `businessRuleTask` embeds a decision table with input expressions, rules, and typed outputs, using the `first` and `unique` hit policies.
+- [ ] Every cell is parse-checked when the definition is saved, in both the editor and the API.
+- [ ] The matching rule's outputs are written atomically, with coercion to declared types and validation.
+- [ ] No matching rule, or a `unique` conflict, follows an attached error boundary or otherwise fails the transition.
+- [ ] The editor edits the table as a grid.
+
+## Later releases
+
+- The `collect` and priority hit policies.
+- Decision definitions versioned separately and shared by several workflows.
+- Testing a table with sample inputs in the editor (see [UI-08](ui-08-editor-test-run.md)).
 
 ## Current state
 
@@ -34,10 +49,8 @@ Verified on 2026-10-24: not implemented.
 
 ## Open questions
 
-- Embedded in the node, or a separately versioned decision definition that several workflows reference by key?
 - Cell syntax: full NCalc expressions, or a simpler test syntax such as `> 1000`, `"gold","silver"`, and `-` for any value?
-- Which hit policies come first, and what output shape `collect` produces (arrays).
-- Editor experience: an inspector grid or a dialog, and a panel to test the table with sample inputs.
+- An inspector grid or a dialog?
 - Is DMN XML import out of scope?
 
 ## Plan

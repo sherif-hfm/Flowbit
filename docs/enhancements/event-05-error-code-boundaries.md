@@ -6,8 +6,9 @@
 | --- | --- |
 | Status | Not started |
 | Category | New event capability |
-| Effort | S |
+| Effort | M |
 | Priority | Not ranked |
+| Depends on | None |
 | Related | [TASK-02](task-02-external-task.md), [TASK-01](task-01-call-activity.md) |
 
 ## Summary
@@ -17,6 +18,18 @@ Allow several `errorBoundaryEvent` nodes on one host, each matching an error cod
 ## Why it adds value
 
 - Different failures need different handling. Today one catch-all boundary must be followed by a gateway that inspects `statusVariable`.
+
+## First release acceptance criteria
+
+- [ ] An `errorBoundaryEvent` can list HTTP status codes or ranges to match, and a host may have several boundaries, with at most one catch-all.
+- [ ] A REST failure follows the matching boundary in a fixed precedence (exact code, then range, then catch-all); with no match, the task fails as it does today.
+- [ ] The editor and the API reject overlapping matchers on one host.
+- [ ] The editor shows each boundary's codes.
+
+## Later releases
+
+- Error codes thrown by scripts.
+- Business-error codes from external tasks ([TASK-02](task-02-external-task.md)) and child instances ([TASK-01](task-01-call-activity.md)).
 
 ## Current state
 
@@ -31,9 +44,8 @@ Verified on 2026-10-24: not implemented.
 
 ## Open questions
 
-- Code sources: HTTP status, codes thrown by scripts, and business errors from external tasks ([TASK-02](task-02-external-task.md)) or child instances ([TASK-01](task-01-call-activity.md)).
-- Matching precedence among exact codes, ranges, and the catch-all.
 - Interaction with the `retryFirst` and `boundaryFirst` job policies.
+- How timeouts and network failures match, given that `statusVariable` receives 0 when no response exists.
 
 ## Plan
 

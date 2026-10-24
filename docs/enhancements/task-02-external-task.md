@@ -6,9 +6,10 @@
 | --- | --- |
 | Status | Not started |
 | Category | New task type |
-| Effort | M |
-| Priority | Recommended order #4 |
-| Related | [EVENT-05](event-05-error-code-boundaries.md), [TASK-05](task-05-multi-instance-automatic-activities.md), [INT-01](int-01-outbound-lifecycle-webhooks.md) |
+| Effort | L |
+| Priority | Conditional: schedule when a concrete integration need justifies its lifecycle complexity |
+| Depends on | None |
+| Related | [EVENT-05](event-05-error-code-boundaries.md), [INT-01](int-01-outbound-lifecycle-webhooks.md) |
 
 ## Summary
 
@@ -19,6 +20,21 @@ An `externalTask` node publishes a unit of work on a named `topic`. External wor
 - Flowbit makes no outbound call, so targets behind firewalls or in other networks need no inbound access.
 - Long-running work (minutes or hours) never holds a transaction or a synchronous HTTP request open.
 - Workers control their own throughput, and teams can implement them in any language.
+
+## First release acceptance criteria
+
+- [ ] An `externalTask` node with a `topic` creates a work item that authenticated machine clients can fetch and lock.
+- [ ] A client fetches work only for topics it is allowed, receives only the node's declared input variables, and holds a lock for a bounded duration that it can extend.
+- [ ] Completing with typed outputs validates all-or-nothing and advances the token exactly once; a completion with an expired or superseded lock is rejected.
+- [ ] A reported failure follows the node's retry delays and opens an incident when retries run out; the incident's manual retry makes the work fetchable again.
+- [ ] A reported business error follows the attached error boundary and records its code in `errorVariable`.
+- [ ] Cancelling the instance or interrupting the node makes the work unfetchable, and later completions are rejected.
+
+## Later releases
+
+- Long polling.
+- Topic queue depth and worker activity on Jobs & incidents.
+- Business-error codes that select among several boundaries ([EVENT-05](event-05-error-code-boundaries.md)).
 
 ## Current state
 
@@ -36,11 +52,10 @@ Verified on 2026-10-24: not implemented.
 
 ## Open questions
 
-- Fetch API: long polling or short polling, batch size, lock duration, and lock-extension limits.
+- Fetch API details: short or long polling, batch size, and lock-duration limits.
 - Client authorization: per topic, per workflow family, or both, and which new client scopes?
-- Payload: which variables are sent to a worker (an explicit list or all of them), and how shared aliases are handled.
-- Business error codes and how they select a boundary ([EVENT-05](event-05-error-code-boundaries.md)).
-- Operations: topic queue depth and worker visibility on Jobs & incidents.
+- How shared-variable aliases are handled in worker payloads and outputs.
+- Version-switch rules for instances with locked external work.
 
 ## Plan
 
