@@ -143,7 +143,6 @@ Direct constructor callers must remove the `instanceQueries` argument after
 `logger`, keeping `projections` and all remaining arguments in place. Rebuild
 in-process consumers together; there is no compatibility constructor or facade.
 HTTP routes, DTOs, authorization, workflow JSON, and persisted data are unchanged.
-See the [Stage 8 implementation record](../docs/refactoring/stage-08-remove-query-detail-compatibility.md).
 
 ### Waiting-task role-management ownership
 
@@ -178,8 +177,7 @@ Stage 9 removes four C# members from `IWorkflowEngineService` and
 
 Consumers of other engine methods can inject both interfaces. Direct engine
 construction is unchanged. HTTP routes, DTOs, authorization, workflow JSON, and
-persisted data are unchanged. See the
-[Stage 9 implementation record](../docs/refactoring/stage-09-waiting-task-role-management.md#implementation-record--2026-09-20).
+persisted data are unchanged.
 
 
 The repository's private SQL helpers live in partial class files beside the

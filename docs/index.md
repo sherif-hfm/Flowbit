@@ -48,57 +48,36 @@ with file tools, and what was verified. The earlier [eight recommendations](plan
 and [staged improvement plan](plans/ai-assistant-improvement-plan.md) describe the replaced command-loop engine and
 are kept as history. The [AI authoring guide](ai-authoring.md) describes supported behavior.
 
-## Planned refactoring
+## Enhancement backlog
 
-The [staged refactoring plans](refactoring/README.md) describe contributor work,
-with a separate scope, implementation sequence, and acceptance gate for each
-stage. Each stage records its implementation and acceptance status. The
-[refactoring gap inventory](refactoring/gaps.md) records deferred and unplanned
-work; the [remaining-gaps implementation plan](refactoring/remaining-gaps-implementation-plan.md)
-selects the prioritized follow-up stages and records their boundaries. The
-follow-up roadmap's Stages 8–11 and Stage 5 are implemented and locally accepted.
-Stage 11's display extraction, runtime acceptance and final visual review are
-complete. Stage 7's no-Worker smoke suite passes locally and in CI.
-The [Stage 7 browser smoke suite](refactoring/stage-07-browser-smoke-and-stage-05-acceptance.md)
-is implemented and passing locally (`Flowbit/tests/Flowbit.BrowserTests/`); the
-Stage 5 runtime acceptance rows (headed inspection, Worker-driven batch links,
-and the pre-extraction comparison) passed with the separate 24-case local
-acceptance suite. The editor's native-picker success/cancel check
-is a separate Stage 7 gate and remains unavailable. Remote `test` and
-`browser-smoke` jobs passed for `3e70130` in
-[run 35713256658](https://github.com/sherif-hfm/Flowbit/actions/runs/35713256658).
+The [enhancement backlog](enhancements/README.md) lists candidate task types,
+events, integrations, and Flowbit.Ui features that are not implemented yet.
+Each item records its status, the evidence for that status, open questions, and
+a plan section to complete before implementation starts.
 
-The [Stage 8 query/detail compatibility removal plan](refactoring/stage-08-remove-query-detail-compatibility.md)
-records the implemented C# caller migration, direct detail endpoint projection
-calls, and removal of three engine methods (40 → 37). HTTP and identity
-boundaries are unchanged. All local Stage 8 gates passed: 1,900 solution tests
-and 20 standalone Chromium tests, with no failures or skips.
+## Refactoring history
 
-The [Stage 9 waiting-task role-management plan](refactoring/stage-09-waiting-task-role-management.md)
-records the implemented focused service, four endpoint migrations (37 → 33
-engine methods), preserved transaction and lock behavior, and C# caller
-migration. HTTP routes, DTOs, and role-policy runtime behavior are unchanged.
-All local Stage 9 gates passed: 1,930 solution tests and 20 standalone
-Chromium tests, with no failures or skips.
+The staged refactoring plans and gap inventory that guided earlier contributor
+work were removed as outdated in commit `87a649c`; git history retains them.
+Their completed outcomes are part of the current code and guides:
 
-The [Stage 10 editor node-type transition plan](refactoring/stage-10-editor-node-type-transitions.md)
-details the implemented `changeNodeTypeFromInspector` helper, the preserved
-graph cleanup and undo/redo behavior, characterization coverage, and browser
-acceptance. Stage 10 is implemented and locally accepted: 20 characterization
-tests passed against the previous inline callback before extraction, and the
-final gates passed 1,950 solution tests with all editor and harness cases of
-the standalone Chromium suite passing (E1-E8 plus regressions; one unrelated
-R6 scroll-timing flake passed on retry) and headed inspection evidence recorded
-in the stage document.
-
-The [Stage 11 administrative-action display plan](refactoring/stage-11-administrative-action-display-components.md)
-is implemented as three display components under
-`Flowbit.Ui/Components/Shared/AdministrativeBatches/` with the page retaining
-all requests, filters, mutations, identity checks, polling, and disposal; the
-stage's review follow-up records passing Windows/Linux tests and separate
-Worker-enabled browser scenarios. Stage 5's prerequisite is complete, and the
-maintained runtime acceptance suite passes; the final administrative 11/11 run
-and visual review close Stage 11's remaining evidence.
+- Stages 5 and 11 moved the instance-detail and administrative-batch display
+  sections into display-only components under
+  `Flowbit.Ui/Components/Shared/InstanceDetails/` and
+  `Flowbit.Ui/Components/Shared/AdministrativeBatches/`. The pages keep all
+  requests, filters, mutations, identity checks, polling, and disposal.
+- Stage 7 added the no-Worker Chromium smoke suite, which passes locally and in
+  CI. The editor's native file-picker success/cancel path remains a manual
+  verification step.
+- Stage 8 removed three query/detail compatibility methods from the engine;
+  list, search, and detail endpoints call their query and projection services
+  directly, with HTTP and identity boundaries unchanged.
+- Stage 9 moved waiting-task role management into
+  `IUserTaskRoleManagementService`, which the four role endpoints use directly;
+  routes, DTOs, and role-policy behavior are unchanged.
+- Stage 10 extracted the editor's Type-selector transition into
+  `changeNodeTypeFromInspector`, preserving graph cleanup and undo/redo
+  behavior.
 
 Contributor browser commands are documented separately for the
 [no-Worker smoke suite](../Flowbit/tests/Flowbit.BrowserTests/README.md) and the

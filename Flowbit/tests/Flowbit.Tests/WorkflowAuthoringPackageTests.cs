@@ -141,8 +141,10 @@ public sealed class WorkflowAuthoringPackageTests
         }
         Assert.Contains("(../../examples/README.md)", loaded.Resources["references/docs/node-reference.md"]);
         Assert.Contains("(../references/docs/getting-started.md)", loaded.Resources["examples/README.md"]);
-        // Planning records describe decisions and superseded engines; links to them become labels (checked by the loop above).
+        // Planning records describe decisions, superseded engines and unbuilt enhancements; links to them become labels
+        // (checked by the loop above).
         Assert.DoesNotContain(loaded.Resources.Keys, key => key.StartsWith("references/docs/plans/", StringComparison.Ordinal));
+        Assert.DoesNotContain(loaded.Resources.Keys, key => key.StartsWith("references/docs/enhancements/", StringComparison.Ordinal));
     }
 
     [Fact]

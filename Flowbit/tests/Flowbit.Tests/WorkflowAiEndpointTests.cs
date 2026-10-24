@@ -164,6 +164,7 @@ public sealed class WorkflowAiEndpointTests
         Assert.NotNull(zip.GetEntry("flowbit-authoring/references/workflow.schema.json"));
         Assert.NotNull(zip.GetEntry("flowbit-authoring/manifest.json"));
         Assert.DoesNotContain(zip.Entries, entry => entry.FullName.StartsWith("flowbit-authoring/references/docs/plans/", StringComparison.Ordinal));
+        Assert.DoesNotContain(zip.Entries, entry => entry.FullName.StartsWith("flowbit-authoring/references/docs/enhancements/", StringComparison.Ordinal));
         Assert.Equal(0, factory.Service.Calls);
     }
 

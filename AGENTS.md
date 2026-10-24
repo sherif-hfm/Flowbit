@@ -202,8 +202,9 @@ The key pieces:
   and multi-instance outcomes. Rule helpers such as `validateTypedOutputMappings`
   and `validateRuntimeOutputTarget` stay shared across phases. The whole
   validator lives between the `// BEGIN/END WORKFLOW SAVE VALIDATOR` markers and
-  must return the same ordered error array for the same candidate; see
-  [docs/refactoring/stage-04-editor-validation.md](docs/refactoring/stage-04-editor-validation.md).
+  must return the same ordered error array for the same candidate;
+  [EditorValidatorCharacterizationTests](Flowbit/tests/Flowbit.Tests/EditorValidatorCharacterizationTests.cs)
+  pins those ordered arrays.
 
 The editor is dependency-free at runtime. Its save validator and selected editor
 helpers are covered by the `Flowbit/tests/Flowbit.Tests` test project; visual and

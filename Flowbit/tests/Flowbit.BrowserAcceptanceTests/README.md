@@ -1,9 +1,9 @@
 # Local Worker-enabled browser acceptance
 
-This standalone .NET 10 xUnit project closes the runtime browser checks in
-[Stage 5](../../../docs/refactoring/stage-05-instance-detail-components.md) and
-[Stage 11](../../../docs/refactoring/stage-11-administrative-action-display-components.md),
-and exercises focused [canonical workflow examples](../../../examples/README.md#coverage-matrix).
+This standalone .NET 10 xUnit project closes the runtime browser checks of
+Stages 5 and 11 of the [refactoring roadmap](../../../docs/index.md#refactoring-history)
+(the instance-detail and administrative-batch display components), and
+exercises focused [canonical workflow examples](../../../examples/README.md#coverage-matrix).
 It is outside both solution files and GitHub CI. The existing
 [browser smoke suite](../Flowbit.BrowserTests/README.md) remains Worker-free;
 run it separately to retain the editor and basic runtime checks.

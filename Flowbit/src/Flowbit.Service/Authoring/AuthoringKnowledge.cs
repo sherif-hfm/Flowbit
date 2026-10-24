@@ -92,8 +92,9 @@ public static class AuthoringPackageBuilder
                      .Where(path => Path.GetExtension(path) is ".md" or ".json").Order(StringComparer.Ordinal))
         {
             var source = Path.GetRelativePath(root, file).Replace('\\', '/');
-            // Internal planning records describe decisions and superseded engines, not supported behavior.
-            if (source.StartsWith("docs/refactoring/", StringComparison.Ordinal) || source.StartsWith("docs/plans/", StringComparison.Ordinal)) continue;
+            // Internal planning records describe decisions, superseded engines and unbuilt enhancements, not supported behavior.
+            if (source.StartsWith("docs/refactoring/", StringComparison.Ordinal) || source.StartsWith("docs/plans/", StringComparison.Ordinal)
+                || source.StartsWith("docs/enhancements/", StringComparison.Ordinal)) continue;
             Add(directory == "examples" ? source : "references/" + source, source);
         }
         Add("references/Flowbit/README.md", "Flowbit/README.md");

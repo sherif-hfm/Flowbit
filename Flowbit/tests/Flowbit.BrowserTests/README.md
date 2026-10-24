@@ -1,9 +1,9 @@
 # Flowbit browser smoke suite (`Flowbit.BrowserTests`)
 
 A standalone Chromium suite that drives the **real** standalone editor and the
-real Flowbit API/UI over localhost. It is part of Stage 7 of the
-[remaining-gaps plan](../../../docs/refactoring/stage-07-browser-smoke-and-stage-05-acceptance.md)
-and deliberately lives outside `Flowbit.sln` and `Flowbit.slnx`, so the normal
+real Flowbit API/UI over localhost. It was added in Stage 7 of the
+[refactoring roadmap](../../../docs/index.md#refactoring-history) and
+deliberately lives outside `Flowbit.sln` and `Flowbit.slnx`, so the normal
 solution test command stays free of Chromium requirements.
 
 - Real hosts: the published API and UI run as child processes on ephemeral
