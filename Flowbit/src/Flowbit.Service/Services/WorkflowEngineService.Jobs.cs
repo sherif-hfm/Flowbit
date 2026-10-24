@@ -1818,23 +1818,9 @@ public sealed partial class WorkflowEngineService
             : job.MultiInstanceExecutionId is null
                 ? "userTaskAsyncAfter"
                 : "multiInstanceAsyncAfter";
-        if (administrativeBatch is null)
-        {
-            await RecordSequenceFlowOccurrenceAsync(
-                flowInfo,
-                instance.Id,
-                token.Id,
-                job.UserTaskId,
-                job.MultiInstanceExecutionId,
-                null,
-                flow,
-                historyNote,
-                isAction: false,
-                isTraversal: true,
-                actor: actor,
-                values: null,
-                cancellationToken: cancellationToken);
-        }
+        // The action was recorded when the task completed; this continuation
+        // contributes only the deferred traversal, which the advance records
+        // once with the original task/execution correlation.
         var queue = new Queue<long>();
         await AdvanceAutomaticTokenAsync(
             instance,
@@ -1849,9 +1835,8 @@ public sealed partial class WorkflowEngineService
             flowInfo,
             queue,
             cancellationToken,
-            administrativeUserTaskId: administrativeBatch is null ? null : job.UserTaskId,
-            administrativeMultiInstanceExecutionId:
-                administrativeBatch is null ? null : job.MultiInstanceExecutionId,
+            traversalUserTaskId: job.UserTaskId,
+            traversalMultiInstanceExecutionId: job.MultiInstanceExecutionId,
             administrativeBatch: administrativeBatch);
         if (await IsInstanceRunningAsync(instance.Id, cancellationToken))
         {

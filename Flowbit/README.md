@@ -688,6 +688,15 @@ traversal-only; and automatic routing is traversal-only. The last evidence
 snapshots the validated actor and all their roles at action time, so a directly
 following gateway can route on the role of the user who selected the flow.
 
+An `asyncAfter` user task defers the traversal to its durable continuation. A
+normal selection records its action when the task completes; a multi-instance
+aggregate winner/default records nothing at that point. The continuation then
+records exactly one traversal, kind `userTaskAsyncAfter` or
+`multiInstanceAsyncAfter` (`administrativeAction` for an administrative
+selection), correlated with the completed user task and, for multi-instance
+work, its execution. `traversals.count` therefore advances by one per
+continuation.
+
 `FlowInfo` is allowed in non-default Exclusive, Inclusive, and Complex outgoing
 conditions, multi-instance completion conditions, NCalc script assignments, and
 JavaScript script tasks. It is not available in Complex activation conditions,
@@ -702,6 +711,17 @@ or multi-instance fan-out. Definitions that do not reference `FlowInfo` skip the
 summary query and write no occurrence or summary rows. The additive migration
 does not backfill or guess old events; existing instances expose only evidence
 recorded after deployment.
+
+Earlier releases recorded an ordinary (non-administrative) async-after
+continuation's traversal twice, the second row without task correlation.
+Occurrence and summary rows already written that way are not rewritten: an
+affected instance keeps the extra traversal in that flow's `traversals.count`
+and occurrence history, and only continuations processed by an upgraded Worker
+count once. Earlier releases also rejected, for a definition using `FlowInfo`,
+the child action that decided a multi-instance outcome which does not traverse
+immediately (an `asyncAfter` parent, or a host a conditional boundary
+interrupted in the same batch). That action now commits and records no
+aggregate occurrence.
 
 ## Durable async work and timers
 

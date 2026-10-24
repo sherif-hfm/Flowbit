@@ -458,7 +458,7 @@ Capture is opt-in through `WorkflowAudit:AllowedClaims`, independently of expres
 
 ### Flow evidence in authored logic
 
-`FlowInfo(flowId, 'path')` makes instance-lifetime action/traversal summaries available to supported workflow expressions. An explicit human selection is an action; movement of an execution token is a traversal. A multi-instance child vote is action-only, while its aggregate outcome is traversal-only. Counts and last-evidence snapshots let a downstream decision inspect who selected a route, including captured roles and values.
+`FlowInfo(flowId, 'path')` makes instance-lifetime action/traversal summaries available to supported workflow expressions. An explicit human selection is an action; movement of an execution token is a traversal. A multi-instance child vote is action-only, while its aggregate outcome is traversal-only. With `asyncAfter`, the traversal is recorded once, when the durable continuation leaves the task. Counts and last-evidence snapshots let a downstream decision inspect who selected a route, including captured roles and values.
 
 This is an authored expression facility, not a general HTTP query endpoint. It is supported in non-default Exclusive, Inclusive, and Complex outgoing conditions, multi-instance completion conditions, and script tasks; it is rejected in Complex activation conditions, action visibility, assignee/cardinality, and variable/output/header validation. `CountFlow`/`PercentFlow` remain local to the current multi-instance execution. No pre-deployment evidence is invented. See the [flow-evidence runtime reference](../Flowbit/README.md#instance-wide-flow-evidence-flowinfo) for paths, shapes, and persistence behavior.
 

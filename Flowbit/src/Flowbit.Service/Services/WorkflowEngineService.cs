@@ -3077,24 +3077,31 @@ public sealed partial class WorkflowEngineService(
         var hostStillCurrent = IsSameRunnableActivation(
             expectedHostToken,
             tokenAfterConditionalCapture);
-        await RecordSequenceFlowOccurrenceAsync(
-            flowInfo,
-            instance.Id,
-            execution.TokenId,
-            userTaskId,
-            execution.Id,
-            itemIndex,
-            winning,
-            administrativeBatch is null
-                ? directParentInterrupt ? "multiInstanceInterrupt" : "multiInstanceOutcome"
-                : NodeExecutionCompletionReasons.AdministrativeAction,
-            isAction: isParentAction,
-            isTraversal: hostStillCurrent && !node.AsyncAfter,
-            actor: actor,
-            values: directParentInterrupt ? variableValues : null,
-            cancellationToken: cancellationToken,
-            administrativeBatch: administrativeBatch,
-            sharedVariableWrites: directParentInterrupt ? sharedVariableWrites : null);
+        // An aggregate winner is evidence only when it is a parent action or
+        // traverses now; an async-after continuation records the deferred
+        // traversal, and an interrupted host records none.
+        var traversesNow = hostStillCurrent && !node.AsyncAfter;
+        if (isParentAction || traversesNow)
+        {
+            await RecordSequenceFlowOccurrenceAsync(
+                flowInfo,
+                instance.Id,
+                execution.TokenId,
+                userTaskId,
+                execution.Id,
+                itemIndex,
+                winning,
+                administrativeBatch is null
+                    ? directParentInterrupt ? "multiInstanceInterrupt" : "multiInstanceOutcome"
+                    : NodeExecutionCompletionReasons.AdministrativeAction,
+                isAction: isParentAction,
+                isTraversal: traversesNow,
+                actor: actor,
+                values: directParentInterrupt ? variableValues : null,
+                cancellationToken: cancellationToken,
+                administrativeBatch: administrativeBatch,
+                sharedVariableWrites: directParentInterrupt ? sharedVariableWrites : null);
+        }
         if (!hostStillCurrent)
         {
             await unitOfWork.SaveChangesAsync(cancellationToken);
@@ -5676,8 +5683,8 @@ public sealed partial class WorkflowEngineService(
                 queue,
                 cancellationToken,
                 administrativeAction: administrativeTraversal is not null,
-                administrativeUserTaskId: administrativeTraversal?.UserTaskId,
-                administrativeMultiInstanceExecutionId:
+                traversalUserTaskId: administrativeTraversal?.UserTaskId,
+                traversalMultiInstanceExecutionId:
                     administrativeTraversal?.MultiInstanceExecutionId,
                 administrativeValues: administrativeTraversal?.Values,
                 administrativeBatch: administrativeTraversal?.AdministrativeBatch);
@@ -7609,8 +7616,8 @@ public sealed partial class WorkflowEngineService(
         int immediateInterruptHops = 0,
         bool deferSave = false,
         bool administrativeAction = false,
-        long? administrativeUserTaskId = null,
-        long? administrativeMultiInstanceExecutionId = null,
+        long? traversalUserTaskId = null,
+        long? traversalMultiInstanceExecutionId = null,
         Dictionary<string, JsonElement>? administrativeValues = null,
         AdministrativeBatchFlowContext? administrativeBatch = null,
         Dictionary<string, JsonElement>? historyPayload = null)
@@ -7620,8 +7627,8 @@ public sealed partial class WorkflowEngineService(
             flowInfo,
             instance.Id,
             token.Id,
-            administrativeUserTaskId,
-            administrativeMultiInstanceExecutionId,
+            traversalUserTaskId,
+            traversalMultiInstanceExecutionId,
             null,
             flow,
             note,
