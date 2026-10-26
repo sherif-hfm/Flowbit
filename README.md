@@ -102,7 +102,7 @@ Conditional events observe declared, persisted instance variables. They evaluate
 
 `asyncBefore` and `asyncAfter` introduce durable execution boundaries. The Worker leases persisted jobs from PostgreSQL, executes eligible work, and records attempts, retries, output conflicts, and incidents. Timers, subscriptions, and conditional wake fences survive process restarts.
 
-Operators can inspect jobs and incidents, retry eligible failures, search instances and node executions, and review variable changes and flow evidence. Administrative tools support prepared batches for actions, variable updates, and workflow-version changes, with eligibility checks and per-item results. Eligible completed or cancelled instances can be previewed for controlled reactivation.
+Operators can inspect jobs and incidents, retry eligible failures, search instances and node executions, and review variable changes and flow evidence. Instance detail draws the instance's workflow version and marks where it is waiting, or where it ended. Administrative tools support prepared batches for actions, variable updates, and workflow-version changes, with eligibility checks and per-item results. Eligible completed or cancelled instances can be previewed for controlled reactivation.
 
 Health endpoints and Prometheus-format metrics expose worker readiness, queue activity, timing, retries, and incidents. Retention policies provide explicit control over historical data.
 

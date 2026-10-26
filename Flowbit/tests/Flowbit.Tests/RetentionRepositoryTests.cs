@@ -259,7 +259,9 @@ public sealed class RetentionRepositoryTests(PostgresApiFixture fixture)
                 .MigrateAsync("20260905143652_AddUserTaskRolePolicies"));
             Assert.Contains("Cannot downgrade retention", exception.MessageText);
             Assert.True(await db.RetentionCoordinators.AnyAsync());
-            Assert.NotNull((await db.WorkflowInstances.FindAsync(instances[0]))!.HistoryPrunedAt);
+            // Read only the marker: newer migrations' columns may already be gone.
+            Assert.NotNull(await db.WorkflowInstances.Where(i => i.Id == instances[0])
+                .Select(i => i.HistoryPrunedAt).SingleAsync());
         }
         finally
         {

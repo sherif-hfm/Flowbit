@@ -34,7 +34,8 @@ public sealed record WorkflowInstanceRecord(
     string? FaultDescription = null,
     long? CurrentNodeExecutionId = null,
     DateTimeOffset? FinishedAt = null,
-    DateTimeOffset? HistoryPrunedAt = null);
+    DateTimeOffset? HistoryPrunedAt = null,
+    long? LastReactivationTokenId = null);
 
 public sealed record WorkflowInstanceVersionChangeRecord(
     long Id,

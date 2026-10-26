@@ -28,6 +28,13 @@ public sealed class WorkflowInstanceEntity
 
     public DateTimeOffset? HistoryPrunedAt { get; set; }
 
+    /// <summary>
+    /// The root token created by the most recent reactivation; null when the instance
+    /// was never reactivated. Tokens from this id onward belong to the current run.
+    /// Unlike the reactivation history entry, retention never removes it.
+    /// </summary>
+    public long? LastReactivationTokenId { get; set; }
+
     public List<InstanceVariableEntity> Variables { get; set; } = [];
 
     public List<InstanceVariableCurrentValueEntity> CurrentVariableValues { get; set; } = [];

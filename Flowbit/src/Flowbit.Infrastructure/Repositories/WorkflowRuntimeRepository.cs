@@ -2511,6 +2511,16 @@ public sealed partial class WorkflowRuntimeRepository(
         }
     }
 
+    public async Task SetLastReactivationTokenAsync(
+        long instanceId,
+        long tokenId,
+        CancellationToken cancellationToken)
+    {
+        var instance = dbContext.WorkflowInstances.Local.SingleOrDefault(entity => entity.Id == instanceId)
+            ?? await dbContext.WorkflowInstances.SingleAsync(entity => entity.Id == instanceId, cancellationToken);
+        instance.LastReactivationTokenId = tokenId;
+    }
+
     public async Task SetInstanceStatusAsync(
         long instanceId,
         string status,
@@ -6500,7 +6510,8 @@ public sealed partial class WorkflowRuntimeRepository(
             token.FaultDescription,
             token.CurrentNodeExecutionId,
             entity.FinishedAt,
-            entity.HistoryPrunedAt);
+            entity.HistoryPrunedAt,
+            entity.LastReactivationTokenId);
 
     private static WorkflowInstanceVersionChangeRecord ToRecord(
         WorkflowInstanceVersionChangeEntity entity) =>

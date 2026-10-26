@@ -270,6 +270,7 @@ while preserving `/instances/{id}` and any query string. Reloading after using
 a section link therefore stays on the same instance.
 
 - **Execution positions** shows the active or terminal tokens and links to their human work. Do not infer the whole process from one node name.
+- **Diagram** draws the instance's workflow version and marks where the instance is now. See [Read the instance diagram](#read-the-instance-diagram).
 - **Administrative actions** lists active human-task positions and their authored direct actions when the API grants workflow-administrator permission. See [the override procedure](#use-instance-administrative-actions).
 - **Variables** shows the latest displayed values and their attribution; **History** shows transition times, node/flow references, actors, and available event details.
 - **History** describes claim, release, recovery, delegation, and inherited-claim events. Expand **Actor claims** under an actor to inspect the captured claim names and values, including repeated values. Delegated events also identify the represented owner.
@@ -283,6 +284,28 @@ Personal task visibility and instance administration are different access scopes
 For a committed visit to a node, use **Activity** (**Node activity**). Combine lifecycle status, **Advanced filters**, and sorting, then open a result. The detail separates timing, actors, task/token correlations, submitted results, committed failures, and **Execution-local variable changes**. Those changes are attributed writes, not a complete execution-time snapshot. Date filters use inclusive **From** and exclusive **To** bounds; variable filters search the owning instance's latest data. Read access comes from workflow `taskAssignmentRoles` or `NodeExecution.RequiredRole` (default `admin`) and grants no task mutation authority.
 
 Under **Actors, roles, and claims**, expand **Starting actor claims** or **Completing actor claims** to inspect the separate snapshots. Claim and unclaim events leave these visit snapshots unchanged. **Not recorded** means a snapshot is unavailable, including older data or disabled capture; **No selected claims present** means capture was enabled but none of the selected names were in that actor's token. These messages also appear in instance history. Claim values are displayed as text. Capture is configured by an operator through [selected-claim audit](deployment.md#selected-claim-audit), and retained snapshots may disappear with their owning history or activity records.
+
+### Read the instance diagram
+
+The **Diagram** section draws the exact workflow version the instance runs, read-only, with the editor's shapes. It shows where the instance is now, not the path it took:
+
+| Marker | Meaning |
+| --- | --- |
+| Green ring | An active position. Its tooltip and the details panel say what it waits for: user work, a message, a timer, a condition, background processing, or other branches at a gateway. |
+| Badge such as `2/5` | Multi-instance progress: completed work items out of the total. |
+| Badge such as `×2` | Several tokens wait at the same node. When they are several multi-instance executions, the tooltip adds up their progress. |
+| Blue ring | The finished instance ended here, at a normal or terminate end event. |
+| Red ring | The instance faulted here, or this work was cancelled with the instance or by a terminate or error end event. |
+
+The ring surrounds the node; the node's own outline keeps the color of its type. A running instance marks only its active positions, and a finished instance only its final positions; after a reactivation, those of its last run, even once [retention](#manage-retention) has removed its history. Flows are never highlighted, and earlier visits are not shown.
+
+To inspect a node, click it, or press Tab to reach a marked node and then Enter. The details panel lists each position at that node with its status and these links:
+
+- **Open task** opens the user task. The task page still applies your task visibility.
+- **Node execution** opens the visit in Activity. It appears only for executions your roles can read: `NodeExecution.RequiredRole` (default `admin`) or the version's `taskAssignmentRoles`. Visits that ended before Flowbit recorded node executions, or that [retention](#manage-retention) removed, have no link. A position queued for background processing after its task finished links the visit it follows.
+- A multi-instance node lists up to five of its work items, finished ones included.
+
+Press Escape or **Clear** to clear the selection. Drag to move the diagram, and use the zoom buttons or hold Ctrl while scrolling to zoom; the plain mouse wheel scrolls the page. **Fit** shows the whole workflow. The diagram opens on the whole workflow, or on the marked nodes when the whole workflow would be too small to read. When the marked nodes are too far apart to read together, it opens on the leftmost of them; drag to reach the others. On a touch screen, drag inside the diagram to move it and outside it to scroll the page. The diagram has no editing, search, or trace tools; change a workflow from **Workflows**.
 
 ## Use instance administrative actions
 

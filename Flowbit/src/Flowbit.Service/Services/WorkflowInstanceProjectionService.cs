@@ -116,7 +116,8 @@ internal sealed class WorkflowInstanceProjectionService(
             VariableUpdates = variableUpdateAudits,
             SharedVariables = sharedVariableMetadata,
             FinishedAt = instance.FinishedAt,
-            HistoryPrunedAt = instance.HistoryPrunedAt
+            HistoryPrunedAt = instance.HistoryPrunedAt,
+            LastReactivationTokenId = instance.LastReactivationTokenId
         };
     }
 

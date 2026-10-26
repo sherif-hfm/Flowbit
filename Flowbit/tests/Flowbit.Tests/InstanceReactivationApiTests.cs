@@ -62,6 +62,44 @@ public sealed class InstanceReactivationApiTests(PostgresApiFixture fixture)
     }
 
     [Fact]
+    public async Task Reactivation_RecordsItsRootTokenSoHistoryRetentionKeepsTheRunBoundary()
+    {
+        var workflow = await CreateWorkflowAsync(CreateSimpleWorkflow());
+        var started = await StartAsync(workflow.Id);
+        Assert.Null(started.LastReactivationTokenId);
+        using (var cancellation = await SendAsync(HttpMethod.Post, $"/api/instances/{started.Id}/cancel"))
+            Assert.Equal(HttpStatusCode.NoContent, cancellation.StatusCode);
+
+        var preview = await PreviewAsync(started.Id);
+        using var response = await SendAsync(HttpMethod.Post, $"/api/instances/{started.Id}/reactivation",
+            new ReactivateInstanceRequest(2, preview.WorkflowId, preview.ExpectedUpdatedAt, "Reopen for another review"));
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var reactivated = await ReadAsync<InstanceDetailDto>(response);
+        var rootToken = Assert.Single(reactivated.ExecutionPositions, position => position.TokenStatus == "active").TokenId;
+        Assert.Equal(rootToken, reactivated.LastReactivationTokenId);
+        Assert.Contains(reactivated.History, entry => entry.Note == "instanceReactivated" && entry.TokenId == rootToken);
+
+        // Once the instance has finished again, retention may remove all of its history.
+        using (var cancellation = await SendAsync(HttpMethod.Post, $"/api/instances/{started.Id}/cancel"))
+            Assert.Equal(HttpStatusCode.NoContent, cancellation.StatusCode);
+        await using (var db = fixture.CreateDbContext())
+        {
+            await using var transaction = await db.Database.BeginTransactionAsync();
+            var instance = await db.WorkflowInstances.SingleAsync(row => row.Id == started.Id);
+            await db.InstanceHistory.Where(row => row.InstanceId == started.Id).ExecuteDeleteAsync();
+            instance.HistoryPrunedAt = instance.UpdatedAt = DateTimeOffset.UtcNow;
+            await db.SaveChangesAsync();
+            await transaction.CommitAsync();
+        }
+
+        using var detailResponse = await SendAsync(HttpMethod.Get, $"/api/instances/{started.Id}");
+        var detail = await ReadAsync<InstanceDetailDto>(detailResponse);
+        Assert.Empty(detail.History);
+        Assert.Equal(rootToken, detail.LastReactivationTokenId);
+        Assert.Equal(2, detail.ExecutionPositions.Count);
+    }
+
+    [Fact]
     public async Task CompletedInstance_ReactivationPreservesHistoryVariablesAndFlowEvidenceAndCreatesFreshWork()
     {
         var workflow = await CreateWorkflowAsync(CreateEvidenceWorkflow());

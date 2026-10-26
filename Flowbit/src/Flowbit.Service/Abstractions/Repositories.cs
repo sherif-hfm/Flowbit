@@ -354,6 +354,15 @@ public interface IWorkflowRuntimeRepository : IWorkflowInstanceQueryRepository
         string status,
         CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Records the root token a reactivation created, so the current run stays
+    /// identifiable after retention removes the reactivation history entry.
+    /// </summary>
+    Task SetLastReactivationTokenAsync(
+        long instanceId,
+        long tokenId,
+        CancellationToken cancellationToken);
+
     Task<GatewayExecutionRecord> AddGatewayExecutionAsync(
         long instanceId,
         int gatewayNodeId,

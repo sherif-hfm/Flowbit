@@ -513,6 +513,13 @@ public sealed record InstanceDetailDto(
 
     public DateTimeOffset? HistoryPrunedAt { get; init; }
 
+    /// <summary>
+    /// The root token created by the most recent reactivation, or null when the
+    /// instance was never reactivated. Execution positions with this token id or a
+    /// later one belong to the current run. It remains after history retention.
+    /// </summary>
+    public long? LastReactivationTokenId { get; init; }
+
     public IReadOnlyList<ExecutionPositionDto> ExecutionPositions { get; init; } = [];
 
     public IReadOnlyList<MultiInstanceProgressDto> MultiInstances { get; init; } = [];

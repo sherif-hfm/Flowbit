@@ -3475,6 +3475,9 @@ namespace Flowbit.Infrastructure.Data.Migrations
                         .HasColumnType("character varying(300)")
                         .UseCollation("C");
 
+                    b.Property<long?>("LastReactivationTokenId")
+                        .HasColumnType("bigint");
+
                     b.Property<string>("StartedBy")
                         .HasMaxLength(300)
                         .HasColumnType("character varying(300)");

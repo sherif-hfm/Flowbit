@@ -873,7 +873,8 @@ public sealed class AdministrativeActionBatchMigrationTests(PostgresApiFixture f
         context.Database.ExecuteSqlRawAsync("""
             ALTER TABLE flowbit.workflow_instances
                 ADD COLUMN "FinishedAt" timestamp with time zone NULL,
-                ADD COLUMN "HistoryPrunedAt" timestamp with time zone NULL;
+                ADD COLUMN "HistoryPrunedAt" timestamp with time zone NULL,
+                ADD COLUMN "LastReactivationTokenId" bigint NULL;
             ALTER TABLE flowbit.node_executions
                 ADD COLUMN "TriggeredByClaimsJson" jsonb NULL,
                 ADD COLUMN "CompletedByClaimsJson" jsonb NULL;

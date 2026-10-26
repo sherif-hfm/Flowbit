@@ -183,6 +183,10 @@ public sealed partial class WorkflowEngineService
                 cancellationToken,
                 automaticActivationCount: 0,
                 automaticActivationStateIds: []);
+            await runtime.SetLastReactivationTokenAsync(
+                instance.Id,
+                token.Id,
+                cancellationToken);
 
             var newTask = await runtime.GetActiveUserTaskAsync(
                     instance.Id,

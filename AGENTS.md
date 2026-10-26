@@ -101,6 +101,9 @@ mount the same editor without a server; `theme-init.js` applies its initial them
 The root HTML is a compatibility launcher. Keep the complete asset folder together.
 Flowbit.Ui uses `workflow-editor-host.js` for direct Blazor interop and mounts
 into an empty element owned by `WorkflowEditor.razor`; no iframe is used.
+Instance detail mounts the same assets read-only through the adapter's
+`createViewer` export (`mode: "viewer"`), into an empty element owned by
+`Components/Shared/InstanceDiagram.razor`.
 The key pieces:
 
 - **State and lifecycle**: Each mount privately owns `model`, history, selection,
@@ -108,11 +111,21 @@ The key pieces:
   `acknowledgeSaved`, `getState`, `setHostState`, and `dispose`. Callbacks report
   dirty state, document replacement, and hosted save requests. Disposal cancels
   listeners, timers, animation frames, readers, and observers before clearing
-  the root. The supported hosts each mount one editor per page.
+  the root. The supported hosts each mount one editor or viewer per page. A
+  viewer's controller exposes only `load(definition, overlay)`,
+  `setOverlay(overlay)`, `selectNode(nodeId | null)`, and `dispose`, and its
+  `onSelectionChange` callback reports the selected node. An overlay marks nodes
+  as `active`, `ended`, `faulted`, or `cancelled`, with an optional badge and a
+  label; invalid entries are ignored.
 - **Isolation**: CSS, DOM queries, theme, and keyboard handling belong to the
   mounting root. Responsive layout and inspector sizing use that container.
   Hosted mode uses the app's light appearance and a compact command bar;
-  standalone mode retains its branding and theme toggle. Blazor owns API/auth,
+  standalone mode retains its branding and theme toggle. Viewer mode also uses
+  the light appearance. It removes the toolbar, authoring palette, diagram
+  tools, and inspector from the page, keeps the dialogs hidden, keeps the pan
+  tool, and records no history. It draws
+  no trace highlighting and ignores editing shortcuts. Only Ctrl or Meta with
+  the wheel zooms, so the plain wheel scrolls the page. Blazor owns API/auth,
   route, and saved-version metadata; JavaScript owns the editor subtree.
 - **Rendering**: `render()` is the top-level redraw. It calls `renderLanes()`,
   `renderEdges()`, `renderNodes()`, `renderInspector()`, and `renderHint()`.
@@ -236,7 +249,7 @@ A repeatable Chromium smoke suite exists at
 real copied editor and the real published API/UI over localhost with a
 disposable PostgreSQL container; see its
 [README](Flowbit/tests/Flowbit.BrowserTests/README.md) for setup and the
-E1–E8/R1–R7 coverage matrix. It is the baseline for editor/runtime UI changes,
+E1–E8/R1–R8 coverage matrix. It is the baseline for editor/runtime UI changes,
 but it does not replace scenario-specific manual verification: the native
 file-picker success/cancel path, visual comparisons, and behaviors outside the
 matrix still need the manual steps above.
@@ -963,8 +976,11 @@ Storage follows the hybrid design:
   the requested node. Variables, FlowInfo summaries, history, receipts, and all
   old terminal runtime rows are retained; no authored sequence flow is recorded.
   The required 1-1,000-character reason and operator/role/new-activation details
-  are appended in `instanceReactivated` history. Faulted instances remain
-  terminal and unsupported.
+  are appended in `instanceReactivated` history. The new root token is also
+  stored as `workflow_instances.LastReactivationTokenId` (instance detail
+  `lastReactivationTokenId`): tokens from it onward form the current run, and it
+  survives history retention. Its additive migration backfills it from existing
+  reactivation history. Faulted instances remain terminal and unsupported.
 - **Error events.** An `errorBoundaryEvent` is attached to a `serviceTask` or
   `scriptTask` (`attachedToRef`) and catches that task's runtime failures
   (HTTP non-2xx/timeout/network, or a script/assignment/validation error): the
@@ -1570,7 +1586,13 @@ what the cross-version `workflowKey` instance search matches.
   sequence flows, take authorized parent-level multi-instance interrupt actions,
   view variables and history (including task-assignment/reactivation audit
   details), and, for authorized administrators, preview and confirm safe
-  completed/cancelled instance reactivation.
+  completed/cancelled instance reactivation. Its read-only **Diagram** marks a
+  running instance's active positions or a finished instance's final positions
+  (from its last run, after a reactivation), never the path taken. Selecting a
+  node lists its task links and node-execution links. The page loads node
+  executions of every status for the selected node through the role-scoped
+  node-execution search, so links appear only for executions the caller may
+  read, and an async-after wait links the completed visit it follows.
 
 Display sections live in shared child components so pages keep their own
 coordination. The instance detail sections are under
@@ -1588,6 +1610,13 @@ mutations. The page keeps fetching, filters, pagination, population selection,
 input validation, mutation handlers, identity checks, the three-second poll,
 and disposal. Its timer dispatches both the guarded refresh and a render of
 the current state (including permission loss); it never renders after disposal.
+`Components/Shared/InstanceDiagram.razor` is the exception that owns a
+lifecycle: it mounts, updates, and disposes the editor's read-only viewer and
+injects only `IJSRuntime`. A failed mount, load, or marker update is shown once
+and retried only after the instance changes, so it never re-renders in a loop. The pure `InstanceDiagramOverlay` derives its markers
+from `InstanceDetailDto`, and `ExecutionPositionText` holds the position wording
+shared with `ExecutionPositionList`. Instance detail keeps the selection, the
+node-execution lookup, polling, and identity checks.
 
 The UI talks to the API through `WorkflowApiClient` (a typed `HttpClient`). Its
 legacy GET methods remain for dashboard/compatibility reads; all five interactive

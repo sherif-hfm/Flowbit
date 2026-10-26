@@ -31,7 +31,7 @@ function mount(root, options = {}) {
   };
   const queueMicrotask = callback => window.queueMicrotask(() => { if (!disposed) callback(); });
   const hasEditorFocus = event => root.contains(event.target) || root.contains(document.activeElement) ||
-    (options.mode !== "hosted" && document.activeElement === document.body);
+    (options.mode !== "hosted" && options.mode !== "viewer" && document.activeElement === document.body);
   function dispose() {
     if (disposed) return;
     disposed = true;
@@ -51,8 +51,9 @@ function mount(root, options = {}) {
   }
   try {
   root.classList.add("flowbit-editor");
-  root.dataset.mode = options.mode === "hosted" ? "hosted" : "standalone";
-  root.tabIndex = 0;
+  root.dataset.mode = options.mode === "hosted" || options.mode === "viewer" ? options.mode : "standalone";
+  // A viewer's marked nodes are its tab stops; the root only takes focus from pointer input.
+  root.tabIndex = options.mode === "viewer" ? -1 : 0;
   root.innerHTML = window.FlowbitEditorTemplate;
   listen(root, "pointerdown", event => {
     if (!event.target.closest("input, textarea, select, button, a, summary, [contenteditable]"))
@@ -66,6 +67,11 @@ const GATEWAY_D = 76;
 const BOUNDARY_D = 28;
 const MIN_LANE_W = 220, MIN_LANE_H = 150;
 const ZOOM_MIN = 0.35, ZOOM_MAX = 2.5;
+// A read-only viewer, such as instance detail's diagram: the same rendering without authoring.
+const viewerMode = options.mode === "viewer";
+const INSTANCE_OVERLAY_STATES = new Set(["active", "ended", "faulted", "cancelled"]);
+// The lowest zoom at which semantic zoom still shows node captions.
+const READABLE_VIEWER_ZOOM = 0.6;
 const NODE_TYPE = {
   START_EVENT: "startEvent",
   TIMER_START_EVENT: "timerStartEvent",
@@ -928,6 +934,9 @@ let diagramSearchMatches = [];
 let diagramSearchIndex = -1;
 let snapToGrid = false;
 let gridSize = DEFAULT_GRID_SIZE;
+let instanceOverlay = new Map(); // viewer only: node id -> { state, badge, label }
+let notifiedViewerSelection = null;
+let pendingViewerFit = false;
 
 const svg = byId('svg');
 const mainEl = root.querySelector('.editor-workspace');
@@ -1184,7 +1193,8 @@ function getFlow(id) { return model.sequenceFlows.find(f => f.id === id); }
 function outgoingFlows(nodeId) { return model.sequenceFlows.filter(f => f.sourceRef === nodeId); }
 function incomingFlows(nodeId) { return model.sequenceFlows.filter(f => f.targetRef === nodeId); }
 function refreshTraceContext() {
-  activeTraceContext = selected && selectedNodeIds.size <= 1
+  // A viewer never traces: highlighted flows would read as the path an instance took.
+  activeTraceContext = !viewerMode && selected && selectedNodeIds.size <= 1
     ? buildDiagramTraceContext(model, selected, traceMode)
     : null;
 }
@@ -2188,6 +2198,95 @@ function appendAssigneeMarker(g, title) {
   g.appendChild(marker);
 }
 
+// BEGIN INSTANCE OVERLAY HELPERS
+// Hosts describe runtime state per node; invalid or duplicate entries are ignored.
+function normalizeInstanceOverlay(overlay) {
+  const markers = new Map();
+  const nodes = overlay && Array.isArray(overlay.nodes) ? overlay.nodes : [];
+  for (const item of nodes) {
+    if (!item || typeof item !== "object" || !Number.isInteger(item.id) ||
+        !INSTANCE_OVERLAY_STATES.has(item.state) || markers.has(item.id)) continue;
+    markers.set(item.id, {
+      state: item.state,
+      badge: typeof item.badge === "string" ? truncateText(item.badge, 8) : "",
+      label: typeof item.label === "string" ? truncateText(item.label, 300) : ""
+    });
+  }
+  return markers;
+}
+
+function setInstanceOverlay(overlay) {
+  instanceOverlay = normalizeInstanceOverlay(overlay);
+  renderNodes();
+}
+
+// A state ring outside the shape, so it never competes with the node type's own colors.
+function appendInstanceHalo(g, node) {
+  const size = nodeSize(node);
+  const gap = 6;
+  let halo;
+  if (isEventType(node.type) || isBoundaryEventType(node.type)) {
+    halo = el("circle", { cx: size.w / 2, cy: size.h / 2, r: size.w / 2 + gap });
+  } else if (isGatewayType(node.type)) {
+    const h = size.w / 2, d = size.w, o = gap + 3;
+    halo = el("polygon", { points: `${h},${-o} ${d + o},${h} ${h},${d + o} ${-o},${h}` });
+  } else {
+    halo = el("rect", { x: -gap, y: -gap, width: size.w + gap * 2, height: size.h + gap * 2, rx: 16, ry: 16 });
+  }
+  halo.setAttribute("class", "instance-halo");
+  halo.setAttribute("aria-hidden", "true");
+  // Behind the shape: right after the node's tooltip title.
+  g.insertBefore(halo, g.children[1] ?? null);
+}
+
+function appendInstanceMarker(g, node, marker) {
+  const name = String(node.name ?? "").trim() || "Unnamed";
+  g.setAttribute("tabindex", "0");
+  g.setAttribute("role", "button");
+  g.setAttribute("aria-label",
+    `${name}, ${typeLabel(node.type)}${marker.label ? `: ${marker.label}` : ""}`);
+  appendInstanceHalo(g, node);
+  if (!marker.badge) return;
+  const size = nodeSize(node);
+  const width = Math.max(22, 12 + Array.from(marker.badge).length * 7);
+  const badge = el("g", {
+    class: "instance-badge",
+    transform: `translate(${size.w - width / 2 + 6},-4)`,
+    "aria-hidden": "true"
+  });
+  badge.appendChild(el("rect", { x: -width / 2, y: -10, width, height: 20, rx: 10, ry: 10 }));
+  const text = el("text", { x: 0, y: 4, "text-anchor": "middle" });
+  text.textContent = marker.badge;
+  badge.appendChild(text);
+  g.appendChild(badge);
+}
+
+function appendViewerSelectionRing(g, node) {
+  const size = nodeSize(node);
+  // Clears the state ring, which sits up to nine units outside the shape.
+  const inset = 13;
+  const ring = el("g", { class: "viewer-selection-ring", "aria-hidden": "true" });
+  ring.appendChild(el("rect", {
+    x: -inset, y: -inset, width: size.w + inset * 2, height: size.h + inset * 2, rx: 14, ry: 14
+  }));
+  g.appendChild(ring);
+}
+
+function focusedViewerNodeId() {
+  const active = document.activeElement;
+  const group = active && nodesG.contains(active) ? active.closest?.(".node[data-id]") : null;
+  return group ? Number(group.getAttribute("data-id")) : null;
+}
+
+function focusViewerNode(nodeId) {
+  const group = [...nodesG.querySelectorAll(".node[data-id]")]
+    .find(candidate => Number(candidate.getAttribute("data-id")) === nodeId);
+  if (group?.getAttribute("tabindex") === "0") group.focus({ preventScroll: true });
+  // A node that lost its marker is no longer a tab stop; keep focus in the diagram.
+  else root.focus({ preventScroll: true });
+}
+// END INSTANCE OVERLAY HELPERS
+
 function connectionHandlePoints(node) {
   const size = nodeSize(node);
   return [
@@ -2396,6 +2495,7 @@ function render() {
   renderInspector();
   renderHint();
   hostBridge?.changed();
+  if (viewerMode) notifyViewerSelection();
 }
 
 function renderDiagramLayers() {
@@ -2418,9 +2518,11 @@ function renderLanes() {
     const nameText = el("text", { x: 12, y: 42, "font-weight": "600" });
     nameText.textContent = lane.name;
     g.appendChild(nameText);
-    const handle = el("rect", { class: "resize", x: lane.w - 14, y: lane.h - 14, width: 10, height: 10, rx: 2 });
-    handle.addEventListener("pointerdown", (e) => onLaneResizePointerDown(e, lane));
-    g.appendChild(handle);
+    if (!viewerMode) {
+      const handle = el("rect", { class: "resize", x: lane.w - 14, y: lane.h - 14, width: 10, height: 10, rx: 2 });
+      handle.addEventListener("pointerdown", (e) => onLaneResizePointerDown(e, lane));
+      g.appendChild(handle);
+    }
 
     g.addEventListener("pointerdown", (e) => onLanePointerDown(e, lane));
     lanesG.appendChild(g);
@@ -2428,18 +2530,21 @@ function renderLanes() {
 }
 
 function renderNodes() {
+  // Re-rendering replaces node elements; keep a viewer's keyboard focus on the same node.
+  const focusedNodeId = viewerMode ? focusedViewerNodeId() : null;
   nodesG.innerHTML = "";
   for (const node of model.flowNodes) {
     const pos = nodePosition(node);
     const nodeSelected = isSel('node', node.id);
     const primarySelected = selected?.kind === 'node' && selected.nodeId === node.id;
+    const instanceMarker = viewerMode ? instanceOverlay.get(node.id) : null;
     const g = el("g", {
-      class: `node ${node.type} ${isConditionalBoundaryEventType(node.type) && node.cancelActivity === false ? 'non-interrupting' : ''} ${nodeSelected ? 'selected' : ''} ${primarySelected ? 'primary-selected' : ''} ${traceClass('node', node.id)}`,
+      class: `node ${node.type} ${isConditionalBoundaryEventType(node.type) && node.cancelActivity === false ? 'non-interrupting' : ''} ${nodeSelected ? 'selected' : ''} ${primarySelected ? 'primary-selected' : ''} ${traceClass('node', node.id)} ${instanceMarker ? `instance-marked instance-${instanceMarker.state}` : ''}`,
       transform: `translate(${pos.x},${pos.y})`, "data-id": node.id
     });
     const marker = model.initialEventId === node.id ? " · START" : "";
     const roles = node.rolesVariable != null ? truncateText(`$${node.rolesVariable}`, 20) : roleSummary(node.roles, 20);
-    appendSvgTitle(g, `#${node.id} · ${typeLabel(node.type)} · ${node.name || "Unnamed"}${node.rolesVariable != null ? ` · Role variable: ${node.rolesVariable} (captured on entry)` : roles ? ` · Roles: ${normalizeRoles(node.roles).join(", ")}` : ""}`);
+    appendSvgTitle(g, `#${node.id} · ${typeLabel(node.type)} · ${node.name || "Unnamed"}${node.rolesVariable != null ? ` · Role variable: ${node.rolesVariable} (captured on entry)` : roles ? ` · Roles: ${normalizeRoles(node.roles).join(", ")}` : ""}${instanceMarker?.label ? ` · ${instanceMarker.label}` : ""}`);
 
     if (isBoundaryEventType(node.type)) {
       const r = BOUNDARY_D / 2;
@@ -2513,10 +2618,18 @@ function renderNodes() {
       }
     }
 
-    appendConnectionHandles(g, node);
+    if (instanceMarker) appendInstanceMarker(g, node, instanceMarker);
+    if (viewerMode && nodeSelected) {
+      appendViewerSelectionRing(g, node);
+      // Among the marked nodes, the selected one is the current one.
+      if (instanceMarker) g.setAttribute("aria-current", "true");
+    }
+    if (!viewerMode) appendConnectionHandles(g, node);
 
     if (isBoundaryEventType(node.type)) {
       g.addEventListener("pointerdown", (e) => {
+        // Like any node, a boundary event lets the pan tool pan, and is inspected on release.
+        if (activeTool === "pan") return;
         if (connectMode) { e.stopPropagation(); handleConnectClick(node); return; }
         e.stopPropagation();
         select('node', node.id);
@@ -2524,9 +2637,17 @@ function renderNodes() {
     } else {
       g.addEventListener("pointerdown", (e) => onNodePointerDown(e, node));
     }
+    if (instanceMarker) {
+      g.addEventListener("keydown", event => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        select('node', node.id);
+      });
+    }
     nodesG.appendChild(g);
   }
   updateConnectionVisualState();
+  if (focusedNodeId != null) focusViewerNode(focusedNodeId);
 }
 
 function flowLabelInfo(flow, source) {
@@ -3079,7 +3200,8 @@ function renderEdges() {
     const selectedFlow = isSel('flow', flow.id);
     const edgeClass = `edge ${dashed ? "auto" : ""} ${isError ? "error" : ""} ${selectedFlow ? "selected" : ""} ${traceClass('flow', flow.id)}`;
     const labelInfo = flowLabelInfo(flow, source);
-    const pathGroup = el("g", {
+    // Viewer flows keep their tooltip but are neither focusable nor selectable.
+    const pathGroup = el("g", viewerMode ? { class: edgeClass, "data-flow": flow.id } : {
       class: edgeClass,
       "data-flow": flow.id,
       role: "button",
@@ -3105,7 +3227,7 @@ function renderEdges() {
       `flow-label-guide-${flowIndex}`);
     const selectFlow = (event) => { event.stopPropagation(); select("flow", flow.id); };
     pathGroup.addEventListener("click", selectFlow);
-    pathGroup.addEventListener("keydown", event => {
+    if (!viewerMode) pathGroup.addEventListener("keydown", event => {
       if (event.key !== "Enter" && event.key !== " ") return;
       event.preventDefault();
       selectFlow(event);
@@ -3121,8 +3243,11 @@ function renderEdges() {
     };
     pathGroup.addEventListener("mouseenter", () => setHover(true));
     pathGroup.addEventListener("mouseleave", () => setHover(false));
-    pathGroup.addEventListener("focus", () => setHover(true));
-    pathGroup.addEventListener("blur", () => setHover(false));
+    // Chrome makes SVG elements with focus listeners focusable, even without tabindex.
+    if (!viewerMode) {
+      pathGroup.addEventListener("focus", () => setHover(true));
+      pathGroup.addEventListener("blur", () => setHover(false));
+    }
     labelGroup.addEventListener("click", selectFlow);
     labelGroup.addEventListener("mouseenter", () => setHover(true));
     labelGroup.addEventListener("mouseleave", () => setHover(false));
@@ -3183,6 +3308,8 @@ function updateInspectorItemDeleteButtons() {
 function renderInspector() {
   inspectorItemDeleteButtons = [];
   inspector.innerHTML = "";
+  // A viewer has no inspector; its host describes the selected node.
+  if (viewerMode) return;
   if (selected?.kind === 'node' && selectedNodeIds.size > 1) {
     return renderMultiNodeInspector();
   }
@@ -6721,7 +6848,38 @@ function fitBounds(bounds, padding = 64, maxZoom = ZOOM_MAX) {
 function fitView() {
   const layers = [lanesG, edgesG, nodesG].filter(layer => layer.childElementCount > 0);
   const bounds = combineBounds(layers.map(domBounds));
-  if (!fitBounds(bounds, 64, ZOOM_MAX)) resetViewport();
+  if (!fitBounds(bounds, 64, viewerMode ? 1 : ZOOM_MAX)) resetViewport();
+}
+
+function boundsInsideViewport(bounds) {
+  const { width, height } = canvasDimensions();
+  return bounds.left >= viewState.x && bounds.top >= viewState.y &&
+    bounds.right <= viewState.x + width / viewState.zoom &&
+    bounds.bottom <= viewState.y + height / viewState.zoom;
+}
+
+// A viewer opens on the whole diagram. When that is too small to read or
+// leaves marked nodes off the canvas, it centers the marked nodes at the
+// smallest readable zoom, keeping as much context as fits. Marked nodes too far
+// apart to read together give way to the first of them in reading order. Without
+// a laid-out canvas, the resize observer fits later.
+function fitViewerContent() {
+  const rect = canvasWrap.getBoundingClientRect();
+  if (!(rect.width > 1 && rect.height > 1)) {
+    pendingViewerFit = true;
+    return;
+  }
+  pendingViewerFit = false;
+  fitView();
+  const markedNodes = [...instanceOverlay.keys()].map(getNode).filter(Boolean);
+  const marked = combineBounds(markedNodes.map(node => edgeNodeBounds(node, 16)));
+  if (!marked || (classifySemanticZoom(viewState.zoom) !== "overview" && boundsInsideViewport(marked))) return;
+  fitBounds(marked, 48, Math.max(viewState.zoom, READABLE_VIEWER_ZOOM));
+  if (classifySemanticZoom(viewState.zoom) !== "overview") return;
+  const [first] = markedNodes
+    .map(node => ({ node, position: nodePosition(node) }))
+    .sort((a, b) => a.position.x - b.position.x || a.position.y - b.position.y);
+  fitBounds(edgeNodeBounds(first.node, 16), 48, READABLE_VIEWER_ZOOM);
 }
 
 function fitSelection() {
@@ -6856,6 +7014,8 @@ function panInspectionTarget(target) {
     const nodeId = Number(nodeElement.dataset.id ?? nodeElement.getAttribute?.("data-id"));
     if (getNode(nodeId)) return { kind: "node", id: nodeId };
   }
+  // A viewer inspects nodes only; clicking a flow or lane clears the selection.
+  if (viewerMode) return null;
   const flowElement = target?.closest?.(".edge[data-flow]");
   if (flowElement) {
     const flowId = Number(flowElement.dataset.flow ?? flowElement.getAttribute?.("data-flow"));
@@ -6982,7 +7142,8 @@ function finishItemGestureForToolSwitch() {
 }
 
 function setActiveTool(tool) {
-  const nextTool = ["select", "rectangle", "pan"].includes(tool) ? tool : "select";
+  // A viewer only pans and inspects; it never offers the selection or editing tools.
+  const nextTool = viewerMode ? "pan" : ["select", "rectangle", "pan"].includes(tool) ? tool : "select";
   if (nextTool !== activeTool) {
     if (canvasPan) finishCanvasPan({ pointerId: canvasPan.pointerId }, "cancel");
     suppressCanvasClick = false;
@@ -7045,6 +7206,12 @@ function clearSelection() {
   selectedNodeIds.clear();
   traceMode = "local";
   render();
+}
+function notifyViewerSelection() {
+  const nodeId = selected?.kind === "node" ? selected.nodeId : null;
+  if (nodeId === notifiedViewerSelection) return;
+  notifiedViewerSelection = nodeId;
+  options.onSelectionChange?.(nodeId);
 }
 function setTraceMode(mode) {
   if (!selected || selected.kind === "lane" || selectedNodeIds.size > 1 ||
@@ -7570,6 +7737,8 @@ svg.addEventListener("click", (e) => {
   e.stopPropagation();
 }, true);
 svg.addEventListener("wheel", (e) => {
+  // An embedded viewer leaves the plain wheel to the page; Ctrl or Meta (and pinch) zooms.
+  if (viewerMode && !e.ctrlKey && !e.metaKey) return;
   e.preventDefault();
   const factor = Math.exp(-e.deltaY * .0015);
   zoomTo(viewState.zoom * factor, e.clientX, e.clientY);
@@ -11214,7 +11383,8 @@ function updateThemeToggle(theme) {
 function setTheme(value, persist = false) {
   const theme = normalizeTheme(value) || systemTheme();
   root.dataset.theme = theme;
-  if (options.mode !== "hosted") document.getElementById("themeColorMeta")
+  // Only the standalone document owns its theme-color meta tag.
+  if (options.mode !== "hosted" && options.mode !== "viewer") document.getElementById("themeColorMeta")
     ?.setAttribute("content", theme === "dark" ? "#0f172a" : "#f4f7fb");
   updateThemeToggle(theme);
   if (persist) {
@@ -11230,11 +11400,13 @@ function followSystemTheme(event) {
 }
 // END THEME HELPERS
 
-const savedTheme = options.mode === "hosted" ? "light" : normalizeTheme(readUiPreference(THEME_STORAGE_KEY));
+// Hosted editors and viewers follow the app's light appearance.
+const savedTheme = options.mode === "hosted" || viewerMode
+  ? "light" : normalizeTheme(readUiPreference(THEME_STORAGE_KEY));
 themeWasExplicitlyChosen = savedTheme !== null;
 setTheme(savedTheme || root.dataset.theme, false);
 
-if (themeMediaQuery && options.mode !== "hosted") {
+if (themeMediaQuery && options.mode !== "hosted" && !viewerMode) {
   if (typeof themeMediaQuery.addEventListener === "function") {
     listen(themeMediaQuery, "change", followSystemTheme);
   } else if (typeof themeMediaQuery.addListener === "function") {
@@ -11512,31 +11684,42 @@ byId("fileInput").onchange = (e) => {
 };
 wfNameInput.oninput = () => { model.name = wfNameInput.value; };
 
-listen(root, "pointerdown", () => {
-  if (historyCommitTimer !== null) commitHistory();
-}, true);
-listen(root, "input", event => {
-  if (event.target === diagramSearchInput ||
-      event.target === gridSizeInput ||
-      event.target === traceOpacityInput ||
-      event.target.id === "js-editor-textarea") return;
-  scheduleHistoryCommit();
-});
-listen(root, "change", event => {
-  if (event.target === labelModeSelect ||
-      event.target === snapToGridInput ||
-      event.target === gridSizeInput ||
-      event.target === traceOpacityInput) return;
-  commitHistory();
-});
-listen(root, "pointerup", () => queueMicrotask(commitHistory));
-listen(root, "click", event => {
-  if (event.target.closest("#undoBtn, #redoBtn")) return;
-  queueMicrotask(commitHistory);
-});
+// A viewer never changes its document, so it records no history.
+if (!viewerMode) {
+  listen(root, "pointerdown", () => {
+    if (historyCommitTimer !== null) commitHistory();
+  }, true);
+  listen(root, "input", event => {
+    if (event.target === diagramSearchInput ||
+        event.target === gridSizeInput ||
+        event.target === traceOpacityInput ||
+        event.target.id === "js-editor-textarea") return;
+    scheduleHistoryCommit();
+  });
+  listen(root, "change", event => {
+    if (event.target === labelModeSelect ||
+        event.target === snapToGridInput ||
+        event.target === gridSizeInput ||
+        event.target === traceOpacityInput) return;
+    commitHistory();
+  });
+  listen(root, "pointerup", () => queueMicrotask(commitHistory));
+  listen(root, "click", event => {
+    if (event.target.closest("#undoBtn, #redoBtn")) return;
+    queueMicrotask(commitHistory);
+  });
+}
 
 listen(window, "keydown", (e) => {
   if (!hasEditorFocus(e)) return;
+  if (viewerMode) {
+    // Editing, tool, history, and search shortcuts do not apply to a viewer.
+    if (e.key === "Escape" && selected) {
+      e.preventDefault();
+      clearSelection();
+    }
+    return;
+  }
   const historyModifier = (e.ctrlKey || e.metaKey) && !e.altKey;
   const historyKey = e.key.toLowerCase();
   const historyTarget = e.target;
@@ -11686,7 +11869,11 @@ resizer.addEventListener("keydown", (e) => {
 });
 
 if (typeof ResizeObserver !== "undefined") {
-  const resizeObserver = new ResizeObserver(() => { if (!disposed) applyViewBox(); });
+  const resizeObserver = new ResizeObserver(() => {
+    if (disposed) return;
+    if (pendingViewerFit) fitViewerContent();
+    else applyViewBox();
+  });
   resizeObserver.observe(canvasWrap);
   cleanup.push(() => resizeObserver.disconnect());
 } else {
@@ -11694,6 +11881,12 @@ if (typeof ResizeObserver !== "undefined") {
 }
 
 /* ---------- Init ---------- */
+if (viewerMode) {
+  // Marked nodes are buttons inside the diagram, so it is a group, not an application.
+  svg.setAttribute("role", "group");
+  svg.setAttribute("aria-label", typeof options.label === "string" && options.label.trim()
+    ? options.label.trim() : "Read-only workflow diagram");
+}
 setActiveTool("pan");
 resetViewport();
 render();
@@ -11743,6 +11936,38 @@ for (const button of root.querySelectorAll("[data-editor-action]")) {
       event.stopPropagation();
     }
   }, true);
+
+  // A viewer has no document state to export, save, or guard; hosts only
+  // replace the definition and overlay and observe the selected node.
+  if (options.mode === "viewer") {
+    // The host page gets only the canvas and its zoom controls: remove the
+    // hidden authoring markup, including the editor's own heading. The editor
+    // keeps references to these elements, and still looks up its dialogs.
+    for (const selector of [".app-toolbar", ".editor-feedback", ".authoring-palette",
+      ".diagram-tools", ".inspector-dock", ".hint"]) root.querySelector(selector)?.remove();
+    const ensureViewerOpen = () => { if (disposed) throw new Error("Diagram is closed."); };
+    const viewer = {
+      load(definition, overlay = null) {
+        ensureViewerOpen();
+        loadFromObject(definition);
+        instanceOverlay = normalizeInstanceOverlay(overlay);
+        renderNodes();
+        fitViewerContent();
+      },
+      setOverlay(overlay) {
+        ensureViewerOpen();
+        setInstanceOverlay(overlay);
+      },
+      selectNode(nodeId) {
+        ensureViewerOpen();
+        if (nodeId == null) clearSelection();
+        else if (getNode(nodeId)) select("node", nodeId);
+      },
+      dispose
+    };
+    mounted.set(root, viewer);
+    return viewer;
+  }
 
   let baseline = JSON.stringify(model);
   let unsavedDocument = false;

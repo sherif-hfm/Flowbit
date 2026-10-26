@@ -16,7 +16,7 @@
                     <StatusBadge Status="@position.TokenStatus" />
                 </div>
                 <span class="execution-position-meta">
-                    Token #@position.TokenId · Node #@position.NodeId · @NodeTypeLabel(position.NodeType)
+                    Token #@position.TokenId · Node #@position.NodeId · @ExecutionPositionText.NodeTypeLabel(position.NodeType)
                 </span>
                 @if (!string.IsNullOrWhiteSpace(position.NodeExternalId))
                 {
@@ -28,7 +28,7 @@
                 }
                 @if (!string.IsNullOrWhiteSpace(position.TerminationReason))
                 {
-                    <span class="execution-position-reason">@TerminationReasonLabel(position.TerminationReason)</span>
+                    <span class="execution-position-reason">@ExecutionPositionText.TerminationReasonLabel(position.TerminationReason)</span>
                 }
             </div>
         }
@@ -79,28 +79,4 @@ else
             : new(value.Trim().ToLowerInvariant()
                 .Select(character => char.IsLetterOrDigit(character) ? character : '-')
                 .ToArray());
-
-    private static string NodeTypeLabel(string type) => type switch
-    {
-        BpmnFlowNodeTypes.UserTask => "User task",
-        BpmnFlowNodeTypes.IntermediateMessageCatchEvent => "Message wait",
-        BpmnFlowNodeTypes.ParallelGateway => "Parallel gateway",
-        BpmnFlowNodeTypes.InclusiveGateway => "Inclusive gateway",
-        BpmnFlowNodeTypes.ComplexGateway => "Complex gateway",
-        BpmnFlowNodeTypes.ScopedInterruptEvent => "Scoped interrupt",
-        BpmnFlowNodeTypes.TerminateEndEvent => "Terminate end",
-        BpmnFlowNodeTypes.ErrorEndEvent => "Error end",
-        BpmnFlowNodeTypes.EndEvent => "End event",
-        _ => type
-    };
-
-    private static string TerminationReasonLabel(string reason) => reason switch
-    {
-        "gatewayScopeCancelled" => "Cancelled by a scoped interrupt",
-        "gatewayJoinMerged" => "Merged at a gateway join",
-        "terminateEnd" => "Cancelled by a terminate end event",
-        "errorEnd" => "Cancelled when the instance faulted",
-        "instanceCancelled" => "Cancelled with the instance",
-        _ => reason
-    };
 }

@@ -1,0 +1,341 @@
+@implements IAsyncDisposable
+@using System.Text
+@using System.Text.Json
+@inject IJSRuntime JS
+
+@* The page owns fetching and polling. This component owns only the shared
+   editor's read-only viewer: it mounts, loads, updates, and disposes it. *@
+<section id="diagram" class="panel mb-3 instance-diagram" aria-labelledby="instance-diagram-heading"
+         data-diagram-ready="@(viewerReady ? "true" : "false")">
+    <div class="section-heading">
+        <div>
+            <h2 id="instance-diagram-heading">Diagram</h2>
+            <p>Workflow version @Instance.Workflow.Version. Highlights show where the instance is now, not the path it took.</p>
+        </div>
+    </div>
+    <ul class="instance-diagram-legend" aria-label="Diagram legend">
+        <li><span class="instance-diagram-swatch swatch-active" aria-hidden="true"></span>Active or waiting</li>
+        <li><span class="instance-diagram-swatch swatch-ended" aria-hidden="true"></span>Ended here</li>
+        <li><span class="instance-diagram-swatch swatch-stopped" aria-hidden="true"></span>Faulted or cancelled here</li>
+    </ul>
+    <div class="instance-diagram-layout">
+        <div @ref="viewerRoot" class="flowbit-editor instance-diagram-canvas"></div>
+        <aside class="instance-diagram-details" aria-labelledby="instance-diagram-details-heading" aria-live="polite">
+            @if (!string.IsNullOrWhiteSpace(viewerError))
+            {
+                <div class="alert alert-warning mb-2" role="status">@viewerError</div>
+            }
+            @if (SelectedNode is { } node)
+            {
+                var marker = overlay.Find(node.Id);
+                <div class="instance-diagram-details-heading">
+                    <h3 id="instance-diagram-details-heading">@(string.IsNullOrWhiteSpace(node.Name) ? $"Node #{node.Id}" : node.Name)</h3>
+                    <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="ClearSelectionAsync">Clear</button>
+                </div>
+                <p class="instance-diagram-meta">
+                    Node #@node.Id · @ExecutionPositionText.NodeTypeLabel(node.Type)@(string.IsNullOrWhiteSpace(node.ExternalId) ? null : $" · {node.ExternalId}")
+                </p>
+                @if (marker is null || marker.Positions.Count == 0)
+                {
+                    <p class="instance-diagram-note">@(marker?.Label ?? "This node has no current execution position.")</p>
+                }
+                else
+                {
+                    <ul class="instance-diagram-positions" aria-label="Execution positions at this node">
+                        @foreach (var position in marker.Positions)
+                        {
+                            var progress = position.MultiInstanceExecutionId is long progressId
+                                ? InstanceDiagramOverlay.FindProgress(Instance, progressId)
+                                : null;
+                            var items = ChildExecutions(position);
+                            var execution = position.MultiInstanceExecutionId is null ? TokenExecution(position) : null;
+                            // A multi-instance position links its visible items; without them, one work item.
+                            var taskId = position.MultiInstanceExecutionId is null || items.Count == 0 ? position.UserTaskId : null;
+                            <li class="instance-diagram-position">
+                                <div class="instance-diagram-position-heading">
+                                    <StatusBadge Status="@position.TokenStatus" />
+                                    <span>Token #@position.TokenId</span>
+                                </div>
+                                <p>@ExecutionPositionText.DescribePosition(position)</p>
+                                @if (progress is not null)
+                                {
+                                    <p>@ProgressText(progress)</p>
+                                }
+                                @if (taskId is not null || execution is not null)
+                                {
+                                    <div class="instance-diagram-links">
+                                        @if (taskId is long openTaskId)
+                                        {
+                                            <a href="@($"user-tasks/{openTaskId}")">@(position.MultiInstanceExecutionId is null ? $"Open task #{openTaskId}" : $"Open a work item (task #{openTaskId})")</a>
+                                        }
+                                        @if (execution is not null)
+                                        {
+                                            <a href="@($"node-executions/{execution.Id}")">Node execution #@execution.Id</a>
+                                        }
+                                    </div>
+                                }
+                                @if (items.Count > 0)
+                                {
+                                    <ul class="instance-diagram-items" aria-label="Work items">
+                                        @foreach (var item in items.Take(MaxChildLinks))
+                                        {
+                                            <li>
+                                                <a href="@($"node-executions/{item.Id}")">@ChildLabel(item)</a>
+                                                <span class="instance-diagram-item-status">@item.Status</span>
+                                                @if (item.UserTaskId is long childTaskId)
+                                                {
+                                                    <a href="@($"user-tasks/{childTaskId}")">Task #@childTaskId</a>
+                                                }
+                                            </li>
+                                        }
+                                    </ul>
+                                    @if (items.Count > MaxChildLinks)
+                                    {
+                                        <p class="instance-diagram-note">@MoreItemsText(items.Count - MaxChildLinks)</p>
+                                    }
+                                }
+                            </li>
+                        }
+                    </ul>
+                    @if (NodeExecutionsLoading)
+                    {
+                        <p class="instance-diagram-note" role="status">Loading execution details…</p>
+                    }
+                    else if (NodeExecutions is not null && VisibleExecutions.Count == 0)
+                    {
+                        <p class="instance-diagram-note">No node execution details for this node are available to you.</p>
+                    }
+                }
+            }
+            else
+            {
+                <h3 id="instance-diagram-details-heading">Selected node</h3>
+                <p class="instance-diagram-note">Select a highlighted node to see its work and execution details. Drag to move the diagram. Use the zoom buttons, or hold Ctrl while you scroll, to zoom.</p>
+            }
+        </aside>
+    </div>
+</section>
+
+@code {
+    private const int MaxChildLinks = 5;
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
+    [Parameter, EditorRequired] public InstanceDetailDto Instance { get; set; } = default!;
+
+    [Parameter] public int? SelectedNodeId { get; set; }
+
+    [Parameter] public EventCallback<int?> SelectedNodeIdChanged { get; set; }
+
+    /// <summary>Node executions of the selected node, or null before they load.</summary>
+    [Parameter] public IReadOnlyList<NodeExecutionSummaryDto>? NodeExecutions { get; set; }
+
+    /// <summary>How many node executions matched; more than <see cref="NodeExecutions"/> holds when the lookup was cut short.</summary>
+    [Parameter] public long NodeExecutionsTotal { get; set; }
+
+    [Parameter] public bool NodeExecutionsLoading { get; set; }
+
+    private ElementReference viewerRoot;
+    private IJSObjectReference? module;
+    private IJSObjectReference? viewer;
+    private DotNetObjectReference<InstanceDiagram>? callback;
+    private readonly CancellationTokenSource lifetime = new();
+    private InstanceDiagramOverlay overlay = InstanceDiagramOverlay.Empty;
+    private long? loadedWorkflowId;
+    private string? appliedSignature;
+    private string? failedAttempt;
+    private bool mounting;
+    private bool syncing;
+    private bool viewerReady;
+    private string? viewerError;
+    private bool disposed;
+
+    private FlowNodeModel? SelectedNode => SelectedNodeId is int nodeId
+        ? Instance.Workflow.Definition.FlowNodes.FirstOrDefault(node => node.Id == nodeId)
+        : null;
+
+    private IReadOnlyList<NodeExecutionSummaryDto> VisibleExecutions =>
+        NodeExecutions?.Where(execution => execution.NodeId == SelectedNodeId).ToList() ?? [];
+
+    protected override void OnParametersSet() => overlay = InstanceDiagramOverlay.Build(Instance);
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (disposed) return;
+        if (viewer is null && !await MountViewerAsync()) return;
+        await SyncViewerAsync();
+    }
+
+    // A failed mount or display is retried only once the instance or its
+    // markers change, so a persistent failure cannot keep re-rendering.
+    private string Attempt => $"{Instance.Workflow.Id}|{overlay.Signature}";
+
+    private async Task<bool> MountViewerAsync()
+    {
+        var attempt = Attempt;
+        if (mounting || attempt == failedAttempt) return false;
+        mounting = true;
+        try
+        {
+            module ??= await JS.InvokeAsync<IJSObjectReference>("import", lifetime.Token, "./workflow-editor-host.js");
+            callback ??= DotNetObjectReference.Create(this);
+            viewer = await module.InvokeAsync<IJSObjectReference>("createViewer", lifetime.Token, viewerRoot, callback, new
+            {
+                stylesheet = Assets["editor/flowbit-editor.css"],
+                template = Assets["editor/editor-template.js"],
+                script = Assets["editor/flowbit-editor.js"]
+            }, "Instance diagram");
+            return true;
+        }
+        // After disposal a pending call can fail in any way; nothing is shown any more.
+        catch (Exception) when (disposed) { return false; }
+        // While the circuit is disconnected no render completes; the next one retries.
+        catch (JSDisconnectedException) { return false; }
+        catch (Exception ex)
+        {
+            failedAttempt = attempt;
+            ShowViewerError(ex);
+            return false;
+        }
+        finally
+        {
+            mounting = false;
+        }
+    }
+
+    // Loads a new workflow version, or updates only the markers. Renders that
+    // arrive while a JavaScript call is pending are caught up by the loop.
+    private async Task SyncViewerAsync()
+    {
+        if (viewer is null || syncing) return;
+        syncing = true;
+        string? attempt = null;
+        try
+        {
+            while (!disposed && viewer is not null)
+            {
+                var applied = overlay;
+                var workflow = Instance.Workflow;
+                attempt = Attempt;
+                if (attempt == failedAttempt) break;
+                if (loadedWorkflowId != workflow.Id)
+                {
+                    var json = JsonSerializer.Serialize(workflow.Definition, JsonOptions);
+                    await using var stream = new MemoryStream(Encoding.UTF8.GetBytes(json));
+                    using var reference = new DotNetStreamReference(stream);
+                    await viewer.InvokeVoidAsync("load", lifetime.Token, reference, applied.ViewerOverlay);
+                    loadedWorkflowId = workflow.Id;
+                    appliedSignature = applied.Signature;
+                }
+                else if (applied.Signature != appliedSignature)
+                {
+                    await viewer.InvokeVoidAsync("setOverlay", lifetime.Token, applied.ViewerOverlay);
+                    appliedSignature = applied.Signature;
+                }
+                else
+                {
+                    break;
+                }
+
+                failedAttempt = null;
+                if (!viewerReady || viewerError is not null)
+                {
+                    viewerReady = true;
+                    viewerError = null;
+                    StateHasChanged();
+                }
+            }
+        }
+        catch (Exception) when (disposed) { }
+        // While the circuit is disconnected no render completes; the next one retries.
+        catch (JSDisconnectedException) { }
+        catch (Exception ex)
+        {
+            failedAttempt = attempt;
+            ShowViewerError(ex);
+        }
+        finally
+        {
+            syncing = false;
+        }
+    }
+
+    private void ShowViewerError(Exception exception)
+    {
+        viewerError = $"The diagram could not be displayed. {exception.Message.Split('\n', 2)[0].Trim()}";
+        StateHasChanged();
+    }
+
+    [JSInvokable]
+    public async Task DiagramSelectionChanged(int? nodeId)
+    {
+        if (disposed) return;
+        await SelectedNodeIdChanged.InvokeAsync(nodeId);
+    }
+
+    private async Task ClearSelectionAsync()
+    {
+        if (viewer is not null)
+        {
+            try
+            {
+                // The viewer reports the cleared selection through DiagramSelectionChanged.
+                await viewer.InvokeVoidAsync("selectNode", lifetime.Token, (object?)null);
+                return;
+            }
+            catch (OperationCanceledException) when (disposed) { return; }
+            catch (JSDisconnectedException) { }
+            catch (JSException) { }
+        }
+        await SelectedNodeIdChanged.InvokeAsync(null);
+    }
+
+    // The newest visible visit of this token at the selected node.
+    private NodeExecutionSummaryDto? TokenExecution(ExecutionPositionDto position) =>
+        VisibleExecutions
+            .Where(execution => execution.TokenId == position.TokenId && execution.MultiInstanceExecutionId is null)
+            .MaxBy(execution => execution.Id);
+
+    private IReadOnlyList<NodeExecutionSummaryDto> ChildExecutions(ExecutionPositionDto position) =>
+        position.MultiInstanceExecutionId is long executionId
+            ? VisibleExecutions
+                .Where(execution => execution.MultiInstanceExecutionId == executionId)
+                .OrderBy(execution => execution.ItemIndex ?? int.MaxValue)
+                .ThenBy(execution => execution.Id)
+                .ToList()
+            : [];
+
+    // The lookup returns one page; once it is cut short, the exact number is unknown.
+    private string MoreItemsText(int unlisted) =>
+        NodeExecutions is not null && NodeExecutionsTotal > NodeExecutions.Count
+            ? $"and at least {unlisted} more visible work items"
+            : $"and {unlisted} more visible work items";
+
+    private static string ProgressText(MultiInstanceProgressDto progress) =>
+        $"{progress.Completed} of {progress.Total} completed · {progress.Active} active" +
+        (progress.Pending > 0 ? $" · {progress.Pending} pending" : string.Empty);
+
+    private static string ChildLabel(NodeExecutionSummaryDto execution) =>
+        execution.ItemIndex is int index
+            ? $"Item {index}{(string.IsNullOrWhiteSpace(execution.Owner) ? null : $" · {execution.Owner}")}"
+            : $"Node execution #{execution.Id}";
+
+    public async ValueTask DisposeAsync()
+    {
+        if (disposed) return;
+        disposed = true;
+        await lifetime.CancelAsync();
+        if (viewer is not null)
+        {
+            try { await viewer.InvokeVoidAsync("dispose"); await viewer.DisposeAsync(); }
+            catch (JSDisconnectedException) { }
+            catch (TaskCanceledException) { }
+        }
+        if (module is not null)
+        {
+            try { await module.DisposeAsync(); }
+            catch (JSDisconnectedException) { }
+        }
+        callback?.Dispose();
+        lifetime.Dispose();
+    }
+}

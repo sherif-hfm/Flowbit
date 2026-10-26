@@ -289,7 +289,8 @@ public sealed class InstanceVariableUpdateMigrationTests(PostgresApiFixture fixt
                     """
                     ALTER TABLE flowbit.workflow_instances
                         ADD COLUMN IF NOT EXISTS "FinishedAt" timestamp with time zone,
-                        ADD COLUMN IF NOT EXISTS "HistoryPrunedAt" timestamp with time zone
+                        ADD COLUMN IF NOT EXISTS "HistoryPrunedAt" timestamp with time zone,
+                        ADD COLUMN IF NOT EXISTS "LastReactivationTokenId" bigint
                     """,
                     compatibility);
                 await columns.ExecuteNonQueryAsync();

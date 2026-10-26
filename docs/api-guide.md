@@ -1104,7 +1104,7 @@ Content-Type: application/json
 
 ### POST /api/instances/{id}/reactivation
 
-Atomically creates a fresh user-task activation for an eligible completed or cancelled instance while preserving its prior runtime history.
+Atomically creates a fresh user-task activation for an eligible completed or cancelled instance while preserving its prior runtime history. The response's `lastReactivationTokenId` is the new root token: execution positions with it or a later token ID belong to the new run.
 
 **Access:** Workflow administrator. See [authentication](#http-conventions-and-authentication).
 
@@ -1152,7 +1152,8 @@ Content-Type: application/json
   "currentNodeName": "Review",
   "businessKey": null,
   "createdAt": "2026-09-09T10:00:00Z",
-  "updatedAt": "2026-09-09T10:00:00Z"
+  "updatedAt": "2026-09-09T10:00:00Z",
+  "lastReactivationTokenId": 205
 }
 ```
 
@@ -7177,6 +7178,7 @@ Represents full details of a workflow instance, including variable values and hi
 | `fault` | null or [FaultInfoDto](#schema-faultinfodto) | No | — |
 | `finishedAt` | null or string (date-time) | No | — |
 | `historyPrunedAt` | null or string (date-time) | No | — |
+| `lastReactivationTokenId` | null or integer (int64) | No | The root token created by the most recent reactivation, or null when the instance was never reactivated. Execution positions with this token ID or a later one belong to the current run. It remains after history retention. |
 | `executionPositions` | array of [ExecutionPositionDto](#schema-executionpositiondto) | No | All exposed token positions; the representative currentNode fields do not imply a single active token. |
 | `multiInstances` | array of [MultiInstanceProgressDto](#schema-multiinstanceprogressdto) | No | — |
 | `gatewayExecutions` | array of [GatewayExecutionDto](#schema-gatewayexecutiondto) | No | — |

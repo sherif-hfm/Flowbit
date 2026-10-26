@@ -4666,9 +4666,9 @@ public sealed class EditorRuntimeSmokeTests
             error.Contains("condition must not be blank", StringComparison.Ordinal));
     }
 
-    private static Engine CreateEditorEngine(string? beforeMainScript = null)
+    internal static Engine CreateEditorEngine(string? beforeMainScript = null, string mode = "standalone")
     {
-        var html = ReadEditorSource();
+        var html = EditorSource.Read(mode);
         var scripts = Regex.Matches(
             html,
             @"<script(?:\s[^>]*)?>(?<code>[\s\S]*?)</script>");
@@ -4708,6 +4708,13 @@ public sealed class EditorRuntimeSmokeTests
             clientHeight: 700,
             appendChild(child) {
               this.children.push(child);
+              if (child) child.parentNode = this;
+              return child;
+            },
+            insertBefore(child, reference) {
+              const index = reference ? this.children.indexOf(reference) : -1;
+              if (index < 0) this.children.push(child);
+              else this.children.splice(index, 0, child);
               if (child) child.parentNode = this;
               return child;
             },
@@ -4900,6 +4907,4 @@ public sealed class EditorRuntimeSmokeTests
         const URL = fakeUrl;
         window.requestAnimationFrame = requestAnimationFrame;
         """;
-
-    private static string ReadEditorSource() => EditorSource.Read();
 }

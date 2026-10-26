@@ -1,6 +1,6 @@
 # Flowbit
 
-.NET 10 workflow runtime for definitions authored in the standalone editor or the shared editor mounted inline in Flowbit.Ui. The canonical template, scoped CSS, and `FlowbitEditor.mount` factory live in `src/Flowbit.Ui/wwwroot/editor/`; the repository-root `flowbit-editor.html` is a compatibility launcher. The standalone bootstrap and Blazor adapter each mount that implementation. The adapter disposes its event handlers and observers on navigation. Blazor owns API calls and saved-version metadata. See [visual authoring](../docs/ui-guide.md#design-workflows-in-the-ui) for version saves and permissions.
+.NET 10 workflow runtime for definitions authored in the standalone editor or the shared editor mounted inline in Flowbit.Ui. The canonical template, scoped CSS, and `FlowbitEditor.mount` factory live in `src/Flowbit.Ui/wwwroot/editor/`; the repository-root `flowbit-editor.html` is a compatibility launcher. The standalone bootstrap and Blazor adapter each mount that implementation; the adapter's `createViewer` also mounts it read-only (`mode: "viewer"`) for the instance-detail diagram. The adapter disposes its event handlers and observers on navigation. Blazor owns API calls and saved-version metadata. See [visual authoring](../docs/ui-guide.md#design-workflows-in-the-ui) for version saves and permissions.
 
 Start with the [developer documentation](../docs/index.md) for HTTP onboarding, the complete API reference, BPMN support, and deployment. This README retains the detailed runtime implementation reference.
 
@@ -22,7 +22,10 @@ Authentication supports provider-managed OpenID Connect or [Local database-backe
   through a typed `EventCallback<long> OnOpenBatch`). These children are
   display-only and inject no API client, identity, timers, or request
   lifecycle; pages keep fetching, filters, pagination, mutations, identity
-  checks, polling, and disposal.
+  checks, polling, and disposal. `Components/Shared/InstanceDiagram.razor`
+  additionally owns the lifecycle of the editor's read-only viewer and
+  injects only `IJSRuntime`; the pure `InstanceDiagramOverlay` derives its
+  node markers from instance detail.
 - `src/Flowbit.Worker` - durable PostgreSQL job/timer dispatcher, lease
   heartbeats, timer-start reconciliation, metrics, and retention cleanup.
 - `tests/Flowbit.Tests` - xUnit definition/editor tests plus an in-process
@@ -1020,7 +1023,10 @@ boundaries and ownership inheritance, and requires exactly one stable active
 task at the requested node. All prior tokens, work items, executions, jobs,
 subscriptions, variables, receipts, FlowInfo summaries, and history remain
 unchanged. The engine appends an `instanceReactivated` history row but records no
-sequence-flow occurrence because no authored flow was traversed. If task entry
+sequence-flow occurrence because no authored flow was traversed. It also stores
+the new root token as the instance's `LastReactivationTokenId`: tokens from that
+ID onward belong to the current run, and unlike the history row, retention never
+removes it. Instance detail exposes it as `lastReactivationTokenId`. If task entry
 cannot reach the stable-wait postcondition, the status, claim, new runtime rows,
 and audit all roll back together.
 

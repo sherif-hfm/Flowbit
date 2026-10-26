@@ -91,3 +91,37 @@ export async function create(root, dotnet, urls) {
         dispose
     };
 }
+
+// Read-only diagram for instance detail. Blazor supplies the definition and
+// node markers; the viewer reports the node a person selects.
+export async function createViewer(root, dotnet, urls, label) {
+    await Promise.all([loadAsset(urls.stylesheet, true), loadAsset(urls.template)]);
+    await loadAsset(urls.script);
+    if (!root.isConnected) throw new Error("Diagram is closed.");
+    let disposed = false;
+    const viewer = window.FlowbitEditor.mount(root, {
+        mode: "viewer",
+        label,
+        onSelectionChange: nodeId => {
+            if (!disposed) dotnet.invokeMethodAsync("DiagramSelectionChanged", nodeId).catch(() => {});
+        }
+    });
+    const removed = new MutationObserver(() => { if (!root.isConnected) dispose(); });
+    removed.observe(document.body, { childList: true, subtree: true });
+    function dispose() {
+        if (disposed) return;
+        disposed = true;
+        removed.disconnect();
+        viewer.dispose();
+    }
+    return {
+        async load(stream, overlay) {
+            const json = new TextDecoder().decode(await stream.arrayBuffer());
+            if (disposed) return;
+            viewer.load(JSON.parse(json), overlay);
+        },
+        setOverlay(overlay) { if (!disposed) viewer.setOverlay(overlay); },
+        selectNode(nodeId) { if (!disposed) viewer.selectNode(nodeId); },
+        dispose
+    };
+}

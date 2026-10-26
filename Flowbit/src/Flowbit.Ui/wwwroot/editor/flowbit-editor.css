@@ -112,6 +112,13 @@
     --flow-default: #67e8f9;
     --flow-interrupt: #fb7185;
     --trace-context-shadow: rgba(251,113,133,.32);
+    --instance-active: #34d399;
+    --instance-active-glow: rgba(52,211,153,.5);
+    --instance-ended: #60a5fa;
+    --instance-ended-glow: rgba(96,165,250,.45);
+    --instance-stopped: #f87171;
+    --instance-stopped-glow: rgba(248,113,113,.45);
+    --instance-badge-text: #0b1220;
     --modal-overlay: rgba(15, 23, 42, 0.75);
     --modal-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
     --modal-footer: rgba(15, 23, 42, 0.2);
@@ -238,6 +245,13 @@
     --flow-default: #0e7490;
     --flow-interrupt: #be123c;
     --trace-context-shadow: rgba(190,18,60,.25);
+    --instance-active: #15803d;
+    --instance-active-glow: rgba(21,128,61,.4);
+    --instance-ended: #2563eb;
+    --instance-ended-glow: rgba(37,99,235,.35);
+    --instance-stopped: #dc2626;
+    --instance-stopped-glow: rgba(220,38,38,.35);
+    --instance-badge-text: #fff;
     --modal-overlay: rgba(15, 23, 42, 0.45);
     --modal-shadow: 0 25px 50px -12px rgba(15, 23, 42, 0.28);
     --modal-footer: rgba(241, 245, 249, .78);
@@ -1622,6 +1636,35 @@
   .flowbit-editor[data-mode="hosted"] .editor-host-actions { width: 100%; justify-content: flex-end; }
   .flowbit-editor .editor-save-context { flex-direction: row; gap: 10px; }
 }
+/* Read-only viewer: only the canvas and its zoom controls remain. */
+.flowbit-editor[data-mode="viewer"] .app-toolbar,
+.flowbit-editor[data-mode="viewer"] .authoring-palette,
+.flowbit-editor[data-mode="viewer"] .diagram-tools,
+.flowbit-editor[data-mode="viewer"] .inspector-dock,
+.flowbit-editor[data-mode="viewer"] .hint,
+.flowbit-editor[data-mode="viewer"] .modal-overlay { display: none !important; }
+.flowbit-editor[data-mode="viewer"] #svg[data-active-tool="pan"] .node.instance-marked,
+.flowbit-editor[data-mode="viewer"] #svg[data-active-tool="pan"] .node.instance-marked * { cursor: pointer !important; }
+/* A state ring around marked nodes; the node keeps its own type colors. */
+.flowbit-editor[data-mode="viewer"] .node .instance-halo { fill: none; stroke: var(--instance-active); stroke-width: 3.5; pointer-events: none; }
+.flowbit-editor[data-mode="viewer"] .node rect.instance-halo { rx: 16; ry: 16; }
+.flowbit-editor[data-mode="viewer"] .node.instance-ended .instance-halo { stroke: var(--instance-ended); }
+.flowbit-editor[data-mode="viewer"] .node.instance-faulted .instance-halo,
+.flowbit-editor[data-mode="viewer"] .node.instance-cancelled .instance-halo { stroke: var(--instance-stopped); }
+.flowbit-editor[data-mode="viewer"] .node.instance-active { filter: drop-shadow(0 0 7px var(--instance-active-glow)); }
+.flowbit-editor[data-mode="viewer"] .node.instance-ended { filter: drop-shadow(0 0 7px var(--instance-ended-glow)); }
+.flowbit-editor[data-mode="viewer"] .node.instance-faulted,
+.flowbit-editor[data-mode="viewer"] .node.instance-cancelled { filter: drop-shadow(0 0 7px var(--instance-stopped-glow)); }
+.flowbit-editor[data-mode="viewer"] .node .instance-badge rect { fill: var(--instance-active); stroke: var(--canvas); stroke-width: 2; rx: 10; ry: 10; }
+.flowbit-editor[data-mode="viewer"] .node.instance-ended .instance-badge rect { fill: var(--instance-ended); }
+.flowbit-editor[data-mode="viewer"] .node.instance-faulted .instance-badge rect,
+.flowbit-editor[data-mode="viewer"] .node.instance-cancelled .instance-badge rect { fill: var(--instance-stopped); }
+.flowbit-editor[data-mode="viewer"] .node .instance-badge text { fill: var(--instance-badge-text); font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.flowbit-editor[data-mode="viewer"] .node .viewer-selection-ring rect { fill: none; stroke: var(--accent); stroke-width: 2; stroke-dasharray: 6 4; rx: 14; ry: 14; pointer-events: none; }
+.flowbit-editor[data-mode="viewer"] .node:focus { outline: none; }
+.flowbit-editor[data-mode="viewer"] .node:focus-visible { outline: 3px solid var(--accent); outline-offset: 4px; }
+/* Keep marked event and gateway names readable at every zoom level. */
+.flowbit-editor[data-mode="viewer"] #svg .node.instance-marked .shape-caption { display: inline !important; }
 @container flowbit-editor (max-width: 480px) {
   .flowbit-editor[data-mode="hosted"] .app-toolbar { padding: 8px; gap: 8px; }
   .flowbit-editor .back-label { display: none; }

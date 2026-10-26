@@ -19,9 +19,9 @@ editor load flow; runtime fixtures are created and published through
 | Fixture | Workflow key | Used by | Shape |
 | --- | --- | --- | --- |
 | `runtime-lifecycle.json` | `browser-lifecycle-r1` | R1, R3 | start → claim-required `userTask` (`roles: ["Agent"]`, external id `TASK_REVIEW_REQUEST`) → end; single action flow `Approve` (flow 102) captures required string `decisionNote`. |
-| `runtime-navigation.json` | `browser-navigation-r2` | R2, R6 | start → `approval1` → `approval2` → end; open role-less tasks, two steps so one instance can be driven to `Completed` over HTTP while another rests. |
-| `runtime-gateway.json` | `browser-gateway-r4` | R4, R6 | start → parallel split (`Fork reviews`) → `Reviewer A` / `Reviewer B` → complex merge (`TotalIncomingCount() >= 2`, joinCancellation referencing the split) → `Finalize` → end. |
-| `runtime-mi.json` | `browser-mi-r5` | R4, R5, R6 | start → parallel collection multi-instance `userTask` over `reviewers` (default `alpha`, `beta`, `gamma`) → end; action flow `Complete review` requires `reviewComment`; hidden engine fallback flow 202. |
+| `runtime-navigation.json` | `browser-navigation-r2` | R2, R6, R8 | start → `approval1` → `approval2` → end; open role-less tasks, two steps so one instance can be driven to `Completed` over HTTP while another rests. |
+| `runtime-gateway.json` | `browser-gateway-r4` | R4, R6, R8 | start → parallel split (`Fork reviews`) → `Reviewer A` / `Reviewer B` → complex merge (`TotalIncomingCount() >= 2`, joinCancellation referencing the split) → `Finalize` → end. |
+| `runtime-mi.json` | `browser-mi-r5` | R4, R5, R6, R8 | start → parallel collection multi-instance `userTask` over `reviewers` (default `alpha`, `beta`, `gamma`) → end; action flow `Complete review` requires `reviewComment`; hidden engine fallback flow 202. |
 | `runtime-administrative-r7.json` | `browser-administrative-r7` | R7 | start → `userTask` `Manual review` (node 2, external id `TASK_MANUAL_REVIEW`) → end; single action flow `Approve` (flow 102) with one optional string `approvalNote`. One batch execution completes the instance synchronously and leaves a completed one-item audit batch, so R7 exercises real batch display without a Worker. |
 
 ## Actors and expected states
@@ -48,6 +48,12 @@ editor load flow; runtime fixtures are created and published through
 - R7: `supervisor` (role `admin`) executes immediate instance administrative
   actions through the instance-detail panel and inspects the resulting audit
   batches on `/administrative-actions`.
+- R8: `beta` (role `Reviewer`) completes multi-instance item 1 over HTTP, and
+  the setup client completes the navigation instance. `operator` (roles
+  `Reviewer` + `admin`; `admin` grants node-execution read access) and then
+  `reviewer` (role `Reviewer` only) open the diagrams. The gateway instance
+  rests on `Reviewer A` and `Reviewer B`, the multi-instance task shows
+  `1/3`, and the navigation instance has ended at `End`.
 
 ## Prerequisites and boundaries
 

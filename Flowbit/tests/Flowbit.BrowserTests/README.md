@@ -131,6 +131,7 @@ Hosted editor scenarios H1 (1440x900 and 1024x768) and H2 exercise exact-version
 | R5 real polling and disposal | 1440x900 | An open poll-eligible MI detail updates after an out-of-band HTTP completion within the five-second polling window; navigate away/back shows current data; host logs record no error-level circuit issues. |
 | R6 responsive controls and focus | 1024x768, 390x844 | Real responsive navigation, section links preserving the instance path/query, keyboard focus, wheel scrolling to clipped table columns, and parsed submitted JSON. |
 | R7 administrative batch display | 1440x900, 1024x768, 390x844 | Executes immediate administrative actions through the real instance-detail panel, verifies refreshed instance status, variables and history before following the real audit batch link, verifies the frozen request, count order/values, item row, highlight, JSON details, and recent history against HTTP reads, switches batches with real clicks and keyboard-activated Open buttons, exercises zero-match item and recent-batch status filters with restore, checks narrow-table scrolling and document overflow, and records before/after audit screenshots at all three viewports. |
+| R8 live instance diagram | 1440x900, 390x844 | The read-only diagram on instance detail marks exactly the two active parallel user tasks and highlights no flow, with the authoring toolbar, palette and inspector hidden. Dragging a marked node only pans the canvas, and Delete removes nothing. Clicking a node lists its task link and, for an operator with node-execution read access, its node-execution link, and marks the node `aria-current`; Enter selects a focused node and Escape clears the selection. The execution link opens that execution, and Back returns to the diagram. A multi-instance node shows its `1/3` progress badge, a completed instance marks only its end event, and the page has no horizontal overflow. A reviewer without node-execution access sees the task link but no execution link. |
 
 The editor and runtime product scenarios are accompanied by four harness regression tests:
 auxiliary-page errors/dialogs must fail, successful diagnostics must retain
@@ -185,6 +186,8 @@ Every run writes to `artifacts/browser/runs/<timestamp>-<id>/`:
 - H8 additionally retains `ai-resumed-progress.png`, showing the same
   `workflow.json` node/connection counts after Continue resets the per-run metrics.
 - H10 retains `ai-models.png` and `ai-model-edit.png` at all three viewports.
+- R8 retains `instance-diagram-running.png`, with Reviewer A selected, and
+  `instance-diagram-finished.png` at both viewports.
 - E7 captures `boundary-conversion-before.png` and
   `boundary-conversion-after.png` at both editor viewports, with the populated
   workflow and host selected. These show the service-task inspector and attached
