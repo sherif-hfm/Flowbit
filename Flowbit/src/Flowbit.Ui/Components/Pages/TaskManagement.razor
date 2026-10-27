@@ -118,12 +118,19 @@ else
         {
             <div class="table-responsive">
                 <table class="table align-middle">
-                    <thead><tr><th>Task</th><th>Workflow</th><th>Ownership</th><th>Required roles</th><th>Updated</th><th><span class="visually-hidden">Actions</span></th></tr></thead>
+                    <thead><tr><th>Task</th><th>Due</th><th>Workflow</th><th>Ownership</th><th>Required roles</th><th>Updated</th><th><span class="visually-hidden">Actions</span></th></tr></thead>
                     <tbody>
                         @foreach (var item in result.Items)
                         {
                             <tr>
                                 <td><span class="data-title">@item.NodeName</span><span class="data-subtitle">Task #@item.UserTaskId · Instance #@item.InstanceId@if (item.ItemIndex is not null) { <text> · Item #@item.ItemIndex</text> }</span><StatusBadge Status="@(item.Status == "pending" ? "warning" : "primary")" Text="@item.Status" /></td>
+                                <td>
+                                    <TaskDueDate DueAt="@item.DueAt" DueStatus="@item.DueStatus" EmptyText="—" />
+                                    @if (item.Priority is int priority)
+                                    {
+                                        <span class="data-subtitle">Priority @priority</span>
+                                    }
+                                </td>
                                 <td>@item.WorkflowName<span class="data-subtitle">@(item.BusinessKey ?? item.WorkflowKey) · v@(item.WorkflowVersion)</span></td>
                                 <td><StatusBadge Status="@OwnershipTone(item.Ownership)" Text="@OwnershipLabel(item)" /><span class="data-subtitle">@(item.RequiresClaim ? "Claim required when pooled" : "Open when pooled")</span></td>
                                 <td>@if (item.NodeRoles.Count == 0) { <span>Any role</span> } else { @foreach (var role in item.NodeRoles) { <StatusBadge Status="neutral" Text="@role" /> } }</td>

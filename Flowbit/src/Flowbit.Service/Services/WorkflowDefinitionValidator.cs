@@ -67,6 +67,7 @@ public sealed class WorkflowDefinitionValidator(
         ValidateAuthoredMessageStartMetadata(definition);
         ValidateAuthoredAsyncTimerMetadata(definition);
         ValidateAuthoredInboxVisibilityMetadata(definition);
+        ValidateAuthoredUserTaskDueMetadata(definition);
         ValidateAuthoredConditionalEventMetadata(definition);
         ValidateAuthoredSharedVariableMetadata(definition);
         ValidateRoleSources(definition);
@@ -408,6 +409,8 @@ public sealed class WorkflowDefinitionValidator(
                         $"User task #{node.Id} has an invalid assignee expression: '{node.AssigneeExpression}'.");
                 }
 
+                ValidateUserTaskDueAndPriority(node);
+
                 foreach (var flow in outgoing.Where(f => !string.IsNullOrWhiteSpace(f.Condition)))
                 {
                     if (!SequenceFlowConditionEvaluator.IsValid(flow.Condition))
@@ -474,6 +477,61 @@ public sealed class WorkflowDefinitionValidator(
             {
                 throw new WorkflowDomainException(
                     $"User task #{node.Id} has an invalid inboxVisibilityCondition: {exception.Message}");
+            }
+        }
+    }
+
+    // Normalization clears these user-task fields on other node types, so a
+    // misplaced value must be rejected before it is silently discarded.
+    private static void ValidateAuthoredUserTaskDueMetadata(WorkflowModel definition)
+    {
+        foreach (var node in definition.FlowNodes.Where(node => !BpmnFlowNodeTypes.IsUserTask(node.Type)))
+        {
+            if (!string.IsNullOrWhiteSpace(node.DueDateExpression))
+            {
+                throw new WorkflowDomainException(
+                    $"Flow node #{node.Id} defines dueDate but is not a user task.");
+            }
+
+            if (!string.IsNullOrWhiteSpace(node.PriorityExpression))
+            {
+                throw new WorkflowDomainException(
+                    $"Flow node #{node.Id} defines priority but is not a user task.");
+            }
+        }
+    }
+
+    // A fixed due value is used as is; any other due date or priority must be
+    // parseable NCalc. Fixed or literal values that can never be used are
+    // rejected here because runtime failures only log a warning.
+    private static void ValidateUserTaskDueAndPriority(FlowNodeModel node)
+    {
+        if (!string.IsNullOrWhiteSpace(node.DueDateExpression))
+        {
+            if (UserTaskDueRules.DueDateProblem(node.DueDateExpression) is { } dueDateProblem)
+            {
+                throw new WorkflowDomainException($"User task #{node.Id} {dueDateProblem}");
+            }
+
+            if (!UserTaskDueRules.TryParseFixedValue(node.DueDateExpression, out _)
+                && !SequenceFlowConditionEvaluator.IsValid(node.DueDateExpression))
+            {
+                throw new WorkflowDomainException(
+                    $"User task #{node.Id} has an invalid dueDate expression: '{node.DueDateExpression}'.");
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(node.PriorityExpression))
+        {
+            if (UserTaskDueRules.PriorityProblem(node.PriorityExpression) is { } priorityProblem)
+            {
+                throw new WorkflowDomainException($"User task #{node.Id} {priorityProblem}");
+            }
+
+            if (!SequenceFlowConditionEvaluator.IsValid(node.PriorityExpression))
+            {
+                throw new WorkflowDomainException(
+                    $"User task #{node.Id} has an invalid priority expression: '{node.PriorityExpression}'.");
             }
         }
     }
@@ -3404,6 +3462,8 @@ public sealed class WorkflowDefinitionValidator(
             Check(node.ActivationCondition, false,
                 $"Complex gateway #{node.Id} activationCondition");
             Check(node.AssigneeExpression, false, $"User task #{node.Id} assignee expression");
+            Check(node.DueDateExpression, false, $"User task #{node.Id} dueDate");
+            Check(node.PriorityExpression, false, $"User task #{node.Id} priority");
             Check(node.MultiInstance?.CardinalityExpression, false,
                 $"User task #{node.Id} cardinalityExpression");
             Check(node.Message?.HeaderValidation, false,
@@ -3520,6 +3580,8 @@ public sealed class WorkflowDefinitionValidator(
                 $"Complex gateway #{node.Id} activationCondition");
             Check(node.AssigneeExpression, null, false,
                 $"User task #{node.Id} assignee expression");
+            Check(node.DueDateExpression, null, false, $"User task #{node.Id} dueDate");
+            Check(node.PriorityExpression, null, false, $"User task #{node.Id} priority");
             Check(node.MultiInstance?.CardinalityExpression, null, false,
                 $"User task #{node.Id} cardinalityExpression");
             Check(node.Message?.HeaderValidation, null, false,

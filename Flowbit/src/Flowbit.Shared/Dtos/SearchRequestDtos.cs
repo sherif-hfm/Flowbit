@@ -35,6 +35,25 @@ public sealed record InboxSearchRequest
     public string? BusinessKey { get; init; }
     public int? NodeId { get; init; }
     public string? NodeExternalId { get; init; }
+
+    /// <summary>
+    /// Due statuses to include: overdue, dueSoon, upcoming, or none (no due
+    /// date). A task matching any listed status is included.
+    /// </summary>
+    public IReadOnlyList<string>? DueStatuses { get; init; }
+
+    /// <summary>Inclusive lower bound on the task's due time.</summary>
+    public DateTimeOffset? DueFrom { get; init; }
+
+    /// <summary>Exclusive upper bound on the task's due time.</summary>
+    public DateTimeOffset? DueTo { get; init; }
+
+    /// <summary>Inclusive minimum task priority.</summary>
+    public int? MinPriority { get; init; }
+
+    /// <summary>Inclusive maximum task priority.</summary>
+    public int? MaxPriority { get; init; }
+
     public JsonElement? VariableFilter { get; init; }
     public IReadOnlyList<SearchSortDto>? Sort { get; init; }
     public bool? IncludeVariables { get; init; }

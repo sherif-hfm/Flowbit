@@ -3007,6 +3007,132 @@ public sealed class EditorRuntimeSmokeTests
         Assert.True(root.GetProperty("clearedOnTypeChange").GetBoolean());
     }
 
+    [Fact]
+    public void DueDateAndPriority_LoadEditValidateExportAndClearWithNodeType()
+    {
+        var engine = CreateEditorEngine();
+        using var result = JsonDocument.Parse(engine.Evaluate(
+            """
+            (() => {
+              loadFromObject({
+                id: 'due-date-editor',
+                name: 'Due date editor',
+                variables: [],
+                lanes: [],
+                flowNodes: [
+                  { id: 1, name: 'Start', type: 'startEvent', dueDate: 'P1D' },
+                  { id: 2, name: 'Review', type: 'userTask', dueDate: 'P2D', priority: '80' },
+                  { id: 3, name: 'Legacy review', type: 'userTask', dueDate: '  ', priority: null },
+                  { id: 4, name: 'Done', type: 'endEvent' }
+                ],
+                sequenceFlows: [
+                  { id: 101, sourceRef: 1, targetRef: 2 },
+                  { id: 201, name: 'Approve', sourceRef: 2, targetRef: 3 },
+                  { id: 301, name: 'Close', sourceRef: 3, targetRef: 4 }
+                ]
+              });
+
+              const review = getNode(2);
+              const legacy = getNode(3);
+              const loaded = {
+                startOmitted: JSON.stringify(getNode(1)).indexOf('dueDate') < 0,
+                legacyOmitted: JSON.stringify(legacy).indexOf('dueDate') < 0 &&
+                  JSON.stringify(legacy).indexOf('priority') < 0,
+                dueDate: review.dueDate,
+                priority: review.priority
+              };
+
+              selected = { kind: 'node', nodeId: review.id };
+              selectedNodeIds.clear();
+              selectedNodeIds.add(review.id);
+              renderInspector();
+              const fieldFor = label => inspector.children.find(child =>
+                String(child.className) === 'field' &&
+                child.children.some(item => item.tagName === 'LABEL' && item.textContent === label));
+              const dueField = fieldFor('Due date');
+              const dueInput = dueField.children.find(child => child.tagName === 'INPUT');
+              const dueStatus = dueField.children.find(child => child.tagName === 'P');
+              const priorityField = fieldFor('Priority');
+              const priorityInput = priorityField.children.find(child => child.tagName === 'INPUT');
+              const priorityStatus = priorityField.children.find(child => child.tagName === 'P');
+              const initial = {
+                due: dueInput.value,
+                priority: priorityInput.value,
+                aria: dueInput.getAttribute('aria-invalid'),
+                status: dueStatus.textContent
+              };
+
+              dueInput.value = "'P2X'";
+              dueInput.oninput();
+              priorityInput.value = '3000000000';
+              priorityInput.oninput();
+              const invalid = {
+                dueAria: dueInput.getAttribute('aria-invalid'),
+                dueStatus: dueStatus.textContent,
+                priorityAria: priorityInput.getAttribute('aria-invalid'),
+                priorityStatus: priorityStatus.textContent,
+                errors: prepareWorkflowExport().errors
+              };
+
+              dueInput.value = "  if(amount > 1000, 'PT4H', 'P2D')  ";
+              dueInput.oninput();
+              priorityInput.value = '   ';
+              priorityInput.oninput();
+              const exported = JSON.parse(prepareWorkflowExport().json);
+              const exportedReview = exported.flowNodes.find(node => node.id === 2);
+              const exportedLegacy = exported.flowNodes.find(node => node.id === 3);
+
+              review.type = NODE_TYPE.TASK;
+              applyTypeInvariants(review);
+
+              return JSON.stringify({
+                loaded,
+                initial,
+                invalid,
+                exportedDue: exportedReview.dueDate,
+                exportedPriorityOmitted: !Object.prototype.hasOwnProperty.call(exportedReview, 'priority'),
+                legacyExportOmitted: !Object.prototype.hasOwnProperty.call(exportedLegacy, 'dueDate'),
+                clearedOnTypeChange: !Object.prototype.hasOwnProperty.call(review, 'dueDate') &&
+                  !Object.prototype.hasOwnProperty.call(review, 'priority')
+              });
+            })()
+            """).AsString());
+
+        var root = result.RootElement;
+        var loaded = root.GetProperty("loaded");
+        Assert.True(loaded.GetProperty("startOmitted").GetBoolean());
+        Assert.True(loaded.GetProperty("legacyOmitted").GetBoolean());
+        Assert.Equal("P2D", loaded.GetProperty("dueDate").GetString());
+        Assert.Equal("80", loaded.GetProperty("priority").GetString());
+
+        var initial = root.GetProperty("initial");
+        Assert.Equal("P2D", initial.GetProperty("due").GetString());
+        Assert.Equal("80", initial.GetProperty("priority").GetString());
+        Assert.Equal("false", initial.GetProperty("aria").GetString());
+        Assert.Equal(string.Empty, initial.GetProperty("status").GetString());
+
+        var invalid = root.GetProperty("invalid");
+        Assert.Equal("true", invalid.GetProperty("dueAria").GetString());
+        Assert.Equal(
+            "dueDate 'P2X' is not an ISO-8601 duration such as P2D or a date-time with an offset such as 2030-01-31T17:00:00Z.",
+            invalid.GetProperty("dueStatus").GetString());
+        Assert.Equal("true", invalid.GetProperty("priorityAria").GetString());
+        Assert.Equal(
+            "priority 3000000000 is outside the whole-number range -2147483648 to 2147483647.",
+            invalid.GetProperty("priorityStatus").GetString());
+        Assert.Equal(
+            [
+                "User task #2 (Review) dueDate 'P2X' is not an ISO-8601 duration such as P2D or a date-time with an offset such as 2030-01-31T17:00:00Z.",
+                "User task #2 (Review) priority 3000000000 is outside the whole-number range -2147483648 to 2147483647."
+            ],
+            invalid.GetProperty("errors").EnumerateArray().Select(error => error.GetString()));
+
+        Assert.Equal("if(amount > 1000, 'PT4H', 'P2D')", root.GetProperty("exportedDue").GetString());
+        Assert.True(root.GetProperty("exportedPriorityOmitted").GetBoolean());
+        Assert.True(root.GetProperty("legacyExportOmitted").GetBoolean());
+        Assert.True(root.GetProperty("clearedOnTypeChange").GetBoolean());
+    }
+
     // BEGIN STAGE 10 â€” node-type transition characterization. These tests
     // capture the live Type selector callback by temporarily wrapping
     // selectField while the node inspector is built, then restore the original

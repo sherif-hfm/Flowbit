@@ -54,7 +54,7 @@ else
 
     <section class="filter-panel" aria-labelledby="inbox-filter-heading">
         <div class="section-heading mb-0">
-            <div><h2 id="inbox-filter-heading">Inbox filters</h2><p>Narrow work by workflow, node, instance, or process data.</p></div>
+            <div><h2 id="inbox-filter-heading">Inbox filters</h2><p>Narrow work by workflow, node, instance, due date, priority, or process data.</p></div>
             <button class="btn btn-sm btn-outline-secondary" @onclick="() => filtersOpen = !filtersOpen" aria-expanded="@(filtersOpen ? "true" : "false")" aria-controls="inbox-filter-fields">
                 @(filtersOpen ? "Hide filters" : ActiveFilterCount > 0 ? $"Show filters ({ActiveFilterCount})" : "Show filters")
             </button>
@@ -68,6 +68,18 @@ else
                 <div><label class="form-label" for="inbox-business-key">Business key</label><input id="inbox-business-key" class="form-control" @bind="businessKey" placeholder="REQUEST-42" /></div>
                 <div><label class="form-label" for="inbox-node-id">Node ID</label><input id="inbox-node-id" type="number" class="form-control" @bind="nodeId" placeholder="3" /></div>
                 <div><label class="form-label" for="inbox-node-external">Node external ID</label><input id="inbox-node-external" class="form-control" @bind="nodeExternalId" placeholder="TASK_MANAGER_APPROVAL" /></div>
+                <div>
+                    <label class="form-label" for="inbox-due-status">Due</label>
+                    <select id="inbox-due-status" class="form-select" @bind="dueStatus">
+                        <option value="">Any</option>
+                        <option value="@UserTaskDueStatuses.Overdue">Overdue</option>
+                        <option value="@UserTaskDueStatuses.DueSoon">Due soon</option>
+                        <option value="@UserTaskDueStatuses.Upcoming">Upcoming</option>
+                        <option value="@UserTaskDueStatuses.None">No due date</option>
+                    </select>
+                </div>
+                <div><label class="form-label" for="inbox-min-priority">Minimum priority</label><input id="inbox-min-priority" type="number" step="1" class="form-control" @bind="minPriority" placeholder="50" /></div>
+                <div><label class="form-label" for="inbox-max-priority">Maximum priority</label><input id="inbox-max-priority" type="number" step="1" class="form-control" @bind="maxPriority" placeholder="100" /></div>
                 <div class="filter-span-2">
                     <AdvancedVariableFilterEditor Id="inbox-variable-filter"
                                                   Value="@variableFilterJson"
@@ -118,7 +130,7 @@ else
             <div class="table-responsive">
                 <table class="table align-middle">
                     <caption class="visually-hidden">Work items visible to the current identity</caption>
-                    <thead><tr><th scope="col">Task</th><th scope="col">Workflow</th><th scope="col">Assignment</th><th scope="col">Progress</th><th scope="col">Readiness</th>@if (includeVariables) { <th scope="col">Variables</th> }<th scope="col">Task updated</th><th scope="col"><span class="visually-hidden">Open</span></th></tr></thead>
+                    <thead><tr><th scope="col">Task</th><th scope="col">Due</th><th scope="col">Workflow</th><th scope="col">Assignment</th><th scope="col">Progress</th><th scope="col">Readiness</th>@if (includeVariables) { <th scope="col">Variables</th> }<th scope="col">Task updated</th><th scope="col"><span class="visually-hidden">Open</span></th></tr></thead>
                     <tbody>
                         @foreach (var item in result.Items)
                         {
@@ -131,6 +143,13 @@ else
                                         <ActingForBadge ActingFor="@item.DelegatedAccess.ActingFor" DelegationId="@item.DelegatedAccess.DelegationId" />
                                     }
                                     <WorkflowAttributes Attributes="@item.Attributes" Label="Node attributes" />
+                                </td>
+                                <td>
+                                    <TaskDueDate DueAt="@item.DueAt" DueStatus="@item.DueStatus" EmptyText="—" />
+                                    @if (item.Priority is int priority)
+                                    {
+                                        <span class="data-subtitle">Priority @priority</span>
+                                    }
                                 </td>
                                 <td>@item.WorkflowName<span class="data-subtitle">@(item.BusinessKey ?? "No business key")</span></td>
                                 <td>@Assignment(item)<span class="data-subtitle">@(item.NodeRoles.Count == 0 ? "Open to any role" : string.Join(", ", item.NodeRoles))</span></td>
@@ -169,6 +188,9 @@ else
     private string? businessKey;
     private int? nodeId;
     private string? nodeExternalId;
+    private string? dueStatus;
+    private int? minPriority;
+    private int? maxPriority;
     private string? error;
     private bool filtersOpen;
     private bool includeVariables;
@@ -186,11 +208,13 @@ else
         new("taskCreatedAt", "Task created"),
         new("taskUpdatedAt", "Task updated"),
         new("instanceCreatedAt", "Instance created"),
-        new("instanceUpdatedAt", "Instance updated")
+        new("instanceUpdatedAt", "Instance updated"),
+        new("dueAt", "Due date"),
+        new("priority", "Priority")
     ];
 
     private string IdentityInitial => (Token.CurrentUser ?? "A")[..1].ToUpperInvariant();
-    private int ActiveFilterCount => new object?[] { variableFilterJson, instanceId, workflowId, workflowKey, businessKey, nodeId, nodeExternalId }
+    private int ActiveFilterCount => new object?[] { variableFilterJson, instanceId, workflowId, workflowKey, businessKey, nodeId, nodeExternalId, dueStatus, minPriority, maxPriority }
         .Count(value => value switch { string text => !string.IsNullOrWhiteSpace(text), null => false, _ => true });
     private int TotalPages => result is null || result.TotalCount == 0 ? 1 : (int)Math.Ceiling(result.TotalCount / (double)result.PageSize);
     private bool HasNextPage => !loading && !filtersDirty && result is not null && page < TotalPages;
@@ -211,9 +235,9 @@ else
     private async Task ApplyFiltersAsync() { MarkFiltersDirty(); await LoadAsync(); }
     private async Task ClearFiltersAsync()
     {
-        variableFilterJson = variableFilterError = workflowKey = businessKey = nodeExternalId = null;
+        variableFilterJson = variableFilterError = workflowKey = businessKey = nodeExternalId = dueStatus = null;
         instanceId = workflowId = null;
-        nodeId = null;
+        nodeId = minPriority = maxPriority = null;
         includeVariables = false;
         MarkFiltersDirty();
         await LoadAsync();
@@ -284,6 +308,9 @@ else
                 WorkflowId = workflowId,
                 WorkflowKey = workflowKey,
                 BusinessKey = businessKey,
+                DueStatuses = string.IsNullOrWhiteSpace(dueStatus) ? null : [dueStatus],
+                MinPriority = minPriority,
+                MaxPriority = maxPriority,
                 IncludeVariables = includeVariables,
                 Sort = sortClauses
             });

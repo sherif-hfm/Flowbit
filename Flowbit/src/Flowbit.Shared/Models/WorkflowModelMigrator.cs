@@ -572,6 +572,8 @@ public static class WorkflowModelMigrator
             node.AssignmentMode = AssignmentModes.Fresh;
             node.InheritAssignmentFromNodeId = null;
             node.InboxVisibilityCondition = null;
+            node.DueDateExpression = null;
+            node.PriorityExpression = null;
         }
 
         if (BpmnFlowNodeTypes.IsErrorEnd(node.Type))
@@ -845,6 +847,8 @@ public static class WorkflowModelMigrator
         else if (BpmnFlowNodeTypes.IsUserTask(node.Type))
         {
             node.InboxVisibilityCondition = TrimToNull(node.InboxVisibilityCondition);
+            node.DueDateExpression = TrimToNull(node.DueDateExpression);
+            node.PriorityExpression = TrimToNull(node.PriorityExpression);
 
             // Tolerant load: older documents have no claimMode.
             if (string.IsNullOrWhiteSpace(node.ClaimMode))

@@ -133,6 +133,8 @@ Creates waiting human work. A normal task has one work item; a multi-instance ta
 | `assignmentMode` | string | Optional; `"fresh"` | `fresh` uses the optional assignee expression or leaves work unassigned. `previous` uses the latest completed work item; `fromNode` uses the latest completed item at a specified user task. Non-fresh modes require `requiresAssignment: true` and no `assignee` expression. |
 | `inheritAssignmentFromNodeId` | integer | Required for `assignmentMode: "fromNode"`; otherwise cleared | Existing user-task node ID. Inheritance prefers the source assignee, then its represented completing owner, then its completing actor. No eligible source leaves work in the assignment queue. |
 | `inboxVisibilityCondition` | string | Optional; absent/blank means no extra restriction | Bounded database expression deciding personal inbox membership and access. See the visibility contract below. |
+| `dueDate` | string | Optional; absent | Due time resolved once when the work item is created: a fixed ISO-8601 duration such as `"P2D"` counted from creation, a fixed date-time with an offset, or an NCalc expression giving either as text. Allowed on multi-instance tasks. See [due date and priority](#due-date-and-priority). |
+| `priority` | string | Optional; absent | NCalc expression resolved once when the work item is created, giving a whole number from -2,147,483,648 to 2,147,483,647; higher is more urgent. Write it as a JSON string, such as `"50"`. See [due date and priority](#due-date-and-priority). |
 | `variables` | variable[] | Optional; `[]` | Retained node-scope declarations, using [variable properties](#variables-and-inputs). Current user-action endpoints validate and resolve inputs from the selected outgoing **flow's** `variables`; author action forms there. This node list does not create a second submission contract. |
 | `multiInstance` | object | Optional; absent means one normal work item | Repeated human work; see all properties below. |
 | `asyncBefore`, `asyncAfter`, `job` | Boolean / object | Optional; flags `false` | Shared [durable job policy](#durable-job-policy). For multi-instance work, boundaries apply once to the parent, not once per child. |
@@ -161,7 +163,36 @@ Example: a pooled reviewer task; give its outgoing actions their own names, opti
 }
 ```
 
-Examples: [roles, claims, and bypass](../examples/user-tasks/01-roles-claim-and-bypass.json), [claim inheritance](../examples/user-tasks/02-claim-inheritance.json), and [required assignment and distribution](../examples/user-tasks/04-required-assignment-and-distribution.json).
+Examples: [roles, claims, and bypass](../examples/user-tasks/01-roles-claim-and-bypass.json), [claim inheritance](../examples/user-tasks/02-claim-inheritance.json), [required assignment and distribution](../examples/user-tasks/04-required-assignment-and-distribution.json), and [due date and priority](../examples/user-tasks/06-due-date-and-priority.json).
+
+#### Due date and priority
+
+`dueDate` and `priority` are resolved once when each work item is created and saved on it. Later variable changes, claims, assignment, role changes, delegation, administrative actions, and version changes keep the saved values; a reactivated task is a new work item and resolves them again. A multi-instance task resolves them once when its execution starts, and every child gets the same values, so a sequential child's duration counts from the start of the execution. A normal task with `asyncBefore: true` creates its pending work item when the token enters the task, so its duration counts from entry, not from when the Worker activates it; activation keeps the saved values. A multi-instance task with `asyncBefore: true` starts its execution, and resolves the values, after its job runs.
+
+| `dueDate` value | Saved due time |
+| --- | --- |
+| A fixed duration with the grammar of a timer's [`timeDuration`](#timer-configuration), such as `P2D`, `PT4H`, or `P1W` | The work item's creation time plus the duration. |
+| A fixed date-time with `Z` or an offset, with the grammar of a timer's `timeDate`, such as `2030-01-31T17:00:00+02:00` | That instant, in UTC. A time already past makes the task overdue at once. |
+| Anything else: an NCalc expression, such as `if(amount >= 10000, 'PT4H', 'P2D')` or `contractEnd` | The expression's result, which must be text in one of the two forms above. |
+
+Expressions see the same stored variables and `sys.*`, `config.*`, and `setting.*` context as the assignee expression; `FlowInfo` and gateway helper functions are not available. A `datetime` value works only if it carries an offset. For a `date` value, append a time and an offset, for example `dueDay + 'T17:00:00Z'`.
+
+A `priority` result must be a finite number without a fractional part, so `2.0` is accepted and `2.5` or the text `'5'` is not.
+
+A null result leaves the work item without that value. Any other result that cannot be used, such as a date without a time, a date-time without an offset, a number where a due date is expected, or a failed evaluation, also leaves it without the value and logs a warning that names the node, the instance, and the reason; the transition does not fail. Definition validation rejects both properties on other node types, NCalc syntax errors, a quoted or evidently intended fixed due date that does not parse (such as `'P2X'`, `p2d`, `P1M`, `P1Y`, or `2026-11-01`; months and years are not fixed durations), and a whole-number priority outside the range. An unquoted value such as `P2X` is a valid NCalc variable name, so validation accepts it, and a missing variable is reported only by the runtime warning.
+
+The APIs return the saved values as `dueAt` and `priority`, with a `dueStatus` of `overdue`, `dueSoon`, or `upcoming` for open work items; see [build an inbox](developer-guide.md#build-an-inbox-and-action-form). Changing only these properties never blocks an in-place workflow-version change.
+
+```json
+{
+  "id": 2,
+  "type": "userTask",
+  "name": "Review purchase",
+  "roles": ["Reviewer"],
+  "dueDate": "if(amount >= 10000, 'PT4H', 'P2D')",
+  "priority": "if(amount >= 10000, 80, 40)"
+}
+```
 
 #### Multi-instance properties
 

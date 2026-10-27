@@ -127,6 +127,35 @@ public sealed class DatabaseSchemaTests(PostgresApiFixture fixture)
     }
 
     [Fact]
+    public async Task UserTaskDueIndexAndThresholdSettingAreApplied()
+    {
+        await using var connection = await fixture.DataSource.OpenConnectionAsync();
+        await using (var index = new NpgsqlCommand(
+                         """
+                         SELECT indexdef
+                         FROM pg_catalog.pg_indexes
+                         WHERE schemaname = 'flowbit'
+                           AND tablename = 'user_tasks'
+                           AND indexname = 'IX_user_tasks_Status_DueAt_Id'
+                         """,
+                         connection))
+        {
+            var definition = (string?)await index.ExecuteScalarAsync();
+            Assert.NotNull(definition);
+            Assert.Contains("(\"Status\", \"DueAt\", \"Id\")", definition, StringComparison.Ordinal);
+        }
+
+        await using var setting = new NpgsqlCommand(
+            """
+            SELECT "Value"
+            FROM flowbit.engine_settings
+            WHERE "Namespace" = 'UserTasks' AND "Key" = 'DueSoonThreshold'
+            """,
+            connection);
+        Assert.Equal("P1D", (string?)await setting.ExecuteScalarAsync());
+    }
+
+    [Fact]
     public async Task InstanceVersionChangeBatchClassificationCountsAreApplied()
     {
         await using var connection = await fixture.DataSource.OpenConnectionAsync();

@@ -208,9 +208,10 @@ The key pieces:
   (error accumulator, candidate arrays, lookup maps, structural adjacency, and
   reachability helpers), then executes named `validateSave*` phase functions in
   a fixed order: attributes, workflow key, unique ids, role sources, task
-  distribution, inbox visibility, assignment, variable names, FlowInfo and
-  gateway expression usage, shared bindings, script tasks, variable contracts,
-  declared producers, async/job/timer settings, per-node-type settings,
+  distribution, inbox visibility, assignment, user-task due date and priority,
+  variable names, FlowInfo and gateway expression usage, shared bindings,
+  script tasks, variable contracts, variable presentation, declared producers,
+  async/job/timer settings, per-node-type settings,
   end events, node types, gateway topology, graph scopes, entry identity,
   and multi-instance outcomes. Rule helpers such as `validateTypedOutputMappings`
   and `validateRuntimeOutputTarget` stay shared across phases. The whole
@@ -249,7 +250,7 @@ A repeatable Chromium smoke suite exists at
 real copied editor and the real published API/UI over localhost with a
 disposable PostgreSQL container; see its
 [README](Flowbit/tests/Flowbit.BrowserTests/README.md) for setup and the
-E1–E9/R1–R9 coverage matrix. It is the baseline for editor/runtime UI changes,
+E1–E10/R1–R10 coverage matrix. It is the baseline for editor/runtime UI changes,
 but it does not replace scenario-specific manual verification: the native
 file-picker success/cancel path, visual comparisons, and behaviors outside the
 matrix still need the manual steps above.
@@ -1179,6 +1180,25 @@ Storage follows the hybrid design:
   Assignment matching is case-insensitive and is enforced by inbox, flow, claim,
   and task action endpoints. Existing collection multi-instance assignment is
   unchanged; assignee expressions are rejected on every multi-instance task.
+- **User-task due dates and priorities.** A `userTask`, including a
+  multi-instance one, may carry `dueDate` (a fixed ISO-8601 duration counted
+  from work-item creation, a fixed offset date-time, or an NCalc expression
+  giving either as text; `UserTaskDueRules`) and `priority` (NCalc giving an
+  `int`). `ToSnapshot` resolves them with the assignee context for a normal
+  task and once per multi-instance execution, gated like role-policy capture;
+  the repository saves `user_tasks.DueAt` (duration added to the row's
+  `CreatedAt`) and `Priority` in `NewUserTask` and the bulk child insert.
+  Unusable results log a warning and leave the value null; transitions never
+  fail, values are never recomputed, and version contracts ignore both
+  properties. Inbox, task, task-history, management, and distribution DTOs add
+  `DueAt`, `Priority`, and a read-time `DueStatus` (`overdue`, `dueSoon`,
+  `upcoming`) from `UserTaskDueClock`, using one request instant and the
+  `UserTasks.DueSoonThreshold` engine setting (default `P1D`), read lazily at
+  most once per scope so requests without due dates keep their query counts.
+  The inbox sorts by `dueAt`/`priority` with NULLS LAST and filters by
+  `dueStatus`, `dueFrom`/`dueTo`, and `minPriority`/`maxPriority` in
+  `BuildInboxWhere`, before visibility, one-per-actor selection, count, order,
+  and paging.
 - **Required assignment and assignment inheritance.** A normal `userTask` may set
   `requiresAssignment=true`. While its active work item has no `Assignee`, regular
   inbox and actor-scoped task reads omit it and claim/action endpoints reject it;
@@ -1363,7 +1383,7 @@ what the cross-version `workflowKey` instance search matches.
   `GET /?status=&instanceId=&workflowId=&workflowKey=&businessKey=&nodeId=&nodeExternalId=&var=&includeVariables=&sort=&page=&pageSize=` (paged),
   `POST /search` (same native selectors/defaults plus an advanced JSON
   `variableFilter` and structured sort),
-  `GET /inbox?instanceId=&workflowId=&workflowKey=&businessKey=&nodeId=&nodeExternalId=&var=&includeVariables=&sort=&page=&pageSize=` (paged, actor-scoped),
+  `GET /inbox?instanceId=&workflowId=&workflowKey=&businessKey=&nodeId=&nodeExternalId=&dueStatus=&dueFrom=&dueTo=&minPriority=&maxPriority=&var=&includeVariables=&sort=&page=&pageSize=` (paged, actor-scoped),
   `POST /inbox/search` (advanced actor-scoped search), `GET /{id}`,
   `GET /{id}/flows` (available sequence flows), `POST /{id}/claim`,
   `POST /{id}/unclaim`, `POST /{id}/flows/{flowId}` (take a flow),
@@ -1380,7 +1400,8 @@ what the cross-version `workflowKey` instance search matches.
   structured objects, with case-insensitive `asc` or `desc` directions.
   Instance sortable fields are `id`, `createdAt`, and `updatedAt`; inbox sortable fields are
   `userTaskId`, `instanceId`, `taskCreatedAt`, `taskUpdatedAt`,
-  `instanceCreatedAt`, and `instanceUpdatedAt`. Instance ordering defaults to
+  `instanceCreatedAt`, `instanceUpdatedAt`, `dueAt`, and `priority` (the last
+  two sort tasks without a value last in both directions). Instance ordering defaults to
   `updatedAt:desc`; inbox ordering defaults to `taskUpdatedAt:desc`. Unknown,
   malformed, blank, or duplicate clauses and more than three clauses return 400.
   If instance `id` or inbox `userTaskId` is not an explicit clause, the
@@ -1556,10 +1577,13 @@ what the cross-version `workflowKey` instance search matches.
   execution-attributed variable writes. It links to the related instance and
   user task when applicable.
 - `/inbox` (`Inbox.razor`) - actor-scoped inbox, with the same instance id,
-  workflow id, workflow key, node id, node external id, and advanced JSON
-  variable filters. It always calls the actor-scoped POST search route; its sort
-  toolbar exposes the six inbox sort fields, returned variables are optionally
-  expandable, and delegated rows show an `Acting for ...` badge.
+  workflow id, workflow key, node id, node external id, due status, priority
+  range, and advanced JSON variable filters. It always calls the actor-scoped
+  POST search route; its sort toolbar exposes the eight inbox sort fields, a
+  **Due** column (`TaskDueDate`) shows the due time, the API's overdue or
+  due-soon badge, and the priority, returned variables are optionally
+  expandable, and delegated rows show an `Acting for ...` badge. Overview's My
+  work list, task detail, and `/task-management` show the same due values.
 - `/delegations` (`MyDelegations.razor`) - self-service outgoing/incoming grant
   lists, finite-window batch creation by workflow key, acceptance/rejection, and
   withdrawal/revocation with optimistic concurrency.
@@ -1741,6 +1765,8 @@ A node in the workflow. `type` is one of `startEvent`, `userTask`, `task`,
   "assignmentMode": "fresh",   // requiresAssignment: fresh | previous | fromNode
   "inheritAssignmentFromNodeId": null, // assignment fromNode mode only
   "assignee": null,            // normal userTask only: optional NCalc username expression
+  "dueDate": null,             // userTask only, e.g. "P2D": fixed duration/offset date-time or NCalc giving one as text
+  "priority": null,            // userTask only, e.g. "50": NCalc giving a whole number; higher = more urgent
   "variables": [ /* Variable[] */ ], // startEvent / messageStartEvent (data to start) / userTask
   "service": { /* ServiceTaskConfig */ }, // serviceTask only (REST call config)
   "scriptFormat": "ncalc",     // scriptTask only: ncalc | javascript
@@ -2634,6 +2660,12 @@ when extending the model so new features stay close to BPMN terminology.
   entry and the result is snapshotted on the work item. The editor shows an
   `ASGN` marker and an `Assignee expression` field. Legacy user-task node
   `condition` properties are ignored; sequence-flow conditions remain supported.
+- **User-task due date and priority**: a `userTask` may carry `dueDate` (for
+  example `P2D` or `if(amount > 1000, 'PT4H', 'P2D')`) and `priority` (for
+  example `if(amount > 1000, 80, 40)`), resolved once when the work item is
+  created. The editor shows **Due date** and **Priority** fields with live
+  validation from the save validator's `userTaskDueValueProblem`, and keeps
+  them for multi-instance tasks.
 
 ---
 

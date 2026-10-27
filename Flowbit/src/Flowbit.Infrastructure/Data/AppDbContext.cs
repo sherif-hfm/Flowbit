@@ -766,6 +766,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
             entity.HasIndex(e => new { e.Status, e.UpdatedAt, e.Id });
             entity.HasIndex(e => new { e.Status, e.CreatedAt, e.Id });
+            entity.HasIndex(e => new { e.Status, e.DueAt, e.Id });
             entity.HasIndex(e => new { e.InstanceId, e.Status });
             entity.HasIndex(e => new { e.InstanceId, e.Status, e.CompletedAt, e.Id });
             entity.HasIndex(e => new { e.NodeId, e.Status });

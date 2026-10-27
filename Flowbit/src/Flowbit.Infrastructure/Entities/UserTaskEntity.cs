@@ -24,6 +24,8 @@ public sealed class UserTaskEntity
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset? CompletedAt { get; set; }
+    public DateTimeOffset? DueAt { get; set; }
+    public int? Priority { get; set; }
     public long? MultiInstanceExecutionId { get; set; }
     public MultiInstanceExecutionEntity? MultiInstanceExecution { get; set; }
     public int? ItemIndex { get; set; }

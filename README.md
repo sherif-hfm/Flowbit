@@ -68,7 +68,7 @@ Follow the [Flowbit.Ui guide](docs/ui-guide.md) to import and publish a definiti
 
 ### Human work and approval teams
 
-User tasks support role-based access at both the task and action level, claim ownership, direct assignee expressions, required assignment, and claim or assignment inheritance. Runtime delegation lets authorized users act on another user's eligible work with audit attribution.
+User tasks support role-based access at both the task and action level, claim ownership, direct assignee expressions, required assignment, and claim or assignment inheritance. Runtime delegation lets authorized users act on another user's eligible work with audit attribution. A task can carry a due date and a priority, resolved when its work item is created; My work shows overdue and due-soon badges and sorts and filters by both, and the inbox APIs return them to embedding applications.
 
 Task and action roles can come from declared `string[]` variables. Their effective permissions are captured when work is created; separately authorized managers can update the saved role policy of waiting work. An optional inbox visibility condition filters work against persisted variables and allowed actor context before database counting and paging.
 

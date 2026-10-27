@@ -1,6 +1,6 @@
 # User-task examples
 
-These definitions focus on the authorization, claim, assignee, and required-assignment contracts of a normal `userTask`. Create and publish a definition before starting it. The examples use authenticated user endpoints and do not require the durable-job worker because every task has `asyncBefore` and `asyncAfter` disabled.
+These definitions focus on the authorization, claim, assignee, required-assignment, and due-date and priority contracts of a normal `userTask`. Create and publish a definition before starting it. The examples use authenticated user endpoints and do not require the durable-job worker because every task has `asyncBefore` and `asyncAfter` disabled.
 
 Useful endpoints:
 
@@ -39,3 +39,10 @@ Useful endpoints:
 - API/worker/configuration: an external distributor calls `GET /api/task-distribution/workflows/{workflowKey}/tasks` and `POST /api/task-distribution/workflows/{workflowKey}/tasks/{taskId}/assign` with `X-Client-Id` and `X-Client-Secret`. Configure `WorkflowContext:Config:exampleDistributorClientId` and `WorkflowContext:Config:exampleDistributorSecret`; the JSON contains only trusted `${config.*}` references. No durable-job worker is required.
 
 For concurrent clients, use the task's current `updatedAt` as `expectedUpdatedAt` on assignment changes, then refresh after a `409` conflict.
+
+## [06 - Due date and priority](06-due-date-and-priority.json)
+
+- Start values: node `1`; `amount` is a required positive number and `contractEnd` a required date-time with an offset, such as `2030-01-31T17:00:00+02:00`. The starter needs `Requester`.
+- Actors and actions: task `2` evaluates `dueDate` `if(amount >= 10000, 'PT4H', 'P2D')` and `priority` `if(amount >= 10000, 80, 40)` once when it is created, so a purchase of 10,000 or more is due four hours after the task is created with priority 80, and a smaller one two days later with priority 40. A `Reviewer` takes flow `201`. Task `3` is due at `contractEnd` with the fixed priority `60`; a `Signatory` takes flow `301`.
+- Expected result: inbox items and `GET /api/user-tasks/{taskId}` return `dueAt`, `priority`, and `dueStatus` (`overdue`, `dueSoon` within the `UserTasks.DueSoonThreshold` window, which defaults to one day, or `upcoming`). Changing `amount` after the review was created does not move its due date. The instance completes at node `4`.
+- API/worker/configuration: authenticated instance and user-task APIs only; no worker and no external configuration. Sort My work by `dueAt` or `priority`, or filter it with `dueStatus`, `dueFrom`, `dueTo`, `minPriority`, and `maxPriority`.

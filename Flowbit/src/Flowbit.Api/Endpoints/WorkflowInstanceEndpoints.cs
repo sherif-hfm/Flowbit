@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Flowbit.Api.Auth;
 using Flowbit.Service.Abstractions;
+using Flowbit.Service.Models;
 using Flowbit.Service.Services;
 using Flowbit.Shared.Dtos;
 using Flowbit.Shared.Models;
@@ -329,8 +330,13 @@ public static class WorkflowInstanceEndpoints
     /// <param name="businessKey">Optional. Exact, case-sensitive business-key match after trimming.</param>
     /// <param name="nodeId">Optional. Filter by flow node ID.</param>
     /// <param name="nodeExternalId">Optional. Filter by flow node external ID (case-insensitive).</param>
+    /// <param name="dueStatus">Optional. Repeated due statuses to include: <c>overdue</c>, <c>dueSoon</c>, <c>upcoming</c>, or <c>none</c> (no due date); a task matching any of them is included.</param>
+    /// <param name="dueFrom">Optional. Inclusive lower bound on the task's due time; tasks without a due date do not match.</param>
+    /// <param name="dueTo">Optional. Exclusive upper bound on the task's due time; must be later than <c>dueFrom</c>.</param>
+    /// <param name="minPriority">Optional. Inclusive minimum task priority; tasks without a priority do not match.</param>
+    /// <param name="maxPriority">Optional. Inclusive maximum task priority; must not be below <c>minPriority</c>.</param>
     /// <param name="variables">Optional. Repeated <c>var=name:value</c> filters; exact case-insensitive match on an instance variable's latest scalar value, AND-combined.</param>
-    /// <param name="sort">Optional. Up to three repeated <c>sort=field:direction</c> clauses over task/instance IDs and creation/update timestamps.</param>
+    /// <param name="sort">Optional. Up to three repeated <c>sort=field:direction</c> clauses over task/instance IDs, creation/update timestamps, <c>dueAt</c>, and <c>priority</c>.</param>
     /// <param name="includeVariables">Optional. Include the latest value of every instance variable in each inbox item (default false).</param>
     /// <param name="page">Optional. The 1-based page index (default 1).</param>
     /// <param name="pageSize">Optional. The number of items per page (default 50, max 200).</param>
@@ -345,7 +351,8 @@ public static class WorkflowInstanceEndpoints
     /// <c>ClaimedByMe = true</c>. Each <see cref="InboxItemDto"/> carries precomputed
     /// <c>CanClaim</c>/<c>CanAct</c> flags based on the caller's roles. Directly assigned
     /// tasks are matched to the authenticated username case-insensitively. Counting and
-    /// paging are performed in SQL. A 400 is returned for a malformed <c>var</c> entry.
+    /// paging are performed in SQL. A 400 is returned for a malformed <c>var</c> entry,
+    /// an unknown due status, or an empty due-date or priority range.
     /// </remarks>
     public static async Task<IResult> GetInbox(
         long? instanceId,
@@ -354,6 +361,11 @@ public static class WorkflowInstanceEndpoints
         string? businessKey,
         int? nodeId,
         string? nodeExternalId,
+        [FromQuery(Name = "dueStatus")] string[]? dueStatus,
+        DateTimeOffset? dueFrom,
+        DateTimeOffset? dueTo,
+        int? minPriority,
+        int? maxPriority,
         [FromQuery(Name = "var")] string[]? variables,
         [FromQuery(Name = "sort")] string[]? sort,
         bool? includeVariables,
@@ -365,7 +377,8 @@ public static class WorkflowInstanceEndpoints
         CancellationToken cancellationToken)
     {
         var (p, s) = NormalizePaging(page, pageSize);
-        return Results.Ok(await service.GetInboxAsync(actorResolver.Resolve(principal), instanceId, workflowId, workflowKey, businessKey, nodeId, nodeExternalId, variables, sort, includeVariables ?? false, p, s, cancellationToken));
+        var dueAndPriority = new InboxDueAndPriorityFilter(dueStatus, dueFrom, dueTo, minPriority, maxPriority);
+        return Results.Ok(await service.GetInboxAsync(actorResolver.Resolve(principal), instanceId, workflowId, workflowKey, businessKey, nodeId, nodeExternalId, dueAndPriority, variables, sort, includeVariables ?? false, p, s, cancellationToken));
     }
 
     private static async Task<IResult> SearchInbox(

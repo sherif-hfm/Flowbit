@@ -469,6 +469,51 @@ public sealed class WorkflowVersionCompatibilityEvaluatorTests
     }
 
     [Fact]
+    public void Due_date_and_priority_changes_do_not_change_an_open_task_contract()
+    {
+        var sourceModel = BasicModel();
+        var sourceTask = sourceModel.FlowNodes.Single(node => node.Id == 2);
+        sourceTask.DueDateExpression = "P2D";
+        sourceTask.PriorityExpression = "40";
+        var targetModel = Clone(sourceModel);
+        var targetTask = targetModel.FlowNodes.Single(node => node.Id == 2);
+        targetTask.DueDateExpression = "if(amount > 100, 'PT4H', 'P1D')";
+        targetTask.PriorityExpression = null;
+
+        var result = WorkflowVersionCompatibilityEvaluator.Evaluate(
+            Context(Definition(11, 1, sourceModel), Definition(12, 2, targetModel), includeOpenTask: true));
+
+        Assert.True(result.IsCompatible);
+        Assert.Empty(result.Blockers);
+        Assert.Empty(result.Warnings);
+    }
+
+    [Fact]
+    public void Due_date_and_priority_changes_do_not_change_multi_instance_or_open_job_contracts()
+    {
+        var sourceModel = PresentationModel();
+        var sourceTask = sourceModel.FlowNodes.Single(node => node.Id == 2);
+        sourceTask.DueDateExpression = "P2D";
+        sourceTask.PriorityExpression = "40";
+        var targetModel = Clone(sourceModel);
+        var targetTask = targetModel.FlowNodes.Single(node => node.Id == 2);
+        targetTask.DueDateExpression = "2030-01-31T17:00:00Z";
+        targetTask.PriorityExpression = "90";
+        var source = Definition(11, 1, sourceModel);
+        var context = Context(source, Definition(12, 2, targetModel)) with
+        {
+            ActiveMultiInstanceExecutions = [MultiInstanceExecution()],
+            OpenJobs = [UserTaskAsyncAfterJob(source)]
+        };
+
+        var result = WorkflowVersionCompatibilityEvaluator.Evaluate(context);
+
+        Assert.True(result.IsCompatible);
+        Assert.Empty(result.Blockers);
+        Assert.Empty(result.Warnings);
+    }
+
+    [Fact]
     public void Variable_contract_changes_still_change_multi_instance_and_open_job_contracts()
     {
         var sourceModel = PresentationModel();

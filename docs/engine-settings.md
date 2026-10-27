@@ -2,7 +2,7 @@
 
 [Documentation home](index.md) · [Deployment and operations](deployment.md#configuration) · [Settings API](api-guide.md#settings) · [Settings UI](ui-guide.md#engine-and-workflow-settings)
 
-This is the complete reference for the **16 current built-in settings** read from PostgreSQL's `flowbit.engine_settings` table. These are deployment-wide string records, shared by API and Worker replicas using that database. They are distinct from [host configuration](deployment.md#configuration) in `appsettings.json` or environment variables, JSON [workflow-context settings](developer-guide.md#output-mappings-and-expression-context), and properties authored in workflow definitions.
+This is the complete reference for the **17 current built-in settings** read from PostgreSQL's `flowbit.engine_settings` table. These are deployment-wide string records, shared by API and Worker replicas using that database. They are distinct from [host configuration](deployment.md#configuration) in `appsettings.json` or environment variables, JSON [workflow-context settings](developer-guide.md#output-mappings-and-expression-context), and properties authored in workflow definitions.
 
 A **runtime default** is what a consumer uses without a usable setting. A **seed value** is a row inserted by a migration when the setting is missing. Deleting a seeded row does not rerun an already-applied migration; consumers still apply their documented fallback. The final entry, `AiAuthoring.Models`, is reserved and has its own management API.
 
@@ -24,6 +24,7 @@ A **runtime default** is what a consumer uses without a usable setting. A **seed
 | [WorkflowBatchActions.MaxAffectedTasks](#workflowbatchactionsmaxaffectedtasks) | Tasks affected by one administrative action batch. | `10000` |
 | [WorkflowVersionChanges.MaxBatchInstances](#workflowversionchangesmaxbatchinstances) | Instances frozen into one version-change batch. | `10000` |
 | [WorkflowVariableUpdates.MaxBatchInstances](#workflowvariableupdatesmaxbatchinstances) | Instances frozen into one variable-update batch. | `10000` |
+| [UserTasks.DueSoonThreshold](#usertasksduesoonthreshold) | How long before its due time an open user task counts as due soon. | `P1D` |
 | [Authentication.UserIdentityClaim](#authenticationuseridentityclaim) | Authoritative JWT claim identifying the actor. | Unset: identity selection chain |
 | [AiAuthoring.Models](#aiauthoringmodels) | Assistant model catalog, including provider keys. | Empty catalog |
 
@@ -280,6 +281,19 @@ Bounds running instances frozen into one administrative variable-update batch. B
 
 See [administrative variable updates](api-guide.md#variable-update-batches) and [runtime update rules](../Flowbit/README.md#administrative-instance-variable-updates). Implementation: [batch service](../Flowbit/src/Flowbit.Service/Services/InstanceVariableUpdateBatchService.cs) and [limits](../Flowbit/src/Flowbit.Service/Models/InstanceVariableUpdateModels.cs).
 
+## Task settings
+
+### UserTasks.DueSoonThreshold
+
+- **Namespace / key:** `UserTasks` / `DueSoonThreshold`.
+- **Value / fallback:** a positive fixed ISO-8601 duration with the grammar of a timer's `timeDuration`, such as `PT8H`, `P1D`, or `P1W`; surrounding whitespace is ignored. Missing, blank, malformed, zero, and calendar values such as `P1M` fall back to `P1D`.
+- **Seed:** `P1D` in `AddUserTaskDueDateAndPriority` when missing.
+- **Takes effect:** the next response or inbox filter that needs it; no restart. It never changes a task's saved due date.
+
+An active or pending work item with a due time has the `dueStatus` `overdue` once that time is reached, `dueSoon` when it is due within this window, and `upcoming` otherwise. Inbox, task, task-management, and task-distribution responses compute it from the server time when they are built, and the inbox `dueStatus` filter uses the same window, so Flowbit.Ui and other clients show the same badges. The setting is read once per request, and only when a returned task has a due time or a `dueSoon` or `upcoming` filter needs it.
+
+See [due date and priority](node-reference.md#due-date-and-priority) and [inbox filters](api-guide.md#get-apiinstancesinbox). Implementation: [setting rules](../Flowbit/src/Flowbit.Service/Models/UserTaskDueModels.cs) and [inbox and task responses](../Flowbit/src/Flowbit.Service/Services/WorkflowEngineService.cs).
+
 ## Identity and AI settings
 
 ### Authentication.UserIdentityClaim
@@ -338,6 +352,7 @@ Migration names below link to their actual seed implementation. Seeds are applie
 | [AddInstanceVariableUpdates](../Flowbit/src/Flowbit.Infrastructure/Data/Migrations/20260810174726_AddInstanceVariableUpdates.cs) | `WorkflowVariableUpdates.MaxBatchInstances` = `10000`. |
 | [AddSharedVariables](../Flowbit/src/Flowbit.Infrastructure/Data/Migrations/20260824174251_AddSharedVariables.cs) | `SharedVariables.RequiredRole` = `admin`. |
 | [AddLocalIdentity](../Flowbit/src/Flowbit.Infrastructure/Data/Migrations/20261021153025_AddLocalIdentity.cs) | `Users.RequiredRole` = `admin`. |
+| [AddUserTaskDueDateAndPriority](../Flowbit/src/Flowbit.Infrastructure/Data/Migrations/20261027075021_AddUserTaskDueDateAndPriority.cs) | `UserTasks.DueSoonThreshold` = `P1D`. Down removes the row only if it is unchanged. |
 
 `Authentication.UserIdentityClaim` and `AiAuthoring.Models` are optional and unseeded. No provider keys or task-distribution credentials are seeded. Host configuration supplies deployment secrets where the relevant feature requires it; the AI catalog has its dedicated credential management.
 

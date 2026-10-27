@@ -318,7 +318,34 @@ public sealed record UserTaskDto(
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public long? AdministrativeActionBatchId { get; init; }
 
+    /// <summary>The due time saved when the work item was created, in UTC.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DateTimeOffset? DueAt { get; init; }
+
+    /// <summary>The priority saved when the work item was created; higher values are more urgent.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? Priority { get; init; }
+
+    /// <summary>
+    /// overdue, dueSoon, or upcoming for an active or pending work item with a
+    /// due time, computed from the server time when the response is built.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? DueStatus { get; init; }
+
     public IReadOnlyList<WorkflowAttributeModel> Attributes { get; init; } = [];
+}
+
+/// <summary>
+/// Due statuses computed for an open work item with a due time, plus the
+/// <see cref="None"/> filter value that matches work items without one.
+/// </summary>
+public static class UserTaskDueStatuses
+{
+    public const string Overdue = "overdue";
+    public const string DueSoon = "dueSoon";
+    public const string Upcoming = "upcoming";
+    public const string None = "none";
 }
 
 public sealed record UserTaskActionAckDto(
@@ -397,6 +424,22 @@ public sealed record ManagedUserTaskDto(
     public string Status { get; init; } = "active";
     public bool CanManageAssignment { get; init; }
     public bool CanManageRoles { get; init; }
+
+    /// <summary>The due time saved when the work item was created, in UTC.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DateTimeOffset? DueAt { get; init; }
+
+    /// <summary>The priority saved when the work item was created; higher values are more urgent.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? Priority { get; init; }
+
+    /// <summary>
+    /// overdue, dueSoon, or upcoming for an active or pending work item with a
+    /// due time, computed from the server time when the response is built.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? DueStatus { get; init; }
+
     public IReadOnlyList<WorkflowAttributeModel> Attributes { get; init; } = [];
 }
 
@@ -791,6 +834,21 @@ public sealed record InboxItemDto(
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public DelegatedTaskAccessDto? DelegatedAccess { get; init; }
+
+    /// <summary>The due time saved when the work item was created, in UTC.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DateTimeOffset? DueAt { get; init; }
+
+    /// <summary>The priority saved when the work item was created; higher values are more urgent.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? Priority { get; init; }
+
+    /// <summary>
+    /// overdue, dueSoon, or upcoming for a work item with a due time, computed
+    /// from the server time when the response is built.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? DueStatus { get; init; }
 
     public IReadOnlyList<WorkflowAttributeModel> Attributes { get; init; } = [];
 }

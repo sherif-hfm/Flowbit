@@ -1,0 +1,32 @@
+@using System.Globalization
+
+@* Shows a work item's saved due time with the API's due status. Flowbit.Ui
+   keeps no clock or threshold of its own, so the badge always matches the
+   server's dueStatus. *@
+@if (DueAt is DateTimeOffset dueAt)
+{
+    <span class="task-due-date">
+        <span title="@dueAt.ToString("O", CultureInfo.InvariantCulture)">@dueAt.ToLocalTime().ToString("g")</span>
+        @if (DueStatus == UserTaskDueStatuses.Overdue)
+        {
+            <StatusBadge Status="danger" Text="Overdue" />
+        }
+        else if (DueStatus == UserTaskDueStatuses.DueSoon)
+        {
+            <StatusBadge Status="warning" Text="Due soon" />
+        }
+    </span>
+}
+else if (!string.IsNullOrEmpty(EmptyText))
+{
+    <span class="text-muted">@EmptyText</span>
+}
+
+@code {
+    [Parameter] public DateTimeOffset? DueAt { get; set; }
+
+    [Parameter] public string? DueStatus { get; set; }
+
+    /// <summary>Text shown when the work item has no due time; nothing is shown when null.</summary>
+    [Parameter] public string? EmptyText { get; set; }
+}

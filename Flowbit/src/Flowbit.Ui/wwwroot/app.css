@@ -151,6 +151,7 @@ code { color: var(--fb-primary-hover); }
 .status-neutral { color: var(--fb-text-secondary); background: #f1f5f9; }
 .acting-for-badge { display: inline-flex; align-items: center; gap: .3rem; margin-top: .25rem; padding: .24rem .5rem; color: #6d28d9; background: #f5f3ff; border: 1px solid #ddd6fe; border-radius: 999px; font-size: .64rem; font-weight: 780; white-space: nowrap; }
 .acting-for-badge .app-icon { width: .82rem; height: .82rem; }
+.task-due-date { display: inline-flex; flex-wrap: wrap; align-items: center; gap: .3rem .45rem; }
 .progress { height: .5rem; background: var(--fb-border); border-radius: 999px; }
 .progress-bar { background: var(--fb-primary); border-radius: 999px; }
 
@@ -212,9 +213,9 @@ code { color: var(--fb-primary-hover); }
 
 .summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .75rem; }
 .summary-item { padding: .8rem; background: var(--fb-surface-soft); border-radius: .65rem; }
-.summary-item span, .summary-item strong { display: block; }
-.summary-item span { color: var(--fb-muted); font-size: .63rem; }
-.summary-item strong { margin-top: .15rem; color: var(--fb-ink); font-size: .8rem; overflow-wrap: anywhere; }
+.summary-item > span, .summary-item > strong { display: block; }
+.summary-item > span { color: var(--fb-muted); font-size: .63rem; }
+.summary-item > strong { margin-top: .15rem; color: var(--fb-ink); font-size: .8rem; overflow-wrap: anywhere; }
 
 .execution-position-list { display: grid; gap: .55rem; }
 .execution-position-list.compact { gap: .35rem; }

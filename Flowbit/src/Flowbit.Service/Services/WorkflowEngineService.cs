@@ -42,6 +42,7 @@ public sealed partial class WorkflowEngineService(
         sharedVariableAccessPlans
         ?? new SharedVariableAccessPlanCache(new ConditionalEventDefinitionAnalyzer());
     private Dictionary<string, JsonElement>? _settingsCache;
+    private TimeSpan? _dueSoonThreshold;
 
     private sealed record ConditionalAtomicContinuation(
         ExecutionTokenRecord Token,
@@ -1427,6 +1428,7 @@ public sealed partial class WorkflowEngineService(
         string? businessKey,
         int? nodeId,
         string? nodeExternalId,
+        InboxDueAndPriorityFilter dueAndPriority,
         IReadOnlyList<string>? variables,
         IReadOnlyList<string>? sort,
         bool includeVariables,
@@ -1435,7 +1437,7 @@ public sealed partial class WorkflowEngineService(
         CancellationToken cancellationToken) =>
         GetInboxCoreAsync(
             actor, instanceId, workflowId, workflowKey, businessKey, nodeId,
-            nodeExternalId,
+            nodeExternalId, dueAndPriority,
             VariableFilterParser.FromLegacy(WorkflowQueryInputParser.ParseVariableFilters(variables)),
             ParseInboxSort(sort), includeVariables, page, pageSize,
             cancellationToken);
@@ -1454,6 +1456,12 @@ public sealed partial class WorkflowEngineService(
             request.BusinessKey,
             request.NodeId,
             request.NodeExternalId,
+            new InboxDueAndPriorityFilter(
+                request.DueStatuses,
+                request.DueFrom,
+                request.DueTo,
+                request.MinPriority,
+                request.MaxPriority),
             VariableFilterParser.Parse(request.VariableFilter),
             ParseInboxSort(WorkflowQueryInputParser.ToLegacySort(request.Sort)),
             request.IncludeVariables ?? false,
@@ -1470,6 +1478,7 @@ public sealed partial class WorkflowEngineService(
         string? businessKey,
         int? nodeId,
         string? nodeExternalId,
+        InboxDueAndPriorityFilter? dueAndPriority,
         VariableFilterExpression? variableFilter,
         IReadOnlyList<InboxSortCriterion> sortCriteria,
         bool includeVariables,
@@ -1481,15 +1490,23 @@ public sealed partial class WorkflowEngineService(
         var visibilityContext = CreateInboxVisibilityContext(actor);
         var normalizedUser = visibilityContext.User;
         var normalizedRoles = NormalizeRoles(visibilityContext.Roles);
+        var dueCriteria = await ParseInboxDueAndPriorityAsync(
+            dueAndPriority, visibilityContext.AsOf, cancellationToken);
         var paged = await runtime.ListInboxAsync(
             visibilityContext,
             instanceId, workflowId, workflowKey, businessKey, nodeId,
-            nodeExternalId, variableFilter, sortCriteria, page, pageSize, cancellationToken);
+            nodeExternalId, variableFilter, sortCriteria, page, pageSize, cancellationToken,
+            dueCriteria);
 
         if (paged.Items.Count == 0)
         {
             return new PagedResult<InboxItemDto>([], paged.Page, paged.PageSize, paged.TotalCount);
         }
+
+        // Read the threshold only when a returned task has a due time.
+        var dueClock = paged.Items.Any(row => row.DueAt is not null)
+            ? await GetDueClockAsync(visibilityContext.AsOf, cancellationToken)
+            : null;
 
         var policyIds = paged.Items.Where(row => row.RolePolicyId.HasValue)
             .Select(row => row.RolePolicyId!.Value).Distinct().ToArray();
@@ -1589,9 +1606,94 @@ public sealed partial class WorkflowEngineService(
             accessByTask, attributesByTask, canActByTask, hasBypassClaimByTask,
             row.MultiInstanceExecutionId is long executionId ? progressByExecution.GetValueOrDefault(executionId) : null,
             includeVariables,
-            sharedMetadataByWorkflowId.GetValueOrDefault(row.WorkflowDefinitionId))).ToList();
+            sharedMetadataByWorkflowId.GetValueOrDefault(row.WorkflowDefinitionId),
+            dueClock)).ToList();
         return new PagedResult<InboxItemDto>(items, paged.Page, paged.PageSize, paged.TotalCount);
     }
+
+    // Validates the due-date and priority inbox filters. The threshold is read
+    // only for a dueSoon or upcoming status, so other requests cost no query.
+    private async Task<InboxDueAndPriorityCriteria?> ParseInboxDueAndPriorityAsync(
+        InboxDueAndPriorityFilter? filter,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        if (filter is null)
+        {
+            return null;
+        }
+
+        var statuses = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var raw in filter.DueStatuses ?? [])
+        {
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                continue;
+            }
+
+            statuses.Add(raw.Trim().ToLowerInvariant() switch
+            {
+                "overdue" => UserTaskDueStatuses.Overdue,
+                "duesoon" => UserTaskDueStatuses.DueSoon,
+                "upcoming" => UserTaskDueStatuses.Upcoming,
+                "none" => UserTaskDueStatuses.None,
+                _ => throw new WorkflowDomainException(
+                    $"Unknown due status '{raw.Trim()}'. Allowed values: overdue, dueSoon, upcoming, none.")
+            });
+        }
+
+        if (filter.DueFrom is DateTimeOffset from && filter.DueTo is DateTimeOffset to && from >= to)
+        {
+            throw new WorkflowDomainException("dueFrom must be earlier than dueTo.");
+        }
+
+        if (filter.MinPriority is int minimum && filter.MaxPriority is int maximum && minimum > maximum)
+        {
+            throw new WorkflowDomainException("minPriority must not exceed maxPriority.");
+        }
+
+        if (statuses.Count == 0
+            && filter.DueFrom is null
+            && filter.DueTo is null
+            && filter.MinPriority is null
+            && filter.MaxPriority is null)
+        {
+            return null;
+        }
+
+        DateTimeOffset? dueSoonUntil = statuses.Contains(UserTaskDueStatuses.DueSoon)
+                                       || statuses.Contains(UserTaskDueStatuses.Upcoming)
+            ? (await GetDueClockAsync(now, cancellationToken)).DueSoonUntil
+            : null;
+        return new InboxDueAndPriorityCriteria(
+            statuses,
+            filter.DueFrom?.ToUniversalTime(),
+            filter.DueTo?.ToUniversalTime(),
+            filter.MinPriority,
+            filter.MaxPriority,
+            now,
+            dueSoonUntil);
+    }
+
+    // Engine settings are not cached, so the due-soon threshold is read at most
+    // once per scope and only when a response or filter needs it.
+    private async Task<UserTaskDueClock> GetDueClockAsync(
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        if (_dueSoonThreshold is null)
+        {
+            var configured = await engineSettings.GetByKeyAsync(
+                UserTaskDueSettings.DueSoonThresholdKey,
+                cancellationToken);
+            _dueSoonThreshold = UserTaskDueSettings.ParseDueSoonThreshold(configured?.Value);
+        }
+
+        return new UserTaskDueClock(now, _dueSoonThreshold.Value);
+    }
+
+    private static bool IsOpenUserTask(string status) =>
+        status is UserTaskRecordStatuses.Active or UserTaskRecordStatuses.Pending;
 
     private static long InboxAuthorizationKey(InboxListItem row) => row.UserTaskId;
 
@@ -1620,7 +1722,8 @@ public sealed partial class WorkflowEngineService(
         Dictionary<long, bool>? hasBypassClaimByTask = null,
         MultiInstanceProgressDto? multiInstance = null,
         bool includeVariables = false,
-        IReadOnlyList<SharedVariableBindingMetadataDto>? sharedVariables = null)
+        IReadOnlyList<SharedVariableBindingMetadataDto>? sharedVariables = null,
+        UserTaskDueClock? dueClock = null)
     {
         var claimedByMe = string.Equals(row.ClaimedBy, normalizedUser, StringComparison.OrdinalIgnoreCase);
         var authorizationKey = InboxAuthorizationKey(row);
@@ -1698,6 +1801,9 @@ public sealed partial class WorkflowEngineService(
             Variables = includeVariables ? row.Variables : null,
             SharedVariables = includeVariables ? sharedVariables : null,
             DelegatedAccess = access.ToDto(),
+            DueAt = row.DueAt,
+            Priority = row.Priority,
+            DueStatus = dueClock?.StatusFor(row.DueAt, open: true),
             Attributes = attributesByTask[authorizationKey]
         };
     }
@@ -2558,6 +2664,9 @@ public sealed partial class WorkflowEngineService(
                 await runtime.GetMultiInstanceActorStatesAsync(
                     onePerActorIds, representedUser, cancellationToken);
         }
+        var dueClock = pageRecords.Any(task => task.DueAt is not null && IsOpenUserTask(task.Status))
+            ? await GetDueClockAsync(visibilityContext.AsOf, cancellationToken)
+            : null;
         var items = new List<UserTaskDto>(pageRecords.Count);
         foreach (var task in pageRecords)
         {
@@ -2580,7 +2689,8 @@ public sealed partial class WorkflowEngineService(
                 progress,
                 capabilities,
                 NodeAttributes(workflow, task.NodeId),
-                access.ExecutionActor));
+                access.ExecutionActor,
+                dueClock));
         }
         return new PagedResult<UserTaskDto>(items, page, pageSize, paged.TotalCount);
     }
@@ -10103,8 +10213,10 @@ public sealed partial class WorkflowEngineService(
                 "taskupdatedat" => InboxSortField.TaskUpdatedAt,
                 "instancecreatedat" => InboxSortField.InstanceCreatedAt,
                 "instanceupdatedat" => InboxSortField.InstanceUpdatedAt,
+                "dueat" => InboxSortField.DueAt,
+                "priority" => InboxSortField.Priority,
                 _ => throw new WorkflowDomainException(
-                    $"Unknown inbox sort field '{field}'. Allowed fields: userTaskId, instanceId, taskCreatedAt, taskUpdatedAt, instanceCreatedAt, instanceUpdatedAt.")
+                    $"Unknown inbox sort field '{field}'. Allowed fields: userTaskId, instanceId, taskCreatedAt, taskUpdatedAt, instanceCreatedAt, instanceUpdatedAt, dueAt, priority.")
             },
             static (field, direction) => new InboxSortCriterion(field, direction));
     }
@@ -10118,12 +10230,16 @@ public sealed partial class WorkflowEngineService(
             ? await BuildProgressAsync(executionId, cancellationToken)
             : null;
         var presentation = await BuildUserTaskPresentationAsync(task, actor, cancellationToken);
+        var dueClock = task.DueAt is not null && IsOpenUserTask(task.Status)
+            ? await GetDueClockAsync(timeProvider.GetUtcNow(), cancellationToken)
+            : null;
         return ToUserTaskDto(
             task,
             progress,
             presentation.Capabilities,
             presentation.Attributes,
-            actor);
+            actor,
+            dueClock);
     }
 
     private static UserTaskDto ToUserTaskDto(
@@ -10131,7 +10247,8 @@ public sealed partial class WorkflowEngineService(
         MultiInstanceProgressDto? progress,
         UserTaskCapabilitiesDto capabilities,
         IReadOnlyList<WorkflowAttributeModel> attributes,
-        ActorContext? actor = null) =>
+        ActorContext? actor = null,
+        UserTaskDueClock? dueClock = null) =>
         new UserTaskDto(task.Id, task.InstanceId, task.TokenId, task.NodeId, task.NodeName,
             task.NodeExternalId, task.Roles, task.RequiresClaim, task.RequiresAssignment, task.Status, task.ClaimedBy,
             task.Assignee, task.ItemIndex, task.ItemValue, task.SelectedFlowId, task.CompletedBy,
@@ -10149,6 +10266,9 @@ public sealed partial class WorkflowEngineService(
             CompletionKind = task.CompletionKind,
             CompletionReason = task.CompletionReason,
             AdministrativeActionBatchId = task.AdministrativeActionBatchId,
+            DueAt = task.DueAt,
+            Priority = task.Priority,
+            DueStatus = dueClock?.StatusFor(task.DueAt, IsOpenUserTask(task.Status)),
             Attributes = attributes
         };
 
@@ -10312,7 +10432,8 @@ public sealed partial class WorkflowEngineService(
     private static ManagedUserTaskDto ToManagedUserTaskDto(
         ManagedUserTaskRecord task,
         MultiInstanceProgressDto? progress,
-        IReadOnlyList<WorkflowAttributeModel> attributes)
+        IReadOnlyList<WorkflowAttributeModel> attributes,
+        UserTaskDueClock? dueClock = null)
     {
         var ownership = task.Assignee is not null
             ? UserTaskOwnershipKinds.Assigned
@@ -10345,7 +10466,10 @@ public sealed partial class WorkflowEngineService(
             task.Variables)
         {
             Attributes = attributes,
-            Status = task.Status
+            Status = task.Status,
+            DueAt = task.DueAt,
+            Priority = task.Priority,
+            DueStatus = dueClock?.StatusFor(task.DueAt, IsOpenUserTask(task.Status))
         };
     }
 
@@ -10375,6 +10499,9 @@ public sealed partial class WorkflowEngineService(
             }
         }
         var managerRoles = manager is null ? new HashSet<string>() : NormalizeRoles(manager.Roles);
+        var dueClock = paged.Items.Any(item => item.DueAt is not null)
+            ? await GetDueClockAsync(timeProvider.GetUtcNow(), cancellationToken)
+            : null;
         var items = paged.Items.Select(item =>
         {
             var workflow = workflows[item.WorkflowDefinitionId];
@@ -10382,7 +10509,8 @@ public sealed partial class WorkflowEngineService(
                 item.MultiInstanceExecutionId is long executionId
                     ? progress.GetValueOrDefault(executionId)
                     : null,
-                NodeAttributes(workflow, item.NodeId));
+                NodeAttributes(workflow, item.NodeId),
+                dueClock);
             return dto with
             {
                 CanManageAssignment = item.Status == UserTaskRecordStatuses.Active
@@ -10666,6 +10794,12 @@ public sealed partial class WorkflowEngineService(
             ? ResolveTaskRolePolicy(definition, node,
                 assigneeContext ?? new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase))
             : null;
+        // Like the role policy, a multi-instance task resolves these once for
+        // its execution, and every child gets the same values.
+        var (dueDate, priority) = BpmnFlowNodeTypes.IsUserTask(node.Type) && assigneeContext is not null
+            && (node.MultiInstance is null || captureMultiInstanceRoles)
+            ? ResolveUserTaskDueAndPriority(node, assigneeContext, instanceId)
+            : (null, null);
         return new CurrentNodeSnapshot(
             node.Id,
             node.Name,
@@ -10680,9 +10814,85 @@ public sealed partial class WorkflowEngineService(
             BpmnFlowNodeTypes.IsErrorEnd(node.Type) ? node.ErrorDescription ?? node.Name : null,
             node.AsyncBefore)
         {
-            RolePolicy = rolePolicy
+            RolePolicy = rolePolicy,
+            DueDate = dueDate,
+            Priority = priority
         };
     }
+
+    // Resolves a user task's due date and priority when its work item is
+    // created. As for the assignee expression, a result that cannot be used
+    // leaves the value empty and logs a warning; it never fails the transition.
+    private (UserTaskDueValue? DueDate, int? Priority) ResolveUserTaskDueAndPriority(
+        FlowNodeModel node,
+        IReadOnlyDictionary<string, JsonElement> context,
+        long? instanceId)
+    {
+        UserTaskDueValue? dueDate = null;
+        if (!string.IsNullOrWhiteSpace(node.DueDateExpression))
+        {
+            if (UserTaskDueRules.TryParseFixedValue(node.DueDateExpression, out var fixedValue))
+            {
+                dueDate = fixedValue;
+            }
+            else if (TryEvaluateUserTaskValue(node, "dueDate", node.DueDateExpression, context, instanceId, out var raw)
+                     && !UserTaskDueRules.TryInterpretDueDateResult(raw, out dueDate, out var problem))
+            {
+                LogUnusableUserTaskValue(node, "dueDate", node.DueDateExpression, instanceId, problem);
+            }
+
+            if (dueDate?.After is TimeSpan after
+                && DateTimeOffset.MaxValue - timeProvider.GetUtcNow() < after)
+            {
+                LogUnusableUserTaskValue(node, "dueDate", node.DueDateExpression, instanceId,
+                    "the duration passes the largest supported date");
+                dueDate = null;
+            }
+        }
+
+        int? priority = null;
+        if (!string.IsNullOrWhiteSpace(node.PriorityExpression)
+            && TryEvaluateUserTaskValue(node, "priority", node.PriorityExpression, context, instanceId, out var rawPriority)
+            && !UserTaskDueRules.TryInterpretPriorityResult(rawPriority, out priority, out var priorityProblem))
+        {
+            LogUnusableUserTaskValue(node, "priority", node.PriorityExpression, instanceId, priorityProblem);
+        }
+
+        return (dueDate, priority);
+    }
+
+    private bool TryEvaluateUserTaskValue(
+        FlowNodeModel node,
+        string property,
+        string expression,
+        IReadOnlyDictionary<string, JsonElement> context,
+        long? instanceId,
+        out object? result)
+    {
+        try
+        {
+            result = SequenceFlowConditionEvaluator.EvaluateValue(expression, context, preserveComplexTypes: true);
+            return true;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(ex,
+                "User task #{NodeId} {Property} expression '{Expression}' failed for instance {InstanceId}; creating the work item without it.",
+                node.Id, property, expression, instanceId);
+            result = null;
+            return false;
+        }
+    }
+
+    private void LogUnusableUserTaskValue(
+        FlowNodeModel node,
+        string property,
+        string expression,
+        long? instanceId,
+        string? problem) =>
+        logger.LogWarning(
+            "User task #{NodeId} {Property} expression '{Expression}' did not give a usable value for instance {InstanceId} ({Problem}); creating the work item without it.",
+            node.Id, property, expression, instanceId, problem);
 
     private static FlowNodeModel GetFlowNode(WorkflowModel definition, int nodeId) =>
         definition.FlowNodes.SingleOrDefault(n => n.Id == nodeId)

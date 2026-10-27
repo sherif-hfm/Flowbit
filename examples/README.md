@@ -7,7 +7,7 @@ legacy properties. Most ids use `example-*`; the administrative-action sample
 retains its authored `admin-action` id. The examples are intentionally focused: combine their
 patterns when building a production workflow.
 
-The catalog contains 48 workflows. Automated tests recursively discover every
+The catalog contains 49 workflows. Automated tests recursively discover every
 JSON file, deserialize it, validate it with the runtime's strict JavaScript
 parser, load and render it in the editor, and verify that this page links it.
 Those definition/editor tests do not execute integrations. The separate
@@ -60,6 +60,7 @@ walkthroughs.
 | [Claim inheritance](user-tasks/02-claim-inheritance.json) | `Coordinator` starts with no values. | Actor A claims the fresh task and inherits `previous`; actor B claims the specialist task; the final `fromNode` task returns to actor A. | Demonstrates distinct actors and `fresh`, `previous`, and `fromNode` claim modes. | Authenticated user-task API and database; no Worker or configuration. |
 | [Direct assignee expression](user-tasks/03-direct-assignee-expression.json) | `Requester` supplies `requestSummary`; `requestedAssignee` has a padded default and may be blank. | The resolved `Reviewer` acts, choosing **Approve** or **Reject** for the labelled `reviewOutcome` input. `Lower`, `Trim`, `IsNullOrWhiteSpace`, variables, and `[sys.user]` normalize the direct assignee. | Only the snapshotted assignee can complete the review. | Authenticated API and database; no Worker or configuration. |
 | [Required assignment and distribution](user-tasks/04-required-assignment-and-distribution.json) | `Requester` supplies required `workReference`. | A distributor assigns the fresh task; `Worker` completes inherited work; `OperationsManager` handles the independent task; manager roles can assign/release. | Shows required assignment plus `fresh`, `previous`, and `fromNode` assignment ownership. | API and database; configure `${config.exampleDistributorClientId}` and `${config.exampleDistributorSecret}` for the external distribution endpoints; no Worker. |
+| [Due date and priority](user-tasks/06-due-date-and-priority.json) | `Requester` supplies `amount` and `contractEnd`, a date-time with an offset. | A `Reviewer` approves the purchase; a `Signatory` countersigns. | The review is due four hours after it is created with priority 80 for 10,000 or more, otherwise two days later with priority 40; the countersignature is due at `contractEnd` with priority 60. My work shows overdue and due-soon badges and sorts by both. | Authenticated API and database; no Worker or configuration. |
 
 The [variable roles and role management example](user-tasks/05-variable-roles-and-role-management.json)
 starts without input or a start role. Task roles capture `reviewRoles` as
@@ -186,7 +187,7 @@ actions, and records the outcome of each test run separately.
 | Coverage layer | Included | Verification boundary |
 | --- | --- | --- |
 | Authored node and event types | All 21: four tasks, four gateways, three starts, three intermediate catches, three boundaries, three ends, and the scoped-interrupt extension. | Recursive runtime/editor validation and the explicit 21-type assertion; editor execution here uses Jint rather than a real browser. |
-| Demonstrated catalog scenarios | Claims, assignment/distribution, captured roles, scripts, typed REST/messages, idempotency, multi-instance aggregation, timers, conditional events, retries/recovery, and scope cancellation. | The 48 definitions and category walkthroughs explain actors, inputs, prerequisites, and expected outcomes. |
+| Demonstrated catalog scenarios | Claims, assignment/distribution, captured roles, task due dates and priorities, scripts, typed REST/messages, idempotency, multi-instance aggregation, timers, conditional events, retries/recovery, and scope cancellation. | The 49 definitions and category walkthroughs explain actors, inputs, prerequisites, and expected outcomes. |
 | Focused runtime acceptance | Both REST recovery paths and boundary-order policies; both receipt/deadline paths; nested cancellation; MI role replacement/stale edits; normal versus terminate end; approval timer return; quorum cancellation before finalization. | `ExampleWorkflowAcceptanceTests` uses real HTTP and Worker processing with controlled local services. It is explicitly run outside the solution and CI; inspect its results before claiming a verified run. |
 | Browser and manual checks | New diagrams at desktop/tablet widths; incident recovery and role management at desktop, tablet, and mobile widths. | Real Chromium input, screenshots, and browser diagnostics supplement API assertions; native picker and visual-review limitations are reported separately. |
 

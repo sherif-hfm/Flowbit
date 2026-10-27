@@ -508,6 +508,7 @@ A normal user task creates one work item each time a token rests on it. A multi-
 | `Roles` | Inbox role projection (GIN-indexed). The authoritative captured roles are in `user_task_role_policies` via `RolePolicyId`. |
 | `RequiresClaim`, `ClaimedBy` | Claim requirement and current claimant. |
 | `RequiresAssignment`, `Assignee` | Required-assignment gate and the directly assigned user. A case-insensitive expression index backs assignee lookups. |
+| `DueAt`, `Priority` | Nullable due time and priority resolved from the task's `dueDate` and `priority` when the work item was created. Children of a multi-instance execution share one value. Never recomputed. The `(Status, DueAt, Id)` index backs due-date filters. |
 | `InboxVisibilityConditionId` | The compiled inbox condition captured at insert. |
 | `MultiInstanceExecutionId`, `ItemIndex`, `ItemValueJson` | Multi-instance parent, child index (unique within the parent), and the collection value for that child. |
 | `SelectedFlowId`, `ResultJson` | Chosen outgoing flow and submitted values. |

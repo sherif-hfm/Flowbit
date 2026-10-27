@@ -466,6 +466,28 @@ public sealed class FlowNodeModel
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? InboxVisibilityCondition { get; set; }
 
+    // userTask only, including multi-instance: resolved once when the work item
+    // (or the multi-instance execution) is created and saved on it. A fixed
+    // ISO-8601 duration or offset date-time is used as is; anything else is an
+    // NCalc expression whose text result must have one of those forms. An
+    // unusable result leaves the task without a due date.
+    /// <summary>
+    /// Optional due date: a fixed ISO-8601 duration counted from work-item
+    /// creation, a fixed date-time with an offset, or an NCalc expression that
+    /// gives either one as text.
+    /// </summary>
+    [JsonPropertyName("dueDate")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? DueDateExpression { get; set; }
+
+    /// <summary>
+    /// Optional NCalc expression giving the task's priority as a whole number;
+    /// higher values are more urgent.
+    /// </summary>
+    [JsonPropertyName("priority")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? PriorityExpression { get; set; }
+
     /// <summary>
     /// Optional multi-instance loop configuration for a user task.
     /// </summary>
@@ -787,6 +809,233 @@ public static class TimerDefinitionRules
                 NumberStyles.AllowDecimalPoint,
                 CultureInfo.InvariantCulture)
             : 0m;
+    }
+}
+
+/// <summary>
+/// A user task's resolved due value: a fixed instant, or a duration that is
+/// counted from the moment the work item is created.
+/// </summary>
+public sealed record UserTaskDueValue
+{
+    private UserTaskDueValue(DateTimeOffset? at, TimeSpan? after)
+    {
+        At = at;
+        After = after;
+    }
+
+    public DateTimeOffset? At { get; }
+
+    public TimeSpan? After { get; }
+
+    public static UserTaskDueValue Instant(DateTimeOffset at) => new(at.ToUniversalTime(), null);
+
+    public static UserTaskDueValue Duration(TimeSpan after) => new(null, after);
+
+    /// <summary>
+    /// Returns the due time of a work item created at <paramref name="createdAt"/>,
+    /// or null when a duration would pass the largest representable time.
+    /// </summary>
+    public DateTimeOffset? ResolveAt(DateTimeOffset createdAt)
+    {
+        if (At is DateTimeOffset at)
+        {
+            return at;
+        }
+
+        var start = createdAt.ToUniversalTime();
+        return After is TimeSpan after && DateTimeOffset.MaxValue - start >= after
+            ? start + after
+            : null;
+    }
+}
+
+/// <summary>
+/// Authoring and runtime rules for user-task due dates and priorities. A due
+/// date reuses the timer subset: a fixed ISO-8601 duration counted from
+/// work-item creation, or a fixed date-time with an offset. Any other due date
+/// is an NCalc expression whose text result must have one of those forms. A
+/// priority is an NCalc expression giving a whole number.
+/// </summary>
+public static class UserTaskDueRules
+{
+    public const string DueDateFormsDescription =
+        "an ISO-8601 duration such as P2D or a date-time with an offset such as 2030-01-31T17:00:00Z";
+
+    private static readonly Regex WholeNumberLiteralPattern = new(
+        @"^[+-]?\d+$",
+        RegexOptions.CultureInvariant);
+
+    // Bare text that is evidently meant as a fixed value but does not parse,
+    // such as p2d, P1Y, or 2026-11-01. NCalc would read it as a variable name
+    // or as arithmetic, so it could never give a usable due date.
+    private static readonly Regex IntendedFixedValuePattern = new(
+        @"^(?:[Pp](?=[^\d]*\d)[0-9TtYyWwDdHhMmSs.,]+|\d{4}-\d{2}-\d{2}(?:[Tt ].*)?)$",
+        RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// Parses a fixed due value: a positive fixed-unit duration or a date-time
+    /// with an explicit offset, using the timer grammar.
+    /// </summary>
+    public static bool TryParseFixedValue(string? text, out UserTaskDueValue value)
+    {
+        if (TimerDefinitionRules.TryParseFixedDuration(text, out var duration))
+        {
+            value = UserTaskDueValue.Duration(duration);
+            return true;
+        }
+
+        if (TimerDefinitionRules.TryParseTimeDate(text, out var timestamp))
+        {
+            value = UserTaskDueValue.Instant(timestamp);
+            return true;
+        }
+
+        value = null!;
+        return false;
+    }
+
+    /// <summary>
+    /// Returns the text of an expression that is a single quoted string
+    /// literal, in single or double quotes, without quotes of the same kind or
+    /// escapes inside; returns null for any other expression.
+    /// </summary>
+    public static string? QuotedLiteral(string? expression)
+    {
+        var trimmed = expression?.Trim();
+        if (trimmed is not { Length: >= 2 } || trimmed[0] is not ('\'' or '"'))
+        {
+            return null;
+        }
+
+        var quote = trimmed[0];
+        return trimmed[^1] == quote
+               && trimmed.IndexOf(quote, 1) == trimmed.Length - 1
+               && !trimmed.Contains('\\')
+            ? trimmed[1..^1]
+            : null;
+    }
+
+    /// <summary>
+    /// Describes why an authored due date can never be used, or returns null.
+    /// Only fixed values, quoted literals, and bare text that is evidently
+    /// meant as a fixed value are checked; NCalc syntax is checked separately.
+    /// </summary>
+    public static string? DueDateProblem(string? expression)
+    {
+        if (string.IsNullOrWhiteSpace(expression) || TryParseFixedValue(expression, out _))
+        {
+            return null;
+        }
+
+        var trimmed = expression.Trim();
+        var literal = QuotedLiteral(trimmed);
+        if (literal is not null)
+        {
+            return TryParseFixedValue(literal, out _)
+                ? null
+                : $"dueDate '{literal}' is not {DueDateFormsDescription}.";
+        }
+
+        return IntendedFixedValuePattern.IsMatch(trimmed)
+            ? $"dueDate '{trimmed}' is not {DueDateFormsDescription}."
+            : null;
+    }
+
+    /// <summary>
+    /// Describes a whole-number priority literal outside the supported range,
+    /// or returns null. Other expressions are checked when they are evaluated.
+    /// </summary>
+    public static string? PriorityProblem(string? expression)
+    {
+        var trimmed = expression?.Trim();
+        return trimmed is not null
+               && WholeNumberLiteralPattern.IsMatch(trimmed)
+               && !int.TryParse(trimmed, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out _)
+            ? $"priority {trimmed} is outside the whole-number range {int.MinValue} to {int.MaxValue}."
+            : null;
+    }
+
+    /// <summary>
+    /// Interprets an evaluated due-date expression. Null means no due date.
+    /// Text must be a fixed duration or an offset date-time; anything else is
+    /// unusable and reported through <paramref name="problem"/>.
+    /// </summary>
+    public static bool TryInterpretDueDateResult(
+        object? result,
+        out UserTaskDueValue? value,
+        out string? problem)
+    {
+        value = null;
+        problem = null;
+        switch (result)
+        {
+            case null:
+                return true;
+            case string text when TryParseFixedValue(text, out var parsed):
+                value = parsed;
+                return true;
+            case string:
+                problem = $"the text result is not {DueDateFormsDescription}";
+                return false;
+            default:
+                problem = $"the result is a {result.GetType().Name}, not text";
+                return false;
+        }
+    }
+
+    /// <summary>
+    /// Interprets an evaluated priority expression. Null means no priority. A
+    /// finite number without a fractional part within the Int32 range is used;
+    /// anything else is unusable and reported through <paramref name="problem"/>.
+    /// </summary>
+    public static bool TryInterpretPriorityResult(
+        object? result,
+        out int? value,
+        out string? problem)
+    {
+        value = null;
+        problem = null;
+        switch (result)
+        {
+            case null:
+                return true;
+            case double or float:
+                var floating = Convert.ToDouble(result, CultureInfo.InvariantCulture);
+                if (!double.IsFinite(floating) || Math.Floor(floating) != floating)
+                {
+                    problem = "the result is not a whole number";
+                    return false;
+                }
+
+                if (floating is < int.MinValue or > int.MaxValue)
+                {
+                    problem = "the result is outside the Int32 range";
+                    return false;
+                }
+
+                value = (int)floating;
+                return true;
+            case sbyte or byte or short or ushort or int or uint or long or ulong or decimal:
+                var number = Convert.ToDecimal(result, CultureInfo.InvariantCulture);
+                if (number != decimal.Truncate(number))
+                {
+                    problem = "the result is not a whole number";
+                    return false;
+                }
+
+                if (number is < int.MinValue or > int.MaxValue)
+                {
+                    problem = "the result is outside the Int32 range";
+                    return false;
+                }
+
+                value = (int)number;
+                return true;
+            default:
+                problem = $"the result is a {result.GetType().Name}, not a number";
+                return false;
+        }
     }
 }
 

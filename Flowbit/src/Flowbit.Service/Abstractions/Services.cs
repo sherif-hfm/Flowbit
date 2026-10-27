@@ -194,6 +194,7 @@ public interface IWorkflowEngineService
         string? businessKey,
         int? nodeId,
         string? nodeExternalId,
+        InboxDueAndPriorityFilter dueAndPriority,
         IReadOnlyList<string>? variables,
         IReadOnlyList<string>? sort,
         bool includeVariables,

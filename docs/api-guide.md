@@ -130,7 +130,7 @@ Logical operators: `$and`, `$or`, `$not`. Comparisons: `$eq`, `$eqIgnoreCase`, `
 
 `$eq` is typed and case-sensitive; numeric ranges accept numbers only. Explicit JSON null differs from a missing path; missing values do not match `$ne` or `$nin`. Use `$exists:false` for absence. Filters allow five logical levels, 20 comparison predicates, 100 membership values, and 16 path segments. The five main advanced-search bodies are limited to 64 KiB; batch requests use the separate limits shown below. Unknown operators, regex, raw JSONPath, `$where`, and executable expressions return `400`. Full semantics and examples are in the [runtime search reference](../Flowbit/README.md#advanced-variable-search).
 
-GET sorting uses repeated `sort=field:asc` or `sort=field:desc`; POST uses objects with `field` and `direction`. At most three criteria are accepted. Instance sorts: `id`, `createdAt`, `updatedAt`, default `updatedAt DESC, id DESC`. Inbox sorts include task and instance ID/creation/update fields, default `taskUpdatedAt DESC, taskId DESC`. Node-activity sorts and range semantics are listed in its section. An ID tie-breaker makes ordering deterministic; sorting and filters are applied in PostgreSQL before paging.
+GET sorting uses repeated `sort=field:asc` or `sort=field:desc`; POST uses objects with `field` and `direction`. At most three criteria are accepted. Instance sorts: `id`, `createdAt`, `updatedAt`, default `updatedAt DESC, id DESC`. Inbox sorts include task and instance ID/creation/update fields plus `dueAt` and `priority`, which put tasks without a value last in both directions; the default is `taskUpdatedAt DESC, taskId DESC`. Node-activity sorts and range semantics are listed in its section. An ID tie-breaker makes ordering deterministic; sorting and filters are applied in PostgreSQL before paging.
 
 Object response examples below are **excerpts** when a DTO is large; the linked schema tables enumerate the complete response. Empty-list examples represent a valid search with no matches. Request examples are complete illustrative bodies, but their IDs, credentials, timestamps and authored inputs must match your deployment.
 
@@ -923,16 +923,23 @@ Retrieves user tasks pending claim or action for the current authenticated actor
 | `businessKey` | query | string | No | Optional. Exact, case-sensitive business-key match after trimming. |
 | `nodeId` | query | integer (int32) | No | Optional. Filter by flow node ID. |
 | `nodeExternalId` | query | string | No | Optional. Filter by flow node external ID (case-insensitive). |
+| `dueStatus` | query | array of string | No | Optional. Repeated due status to include: `overdue`, `dueSoon`, `upcoming`, or `none` (no due date), ignoring case. A task matching any listed status is included. |
+| `dueFrom` | query | string (date-time) | No | Optional. Inclusive lower bound on the task's `dueAt`; tasks without a due date do not match. |
+| `dueTo` | query | string (date-time) | No | Optional. Exclusive upper bound on the task's `dueAt`; must be later than `dueFrom`. |
+| `minPriority` | query | integer (int32) | No | Optional. Inclusive minimum task priority; tasks without a priority do not match. |
+| `maxPriority` | query | integer (int32) | No | Optional. Inclusive maximum task priority; must not be below `minPriority`. |
 | `var` | query | array of string | No | Repeated `var=name:value` filter. Exact, case-insensitive match on an instance variable's latest scalar value. Multiple entries are AND-combined. Array/object variables never match. |
-| `sort` | query | array of string | No | Optional. Up to three repeated `sort=field:direction` clauses over task/instance IDs and creation/update timestamps. |
+| `sort` | query | array of string | No | Optional. Up to three repeated `sort=field:direction` clauses over task/instance IDs, creation/update timestamps, `dueAt`, and `priority`. |
 | `includeVariables` | query | boolean | No | When true, each returned item includes a `variables` object containing the latest value for every instance variable. Defaults to false. |
 | `page` | query | integer (int32) | No | Optional. The 1-based page index (default 1). |
 | `pageSize` | query | integer (int32) | No | Optional. The number of items per page (default 50, max 200). |
 
+The due-date and priority filters combine with each other and with the other filters, and run in PostgreSQL before counting and paging. `dueStatus` uses the same server time and `UserTasks.DueSoonThreshold` window as the returned items' `dueStatus`.
+
 **Body:** none.
 
 **Success:** `200` [PagedResultOfInboxItemDto](#schema-pagedresultofinboxitemdto).
-**Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden (missing OIDC API scope). See [error envelopes](#errors-and-concurrency) and the family rules above.
+**Errors:** `400` Bad Request, including an unknown `dueStatus`, `dueFrom` not earlier than `dueTo`, or `minPriority` above `maxPriority`; `401` Unauthorized; `403` Forbidden (missing OIDC API scope). See [error envelopes](#errors-and-concurrency) and the family rules above.
 
 ```http
 GET /api/instances/inbox?pageSize=50 HTTP/1.1
@@ -6990,6 +6997,8 @@ Type-specific requirements and defaults are in BPMN support. Missing cancelActiv
 | `assignmentMode` | string | No | fresh (default), previous, or fromNode; fromNode also requires inheritAssignmentFromNodeId. Default: `"fresh"`. |
 | `inheritAssignmentFromNodeId` | null or integer (int32) | No | The user-task node whose latest completed work item supplies an inherited assignment. |
 | `inboxVisibilityCondition` | null or string | No | Optional bounded expression evaluated by PostgreSQL to decide whether this user task belongs in a caller's inbox and may be accessed by that caller. Blank values normalize to null. |
+| `dueDate` | null or string | No | Optional due date: a fixed ISO-8601 duration counted from work-item creation, a fixed date-time with an offset, or an NCalc expression that gives either one as text. User tasks only. |
+| `priority` | null or string | No | Optional NCalc expression giving the task's priority as a whole number; higher values are more urgent. User tasks only. |
 | `multiInstance` | null or [MultiInstanceModel](#schema-multiinstancemodel) | No | — |
 | `attachedToRef` | null or integer (int32) | No | Authored host node ID for the boundary. Allowed hosts depend on error/timer/conditional boundary type; see BPMN support. |
 | `errorVariable` | null or string | No | The variable name where the failure reason is written when caught. |
@@ -7085,6 +7094,9 @@ Represents a user task in the inbox of an actor.
 | `variables` | null or object | No | Gets the latest instance variable values when explicitly requested. |
 | `sharedVariables` | array of [SharedVariableBindingMetadataDto](#schema-sharedvariablebindingmetadatadto) or null | No | — |
 | `delegatedAccess` | null or [DelegatedTaskAccessDto](#schema-delegatedtaskaccessdto) | No | — |
+| `dueAt` | null or string (date-time) | No | The due time saved when the work item was created, in UTC. Omitted when the task has none. |
+| `priority` | null or integer (int32) | No | The priority saved when the work item was created; higher values are more urgent. Omitted when the task has none. |
+| `dueStatus` | null or string | No | `overdue`, `dueSoon`, or `upcoming` for a work item with a due time, computed from the server time and `UserTasks.DueSoonThreshold` when the response is built. Omitted without a due time. |
 | `attributes` | array of [WorkflowAttributeModel](#schema-workflowattributemodel) | No | Authored metadata key/value entries; no workflow authorization semantics are implied. |
 
 </details>
@@ -7104,6 +7116,11 @@ Advanced actor inbox search request.
 | `businessKey` | null or string | No | — |
 | `nodeId` | null or integer (int32) | No | — |
 | `nodeExternalId` | null or string | No | — |
+| `dueStatuses` | array of string or null | No | Due statuses to include: `overdue`, `dueSoon`, `upcoming`, or `none` (no due date). A task matching any listed status is included. |
+| `dueFrom` | null or string (date-time) | No | Inclusive lower bound on the task's due time. |
+| `dueTo` | null or string (date-time) | No | Exclusive upper bound on the task's due time. |
+| `minPriority` | null or integer (int32) | No | Inclusive minimum task priority. |
+| `maxPriority` | null or integer (int32) | No | Inclusive maximum task priority. |
 | `variableFilter` | null or [JsonElement](#schema-jsonelement) | No | Optional typed latest-instance-value predicate; see Filtering and pagination. |
 | `sort` | array of [SearchSortDto](#schema-searchsortdto) or null | No | Up to three field/direction clauses; allowed fields depend on endpoint. |
 | `includeVariables` | null or boolean | No | Default false. |
@@ -8093,6 +8110,9 @@ Advanced manager-scoped user-task search request.
 | `status` | string | No | Lifecycle value; see this resource family’s vocabulary. |
 | `canManageAssignment` | boolean | No | — |
 | `canManageRoles` | boolean | No | — |
+| `dueAt` | null or string (date-time) | No | The due time saved when the work item was created, in UTC. Omitted when the task has none. |
+| `priority` | null or integer (int32) | No | The priority saved when the work item was created; higher values are more urgent. Omitted when the task has none. |
+| `dueStatus` | null or string | No | `overdue`, `dueSoon`, or `upcoming` for an active or pending work item with a due time, computed when the response is built. Omitted otherwise. |
 | `attributes` | array of [WorkflowAttributeModel](#schema-workflowattributemodel) | No | Authored metadata key/value entries; no workflow authorization semantics are implied. |
 
 </details>
@@ -9744,6 +9764,9 @@ Optimistic lifecycle command used to accept, reject, withdraw, or revoke a grant
 | `completionKind` | null or string | No | — |
 | `completionReason` | null or string | No | — |
 | `administrativeActionBatchId` | null or integer (int64) | No | — |
+| `dueAt` | null or string (date-time) | No | The due time saved when the work item was created, in UTC. Omitted when the task has none. |
+| `priority` | null or integer (int32) | No | The priority saved when the work item was created; higher values are more urgent. Omitted when the task has none. |
+| `dueStatus` | null or string | No | `overdue`, `dueSoon`, or `upcoming` for an active or pending work item with a due time, computed when the response is built. Omitted for completed and cancelled work items. |
 | `attributes` | array of [WorkflowAttributeModel](#schema-workflowattributemodel) | No | Authored metadata key/value entries; no workflow authorization semantics are implied. |
 
 </details>

@@ -1390,13 +1390,13 @@ dotnet test ./tests/Flowbit.BrowserTests/Flowbit.BrowserTests.csproj -c Release 
 ```
 
 Set `FLOWBIT_BROWSER_HEADED=1` to launch Chromium headed for local diagnosis.
-The suite covers editor E1–E9 and runtime R1–R9 scenarios (see the project
+The suite covers editor E1–E10 and runtime R1–R10 scenarios (see the project
 README); manual native-picker and full acceptance checks remain the caller's
 responsibility.
 
 The browser project also checks its own auxiliary-page diagnostics, retained
 warnings/network failures, one-shot native browser dialogs, and timeout cleanup
-(40 cases including 36 editor and runtime product scenarios). Each scenario retains
+(44 cases including 40 editor and runtime product scenarios). Each scenario retains
 `diagnostics.json`, including successful runs.
 The UI shell and instance summary expose nonvisual `data-interactive` markers
 from Blazor's renderer state so tests do not act on prerendered controls.
@@ -1621,8 +1621,9 @@ GET /api/instances/inbox?sort=instanceCreatedAt:desc&sort=userTaskId:asc
 
 Instance fields are `id`, `createdAt`, and `updatedAt`. Inbox fields are
 `userTaskId`, `instanceId`, `taskCreatedAt`, `taskUpdatedAt`,
-`instanceCreatedAt`, and `instanceUpdatedAt`. Without an explicit sort, the
-existing defaults remain `updatedAt DESC, id DESC` and
+`instanceCreatedAt`, `instanceUpdatedAt`, `dueAt`, and `priority`; tasks
+without a due date or priority sort last in both directions. Without an
+explicit sort, the existing defaults remain `updatedAt DESC, id DESC` and
 `taskUpdatedAt DESC, userTaskId DESC`, respectively. An implicit unique-ID
 tie-breaker keeps pages deterministic. The instance list returns an opaque
 `nextCursor`; pass it back as `cursor` for the next page. A cursor is bound to
@@ -1656,6 +1657,14 @@ Each token resting on a `userTask` owns a persisted work item. Task-addressed ro
 | `GET /api/instances/inbox` | List active work and caller-specific claim/action capabilities. |
 
 The older instance-addressed `/api/instances/{id}/claim`, `/unclaim`, `/flows`, and `/flows/{flowId}` routes delegate to the same task core. They return `409` when no single active task can be addressed safely.
+
+### Due dates and priorities
+
+A `userTask` may set `dueDate` and `priority`. `WorkflowEngineService.ToSnapshot` resolves them where it resolves the assignee expression, and also when a multi-instance execution starts, at the point where the execution's role policy is captured; the token that only enters a multi-instance task does not resolve them. A fixed ISO-8601 duration or offset date-time is used as is (`UserTaskDueRules`); anything else is an NCalc expression whose text result must have one of those forms, and a priority must be a whole number in the `int` range. An unusable result logs a warning and leaves the value empty; it never fails the transition.
+
+The snapshot carries the due value as an instant or as a duration, and `WorkflowRuntimeRepository` adds a duration to the same timestamp it records as the work item's `CreatedAt`, both in `NewUserTask` and in the bulk insert of multi-instance children, which also inserts pending sequential children. Saved values are never recomputed. `WorkflowVersionCompatibilityEvaluator` leaves both properties out of node contracts.
+
+Inbox, task, task-history, task-management, and task-distribution responses add `dueAt`, `priority`, and a read-time `dueStatus` from `UserTaskDueClock`, which uses one clock instant per request and the `UserTasks.DueSoonThreshold` engine setting. Engine settings are not cached, so the engine reads the threshold at most once per scope and only when a returned task has a due time or a `dueSoon`/`upcoming` filter needs it; requests without due dates keep their query counts. The inbox `dueStatus`, `dueFrom`/`dueTo`, and `minPriority`/`maxPriority` filters are bound parameters in `BuildInboxWhere`, applied before visibility, one-per-actor selection, counting, ordering, and paging. See [due date and priority](../docs/node-reference.md#due-date-and-priority).
 
 ### Conditions are visibility and execution guards
 

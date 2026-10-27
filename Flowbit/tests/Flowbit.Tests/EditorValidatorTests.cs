@@ -2612,6 +2612,78 @@ public sealed class EditorValidatorTests
             error.Contains("only when type='userTask'", StringComparison.Ordinal));
     }
 
+    [Theory]
+    [InlineData("dueDate", "P2D")]
+    [InlineData("dueDate", "2030-01-31T17:00:00Z")]
+    [InlineData("dueDate", "'P2D'")]
+    [InlineData("dueDate", "\"PT4H\"")]
+    [InlineData("dueDate", "contractEnd")]
+    [InlineData("dueDate", "if(amount > 1, 'PT4H', 'P2D')")]
+    [InlineData("dueDate", "p1Deadline")]
+    [InlineData("dueDate", "[p2d]")]
+    [InlineData("dueDate", "'P2X'")]
+    [InlineData("dueDate", "\"2030-01-31\"")]
+    [InlineData("dueDate", "p2d")]
+    [InlineData("dueDate", "pt4h")]
+    [InlineData("dueDate", "P1M")]
+    [InlineData("dueDate", "P1Y")]
+    [InlineData("dueDate", "P1Y2M")]
+    [InlineData("dueDate", "p2y")]
+    [InlineData("dueDate", "2026-11-01")]
+    [InlineData("dueDate", "2026-11-01T17:00:00")]
+    [InlineData("priority", "50")]
+    [InlineData("priority", "-5")]
+    [InlineData("priority", "+7")]
+    [InlineData("priority", "-2147483648")]
+    [InlineData("priority", "amount * 2")]
+    [InlineData("priority", "2147483648")]
+    [InlineData("priority", " -99999999999999999999 ")]
+    public void Validator_ChecksDueDateAndPriorityLikeTheServer(string property, string expression)
+    {
+        var candidate = JsonNode.Parse(JsonSerializer.Serialize(
+            DefinitionValidationTests.LoadModel("votes-users-list.json")))!.AsObject();
+        var userTask = candidate["flowNodes"]!.AsArray().Select(node => node!.AsObject())
+            .First(node => node["type"]!.GetValue<string>() == "userTask");
+        userTask[property] = expression;
+        var serverProblem = property == "dueDate"
+            ? UserTaskDueRules.DueDateProblem(expression)
+            : UserTaskDueRules.PriorityProblem(expression);
+
+        var errors = ValidateJson(candidate.ToJsonString());
+
+        if (serverProblem is null)
+        {
+            Assert.Empty(errors);
+        }
+        else
+        {
+            var error = Assert.Single(errors);
+            Assert.StartsWith($"User task #{userTask["id"]!.GetValue<int>()} (", error, StringComparison.Ordinal);
+            Assert.EndsWith(") " + serverProblem, error, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public void Validator_RejectsDueDateAndPriorityOutsideUserTasksAndNonTextValues()
+    {
+        var candidate = JsonNode.Parse(JsonSerializer.Serialize(
+            DefinitionValidationTests.LoadModel("votes-users-list.json")))!.AsObject();
+        var nodes = candidate["flowNodes"]!.AsArray().Select(node => node!.AsObject()).ToArray();
+        var userTask = nodes.First(node => node["type"]!.GetValue<string>() == "userTask");
+        var start = nodes.First(node => node["type"]!.GetValue<string>() == "startEvent");
+
+        start["dueDate"] = "P2D";
+        start["priority"] = "   ";
+        userTask["priority"] = 50;
+
+        Assert.Equal(
+            [
+                "Flow node #1 defines dueDate but is not a user task.",
+                $"User task #{userTask["id"]!.GetValue<int>()} ({userTask["name"]!.GetValue<string>()}) priority must be text."
+            ],
+            ValidateJson(candidate.ToJsonString()));
+    }
+
     private static WorkflowModel CreateTimerStartModel(TimerDefinitionModel timer) => new()
     {
         Id = "timer-start-editor-validation",

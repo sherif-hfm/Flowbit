@@ -1,0 +1,194 @@
+{
+  "id": "example-user-task-due-date-and-priority",
+  "name": "User Task Example 06 - Due Date and Priority",
+  "initialEventId": 1,
+  "variables": [],
+  "lanes": [
+    {
+      "id": 1,
+      "name": "Purchase Review",
+      "externalId": "LANE_PURCHASE_REVIEW",
+      "x": 30,
+      "y": 30,
+      "w": 1360,
+      "h": 440
+    }
+  ],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Request Purchase",
+      "externalId": "START_REQUEST_PURCHASE",
+      "type": "startEvent",
+      "laneId": 1,
+      "x": 80,
+      "y": 190,
+      "roles": [
+        "Requester"
+      ],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [
+        {
+          "id": 1,
+          "name": "amount",
+          "dataType": "number",
+          "isArray": false,
+          "nullable": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": "amount > 0",
+          "label": "Amount",
+          "helpText": "Purchases of 10,000 or more are reviewed within four hours."
+        },
+        {
+          "id": 2,
+          "name": "contractEnd",
+          "dataType": "datetime",
+          "isArray": false,
+          "nullable": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": null,
+          "label": "Contract signing deadline",
+          "helpText": "The countersignature is due at this time."
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "Review Purchase",
+      "externalId": "TASK_REVIEW_PURCHASE",
+      "type": "userTask",
+      "asyncBefore": false,
+      "asyncAfter": false,
+      "laneId": 1,
+      "x": 360,
+      "y": 175,
+      "roles": [
+        "Reviewer"
+      ],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "dueDate": "if(amount >= 10000, 'PT4H', 'P2D')",
+      "priority": "if(amount >= 10000, 80, 40)",
+      "multiInstance": null
+    },
+    {
+      "id": 3,
+      "name": "Countersign Contract",
+      "externalId": "TASK_COUNTERSIGN_CONTRACT",
+      "type": "userTask",
+      "asyncBefore": false,
+      "asyncAfter": false,
+      "laneId": 1,
+      "x": 700,
+      "y": 175,
+      "roles": [
+        "Signatory"
+      ],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "dueDate": "contractEnd",
+      "priority": "60",
+      "multiInstance": null
+    },
+    {
+      "id": 4,
+      "name": "Purchase Completed",
+      "externalId": "END_PURCHASE_COMPLETED",
+      "type": "endEvent",
+      "laneId": 1,
+      "x": 1080,
+      "y": 190,
+      "roles": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": []
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "Open review",
+      "externalId": "FLOW_OPEN_PURCHASE_REVIEW",
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": [],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
+    },
+    {
+      "id": 201,
+      "name": "Approve purchase",
+      "externalId": "FLOW_APPROVE_PURCHASE",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [
+        "Reviewer"
+      ],
+      "variables": [],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
+    },
+    {
+      "id": 301,
+      "name": "Countersign",
+      "externalId": "FLOW_COUNTERSIGN",
+      "sourceRef": 3,
+      "targetRef": 4,
+      "roles": [
+        "Signatory"
+      ],
+      "variables": [],
+      "condition": null,
+      "conditionPriority": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "canActWithoutClaim": false,
+      "canActWithoutClaimRoles": [],
+      "completionCondition": null,
+      "completionPriority": null,
+      "cancelRemainingInstances": false
+    }
+  ],
+  "cancelRoles": [
+    "Requester"
+  ],
+  "unclaimRoles": [],
+  "taskAssignmentRoles": [],
+  "taskDistribution": null
+}

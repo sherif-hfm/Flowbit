@@ -33,7 +33,7 @@ The order favors improvements people feel in everyday work over new runtime capa
 
 1. [UI-01 Live instance diagram](ui-01-live-instance-diagram.md): current positions, waiting work, and links, without history. Done.
 2. [UI-03 Rich task forms](ui-03-rich-task-forms.md): input controls chosen by data type first, then labels, help text, and fixed options. Done.
-3. [UI-04 Task due date and priority](ui-04-task-due-date-and-priority.md)
+3. [UI-04 Task due date and priority](ui-04-task-due-date-and-priority.md): due dates and priorities saved on each work item, with badges, sorting, and filters in My work. Done.
 4. [UI-05 Live refresh](ui-05-live-refresh.md): change signals only, independent of webhooks.
 5. [UI-07 Version compare](ui-07-version-compare.md)
 6. [INT-01 Outbound lifecycle webhooks](int-01-outbound-lifecycle-webhooks.md)
@@ -90,7 +90,7 @@ Other items are not ranked yet.
 | [UI-01](ui-01-live-instance-diagram.md) | Live instance diagram | M | None | Done |
 | [UI-02](ui-02-process-analytics-heatmap.md) | Process analytics and heatmap | M | [UI-01](ui-01-live-instance-diagram.md) | Not started |
 | [UI-03](ui-03-rich-task-forms.md) | Rich task forms | M | None | Done |
-| [UI-04](ui-04-task-due-date-and-priority.md) | Task due date and priority | M | None | Not started |
+| [UI-04](ui-04-task-due-date-and-priority.md) | Task due date and priority | M | None | Done |
 | [UI-05](ui-05-live-refresh.md) | Live refresh | M | None | Not started |
 | [UI-06](ui-06-comments-and-attachments.md) | Comments and attachments | M–L | None | Not started |
 | [UI-07](ui-07-version-compare.md) | Version compare | M | [UI-01](ui-01-live-instance-diagram.md) | Not started |
@@ -102,6 +102,7 @@ Other items are not ranked yet.
 | [UI-13](ui-13-notification-center.md) | Notification center | M | [INT-01](int-01-outbound-lifecycle-webhooks.md) | Not started |
 | [UI-14](ui-14-instance-diagram-history.md) | Instance diagram history | M | [UI-01](ui-01-live-instance-diagram.md) | Not started |
 | [UI-15](ui-15-form-layout-and-data-options.md) | Form layout, data options, and start-form discovery | M | [UI-03](ui-03-rich-task-forms.md) | Not started |
+| [UI-16](ui-16-overdue-work-and-due-date-follow-ups.md) | Overdue work and due-date follow-ups | M | [UI-04](ui-04-task-due-date-and-priority.md) | Not started |
 
 ## Documentation housekeeping
 

@@ -78,6 +78,14 @@ public sealed record CurrentNodeSnapshot(
     bool AsyncBefore = false)
 {
     public ResolvedUserTaskRolePolicy? RolePolicy { get; init; }
+
+    /// <summary>
+    /// The user task's resolved due value; a duration is counted from the
+    /// creation time the repository records for the work item.
+    /// </summary>
+    public UserTaskDueValue? DueDate { get; init; }
+
+    public int? Priority { get; init; }
 }
 
 public sealed record ExecutionTokenCreateRecord(
@@ -335,6 +343,8 @@ public sealed record UserTaskRecord(
     public string? CompletionKind { get; init; }
     public string? CompletionReason { get; init; }
     public long? AdministrativeActionBatchId { get; init; }
+    public DateTimeOffset? DueAt { get; init; }
+    public int? Priority { get; init; }
 
     /// <summary>
     /// Request-local delegation metadata populated by actor-scoped repository
@@ -370,6 +380,8 @@ public sealed record ManagedUserTaskRecord(
 {
     public string Status { get; init; } = UserTaskRecordStatuses.Active;
     public long? RolePolicyId { get; init; }
+    public DateTimeOffset? DueAt { get; init; }
+    public int? Priority { get; init; }
 }
 
 public sealed record UserTaskWorkSummaryRecord(
@@ -512,7 +524,9 @@ public enum InboxSortField
     TaskCreatedAt,
     TaskUpdatedAt,
     InstanceCreatedAt,
-    InstanceUpdatedAt
+    InstanceUpdatedAt,
+    DueAt,
+    Priority
 }
 
 public sealed record InboxSortCriterion(
@@ -565,6 +579,8 @@ public sealed record InboxListItem(
     public long? RolePolicyId { get; init; }
     public string? ActingFor { get; init; }
     public long? DelegationId { get; init; }
+    public DateTimeOffset? DueAt { get; init; }
+    public int? Priority { get; init; }
 }
 
 public sealed record AssignmentInheritanceSourceRecord(

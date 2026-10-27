@@ -224,6 +224,15 @@ Authorization: Bearer <token>
 
 Read `items`, `page`, `pageSize`, and `totalCount`. Each row includes its exact `userTaskId`, ownership, role information, and `canClaim`/`canAct` flags. `includeVariables` defaults to false; enabling it returns a latest-value object, not variable audit history.
 
+When a task's definition sets [`dueDate` or `priority`](node-reference.md#due-date-and-priority), inbox rows, task detail, task history, task-management, and task-distribution rows carry the saved `dueAt` and `priority`. Open work items with a due time also carry `dueStatus`: `overdue` once `dueAt` is reached, `dueSoon` within the `UserTasks.DueSoonThreshold` window (one day by default; see [engine settings](engine-settings.md#usertasksduesoonthreshold)), and `upcoming` otherwise. The server computes it from its own clock when it builds the response, so show it instead of comparing `dueAt` with the client's clock. All three properties are omitted when they have no value.
+
+Sort the inbox with `sort=dueAt:asc` or `sort=priority:desc`; tasks without a value come last in either direction. Filter it with repeated `dueStatus` values (`overdue`, `dueSoon`, `upcoming`, or `none` for no due date), `dueFrom` (inclusive), `dueTo` (exclusive), `minPriority`, and `maxPriority`. The POST search takes the same filters, with `dueStatuses` as an array. Send `dueFrom` and `dueTo` with an offset.
+
+```http
+GET /api/instances/inbox?dueStatus=overdue&dueStatus=dueSoon&sort=dueAt:asc&sort=priority:desc HTTP/1.1
+Authorization: Bearer <token>
+```
+
 1. Open the selected `GET /api/user-tasks/{taskId}`. Render ownership and `capabilities`, including `canUnclaim`.
 2. If permitted and needed, `POST /api/user-tasks/{taskId}/claim` with no body. Use the returned task state.
 3. Call `GET /api/user-tasks/{taskId}/flows` after claiming to discover the actor's currently executable actions. Build each action's form from its `variables` and application metadata: show a declaration's `label` (or its `name`) and `helpText`, and offer its `options` as a list, submitting the chosen option's `value` unchanged.
@@ -332,7 +341,7 @@ Keep authored IDs and integration labels stable when behavior is meant to remain
 
 For active instance migration, call `POST /api/instances/{instanceId}/version-change/preview` with `targetWorkflowId`. Inspect `compatible`, `blockers`, and `warnings`; then submit the change with the preview's `expectedSourceWorkflowId`, `expectedUpdatedAt`, and a reason. The server revalidates in the mutation transaction. Do not copy a preview's concurrency values between instances or retry a stale change unchanged without rereading state.
 
-Compatibility includes persisted variables, open task/action and role contracts, gateway/branch state, message/timer/conditional waits, and durable work. A same-family target is not sufficient by itself. Use the batch preview/execute APIs for managed migrations of many instances; see the API reference for their lifecycle. Database-schema upgrades and instance-definition version changes are separate operations.
+Compatibility includes persisted variables, open task/action and role contracts, gateway/branch state, message/timer/conditional waits, and durable work. A same-family target is not sufficient by itself. Changing only a user task's `dueDate` or `priority` never blocks a change; open work items keep the values saved when they were created. Use the batch preview/execute APIs for managed migrations of many instances; see the API reference for their lifecycle. Database-schema upgrades and instance-definition version changes are separate operations.
 
 ## Integrate inbound messages
 

@@ -2923,6 +2923,9 @@ namespace Flowbit.Infrastructure.Data.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasDefaultValueSql("now()");
 
+                    b.Property<DateTimeOffset?>("DueAt")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<long?>("InboxVisibilityConditionId")
                         .HasColumnType("bigint");
 
@@ -2949,6 +2952,9 @@ namespace Flowbit.Infrastructure.Data.Migrations
                         .IsRequired()
                         .HasMaxLength(300)
                         .HasColumnType("character varying(300)");
+
+                    b.Property<int?>("Priority")
+                        .HasColumnType("integer");
 
                     b.Property<bool>("RequiresAssignment")
                         .ValueGeneratedOnAdd()
@@ -3012,6 +3018,8 @@ namespace Flowbit.Infrastructure.Data.Migrations
                     b.HasIndex("MultiInstanceExecutionId", "Status", "ItemIndex");
 
                     b.HasIndex("Status", "CreatedAt", "Id");
+
+                    b.HasIndex("Status", "DueAt", "Id");
 
                     b.HasIndex("Status", "UpdatedAt", "Id");
 

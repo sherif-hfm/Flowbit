@@ -42,6 +42,14 @@ else
             <div class="summary-item"><span>Claimed by</span><strong>@(task.ClaimedBy ?? "Unclaimed")</strong></div>
             <div class="summary-item"><span>Claim required</span><strong>@(task.RequiresClaim ? "Yes" : "No")</strong></div>
             <div class="summary-item"><span>Last updated</span><strong>@task.UpdatedAt.ToLocalTime().ToString("g")</strong></div>
+            @if (task.DueAt is not null)
+            {
+                <div class="summary-item"><span>Due</span><strong><TaskDueDate DueAt="@task.DueAt" DueStatus="@task.DueStatus" /></strong></div>
+            }
+            @if (task.Priority is int priority)
+            {
+                <div class="summary-item"><span>Priority</span><strong>@priority</strong></div>
+            }
             @if (task.ItemIndex is not null)
             {
                 <div class="summary-item"><span>Multi-instance item</span><strong>#@task.ItemIndex · @Format(task.ItemValue)</strong></div>

@@ -1,0 +1,84 @@
+{
+  "id": "browser-due-dates-r10",
+  "name": "Browser due dates",
+  "initialEventId": 1,
+  "variables": [],
+  "lanes": [
+    { "id": 1, "name": "Review deadlines", "x": 20, "y": 20, "w": 1100, "h": 620 }
+  ],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Start",
+      "externalId": "START_DUE_DATES",
+      "type": "startEvent",
+      "laneId": 1,
+      "x": 60,
+      "y": 290,
+      "variables": [
+        { "id": 1, "name": "amount", "dataType": "number", "isArray": false, "required": false, "defaultValue": 500 }
+      ]
+    },
+    { "id": 2, "name": "Open reviews", "externalId": "GATEWAY_OPEN_REVIEWS", "type": "parallelGateway", "laneId": 1, "x": 200, "y": 284 },
+    {
+      "id": 3,
+      "name": "Overdue review",
+      "externalId": "TASK_OVERDUE_REVIEW",
+      "type": "userTask",
+      "laneId": 1,
+      "x": 380,
+      "y": 60,
+      "roles": ["Reviewer"],
+      "dueDate": "2020-01-01T09:00:00Z",
+      "priority": "90"
+    },
+    {
+      "id": 4,
+      "name": "Due soon review",
+      "externalId": "TASK_DUE_SOON_REVIEW",
+      "type": "userTask",
+      "laneId": 1,
+      "x": 380,
+      "y": 200,
+      "roles": ["Reviewer"],
+      "dueDate": "PT2H",
+      "priority": "if(amount > 100, 60, 10)"
+    },
+    {
+      "id": 5,
+      "name": "Upcoming review",
+      "externalId": "TASK_UPCOMING_REVIEW",
+      "type": "userTask",
+      "laneId": 1,
+      "x": 380,
+      "y": 340,
+      "roles": ["Reviewer"],
+      "dueDate": "P3D",
+      "priority": "20"
+    },
+    {
+      "id": 6,
+      "name": "Unscheduled review",
+      "externalId": "TASK_UNSCHEDULED_REVIEW",
+      "type": "userTask",
+      "laneId": 1,
+      "x": 380,
+      "y": 480,
+      "roles": ["Reviewer"]
+    },
+    { "id": 7, "name": "All reviewed", "externalId": "GATEWAY_ALL_REVIEWED", "type": "parallelGateway", "laneId": 1, "x": 640, "y": 284 },
+    { "id": 8, "name": "End", "type": "endEvent", "laneId": 1, "x": 820, "y": 290 }
+  ],
+  "sequenceFlows": [
+    { "id": 101, "name": "Open", "sourceRef": 1, "targetRef": 2 },
+    { "id": 201, "name": "Overdue branch", "sourceRef": 2, "targetRef": 3 },
+    { "id": 202, "name": "Due soon branch", "sourceRef": 2, "targetRef": 4 },
+    { "id": 203, "name": "Upcoming branch", "sourceRef": 2, "targetRef": 5 },
+    { "id": 204, "name": "Unscheduled branch", "sourceRef": 2, "targetRef": 6 },
+    { "id": 301, "name": "Reviewed", "sourceRef": 3, "targetRef": 7, "roles": ["Reviewer"] },
+    { "id": 401, "name": "Reviewed", "sourceRef": 4, "targetRef": 7, "roles": ["Reviewer"] },
+    { "id": 501, "name": "Reviewed", "sourceRef": 5, "targetRef": 7, "roles": ["Reviewer"] },
+    { "id": 601, "name": "Reviewed", "sourceRef": 6, "targetRef": 7, "roles": ["Reviewer"] },
+    { "id": 701, "name": "Finish", "sourceRef": 7, "targetRef": 8 }
+  ]
+}

@@ -223,7 +223,8 @@ public sealed partial class WorkflowRuntimeRepository(
         IReadOnlyList<InboxSortCriterion> sort,
         int page,
         int pageSize,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        InboxDueAndPriorityCriteria? dueAndPriority = null)
     {
         ArgumentNullException.ThrowIfNull(visibilityContext);
         var user = visibilityContext.User;
@@ -233,7 +234,7 @@ public sealed partial class WorkflowRuntimeRepository(
         // so compare lower-cased node roles against lower-cased actor roles.
         var (where, args) = BuildInboxWhere(
             visibilityContext, instanceId, workflowId, workflowKey, businessKey,
-            nodeId, nodeExternalId, variableFilter);
+            nodeId, nodeExternalId, variableFilter, dueAndPriority);
         var eligibleOrderBy = BuildInboxOrderBy(sort, "e");
         var pageOrderBy = BuildInboxOrderBy(sort, "page");
         var eligibleCte = $"""
@@ -248,6 +249,8 @@ public sealed partial class WorkflowRuntimeRepository(
                        ut."UpdatedAt" AS "TaskUpdatedAt",
                        w."CreatedAt" AS "InstanceCreatedAt",
                        w."UpdatedAt" AS "InstanceUpdatedAt",
+                       ut."DueAt",
+                       ut."Priority",
                        COALESCE(mie."OnePerActor", FALSE) AS "OnePerActor",
                        ut."Assignee",
                        ut."ClaimedBy",
@@ -297,6 +300,8 @@ public sealed partial class WorkflowRuntimeRepository(
                        candidate."TaskUpdatedAt",
                        candidate."InstanceCreatedAt",
                        candidate."InstanceUpdatedAt",
+                       candidate."DueAt",
+                       candidate."Priority",
                        ROW_NUMBER() OVER (
                            PARTITION BY CASE
                                WHEN candidate."OnePerActor" THEN candidate."MultiInstanceExecutionId"
@@ -364,7 +369,8 @@ public sealed partial class WorkflowRuntimeRepository(
                     SELECT e."Id", e."InstanceId", e."MultiInstanceExecutionId",
                            e."DelegationId", e."ActingFor",
                            e."TaskCreatedAt", e."TaskUpdatedAt",
-                           e."InstanceCreatedAt", e."InstanceUpdatedAt"
+                           e."InstanceCreatedAt", e."InstanceUpdatedAt",
+                           e."DueAt", e."Priority"
                     FROM eligible e
                     WHERE e.inbox_rank = 1
                     ORDER BY {eligibleOrderBy}
@@ -436,6 +442,8 @@ public sealed partial class WorkflowRuntimeRepository(
                        ut."UpdatedAt" AS "TaskUpdatedAt",
                        w."CreatedAt" AS "InstanceCreatedAt",
                        w."UpdatedAt" AS "InstanceUpdatedAt",
+                       ut."DueAt" AS "DueAt",
+                       ut."Priority" AS "Priority",
                        COALESCE(values."VariablesJson", jsonb_build_object())::text AS "VariablesJson",
                        mie."Id" AS "MiId",
                        mie."InstanceId" AS "MiInstanceId",
@@ -700,7 +708,8 @@ public sealed partial class WorkflowRuntimeRepository(
         string? businessKey,
         int? nodeId,
         string? nodeExternalId,
-        VariableFilterExpression? variableFilter)
+        VariableFilterExpression? variableFilter,
+        InboxDueAndPriorityCriteria? dueAndPriority)
     {
         var user = visibilityContext.User;
         var roles = visibilityContext.Roles;
@@ -784,11 +793,79 @@ public sealed partial class WorkflowRuntimeRepository(
         AppendBusinessKeyFilter(where, args, businessKey);
         AppendNodeIdFilter(where, args, nodeId, useUserTaskProjection: true);
         AppendNodeExternalIdFilter(where, args, nodeExternalId, useUserTaskProjection: true);
+        AppendDueAndPriorityFilters(where, args, dueAndPriority);
         VariableFilterSqlCompiler.Append(where, args, variableFilter, "w.\"Id\"");
 
         return (where, args);
     }
 #pragma warning restore EF1002
+
+    // Due statuses are OR-combined and use the request's clock; the range and
+    // priority bounds AND-combine with every other filter. All values are
+    // parameter-bound. Children of one multi-instance execution share their
+    // values, so these filters keep or drop the whole execution.
+    private static void AppendDueAndPriorityFilters(
+        StringBuilder where,
+        List<(string Name, object Value)> args,
+        InboxDueAndPriorityCriteria? criteria)
+    {
+        if (criteria is null)
+        {
+            return;
+        }
+
+        if (criteria.DueStatuses.Count > 0)
+        {
+            var statuses = new List<string>(criteria.DueStatuses.Count);
+            if (criteria.DueStatuses.Contains(UserTaskDueStatuses.Overdue))
+            {
+                statuses.Add("ut.\"DueAt\" <= @dueNow");
+            }
+            if (criteria.DueStatuses.Contains(UserTaskDueStatuses.DueSoon))
+            {
+                statuses.Add("(ut.\"DueAt\" > @dueNow AND ut.\"DueAt\" <= @dueSoonUntil)");
+            }
+            if (criteria.DueStatuses.Contains(UserTaskDueStatuses.Upcoming))
+            {
+                statuses.Add("ut.\"DueAt\" > @dueSoonUntil");
+            }
+            if (criteria.DueStatuses.Contains(UserTaskDueStatuses.None))
+            {
+                statuses.Add("ut.\"DueAt\" IS NULL");
+            }
+
+            args.Add(("dueNow", criteria.Now));
+            if (criteria.DueSoonUntil is DateTimeOffset dueSoonUntil)
+            {
+                args.Add(("dueSoonUntil", dueSoonUntil));
+            }
+            where.Append(" AND (").Append(string.Join(" OR ", statuses)).Append(')');
+        }
+
+        if (criteria.DueFrom is DateTimeOffset dueFrom)
+        {
+            args.Add(("dueFrom", dueFrom));
+            where.Append(" AND ut.\"DueAt\" >= @dueFrom");
+        }
+
+        if (criteria.DueTo is DateTimeOffset dueTo)
+        {
+            args.Add(("dueTo", dueTo));
+            where.Append(" AND ut.\"DueAt\" < @dueTo");
+        }
+
+        if (criteria.MinPriority is int minPriority)
+        {
+            args.Add(("minPriority", minPriority));
+            where.Append(" AND ut.\"Priority\" >= @minPriority");
+        }
+
+        if (criteria.MaxPriority is int maxPriority)
+        {
+            args.Add(("maxPriority", maxPriority));
+            where.Append(" AND ut.\"Priority\" <= @maxPriority");
+        }
+    }
 
     // Filters on the instance id (primary key). The value is parameter-bound,
     // so there is no SQL injection surface.
@@ -1021,9 +1098,15 @@ public sealed partial class WorkflowRuntimeRepository(
                 InboxSortField.TaskUpdatedAt => $"{alias}.\"TaskUpdatedAt\"",
                 InboxSortField.InstanceCreatedAt => $"{alias}.\"InstanceCreatedAt\"",
                 InboxSortField.InstanceUpdatedAt => $"{alias}.\"InstanceUpdatedAt\"",
+                InboxSortField.DueAt => $"{alias}.\"DueAt\"",
+                InboxSortField.Priority => $"{alias}.\"Priority\"",
                 _ => throw new ArgumentOutOfRangeException(nameof(requested), criterion.Field, "Unsupported inbox sort field.")
             };
-            return $"{column} {ToSqlDirection(criterion.Direction)}";
+            // Tasks without a due date or priority sort last in both directions.
+            var nulls = criterion.Field is InboxSortField.DueAt or InboxSortField.Priority
+                ? " NULLS LAST"
+                : string.Empty;
+            return $"{column} {ToSqlDirection(criterion.Direction)}{nulls}";
         }).ToList();
 
         if (!sort.Any(criterion => criterion.Field == InboxSortField.UserTaskId))
@@ -3564,7 +3647,9 @@ public sealed partial class WorkflowRuntimeRepository(
         {
             RolePolicyId = row.RolePolicyId,
             ActingFor = row.ActingFor,
-            DelegationId = row.DelegationId
+            DelegationId = row.DelegationId,
+            DueAt = row.DueAt,
+            Priority = row.Priority
         };
     }
 
@@ -3676,6 +3761,8 @@ public sealed partial class WorkflowRuntimeRepository(
         public DateTimeOffset TaskUpdatedAt { get; set; }
         public DateTimeOffset InstanceCreatedAt { get; set; }
         public DateTimeOffset InstanceUpdatedAt { get; set; }
+        public DateTimeOffset? DueAt { get; set; }
+        public int? Priority { get; set; }
         public string VariablesJson { get; set; } = string.Empty;
         public long? MiId { get; set; }
         public long? MiInstanceId { get; set; }
@@ -3712,7 +3799,9 @@ public sealed partial class WorkflowRuntimeRepository(
             CompletedActingFor = row.CompletedActingFor,
             CompletionDelegationId = row.CompletionDelegationId,
             ActingFor = row.ActingFor,
-            DelegationId = row.DelegationId
+            DelegationId = row.DelegationId,
+            DueAt = row.DueAt,
+            Priority = row.Priority
         };
 
     private static Dictionary<string, JsonElement>? ParseOptionalDictionary(string? json) =>
@@ -3747,6 +3836,8 @@ public sealed partial class WorkflowRuntimeRepository(
         public DateTimeOffset CreatedAt { get; set; }
         public DateTimeOffset UpdatedAt { get; set; }
         public DateTimeOffset? CompletedAt { get; set; }
+        public DateTimeOffset? DueAt { get; set; }
+        public int? Priority { get; set; }
         public long? NodeExecutionId { get; set; }
         public long? DelegationId { get; set; }
         public string? ActingFor { get; set; }
@@ -3812,7 +3903,9 @@ public sealed partial class WorkflowRuntimeRepository(
                       ?? new Dictionary<string, System.Text.Json.JsonElement>(StringComparer.OrdinalIgnoreCase))
             {
                 Status = task.Status,
-                RolePolicyId = task.RolePolicyId
+                RolePolicyId = task.RolePolicyId,
+                DueAt = task.DueAt,
+                Priority = task.Priority
             };
         }).ToList();
     }
@@ -3948,7 +4041,7 @@ public sealed partial class WorkflowRuntimeRepository(
                          "NodeExternalId", "Roles", "RequiresClaim",
                          "RequiresAssignment", "Status", "CreatedAt", "UpdatedAt",
                          "MultiInstanceExecutionId", "ItemIndex", "ItemValueJson",
-                         "Assignee", "RolePolicyId")
+                         "Assignee", "RolePolicyId", "DueAt", "Priority")
                     SELECT
                         @instance_id, @token_id, @node_id, @node_name,
                         @node_external_id, @roles, @requires_claim,
@@ -3958,7 +4051,7 @@ public sealed partial class WorkflowRuntimeRepository(
                             WHEN item_value IS NULL THEN NULL
                             ELSE item_value::jsonb
                         END,
-                        assignee, @role_policy_id
+                        assignee, @role_policy_id, @due_at, @priority
                     FROM item_source
                     ORDER BY item_index
                     RETURNING "Id", "ItemIndex", "Status"
@@ -4077,6 +4170,20 @@ public sealed partial class WorkflowRuntimeRepository(
                     NpgsqlDbType.Bigint)
                 {
                     Value = (object?)triggeredBy.DelegationId ?? DBNull.Value
+                });
+                // Every child, including pending sequential ones, gets the
+                // execution's due time and priority.
+                insertItems.Parameters.Add(new NpgsqlParameter(
+                    "due_at",
+                    NpgsqlDbType.TimestampTz)
+                {
+                    Value = (object?)node.DueDate?.ResolveAt(now) ?? DBNull.Value
+                });
+                insertItems.Parameters.Add(new NpgsqlParameter(
+                    "priority",
+                    NpgsqlDbType.Integer)
+                {
+                    Value = (object?)node.Priority ?? DBNull.Value
                 });
                 insertItems.Parameters.AddWithValue("now", now);
                 var inserted = Convert.ToInt32(
@@ -4610,6 +4717,8 @@ public sealed partial class WorkflowRuntimeRepository(
                        ut."CreatedAt" AS "CreatedAt",
                        ut."UpdatedAt" AS "UpdatedAt",
                        ut."CompletedAt" AS "CompletedAt",
+                       ut."DueAt" AS "DueAt",
+                       ut."Priority" AS "Priority",
                        node_execution."Id" AS "NodeExecutionId",
                        eligible."DelegationId" AS "DelegationId",
                        eligible."ActingFor" AS "ActingFor"
@@ -6714,7 +6823,9 @@ public sealed partial class WorkflowRuntimeRepository(
             CompletionDelegationId = entity.CompletionDelegationId,
             CompletionKind = entity.CompletionKind,
             CompletionReason = entity.CompletionReason,
-            AdministrativeActionBatchId = entity.AdministrativeActionBatchId
+            AdministrativeActionBatchId = entity.AdministrativeActionBatchId,
+            DueAt = entity.DueAt,
+            Priority = entity.Priority
         };
 
     private static NodeExecutionRecord ToRecord(NodeExecutionEntity entity) =>
@@ -6999,6 +7110,8 @@ public sealed partial class WorkflowRuntimeRepository(
             Status = status,
             ClaimedBy = claimedBy,
             Assignee = node.Assignee,
+            DueAt = node.DueDate?.ResolveAt(now),
+            Priority = node.Priority,
             CreatedAt = now,
             UpdatedAt = now
         };

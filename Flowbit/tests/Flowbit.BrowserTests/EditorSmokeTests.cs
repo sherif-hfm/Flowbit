@@ -797,6 +797,86 @@ public sealed class EditorSmokeTests(BrowserStackFixture stack)
         });
     }
 
+    [Theory]
+    [MemberData(nameof(EditorViewports))]
+    public async Task E10_UserTaskDueDateAndPriorityEditValidateSaveAndReload(int viewportWidth, int viewportHeight)
+    {
+        await using var scenario = await CreateEditorScenarioAsync(
+            $"e10-due-date-priority-{viewportWidth}x{viewportHeight}", viewportWidth, viewportHeight);
+        await scenario.RunAsync("due-date-priority", async () =>
+        {
+            await OpenEditorAsync(scenario);
+            var page = scenario.Page;
+            await EditorInteractions.LoadWorkflowAsync(
+                page, EditorInteractions.FixturePath("editor-basic.json"));
+            await EditorInteractions.SelectNodeAsync(page, 2);
+
+            // A quoted due date that is not a duration or date-time is reported at once.
+            var dueDate = page.Locator("#user-task-dueDate-2");
+            var priority = page.Locator("#user-task-priority-2");
+            await dueDate.FillAsync("'P2X'");
+            await priority.FillAsync("75");
+            await Assertions.Expect(dueDate).ToHaveAttributeAsync("aria-invalid", "true");
+            await Assertions.Expect(page.Locator("#user-task-dueDate-2-status")).ToHaveTextAsync(
+                "dueDate 'P2X' is not an ISO-8601 duration such as P2D or a date-time with an offset such as 2030-01-31T17:00:00Z.");
+            await Assertions.Expect(priority).ToHaveAttributeAsync("aria-invalid", "false");
+
+            // Saving is blocked with the same message.
+            await page.Locator("#fileMenuSummary").ClickAsync();
+            await page.Locator("#saveBtn").ClickAsync();
+            var errors = await EditorInteractions.WaitForValidationDialogAsync(page);
+            Assert.Contains(
+                "dueDate 'P2X' is not an ISO-8601 duration such as P2D or a date-time with an offset such as 2030-01-31T17:00:00Z.",
+                errors,
+                StringComparison.Ordinal);
+            await EditorInteractions.CloseValidationDialogWithEscapeAsync(page);
+
+            // A calendar-year duration is evidently meant as a fixed value, so it
+            // is reported too instead of being read as a variable name.
+            await dueDate.FillAsync("P1Y");
+            await Assertions.Expect(dueDate).ToHaveAttributeAsync("aria-invalid", "true");
+            await Assertions.Expect(page.Locator("#user-task-dueDate-2-status")).ToHaveTextAsync(
+                "dueDate 'P1Y' is not an ISO-8601 duration such as P2D or a date-time with an offset such as 2030-01-31T17:00:00Z.");
+
+            await dueDate.FillAsync("  P3D  ");
+            await Assertions.Expect(dueDate).ToHaveAttributeAsync("aria-invalid", "false");
+            await Assertions.Expect(page.Locator("#user-task-dueDate-2-status")).ToHaveTextAsync(string.Empty);
+            await page.Locator("#inspectorPanel").ScreenshotAsync(new LocatorScreenshotOptions
+            {
+                Path = Path.Combine(scenario.ArtifactDirectory, "due-date-priority.png"),
+            });
+
+            var saved = await EditorInteractions.SaveAndCaptureDownloadAsync(
+                page, scenario, scenario.ArtifactDirectory);
+            var task = saved.RootElement.GetProperty("flowNodes")
+                .EnumerateArray().First(node => node.GetProperty("id").GetInt32() == 2);
+            Assert.Equal("P3D", task.GetProperty("dueDate").GetString());
+            Assert.Equal("75", task.GetProperty("priority").GetString());
+            Assert.All(
+                saved.RootElement.GetProperty("flowNodes").EnumerateArray()
+                    .Where(node => node.GetProperty("id").GetInt32() != 2),
+                node => Assert.False(node.TryGetProperty("dueDate", out _)));
+
+            // A fresh page reloads both values into the inspector.
+            var freshPage = await scenario.Context.NewPageAsync();
+            try
+            {
+                await freshPage.GotoAsync($"{stack.EditorBaseAddress}/",
+                    new PageGotoOptions { WaitUntil = WaitUntilState.Load });
+                await freshPage.WaitForSelectorAsync("#svg");
+                await EditorInteractions.LoadSavedFileAsync(freshPage, scenario.LastSavedFile!);
+                await EditorInteractions.PinInspectorOpenAsync(freshPage);
+                await EditorInteractions.SelectNodeAsync(freshPage, 2);
+                await Assertions.Expect(freshPage.Locator("#user-task-dueDate-2")).ToHaveValueAsync("P3D");
+                await Assertions.Expect(freshPage.Locator("#user-task-priority-2")).ToHaveValueAsync("75");
+            }
+            finally
+            {
+                await freshPage.CloseAsync();
+            }
+        });
+    }
+
     // Inspector fields put a static label before their control.
     private static ILocator FormField(ILocator scope, string label) =>
         scope.Locator(".field").Filter(new LocatorFilterOptions

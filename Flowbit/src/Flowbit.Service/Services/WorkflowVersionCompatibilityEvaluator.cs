@@ -1271,6 +1271,10 @@ public static class WorkflowVersionCompatibilityEvaluator
         json.Remove("x");
         json.Remove("y");
         json.Remove("attributes");
+        // A due date and priority are resolved when a work item is created and
+        // saved on it, so changing them affects only later work items.
+        json.Remove("dueDate");
+        json.Remove("priority");
         RemoveVariablePresentation(json);
         CanonicalizeStringSet(json, "roles");
         return json.ToJsonString();

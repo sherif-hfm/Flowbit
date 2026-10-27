@@ -77,7 +77,8 @@ public interface IWorkflowRuntimeRepository : IWorkflowInstanceQueryRepository
         IReadOnlyList<InboxSortCriterion> sort,
         int page,
         int pageSize,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken,
+        InboxDueAndPriorityCriteria? dueAndPriority = null);
 
     Task<PagedResult<ManagedUserTaskRecord>> ListManageableUserTasksAsync(
         IReadOnlyCollection<string> managerRoles,

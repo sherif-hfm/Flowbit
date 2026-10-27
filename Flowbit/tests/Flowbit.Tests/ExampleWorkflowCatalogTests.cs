@@ -12,7 +12,7 @@ public sealed class ExampleWorkflowCatalogTests
     {
         var paths = ExampleWorkflowData.RelativePaths;
         Assert.NotEmpty(paths);
-        Assert.Equal(48, paths.Count);
+        Assert.Equal(49, paths.Count);
 
         var catalogPath = Path.Combine(
             AppContext.BaseDirectory,

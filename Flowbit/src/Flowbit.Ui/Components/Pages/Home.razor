@@ -144,7 +144,7 @@ else if (snapshot is not null)
                         {
                             <a class="quick-item" href="@($"user-tasks/{item.UserTaskId}")">
                                 <span class="quick-icon">@Initials(item.WorkflowName)</span>
-                                <span class="quick-copy"><strong>@item.CurrentNodeName</strong><small>@item.WorkflowName · @TaskState(item)</small></span>
+                                <span class="quick-copy"><strong>@item.CurrentNodeName</strong><small>@item.WorkflowName · @TaskState(item)</small>@if (item.DueStatus is UserTaskDueStatuses.Overdue or UserTaskDueStatuses.DueSoon) { <TaskDueDate DueAt="@item.DueAt" DueStatus="@item.DueStatus" /> }</span>
                                 <AppIcon Name="chevron-right" />
                             </a>
                         }

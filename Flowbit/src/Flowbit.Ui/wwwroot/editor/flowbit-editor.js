@@ -1656,6 +1656,8 @@ function applyTypeInvariants(node) {
     node.assignmentMode = ASSIGNMENT_MODE.FRESH;
     node.inheritAssignmentFromNodeId = null;
     delete node.inboxVisibilityCondition;
+    delete node.dueDate;
+    delete node.priority;
   } else if (typeof node.inboxVisibilityCondition === "string" &&
       !node.inboxVisibilityCondition.trim()) {
     node.inboxVisibilityCondition = null;
@@ -3766,6 +3768,8 @@ function renderNodeInspector() {
         renderNodes();
       });
     }
+
+    renderUserTaskDueFields(node);
 
     if (node.multiInstance && node.assignee) {
       node.assignee = null;
@@ -6211,6 +6215,58 @@ function renderInboxVisibilityConditionField(node) {
     "16 external references, 16 literals, 512-byte string literals, 128-character " +
     "numeric text, and exponent magnitude 100.";
   inspector.appendChild(help);
+}
+function renderUserTaskDueFields(node) {
+  const hint = document.createElement("p");
+  hint.className = "empty-note";
+  hint.textContent =
+    "Optional. Resolved once when each work item is created; a multi-instance task " +
+    "resolves them once for all its items. Due date: a duration such as P2D, counted " +
+    "from creation, a date-time with an offset such as 2030-01-31T17:00:00Z, or an " +
+    "NCalc expression that gives one as text, such as if(amount > 1000, 'PT4H', 'P2D'). " +
+    "Priority: an NCalc expression that gives a whole number; higher is more urgent. " +
+    "A result that cannot be used leaves the value empty.";
+  inspector.appendChild(hint);
+  renderUserTaskDueField(node, "dueDate", "Due date", "P2D");
+  renderUserTaskDueField(node, "priority", "Priority", "50");
+}
+function renderUserTaskDueField(node, property, label, placeholder) {
+  const f = document.createElement("div");
+  f.className = "field";
+  const inputId = "user-task-" + property + "-" + String(node.id);
+  const labelElement = document.createElement("label");
+  labelElement.htmlFor = inputId;
+  labelElement.textContent = label;
+  const input = document.createElement("input");
+  input.type = "text";
+  input.id = inputId;
+  input.spellcheck = false;
+  input.placeholder = placeholder;
+  input.value = typeof node[property] === "string" ? node[property] : String(node[property] ?? "");
+  const status = document.createElement("p");
+  status.className = "expression-validation";
+  status.setAttribute("role", "status");
+  status.setAttribute("aria-live", "polite");
+  status.id = inputId + "-status";
+  input.setAttribute("aria-describedby", status.id);
+  const updateValidation = () => {
+    const problem = userTaskDueValueProblem(property, node[property]);
+    input.setAttribute("aria-invalid", problem ? "true" : "false");
+    status.textContent = problem || "";
+  };
+  input.oninput = () => {
+    if (input.value.trim()) {
+      node[property] = input.value;
+    } else {
+      delete node[property];
+    }
+    updateValidation();
+  };
+  f.appendChild(labelElement);
+  f.appendChild(input);
+  f.appendChild(status);
+  inspector.appendChild(f);
+  updateValidation();
 }
 function selectField(label, options, value, onChange) {
   const f = document.createElement("div");
@@ -9137,6 +9193,7 @@ function validateModelForSave(candidate) {
   validateSaveTaskDistribution(ctx);
   validateSaveInboxVisibilityConditions(ctx);
   validateSaveAssignmentSettings(ctx);
+  validateSaveUserTaskDueAndPriority(ctx);
   validateSaveVariableNames(ctx);
   validateFlowInfoUsage(ctx);
   validateGatewayExpressionUsage(ctx);
@@ -9315,6 +9372,8 @@ function validateFlowInfoUsage(ctx) {
       const label = "Flow node #" + String(node && node.id);
       validateVariables(node && node.variables, label);
       validateFlowInfoExpression(ctx, node && node.assignee, label + " assignee expression", false);
+      validateFlowInfoExpression(ctx, node && node.dueDate, label + " dueDate", false);
+      validateFlowInfoExpression(ctx, node && node.priority, label + " priority", false);
       validateFlowInfoExpression(
         ctx,
         node && node.multiInstance && node.multiInstance.cardinalityExpression,
@@ -9473,6 +9532,8 @@ function validateGatewayExpressionUsage(ctx) {
         label + " activationCondition", complex, false);
       validateGatewayExpression(ctx, node && node.assignee,
         label + " assignee expression", null, false);
+      validateGatewayExpression(ctx, node && node.dueDate, label + " dueDate", null, false);
+      validateGatewayExpression(ctx, node && node.priority, label + " priority", null, false);
       validateGatewayExpression(
         ctx,
         node && node.multiInstance && node.multiInstance.cardinalityExpression,
@@ -9652,6 +9713,70 @@ function validateSaveAssignmentSettings(ctx) {
       }
     } else if (node.inheritAssignmentFromNodeId != null) {
       ctx.errors.push(label + " can define inheritAssignmentFromNodeId only with assignmentMode='fromNode'.");
+    }
+  }
+}
+// User-task due dates and priorities. These mirror UserTaskDueRules on the
+// server: a fixed duration or offset date-time is used as is, and a quoted or
+// evidently intended fixed value that does not parse can never be used. NCalc
+// syntax is checked by the server, as for the assignee expression.
+const USER_TASK_DUE_DATE_FORMS =
+  "an ISO-8601 duration such as P2D or a date-time with an offset such as 2030-01-31T17:00:00Z";
+const USER_TASK_INTENDED_FIXED_DUE_VALUE =
+  /^(?:[Pp](?=[^\d]*\d)[0-9TtYyWwDdHhMmSs.,]+|\d{4}-\d{2}-\d{2}(?:[Tt ].*)?)$/;
+function isFixedUserTaskDueValue(text) {
+  return validatorFixedDurationSeconds(text) !== null || validatorTimeDate(text);
+}
+function quotedUserTaskLiteral(trimmed) {
+  if (trimmed.length < 2) return null;
+  const quote = trimmed[0];
+  if (quote !== "'" && quote !== "\"") return null;
+  return trimmed[trimmed.length - 1] === quote &&
+      trimmed.indexOf(quote, 1) === trimmed.length - 1 &&
+      !trimmed.includes("\\")
+    ? trimmed.slice(1, -1)
+    : null;
+}
+function userTaskDueValueProblem(property, value) {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "string") return property + " must be text.";
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (property === "dueDate") {
+    if (isFixedUserTaskDueValue(trimmed)) return null;
+    const literal = quotedUserTaskLiteral(trimmed);
+    if (literal !== null) {
+      return isFixedUserTaskDueValue(literal)
+        ? null
+        : "dueDate '" + literal + "' is not " + USER_TASK_DUE_DATE_FORMS + ".";
+    }
+    return USER_TASK_INTENDED_FIXED_DUE_VALUE.test(trimmed)
+      ? "dueDate '" + trimmed + "' is not " + USER_TASK_DUE_DATE_FORMS + "."
+      : null;
+  }
+  if (/^[+-]?\d+$/.test(trimmed)) {
+    const number = BigInt(trimmed.replace(/^\+/, ""));
+    if (number < -2147483648n || number > 2147483647n) {
+      return "priority " + trimmed +
+        " is outside the whole-number range -2147483648 to 2147483647.";
+    }
+  }
+  return null;
+}
+function validateSaveUserTaskDueAndPriority(ctx) {
+  for (const node of ctx.nodes) {
+    if (!node) continue;
+    for (const property of ["dueDate", "priority"]) {
+      const value = node[property];
+      if (node.type !== "userTask") {
+        if (value != null && (typeof value !== "string" || value.trim())) {
+          ctx.errors.push("Flow node #" + String(node.id) + " defines " + property +
+            " but is not a user task.");
+        }
+        continue;
+      }
+      const problem = userTaskDueValueProblem(property, value);
+      if (problem) ctx.errors.push(saveNodeLabel(node) + " " + problem);
     }
   }
 }
@@ -11282,6 +11407,14 @@ function prepareWorkflowExport(candidate = model) {
           !node.inboxVisibilityCondition.trim())) {
       delete node.inboxVisibilityCondition;
     }
+    for (const property of ["dueDate", "priority"]) {
+      if (!isUserTaskType(node.type) || typeof node[property] !== "string" ||
+          !node[property].trim()) {
+        delete node[property];
+      } else {
+        node[property] = node[property].trim();
+      }
+    }
     if (isConditionalEventType(node.type) && node.conditional &&
         node.conditional.deliveryMode === CONDITIONAL_DELIVERY_MODE.ATOMIC) {
       delete node.conditional.deliveryMode;
@@ -11504,6 +11637,10 @@ function migrateLegacyToNew(obj) {
     taskDistribution: null
   };
 }
+function loadedUserTaskDueValue(value) {
+  if (value === undefined || value === null) return undefined;
+  return typeof value === "string" && !value.trim() ? undefined : value;
+}
 function normalizeLoadedModel(obj) {
   if (!obj || typeof obj !== "object" || Array.isArray(obj) ||
       (!Array.isArray(obj.flowNodes) && !Array.isArray(obj.steps))) {
@@ -11577,6 +11714,14 @@ function normalizeLoadedModel(obj) {
                   !s.inboxVisibilityCondition.trim()
                 ? null
                 : s.inboxVisibilityCondition))
+          : undefined,
+        // Absent or blank stays absent; other values are kept so save
+        // validation can report them.
+        dueDate: (s.type ?? "userTask") === "userTask"
+          ? loadedUserTaskDueValue(s.dueDate)
+          : undefined,
+        priority: (s.type ?? "userTask") === "userTask"
+          ? loadedUserTaskDueValue(s.priority)
           : undefined,
         multiInstance: s.multiInstance ? normalizeMultiInstanceForLoad(s.multiInstance) : null,
         service: isServiceTaskType(s.type) ? normalizeService(s.service, loadedProcessVariables) : undefined,

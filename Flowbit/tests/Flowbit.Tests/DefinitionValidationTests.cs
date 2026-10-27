@@ -532,6 +532,86 @@ public sealed class DefinitionValidationTests
     }
 
     [Fact]
+    public async Task CreateAsync_TrimsUserTaskDueDateAndPriority()
+    {
+        var model = CreateTerminalModel(BpmnFlowNodeTypes.EndEvent);
+        var review = model.FlowNodes.Single(node => node.Id == 2);
+        review.DueDateExpression = "  if(amount >= 10000, 'PT4H', 'P2D')  ";
+        review.PriorityExpression = "  if(amount >= 10000, 80, 40)  ";
+        var service = CreateService(out var repository);
+
+        await service.CreateAsync(model, false, CancellationToken.None);
+
+        var saved = repository.Added!.Definition.FlowNodes.Single(node => node.Id == 2);
+        Assert.Equal("if(amount >= 10000, 'PT4H', 'P2D')", saved.DueDateExpression);
+        Assert.Equal("if(amount >= 10000, 80, 40)", saved.PriorityExpression);
+    }
+
+    [Theory]
+    [InlineData("P2D")]
+    [InlineData("2030-01-31T17:00:00+02:00")]
+    [InlineData("'PT4H'")]
+    [InlineData("contractEnd")]
+    public async Task CreateAsync_AcceptsUserTaskDueDateForms(string dueDate)
+    {
+        var model = CreateTerminalModel(BpmnFlowNodeTypes.EndEvent);
+        model.FlowNodes.Single(node => node.Id == 2).DueDateExpression = dueDate;
+        model.FlowNodes.Single(node => node.Id == 2).PriorityExpression = "-5";
+
+        await CreateService(out _).CreateAsync(model, false, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task CreateAsync_AcceptsDueDateAndPriorityOnMultiInstanceTasks()
+    {
+        var model = LoadModel("votes-users-list.json");
+        var task = model.FlowNodes.Single(node => node.MultiInstance is not null);
+        task.DueDateExpression = "P1D";
+        task.PriorityExpression = "70";
+        var service = CreateService(out var repository);
+
+        await service.CreateAsync(model, false, CancellationToken.None);
+
+        var saved = repository.Added!.Definition.FlowNodes.Single(node => node.Id == task.Id);
+        Assert.Equal("P1D", saved.DueDateExpression);
+        Assert.Equal("70", saved.PriorityExpression);
+    }
+
+    [Theory]
+    [InlineData(1, "dueDate", "P2D", "Flow node #1 defines dueDate but is not a user task.")]
+    [InlineData(3, "priority", "5", "Flow node #3 defines priority but is not a user task.")]
+    [InlineData(2, "dueDate", "'P2X'", "User task #2 dueDate 'P2X' is not an ISO-8601 duration such as P2D or a date-time with an offset such as 2030-01-31T17:00:00Z.")]
+    [InlineData(2, "dueDate", "2026-11-01", "User task #2 dueDate '2026-11-01' is not an ISO-8601 duration such as P2D or a date-time with an offset such as 2030-01-31T17:00:00Z.")]
+    [InlineData(2, "dueDate", "P1Y", "User task #2 dueDate 'P1Y' is not an ISO-8601 duration such as P2D or a date-time with an offset such as 2030-01-31T17:00:00Z.")]
+    [InlineData(2, "dueDate", "if(amount > 1, 'P2D'", "User task #2 has an invalid dueDate expression: 'if(amount > 1, 'P2D''.")]
+    [InlineData(2, "priority", "2147483648", "User task #2 priority 2147483648 is outside the whole-number range -2147483648 to 2147483647.")]
+    [InlineData(2, "priority", "(1 +", "User task #2 has an invalid priority expression: '(1 +'.")]
+    [InlineData(2, "dueDate", "FlowInfo(201, 'actions.count')", "User task #2 dueDate has invalid FlowInfo usage")]
+    [InlineData(2, "priority", "IncomingCount(101)", "User task #2 priority has invalid Complex gateway expression usage")]
+    public async Task CreateAsync_RejectsInvalidUserTaskDueDateAndPriority(
+        int nodeId,
+        string property,
+        string expression,
+        string expected)
+    {
+        var model = CreateTerminalModel(BpmnFlowNodeTypes.EndEvent);
+        var node = model.FlowNodes.Single(candidate => candidate.Id == nodeId);
+        if (property == "dueDate")
+        {
+            node.DueDateExpression = expression;
+        }
+        else
+        {
+            node.PriorityExpression = expression;
+        }
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+
+        Assert.StartsWith(expected, error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task CreateAsync_AcceptsVariablePresentationLimits()
     {
         var model = CreateTerminalModel(BpmnFlowNodeTypes.EndEvent);
