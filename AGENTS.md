@@ -249,7 +249,7 @@ A repeatable Chromium smoke suite exists at
 real copied editor and the real published API/UI over localhost with a
 disposable PostgreSQL container; see its
 [README](Flowbit/tests/Flowbit.BrowserTests/README.md) for setup and the
-E1–E8/R1–R8 coverage matrix. It is the baseline for editor/runtime UI changes,
+E1–E9/R1–R9 coverage matrix. It is the baseline for editor/runtime UI changes,
 but it does not replace scenario-specific manual verification: the native
 file-picker success/cancel path, visual comparisons, and behaviors outside the
 matrix still need the manual steps above.
@@ -1539,7 +1539,7 @@ what the cross-version `workflowKey` instance search matches.
   bounded streaming interop (2 MiB for hosted saves), while the server owns
   authentication. Unsaved-state guards include pending JavaScript modal drafts.
 - `/workflows/{id}/start` (`StartInstance.razor`) - pick a start event, fill its
-  variables, and launch an instance.
+  variables with typed controls, and launch an instance.
 - `/instances` (`Instances.razor`) - list instances, filterable by status, by
   instance id, workflow id, workflow key, node id, node external id, and an
   advanced JSON `variableFilter`. It always calls `POST /api/instances/search`;
@@ -1617,6 +1617,25 @@ and retried only after the instance changes, so it never re-renders in a loop. T
 from `InstanceDetailDto`, and `ExecutionPositionText` holds the position wording
 shared with `ExecutionPositionList`. Instance detail keeps the selection, the
 node-execution lookup, polling, and identity checks.
+
+Typed start and action inputs render through `Components/Shared/VariableInputField.razor`
+on the start page, task detail, instance-detail actions and interrupts, and the
+instance administrative panel. It injects nothing and stores, through the page's
+own `ValueChanged`, exactly the text `StartVariableInputParser` already accepts, so
+payload code is unchanged; every one of those forms parses with that parser. The
+pure `VariableInputConversion` chooses the control, formats options, composes
+date-times with the browser's offset (`Z` for zero), and owns the internal
+`Invalid` sentinel that the parser refuses explicitly. Number, date, and
+date-time pickers use the custom `typedinput` event: `wwwroot/typed-inputs.js`,
+loaded right after `blazor.web.js`, registers it, and its args carry the browser's
+`badInput`, offset, time zone, and skipped-time flag synchronously with the
+`input` event, so no click can overtake a pending value. A second event,
+`typedcommit`, carries the same args on `focusout`: a date or date-time started
+from empty and left partly filled raises no `input` event in Chromium. The script
+also blurs a focused `data-typed-input` number box on wheel so the wheel cannot
+step its value. The `[EventHandler]` attributes must stay on a class named
+`EventHandlers`, the only name the Razor compiler scans. Pickers are uncontrolled
+(`@key` generation) and are rewritten only after an outside value change.
 
 The UI talks to the API through `WorkflowApiClient` (a typed `HttpClient`). Its
 legacy GET methods remain for dashboard/compatibility reads; all five interactive
@@ -1953,9 +1972,30 @@ null, while optional JSON inputs retain their existing JSON-value behavior.
   "isArray": false,
   "required": true,
   "defaultValue": null,        // optional vars only: value (or ${...} template) persisted when none supplied
-  "validation": null           // optional NCalc rule checked at start / flow-take (nullable)
+  "validation": null,          // optional NCalc rule checked at start / flow-take (nullable)
+  "label": "Request number",   // optional form presentation; omitted when unset
+  "helpText": "Printed on the purchase order.",
+  "options": [ { "value": 1001, "label": "Office" } ] // single string/number only
 }
 ```
+
+**Form presentation.** Start/action inputs may carry `label` (at most 300
+Unicode scalar values), plain-text `helpText` (at most 1,000), and up to 100
+fixed `options` (`{ value, label? }`) on a single `string` or `number`. Like
+attributes they never affect execution: Flowbit.Ui forms offer only the listed
+options, but the engine accepts any value of the declared type,
+`WorkflowVersionCompatibilityEvaluator` strips them from node and flow
+contracts, and process variables reject them. String option values are
+nonblank, have no surrounding whitespace, and are unique ignoring case; number
+option values have at most 15 significant digits and 28 decimal places
+(`VariablePresentationConstraints.IsExactOptionNumber`, so a JavaScript number
+and a `decimal` both hold them exactly), fit `decimal`, and are unique by value. `WorkflowModelMigrator` trims labels and help
+text and turns blanks and empty option lists into null, so older documents keep
+their exact shape; the editor's `normalizeVariable` keeps the fields (a `label`
+on a variable without `name` remains the legacy name fallback) and export omits
+blanks. `WorkflowDefinitionValidator.ValidateVariablePresentation` and the
+editor's `validateSaveVariablePresentation` phase apply the same rules. See
+[form presentation](docs/node-reference.md#form-presentation).
 
 `defaultValue` applies to **optional** variables only (the editor hides it when
 `required` is checked). When a value is not supplied at start / flow-take, the

@@ -203,6 +203,8 @@ Defaults may contain `${variableName}` and allowed context placeholders. Declara
 
 For the tutorial, the start requires `requestReference` with `Len(Trim(requestReference)) >= 3`. The approval action requires `reviewNote` with the same minimum length. The supervisor escalation action instead requires `escalationNote` with a minimum trimmed length of five. Send the selected action's own fields.
 
+Start and action inputs may also describe how a form presents them, with an optional `label`, plain-text `helpText`, and fixed `options` (`{ "value", "label" }`) for a single `string` or `number`. These properties are presentation-only. Flowbit.Ui forms offer only the listed options, but the engine accepts any value of the declared type from any client, so keep a `validation` rule, such as `outcome in ('approved', 'rejected')`, when other values must be rejected. Process variables reject them. See [form presentation](node-reference.md#form-presentation) for the limits.
+
 ### Output mappings and expression context
 
 Service and message output mappings define `variable`, `path`, `dataType`, `isArray`, `required`, optional `defaultValue`, and optional `validation`. Paths select values from the JSON payload. Defaults apply to missing paths, not to present values of the wrong type. Outputs are validated as a batch before persistence, including checks against target variable contracts; a rejected message mapping does not partially write values.
@@ -224,8 +226,10 @@ Read `items`, `page`, `pageSize`, and `totalCount`. Each row includes its exact 
 
 1. Open the selected `GET /api/user-tasks/{taskId}`. Render ownership and `capabilities`, including `canUnclaim`.
 2. If permitted and needed, `POST /api/user-tasks/{taskId}/claim` with no body. Use the returned task state.
-3. Call `GET /api/user-tasks/{taskId}/flows` after claiming to discover the actor's currently executable actions. Build each action's form from its `variables` and application metadata.
+3. Call `GET /api/user-tasks/{taskId}/flows` after claiming to discover the actor's currently executable actions. Build each action's form from its `variables` and application metadata: show a declaration's `label` (or its `name`) and `helpText`, and offer its `options` as a list, submitting the chosen option's `value` unchanged.
 4. Submit the selected returned flow ID and its input values. Refresh task/inbox/instance state after success or conflict.
+
+For a `datetime` input entered as local time, send the local date and time with the user's UTC offset for that moment, for example `"2026-09-10T10:30:00+03:00"`. Flowbit.Ui does this with the browser's time zone. Flowbit stores the text as sent, so a value without an offset does not identify a moment: expressions compare it as text, and inbox visibility conditions treat it as unknown.
 
 ```http
 POST /api/user-tasks/{taskId}/flows/{flowId} HTTP/1.1

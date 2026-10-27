@@ -399,7 +399,7 @@ else
             <div class="row">
                 @foreach (var flow in interruptFlows)
                 {
-                    <div class="col-md-6 mb-3">
+                    <div @key="flow.Id" class="col-md-6 mb-3">
                         <div class="card h-100 border-danger">
                             <div class="card-body">
                                 <h3 class="h5">@(string.IsNullOrWhiteSpace(flow.Name) ? $"Flow #{flow.Id}" : flow.Name)</h3>
@@ -410,17 +410,10 @@ else
                                 @foreach (var variable in flow.Variables)
                                 {
                                     <div class="mb-2">
-                                        <label class="form-label">
-                                            @variable.Name
-                                            <span class="text-muted">(@variable.DataType@(variable.IsArray ? "[]" : ""))</span>
-                                            @if (variable.Required)
-                                            {
-                                                <span class="text-danger">*</span>
-                                            }
-                                        </label>
-                                        <input class="form-control"
-                                               value="@GetFlowInput(flow.Id, variable.Name)"
-                                               @oninput="e => SetFlowInput(flow.Id, variable.Name, e.Value?.ToString())" />
+                                        <VariableInputField Variable="variable"
+                                                            InputId="@($"instance-interrupt-{flow.Id}-{variable.Name.Replace(" ", "-")}")"
+                                                            Value="@GetFlowInput(flow.Id, variable.Name)"
+                                                            ValueChanged="value => SetFlowInput(flow.Id, variable.Name, value)" />
                                     </div>
                                 }
 
@@ -467,7 +460,7 @@ else
             <div class="row">
                 @foreach (var flow in availableFlows)
                 {
-                    <div class="col-md-6 mb-3">
+                    <div @key="flow.Id" class="col-md-6 mb-3">
                         <div class="card h-100">
                             <div class="card-body">
                                 <h3 class="h5">@(string.IsNullOrWhiteSpace(flow.Name) ? $"Flow #{flow.Id}" : flow.Name)</h3>
@@ -478,17 +471,10 @@ else
                                 @foreach (var variable in flow.Variables)
                                 {
                                     <div class="mb-2">
-                                        <label class="form-label">
-                                            @variable.Name
-                                            <span class="text-muted">(@variable.DataType@(variable.IsArray ? "[]" : ""))</span>
-                                            @if (variable.Required)
-                                            {
-                                                <span class="text-danger">*</span>
-                                            }
-                                        </label>
-                                        <input class="form-control"
-                                               value="@GetFlowInput(flow.Id, variable.Name)"
-                                               @oninput="e => SetFlowInput(flow.Id, variable.Name, e.Value?.ToString())" />
+                                        <VariableInputField Variable="variable"
+                                                            InputId="@($"instance-flow-{flow.Id}-{variable.Name.Replace(" ", "-")}")"
+                                                            Value="@GetFlowInput(flow.Id, variable.Name)"
+                                                            ValueChanged="value => SetFlowInput(flow.Id, variable.Name, value)" />
                                     </div>
                                 }
 
@@ -1628,7 +1614,12 @@ else
                 continue;
             }
 
-            payload[variable.Name] = ToJsonElement(variable, raw);
+            if (!StartVariableInputParser.TryParse(variable, raw, out var value, out var parseError))
+            {
+                throw new FormatException(parseError);
+            }
+
+            payload[variable.Name] = value;
         }
 
         return payload;
@@ -1659,21 +1650,5 @@ else
             }
         }
         pollCancellation.Dispose();
-    }
-
-    private static JsonElement ToJsonElement(VariableModel variable, string raw)
-    {
-        if (variable.IsArray)
-        {
-            var values = raw.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
-            return JsonSerializer.SerializeToElement(values);
-        }
-
-        return variable.DataType switch
-        {
-            WorkflowVariableTypes.Number when decimal.TryParse(raw, out var number) => JsonSerializer.SerializeToElement(number),
-            WorkflowVariableTypes.Boolean when bool.TryParse(raw, out var boolean) => JsonSerializer.SerializeToElement(boolean),
-            _ => JsonSerializer.SerializeToElement(raw)
-        };
     }
 }

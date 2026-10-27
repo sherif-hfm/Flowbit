@@ -27,7 +27,7 @@ Useful endpoints:
 ## [03 - Direct assignee expression](03-direct-assignee-expression.json)
 
 - Start values: node `1`; `requestSummary` is required. `requestedAssignee` defaults to `"  Alice.Example  "` and may be supplied explicitly.
-- Actors and actions: a `Requester` starts the instance. Task `2` evaluates `if(IsNullOrWhiteSpace(requestedAssignee), Lower(Trim([sys.user])), Lower(Trim(requestedAssignee)))` once on entry. A nonblank value is trimmed and lowercased; a blank value falls back to the authenticated starter from `sys.user`. The resolved user must also hold `Reviewer` and takes flow `201` with `reviewOutcome` set to an approved/rejected value.
+- Actors and actions: a `Requester` starts the instance. Task `2` evaluates `if(IsNullOrWhiteSpace(requestedAssignee), Lower(Trim([sys.user])), Lower(Trim(requestedAssignee)))` once on entry. A nonblank value is trimmed and lowercased; a blank value falls back to the authenticated starter from `sys.user`. The resolved user must also hold `Reviewer` and takes flow `201` with `reviewOutcome` set to an approved/rejected value. The form shows that input as **Review outcome**, with help text and the fixed options **Approve** and **Reject**; the form offers only those options, and the authored `validation` rule still checks values sent through the API.
 - Expected result: only the snapshotted direct assignee can act, and the instance completes at node `3`. With the default, the assignee is `alice.example`; with whitespace input, it is the normalized starter identity.
 - API/worker/configuration: authenticated instance and user-task APIs only; no claim call, worker, or external configuration.
 

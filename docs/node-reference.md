@@ -1023,6 +1023,9 @@ The same variable declaration shape is used for workflow-level variables, manual
 | `scope` | string | Top-level only; omitted means `"instance"`. | `instance` stores per-instance data; `shared` binds to a deployment catalog entry. Start/action inputs cannot set scope metadata. |
 | `sharedKey` | string | Required for `scope: "shared"`; otherwise omit. | Existing catalog key, maximum 300 Unicode scalar values. Only one local alias for a given catalog key per workflow. |
 | `access` | string | Required explicitly for `scope: "shared"`; otherwise omit. | `read` or `readWrite`. Producers need write access; binding contract and deployment permissions must match. |
+| `label` | string | Optional; start/action inputs only. | Form text shown instead of `name`. Trimmed; blank means none. Maximum 300 Unicode scalar values. |
+| `helpText` | string | Optional; start/action inputs only. | Plain text shown with the form field; line breaks are kept. Trimmed; blank means none. Maximum 1,000 Unicode scalar values. |
+| `options` | array | Optional; start/action inputs only. | Fixed choices a form offers, as `{ "value", "label" }` objects; see [form presentation](#form-presentation). Only on a single (non-array) `string` or `number`. An empty list means none. |
 
 | `dataType` | Scalar JSON example | Notes |
 | --- | --- | --- |
@@ -1047,6 +1050,34 @@ Top-level variable fragments:
 ```
 
 An MI `resultVariable` uses scalar `dataType: "json"` with `isArray: false`; its JSON value is the result array. Do not confuse that with a declaration of `json[]`.
+
+### Form presentation
+
+Start-event and user-action input declarations may carry `label`, `helpText`, and `options` for the forms that collect them. Like node and flow `attributes`, these properties never affect execution: the engine accepts any value of the declared type whether or not it is an option, and changing only these properties never blocks a workflow-version change. Process variables reject them.
+
+```json
+{
+  "id": 1,
+  "name": "reviewOutcome",
+  "dataType": "string",
+  "required": true,
+  "validation": "reviewOutcome in ('approved', 'rejected')",
+  "label": "Review outcome",
+  "helpText": "Choose the outcome you agreed with the requester.",
+  "options": [
+    { "value": "approved", "label": "Approve" },
+    { "value": "rejected", "label": "Reject" }
+  ]
+}
+```
+
+Each option needs a `value` of the declaration's type; `label` is optional, at most 300 Unicode scalar values, and forms show the value without it. A declaration may have at most 100 options.
+
+- **String values** must not be blank, must not start or end with whitespace, have at most 300 Unicode scalar values, and are unique ignoring case, because NCalc compares strings case-insensitively.
+- **Number values** have at most 15 significant digits and 28 decimal places, so the editor and forms hold them exactly. They must fit a .NET `decimal` and are unique by value, so `1` and `1.0` are duplicates. The editor saves a number in its shortest form, for example `1.50` as `1.5`.
+- Option values are literal; `${...}` templates are not resolved.
+
+Flowbit.Ui forms offer only the listed values, but options do not restrict what the engine accepts: an API client can send any value of the declared type. To reject other values, keep a `validation` rule such as the one above. Message starts have no form, so a start event converted to a message start drops these properties.
 
 Start/action defaults can refer to earlier resolved values through `${name}` and available `${sys.*}`, `${config.*}`, or `${setting.*}` context. NCalc uses bracketed dotted names such as `[sys.user]`. Available functions and context depend on the owning property: conditional predicates accept persisted instance variables and reject external context; `FlowInfo` is supported only in the documented routing, MI completion, and script contexts.
 

@@ -206,7 +206,7 @@ DevelopmentToken mode retains its process-wide test identity. OpenIdConnect mode
 
 Choose **Create workflow** on Workflows, or **Workflow editor** in the sidebar, to start an empty document with a fresh editable workflow key. To change an existing definition, expand its family and choose **Edit** on the exact version. The editor fills the workspace beside the normal navigation. Its compact toolbar contains File/Edit/View, the workflow name, version and save status, and **Save new version**. The version's tooltip identifies the source name/key; its workflow key in the inspector is read-only because changes stay in that family.
 
-Use the editor's normal canvas, inspector, variables, and File menu. **Save new version** validates the same JSON as **File → Save JSON**, then creates an **unpublished** immutable version. Editing a stored version uses the existing new-version API; creating or importing locally uses the existing create API. A create request using an existing key appends a version to that family. After success, the toolbar and URL identify the saved version. Publish it separately from Workflows. Existing instances continue using their selected version.
+Use the editor's normal canvas, inspector, variables, and File menu. Each start-event and action variable has a **Form** section for the label, help text, and fixed options that forms show; options are available for a single text or number value, and a type change converts option values where possible. **Save new version** validates the same JSON as **File → Save JSON**, then creates an **unpublished** immutable version. Editing a stored version uses the existing new-version API; creating or importing locally uses the existing create API. A create request using an existing key appends a version to that family. After success, the toolbar and URL identify the saved version. Publish it separately from Workflows. Existing instances continue using their selected version.
 
 Hosted saves are limited to **2 MiB of UTF-8 JSON**. Larger local imports remain editable and can be exported to a file. API load/save requires the configured definition-administration permission (`Workflow.RequiredRole`, default `admin`); validation and authorization errors leave the diagram open. If a connection fails after submission, check Workflows before retrying because the API may already have created a version.
 
@@ -241,19 +241,20 @@ Choose an action from the cards the server returns. Each card has its own inputs
 
 ### Enter typed values
 
-Start and action inputs show their type, with an asterisk for required values. Use these forms:
+Start forms, task action cards, instance-detail actions and interrupt actions, and the instance **Administrative actions** panel choose a control for each value from its declared type. Each field shows its label followed by the variable name and type, or only the variable name and type when the workflow sets no label, and an asterisk for required values. Authored help text appears under the label, and **Leave blank to use the default.** appears when an optional value has a default.
 
-| Type | Example input |
+| Type | Control and entry |
 | --- | --- |
-| `string` | `Reviewed and approved` — no JSON quotes in ordinary task/start text fields. |
-| `number` | `1250.50` — use a period as the decimal separator. |
-| `boolean` | `true` or `false`. |
-| `date` | `2026-09-09`. |
-| `datetime` | `2026-09-09T10:30:00Z` or a timestamp with an explicit offset. |
-| Typed array | `["alice","bob"]`, `[10,20]`, or `[true,false]`; non-JSON types also accept comma-separated scalar values. Use a JSON string array when a value contains a comma. |
-| `json` / `json[]` | Valid JSON, for example `{"approved":true}` or `[{"amount":10}]`. |
+| `string` | A text box. Enter text without JSON quotes, for example `Reviewed and approved`. |
+| `string` or `number` with fixed options | A list with **Choose a value** and the options the workflow defines. Only those values can be chosen. |
+| `number` | A number box. Use plain decimal notation with a period, for example `1250.50`; exponents and thousands separators are not accepted. Turning the mouse wheel over the box moves focus out of it and scrolls the page; it never changes the number. |
+| `boolean` | A list with **True** and **False**. |
+| `date` | A date picker. |
+| `datetime` | A date-time picker in your browser's time zone. Below it, **Sent as** shows the exact value: your local date and time with your browser's UTC offset for that moment, such as `2026-09-10T10:30:00+03:00`, or `Z` when the offset is zero. A time skipped when clocks go forward is rejected. A time that occurs twice when clocks go back uses its first occurrence, with the summer-time offset. |
+| Typed array | A text area. Enter `["alice","bob"]`, `[10,20]`, or `[true,false]`; non-JSON types also accept comma-separated scalar values. Use a JSON string array when a value contains a comma. |
+| `json` / `json[]` | A text area. Enter valid JSON, for example `{"approved":true}` or `[{"amount":10}]`. |
 
-Blank task/start fields are omitted from the submission; they do not mean “write null.” The server applies defaults, required-input checks, and authored validation. Administrative **Raw JSON value** fields have different rules: even a string must be quoted there.
+Blank fields are omitted from the submission; they do not mean “write null.” When the browser cannot read an entry, such as a date or date-time left partly filled or a number like `12-`, the field shows an error as you type or when you leave it, and the form refuses to submit until you correct or clear it. The server applies defaults, required-input checks, and authored validation. Fixed options limit only what the form offers: the server accepts any value of the declared type from other clients unless the workflow's validation rejects it. Administrative **Raw JSON value** fields have different rules: even a string must be quoted there.
 
 ### Concurrent and multi-instance work
 

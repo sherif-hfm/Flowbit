@@ -203,7 +203,8 @@ public sealed class BrowserStackFixture : IAsyncLifetime
         int viewportWidth = 1440,
         int viewportHeight = 900,
         bool blockNativeFilePicker = false,
-        TimeSpan? scenarioTimeout = null)
+        TimeSpan? scenarioTimeout = null,
+        string? timezoneId = null)
     {
         if (invalidReason is not null) throw new InvalidOperationException(invalidReason);
         if (browser is null)
@@ -218,7 +219,8 @@ public sealed class BrowserStackFixture : IAsyncLifetime
             AcceptDownloads = true,
             BaseURL = UiBaseAddress,
             Locale = IsAcceptance ? "en-US" : null,
-            TimezoneId = IsAcceptance ? "UTC" : null,
+            // A scenario that checks browser-local times fixes its own time zone.
+            TimezoneId = timezoneId ?? (IsAcceptance ? "UTC" : null),
         };
         lock (manifestGate)
         {

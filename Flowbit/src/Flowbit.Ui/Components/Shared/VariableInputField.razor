@@ -1,0 +1,179 @@
+@using System.Text.Json
+
+@* One declared start or action value. Every control stores the text the typed
+   parser already accepts, so the page's payload code is unchanged. *@
+<div class="variable-input">
+    <label class="form-label" for="@InputId">@DisplayLabel <span class="field-type">@TypeText</span>@if (Variable.Required) {<span class="required-mark" aria-hidden="true"> *</span>}</label>
+    @if (HelpText is not null)
+    {
+        <div id="@HelpId" class="form-text variable-input-help">@HelpText</div>
+    }
+    @switch (kind)
+    {
+        case VariableInputKind.Options:
+            <select id="@InputId" class="form-select" value="@Value" @onchange="OnChangedAsync"
+                    aria-required="@AriaRequired" aria-describedby="@DescribedBy">
+                <option value="">Choose a value</option>
+                @foreach (var option in options)
+                {
+                    <option value="@option.Value">@option.Text</option>
+                }
+            </select>
+            break;
+        case VariableInputKind.Boolean:
+            <select id="@InputId" class="form-select" value="@Value" @onchange="OnChangedAsync"
+                    aria-required="@AriaRequired" aria-describedby="@DescribedBy">
+                <option value="">Choose a value</option>
+                <option value="true">True</option>
+                <option value="false">False</option>
+            </select>
+            break;
+        @* typedcommit re-reads a picker when focus leaves it: a partial date entered
+           from empty raises no input event. *@
+        case VariableInputKind.Number:
+            <input @key="generation" id="@InputId" class="form-control" type="number" step="any" value="@domValue"
+                   data-typed-input @ontypedinput="OnTypedInputAsync" @ontypedcommit="OnTypedInputAsync"
+                   aria-required="@AriaRequired" aria-invalid="@AriaInvalid" aria-describedby="@DescribedBy" />
+            break;
+        case VariableInputKind.Date:
+            <input @key="generation" id="@InputId" class="form-control" type="date" max="9999-12-31" value="@domValue"
+                   data-typed-input @ontypedinput="OnTypedInputAsync" @ontypedcommit="OnTypedInputAsync"
+                   aria-required="@AriaRequired" aria-invalid="@AriaInvalid" aria-describedby="@DescribedBy" />
+            break;
+        case VariableInputKind.DateTime:
+            <input @key="generation" id="@InputId" class="form-control" type="datetime-local" max="9999-12-31T23:59"
+                   value="@domValue" data-typed-input @ontypedinput="OnTypedInputAsync" @ontypedcommit="OnTypedInputAsync"
+                   aria-required="@AriaRequired" aria-invalid="@AriaInvalid" aria-describedby="@DescribedBy" />
+            break;
+        case VariableInputKind.Structured:
+            <textarea id="@InputId" class="form-control font-monospace" rows="3" value="@Value" @oninput="OnChangedAsync"
+                      placeholder="@StructuredHint" aria-required="@AriaRequired" aria-describedby="@DescribedBy"></textarea>
+            break;
+        default:
+            <input id="@InputId" class="form-control" value="@Value" @oninput="OnChangedAsync"
+                   aria-required="@AriaRequired" aria-describedby="@DescribedBy" />
+            break;
+    }
+    @if (kind == VariableInputKind.DateTime)
+    {
+        <div id="@PreviewId" class="form-text">@DateTimePreview</div>
+    }
+    @if (HasDefault)
+    {
+        <div id="@DefaultId" class="form-text">Leave blank to use the default.</div>
+    }
+    @if (error is not null)
+    {
+        <div id="@ErrorId" class="validation-message" role="alert">@error</div>
+    }
+</div>
+
+@code {
+    private VariableInputKind kind;
+    private IReadOnlyList<VariableInputOption> options = [];
+    private string? signature;
+    private string? lastEmitted;
+    // Pickers render this value only after an outside change, so neither typing
+    // nor a page refresh rewrites what the browser shows.
+    private string domValue = string.Empty;
+    private int generation;
+    private string? error;
+    private string? timeZone;
+
+    [Parameter, EditorRequired]
+    public VariableModel Variable { get; set; } = null!;
+
+    [Parameter, EditorRequired]
+    public string InputId { get; set; } = string.Empty;
+
+    [Parameter]
+    public string? Value { get; set; }
+
+    [Parameter]
+    public EventCallback<string?> ValueChanged { get; set; }
+
+    private string DisplayLabel => string.IsNullOrWhiteSpace(Variable.Label) ? Variable.Name : Variable.Label.Trim();
+
+    // With a label, the name stays visible so messages that name the variable still match a field.
+    private string TypeText
+    {
+        get
+        {
+            var type = Variable.DataType + (Variable.IsArray ? "[]" : string.Empty);
+            return string.IsNullOrWhiteSpace(Variable.Label) ? type : $"{Variable.Name} · {type}";
+        }
+    }
+
+    private string? HelpText => string.IsNullOrWhiteSpace(Variable.HelpText) ? null : Variable.HelpText.Trim();
+
+    private bool HasDefault => !Variable.Required
+        && Variable.DefaultValue is { ValueKind: not (JsonValueKind.Null or JsonValueKind.Undefined) };
+
+    private string HelpId => $"{InputId}-help";
+    private string PreviewId => $"{InputId}-preview";
+    private string DefaultId => $"{InputId}-default";
+    private string ErrorId => $"{InputId}-error";
+    private string? AriaRequired => Variable.Required ? "true" : null;
+    private string? AriaInvalid => error is null ? null : "true";
+
+    private string? DescribedBy
+    {
+        get
+        {
+            var ids = new List<string>(4);
+            if (HelpText is not null) ids.Add(HelpId);
+            if (kind == VariableInputKind.DateTime) ids.Add(PreviewId);
+            if (HasDefault) ids.Add(DefaultId);
+            if (error is not null) ids.Add(ErrorId);
+            return ids.Count == 0 ? null : string.Join(' ', ids);
+        }
+    }
+
+    private string StructuredHint => Variable.IsArray
+        ? Variable.DataType == WorkflowVariableTypes.Json ? "Enter a JSON array" : "JSON array or comma-separated values"
+        : "Enter a JSON value";
+
+    private string DateTimePreview => !string.IsNullOrEmpty(Value) && !VariableInputConversion.IsInvalid(Value)
+        ? $"Sent as {Value}{(timeZone is null ? string.Empty : $" ({timeZone})")}."
+        : "Uses your browser's time zone.";
+
+    protected override void OnParametersSet()
+    {
+        // Captions can change while the values stay the same, for example when
+        // another start event declares the same input, so they are read each time.
+        kind = VariableInputConversion.KindOf(Variable);
+        options = VariableInputConversion.OptionsOf(Variable);
+        var nextSignature = InputId + '\u001d' + VariableInputConversion.Signature(Variable);
+        if (!string.Equals(nextSignature, signature, StringComparison.Ordinal)
+            || !string.Equals(Value, lastEmitted, StringComparison.Ordinal))
+        {
+            signature = nextSignature;
+            Reset();
+        }
+    }
+
+    private void Reset()
+    {
+        lastEmitted = Value;
+        domValue = VariableInputConversion.DomValue(kind, Value);
+        error = null;
+        timeZone = null;
+        generation++;
+    }
+
+    private Task OnChangedAsync(ChangeEventArgs args) => EmitAsync(args.Value?.ToString());
+
+    private Task OnTypedInputAsync(TypedInputEventArgs args)
+    {
+        var result = VariableInputConversion.Interpret(kind, args);
+        error = result.Error;
+        timeZone = result.TimeZone;
+        return EmitAsync(result.Value);
+    }
+
+    private Task EmitAsync(string? value)
+    {
+        lastEmitted = value;
+        return ValueChanged.InvokeAsync(value);
+    }
+}

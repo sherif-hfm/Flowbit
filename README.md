@@ -74,6 +74,8 @@ Task and action roles can come from declared `string[]` variables. Their effecti
 
 Multi-instance tasks support collection-based assignees or expression-based cardinality, parallel or sequential execution, one-per-actor participation, early quorum or after-all evaluation, and parent-level interruption. Results retain the selected actions, submitted values, and actor evidence.
 
+Start and action forms choose controls from each value's type: number boxes, date and date-time pickers that send the browser's UTC offset, true/false lists, and text areas for arrays and JSON. Input declarations can add a form label, help text, and fixed options that the API returns to any client.
+
 ### Decisions, branches, and events
 
 | Building block | Supported behavior |

@@ -2688,7 +2688,146 @@ public sealed class WorkflowDefinitionValidator(
             requireDefault: false,
             allowRequiredDefault: false,
             allowNullable: false);
+        ValidateVariablePresentation(variables, owner);
     }
+
+    // Form metadata belongs to inputs that a person fills in. Process variables
+    // are computed, so they reject it rather than carry fields no form shows.
+    private static void RejectVariablePresentation(VariableModel variable)
+    {
+        var property = !string.IsNullOrWhiteSpace(variable.Label) ? "label"
+            : !string.IsNullOrWhiteSpace(variable.HelpText) ? "helpText"
+            : variable.Options is { Count: > 0 } ? "options"
+            : null;
+        if (property is not null)
+        {
+            throw new WorkflowDomainException(
+                $"Process variable '{variable.Name}' cannot define {property}; "
+                + "form fields apply only to start-event and action inputs.");
+        }
+    }
+
+    // Presentation rules only. Forms offer the options, but the engine never checks
+    // submitted values against them, so these rules keep forms usable instead.
+    private static void ValidateVariablePresentation(IEnumerable<VariableModel> variables, string owner)
+    {
+        foreach (var variable in variables)
+        {
+            if (variable is null)
+            {
+                continue;
+            }
+
+            if (ExceedsRunes(variable.Label?.Trim(), VariablePresentationConstraints.MaxLabelLength))
+            {
+                throw new WorkflowDomainException(
+                    $"Variable '{variable.Name}' label on {owner} must contain at most {VariablePresentationConstraints.MaxLabelLength} Unicode scalar values.");
+            }
+
+            if (ExceedsRunes(variable.HelpText?.Trim(), VariablePresentationConstraints.MaxHelpTextLength))
+            {
+                throw new WorkflowDomainException(
+                    $"Variable '{variable.Name}' helpText on {owner} must contain at most {VariablePresentationConstraints.MaxHelpTextLength} Unicode scalar values.");
+            }
+
+            if (variable.Options is not { Count: > 0 } options)
+            {
+                continue;
+            }
+
+            var isString = variable.DataType == WorkflowVariableTypes.String;
+            if (variable.IsArray || !(isString || variable.DataType == WorkflowVariableTypes.Number))
+            {
+                throw new WorkflowDomainException(
+                    $"Variable '{variable.Name}' on {owner} can define options only for a single string or number value.");
+            }
+
+            if (options.Count > VariablePresentationConstraints.MaxOptionCount)
+            {
+                throw new WorkflowDomainException(
+                    $"Variable '{variable.Name}' on {owner} cannot define more than {VariablePresentationConstraints.MaxOptionCount} options.");
+            }
+
+            var strings = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var numbers = new HashSet<decimal>();
+            for (var index = 0; index < options.Count; index++)
+            {
+                var number = index + 1;
+                var option = options[index];
+                if (option?.Value is not { ValueKind: not (JsonValueKind.Null or JsonValueKind.Undefined) } value)
+                {
+                    throw new WorkflowDomainException(
+                        $"Variable '{variable.Name}' option #{number} on {owner} must define a value.");
+                }
+
+                if (isString)
+                {
+                    if (value.ValueKind != JsonValueKind.String)
+                    {
+                        throw new WorkflowDomainException(
+                            $"Variable '{variable.Name}' option #{number} value on {owner} must be a string.");
+                    }
+
+                    var text = value.GetString()!;
+                    if (string.IsNullOrWhiteSpace(text) || text.Trim().Length != text.Length)
+                    {
+                        throw new WorkflowDomainException(
+                            $"Variable '{variable.Name}' option #{number} value on {owner} cannot be blank or start or end with whitespace.");
+                    }
+
+                    if (ExceedsRunes(text, VariablePresentationConstraints.MaxOptionValueLength))
+                    {
+                        throw new WorkflowDomainException(
+                            $"Variable '{variable.Name}' option #{number} value on {owner} must contain at most {VariablePresentationConstraints.MaxOptionValueLength} Unicode scalar values.");
+                    }
+
+                    if (!strings.Add(text))
+                    {
+                        throw new WorkflowDomainException(
+                            $"Variable '{variable.Name}' option #{number} value '{text}' on {owner} duplicates an earlier option; option values ignore case.");
+                    }
+                }
+                else
+                {
+                    if (value.ValueKind != JsonValueKind.Number)
+                    {
+                        throw new WorkflowDomainException(
+                            $"Variable '{variable.Name}' option #{number} value on {owner} must be a number.");
+                    }
+
+                    // A decimal rounds what it cannot hold, so 1e-29 would become 0.
+                    if (!VariablePresentationConstraints.IsExactOptionNumber(value.GetRawText()))
+                    {
+                        throw new WorkflowDomainException(
+                            $"Variable '{variable.Name}' option #{number} value on {owner} must have at most "
+                            + $"{VariablePresentationConstraints.MaxOptionSignificantDigits} significant digits and "
+                            + $"{VariablePresentationConstraints.MaxOptionDecimalPlaces} decimal places.");
+                    }
+
+                    if (!value.TryGetDecimal(out var amount))
+                    {
+                        throw new WorkflowDomainException(
+                            $"Variable '{variable.Name}' option #{number} value on {owner} must be within the decimal range.");
+                    }
+
+                    if (!numbers.Add(amount))
+                    {
+                        throw new WorkflowDomainException(
+                            $"Variable '{variable.Name}' option #{number} value {value.GetRawText()} on {owner} duplicates an earlier option.");
+                    }
+                }
+
+                if (ExceedsRunes(option.Label?.Trim(), VariablePresentationConstraints.MaxOptionLabelLength))
+                {
+                    throw new WorkflowDomainException(
+                        $"Variable '{variable.Name}' option #{number} label on {owner} must contain at most {VariablePresentationConstraints.MaxOptionLabelLength} Unicode scalar values.");
+                }
+            }
+        }
+    }
+
+    private static bool ExceedsRunes(string? text, int maximum) =>
+        text is not null && text.EnumerateRunes().Take(maximum + 1).Count() > maximum;
 
     // Instance process variables are computed and retain the historical default
     // contract. Shared declarations are aliases for catalog-owned values, so a
@@ -2705,6 +2844,7 @@ public sealed class WorkflowDefinitionValidator(
 
         foreach (var variable in materialized)
         {
+            RejectVariablePresentation(variable);
             var scope = string.IsNullOrWhiteSpace(variable.Scope)
                 ? VariableScopes.Instance
                 : variable.Scope;

@@ -459,6 +459,255 @@ public sealed class DefinitionValidationTests
         Assert.Contains("attribute", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public async Task CreateAsync_NormalizesVariablePresentationAndKeepsOptionValues()
+    {
+        var model = CreateTerminalModel(BpmnFlowNodeTypes.EndEvent);
+        model.FlowNodes.Single(node => node.Id == 1).Variables =
+        [
+            new VariableModel
+            {
+                Id = 1,
+                Name = "category",
+                DataType = WorkflowVariableTypes.String,
+                Required = true,
+                Label = "  Category  ",
+                HelpText = "  Choose one.\nAsk your manager if unsure.  ",
+                Options =
+                [
+                    new VariableOptionModel { Value = JsonSerializer.SerializeToElement("hardware"), Label = "  Hardware  " },
+                    new VariableOptionModel { Value = JsonSerializer.SerializeToElement("Software"), Label = "   " }
+                ]
+            },
+            new VariableModel
+            {
+                Id = 2,
+                Name = "note",
+                DataType = WorkflowVariableTypes.String,
+                Label = " ",
+                HelpText = string.Empty,
+                Options = []
+            }
+        ];
+        model.SequenceFlows.Single(flow => flow.Id == 201).Variables =
+        [
+            new VariableModel
+            {
+                Id = 1,
+                Name = "score",
+                DataType = WorkflowVariableTypes.Number,
+                Options =
+                [
+                    new VariableOptionModel { Value = JsonSerializer.SerializeToElement(1.50m) },
+                    new VariableOptionModel { Value = JsonSerializer.SerializeToElement(2), Label = "Two" }
+                ]
+            }
+        ];
+        var service = CreateService(out var repository);
+
+        await service.CreateAsync(model, false, CancellationToken.None);
+
+        var saved = repository.Added!.Definition;
+        var start = saved.FlowNodes.Single(node => node.Id == 1).Variables;
+        Assert.Equal("Category", start[0].Label);
+        Assert.Equal("Choose one.\nAsk your manager if unsure.", start[0].HelpText);
+        Assert.Collection(
+            start[0].Options!,
+            option =>
+            {
+                Assert.Equal("hardware", option.Value!.Value.GetString());
+                Assert.Equal("Hardware", option.Label);
+            },
+            option =>
+            {
+                Assert.Equal("Software", option.Value!.Value.GetString());
+                Assert.Null(option.Label);
+            });
+        Assert.Null(start[1].Label);
+        Assert.Null(start[1].HelpText);
+        Assert.Null(start[1].Options);
+        var score = saved.SequenceFlows.Single(flow => flow.Id == 201).Variables.Single();
+        Assert.Equal("1.50", score.Options![0].Value!.Value.GetRawText());
+        Assert.Equal("Two", score.Options[1].Label);
+    }
+
+    [Fact]
+    public async Task CreateAsync_AcceptsVariablePresentationLimits()
+    {
+        var model = CreateTerminalModel(BpmnFlowNodeTypes.EndEvent);
+        model.SequenceFlows.Single(flow => flow.Id == 201).Variables =
+        [
+            new VariableModel
+            {
+                Id = 1,
+                Name = "choice",
+                DataType = WorkflowVariableTypes.String,
+                Label = Emoji(VariablePresentationConstraints.MaxLabelLength),
+                HelpText = Emoji(VariablePresentationConstraints.MaxHelpTextLength),
+                Options = Enumerable.Range(0, VariablePresentationConstraints.MaxOptionCount)
+                    .Select(index => new VariableOptionModel
+                    {
+                        Value = JsonSerializer.SerializeToElement(
+                            index == 0 ? Emoji(VariablePresentationConstraints.MaxOptionValueLength) : $"value-{index}"),
+                        Label = index == 0 ? Emoji(VariablePresentationConstraints.MaxOptionLabelLength) : null
+                    })
+                    .ToList()
+            }
+        ];
+
+        await CreateService(out var repository).CreateAsync(model, false, CancellationToken.None);
+
+        Assert.Equal(
+            VariablePresentationConstraints.MaxOptionCount,
+            repository.Added!.Definition.SequenceFlows.Single(flow => flow.Id == 201).Variables[0].Options!.Count);
+    }
+
+    [Fact]
+    public async Task CreateAsync_AcceptsNumberOptionsAtThePrecisionLimits()
+    {
+        var model = CreateTerminalModel(BpmnFlowNodeTypes.EndEvent);
+        string[] values = ["1e-28", "123456789012345", "-0.000000000000025", "1e+28", "7.92281625142643e28"];
+        model.SequenceFlows.Single(flow => flow.Id == 201).Variables =
+        [
+            new VariableModel
+            {
+                Id = 1,
+                Name = "score",
+                DataType = WorkflowVariableTypes.Number,
+                Options = values
+                    .Select(value => new VariableOptionModel { Value = JsonDocument.Parse(value).RootElement.Clone() })
+                    .ToList()
+            }
+        ];
+
+        await CreateService(out var repository).CreateAsync(model, false, CancellationToken.None);
+
+        Assert.Equal(
+            values,
+            repository.Added!.Definition.SequenceFlows.Single(flow => flow.Id == 201).Variables[0].Options!
+                .Select(option => option.Value!.Value.GetRawText()));
+    }
+
+    [Theory]
+    [InlineData("processLabel", "Process variable 'total' cannot define label")]
+    [InlineData("processHelpText", "Process variable 'total' cannot define helpText")]
+    [InlineData("processOptions", "Process variable 'total' cannot define options")]
+    [InlineData("longLabel", "Variable 'choice' label on sequence flow #201 must contain at most 300")]
+    [InlineData("longHelpText", "Variable 'choice' helpText on sequence flow #201 must contain at most 1000")]
+    [InlineData("booleanOptions", "Variable 'choice' on sequence flow #201 can define options only for a single string or number value.")]
+    [InlineData("arrayOptions", "Variable 'choice' on sequence flow #201 can define options only for a single string or number value.")]
+    [InlineData("tooManyOptions", "cannot define more than 100 options")]
+    [InlineData("nullOption", "Variable 'choice' option #1 on sequence flow #201 must define a value.")]
+    [InlineData("missingValue", "Variable 'choice' option #1 on sequence flow #201 must define a value.")]
+    [InlineData("nullValue", "Variable 'choice' option #1 on sequence flow #201 must define a value.")]
+    [InlineData("numberForString", "Variable 'choice' option #1 value on sequence flow #201 must be a string.")]
+    [InlineData("stringForNumber", "Variable 'choice' option #1 value on sequence flow #201 must be a number.")]
+    [InlineData("blankString", "cannot be blank or start or end with whitespace")]
+    [InlineData("paddedString", "cannot be blank or start or end with whitespace")]
+    [InlineData("longStringValue", "Variable 'choice' option #1 value on sequence flow #201 must contain at most 300")]
+    [InlineData("duplicateString", "Variable 'choice' option #2 value 'yes' on sequence flow #201 duplicates an earlier option")]
+    [InlineData("duplicateNumber", "Variable 'choice' option #2 value 1.0 on sequence flow #201 duplicates an earlier option.")]
+    [InlineData("hugeNumber", "must be within the decimal range")]
+    [InlineData("tinyNumber", "Variable 'choice' option #1 value on sequence flow #201 must have at most 15 significant digits and 28 decimal places.")]
+    [InlineData("longNumber", "Variable 'choice' option #1 value on sequence flow #201 must have at most 15 significant digits and 28 decimal places.")]
+    [InlineData("decimalMaxNumber", "Variable 'choice' option #1 value on sequence flow #201 must have at most 15 significant digits and 28 decimal places.")]
+    [InlineData("longOptionLabel", "Variable 'choice' option #1 label on sequence flow #201 must contain at most 300")]
+    [InlineData("startEventLabel", "Variable 'title' label on flow node #1 must contain at most 300")]
+    public async Task CreateAsync_RejectsInvalidVariablePresentation(string invalid, string expected)
+    {
+        var model = CreateTerminalModel(BpmnFlowNodeTypes.EndEvent);
+        var choice = new VariableModel { Id = 1, Name = "choice", DataType = WorkflowVariableTypes.String };
+        model.SequenceFlows.Single(flow => flow.Id == 201).Variables = [choice];
+        var total = new VariableModel
+        {
+            Id = 1,
+            Name = "total",
+            DataType = WorkflowVariableTypes.Number,
+            DefaultValue = JsonSerializer.SerializeToElement(0)
+        };
+        static VariableOptionModel Option(string json) =>
+            new() { Value = JsonDocument.Parse(json).RootElement.Clone() };
+
+        switch (invalid)
+        {
+            case "processLabel": total.Label = "Total"; model.Variables = [total]; break;
+            case "processHelpText": total.HelpText = "Computed."; model.Variables = [total]; break;
+            case "processOptions": total.Options = [Option("1")]; model.Variables = [total]; break;
+            case "longLabel": choice.Label = Emoji(VariablePresentationConstraints.MaxLabelLength + 1); break;
+            case "longHelpText": choice.HelpText = Emoji(VariablePresentationConstraints.MaxHelpTextLength + 1); break;
+            case "booleanOptions":
+                choice.DataType = WorkflowVariableTypes.Boolean;
+                choice.Options = [Option("true")];
+                break;
+            case "arrayOptions": choice.IsArray = true; choice.Options = [Option("\"a\"")]; break;
+            case "tooManyOptions":
+                choice.Options = Enumerable.Range(0, VariablePresentationConstraints.MaxOptionCount + 1)
+                    .Select(index => Option($"\"value-{index}\""))
+                    .ToList();
+                break;
+            case "nullOption": choice.Options = [null!]; break;
+            case "missingValue":
+                choice.Options = JsonSerializer.Deserialize<List<VariableOptionModel>>("""[{"label":"A"}]""");
+                break;
+            case "nullValue": choice.Options = [Option("null")]; break;
+            case "numberForString": choice.Options = [Option("5")]; break;
+            case "stringForNumber":
+                choice.DataType = WorkflowVariableTypes.Number;
+                choice.Options = [Option("\"5\"")];
+                break;
+            case "blankString": choice.Options = [Option("\"   \"")]; break;
+            case "paddedString": choice.Options = [Option("\" yes\"")]; break;
+            case "longStringValue":
+                choice.Options = [Option(JsonSerializer.Serialize(Emoji(VariablePresentationConstraints.MaxOptionValueLength + 1)))];
+                break;
+            case "duplicateString": choice.Options = [Option("\"Yes\""), Option("\"yes\"")]; break;
+            case "duplicateNumber":
+                choice.DataType = WorkflowVariableTypes.Number;
+                choice.Options = [Option("1"), Option("1.0")];
+                break;
+            case "hugeNumber":
+                choice.DataType = WorkflowVariableTypes.Number;
+                choice.Options = [Option("1e400")];
+                break;
+            case "tinyNumber":
+                choice.DataType = WorkflowVariableTypes.Number;
+                choice.Options = [Option("1e-29")];
+                break;
+            case "longNumber":
+                choice.DataType = WorkflowVariableTypes.Number;
+                choice.Options = [Option("9007199254740993")];
+                break;
+            case "decimalMaxNumber":
+                choice.DataType = WorkflowVariableTypes.Number;
+                choice.Options = [Option("79228162514264337593543950335")];
+                break;
+            case "longOptionLabel":
+                var option = Option("\"a\"");
+                option.Label = Emoji(VariablePresentationConstraints.MaxOptionLabelLength + 1);
+                choice.Options = [option];
+                break;
+            case "startEventLabel":
+                model.FlowNodes.Single(node => node.Id == 1).Variables =
+                [
+                    new VariableModel
+                    {
+                        Id = 1,
+                        Name = "title",
+                        DataType = WorkflowVariableTypes.String,
+                        Label = Emoji(VariablePresentationConstraints.MaxLabelLength + 1)
+                    }
+                ];
+                break;
+        }
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+
+        Assert.Contains(expected, error.Message, StringComparison.Ordinal);
+    }
+
+    private static string Emoji(int count) => string.Concat(Enumerable.Repeat("😀", count));
+
     public static IEnumerable<object[]> ValidTypedOutputDefaults()
     {
         var values = new (string Type, string Scalar, string Array)[]

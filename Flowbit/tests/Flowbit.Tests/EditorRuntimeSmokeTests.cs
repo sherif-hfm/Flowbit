@@ -2308,6 +2308,313 @@ public sealed class EditorRuntimeSmokeTests
         Assert.Equal("after", history.RootElement.GetProperty("redone").GetString());
     }
 
+    private const string PresentationWorkflowScript =
+        """
+        const presentationWorkflow = () => ({
+          id: 'variable-presentation',
+          name: 'Variable presentation',
+          initialEventId: 1,
+          variables: [{ id: 1, name: 'total', dataType: 'number', isArray: false, required: false, defaultValue: 0 }],
+          lanes: [],
+          flowNodes: [
+            {
+              id: 1, name: 'Start', type: 'startEvent', x: 0, y: 0,
+              variables: [
+                {
+                  id: 1, name: 'title', dataType: 'string', isArray: false, required: true,
+                  label: '  Request title  ', helpText: '  Keep it short.\nNo codes.  '
+                },
+                { id: 2, name: 'note', dataType: 'string', isArray: false, required: false, label: '   ', options: [] },
+                { id: 3, label: 'legacyName', dataType: 'string', isArray: false, required: false }
+              ]
+            },
+            { id: 2, name: 'Review', type: 'userTask', x: 200, y: 0 },
+            { id: 3, name: 'Done', type: 'endEvent', x: 400, y: 0 }
+          ],
+          sequenceFlows: [
+            { id: 101, name: '', sourceRef: 1, targetRef: 2 },
+            {
+              id: 201, name: 'Score', sourceRef: 2, targetRef: 3,
+              variables: [{
+                id: 1, name: 'score', dataType: 'number', isArray: false, required: false,
+                options: [{ value: 1 }, { value: 2.5, label: '  High  ' }]
+              }]
+            }
+          ]
+        });
+        const descendants = root => {
+          const result = [root];
+          for (const child of root.children || []) result.push(...descendants(child));
+          return result;
+        };
+        const latest = predicate => descendants(inspector).filter(predicate).pop();
+        """;
+
+    [Fact]
+    public void LoaderKeepsVariablePresentationAndLegacyLabelNames()
+    {
+        var engine = CreateEditorEngine();
+        using var loaded = JsonDocument.Parse(engine.Evaluate(
+            PresentationWorkflowScript +
+            """
+            (() => {
+              loadFromObject(presentationWorkflow());
+              return JSON.stringify({
+                start: model.flowNodes[0].variables,
+                flow: model.sequenceFlows[1].variables[0],
+                process: model.variables[0]
+              });
+            })()
+            """).AsString());
+
+        var start = loaded.RootElement.GetProperty("start");
+        Assert.Equal("  Request title  ", start[0].GetProperty("label").GetString());
+        Assert.Equal("  Keep it short.\nNo codes.  ", start[0].GetProperty("helpText").GetString());
+        Assert.Equal(0, start[1].GetProperty("options").GetArrayLength());
+        Assert.Equal("legacyName", start[2].GetProperty("name").GetString());
+        Assert.False(start[2].TryGetProperty("label", out _));
+        var options = loaded.RootElement.GetProperty("flow").GetProperty("options");
+        Assert.Equal(1, options[0].GetProperty("value").GetInt32());
+        Assert.Equal("  High  ", options[1].GetProperty("label").GetString());
+        var process = loaded.RootElement.GetProperty("process");
+        Assert.False(process.TryGetProperty("label", out _));
+        Assert.False(process.TryGetProperty("helpText", out _));
+        Assert.False(process.TryGetProperty("options", out _));
+    }
+
+    [Fact]
+    public void ExportTrimsVariablePresentationAndOmitsBlankFields()
+    {
+        var engine = CreateEditorEngine();
+        using var exported = JsonDocument.Parse(engine.Evaluate(
+            PresentationWorkflowScript +
+            """
+            (() => {
+              loadFromObject(presentationWorkflow());
+              const live = JSON.stringify(model);
+              const result = prepareWorkflowExport();
+              return JSON.stringify({
+                errors: result.errors,
+                unchanged: live === JSON.stringify(model),
+                saved: JSON.parse(result.json)
+              });
+            })()
+            """).AsString());
+
+        Assert.Empty(exported.RootElement.GetProperty("errors").EnumerateArray());
+        Assert.True(exported.RootElement.GetProperty("unchanged").GetBoolean());
+        var saved = exported.RootElement.GetProperty("saved");
+        var start = saved.GetProperty("flowNodes")[0].GetProperty("variables");
+        Assert.Equal("Request title", start[0].GetProperty("label").GetString());
+        Assert.Equal("Keep it short.\nNo codes.", start[0].GetProperty("helpText").GetString());
+        foreach (var removed in new[] { "label", "helpText", "options" })
+        {
+            Assert.False(start[1].TryGetProperty(removed, out _), removed);
+            Assert.False(start[2].TryGetProperty(removed, out _), removed);
+            Assert.False(saved.GetProperty("variables")[0].TryGetProperty(removed, out _), removed);
+        }
+        var options = saved.GetProperty("sequenceFlows")[1].GetProperty("variables")[0].GetProperty("options");
+        Assert.False(options[0].TryGetProperty("label", out _));
+        Assert.Equal("High", options[1].GetProperty("label").GetString());
+        Assert.Equal(2.5, options[1].GetProperty("value").GetDouble());
+    }
+
+    [Fact]
+    public void ValidatorReportsVariablePresentationRules()
+    {
+        var engine = CreateEditorEngine();
+        using var errors = JsonDocument.Parse(engine.Evaluate(
+            PresentationWorkflowScript +
+            """
+            (() => {
+              const candidate = presentationWorkflow();
+              candidate.variables[0].label = 'Total';
+              const start = candidate.flowNodes[0].variables;
+              start[0].label = '😀'.repeat(301);
+              start[0].helpText = 5;
+              start[1].dataType = 'boolean';
+              start[1].options = [{ value: true }];
+              start[2].name = 'choice';
+              start[2].options = [{ label: 'Missing' }, { value: 5 }, { value: ' padded' }, { value: 'Yes' }, { value: 'yes' }];
+              candidate.sequenceFlows[1].variables[0].options = [{ value: 1 }, { value: 1.0 }, { value: '2' }, { value: 1e400 }, { value: 3, label: 7 }];
+              candidate.sequenceFlows[1].variables.push({ id: 2, name: 'many', dataType: 'string', options: Array.from({ length: 101 }, (_, i) => ({ value: 'v' + i })) });
+              candidate.sequenceFlows[1].variables.push({ id: 3, name: 'odd', dataType: 'string', options: { value: 'x' } });
+              return JSON.stringify(validateModelForSave(candidate).filter(error =>
+                /option|label|helpText|Process variable/.test(error)));
+            })()
+            """).AsString());
+
+        Assert.Equal(
+            [
+                "Process variable 'total' cannot define label; form fields apply only to start-event and action inputs.",
+                "Variable 'title' label on flow node #1 must contain at most 300 Unicode scalar values.",
+                "Variable 'title' helpText on flow node #1 must be text.",
+                "Variable 'note' on flow node #1 can define options only for a single string or number value.",
+                "Variable 'choice' option #1 on flow node #1 must define a value.",
+                "Variable 'choice' option #2 value on flow node #1 must be a string.",
+                "Variable 'choice' option #3 value on flow node #1 cannot be blank or start or end with whitespace.",
+                "Variable 'choice' option #5 value 'yes' on flow node #1 duplicates an earlier option; option values ignore case.",
+                "Variable 'score' option #2 value 1 on sequence flow #201 duplicates an earlier option.",
+                "Variable 'score' option #3 value on sequence flow #201 must be a number.",
+                "Variable 'score' option #4 value on sequence flow #201 must be within the decimal range.",
+                "Variable 'score' option #5 label on sequence flow #201 must be text.",
+                "Variable 'many' on sequence flow #201 cannot define more than 100 options.",
+                "Variable 'odd' options on sequence flow #201 must be a list."
+            ],
+            errors.RootElement.EnumerateArray().Select(error => error.GetString()!).ToArray());
+    }
+
+    [Fact]
+    public void NumberOptionsKeepTheirExactValueOrReportWhy()
+    {
+        var engine = CreateEditorEngine();
+        using var result = JsonDocument.Parse(engine.Evaluate(
+            PresentationWorkflowScript +
+            """
+            (() => {
+              const number = { dataType: 'number' };
+              const typed = ['12.50', ' -3 ', '1e-28', '9007199254740993', '1e-29', '1e400', 'twelve']
+                .map(text => optionValueFromText(text, number));
+              const candidate = presentationWorkflow();
+              candidate.sequenceFlows[1].variables[0].options = [
+                { value: 9007199254740993 }, { value: 1e-29 }, { value: 79228162514264337593543950335 },
+                { value: '9007199254740993' }, { value: '1e400' }, { value: '5' },
+                { value: 7.92281625142643e28 }, { value: 8e28 }, { value: 1e-28 }
+              ];
+              return JSON.stringify({
+                typed,
+                errors: validateModelForSave(candidate).filter(error => /option/.test(error))
+              });
+            })()
+            """).AsString());
+
+        var typed = result.RootElement.GetProperty("typed");
+        Assert.Equal(12.5, typed[0].GetDouble());
+        Assert.Equal(-3, typed[1].GetDouble());
+        Assert.Equal(1e-28, typed[2].GetDouble());
+        Assert.Equal(
+            ["9007199254740993", "1e-29", "1e400", "twelve"],
+            typed.EnumerateArray().Skip(3).Select(value => value.GetString()));
+        const string precision = " must have at most 15 significant digits and 28 decimal places.";
+        Assert.Equal(
+            [
+                "Variable 'score' option #1 value on sequence flow #201" + precision,
+                "Variable 'score' option #2 value on sequence flow #201" + precision,
+                "Variable 'score' option #3 value on sequence flow #201" + precision,
+                "Variable 'score' option #4 value on sequence flow #201" + precision,
+                "Variable 'score' option #5 value on sequence flow #201 must be within the decimal range.",
+                "Variable 'score' option #6 value on sequence flow #201 must be a number.",
+                "Variable 'score' option #8 value on sequence flow #201 must be within the decimal range."
+            ],
+            result.RootElement.GetProperty("errors").EnumerateArray().Select(error => error.GetString()!).ToArray());
+    }
+
+    [Fact]
+    public void VariableFormInspectorEditsPresentationAndConvertsOptionsOnTypeChange()
+    {
+        var engine = CreateEditorEngine();
+        using var edited = JsonDocument.Parse(engine.Evaluate(
+            PresentationWorkflowScript +
+            """
+            (() => {
+              const workflow = presentationWorkflow();
+              workflow.flowNodes[0].variables = [
+                { id: 1, name: 'amount', dataType: 'string', isArray: false, required: false }
+              ];
+              loadFromObject(workflow);
+              selected = { kind: 'node', nodeId: 1 };
+              renderInspector();
+              const form = latest(element => element.className === 'variable-form');
+              const closedWhenEmpty = form.open === false;
+
+              const label = latest(element => element.innerHTML === '<label>Label</label>').children[0];
+              label.value = 'Amount';
+              label.oninput();
+              const help = latest(element => element.innerHTML === '<label>Help text</label>').children[0];
+              help.value = 'Whole euros.';
+              help.oninput();
+              latest(element => element.textContent === '+ Add option').onclick();
+              latest(element => element.textContent === '+ Add option').onclick();
+              latest(element => element.innerHTML === '<label>Option 1 value</label>').children[0].value = '10';
+              latest(element => element.innerHTML === '<label>Option 1 value</label>').children[0].oninput();
+              const second = latest(element => element.innerHTML === '<label>Option 2 value</label>').children[0];
+              second.value = 'twenty';
+              second.oninput();
+              const optionLabel = latest(element => element.innerHTML === '<label>Option 2 label (optional)</label>').children[0];
+              optionLabel.value = 'Twenty';
+              optionLabel.oninput();
+              commitHistory();
+              const asString = JSON.parse(JSON.stringify(model.flowNodes[0].variables[0]));
+
+              const type = latest(element => element.innerHTML === '<label>Data type</label>').children[0];
+              type.value = 'number';
+              type.onchange();
+              commitHistory();
+              const asNumber = JSON.parse(JSON.stringify(model.flowNodes[0].variables[0].options));
+
+              type.value = 'boolean';
+              type.onchange();
+              const removeShown = !!latest(element => element.textContent === 'Remove options');
+              latest(element => element.textContent === 'Remove options').onclick();
+              commitHistory();
+              const removed = model.flowNodes[0].variables[0].options === undefined;
+              undo();
+              const restored = JSON.parse(JSON.stringify(model.flowNodes[0].variables[0].options));
+              // Undo replaces the document and redraws the inspector.
+              const restoredLabel = latest(element => element.innerHTML === '<label>Label</label>').children[0];
+              restoredLabel.value = '   ';
+              restoredLabel.oninput();
+              return JSON.stringify({
+                closedWhenEmpty, asString, asNumber, removeShown, removed, restored,
+                labelCleared: !('label' in model.flowNodes[0].variables[0])
+              });
+            })()
+            """).AsString());
+
+        var root = edited.RootElement;
+        Assert.True(root.GetProperty("closedWhenEmpty").GetBoolean());
+        var asString = root.GetProperty("asString");
+        Assert.Equal("Amount", asString.GetProperty("label").GetString());
+        Assert.Equal("Whole euros.", asString.GetProperty("helpText").GetString());
+        Assert.Equal("10", asString.GetProperty("options")[0].GetProperty("value").GetString());
+        Assert.Equal("Twenty", asString.GetProperty("options")[1].GetProperty("label").GetString());
+        var asNumber = root.GetProperty("asNumber");
+        Assert.Equal(10, asNumber[0].GetProperty("value").GetInt32());
+        Assert.Equal("twenty", asNumber[1].GetProperty("value").GetString());
+        Assert.True(root.GetProperty("removeShown").GetBoolean());
+        Assert.True(root.GetProperty("removed").GetBoolean());
+        Assert.Equal(10, root.GetProperty("restored")[0].GetProperty("value").GetInt32());
+        Assert.True(root.GetProperty("labelCleared").GetBoolean());
+    }
+
+    [Fact]
+    public void ProcessVariableInspectorOffersRemovingImportedFormFields()
+    {
+        var engine = CreateEditorEngine();
+        using var result = JsonDocument.Parse(engine.Evaluate(
+            PresentationWorkflowScript +
+            """
+            (() => {
+              const workflow = presentationWorkflow();
+              workflow.variables[0].label = 'Total';
+              workflow.variables[0].options = [{ value: 1 }];
+              loadFromObject(workflow);
+              selected = null;
+              renderInspector();
+              const form = latest(element => element.className === 'variable-form');
+              latest(element => element.textContent === 'Remove form fields').onclick();
+              const variable = model.variables[0];
+              return JSON.stringify({
+                noFormSection: form === undefined,
+                cleared: !('label' in variable) && !('options' in variable)
+              });
+            })()
+            """).AsString());
+
+        Assert.True(result.RootElement.GetProperty("noFormSection").GetBoolean());
+        Assert.True(result.RootElement.GetProperty("cleared").GetBoolean());
+    }
+
     [Fact]
     public void FriendlyDurationCycleAndLocalDateHelpersProduceCanonicalIsoValues()
     {

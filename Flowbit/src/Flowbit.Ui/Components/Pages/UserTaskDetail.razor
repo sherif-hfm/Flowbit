@@ -90,7 +90,7 @@ else
             <div class="action-grid">
                 @foreach (var flow in flows)
                 {
-                    <article class="action-card @(flow.CancelRemainingInstances ? "danger" : null)">
+                    <article @key="flow.Id" class="action-card @(flow.CancelRemainingInstances ? "danger" : null)">
                         <div class="d-flex justify-content-between align-items-start gap-2 mb-3">
                             <div><span class="page-eyebrow">Flow #@flow.Id</span><h3>@(string.IsNullOrWhiteSpace(flow.Name) ? $"Continue to node #{flow.TargetRef}" : flow.Name)</h3></div>
                             @if (flow.CancelRemainingInstances) { <StatusBadge Status="danger" Text="Interrupt" /> }
@@ -100,8 +100,8 @@ else
                         {
                             var inputId = $"task-{TaskId}-flow-{flow.Id}-{variable.Name.Replace(" ", "-")}";
                             <div class="mb-3">
-                                <label class="form-label" for="@inputId">@variable.Name <span class="field-type">@variable.DataType@(variable.IsArray ? "[]" : "")</span>@if (variable.Required) { <span class="required-mark" aria-label="required"> *</span> }</label>
-                                <input id="@inputId" class="form-control" value="@GetInput(flow.Id, variable.Name)" @oninput="e => SetInput(flow.Id, variable.Name, e.Value?.ToString())" />
+                                <VariableInputField Variable="variable" InputId="@inputId" Value="@GetInput(flow.Id, variable.Name)"
+                                                    ValueChanged="value => SetInput(flow.Id, variable.Name, value)" />
                             </div>
                         }
                         <button class="btn @(flow.CancelRemainingInstances ? "btn-danger" : "btn-primary")" disabled="@busy" @onclick="() => TakeAsync(flow)">@(busy ? "Submitting…" : "Take action")</button>

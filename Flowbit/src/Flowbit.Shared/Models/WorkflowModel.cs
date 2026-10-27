@@ -1564,6 +1564,114 @@ public sealed class VariableModel
     [JsonPropertyName("validation")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Validation { get; set; }
+
+    // Form presentation metadata for start-event and action inputs. Like node and
+    // flow attributes it never affects execution, validation of submitted values,
+    // or workflow-version compatibility. Process variables cannot define it.
+    /// <summary>
+    /// Optional form label shown instead of the variable name.
+    /// </summary>
+    [JsonPropertyName("label")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Label { get; set; }
+
+    /// <summary>
+    /// Optional plain-text help shown with the form field.
+    /// </summary>
+    [JsonPropertyName("helpText")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? HelpText { get; set; }
+
+    /// <summary>
+    /// Optional fixed choices a form offers for a single string or number value.
+    /// Flowbit.Ui forms offer only these values; the engine still accepts any value
+    /// of the declared type.
+    /// </summary>
+    [JsonPropertyName("options")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<VariableOptionModel>? Options { get; set; }
+}
+
+/// <summary>
+/// One fixed choice a form offers for a variable.
+/// </summary>
+public sealed class VariableOptionModel
+{
+    /// <summary>
+    /// The value submitted when the option is chosen: a string for a string
+    /// variable, or a number for a number variable.
+    /// </summary>
+    [JsonPropertyName("value")]
+    public JsonElement? Value { get; set; }
+
+    /// <summary>
+    /// Optional text shown for the option instead of its value.
+    /// </summary>
+    [JsonPropertyName("label")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Label { get; set; }
+}
+
+/// <summary>
+/// Authoring limits for variable form presentation metadata.
+/// </summary>
+public static class VariablePresentationConstraints
+{
+    public const int MaxLabelLength = 300;
+    public const int MaxHelpTextLength = 1000;
+    public const int MaxOptionCount = 100;
+    public const int MaxOptionLabelLength = 300;
+    public const int MaxOptionValueLength = 300;
+
+    // A number option passes through a JavaScript number in the editor and a
+    // .NET decimal in forms. Within these limits both hold it exactly.
+    public const int MaxOptionSignificantDigits = 15;
+    public const int MaxOptionDecimalPlaces = 28;
+
+    private static readonly Regex OptionNumberPattern = new(
+        @"^-?(?<integer>\d+)(?:\.(?<fraction>\d+))?(?:[eE](?<exponent>[+-]?\d+))?$",
+        RegexOptions.CultureInvariant | RegexOptions.ExplicitCapture);
+
+    /// <summary>
+    /// Whether a JSON number option keeps its exact value as a JavaScript number
+    /// and as a .NET decimal: at most 15 significant digits and 28 decimal places.
+    /// Range is checked separately.
+    /// </summary>
+    public static bool IsExactOptionNumber(string jsonNumber)
+    {
+        var match = OptionNumberPattern.Match(jsonNumber);
+        if (!match.Success)
+        {
+            return false;
+        }
+
+        var fraction = match.Groups["fraction"].Value;
+        var digits = (match.Groups["integer"].Value + fraction).TrimStart('0');
+        var significant = digits.TrimEnd('0');
+        if (significant.Length == 0)
+        {
+            return true;
+        }
+
+        if (significant.Length > MaxOptionSignificantDigits)
+        {
+            return false;
+        }
+
+        var exponentText = match.Groups["exponent"].Value;
+        var exponent = 0;
+        if (exponentText.Length > 0
+            && !int.TryParse(exponentText, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out exponent))
+        {
+            // Too large to hold: a positive exponent leaves no decimal places and
+            // a negative one far more than 28.
+            return exponentText[0] != '-';
+        }
+
+        // The power of ten of the last nonzero digit gives the decimal places.
+        var lastDigitPower = (long)exponent - fraction.Length + (digits.Length - significant.Length);
+        return lastDigitPower >= -MaxOptionDecimalPlaces;
+    }
 }
 
 public sealed class LegacyStepModel

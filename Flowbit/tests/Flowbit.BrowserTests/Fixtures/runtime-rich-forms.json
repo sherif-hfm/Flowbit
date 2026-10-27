@@ -1,0 +1,130 @@
+{
+  "id": "browser-rich-forms-r9",
+  "name": "Browser rich forms",
+  "initialEventId": 1,
+  "variables": [],
+  "lanes": [],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Start",
+      "type": "startEvent",
+      "laneId": null,
+      "x": 60,
+      "y": 90,
+      "variables": [
+        {
+          "id": 1,
+          "name": "requestTitle",
+          "dataType": "string",
+          "isArray": false,
+          "required": true,
+          "label": "Request title",
+          "helpText": "Name the item you need.\nKeep it under 60 characters."
+        },
+        {
+          "id": 2,
+          "name": "amount",
+          "dataType": "number",
+          "isArray": false,
+          "required": true,
+          "label": "Amount (EUR)"
+        },
+        {
+          "id": 3,
+          "name": "urgent",
+          "dataType": "boolean",
+          "isArray": false,
+          "required": false
+        },
+        {
+          "id": 4,
+          "name": "neededBy",
+          "dataType": "date",
+          "isArray": false,
+          "required": false,
+          "label": "Needed by"
+        },
+        {
+          "id": 5,
+          "name": "kickoffAt",
+          "dataType": "datetime",
+          "isArray": false,
+          "required": false,
+          "label": "Kick-off meeting"
+        },
+        {
+          "id": 6,
+          "name": "category",
+          "dataType": "string",
+          "isArray": false,
+          "required": false,
+          "defaultValue": "software",
+          "label": "Category",
+          "options": [
+            { "value": "hardware", "label": "Hardware" },
+            { "value": "software", "label": "Software" },
+            { "value": "services" }
+          ]
+        },
+        {
+          "id": 7,
+          "name": "tags",
+          "dataType": "string",
+          "isArray": true,
+          "required": false
+        }
+      ]
+    },
+    { "id": 2, "name": "Review request", "externalId": "TASK_REVIEW_RICH_FORM", "type": "userTask", "laneId": null, "x": 240, "y": 80, "roles": ["Reviewer"] },
+    { "id": 3, "name": "End", "type": "endEvent", "laneId": null, "x": 480, "y": 90 }
+  ],
+  "sequenceFlows": [
+    { "id": 101, "name": "", "sourceRef": 1, "targetRef": 2 },
+    {
+      "id": 201,
+      "name": "Decide",
+      "externalId": "FLOW_DECIDE",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": ["Reviewer"],
+      "variables": [
+        {
+          "id": 1,
+          "name": "decision",
+          "dataType": "string",
+          "isArray": false,
+          "required": true,
+          "validation": "decision in ('approved', 'rejected')",
+          "label": "Decision",
+          "helpText": "Choose the outcome you agreed with the requester.",
+          "options": [
+            { "value": "approved", "label": "Approve" },
+            { "value": "rejected", "label": "Reject" }
+          ]
+        },
+        {
+          "id": 2,
+          "name": "score",
+          "dataType": "number",
+          "isArray": false,
+          "required": false,
+          "label": "Score",
+          "options": [
+            { "value": 1, "label": "Poor" },
+            { "value": 2.5, "label": "Fair" },
+            { "value": 5, "label": "Excellent" }
+          ]
+        },
+        {
+          "id": 3,
+          "name": "followUpOn",
+          "dataType": "datetime",
+          "isArray": false,
+          "required": false,
+          "label": "Follow-up"
+        }
+      ]
+    }
+  ]
+}

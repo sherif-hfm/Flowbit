@@ -75,28 +75,8 @@
                     {
                         var fieldId = $"instance-admin-input-{selected.Variables.ToList().IndexOf(variable)}";
                         <div class="mb-3">
-                            <label class="form-label" for="@fieldId">@variable.Name (@TypeLabel(variable)) @if (variable.Required) { <span class="required-mark">*</span> }</label>
-                            @if (variable.IsArray || variable.DataType == WorkflowVariableTypes.Json)
-                            {
-                                <textarea id="@fieldId" class="form-control font-monospace" rows="3" value="@InputValue(variable.Name)"
-                                          @oninput="args => SetInput(variable.Name, args.Value?.ToString())" placeholder="@(variable.IsArray ? "[]" : "{}")"></textarea>
-                            }
-                            else if (variable.DataType == WorkflowVariableTypes.Boolean)
-                            {
-                                <select id="@fieldId" class="form-select" value="@InputValue(variable.Name)" @onchange="args => SetInput(variable.Name, args.Value?.ToString())">
-                                    <option value="">Choose a value</option><option value="true">True</option><option value="false">False</option>
-                                </select>
-                            }
-                            else
-                            {
-                                <input id="@fieldId" class="form-control" type="@(variable.DataType == WorkflowVariableTypes.Date ? "date" : "text")"
-                                       value="@InputValue(variable.Name)" @oninput="args => SetInput(variable.Name, args.Value?.ToString())"
-                                       placeholder="@(variable.DataType == WorkflowVariableTypes.DateTime ? "2026-09-10T12:00:00Z" : null)" />
-                            }
-                            @if (!variable.Required && variable.DefaultValue is not null)
-                            {
-                                <div class="form-text">Leave blank to use the authored default.</div>
-                            }
+                            <VariableInputField Variable="variable" InputId="@fieldId" Value="@InputValue(variable.Name)"
+                                                ValueChanged="value => SetInput(variable.Name, value)" />
                         </div>
                     }
                     <label class="form-label" for="instance-admin-reason">Reason (optional)</label>
@@ -314,7 +294,6 @@ else if (!string.IsNullOrWhiteSpace(error) && IsCurrent(viewEpoch))
     }
     private string InputValue(string name) => inputs.GetValueOrDefault(name, string.Empty);
     private void SetInput(string name, string? value) => inputs[name] = value ?? string.Empty;
-    private static string TypeLabel(VariableModel variable) => variable.DataType + (variable.IsArray ? "[]" : string.Empty);
     private static bool IsMultiInstance(AdministrativeActionCandidateDto position) => position.PositionKind == AdministrativeActionPositionKinds.MultiInstanceExecution;
     private static string PositionLabel(AdministrativeActionCandidateDto position) => $"{(IsMultiInstance(position) ? "Multi-instance execution" : "Task")} #{position.PositionId}";
     public void Dispose() { disposed = true; Interlocked.Increment(ref identityEpoch); Token.Changed -= OnIdentityChanged; }

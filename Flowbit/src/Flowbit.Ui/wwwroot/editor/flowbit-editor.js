@@ -6342,6 +6342,9 @@ function variableRow(owner, variable, hideRequired) {
   normalizeVariableBinding(variable, !!hideRequired);
   const box = document.createElement("div");
   box.className = "field inspector-card";
+  // Replaced by the Form section below; type changes refresh only its options
+  // so focus stays on the control being used.
+  let refreshFormOptions = () => {};
 
   if (hideRequired) {
     variable.required = false;
@@ -6368,6 +6371,7 @@ function variableRow(owner, variable, hideRequired) {
       variable.name = match.name;
       variable.dataType = match.dataType;
       variable.isArray = !!match.isArray;
+      coerceVariableOptions(variable);
       renderInspector();
     }, true);
   }
@@ -6445,14 +6449,21 @@ function variableRow(owner, variable, hideRequired) {
   typeSelect.innerHTML = VARIABLE_DATA_TYPES
     .map(type => `<option value="${type}" ${type === variable.dataType ? "selected" : ""}>${type}</option>`)
     .join("");
-  typeSelect.onchange = () => { variable.dataType = typeSelect.value; };
+  typeSelect.onchange = () => {
+    variable.dataType = typeSelect.value;
+    coerceVariableOptions(variable);
+    refreshFormOptions();
+  };
   const sharedProducerTarget = !hideRequired &&
     isSharedProcessVariable(findProcessVariable(variable.name));
   typeSelect.disabled = sharedProducerTarget;
   typeField.appendChild(typeSelect);
   box.appendChild(typeField);
 
-  const arrayField = variableCheckbox("Array", variable.isArray, checked => { variable.isArray = checked; });
+  const arrayField = variableCheckbox("Array", variable.isArray, checked => {
+    variable.isArray = checked;
+    refreshFormOptions();
+  });
   if (sharedProducerTarget) {
     arrayField.querySelector("input").disabled = true;
     const targetHint = document.createElement("p");
@@ -6524,6 +6535,24 @@ function variableRow(owner, variable, hideRequired) {
   valField.appendChild(valHint);
   box.appendChild(valField);
 
+  if (!hideRequired) {
+    const form = variableFormSection(variable);
+    box.appendChild(form.element);
+    refreshFormOptions = form.refreshOptions;
+  } else if (hasVariablePresentation(variable)) {
+    box.appendChild(formNote("Form fields apply only to start-event and action inputs.", true));
+    const clear = document.createElement("button");
+    clear.type = "button";
+    clear.textContent = "Remove form fields";
+    clear.onclick = () => {
+      delete variable.label;
+      delete variable.helpText;
+      delete variable.options;
+      renderInspector();
+    };
+    box.appendChild(clear);
+  }
+
   const del = document.createElement("button");
   del.textContent = "Delete variable";
   del.className = "danger";
@@ -6535,6 +6564,170 @@ function variableRow(owner, variable, hideRequired) {
   box.appendChild(del);
 
   inspector.appendChild(box);
+}
+const VARIABLE_OPTION_LIMIT = 100;
+function variableSupportsOptions(variable) {
+  return !variable.isArray && (variable.dataType === "string" || variable.dataType === "number");
+}
+function hasVariablePresentation(variable) {
+  return variable.label != null || variable.helpText != null || variable.options != null;
+}
+function setOptionalText(target, property, text) {
+  if (text.trim() === "") delete target[property];
+  else target[property] = text;
+}
+// Number options are JSON numbers. Text stays as typed when it is not a number
+// or when a number would change its value, so save validation can report it.
+function optionValueFromText(text, variable) {
+  if (variable.dataType !== "number") return text;
+  const trimmed = text.trim();
+  if (!isExactOptionNumberText(trimmed)) return text;
+  const value = Number(trimmed);
+  return Number.isFinite(value) ? value : text;
+}
+// Keeps authored choices across a string/number type change; values that do not
+// convert stay as they are for save validation to report.
+function coerceVariableOptions(variable) {
+  if (!Array.isArray(variable.options)) return;
+  for (const option of variable.options) {
+    if (!option || typeof option !== "object" || Array.isArray(option)) continue;
+    if (variable.dataType === "number" && typeof option.value === "string") {
+      option.value = optionValueFromText(option.value, variable);
+    } else if (variable.dataType === "string" && typeof option.value === "number") {
+      option.value = String(option.value);
+    }
+  }
+}
+function formNote(text, warning = false) {
+  const note = document.createElement("p");
+  note.className = "empty-note";
+  if (warning) note.style.color = "var(--warning-text)";
+  note.textContent = text;
+  return note;
+}
+function variableFormSection(variable) {
+  const details = document.createElement("details");
+  details.className = "variable-form";
+  details.open = hasVariablePresentation(variable);
+  const summary = document.createElement("summary");
+  summary.textContent = "Form";
+  details.appendChild(summary);
+
+  const labelField = document.createElement("div");
+  labelField.className = "field";
+  labelField.innerHTML = "<label>Label</label>";
+  const labelInput = document.createElement("input");
+  labelInput.type = "text";
+  labelInput.value = typeof variable.label === "string" ? variable.label : "";
+  labelInput.placeholder = "Shown instead of the variable name";
+  labelInput.oninput = () => setOptionalText(variable, "label", labelInput.value);
+  labelField.appendChild(labelInput);
+  details.appendChild(labelField);
+
+  const helpField = document.createElement("div");
+  helpField.className = "field";
+  helpField.innerHTML = "<label>Help text</label>";
+  const helpInput = document.createElement("textarea");
+  helpInput.rows = 2;
+  helpInput.value = typeof variable.helpText === "string" ? variable.helpText : "";
+  helpInput.oninput = () => setOptionalText(variable, "helpText", helpInput.value);
+  helpField.appendChild(helpInput);
+  details.appendChild(helpField);
+
+  const optionsArea = document.createElement("div");
+  optionsArea.className = "variable-options";
+  details.appendChild(optionsArea);
+  renderVariableOptions(optionsArea, variable);
+  details.appendChild(formNote("Forms offer only these options, but API clients can send other values. Use Validation to reject them."));
+  return { element: details, refreshOptions: () => renderVariableOptions(optionsArea, variable) };
+}
+function renderVariableOptions(container, variable) {
+  container.replaceChildren();
+  const refresh = () => renderVariableOptions(container, variable);
+  const addButton = (text, onClick, className) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = text;
+    if (className) button.className = className;
+    button.onclick = onClick;
+    return button;
+  };
+  const removeOptions = () => addButton("Remove options", () => {
+    delete variable.options;
+    refresh();
+  });
+  const options = variable.options;
+  if (options != null && !Array.isArray(options)) {
+    container.appendChild(formNote("Imported options are malformed; expected a list of value and label objects.", true));
+    container.appendChild(removeOptions());
+    return;
+  }
+  if (!variableSupportsOptions(variable)) {
+    if (Array.isArray(options) && options.length > 0) {
+      container.appendChild(formNote("Options apply only to a single text or number value.", true));
+      container.appendChild(removeOptions());
+    } else {
+      container.appendChild(formNote("Options are available for a single text or number value."));
+    }
+    return;
+  }
+
+  const title = document.createElement("div");
+  title.className = "variable-options-title";
+  title.textContent = "Options";
+  container.appendChild(title);
+  (options || []).forEach((option, index) => {
+    const row = document.createElement("div");
+    row.className = "variable-option";
+    if (!option || typeof option !== "object" || Array.isArray(option)) {
+      row.appendChild(formNote("Malformed imported option; expected an object with a value.", true));
+      row.appendChild(addButton("Replace malformed option", () => {
+        options[index] = { value: "" };
+        refresh();
+      }));
+    } else {
+      const valueField = document.createElement("div");
+      valueField.className = "field";
+      valueField.innerHTML = `<label>Option ${index + 1} value</label>`;
+      const valueInput = document.createElement("input");
+      valueInput.type = "text";
+      valueInput.value = option.value == null ? "" : String(option.value);
+      if (variable.dataType === "number") valueInput.inputMode = "decimal";
+      valueInput.oninput = () => { option.value = optionValueFromText(valueInput.value, variable); };
+      valueField.appendChild(valueInput);
+      row.appendChild(valueField);
+
+      const labelField = document.createElement("div");
+      labelField.className = "field";
+      labelField.innerHTML = `<label>Option ${index + 1} label (optional)</label>`;
+      const labelInput = document.createElement("input");
+      labelInput.type = "text";
+      labelInput.value = typeof option.label === "string" ? option.label : "";
+      labelInput.placeholder = "Shown instead of the value";
+      labelInput.oninput = () => setOptionalText(option, "label", labelInput.value);
+      labelField.appendChild(labelInput);
+      row.appendChild(labelField);
+    }
+    row.appendChild(addButton("Remove option", () => {
+      options.splice(index, 1);
+      if (options.length === 0) delete variable.options;
+      refresh();
+    }, "danger"));
+    container.appendChild(row);
+  });
+
+  const count = Array.isArray(options) ? options.length : 0;
+  const add = addButton("+ Add option", () => {
+    if (!Array.isArray(variable.options)) variable.options = [];
+    if (variable.options.length >= VARIABLE_OPTION_LIMIT) return;
+    variable.options.push({ value: "" });
+    refresh();
+  });
+  add.disabled = count >= VARIABLE_OPTION_LIMIT;
+  container.appendChild(add);
+  if (count >= VARIABLE_OPTION_LIMIT) {
+    container.appendChild(formNote(`Maximum ${VARIABLE_OPTION_LIMIT} options.`));
+  }
 }
 function variableCheckbox(label, checked, onChange) {
   const f = document.createElement("div");
@@ -8950,6 +9143,7 @@ function validateModelForSave(candidate) {
   validateSaveSharedBindings(ctx);
   validateSaveScriptTasks(ctx);
   validateSaveVariableContracts(ctx);
+  validateSaveVariablePresentation(ctx);
   validateSaveDeclaredProducers(ctx);
   validateSaveAsyncJobsAndTimers(ctx);
   validateSaveServiceTasks(ctx);
@@ -9732,6 +9926,156 @@ function validateSaveVariableContracts(ctx) {
   }
   for (const flow of ctx.flows) {
     validateVariableContracts(ctx, flow && flow.variables, "sequence flow #" + String(flow && flow.id), false, false);
+  }
+}
+
+// Form metadata (label, helpText, options) guides start and action forms only;
+// the engine never checks submitted values against it. These rules mirror
+// WorkflowDefinitionValidator and report only fields that are present.
+const VARIABLE_PRESENTATION_LIMITS = Object.freeze({
+  label: 300,
+  helpText: 1000,
+  options: 100,
+  optionLabel: 300,
+  optionValue: 300,
+  optionDigits: 15,
+  optionDecimalPlaces: 28
+});
+// A decimal holds magnitudes below 2^96, and every double below 2^96 fits.
+const DECIMAL_LIMIT = 2 ** 96;
+const OPTION_NUMBER_TEXT = /^-?(\d*)(?:\.(\d*))?(?:[eE]([+-]?\d+))?$/;
+const OPTION_PRECISION_ERROR = " must have at most " + VARIABLE_PRESENTATION_LIMITS.optionDigits +
+  " significant digits and " + VARIABLE_PRESENTATION_LIMITS.optionDecimalPlaces + " decimal places.";
+function optionNumberParts(text) {
+  const match = OPTION_NUMBER_TEXT.exec(text);
+  return match && /\d/.test(match[1] + (match[2] || "")) ? match : null;
+}
+// Mirrors VariablePresentationConstraints.IsExactOptionNumber: the value must
+// pass through a JavaScript number and a .NET decimal unchanged.
+function isExactOptionNumberText(text) {
+  const match = optionNumberParts(text);
+  if (!match) return false;
+  const fraction = match[2] || "";
+  const digits = (match[1] + fraction).replace(/^0+/, "");
+  const significant = digits.replace(/0+$/, "");
+  if (significant === "") return true;
+  if (significant.length > VARIABLE_PRESENTATION_LIMITS.optionDigits) return false;
+  // The power of ten of the last nonzero digit gives the decimal places.
+  const lastDigitPower = Number(match[3] || 0) - fraction.length + (digits.length - significant.length);
+  return lastDigitPower >= -VARIABLE_PRESENTATION_LIMITS.optionDecimalPlaces;
+}
+// The inspector keeps number text as typed when a number would change it, so
+// say why instead of asking for a number.
+function numberOptionTextError(value) {
+  const text = typeof value === "string" ? value.trim() : "";
+  if (optionNumberParts(text)) {
+    if (!isExactOptionNumberText(text)) return OPTION_PRECISION_ERROR;
+    if (!Number.isFinite(Number(text))) return " must be within the decimal range.";
+  }
+  return " must be a number.";
+}
+function presentationTextError(value, limit, subject) {
+  if (value == null) return null;
+  if (typeof value !== "string") return subject + " must be text.";
+  return unicodeLength(trimAttributeKey(value)) > limit
+    ? subject + " must contain at most " + limit + " Unicode scalar values."
+    : null;
+}
+function hasPresentationField(value) {
+  return Array.isArray(value)
+    ? value.length > 0
+    : value != null && !(typeof value === "string" && !hasText(value));
+}
+function validateVariablePresentation(errors, variables, owner) {
+  for (const variable of Array.isArray(variables) ? variables : []) {
+    if (!hasText(variable && variable.name)) continue;
+    const prefix = "Variable '" + variable.name.trim() + "'";
+    const labelError = presentationTextError(
+      variable.label, VARIABLE_PRESENTATION_LIMITS.label, prefix + " label on " + owner);
+    if (labelError) errors.push(labelError);
+    const helpError = presentationTextError(
+      variable.helpText, VARIABLE_PRESENTATION_LIMITS.helpText, prefix + " helpText on " + owner);
+    if (helpError) errors.push(helpError);
+    const options = variable.options;
+    if (options == null) continue;
+    if (!Array.isArray(options)) {
+      errors.push(prefix + " options on " + owner + " must be a list.");
+      continue;
+    }
+    if (options.length === 0) continue;
+    const isString = variable.dataType === "string";
+    if (variable.isArray || !(isString || variable.dataType === "number")) {
+      errors.push(prefix + " on " + owner +
+        " can define options only for a single string or number value.");
+      continue;
+    }
+    if (options.length > VARIABLE_PRESENTATION_LIMITS.options) {
+      errors.push(prefix + " on " + owner + " cannot define more than " +
+        VARIABLE_PRESENTATION_LIMITS.options + " options.");
+      continue;
+    }
+    const seen = new Set();
+    options.forEach((option, index) => {
+      const subject = prefix + " option #" + (index + 1);
+      const isObject = !!option && typeof option === "object" && !Array.isArray(option);
+      const value = isObject ? option.value : undefined;
+      if (value == null) {
+        errors.push(subject + " on " + owner + " must define a value.");
+        return;
+      }
+      if (isString) {
+        if (typeof value !== "string") {
+          errors.push(subject + " value on " + owner + " must be a string.");
+        } else if (!hasText(value) || trimAttributeKey(value) !== value) {
+          errors.push(subject + " value on " + owner +
+            " cannot be blank or start or end with whitespace.");
+        } else if (unicodeLength(value) > VARIABLE_PRESENTATION_LIMITS.optionValue) {
+          errors.push(subject + " value on " + owner + " must contain at most " +
+            VARIABLE_PRESENTATION_LIMITS.optionValue + " Unicode scalar values.");
+        } else {
+          const key = ordinalIgnoreCaseAttributeKey(value);
+          if (seen.has(key)) {
+            errors.push(subject + " value '" + value + "' on " + owner +
+              " duplicates an earlier option; option values ignore case.");
+          }
+          seen.add(key);
+        }
+      } else if (typeof value !== "number") {
+        errors.push(subject + " value on " + owner + numberOptionTextError(value));
+      } else if (!Number.isFinite(value)) {
+        errors.push(subject + " value on " + owner + " must be within the decimal range.");
+      } else if (!isExactOptionNumberText(String(value))) {
+        errors.push(subject + " value on " + owner + OPTION_PRECISION_ERROR);
+      } else if (Math.abs(value) >= DECIMAL_LIMIT) {
+        errors.push(subject + " value on " + owner + " must be within the decimal range.");
+      } else {
+        if (seen.has(value)) {
+          errors.push(subject + " value " + String(value) + " on " + owner +
+            " duplicates an earlier option.");
+        }
+        seen.add(value);
+      }
+      const optionLabelError = presentationTextError(
+        option.label, VARIABLE_PRESENTATION_LIMITS.optionLabel, subject + " label on " + owner);
+      if (optionLabelError) errors.push(optionLabelError);
+    });
+  }
+}
+function validateSaveVariablePresentation(ctx) {
+  for (const variable of Array.isArray(ctx.processVariables) ? ctx.processVariables : []) {
+    if (!variable || typeof variable !== "object") continue;
+    const property = ["label", "helpText", "options"]
+      .find(name => hasPresentationField(variable[name]));
+    if (property) {
+      ctx.errors.push("Process variable '" + String(variable.name ?? "").trim() +
+        "' cannot define " + property + "; form fields apply only to start-event and action inputs.");
+    }
+  }
+  for (const node of ctx.nodes) {
+    validateVariablePresentation(ctx.errors, node && node.variables, "flow node #" + String(node && node.id));
+  }
+  for (const flow of ctx.flows) {
+    validateVariablePresentation(ctx.errors, flow && flow.variables, "sequence flow #" + String(flow && flow.id));
   }
 }
 
@@ -10922,10 +11266,14 @@ function prepareWorkflowExport(candidate = model) {
   const canonical = JSON.parse(JSON.stringify(exportModel));
   canonical.variables = (canonical.variables || []).map(variable => {
     normalizeVariableBinding(variable, true);
+    canonicalizeVariablePresentation(variable);
     return variable;
   });
   canonical.flowNodes.forEach(node => {
-    (node.variables || []).forEach(variable => normalizeVariableBinding(variable, false));
+    (node.variables || []).forEach(variable => {
+      normalizeVariableBinding(variable, false);
+      canonicalizeVariablePresentation(variable);
+    });
     if (isMessageStartEventType(node.type) || isTimerStartEventType(node.type)) {
       delete node.variables;
     }
@@ -10940,8 +11288,37 @@ function prepareWorkflowExport(candidate = model) {
     }
   });
   canonical.sequenceFlows.forEach(flow =>
-    (flow.variables || []).forEach(variable => normalizeVariableBinding(variable, false)));
+    (flow.variables || []).forEach(variable => {
+      normalizeVariableBinding(variable, false);
+      canonicalizeVariablePresentation(variable);
+    }));
   return { errors: [], json: JSON.stringify(canonical, null, 2) };
+}
+// Saved JSON carries trimmed form text and omits blank fields and empty option
+// lists, as the server normalizes them. Option values are submitted verbatim.
+function canonicalizeVariablePresentation(variable) {
+  if (!variable || typeof variable !== "object") return;
+  const trimOptional = (target, property) => {
+    if (target[property] == null) {
+      delete target[property];
+    } else if (typeof target[property] === "string") {
+      const text = trimAttributeKey(target[property]);
+      if (text) target[property] = text;
+      else delete target[property];
+    }
+  };
+  trimOptional(variable, "label");
+  trimOptional(variable, "helpText");
+  if (variable.options == null ||
+      (Array.isArray(variable.options) && variable.options.length === 0)) {
+    delete variable.options;
+    return;
+  }
+  for (const option of Array.isArray(variable.options) ? variable.options : []) {
+    if (option && typeof option === "object" && !Array.isArray(option)) {
+      trimOptional(option, "label");
+    }
+  }
 }
 
 async function save() {
@@ -11010,6 +11387,12 @@ function normalizeVariable(v, allowShared = false) {
       normalized.defaultValue = null;
     }
   }
+  // Form metadata is kept as imported so save validation can explain malformed
+  // values. An older document's label on a variable without a name is still
+  // read as that name above, not as a form label.
+  if (v.name != null && v.label != null) normalized.label = v.label;
+  if (v.helpText != null) normalized.helpText = v.helpText;
+  if (v.options != null) normalized.options = v.options;
   return normalized;
 }
 function mapLegacyNodeType(s) {

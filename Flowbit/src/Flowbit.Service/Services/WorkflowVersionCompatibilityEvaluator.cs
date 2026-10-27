@@ -1271,6 +1271,7 @@ public static class WorkflowVersionCompatibilityEvaluator
         json.Remove("x");
         json.Remove("y");
         json.Remove("attributes");
+        RemoveVariablePresentation(json);
         CanonicalizeStringSet(json, "roles");
         return json.ToJsonString();
     }
@@ -1282,9 +1283,27 @@ public static class WorkflowVersionCompatibilityEvaluator
         json.Remove("name");
         json.Remove("externalId");
         json.Remove("attributes");
+        RemoveVariablePresentation(json);
         CanonicalizeStringSet(json, "roles");
         CanonicalizeStringSet(json, "canActWithoutClaimRoles");
         return json.ToJsonString();
+    }
+
+    // Variable labels, help text, and options only shape forms; like attributes
+    // they never change a node or flow contract.
+    private static void RemoveVariablePresentation(JsonObject json)
+    {
+        if (json["variables"] is not JsonArray variables)
+        {
+            return;
+        }
+
+        foreach (var variable in variables.OfType<JsonObject>())
+        {
+            variable.Remove("label");
+            variable.Remove("helpText");
+            variable.Remove("options");
+        }
     }
 
     private static void CanonicalizeStringSet(JsonObject json, string propertyName)

@@ -1,0 +1,112 @@
+{
+  "id": "browser-rich-forms-mi-r9",
+  "name": "Browser rich forms interrupt",
+  "initialEventId": 1,
+  "variables": [
+    {
+      "id": 1,
+      "name": "reviewers",
+      "dataType": "string",
+      "isArray": true,
+      "nullable": false,
+      "required": false,
+      "defaultValue": ["alpha", "beta"]
+    },
+    {
+      "id": 2,
+      "name": "reviewResults",
+      "dataType": "json",
+      "isArray": false,
+      "nullable": false,
+      "required": false,
+      "defaultValue": []
+    }
+  ],
+  "lanes": [],
+  "flowNodes": [
+    { "id": 1, "name": "Start", "type": "startEvent", "laneId": null, "x": 60, "y": 120 },
+    {
+      "id": 2,
+      "name": "Parallel review",
+      "externalId": "TASK_RICH_FORM_MI",
+      "type": "userTask",
+      "laneId": null,
+      "x": 240,
+      "y": 110,
+      "roles": ["Reviewer"],
+      "requiresClaim": false,
+      "multiInstance": {
+        "mode": "parallel",
+        "source": "collection",
+        "collectionVariable": "reviewers",
+        "cardinalityExpression": null,
+        "onePerActor": false,
+        "completionEvaluation": "afterEach",
+        "resultVariable": "reviewResults"
+      }
+    },
+    { "id": 3, "name": "Reviewed", "type": "endEvent", "laneId": null, "x": 520, "y": 60 },
+    { "id": 4, "name": "Stopped", "type": "endEvent", "laneId": null, "x": 520, "y": 200 }
+  ],
+  "sequenceFlows": [
+    { "id": 101, "name": "Create items", "sourceRef": 1, "targetRef": 2 },
+    {
+      "id": 201,
+      "name": "Complete review",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": ["Reviewer"],
+      "completionCondition": "CountFlow(201) == [mi.total]",
+      "completionPriority": 1
+    },
+    {
+      "id": 202,
+      "name": "Engine fallback",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "isDefault": true,
+      "isSelectable": false
+    },
+    {
+      "id": 203,
+      "name": "Stop reviews",
+      "externalId": "FLOW_STOP_REVIEWS",
+      "sourceRef": 2,
+      "targetRef": 4,
+      "roles": ["Reviewer"],
+      "cancelRemainingInstances": true,
+      "variables": [
+        {
+          "id": 1,
+          "name": "stopReason",
+          "dataType": "string",
+          "isArray": false,
+          "required": true,
+          "validation": "stopReason in ('duplicate', 'withdrawn')",
+          "label": "Reason",
+          "helpText": "Tell the reviewers why the review stopped.",
+          "options": [
+            { "value": "duplicate", "label": "Duplicate request" },
+            { "value": "withdrawn", "label": "Withdrawn by requester" }
+          ]
+        },
+        {
+          "id": 2,
+          "name": "budgetCap",
+          "dataType": "number",
+          "isArray": false,
+          "required": false,
+          "label": "Budget cap (EUR)"
+        },
+        {
+          "id": 3,
+          "name": "resumeAt",
+          "dataType": "datetime",
+          "isArray": false,
+          "required": false,
+          "label": "Resume review at"
+        }
+      ]
+    }
+  ]
+}

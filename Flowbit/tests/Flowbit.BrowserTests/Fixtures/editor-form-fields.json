@@ -1,0 +1,35 @@
+{
+  "id": "browser-editor-form-fields",
+  "name": "Browser editor form fields",
+  "initialEventId": 1,
+  "variables": [],
+  "lanes": [],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Submitted",
+      "type": "startEvent",
+      "laneId": null,
+      "x": 60,
+      "y": 90,
+      "variables": [
+        {
+          "id": 1,
+          "name": "amount",
+          "dataType": "string",
+          "isArray": false,
+          "nullable": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": null
+        }
+      ]
+    },
+    { "id": 2, "name": "Review", "type": "userTask", "laneId": null, "x": 220, "y": 80, "roles": ["Agent"] },
+    { "id": 3, "name": "Done", "type": "endEvent", "laneId": null, "x": 460, "y": 90 }
+  ],
+  "sequenceFlows": [
+    { "id": 101, "name": "", "sourceRef": 1, "targetRef": 2 },
+    { "id": 102, "name": "Approve", "sourceRef": 2, "targetRef": 3, "roles": ["Agent"] }
+  ]
+}

@@ -9838,6 +9838,25 @@ Input declarations use required; process declarations use nullable. dataType jso
 | `required` | boolean | No | If true, the variable must be supplied before advancing the transition. Default: `false`. |
 | `defaultValue` | null or [JsonElement](#schema-jsonelement) | No | — |
 | `validation` | null or string | No | An optional NCalc validation expression. |
+| `label` | null or string | No | Optional form label shown instead of the variable name. Start/action inputs only; at most 300 Unicode scalar values. |
+| `helpText` | null or string | No | Optional plain-text help shown with the form field. Start/action inputs only; at most 1,000 Unicode scalar values. |
+| `options` | null or array of [VariableOptionModel](#schema-variableoptionmodel) | No | Optional fixed choices a form offers for a single string or number value, at most 100. Flowbit.Ui forms offer only these values; the engine still accepts any value of the declared type. Start/action inputs only. |
+
+Responses omit `label`, `helpText`, and `options` when they are not set. Every response that returns declarations, including available flows and administrative-action discovery, carries them. See [form presentation](node-reference.md#form-presentation).
+
+</details>
+
+<a id="schema-variableoptionmodel"></a>
+
+<details>
+<summary>VariableOptionModel</summary>
+
+One fixed choice a form offers for a variable.
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `value` | [JsonElement](#schema-jsonelement) | Yes | The value submitted when the option is chosen: a nonblank string without surrounding whitespace for a string variable, or a number within the .NET decimal range with at most 15 significant digits and 28 decimal places for a number variable. Unique within the declaration (strings ignore case). |
+| `label` | null or string | No | Optional text shown for the option instead of its value; at most 300 Unicode scalar values. |
 
 </details>
 

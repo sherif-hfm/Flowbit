@@ -62,9 +62,9 @@ else
                     @foreach (var variable in selectedNode.Variables)
                     {
                         var inputId = $"start-variable-{variable.Name.Replace(" ", "-")}";
-                        <div class="@(variable.IsArray ? "full" : null)">
-                            <label class="form-label" for="@inputId">@variable.Name <span class="field-type">@variable.DataType@(variable.IsArray ? "[]" : "")</span>@if (variable.Required) { <span class="required-mark" aria-label="required"> *</span> }</label>
-                            <input id="@inputId" class="form-control" value="@GetInput(variable.Name)" @oninput="e => SetInput(variable.Name, e.Value?.ToString())" placeholder="@InputHint(variable)" />
+                        <div class="@(VariableInputConversion.SpansFullWidth(variable) ? "full" : null)">
+                            <VariableInputField Variable="variable" InputId="@inputId" Value="@GetInput(variable.Name)"
+                                                ValueChanged="value => SetInput(variable.Name, value)" />
                         </div>
                     }
                 </div>
@@ -195,18 +195,6 @@ else
             submitting = false;
         }
     }
-
-    private static string InputHint(VariableModel variable) => variable.IsArray
-        ? variable.DataType == WorkflowVariableTypes.Json
-            ? "Enter a JSON array"
-            : "JSON array or comma-separated values"
-        : variable.DataType switch
-        {
-            WorkflowVariableTypes.Number => "Enter a number",
-            WorkflowVariableTypes.Boolean => "true or false",
-            WorkflowVariableTypes.Json => "Enter a JSON value",
-            _ => $"Enter {variable.Name}"
-        };
 
     private Dictionary<string, JsonElement> BuildPayload(IEnumerable<VariableModel> variables)
     {

@@ -168,6 +168,7 @@ Flowbit uses NCalc rather than FEEL for routing and assignment expressions, plus
 | Worklist policy | Node/action roles, captured dynamic role policies, claim bypass, assignment/claim inheritance, inbox predicates, and runtime delegation extend BPMN's general resource concepts with concrete authorization behavior. |
 | MI voting and parent interrupts | Selectable votes, engine-only outcomes, priorities, `afterEach`/`afterAll`, one-per-actor participation, and result collections define Flowbit's aggregation contract. |
 | Execution and integration metadata | Async flags, retries, transport idempotency, business-key policy, typed REST mappings, shared bindings, and FlowInfo have Flowbit JSON semantics. Node/flow `attributes` are client metadata and do not alter execution. |
+| Form presentation | Start and action input declarations may carry `label`, `helpText`, and fixed `options` for the forms that collect them. They do not alter execution or version compatibility, and options do not restrict accepted values; `validation` does. BPMN leaves forms to the implementation. See [form presentation](node-reference.md#form-presentation). |
 
 Changes to active gateway, role, wait, job, or output contracts can block an in-place workflow-version switch. Versioning does not automatically migrate incompatible open work. Review [version integration](developer-guide.md) and [upgrade restrictions](deployment.md#upgrade-and-compatibility-rules).
 

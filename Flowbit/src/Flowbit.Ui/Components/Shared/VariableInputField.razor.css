@@ -1,0 +1,17 @@
+.variable-input {
+    min-width: 0;
+}
+
+.variable-input-help {
+    margin: -.1rem 0 .4rem;
+    white-space: pre-line;
+    overflow-wrap: anywhere;
+}
+
+.variable-input .form-text {
+    overflow-wrap: anywhere;
+}
+
+.variable-input .field-type {
+    overflow-wrap: anywhere;
+}

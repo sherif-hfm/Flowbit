@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text.Json;
 using Flowbit.Shared.Models;
+using Flowbit.Ui.Components.Shared;
 
 namespace Flowbit.Ui.Components.Pages;
 
@@ -12,6 +13,15 @@ internal static class StartVariableInputParser
         out JsonElement value,
         out string? error)
     {
+        // A typed control stores this for an entry it could not read; refuse it
+        // explicitly rather than relying on how it happens to parse.
+        if (VariableInputConversion.IsInvalid(raw))
+        {
+            value = default;
+            error = $"Variable '{variable.Name}' has an incomplete or invalid {variable.DataType} value.";
+            return false;
+        }
+
         try
         {
             value = variable.IsArray

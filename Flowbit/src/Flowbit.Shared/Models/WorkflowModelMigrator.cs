@@ -23,6 +23,7 @@ public static class WorkflowModelMigrator
         model.TaskAssignmentRoles = NormalizeRoles(model.TaskAssignmentRoles);
         model.TaskRoleManagementRoles = NormalizeRoles(model.TaskRoleManagementRoles);
         NormalizeVariableBindings(model.Variables, allowShared: true);
+        NormalizeVariablePresentation(model.Variables);
 
         foreach (var node in model.FlowNodes)
         {
@@ -39,6 +40,7 @@ public static class WorkflowModelMigrator
             flow.CanActWithoutClaimRoles = NormalizeRoles(flow.CanActWithoutClaimRoles);
             flow.Variables ??= [];
             NormalizeVariableBindings(flow.Variables, allowShared: false);
+            NormalizeVariablePresentation(flow.Variables);
             if (!flow.CanActWithoutClaim)
             {
                 flow.CanActWithoutClaimRoles = [];
@@ -280,6 +282,36 @@ public static class WorkflowModelMigrator
         }
     }
 
+    // Form metadata is display text: surrounding whitespace is insignificant and
+    // blank means absent, so older documents keep their exact shape. Option values
+    // are submitted verbatim and are therefore never changed here.
+    private static void NormalizeVariablePresentation(IEnumerable<VariableModel> variables)
+    {
+        foreach (var variable in variables)
+        {
+            if (variable is null)
+            {
+                continue;
+            }
+
+            variable.Label = TrimToNull(variable.Label);
+            variable.HelpText = TrimToNull(variable.HelpText);
+            if (variable.Options is not { Count: > 0 })
+            {
+                variable.Options = null;
+                continue;
+            }
+
+            foreach (var option in variable.Options)
+            {
+                if (option is not null)
+                {
+                    option.Label = TrimToNull(option.Label);
+                }
+            }
+        }
+    }
+
     private static List<WorkflowAttributeModel> NormalizeAttributes(
         List<WorkflowAttributeModel>? attributes)
     {
@@ -421,6 +453,7 @@ public static class WorkflowModelMigrator
         node.RolesVariable = NormalizeRoleVariable(node.RolesVariable);
         node.Variables ??= [];
         NormalizeVariableBindings(node.Variables, allowShared: false);
+        NormalizeVariablePresentation(node.Variables);
         node.Assignments ??= [];
 
         if (BpmnFlowNodeTypes.IsAsyncCapableTask(node.Type))

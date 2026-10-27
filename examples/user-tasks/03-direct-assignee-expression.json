@@ -135,7 +135,19 @@
           "nullable": false,
           "required": true,
           "defaultValue": null,
-          "validation": "Contains('approved,rejected', Lower(Trim(reviewOutcome)))"
+          "validation": "Contains('approved,rejected', Lower(Trim(reviewOutcome)))",
+          "label": "Review outcome",
+          "helpText": "Choose the outcome of your review.",
+          "options": [
+            {
+              "value": "approved",
+              "label": "Approve"
+            },
+            {
+              "value": "rejected",
+              "label": "Reject"
+            }
+          ]
         }
       ],
       "condition": null,

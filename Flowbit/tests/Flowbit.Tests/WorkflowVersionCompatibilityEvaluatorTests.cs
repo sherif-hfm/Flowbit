@@ -442,6 +442,54 @@ public sealed class WorkflowVersionCompatibilityEvaluatorTests
     }
 
     [Fact]
+    public void Variable_presentation_changes_do_not_change_multi_instance_or_open_job_contracts()
+    {
+        var sourceModel = PresentationModel();
+        var targetModel = Clone(sourceModel);
+        var targetInput = targetModel.SequenceFlows.Single(flow => flow.Id == 20).Variables.Single();
+        targetInput.Label = "Review outcome";
+        targetInput.HelpText = "Choose the agreed outcome.";
+        targetInput.Options =
+        [
+            new VariableOptionModel { Value = Json("approved"), Label = "Approved" },
+            new VariableOptionModel { Value = Json("rejected") }
+        ];
+        var source = Definition(11, 1, sourceModel);
+        var context = Context(source, Definition(12, 2, targetModel)) with
+        {
+            ActiveMultiInstanceExecutions = [MultiInstanceExecution()],
+            OpenJobs = [UserTaskAsyncAfterJob(source)]
+        };
+
+        var result = WorkflowVersionCompatibilityEvaluator.Evaluate(context);
+
+        Assert.True(result.IsCompatible);
+        Assert.Empty(result.Blockers);
+        Assert.Empty(result.Warnings);
+    }
+
+    [Fact]
+    public void Variable_contract_changes_still_change_multi_instance_and_open_job_contracts()
+    {
+        var sourceModel = PresentationModel();
+        var targetModel = Clone(sourceModel);
+        targetModel.SequenceFlows.Single(flow => flow.Id == 20).Variables.Single().Required = false;
+        var source = Definition(11, 1, sourceModel);
+        var context = Context(source, Definition(12, 2, targetModel)) with
+        {
+            ActiveMultiInstanceExecutions = [MultiInstanceExecution()],
+            OpenJobs = [UserTaskAsyncAfterJob(source)]
+        };
+
+        var result = WorkflowVersionCompatibilityEvaluator.Evaluate(context);
+
+        AssertCodes(
+            result,
+            WorkflowVersionCompatibilityCodes.MultiInstanceOutcomeChanged,
+            WorkflowVersionCompatibilityCodes.OpenJobContractChanged);
+    }
+
+    [Fact]
     public void Open_timer_requires_same_schedule_and_persisted_descriptor()
     {
         var sourceModel = BasicModel(BpmnFlowNodeTypes.IntermediateTimerCatchEvent);
@@ -697,6 +745,45 @@ public sealed class WorkflowVersionCompatibilityEvaluatorTests
                 Flow(10, 1, 2),
                 Flow(20, 2, 3)
             ]
+        };
+
+    // An active multi-instance user task with an async continuation whose single
+    // outcome captures a typed input, so both durable flow contracts apply.
+    private static WorkflowModel PresentationModel()
+    {
+        var model = BasicModel();
+        var task = model.FlowNodes.Single(node => node.Id == 2);
+        task.AsyncAfter = true;
+        task.MultiInstance = new MultiInstanceModel
+        {
+            Mode = MultiInstanceModes.Parallel,
+            Source = MultiInstanceSources.Cardinality,
+            CardinalityExpression = "3",
+            OnePerActor = true,
+            CompletionEvaluation = MultiInstanceCompletionEvaluations.AfterEach,
+            ResultVariable = "votes"
+        };
+        model.SequenceFlows.Single(flow => flow.Id == 20).Variables =
+        [
+            new VariableModel
+            {
+                Id = 1,
+                Name = "reviewOutcome",
+                DataType = WorkflowVariableTypes.String,
+                Required = true
+            }
+        ];
+        return model;
+    }
+
+    private static WorkflowJobRecord UserTaskAsyncAfterJob(WorkflowDefinitionRecord source) =>
+        Job(source) with
+        {
+            NodeName = "Review",
+            NodeType = BpmnFlowNodeTypes.UserTask,
+            Kind = WorkflowJobKinds.AsyncAfter,
+            Phase = WorkflowJobKinds.AsyncAfter,
+            QueueClass = WorkflowJobClasses.Control
         };
 
     private static WorkflowModel GatewayModel() =>

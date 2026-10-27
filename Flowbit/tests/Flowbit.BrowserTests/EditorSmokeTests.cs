@@ -7,8 +7,8 @@ using Xunit;
 namespace Flowbit.BrowserTests;
 
 /// <summary>
-/// Automated editor matrix (E1-E8) against the real copied editor served over
-/// localhost. E1-E8 run at 1440x900 and 1024x768; every scenario keeps fresh
+/// Automated editor matrix (E1-E9) against the real copied editor served over
+/// localhost. E1-E9 run at 1440x900 and 1024x768; every scenario keeps fresh
 /// state so a failed edit cannot invalidate later assertions. Editor open and
 /// inspector pin run inside RunAsync so setup failures still capture traces.
 /// </summary>
@@ -693,4 +693,117 @@ public sealed class EditorSmokeTests(BrowserStackFixture stack)
                     .GetProperty("type").GetString());
         });
     }
+
+    [Theory]
+    [MemberData(nameof(EditorViewports))]
+    public async Task E9_VariableFormFieldsEditSaveAndReload(int viewportWidth, int viewportHeight)
+    {
+        await using var scenario = await CreateEditorScenarioAsync(
+            $"e9-variable-form-fields-{viewportWidth}x{viewportHeight}", viewportWidth, viewportHeight);
+        await scenario.RunAsync("variable-form-fields", async () =>
+        {
+            await OpenEditorAsync(scenario);
+            var page = scenario.Page;
+            await EditorInteractions.LoadWorkflowAsync(
+                page, EditorInteractions.FixturePath("editor-form-fields.json"));
+            await EditorInteractions.SelectNodeAsync(page, 1);
+
+            // The Form section starts closed for a variable without form fields.
+            var card = page.Locator("#inspector .inspector-card")
+                .Filter(new LocatorFilterOptions { Has = page.Locator("details.variable-form") }).First;
+            var form = card.Locator("details.variable-form");
+            await Assertions.Expect(form).Not.ToHaveAttributeAsync("open", string.Empty);
+            await form.Locator("summary").ClickAsync();
+            await FormInput(form, "Label").FillAsync("  Amount (EUR)  ");
+            await FormInput(form, "Help text").FillAsync("Whole euros only.\nAsk finance for larger amounts.");
+
+            // Options appear for a single number; text that converts becomes a number.
+            await FormField(card, "Data type").Locator("select").SelectOptionAsync("number");
+            await form.GetByRole(AriaRole.Button, new LocatorGetByRoleOptions { Name = "+ Add option" }).ClickAsync();
+            await form.GetByRole(AriaRole.Button, new LocatorGetByRoleOptions { Name = "+ Add option" }).ClickAsync();
+            await FormInput(form, "Option 1 value").FillAsync("100");
+            await FormInput(form, "Option 1 label (optional)").FillAsync("Small");
+            await FormInput(form, "Option 2 value").FillAsync("250.5");
+
+            // A value a JavaScript number would change is kept as typed and blocks the save.
+            await form.GetByRole(AriaRole.Button, new LocatorGetByRoleOptions { Name = "+ Add option" }).ClickAsync();
+            await FormInput(form, "Option 3 value").FillAsync("9007199254740993");
+            await page.Locator("#fileMenuSummary").ClickAsync();
+            await page.Locator("#saveBtn").ClickAsync();
+            var errors = await EditorInteractions.WaitForValidationDialogAsync(page);
+            Assert.Contains(
+                "Variable 'amount' option #3 value on flow node #1 must have at most 15 significant digits and 28 decimal places.",
+                errors,
+                StringComparison.Ordinal);
+            await EditorInteractions.CloseValidationDialogWithEscapeAsync(page);
+            await EditorInteractions.SelectNodeAsync(page, 2);
+            await EditorInteractions.SelectNodeAsync(page, 1);
+            await Assertions.Expect(FormInput(form, "Option 3 value")).ToHaveValueAsync("9007199254740993");
+            await form.Locator(".variable-option").Nth(2)
+                .GetByRole(AriaRole.Button, new LocatorGetByRoleOptions { Name = "Remove option" }).ClickAsync();
+            await Assertions.Expect(form.Locator(".variable-option")).ToHaveCountAsync(2);
+
+            // Bring the expanded section just below the inspector's sticky title and
+            // capture the panel, so neither covers the section's heading.
+            await form.EvaluateAsync(
+                """
+                element => {
+                  const scroller = element.closest("#inspector");
+                  const title = scroller.querySelector(":scope > h2:first-child");
+                  const top = scroller.getBoundingClientRect().top;
+                  const covered = title ? title.getBoundingClientRect().bottom - top : 0;
+                  scroller.scrollTop += element.getBoundingClientRect().top - top - covered - 8;
+                }
+                """);
+            await page.Locator("#inspectorPanel").ScreenshotAsync(new LocatorScreenshotOptions
+            {
+                Path = Path.Combine(scenario.ArtifactDirectory, "variable-form-fields.png"),
+            });
+
+            var saved = await EditorInteractions.SaveAndCaptureDownloadAsync(
+                page, scenario, scenario.ArtifactDirectory);
+            var variable = saved.RootElement.GetProperty("flowNodes")
+                .EnumerateArray().First(node => node.GetProperty("id").GetInt32() == 1)
+                .GetProperty("variables")[0];
+            Assert.Equal("number", variable.GetProperty("dataType").GetString());
+            Assert.Equal("Amount (EUR)", variable.GetProperty("label").GetString());
+            Assert.Equal("Whole euros only.\nAsk finance for larger amounts.", variable.GetProperty("helpText").GetString());
+            var options = variable.GetProperty("options");
+            Assert.Equal(2, options.GetArrayLength());
+            Assert.Equal("100", options[0].GetProperty("value").GetRawText());
+            Assert.Equal("Small", options[0].GetProperty("label").GetString());
+            Assert.Equal("250.5", options[1].GetProperty("value").GetRawText());
+            Assert.False(options[1].TryGetProperty("label", out _));
+
+            // A fresh page reloads the fields into an open Form section.
+            var freshPage = await scenario.Context.NewPageAsync();
+            try
+            {
+                await freshPage.GotoAsync($"{stack.EditorBaseAddress}/",
+                    new PageGotoOptions { WaitUntil = WaitUntilState.Load });
+                await freshPage.WaitForSelectorAsync("#svg");
+                await EditorInteractions.LoadSavedFileAsync(freshPage, scenario.LastSavedFile!);
+                await EditorInteractions.PinInspectorOpenAsync(freshPage);
+                await EditorInteractions.SelectNodeAsync(freshPage, 1);
+                var reloaded = freshPage.Locator("#inspector details.variable-form").First;
+                await Assertions.Expect(reloaded).ToHaveAttributeAsync("open", string.Empty);
+                await Assertions.Expect(FormInput(reloaded, "Label")).ToHaveValueAsync("Amount (EUR)");
+                await Assertions.Expect(FormInput(reloaded, "Option 2 value")).ToHaveValueAsync("250.5");
+            }
+            finally
+            {
+                await freshPage.CloseAsync();
+            }
+        });
+    }
+
+    // Inspector fields put a static label before their control.
+    private static ILocator FormField(ILocator scope, string label) =>
+        scope.Locator(".field").Filter(new LocatorFilterOptions
+        {
+            Has = scope.Page.Locator($"xpath=./label[normalize-space(.)='{label}']"),
+        }).First;
+
+    private static ILocator FormInput(ILocator scope, string label) =>
+        FormField(scope, label).Locator("input, textarea").First;
 }
