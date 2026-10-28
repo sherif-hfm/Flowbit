@@ -34,8 +34,9 @@ public sealed class RolePolicyActivationTests(PostgresApiFixture fixture)
                 row.InstanceId == instance.Id && row.Kind == WorkflowJobKinds.AsyncBefore);
             jobId = job.Id;
             queueClass = job.QueueClass;
+            // Due a minute ago, so the job is due even when the database clock runs behind this machine's.
             await db.WorkflowJobs.Where(row => row.Id == jobId).ExecuteUpdateAsync(setters => setters
-                .SetProperty(row => row.Priority, 1_000_000).SetProperty(row => row.DueAt, DateTimeOffset.UtcNow));
+                .SetProperty(row => row.Priority, 1_000_000).SetProperty(row => row.DueAt, DateTimeOffset.UtcNow.AddMinutes(-1)));
         }
         await using (var scope = fixture.Factory.Services.CreateAsyncScope())
         {

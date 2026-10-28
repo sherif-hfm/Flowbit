@@ -362,11 +362,12 @@ public sealed class AdministrativeTimerBoundaryOverrideApiTests(
     {
         await using (var db = fixture.CreateDbContext())
         {
+            // Due a minute ago, so the job is due even when the database clock runs behind this machine's.
             var changed = await db.WorkflowJobs
                 .Where(item => item.Id == jobId)
                 .ExecuteUpdateAsync(setters => setters
                     .SetProperty(item => item.Priority, 1_000_000)
-                    .SetProperty(item => item.DueAt, DateTimeOffset.UtcNow.AddSeconds(-1)));
+                    .SetProperty(item => item.DueAt, DateTimeOffset.UtcNow.AddMinutes(-1)));
             Assert.Equal(1, changed);
         }
 

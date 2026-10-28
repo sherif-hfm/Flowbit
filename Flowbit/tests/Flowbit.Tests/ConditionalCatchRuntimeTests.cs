@@ -671,13 +671,14 @@ public sealed class ConditionalCatchRuntimeTests(PostgresApiFixture fixture)
     {
         await using (var promote = fixture.CreateDbContext())
         {
+            // Due a minute ago, so the job is due even when the database clock runs behind this machine's.
             Assert.Equal(
                 1,
                 await promote.WorkflowJobs
                     .Where(job => job.Id == jobId)
                     .ExecuteUpdateAsync(setters => setters
                         .SetProperty(job => job.Priority, int.MaxValue)
-                        .SetProperty(job => job.DueAt, DateTimeOffset.UtcNow)));
+                        .SetProperty(job => job.DueAt, DateTimeOffset.UtcNow.AddMinutes(-1))));
         }
 
         await using var scope = fixture.Factory.Services.CreateAsyncScope();

@@ -299,7 +299,8 @@ public sealed class InstanceAdministrativeActionApiTests(PostgresApiFixture fixt
         {
             setting.Value = "Recovery";
             job.Priority = 10_000;
-            job.DueAt = DateTimeOffset.UtcNow.AddSeconds(-1);
+            // Due a minute ago, so the job is due even when the database clock runs behind this machine's.
+            job.DueAt = DateTimeOffset.UtcNow.AddMinutes(-1);
             await db.SaveChangesAsync();
             await using var scope = fixture.Factory.Services.CreateAsyncScope();
             var repository = scope.ServiceProvider.GetRequiredService<IWorkflowJobRepository>();

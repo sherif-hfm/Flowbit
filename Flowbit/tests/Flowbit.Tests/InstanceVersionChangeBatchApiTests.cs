@@ -586,7 +586,8 @@ public sealed class InstanceVersionChangeBatchApiTests(PostgresApiFixture fixtur
         {
             var job = await db.WorkflowJobs.SingleAsync(entity => entity.Id == jobId);
             job.Priority = 1_000_000;
-            job.DueAt = DateTimeOffset.UtcNow.AddSeconds(-1);
+            // Due a minute ago, so the job is due even when the database clock runs behind this machine's.
+            job.DueAt = DateTimeOffset.UtcNow.AddMinutes(-1);
             await db.SaveChangesAsync();
         }
 
