@@ -262,6 +262,11 @@ public interface ITimerSubscriptionRepository
         long instanceId,
         CancellationToken cancellationToken);
 
+    /// <summary>Cancels one active or paused subscription; false when it has already ended.</summary>
+    Task<bool> CancelByIdAsync(
+        long subscriptionId,
+        CancellationToken cancellationToken);
+
     Task<int> CancelByTokenIdsAsync(
         long instanceId,
         IReadOnlyCollection<long> tokenIds,

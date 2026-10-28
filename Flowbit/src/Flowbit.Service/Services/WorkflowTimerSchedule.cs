@@ -32,9 +32,14 @@ public sealed record WorkflowTimerSchedule(
                && dueAt < now - grace;
     }
 
+    /// <summary>
+    /// Resolves a timer's schedule from its activation time. A duration that names a business calendar is counted in that
+    /// calendar's working time, which <paramref name="calendar"/> must then supply.
+    /// </summary>
     public static WorkflowTimerSchedule Resolve(
         TimerDefinitionModel timer,
-        DateTimeOffset activatedAt)
+        DateTimeOffset activatedAt,
+        BusinessCalendar? calendar = null)
     {
         ArgumentNullException.ThrowIfNull(timer);
 
@@ -56,6 +61,12 @@ public sealed record WorkflowTimerSchedule(
                 throw new WorkflowDomainException(
                     $"Timer duration '{timer.TimeDuration}' is not a supported fixed ISO-8601 duration.");
             }
+
+            if (!string.IsNullOrWhiteSpace(timer.Calendar))
+            {
+                return ResolveWorkingDuration(timer, activatedAt, calendar);
+            }
+
             return new WorkflowTimerSchedule(activatedAt.ToUniversalTime() + duration, null, 1);
         }
 
@@ -77,6 +88,33 @@ public sealed record WorkflowTimerSchedule(
         }
 
         throw new WorkflowDomainException("Timer configuration has no schedule.");
+    }
+
+    private static WorkflowTimerSchedule ResolveWorkingDuration(
+        TimerDefinitionModel timer,
+        DateTimeOffset activatedAt,
+        BusinessCalendar? calendar)
+    {
+        var name = timer.Calendar!.Trim();
+        if (calendar is null || !string.Equals(calendar.Name, name, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new WorkflowDomainException(
+                $"Timer duration '{timer.TimeDuration}' needs business calendar '{name}', which was not loaded.");
+        }
+
+        if (!TimerDefinitionRules.TryParseWorkingDuration(timer.TimeDuration, out var working))
+        {
+            throw new WorkflowDomainException(
+                BusinessCalendarRules.WorkingDurationProblem("Timer duration", timer.TimeDuration!.Trim()));
+        }
+
+        if (!calendar.TryAdd(activatedAt, working, out var dueAt, out var problem))
+        {
+            throw new WorkflowDomainException(
+                $"Timer duration '{timer.TimeDuration!.Trim()}' cannot be counted in business calendar '{calendar.Name}': {problem}.");
+        }
+
+        return new WorkflowTimerSchedule(dueAt, null, 1);
     }
 
     public DateTimeOffset? GetOccurrence(int zeroBasedIndex)

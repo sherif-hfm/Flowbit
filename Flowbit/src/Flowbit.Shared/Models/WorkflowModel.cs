@@ -481,6 +481,14 @@ public sealed class FlowNodeModel
     public string? DueDateExpression { get; set; }
 
     /// <summary>
+    /// Optional name of the business calendar whose working time a dueDate
+    /// duration counts. A due date that is a date-time ignores it.
+    /// </summary>
+    [JsonPropertyName("dueDateCalendar")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? DueDateCalendar { get; set; }
+
+    /// <summary>
     /// Optional NCalc expression giving the task's priority as a whole number;
     /// higher values are more urgent.
     /// </summary>
@@ -607,6 +615,14 @@ public sealed class TimerDefinitionModel
     [JsonPropertyName("timeCycle")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? TimeCycle { get; set; }
+
+    /// <summary>
+    /// Optional name of the business calendar whose working time a timeDuration
+    /// counts. Absent means wall-clock time.
+    /// </summary>
+    [JsonPropertyName("calendar")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Calendar { get; set; }
 }
 
 /// <summary>
@@ -685,16 +701,18 @@ public static class TimerDefinitionRules
     public const int MaxBoundaryTimersPerHost = BoundaryEventRules.MaxObservableBoundariesPerHost;
     public static readonly TimeSpan MinimumRecurringInterval = TimeSpan.FromSeconds(1);
 
+    // Digits are ASCII, as in the editor: \d would also match other scripts' digits, which the invariant number
+    // parsers reject with an exception.
     private static readonly Regex FixedDurationPattern = new(
-        @"^P(?:(?<weeks>\d+(?:[\.,]\d+)?)W|(?:(?<days>\d+(?:[\.,]\d+)?)D)?(?:T(?:(?<hours>\d+(?:[\.,]\d+)?)H)?(?:(?<minutes>\d+(?:[\.,]\d+)?)M)?(?:(?<seconds>\d+(?:[\.,]\d+)?)S)?)?)$",
+        @"^P(?:(?<weeks>[0-9]+(?:[\.,][0-9]+)?)W|(?:(?<days>[0-9]+(?:[\.,][0-9]+)?)D)?(?:T(?:(?<hours>[0-9]+(?:[\.,][0-9]+)?)H)?(?:(?<minutes>[0-9]+(?:[\.,][0-9]+)?)M)?(?:(?<seconds>[0-9]+(?:[\.,][0-9]+)?)S)?)?)$",
         RegexOptions.CultureInvariant | RegexOptions.ExplicitCapture);
 
     private static readonly Regex CyclePattern = new(
-        @"^R(?<count>\d*)/(?<duration>.+)$",
+        @"^R(?<count>[0-9]*)/(?<duration>.+)$",
         RegexOptions.CultureInvariant | RegexOptions.ExplicitCapture);
 
     private static readonly Regex IsoDateWithOffsetPattern = new(
-        @"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:[\.,]\d{1,7})?)?(?:Z|[+-]\d{2}:\d{2})$",
+        @"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(?::[0-9]{2}(?:[\.,][0-9]{1,7})?)?(?:Z|[+-][0-9]{2}:[0-9]{2})$",
         RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
 
     public static int CountConfiguredExpressions(TimerDefinitionModel timer) =>
@@ -765,6 +783,67 @@ public static class TimerDefinitionRules
         }
     }
 
+    /// <summary>
+    /// Parses a fixed duration that a business calendar can count: whole
+    /// working days, then working time. Weeks and fractional days are rejected
+    /// because their working length is ambiguous.
+    /// </summary>
+    public static bool TryParseWorkingDuration(string? value, out WorkingDuration duration)
+    {
+        duration = default;
+        if (!TryParseFixedDuration(value, out _))
+        {
+            return false;
+        }
+
+        var match = FixedDurationPattern.Match(value!.Trim());
+        var days = match.Groups["days"];
+        var wholeDays = 0;
+        if (match.Groups["weeks"].Success
+            || (days.Success
+                && !int.TryParse(days.Value, NumberStyles.None, CultureInfo.InvariantCulture, out wholeDays)))
+        {
+            return false;
+        }
+
+        var seconds = ReadDecimal(match, "hours") * 60m * 60m
+            + ReadDecimal(match, "minutes") * 60m
+            + ReadDecimal(match, "seconds");
+        var ticks = decimal.Round(
+            seconds * TimeSpan.TicksPerSecond,
+            0,
+            MidpointRounding.AwayFromZero);
+        duration = new WorkingDuration(wholeDays, TimeSpan.FromTicks(decimal.ToInt64(ticks)));
+        return true;
+    }
+
+    /// <summary>
+    /// Describes why a timer's calendar can never be used, or returns null.
+    /// An invalid duration itself is reported by the duration rule.
+    /// </summary>
+    public static string? CalendarProblem(TimerDefinitionModel timer)
+    {
+        var calendar = timer.Calendar?.Trim();
+        if (string.IsNullOrEmpty(calendar))
+        {
+            return null;
+        }
+
+        if (BusinessCalendarRules.NameProblem("calendar", calendar) is { } nameProblem)
+        {
+            return nameProblem;
+        }
+
+        if (string.IsNullOrWhiteSpace(timer.TimeDuration))
+        {
+            return "names a calendar, but only a timeDuration can be counted in a business calendar.";
+        }
+
+        return TryParseFixedDuration(timer.TimeDuration, out _)
+            ? BusinessCalendarRules.CountableDurationProblem("timeDuration", timer.TimeDuration.Trim())
+            : null;
+    }
+
     public static bool TryParseTimeCycle(
         string? value,
         out int? repetitions,
@@ -813,31 +892,128 @@ public static class TimerDefinitionRules
 }
 
 /// <summary>
-/// A user task's resolved due value: a fixed instant, or a duration that is
-/// counted from the moment the work item is created.
+/// A duration counted in a business calendar: whole working days, which keep
+/// the time of day, then working time.
+/// </summary>
+public readonly record struct WorkingDuration(int Days, TimeSpan Time);
+
+/// <summary>
+/// Rules for naming a business calendar from a workflow definition, shared by
+/// definition validation and the editor.
+/// </summary>
+public static class BusinessCalendarRules
+{
+    public const int MaxNameLength = 100;
+    public const string NamePattern = "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$";
+    public const string NameRuleDescription =
+        "1 to 100 letters, digits, '.', '_', or '-', starting with a letter or digit";
+    public const string WorkingDurationRuleDescription =
+        "whole working days and working time, such as P5D or P1DT4H";
+
+    /// <summary>A business calendar searches this many days, about 100 years, after the start for working time.</summary>
+    public const int MaxSearchDays = 36_525;
+    public const string WorkingDurationLimitDescription = "at most 36,525 days, about 100 years";
+
+    private static readonly Regex NameRegex = new(NamePattern, RegexOptions.CultureInvariant);
+
+    public static bool IsValidName(string? name) => name is not null && NameRegex.IsMatch(name);
+
+    public static string? NameProblem(string property, string name) =>
+        IsValidName(name)
+            ? null
+            : $"{property} '{name}' is not a valid business calendar name; use {NameRuleDescription}.";
+
+    public static string WorkingDurationProblem(string property, string duration) =>
+        $"{property} '{duration}' cannot be counted in a business calendar; use {WorkingDurationRuleDescription}.";
+
+    /// <summary>
+    /// Whether a working duration fits in the days a calendar searches. A longer one can never be counted: each working
+    /// day needs a date of its own, and each working hour an hour.
+    /// </summary>
+    public static bool FitsSearchWindow(WorkingDuration duration) =>
+        duration.Days <= MaxSearchDays
+        && duration.Time <= TimeSpan.FromDays(MaxSearchDays - duration.Days);
+
+    public static string WorkingDurationTooLongProblem(string property, string duration) =>
+        $"{property} '{duration}' is longer than a business calendar can count; use {WorkingDurationLimitDescription}.";
+
+    /// <summary>
+    /// Describes why a fixed duration cannot be counted in a business calendar, or returns null. It needs whole days and
+    /// no weeks, and must fit in the days the calendar searches.
+    /// </summary>
+    public static string? CountableDurationProblem(string property, string duration) =>
+        !TimerDefinitionRules.TryParseWorkingDuration(duration, out var working)
+            ? WorkingDurationProblem(property, duration)
+            : FitsSearchWindow(working)
+                ? null
+                : WorkingDurationTooLongProblem(property, duration);
+
+    /// <summary>
+    /// The calendars a definition names, in node order: a timer's <c>calendar</c> and a user task's
+    /// <c>dueDateCalendar</c>.
+    /// </summary>
+    public static IReadOnlyList<BusinessCalendarReference> References(WorkflowModel definition) =>
+        definition.FlowNodes
+            .Select(node => new BusinessCalendarReference(
+                node.Id,
+                (BpmnFlowNodeTypes.IsTimer(node.Type)
+                    ? node.Timer?.Calendar
+                    : BpmnFlowNodeTypes.IsUserTask(node.Type)
+                        ? node.DueDateCalendar
+                        : null)?.Trim()!))
+            .Where(reference => !string.IsNullOrEmpty(reference.Name))
+            .ToList();
+}
+
+public readonly record struct BusinessCalendarReference(int NodeId, string Name);
+
+/// <summary>
+/// A user task's resolved due value: a fixed instant, a duration that is
+/// counted from the moment the work item is created, or a working duration
+/// that a business calendar counts from that moment.
 /// </summary>
 public sealed record UserTaskDueValue
 {
-    private UserTaskDueValue(DateTimeOffset? at, TimeSpan? after)
+    private UserTaskDueValue(
+        DateTimeOffset? at,
+        TimeSpan? after,
+        WorkingDuration? working = null,
+        string? calendar = null)
     {
         At = at;
         After = after;
+        Working = working;
+        Calendar = calendar;
     }
 
     public DateTimeOffset? At { get; }
 
     public TimeSpan? After { get; }
 
+    public WorkingDuration? Working { get; }
+
+    public string? Calendar { get; }
+
     public static UserTaskDueValue Instant(DateTimeOffset at) => new(at.ToUniversalTime(), null);
 
     public static UserTaskDueValue Duration(TimeSpan after) => new(null, after);
 
+    public static UserTaskDueValue WorkingTime(WorkingDuration duration, string calendar) =>
+        new(null, null, duration, calendar);
+
     /// <summary>
     /// Returns the due time of a work item created at <paramref name="createdAt"/>,
-    /// or null when a duration would pass the largest representable time.
+    /// or null when a duration would pass the largest representable time. A
+    /// working duration needs its calendar and is resolved by the engine.
     /// </summary>
     public DateTimeOffset? ResolveAt(DateTimeOffset createdAt)
     {
+        if (Working is not null)
+        {
+            throw new InvalidOperationException(
+                "A working-time due value is resolved through its business calendar.");
+        }
+
         if (At is DateTimeOffset at)
         {
             return at;
@@ -863,14 +1039,15 @@ public static class UserTaskDueRules
         "an ISO-8601 duration such as P2D or a date-time with an offset such as 2030-01-31T17:00:00Z";
 
     private static readonly Regex WholeNumberLiteralPattern = new(
-        @"^[+-]?\d+$",
+        @"^[+-]?[0-9]+$",
         RegexOptions.CultureInvariant);
 
     // Bare text that is evidently meant as a fixed value but does not parse,
     // such as p2d, P1Y, or 2026-11-01. NCalc would read it as a variable name
-    // or as arithmetic, so it could never give a usable due date.
+    // or as arithmetic, so it could never give a usable due date. Digits are
+    // ASCII, as in the editor.
     private static readonly Regex IntendedFixedValuePattern = new(
-        @"^(?:[Pp](?=[^\d]*\d)[0-9TtYyWwDdHhMmSs.,]+|\d{4}-\d{2}-\d{2}(?:[Tt ].*)?)$",
+        @"^(?:[Pp](?=[^0-9]*[0-9])[0-9TtYyWwDdHhMmSs.,]+|[0-9]{4}-[0-9]{2}-[0-9]{2}(?:[Tt ].*)?)$",
         RegexOptions.CultureInvariant);
 
     /// <summary>
@@ -940,6 +1117,81 @@ public static class UserTaskDueRules
         return IntendedFixedValuePattern.IsMatch(trimmed)
             ? $"dueDate '{trimmed}' is not {DueDateFormsDescription}."
             : null;
+    }
+
+    /// <summary>
+    /// Describes why a due-date calendar can never be used with the authored
+    /// due date, or returns null. Only fixed values and quoted literals are
+    /// checked; an expression's result is checked when it is evaluated.
+    /// </summary>
+    public static string? DueDateCalendarProblem(string? dueDate, string? dueDateCalendar)
+    {
+        var calendar = dueDateCalendar?.Trim();
+        if (string.IsNullOrEmpty(calendar))
+        {
+            return null;
+        }
+
+        if (BusinessCalendarRules.NameProblem("dueDateCalendar", calendar) is { } nameProblem)
+        {
+            return nameProblem;
+        }
+
+        if (string.IsNullOrWhiteSpace(dueDate))
+        {
+            return "defines dueDateCalendar without a dueDate.";
+        }
+
+        var trimmed = dueDate.Trim();
+        var fixedText = TryParseFixedValue(trimmed, out _) ? trimmed : QuotedLiteral(trimmed);
+        if (fixedText is null)
+        {
+            return null;
+        }
+
+        if (TimerDefinitionRules.TryParseTimeDate(fixedText, out _))
+        {
+            return "dueDate is a fixed date-time, which a business calendar cannot change; remove dueDateCalendar.";
+        }
+
+        return TimerDefinitionRules.TryParseFixedDuration(fixedText, out _)
+            ? BusinessCalendarRules.CountableDurationProblem("dueDate", fixedText.Trim())
+            : null;
+    }
+
+    /// <summary>
+    /// Counts a duration due value in the named calendar's working time; a
+    /// date-time is used as is. <paramref name="text"/> is the fixed value or
+    /// the expression's text result that gave <paramref name="value"/>.
+    /// </summary>
+    public static bool TryApplyCalendar(
+        UserTaskDueValue value,
+        string text,
+        string? calendar,
+        out UserTaskDueValue result,
+        out string? problem)
+    {
+        result = value;
+        problem = null;
+        if (string.IsNullOrWhiteSpace(calendar) || value.After is null)
+        {
+            return true;
+        }
+
+        if (!TimerDefinitionRules.TryParseWorkingDuration(text, out var working))
+        {
+            problem = $"the duration '{text.Trim()}' cannot be counted in a business calendar; use {BusinessCalendarRules.WorkingDurationRuleDescription}";
+            return false;
+        }
+
+        if (!BusinessCalendarRules.FitsSearchWindow(working))
+        {
+            problem = $"the duration '{text.Trim()}' is longer than a business calendar can count; use {BusinessCalendarRules.WorkingDurationLimitDescription}";
+            return false;
+        }
+
+        result = UserTaskDueValue.WorkingTime(working, calendar.Trim());
+        return true;
     }
 
     /// <summary>

@@ -104,7 +104,7 @@ Each timer specifies exactly one fixed schedule:
 | `timeDuration` | `"PT30S"` | Positive fixed duration from activation. |
 | `timeCycle` | `"R5/PT30S"` | Five occurrences at a 30-second interval; `R/PT30S` has no authored count limit. |
 
-Calendar months/years, cron, time-zone calendars, and expression-based schedules are unsupported. Recurring intervals must be at least one second. The schedule is persisted, but firing can be late if the Worker is unavailable or busy. Recurring misfires more than one minute late skip to a subsequent eligible occurrence; a finite timer catch with no remaining occurrence opens an incident rather than inventing a trigger.
+A `timeDuration` can name a business calendar in `calendar`; it then counts that calendar's working days and working hours in its time zone, and the due time is saved when the timer activates. A timer start whose calendar cannot give a due time opens a `timer_schedule_failed` incident instead of being scheduled. See [working-time durations](node-reference.md#working-time-durations). Calendar months/years, cron, and expression-based schedules are unsupported, and a `timeCycle` cannot name a calendar. Recurring intervals must be at least one second. The schedule is persisted, but firing can be late if the Worker is unavailable or busy. Recurring misfires more than one minute late skip to a subsequent eligible occurrence; a finite timer catch with no remaining occurrence opens an incident rather than inventing a trigger.
 
 Timer starts follow the published default definition's schedule activation. Switching defaults or unpublishing affects those schedules through reconciliation. A normal intermediate catch consumes a trigger and leaves the wait; recurring boundary timers can create several sibling reminders while their host remains active.
 
@@ -170,6 +170,7 @@ Flowbit uses NCalc rather than FEEL for routing and assignment expressions, plus
 | Execution and integration metadata | Async flags, retries, transport idempotency, business-key policy, typed REST mappings, shared bindings, and FlowInfo have Flowbit JSON semantics. Node/flow `attributes` are client metadata and do not alter execution. |
 | Form presentation | Start and action input declarations may carry `label`, `helpText`, and fixed `options` for the forms that collect them. They do not alter execution or version compatibility, and options do not restrict accepted values; `validation` does. BPMN leaves forms to the implementation. See [form presentation](node-reference.md#form-presentation). |
 | Task due date and priority | A `userTask` may carry `dueDate` (a fixed ISO-8601 duration, a fixed date-time, or an NCalc expression) and `priority` (an NCalc whole number), saved on each work item when it is created. The inbox returns, sorts, and filters by them, and reports `overdue` or `dueSoon` status. A missed due date has no execution effect; model enforced deadlines with a timer boundary. BPMN defines no task deadline attribute. See [due date and priority](node-reference.md#due-date-and-priority). |
+| Business calendars | A timer `timeDuration` (`timer.calendar`) and a user-task `dueDate` duration (`dueDateCalendar`) can name a calendar that settings administrators manage: weekly working periods, holidays with optional hours, and an IANA time zone. Days then count working days at the same time of day, and hours count working hours. The due time is saved when the timer or work item starts, so editing a calendar never moves it. BPMN leaves business calendars to the implementation. See [working-time durations](node-reference.md#working-time-durations). |
 
 Changes to active gateway, role, wait, job, or output contracts can block an in-place workflow-version switch. Versioning does not automatically migrate incompatible open work. Review [version integration](developer-guide.md) and [upgrade restrictions](deployment.md#upgrade-and-compatibility-rules).
 
@@ -180,7 +181,7 @@ Changes to active gateway, role, wait, job, or output contracts can block an in-
 - Embedded/event/transaction subprocesses, call activities, reusable subprocess invocation, and compensation scopes.
 - Event-based gateways; signal, escalation, compensation, cancel, link, and general throw-event families beyond the supported table.
 - General BPMN send/receive task implementations, non-REST service connectors, arbitrary external task executors, or multi-instance behavior on other activity types.
-- DMN decision tables, FEEL, cron schedules, business calendars, and calendar-relative timer durations.
+- DMN decision tables, FEEL, cron schedules, and month or year timer durations. Business calendars count only durations, not `timeDate` or `timeCycle` timers.
 
 Do not assume a similarly named element has every option found in a full BPMN engine. Definition validation and the current execution contracts above determine support.
 

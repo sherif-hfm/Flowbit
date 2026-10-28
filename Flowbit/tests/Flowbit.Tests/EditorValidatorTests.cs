@@ -2663,6 +2663,95 @@ public sealed class EditorValidatorTests
         }
     }
 
+    [Theory]
+    [InlineData("P2D", "uk-office")]
+    [InlineData("'PT4H'", "uk-office")]
+    [InlineData("contractEnd", "uk-office")]
+    [InlineData("P1W", "uk-office")]
+    [InlineData("'P1.5D'", "uk-office")]
+    [InlineData("2030-01-31T17:00:00Z", "uk-office")]
+    [InlineData("'2030-01-31T17:00:00+02:00'", "uk-office")]
+    [InlineData("P2D", "uk office")]
+    [InlineData("P2D", "-office")]
+    [InlineData("P36525D", "uk-office")]
+    [InlineData("'P36526D'", "uk-office")]
+    public void Validator_ChecksDueDateCalendarsLikeTheServer(string dueDate, string calendar)
+    {
+        var candidate = JsonNode.Parse(JsonSerializer.Serialize(
+            DefinitionValidationTests.LoadModel("votes-users-list.json")))!.AsObject();
+        var userTask = candidate["flowNodes"]!.AsArray().Select(node => node!.AsObject())
+            .First(node => node["type"]!.GetValue<string>() == "userTask");
+        userTask["dueDate"] = dueDate;
+        userTask["dueDateCalendar"] = calendar;
+        var serverProblem = UserTaskDueRules.DueDateCalendarProblem(dueDate, calendar);
+
+        var errors = ValidateJson(candidate.ToJsonString());
+
+        if (serverProblem is null)
+        {
+            Assert.Empty(errors);
+        }
+        else
+        {
+            var error = Assert.Single(errors);
+            Assert.StartsWith($"User task #{userTask["id"]!.GetValue<int>()} (", error, StringComparison.Ordinal);
+            Assert.EndsWith(") " + serverProblem, error, StringComparison.Ordinal);
+        }
+    }
+
+    [Theory]
+    [InlineData("timeDuration", "P2D", "uk-office")]
+    [InlineData("timeDuration", "P1DT4H", "examples.weekdays")]
+    [InlineData("timeDuration", "P2W", "uk-office")]
+    [InlineData("timeDuration", "P0.5D", "uk-office")]
+    [InlineData("timeCycle", "R3/PT1H", "uk-office")]
+    [InlineData("timeDate", "2030-01-01T09:00:00Z", "uk-office")]
+    [InlineData("timeDuration", "PT4H", "bad name")]
+    [InlineData("timeDuration", "P36525D", "uk-office")]
+    [InlineData("timeDuration", "P36526D", "uk-office")]
+    [InlineData("timeDuration", "P36524DT25H", "uk-office")]
+    [InlineData("timeDuration", "PT876601H", "uk-office")]
+    public void Validator_ChecksTimerCalendarsLikeTheServer(string kind, string value, string calendar)
+    {
+        var timer = kind switch
+        {
+            "timeCycle" => new TimerDefinitionModel { TimeCycle = value, Calendar = calendar },
+            "timeDate" => new TimerDefinitionModel { TimeDate = value, Calendar = calendar },
+            _ => new TimerDefinitionModel { TimeDuration = value, Calendar = calendar }
+        };
+        var serverProblem = TimerDefinitionRules.CalendarProblem(timer);
+
+        var errors = ValidateJson(JsonSerializer.Serialize(CreateTimerStartModel(timer)));
+
+        if (serverProblem is null)
+        {
+            Assert.Empty(errors);
+        }
+        else
+        {
+            Assert.Equal(["Timer event #1 " + serverProblem], errors);
+        }
+    }
+
+    [Fact]
+    public void Validator_RejectsDueDateCalendarsWithoutDueDatesOrOutsideUserTasks()
+    {
+        var candidate = JsonNode.Parse(JsonSerializer.Serialize(
+            DefinitionValidationTests.LoadModel("votes-users-list.json")))!.AsObject();
+        var nodes = candidate["flowNodes"]!.AsArray().Select(node => node!.AsObject()).ToArray();
+        var userTask = nodes.First(node => node["type"]!.GetValue<string>() == "userTask");
+        var start = nodes.First(node => node["type"]!.GetValue<string>() == "startEvent");
+        start["dueDateCalendar"] = "uk-office";
+        userTask["dueDateCalendar"] = "uk-office";
+
+        Assert.Equal(
+            [
+                "Flow node #1 defines dueDateCalendar but is not a user task.",
+                $"User task #{userTask["id"]!.GetValue<int>()} ({userTask["name"]!.GetValue<string>()}) defines dueDateCalendar without a dueDate."
+            ],
+            ValidateJson(candidate.ToJsonString()));
+    }
+
     [Fact]
     public void Validator_RejectsDueDateAndPriorityOutsideUserTasksAndNonTextValues()
     {

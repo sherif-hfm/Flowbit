@@ -489,6 +489,59 @@ public sealed class WorkflowVersionCompatibilityEvaluatorTests
     }
 
     [Fact]
+    public void Due_date_calendar_changes_do_not_change_an_open_task_contract()
+    {
+        var sourceModel = BasicModel();
+        var sourceTask = sourceModel.FlowNodes.Single(node => node.Id == 2);
+        sourceTask.DueDateExpression = "P2D";
+        sourceTask.DueDateCalendar = "uk-office";
+        var targetModel = Clone(sourceModel);
+        targetModel.FlowNodes.Single(node => node.Id == 2).DueDateCalendar = "us-office";
+
+        var result = WorkflowVersionCompatibilityEvaluator.Evaluate(
+            Context(Definition(11, 1, sourceModel), Definition(12, 2, targetModel), includeOpenTask: true));
+
+        Assert.True(result.IsCompatible);
+        Assert.Empty(result.Blockers);
+        Assert.Empty(result.Warnings);
+    }
+
+    [Fact]
+    public void Open_timer_requires_the_same_calendar_in_its_definition_and_persisted_descriptor()
+    {
+        var sourceModel = BasicModel(BpmnFlowNodeTypes.IntermediateTimerCatchEvent);
+        sourceModel.FlowNodes.Single(node => node.Id == 2).Timer = new TimerDefinitionModel
+        {
+            TimeDuration = "PT10M",
+            Calendar = "uk-office"
+        };
+        var source = Definition(11, 1, sourceModel);
+        var sameCalendar = Definition(12, 2, Clone(sourceModel));
+        var otherModel = Clone(sourceModel);
+        otherModel.FlowNodes.Single(node => node.Id == 2).Timer!.Calendar = "us-office";
+        var otherCalendar = Definition(13, 3, otherModel);
+
+        // Calendar names compare ignoring case, as calendars are looked up.
+        var compatible = WorkflowVersionCompatibilityEvaluator.Evaluate(Context(source, sameCalendar) with
+        {
+            OpenTimers = [Timer(source) with { ScheduleCalendar = "UK-Office" }]
+        });
+        var changed = WorkflowVersionCompatibilityEvaluator.Evaluate(Context(source, otherCalendar) with
+        {
+            OpenTimers = [Timer(source) with { ScheduleCalendar = "uk-office" }]
+        });
+        // A wait saved in wall-clock time does not match a target that names a calendar.
+        var persisted = WorkflowVersionCompatibilityEvaluator.Evaluate(Context(source, sameCalendar) with
+        {
+            OpenTimers = [Timer(source)]
+        });
+
+        Assert.True(compatible.IsCompatible, string.Join(", ", compatible.Blockers.Select(blocker => blocker.Code)));
+        AssertCodes(changed, WorkflowVersionCompatibilityCodes.OpenTimerContractChanged);
+        AssertCodes(persisted, WorkflowVersionCompatibilityCodes.OpenTimerContractChanged);
+    }
+
+    [Fact]
     public void Due_date_and_priority_changes_do_not_change_multi_instance_or_open_job_contracts()
     {
         var sourceModel = PresentationModel();

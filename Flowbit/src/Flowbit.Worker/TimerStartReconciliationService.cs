@@ -70,6 +70,7 @@ public sealed class TimerStartReconciliationService(
             scope.ServiceProvider.GetRequiredService<IWorkflowDefinitionRepository>();
         var subscriptions = scope.ServiceProvider.GetRequiredService<ITimerSubscriptionRepository>();
         var jobs = scope.ServiceProvider.GetRequiredService<IWorkflowJobRepository>();
+        var calendars = scope.ServiceProvider.GetService<IBusinessCalendarResolver>();
         await using var transaction =
             await dbContext.Database.BeginTransactionAsync(cancellationToken);
 
@@ -210,6 +211,7 @@ public sealed class TimerStartReconciliationService(
                 dbContext,
                 subscriptions,
                 jobs,
+                calendars,
                 cancellationToken);
         }
 
@@ -304,6 +306,7 @@ public sealed class TimerStartReconciliationService(
         AppDbContext dbContext,
         ITimerSubscriptionRepository subscriptions,
         IWorkflowJobRepository jobs,
+        IBusinessCalendarResolver? calendars,
         CancellationToken cancellationToken)
     {
         var timer = node.Timer
@@ -330,6 +333,12 @@ public sealed class TimerStartReconciliationService(
             && latest.Status is TimerSubscriptionStatuses.Active
                 or TimerSubscriptionStatuses.Paused)
         {
+            // A paused timer start waits for its scheduling incident to be retried.
+            if (latest.Status == TimerSubscriptionStatuses.Paused)
+            {
+                return;
+            }
+
             var hasOccurrenceJob = await dbContext.WorkflowJobs
                 .AsNoTracking()
                 .AnyAsync(
@@ -341,6 +350,22 @@ public sealed class TimerStartReconciliationService(
                         && job.Status != WorkflowJobStatuses.Skipped,
                     cancellationToken);
             if (hasOccurrenceJob)
+            {
+                return;
+            }
+
+            // A retried scheduling incident keeps the subscription until its job runs and cancels it.
+            var awaitsReschedule = await dbContext.WorkflowJobs
+                .AsNoTracking()
+                .AnyAsync(
+                    job => job.WorkflowDefinitionId == definitionId
+                        && job.TimerSubscriptionId == latest.Id
+                        && job.ScheduledOccurrenceAt == null
+                        && job.Status != WorkflowJobStatuses.Completed
+                        && job.Status != WorkflowJobStatuses.Cancelled
+                        && job.Status != WorkflowJobStatuses.Skipped,
+                    cancellationToken);
+            if (awaitsReschedule)
             {
                 return;
             }
@@ -361,7 +386,50 @@ public sealed class TimerStartReconciliationService(
         }
 
         var now = timeProvider.GetUtcNow();
-        var first = ResolveInitial(timer, defaultActivatedAt, now);
+        var calendarName = !string.IsNullOrWhiteSpace(timer.Calendar) && !string.IsNullOrWhiteSpace(timer.TimeDuration)
+            ? timer.Calendar.Trim()
+            : null;
+        BusinessCalendar? calendar = null;
+        string? problem = null;
+        if (calendarName is not null)
+        {
+            var lookup = calendars is null
+                ? new BusinessCalendarLookup(null, "business calendars are not configured")
+                : await calendars.GetAsync(calendarName, cancellationToken);
+            calendar = lookup.Calendar;
+            problem = lookup.Problem;
+        }
+
+        (long Occurrence, DateTimeOffset DueAt)? first = null;
+        if (problem is null)
+        {
+            try
+            {
+                first = ResolveInitial(timer, defaultActivatedAt, now, calendar);
+            }
+            catch (WorkflowDomainException ex)
+            {
+                problem = ex.Message;
+            }
+        }
+
+        if (problem is not null)
+        {
+            // Opened rather than thrown, so the other timer starts in this batch are still scheduled.
+            await OpenScheduleIncidentAsync(
+                definitionId,
+                workflowKey,
+                node,
+                calendarName,
+                defaultActivationId,
+                defaultActivatedAt,
+                problem,
+                subscriptions,
+                jobs,
+                cancellationToken);
+            return;
+        }
+
         if (first is null)
         {
             return;
@@ -377,6 +445,7 @@ public sealed class TimerStartReconciliationService(
                     TimerNodeName = node.Name,
                     ScheduleKind = ScheduleKind(timer),
                     ScheduleExpression = ScheduleExpression(timer),
+                    ScheduleCalendar = calendarName,
                     CancelActivity = true,
                     NextDueAt = first.Value.DueAt,
                     Occurrence = first.Value.Occurrence
@@ -397,6 +466,74 @@ public sealed class TimerStartReconciliationService(
             jobs,
             cancellationToken);
         telemetry.RecordTimerStart();
+    }
+
+    // A timer start whose first due time cannot be computed keeps a paused subscription and an incident, so operators
+    // see why it is not scheduled. Its job has no occurrence; retrying the incident cancels the subscription, and the
+    // next pass schedules the timer start again or opens a new incident.
+    private async Task OpenScheduleIncidentAsync(
+        long definitionId,
+        string workflowKey,
+        FlowNodeModel node,
+        string? calendarName,
+        Guid defaultActivationId,
+        DateTimeOffset defaultActivatedAt,
+        string problem,
+        ITimerSubscriptionRepository subscriptions,
+        IWorkflowJobRepository jobs,
+        CancellationToken cancellationToken)
+    {
+        var timer = node.Timer!;
+        var subscription = await subscriptions.CreateAsync(
+            new TimerSubscriptionCreateRecord
+            {
+                WorkflowDefinitionId = definitionId,
+                WorkflowKey = workflowKey,
+                ActivationId = defaultActivationId,
+                TimerNodeId = node.Id,
+                TimerNodeName = node.Name,
+                ScheduleKind = ScheduleKind(timer),
+                ScheduleExpression = ScheduleExpression(timer),
+                ScheduleCalendar = calendarName,
+                CancelActivity = true,
+                // The subscription never fires while paused; this only holds the timer start's place.
+                NextDueAt = defaultActivatedAt,
+                Occurrence = 0
+            },
+            cancellationToken);
+        if (subscription.Status != TimerSubscriptionStatuses.Active
+            || subscription.ActivationId != defaultActivationId
+            || !await subscriptions.PauseAsync(subscription.Id, subscription.Occurrence, cancellationToken))
+        {
+            return;
+        }
+
+        var job = await jobs.EnqueueIncidentAsync(
+            new WorkflowJobCreateRecord
+            {
+                WorkflowDefinitionId = definitionId,
+                WorkflowKey = workflowKey,
+                TimerSubscriptionId = subscription.Id,
+                ActivationId = defaultActivationId,
+                NodeId = node.Id,
+                NodeName = node.Name,
+                NodeType = node.Type,
+                Kind = WorkflowJobKinds.TimerStart,
+                QueueClass = WorkflowJobClasses.Control,
+                Phase = WorkflowJobKinds.Timer,
+                DueAt = timeProvider.GetUtcNow(),
+                MaxAttempts = 4
+            },
+            WorkflowIncidentTypes.TimerScheduleFailed,
+            $"Timer start #{node.Id} cannot be scheduled.",
+            problem,
+            cancellationToken);
+        logger.LogError(
+            "Timer start #{NodeId} of workflow definition {WorkflowDefinitionId} cannot be scheduled ({Problem}); opened an incident on job {JobId}, to retry once the cause is fixed.",
+            node.Id,
+            definitionId,
+            problem,
+            job.Id);
     }
 
     private static Task<WorkflowJobRecord> EnqueueTimerStartAsync(
@@ -430,9 +567,10 @@ public sealed class TimerStartReconciliationService(
     private static (long Occurrence, DateTimeOffset DueAt)? ResolveInitial(
         TimerDefinitionModel timer,
         DateTimeOffset activatedAt,
-        DateTimeOffset now)
+        DateTimeOffset now,
+        BusinessCalendar? calendar = null)
     {
-        var schedule = WorkflowTimerSchedule.Resolve(timer, activatedAt);
+        var schedule = WorkflowTimerSchedule.Resolve(timer, activatedAt, calendar);
         if (schedule.Interval is null)
         {
             return (0, schedule.FirstOccurrenceAt);

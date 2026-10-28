@@ -1,0 +1,28 @@
+{
+  "id": "browser-editor-business-calendar",
+  "name": "Browser editor business calendar",
+  "initialEventId": 1,
+  "variables": [],
+  "lanes": [],
+  "flowNodes": [
+    { "id": 1, "name": "Submitted", "type": "startEvent", "x": 60, "y": 120 },
+    { "id": 2, "name": "Review", "type": "userTask", "x": 220, "y": 105, "dueDate": "P2D" },
+    {
+      "id": 3,
+      "name": "Deadline",
+      "type": "timerBoundaryEvent",
+      "x": 300,
+      "y": 165,
+      "attachedToRef": 2,
+      "cancelActivity": true,
+      "timer": { "timeDate": null, "timeDuration": "P3D", "timeCycle": null }
+    },
+    { "id": 4, "name": "Done", "type": "endEvent", "x": 520, "y": 120 },
+    { "id": 5, "name": "Escalated", "type": "endEvent", "x": 520, "y": 260 }
+  ],
+  "sequenceFlows": [
+    { "id": 101, "name": "", "sourceRef": 1, "targetRef": 2 },
+    { "id": 201, "name": "Approve", "sourceRef": 2, "targetRef": 4 },
+    { "id": 301, "name": "", "sourceRef": 3, "targetRef": 5 }
+  ]
+}

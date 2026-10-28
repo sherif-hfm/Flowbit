@@ -161,6 +161,7 @@ Paths below are relative to the UI origin, not API endpoints. Most data screens 
 | **Administrative actions** | `/administrative-actions` | Prepare explicit overrides of waiting task or timer-boundary positions. |
 | **Engine settings** | `/engine-settings` | Deployment-wide engine setting records. |
 | **AI models** | `/ai-models` | Models, endpoints, and write-only keys the editor's AI assistant can use. |
+| **Business calendars** | `/business-calendars` | Working days, hours, holidays, and time zones that timer durations and task due dates can count in. |
 | **Retention policies** | `/retention` | Preview and configure cleanup policies and inspect runs. |
 | **Workflow settings** | `/workflow-settings` | JSON settings consumed by workflow expressions/templates. |
 | **Shared variables** | `/shared-variables` | Shared catalog contracts, current values, revisions, and lifecycle. |
@@ -206,7 +207,7 @@ DevelopmentToken mode retains its process-wide test identity. OpenIdConnect mode
 
 Choose **Create workflow** on Workflows, or **Workflow editor** in the sidebar, to start an empty document with a fresh editable workflow key. To change an existing definition, expand its family and choose **Edit** on the exact version. The editor fills the workspace beside the normal navigation. Its compact toolbar contains File/Edit/View, the workflow name, version and save status, and **Save new version**. The version's tooltip identifies the source name/key; its workflow key in the inspector is read-only because changes stay in that family.
 
-Use the editor's normal canvas, inspector, variables, and File menu. Each start-event and action variable has a **Form** section for the label, help text, and fixed options that forms show; options are available for a single text or number value, and a type change converts option values where possible. A user task has **Due date** and **Priority** fields: a due date is a duration such as `P2D`, a date-time with an offset, or an NCalc expression, and a priority is an NCalc expression that gives a whole number. Each field reports a value that can never be used, such as `'P2X'`, as you type, and the save reports it too; see [due date and priority](node-reference.md#due-date-and-priority). **Save new version** validates the same JSON as **File → Save JSON**, then creates an **unpublished** immutable version. Editing a stored version uses the existing new-version API; creating or importing locally uses the existing create API. A create request using an existing key appends a version to that family. After success, the toolbar and URL identify the saved version. Publish it separately from Workflows. Existing instances continue using their selected version.
+Use the editor's normal canvas, inspector, variables, and File menu. Each start-event and action variable has a **Form** section for the label, help text, and fixed options that forms show; options are available for a single text or number value, and a type change converts option values where possible. A user task has **Due date** and **Priority** fields: a due date is a duration such as `P2D`, a date-time with an offset, or an NCalc expression, and a priority is an NCalc expression that gives a whole number. Each field reports a value that can never be used, such as `'P2X'`, as you type, and the save reports it too; see [due date and priority](node-reference.md#due-date-and-priority). The **Due date calendar** field, and a timer's **Business calendar** field shown for a duration, name a [business calendar](#business-calendars) so the duration counts working days and hours; type the calendar's exact name. They report a duration with weeks or fractional days, or a calendar on a fixed date-time, as you type. The server checks that the calendar exists when you save. **Save new version** validates the same JSON as **File → Save JSON**, then creates an **unpublished** immutable version. Editing a stored version uses the existing new-version API; creating or importing locally uses the existing create API. A create request using an existing key appends a version to that family. After success, the toolbar and URL identify the saved version. Publish it separately from Workflows. Existing instances continue using their selected version.
 
 Hosted saves are limited to **2 MiB of UTF-8 JSON**. Larger local imports remain editable and can be exported to a file. API load/save requires the configured definition-administration permission (`Workflow.RequiredRole`, default `admin`); validation and authorization errors leave the diagram open. If a connection fails after submission, check Workflows before retrying because the API may already have created a version.
 
@@ -393,6 +394,21 @@ Choose **Add model** and enter:
 - **API key**: at least 16 characters. For an endpoint without keys, enter a unique placeholder of at least 16 characters.
 
 Select **Add model** in the form to save. The key field is cleared and the key is never shown again. **Edit → Save changes** updates a model; leave **New API key** blank to keep the stored key. Changing the endpoint, model, or reasoning effort makes open assistant conversations start over. **Delete** asks for confirmation and removes the model and its key. When another administrator changed the model first, use **Reload latest**. The models are stored in the `AiAuthoring.Models` engine setting; see [AI model catalog](deployment.md#ai-model-catalog).
+
+### Business calendars
+
+**Business calendars** (`/business-calendars`) requires `Settings.RequiredRole`. Each row shows the calendar's name and description, its time zone, a summary of the working week such as **Mon–Fri 09:00–17:00**, the number of holidays, and when it last changed. A timer's `calendar` and a user task's `dueDateCalendar` name a calendar so that their durations count working time; see [working-time durations](node-reference.md#working-time-durations).
+
+Choose **Add calendar** and enter:
+
+- **Name**: letters, digits, `.`, `_`, and `-`, unique ignoring letter case. Workflows name it exactly, and it cannot change later.
+- **Time zone**: an IANA name such as `Europe/London`, written exactly; the field suggests the zones the server knows.
+- **Working hours**: one line per weekday, such as `09:00-12:30, 13:30-17:30`. A blank day has no working hours. The form starts with Monday to Friday, 09:00 to 17:00, in `Etc/UTC`.
+- **Holidays**: **Add holiday**, then a date, an optional name, and optional working hours. Without hours the day is closed; with hours, for example `09:00-13:00`, only those count.
+
+**Preview** computes a due time for the calendar in the form, before you save it: enter a start in the calendar's time zone and a duration such as `P3D`, then select **Compute due time**. The result shows the due time in the calendar's time zone and in UTC, including across a daylight-saving change.
+
+Select **Add calendar** in the form to save. **Edit → Save changes** replaces the calendar's content; timers and work items that start afterward use it, and due times already saved do not move. When another administrator changed the calendar first, use **Reload latest**; if the latest version cannot be loaded, the form keeps your changes so you can try again. **Delete** asks for confirmation. It is refused while a published workflow, a running instance, or an open job uses the calendar, and the page shows which of these apply.
 
 ### Shared-variable catalog
 

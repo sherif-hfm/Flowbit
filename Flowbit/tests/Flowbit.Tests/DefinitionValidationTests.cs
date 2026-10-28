@@ -612,6 +612,99 @@ public sealed class DefinitionValidationTests
     }
 
     [Fact]
+    public async Task CreateAsync_TrimsCalendarNamesAndAcceptsWorkingDurations()
+    {
+        var model = CreateCalendarModel(" P1DT4H ", " uk-office ");
+        var review = model.FlowNodes.Single(node => node.Id == 2);
+        review.DueDateExpression = "  if(amount > 1, 'P2D', 'PT4H')  ";
+        review.DueDateCalendar = "  uk-office  ";
+        var service = CreateService(out var repository);
+
+        await service.CreateAsync(model, false, CancellationToken.None);
+
+        var saved = repository.Added!.Definition;
+        Assert.Equal("uk-office", saved.FlowNodes.Single(node => node.Id == 2).DueDateCalendar);
+        Assert.Equal("uk-office", saved.FlowNodes.Single(node => node.Id == 4).Timer!.Calendar);
+        Assert.Equal("P1DT4H", saved.FlowNodes.Single(node => node.Id == 4).Timer!.TimeDuration);
+    }
+
+    [Theory]
+    [InlineData("timeCycle", "R3/PT1H", "uk-office", "Timer event #4 names a calendar, but only a timeDuration can be counted in a business calendar.")]
+    [InlineData("timeDate", "2030-01-01T09:00:00Z", "uk-office", "Timer event #4 names a calendar, but only a timeDuration can be counted in a business calendar.")]
+    [InlineData("timeDuration", "P1W", "uk-office", "Timer event #4 timeDuration 'P1W' cannot be counted in a business calendar; use whole working days and working time, such as P5D or P1DT4H.")]
+    [InlineData("timeDuration", "P1.5D", "uk-office", "Timer event #4 timeDuration 'P1.5D' cannot be counted in a business calendar; use whole working days and working time, such as P5D or P1DT4H.")]
+    [InlineData("timeDuration", "P2D", "uk office", "Timer event #4 calendar 'uk office' is not a valid business calendar name; use 1 to 100 letters, digits, '.', '_', or '-', starting with a letter or digit.")]
+    [InlineData("timeDuration", "P2D", "missing-calendar", "Flow node #4 names business calendar 'missing-calendar', which does not exist. Create it on the Business calendars page or correct the name.")]
+    [InlineData("timeDuration", "P2D", "UK-Office", "Flow node #4 names business calendar 'UK-Office', which must be written 'uk-office'.")]
+    [InlineData("timeDuration", "P36526D", "uk-office", "Timer event #4 timeDuration 'P36526D' is longer than a business calendar can count; use at most 36,525 days, about 100 years.")]
+    [InlineData("timeDuration", "P١D", "uk-office", "Timer event #4 timeDuration must be a positive fixed-unit ISO-8601 duration.")]
+    public async Task CreateAsync_RejectsTimerCalendarsThatCanNeverBeUsed(
+        string kind,
+        string value,
+        string calendar,
+        string expected)
+    {
+        var model = CreateCalendarModel("P2D", calendar);
+        model.FlowNodes.Single(node => node.Id == 4).Timer = kind switch
+        {
+            "timeCycle" => new TimerDefinitionModel { TimeCycle = value, Calendar = calendar },
+            "timeDate" => new TimerDefinitionModel { TimeDate = value, Calendar = calendar },
+            _ => new TimerDefinitionModel { TimeDuration = value, Calendar = calendar }
+        };
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+
+        Assert.Equal(expected, error.Message);
+    }
+
+    [Theory]
+    [InlineData(1, null, "uk-office", "Flow node #1 defines dueDateCalendar but is not a user task.")]
+    [InlineData(2, null, "uk-office", "User task #2 defines dueDateCalendar without a dueDate.")]
+    [InlineData(2, "2030-01-31T17:00:00Z", "uk-office", "User task #2 dueDate is a fixed date-time, which a business calendar cannot change; remove dueDateCalendar.")]
+    [InlineData(2, "'2030-01-31T17:00:00+02:00'", "uk-office", "User task #2 dueDate is a fixed date-time, which a business calendar cannot change; remove dueDateCalendar.")]
+    [InlineData(2, "P1W", "uk-office", "User task #2 dueDate 'P1W' cannot be counted in a business calendar; use whole working days and working time, such as P5D or P1DT4H.")]
+    [InlineData(2, "'P0.5D'", "uk-office", "User task #2 dueDate 'P0.5D' cannot be counted in a business calendar; use whole working days and working time, such as P5D or P1DT4H.")]
+    [InlineData(2, "P2D", "-bad", "User task #2 dueDateCalendar '-bad' is not a valid business calendar name; use 1 to 100 letters, digits, '.', '_', or '-', starting with a letter or digit.")]
+    [InlineData(2, "P2D", "missing-calendar", "Flow node #2 names business calendar 'missing-calendar', which does not exist. Create it on the Business calendars page or correct the name.")]
+    [InlineData(2, "P36526D", "uk-office", "User task #2 dueDate 'P36526D' is longer than a business calendar can count; use at most 36,525 days, about 100 years.")]
+    public async Task CreateAsync_RejectsDueDateCalendarsThatCanNeverBeUsed(
+        int nodeId,
+        string? dueDate,
+        string calendar,
+        string expected)
+    {
+        var model = CreateTerminalModel(BpmnFlowNodeTypes.EndEvent);
+        var node = model.FlowNodes.Single(candidate => candidate.Id == nodeId);
+        node.DueDateExpression = dueDate;
+        node.DueDateCalendar = calendar;
+
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(model, false, CancellationToken.None));
+
+        Assert.Equal(expected, error.Message);
+    }
+
+    // Another script's digits used to escape as a FormatException, a server error; the grammar reads ASCII digits only.
+    [Fact]
+    public async Task CreateAsync_ReadsOnlyAsciiDigitsInDurations()
+    {
+        var timerModel = CreateCalendarModel("P2D", "uk-office");
+        timerModel.FlowNodes.Single(node => node.Id == 4).Timer = new TimerDefinitionModel { TimeDuration = "P١D" };
+        var timerError = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(timerModel, false, CancellationToken.None));
+        Assert.Equal("Timer event #4 timeDuration must be a positive fixed-unit ISO-8601 duration.", timerError.Message);
+
+        var dueModel = CreateTerminalModel(BpmnFlowNodeTypes.EndEvent);
+        dueModel.FlowNodes.Single(node => node.Id == 2).DueDateExpression = "'P١D'";
+        var dueError = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateService(out _).CreateAsync(dueModel, false, CancellationToken.None));
+        Assert.Equal(
+            "User task #2 dueDate 'P١D' is not an ISO-8601 duration such as P2D or a date-time with an offset such as 2030-01-31T17:00:00Z.",
+            dueError.Message);
+    }
+
+    [Fact]
     public async Task CreateAsync_AcceptsVariablePresentationLimits()
     {
         var model = CreateTerminalModel(BpmnFlowNodeTypes.EndEvent);
@@ -4673,6 +4766,22 @@ public sealed class DefinitionValidationTests
         ]
     };
 
+    // A user task with a timer boundary whose duration names a calendar.
+    private static WorkflowModel CreateCalendarModel(string duration, string calendar)
+    {
+        var model = CreateTerminalModel(BpmnFlowNodeTypes.EndEvent);
+        model.FlowNodes.Add(new FlowNodeModel
+        {
+            Id = 4,
+            Name = "Deadline",
+            Type = BpmnFlowNodeTypes.TimerBoundaryEvent,
+            AttachedToRef = 2,
+            Timer = new TimerDefinitionModel { TimeDuration = duration, Calendar = calendar }
+        });
+        model.SequenceFlows.Add(new SequenceFlowModel { Id = 401, SourceRef = 4, TargetRef = 3 });
+        return model;
+    }
+
     private static WorkflowDefinitionService CreateService(
         out CapturingDefinitionRepository repository,
         ServiceTaskOptions? options = null,
@@ -4690,7 +4799,8 @@ public sealed class DefinitionValidationTests
             durableProcessing,
             conditionalEventPlanCache: conditionalEventPlanCache,
             sharedVariables: sharedVariables ?? CreateExampleWorkflowSharedCatalog(),
-            sharedVariableAccessPlanCache: sharedVariableAccessPlanCache);
+            sharedVariableAccessPlanCache: sharedVariableAccessPlanCache,
+            businessCalendars: TestBusinessCalendarCatalog.Examples());
     }
 
     private static WorkflowDefinitionValidator CreateValidator(

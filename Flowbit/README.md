@@ -1390,7 +1390,7 @@ dotnet test ./tests/Flowbit.BrowserTests/Flowbit.BrowserTests.csproj -c Release 
 ```
 
 Set `FLOWBIT_BROWSER_HEADED=1` to launch Chromium headed for local diagnosis.
-The suite covers editor E1–E10 and runtime R1–R10 scenarios (see the project
+The suite covers editor E1–E11 and runtime R1–R11 scenarios (see the project
 README); manual native-picker and full acceptance checks remain the caller's
 responsibility.
 
@@ -1665,6 +1665,21 @@ A `userTask` may set `dueDate` and `priority`. `WorkflowEngineService.ToSnapshot
 The snapshot carries the due value as an instant or as a duration, and `WorkflowRuntimeRepository` adds a duration to the same timestamp it records as the work item's `CreatedAt`, both in `NewUserTask` and in the bulk insert of multi-instance children, which also inserts pending sequential children. Saved values are never recomputed. `WorkflowVersionCompatibilityEvaluator` leaves both properties out of node contracts.
 
 Inbox, task, task-history, task-management, and task-distribution responses add `dueAt`, `priority`, and a read-time `dueStatus` from `UserTaskDueClock`, which uses one clock instant per request and the `UserTasks.DueSoonThreshold` engine setting. Engine settings are not cached, so the engine reads the threshold at most once per scope and only when a returned task has a due time or a `dueSoon`/`upcoming` filter needs it; requests without due dates keep their query counts. The inbox `dueStatus`, `dueFrom`/`dueTo`, and `minPriority`/`maxPriority` filters are bound parameters in `BuildInboxWhere`, applied before visibility, one-per-actor selection, counting, ordering, and paging. See [due date and priority](../docs/node-reference.md#due-date-and-priority).
+
+### Business calendars
+
+A timer `timeDuration` can name a calendar in `timer.calendar`, and a user-task `dueDate` duration in `dueDateCalendar`; both then count working time. Settings administrators manage calendars through `BusinessCalendarService` (`/api/business-calendars`, `Settings.RequiredRole`). `business_calendars` stores each calendar's `citext` name, IANA time zone, and `jsonb` weekly hours and holidays. `BusinessCalendarContentRules` validates content on writes, including that the host knows the time zone. Stored content is read back without that check, so a calendar stays listable on a host that lacks its zone.
+
+- **Calculation.** `BusinessCalendar.TryAdd` applies the days, keeping the time of day on the Nth following working day, then counts the time through working periods. It searches `BusinessCalendarRules.MaxSearchDays` (36,525) days, so `CountableDurationProblem` rejects a longer duration at validation. `BusinessCalendarTimeZones.ToInstant` maps a local time to the first instant at which the clock shows it or later. It uses `TimeZoneInfo` with the host's time-zone data and no extra package.
+- **Resolution.** The scoped `BusinessCalendarResolver` loads each calendar once per request or Worker scope, without locks.
+- **Timers.** The engine resolves a calendar timer through `ResolveTimerScheduleAsync` when a catch or boundary activates. `TimerStartReconciliationService` resolves timer starts the same way. A timer start it cannot schedule, for any `WorkflowDomainException`, keeps a paused subscription and a `timer_schedule_failed` incident job without a `ScheduledOccurrenceAt`, instead of stalling the batch or logging on every pass. Retrying the incident runs that job, and `ProcessTimerStartJobAsync` cancels the paused subscription so the next pass schedules the timer start again. `timer_subscriptions.ScheduleCalendar` records the calendar beside the schedule kind and expression. A missing calendar fails the activation with `WorkflowDomainException`.
+- **Due dates.** `ResolveUserTaskDueAndPriority` turns a duration into a working-time `UserTaskDueValue`. `WorkflowRuntimeRepository` resolves it through the resolver at the work item's `CreatedAt`, once for all multi-instance children. A due date that cannot be counted is left empty and logged.
+- **References.** `WorkflowDefinitionRepository` replaces a version's `workflow_definition_business_calendars` rows when the version is saved and when it is published. The calendar rows are locked `FOR KEY SHARE` in name order, after the shared-variable bindings.
+- **Deletion.** `BusinessCalendarRepository.DeleteAsync` locks the calendar `FOR UPDATE` and refuses while a published version, a running instance, or an open job uses it. Updates take `FOR NO KEY UPDATE`, so they never wait for definition saves.
+- **Readiness.** `WorkflowDefinitionReadinessChecker.ValidateBusinessCalendarReferencesAsync` requires every named calendar to exist and to be written in its exact casing. It runs on save, publish, and default selection, and in AI authoring validation.
+- **Version compatibility.** The timer node contract keeps `timer.calendar`, and `TimerDescriptorMatches` compares `ScheduleCalendar` ignoring case. `CanonicalNode` drops `dueDateCalendar`.
+
+See [working-time durations](../docs/node-reference.md#working-time-durations).
 
 ### Conditions are visibility and execution guards
 

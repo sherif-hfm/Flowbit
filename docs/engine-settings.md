@@ -14,7 +14,7 @@ A **runtime default** is what a consumer uses without a usable setting. A **seed
 | [WorkflowInstances.RequiredRole](#workflowinstancesrequiredrole) | Global instance list/search visibility. | `admin` |
 | [NodeExecution.RequiredRole](#nodeexecutionrequiredrole) | Global node-execution activity visibility. | `admin` |
 | [WorkflowJobs.RequiredRole](#workflowjobsrequiredrole) | Durable job and incident operations. | `admin` |
-| [Settings.RequiredRole](#settingsrequiredrole) | Settings, AI models, and retention administration. | `admin` |
+| [Settings.RequiredRole](#settingsrequiredrole) | Settings, AI models, business calendars, and retention administration. | `admin` |
 | [Users.RequiredRole](#usersrequiredrole) | Local user and user-attribute administration. | `admin` |
 | [SharedVariables.RequiredRole](#sharedvariablesrequiredrole) | JWT access to shared variables and client administration. | `admin` |
 | [Delegation.AdminRoles](#delegationadminroles) | Delegation and acceptance-policy administration. | `admin` |
@@ -160,9 +160,9 @@ See [jobs and incidents](api-guide.md#jobs-and-incidents) and [operations UI](ui
 - **Seed:** `admin` in `AddSettingDescriptionsAndManagementRole`, not `SeedDefaultSettings`.
 - **Takes effect:** the next settings-authorized request; no restart. This can remove the editing identity's access immediately after a successful update.
 
-Controls engine-setting and workflow-setting CRUD, AI-model administration, and retention policy, preview, and cleanup-run operations. AI-model administrators choose provider destinations and credentials. This setting does not grant local-user administration, shared-variable administration, or ordinary workflow permissions. Provision an identity with a replacement role before removing your own role from this list.
+Controls engine-setting and workflow-setting CRUD, AI-model administration, business-calendar administration and preview, and retention policy, preview, and cleanup-run operations. AI-model administrators choose provider destinations and credentials. This setting does not grant local-user administration, shared-variable administration, or ordinary workflow permissions. Provision an identity with a replacement role before removing your own role from this list.
 
-See [settings](api-guide.md#settings), [AI models](api-guide.md#ai-models), and [retention](api-guide.md#retention). Implementation: [settings authorization filter](../Flowbit/src/Flowbit.Api/Endpoints/SettingsEndpoints.cs), reused by [AI-model endpoints](../Flowbit/src/Flowbit.Api/Endpoints/AiModelEndpoints.cs) and [retention endpoints](../Flowbit/src/Flowbit.Api/Endpoints/RetentionEndpoints.cs).
+See [settings](api-guide.md#settings), [AI models](api-guide.md#ai-models), [business calendars](api-guide.md#business-calendars), and [retention](api-guide.md#retention). Implementation: [settings authorization filter](../Flowbit/src/Flowbit.Api/Endpoints/SettingsEndpoints.cs), reused by [AI-model endpoints](../Flowbit/src/Flowbit.Api/Endpoints/AiModelEndpoints.cs), [business-calendar endpoints](../Flowbit/src/Flowbit.Api/Endpoints/BusinessCalendarEndpoints.cs), and [retention endpoints](../Flowbit/src/Flowbit.Api/Endpoints/RetentionEndpoints.cs).
 
 ### Users.RequiredRole
 

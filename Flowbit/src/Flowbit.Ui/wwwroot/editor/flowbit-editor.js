@@ -1618,11 +1618,15 @@ function normalizeTimerDefinition(value) {
     if (!trimmed) return null;
     return normalizeDate ? normalizeTimerTimeDate(trimmed) : trimmed;
   };
-  return {
+  const timer = {
     timeDate: normalizeMember(source.timeDate, true),
     timeDuration: normalizeMember(source.timeDuration),
     timeCycle: normalizeMember(source.timeCycle)
   };
+  // A calendar is kept only when named, so timers without one export as before.
+  const calendar = normalizeMember(source.calendar);
+  if (calendar !== null) timer.calendar = calendar;
+  return timer;
 }
 function applyTypeInvariants(node) {
   if (node.attributes == null) node.attributes = [];
@@ -1657,6 +1661,7 @@ function applyTypeInvariants(node) {
     node.inheritAssignmentFromNodeId = null;
     delete node.inboxVisibilityCondition;
     delete node.dueDate;
+    delete node.dueDateCalendar;
     delete node.priority;
   } else if (typeof node.inboxVisibilityCondition === "string" &&
       !node.inboxVisibilityCondition.trim()) {
@@ -5252,9 +5257,12 @@ function renderTimerSection(node) {
       node.timer.timeCycle = value;
     });
   } else {
+    let refreshCalendar = () => {};
     renderDurationEditor(inspector, "Duration after activation", node.timer.timeDuration ?? "", value => {
       node.timer.timeDuration = value;
+      refreshCalendar();
     }, { defaultUnit: "hours" });
+    refreshCalendar = renderTimerCalendarField(node);
   }
   const hint = document.createElement("p");
   hint.className = "empty-note";
@@ -5262,8 +5270,50 @@ function renderTimerSection(node) {
     ? "Choose a local date and time. Flowbit saves the equivalent UTC instant with a Z offset."
     : selectedKind === "timeCycle"
       ? "Choose whether the interval repeats forever or a fixed number of times. Recurring intervals must be at least one second."
-      : "Choose an amount and unit. Fixed weeks, days, hours, minutes, and seconds are supported; calendar years and months are not.";
+      : "Choose an amount and unit. Fixed weeks, days, hours, minutes, and seconds are supported; calendar years and months are not. " +
+        "With a business calendar, days keep the time of day on later working days and hours count only working hours; weeks cannot be used.";
   inspector.appendChild(hint);
+}
+// The calendar is free text: the editor has no list of calendars, and the
+// server checks that the named calendar exists when the definition is saved.
+function renderTimerCalendarField(node) {
+  const f = document.createElement("div");
+  f.className = "field";
+  const inputId = "timer-calendar-" + String(node.id);
+  const labelElement = document.createElement("label");
+  labelElement.htmlFor = inputId;
+  labelElement.textContent = "Business calendar";
+  const input = document.createElement("input");
+  input.type = "text";
+  input.id = inputId;
+  input.spellcheck = false;
+  input.placeholder = "examples.weekdays";
+  input.value = typeof node.timer.calendar === "string" ? node.timer.calendar : String(node.timer.calendar ?? "");
+  const status = document.createElement("p");
+  status.className = "expression-validation";
+  status.setAttribute("role", "status");
+  status.setAttribute("aria-live", "polite");
+  status.id = inputId + "-status";
+  input.setAttribute("aria-describedby", status.id);
+  const updateValidation = () => {
+    const problem = timerCalendarProblem(node.timer);
+    input.setAttribute("aria-invalid", problem ? "true" : "false");
+    status.textContent = problem || "";
+  };
+  input.oninput = () => {
+    if (input.value.trim()) {
+      node.timer.calendar = input.value;
+    } else {
+      delete node.timer.calendar;
+    }
+    updateValidation();
+  };
+  f.appendChild(labelElement);
+  f.appendChild(input);
+  f.appendChild(status);
+  inspector.appendChild(f);
+  updateValidation();
+  return updateValidation;
 }
 
 function renderBoundaryHostSection(hostNode) {
@@ -6224,13 +6274,19 @@ function renderUserTaskDueFields(node) {
     "resolves them once for all its items. Due date: a duration such as P2D, counted " +
     "from creation, a date-time with an offset such as 2030-01-31T17:00:00Z, or an " +
     "NCalc expression that gives one as text, such as if(amount > 1000, 'PT4H', 'P2D'). " +
-    "Priority: an NCalc expression that gives a whole number; higher is more urgent. " +
-    "A result that cannot be used leaves the value empty.";
+    "Due date calendar: the name of a business calendar; a duration then counts its working " +
+    "days and hours. Priority: an NCalc expression that gives a whole number; higher is more " +
+    "urgent. A result that cannot be used leaves the value empty.";
   inspector.appendChild(hint);
-  renderUserTaskDueField(node, "dueDate", "Due date", "P2D");
-  renderUserTaskDueField(node, "priority", "Priority", "50");
+  // The calendar's problems depend on the due date, so each change refreshes every field.
+  const refreshers = [];
+  const refreshAll = () => refreshers.forEach(refresh => refresh());
+  refreshers.push(renderUserTaskDueField(node, "dueDate", "Due date", "P2D", refreshAll));
+  refreshers.push(renderUserTaskDueField(node, "dueDateCalendar", "Due date calendar", "examples.weekdays",
+    refreshAll, () => userTaskDueDateCalendarProblem(node.dueDate, node.dueDateCalendar)));
+  refreshers.push(renderUserTaskDueField(node, "priority", "Priority", "50", refreshAll));
 }
-function renderUserTaskDueField(node, property, label, placeholder) {
+function renderUserTaskDueField(node, property, label, placeholder, onChanged, problemOf) {
   const f = document.createElement("div");
   f.className = "field";
   const inputId = "user-task-" + property + "-" + String(node.id);
@@ -6250,7 +6306,7 @@ function renderUserTaskDueField(node, property, label, placeholder) {
   status.id = inputId + "-status";
   input.setAttribute("aria-describedby", status.id);
   const updateValidation = () => {
-    const problem = userTaskDueValueProblem(property, node[property]);
+    const problem = problemOf ? problemOf() : userTaskDueValueProblem(property, node[property]);
     input.setAttribute("aria-invalid", problem ? "true" : "false");
     status.textContent = problem || "";
   };
@@ -6260,13 +6316,14 @@ function renderUserTaskDueField(node, property, label, placeholder) {
     } else {
       delete node[property];
     }
-    updateValidation();
+    if (onChanged) onChanged(); else updateValidation();
   };
   f.appendChild(labelElement);
   f.appendChild(input);
   f.appendChild(status);
   inspector.appendChild(f);
   updateValidation();
+  return updateValidation;
 }
 function selectField(label, options, value, onChange) {
   const f = document.createElement("div");
@@ -9763,10 +9820,78 @@ function userTaskDueValueProblem(property, value) {
   }
   return null;
 }
+// Business calendars. These mirror BusinessCalendarRules, TimerDefinitionRules,
+// and UserTaskDueRules on the server; the server also checks that a named
+// calendar exists when the definition is saved.
+const BUSINESS_CALENDAR_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+const BUSINESS_CALENDAR_NAME_RULE =
+  "1 to 100 letters, digits, '.', '_', or '-', starting with a letter or digit";
+const WORKING_DURATION_RULE = "whole working days and working time, such as P5D or P1DT4H";
+const WORKING_DURATION_LIMIT = "at most 36,525 days, about 100 years";
+// A calendar searches 36,525 days for working time, so a longer duration can never be counted.
+const BUSINESS_CALENDAR_MAX_SEARCH_SECONDS = 36525 * 86400;
+function businessCalendarNameProblem(property, name) {
+  return BUSINESS_CALENDAR_NAME.test(name)
+    ? null
+    : property + " '" + name + "' is not a valid business calendar name; use " +
+      BUSINESS_CALENDAR_NAME_RULE + ".";
+}
+// A calendar counts whole working days, so weeks and fractional days are refused.
+function isWorkingDuration(text) {
+  if (validatorFixedDurationSeconds(text) === null) return false;
+  const trimmed = text.trim();
+  return !trimmed.includes("W") && !/^P\d+[.,]\d+D/.test(trimmed);
+}
+function workingDurationProblem(property, duration) {
+  return property + " '" + duration + "' cannot be counted in a business calendar; use " +
+    WORKING_DURATION_RULE + ".";
+}
+// Mirrors BusinessCalendarRules.CountableDurationProblem for a valid fixed duration.
+function countableDurationProblem(property, duration) {
+  if (!isWorkingDuration(duration)) return workingDurationProblem(property, duration);
+  return validatorFixedDurationSeconds(duration) > BUSINESS_CALENDAR_MAX_SEARCH_SECONDS
+    ? property + " '" + duration + "' is longer than a business calendar can count; use " +
+      WORKING_DURATION_LIMIT + "."
+    : null;
+}
+function timerCalendarProblem(timer) {
+  if (!timer || typeof timer !== "object" || Array.isArray(timer)) return null;
+  const calendar = timer.calendar;
+  if (calendar === undefined || calendar === null) return null;
+  if (typeof calendar !== "string") return "calendar must be a string.";
+  const name = calendar.trim();
+  if (!name) return null;
+  const nameProblem = businessCalendarNameProblem("calendar", name);
+  if (nameProblem) return nameProblem;
+  if (!hasText(timer.timeDuration)) {
+    return "names a calendar, but only a timeDuration can be counted in a business calendar.";
+  }
+  return validatorFixedDurationSeconds(timer.timeDuration) !== null
+    ? countableDurationProblem("timeDuration", timer.timeDuration.trim())
+    : null;
+}
+function userTaskDueDateCalendarProblem(dueDate, calendar) {
+  if (calendar === undefined || calendar === null) return null;
+  if (typeof calendar !== "string") return "dueDateCalendar must be text.";
+  const name = calendar.trim();
+  if (!name) return null;
+  const nameProblem = businessCalendarNameProblem("dueDateCalendar", name);
+  if (nameProblem) return nameProblem;
+  if (!hasText(dueDate)) return "defines dueDateCalendar without a dueDate.";
+  const trimmed = dueDate.trim();
+  const fixedText = isFixedUserTaskDueValue(trimmed) ? trimmed : quotedUserTaskLiteral(trimmed);
+  if (fixedText === null) return null;
+  if (validatorTimeDate(fixedText)) {
+    return "dueDate is a fixed date-time, which a business calendar cannot change; remove dueDateCalendar.";
+  }
+  return validatorFixedDurationSeconds(fixedText) !== null
+    ? countableDurationProblem("dueDate", fixedText.trim())
+    : null;
+}
 function validateSaveUserTaskDueAndPriority(ctx) {
   for (const node of ctx.nodes) {
     if (!node) continue;
-    for (const property of ["dueDate", "priority"]) {
+    for (const property of ["dueDate", "dueDateCalendar", "priority"]) {
       const value = node[property];
       if (node.type !== "userTask") {
         if (value != null && (typeof value !== "string" || value.trim())) {
@@ -9775,7 +9900,9 @@ function validateSaveUserTaskDueAndPriority(ctx) {
         }
         continue;
       }
-      const problem = userTaskDueValueProblem(property, value);
+      const problem = property === "dueDateCalendar"
+        ? userTaskDueDateCalendarProblem(node.dueDate, value)
+        : userTaskDueValueProblem(property, value);
       if (problem) ctx.errors.push(saveNodeLabel(node) + " " + problem);
     }
   }
@@ -10392,6 +10519,8 @@ function validateSaveAsyncJobsAndTimers(ctx) {
         validatorFixedDurationSeconds(timer.timeDuration) == null) {
       errors.push(label + " timeDuration must be a positive fixed-unit ISO-8601 duration.");
     }
+    const calendarProblem = timerCalendarProblem(timer);
+    if (calendarProblem) errors.push(label + " " + calendarProblem);
     if (configured[0] === "timeCycle") {
       const interval = validatorTimeCycle(timer.timeCycle);
       if (interval == null) {
@@ -11407,7 +11536,7 @@ function prepareWorkflowExport(candidate = model) {
           !node.inboxVisibilityCondition.trim())) {
       delete node.inboxVisibilityCondition;
     }
-    for (const property of ["dueDate", "priority"]) {
+    for (const property of ["dueDate", "dueDateCalendar", "priority"]) {
       if (!isUserTaskType(node.type) || typeof node[property] !== "string" ||
           !node[property].trim()) {
         delete node[property];
@@ -11719,6 +11848,9 @@ function normalizeLoadedModel(obj) {
         // validation can report them.
         dueDate: (s.type ?? "userTask") === "userTask"
           ? loadedUserTaskDueValue(s.dueDate)
+          : undefined,
+        dueDateCalendar: (s.type ?? "userTask") === "userTask"
+          ? loadedUserTaskDueValue(s.dueDateCalendar)
           : undefined,
         priority: (s.type ?? "userTask") === "userTask"
           ? loadedUserTaskDueValue(s.priority)

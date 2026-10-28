@@ -44,7 +44,7 @@ Deadline and timer follow-ups, in this order:
 
 1. [EVENT-01 Expression timers](event-01-expression-timers.md)
 2. [UI-12 Task escalation](ui-12-task-escalation.md)
-3. [EVENT-08 Business calendars](event-08-business-calendars.md) and [EVENT-09 Cron schedules for timer starts](event-09-cron-schedules.md). Move calendars up if your SLAs are counted in working days.
+3. [EVENT-08 Business calendars](event-08-business-calendars.md) (done) and [EVENT-09 Cron schedules for timer starts](event-09-cron-schedules.md).
 
 Conditional items:
 
@@ -74,7 +74,7 @@ Other items are not ranked yet.
 | [EVENT-05](event-05-error-code-boundaries.md) | Error-code matching on error boundaries | M | None | Not started |
 | [EVENT-06](event-06-link-events.md) | Link events | M | None | Not started |
 | [EVENT-07](event-07-compensation.md) | Compensation | L | None | Not started |
-| [EVENT-08](event-08-business-calendars.md) | Business calendars | M–L | [UI-04](ui-04-task-due-date-and-priority.md) | Not started |
+| [EVENT-08](event-08-business-calendars.md) | Business calendars | M–L | [UI-04](ui-04-task-due-date-and-priority.md) | Done |
 | [EVENT-09](event-09-cron-schedules.md) | Cron schedules for timer starts | M | None | Not started |
 
 ## Integration

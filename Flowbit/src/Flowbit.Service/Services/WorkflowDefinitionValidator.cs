@@ -493,6 +493,12 @@ public sealed class WorkflowDefinitionValidator(
                     $"Flow node #{node.Id} defines dueDate but is not a user task.");
             }
 
+            if (!string.IsNullOrWhiteSpace(node.DueDateCalendar))
+            {
+                throw new WorkflowDomainException(
+                    $"Flow node #{node.Id} defines dueDateCalendar but is not a user task.");
+            }
+
             if (!string.IsNullOrWhiteSpace(node.PriorityExpression))
             {
                 throw new WorkflowDomainException(
@@ -519,6 +525,11 @@ public sealed class WorkflowDefinitionValidator(
                 throw new WorkflowDomainException(
                     $"User task #{node.Id} has an invalid dueDate expression: '{node.DueDateExpression}'.");
             }
+        }
+
+        if (UserTaskDueRules.DueDateCalendarProblem(node.DueDateExpression, node.DueDateCalendar) is { } calendarProblem)
+        {
+            throw new WorkflowDomainException($"User task #{node.Id} {calendarProblem}");
         }
 
         if (!string.IsNullOrWhiteSpace(node.PriorityExpression))
@@ -2387,6 +2398,11 @@ public sealed class WorkflowDefinitionValidator(
         {
             throw new WorkflowDomainException(
                 $"Timer event #{node.Id} timeDuration must be a positive fixed-unit ISO-8601 duration.");
+        }
+
+        if (TimerDefinitionRules.CalendarProblem(timer) is { } calendarProblem)
+        {
+            throw new WorkflowDomainException($"Timer event #{node.Id} {calendarProblem}");
         }
 
         if (timer.TimeCycle is not null)

@@ -22,6 +22,7 @@ Table names below omit the `flowbit.` qualifier. The page reflects the current m
 - [Shared variables](#shared-variables)
 - [Delegation](#delegation)
 - [Settings](#settings)
+- [Business calendars](#business-calendars)
 - [Retention](#retention)
 - [Local identity](#local-identity)
 - [Database objects outside tables](#database-objects-outside-tables)
@@ -30,7 +31,7 @@ Table names below omit the `flowbit.` qualifier. The page reflects the current m
 
 ## Conventions
 
-- **Schema.** All 53 tables, the EF `__EFMigrationsHistory` table, sequences, triggers, and functions live in `flowbit`. The `citext` extension, used for case-insensitive keys and user names, is installed in `public`.
+- **Schema.** All 55 tables, the EF `__EFMigrationsHistory` table, sequences, triggers, and functions live in `flowbit`. The `citext` extension, used for case-insensitive keys and user names, is installed in `public`.
 - **Identifiers.** Most tables use a `bigint` identity `Id`. Natural or composite primary keys are called out per table.
 - **Authored IDs are not foreign keys.** `NodeId`, `FlowId`, `SequenceFlowId`, `SourceNodeId`, `GatewayNodeId`, and similar integer columns refer to elements inside `workflow_definitions.Definition` JSON. Read them together with the row's `WorkflowDefinitionId`.
 - **Snapshots.** Runtime rows copy what they need from the definition (node names, types, external IDs, roles, conditions) when they are created, so open work keeps the rules it started with. Only an audited version change updates them.
@@ -45,6 +46,7 @@ Table names below omit the `flowbit.` qualifier. The page reflects the current m
 | [`workflow_definitions`](#workflow_definitions) | [Workflow definitions](#workflow-definitions) | One immutable version of a workflow definition (the editor JSON). |
 | [`workflow_definition_user_task_conditions`](#workflow_definition_user_task_conditions) | [Workflow definitions](#workflow-definitions) | Compiled, database-executable inbox visibility condition per definition version and user task. |
 | [`workflow_definition_shared_variable_bindings`](#workflow_definition_shared_variable_bindings) | [Workflow definitions](#workflow-definitions) | Which shared-variable catalog entries a definition version binds, under which alias and access. |
+| [`workflow_definition_business_calendars`](#workflow_definition_business_calendars) | [Workflow definitions](#workflow-definitions) | Which business calendars a definition version names in timers and user-task due dates. |
 | [`workflow_instances`](#workflow_instances) | [Instances and start identity](#instances-and-start-identity) | One workflow instance and its lifecycle status. |
 | [`workflow_business_key_scopes`](#workflow_business_key_scopes) | [Instances and start identity](#instances-and-start-identity) | Marks a workflow family that has enabled business keys. |
 | [`workflow_business_key_claims`](#workflow_business_key_claims) | [Instances and start identity](#instances-and-start-identity) | Domain uniqueness claim for a business key within a workflow family. |
@@ -90,6 +92,7 @@ Table names below omit the `flowbit.` qualifier. The page reflects the current m
 | [`workflow_delegation_policies`](#workflow_delegation_policies) | [Delegation](#delegation) | Per-workflow acceptance policy for new delegation grants. |
 | [`engine_settings`](#engine_settings) | [Settings](#settings) | Deployment-wide string settings for the engine. |
 | [`workflow_settings`](#workflow_settings) | [Settings](#settings) | Typed JSON settings exposed to workflow expressions as `setting.*`. |
+| [`business_calendars`](#business_calendars) | [Business calendars](#business-calendars) | Named working weeks, holidays, and time zones that durations can count in. |
 | [`retention_policies`](#retention_policies) | [Retention](#retention) | Retention period per history/audit category. |
 | [`retention_coordinator`](#retention_coordinator) | [Retention](#retention) | Singleton lease and run state for retention cleanup. |
 | [`local_users`](#local_users) | [Local identity](#local-identity) | Local-mode user directory. |
@@ -142,9 +145,15 @@ erDiagram
         bigint WorkflowDefinitionId FK
         bigint SharedVariableId FK
     }
+    workflow_definition_business_calendars {
+        bigint WorkflowDefinitionId PK
+        bigint BusinessCalendarId PK
+    }
     shared_variables ||--o{ workflow_definition_shared_variable_bindings : "SharedVariableId"
     workflow_definitions ||--o{ workflow_definition_shared_variable_bindings : "WorkflowDefinitionId"
     workflow_definitions ||--o{ workflow_definition_user_task_conditions : "WorkflowDefinitionId"
+    workflow_definitions ||--o{ workflow_definition_business_calendars : "WorkflowDefinitionId"
+    business_calendars ||--o{ workflow_definition_business_calendars : "BusinessCalendarId"
 ```
 
 ### `workflow_definitions`
@@ -206,6 +215,23 @@ Records each top-level `scope: "shared"` process variable of a definition versio
 - **Unique:** (`WorkflowDefinitionId`, `Alias`); (`WorkflowDefinitionId`, `SharedVariableId`)
 
 The `RESTRICT` reference to `shared_variables` prevents deleting a catalog entry while any definition version binds it.
+
+### `workflow_definition_business_calendars`
+
+Records each business calendar a definition version names in a timer's `calendar` or a user task's `dueDateCalendar`. Rows are written when the version is saved and again when it is published, with the calendar rows locked `FOR KEY SHARE`, so a concurrent calendar delete waits and then sees them.
+
+| Column | Meaning |
+| --- | --- |
+| `WorkflowDefinitionId` | Owning version. Deleting the version deletes its rows. |
+| `BusinessCalendarId` | The named calendar. |
+| `CreatedAt` | When the row was written. |
+
+- **Primary key:** (`WorkflowDefinitionId`, `BusinessCalendarId`)
+- **References:** `BusinessCalendarId` → [`business_calendars`](#business_calendars) (required, `CASCADE`); `WorkflowDefinitionId` → [`workflow_definitions`](#workflow_definitions) (required, `CASCADE`)
+- **Referenced by:** none
+- **Unique:** the primary key; index on `BusinessCalendarId`
+
+The API refuses to delete a calendar that a published version, a running instance, or an open job uses, counting through these rows. Deleting a calendar that only unpublished versions without open work use removes their rows; publishing such a version then fails until the calendar exists again.
 
 ## Instances and start identity
 
@@ -819,7 +845,7 @@ Each row is one unit of durable work, leased by `Flowbit.Worker` with `FOR UPDAT
 | `AttemptCount`, `MaxAttempts`, `RetryDelays`, `FailureHandling` | Retry policy; `FailureHandling` is `boundaryFirst` or `retryFirst`. |
 | `WorkerId`, `LeaseToken`, `LeaseGeneration`, `LeaseExpiresAt`, `HeartbeatAt` | Lease state. Finalization must present the current lease generation. |
 | `InstanceId`, `TokenId`, `ActivationId`, `UserTaskId`, `MultiInstanceExecutionId` | Runtime fences. `InstanceId` is null for instance-less work. |
-| `TimerSubscriptionId`, `ScheduledOccurrenceAt` | Timer occurrence; unique together, so each occurrence gets one job. |
+| `TimerSubscriptionId`, `ScheduledOccurrenceAt` | Timer occurrence; unique together, so each occurrence gets one job. A `timer_schedule_failed` incident's `timerStart` job has a subscription but no occurrence. |
 | `ConditionalBoundarySubscriptionId`, `ConditionalBoundaryOccurrence` | Durable conditional-boundary occurrence; unique together. |
 | `SnapshotId` | Frozen input snapshot in `workflow_job_snapshots`. |
 | `WorkflowDefinitionId`, `WorkflowKey`, `NodeId`, `NodeName`, `NodeType` | Version and node context. |
@@ -865,7 +891,7 @@ Snapshots have no outgoing foreign keys. Retention removes orphaned snapshots to
 
 ### `workflow_incidents`
 
-Opened when durable work cannot continue on its own, for example exhausted retries, an output conflict, or `automatic_loop_limit`. At most one incident is open per job.
+Opened when durable work cannot continue on its own, for example exhausted retries, an output conflict, `automatic_loop_limit`, or `timer_schedule_failed` for a timer start whose first due time cannot be computed. At most one incident is open per job.
 
 | Column | Meaning |
 | --- | --- |
@@ -881,7 +907,7 @@ Opened when durable work cannot continue on its own, for example exhausted retri
 
 ### `timer_subscriptions`
 
-One row per armed timer. A definition-level timer start has no instance or token; at most one is active or paused per definition and node. An instance timer is fenced by `(InstanceId, TokenId, ActivationId, TimerNodeId)`.
+One row per armed timer. A definition-level timer start has no instance or token; at most one is active or paused per definition and node. A timer start whose first due time could not be computed stays paused, with `NextDueAt` set to its activation time, until its `timer_schedule_failed` incident is retried. An instance timer is fenced by `(InstanceId, TokenId, ActivationId, TimerNodeId)`.
 
 | Column | Meaning |
 | --- | --- |
@@ -889,6 +915,7 @@ One row per armed timer. A definition-level timer start has no instance or token
 | `InstanceId`, `TokenId`, `ActivationId` | Instance fence; null for timer starts. |
 | `AttachedToNodeId`, `CancelActivity` | Host node and interrupting flag, for boundaries only. |
 | `ScheduleKind`, `ScheduleExpression` | `timeDate`, `timeDuration`, or `timeCycle`, plus the ISO-8601 value. |
+| `ScheduleCalendar` | The business calendar a `timeDuration` was counted in; null for wall-clock schedules. Version changes compare it, ignoring case, with the target timer's calendar. |
 | `NextDueAt`, `Occurrence` | Next due time and occurrence counter for recurring timers. |
 | `Status`, `CompletedAt` | `active`, `paused`, `completed`, or `cancelled`. |
 
@@ -1405,6 +1432,42 @@ Global, read-only values for workflow expressions, exposed as `setting.<name>` o
 - **Referenced by:** none
 - **Unique:** (`Namespace`, `Name`)
 
+## Business calendars
+
+Working time that timer durations and user-task due dates can count in, managed at `/business-calendars` and through `/api/business-calendars`. See [working-time durations](node-reference.md#working-time-durations).
+
+```mermaid
+erDiagram
+    business_calendars {
+        bigint Id PK
+    }
+    workflow_definition_business_calendars {
+        bigint WorkflowDefinitionId PK
+        bigint BusinessCalendarId PK
+    }
+    business_calendars ||--o{ workflow_definition_business_calendars : "BusinessCalendarId"
+```
+
+### `business_calendars`
+
+One named calendar. Timers and work items read it when they start and save their due time, so editing a row never moves a saved due time.
+
+| Column | Meaning |
+| --- | --- |
+| `Name` | `citext` name that workflows use; unique ignoring case and fixed after creation. |
+| `Description` | Optional description. |
+| `TimeZone` | IANA time-zone id in which periods and holiday dates are read. |
+| `WeeklyHours` | `jsonb` object with all seven lowercase weekdays, each an array of `{ "start", "end" }` periods in `HH:mm`, where an end may be `24:00`. |
+| `Holidays` | `jsonb` array of `{ "date", "name", "workingHours" }` in date order; an empty `workingHours` closes the date. |
+| `CreatedAt`, `UpdatedAt` | Creation time and optimistic concurrency timestamp. |
+
+- **Primary key:** `Id`
+- **References:** none
+- **Referenced by:** [`workflow_definition_business_calendars`](#workflow_definition_business_calendars).`BusinessCalendarId`
+- **Unique:** (`Name`)
+
+The `AddBusinessCalendars` migration seeds `examples.weekdays` (Monday to Friday, 09:00 to 17:00, `Etc/UTC`) when it is missing, for the [example catalog](../examples/README.md).
+
 ## Retention
 
 History and audit retention policies and the Worker-owned cleanup coordinator. See [history and audit retention](../Flowbit/README.md#history-and-audit-retention).
@@ -1547,7 +1610,7 @@ SELECT c.conrelid::regclass AS child_table,
  ORDER BY 1, 2;
 ```
 
-A database migrated to the current release has 53 `flowbit` tables (plus `__EFMigrationsHistory`) and 110 foreign keys.
+A database migrated to the current release has 55 `flowbit` tables (plus `__EFMigrationsHistory`) and 112 foreign keys.
 
 ## Keeping this page current
 

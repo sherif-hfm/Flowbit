@@ -33,7 +33,8 @@ public sealed partial class WorkflowEngineService(
     IConditionalEventDependencyPlanCache? conditionalEventPlans = null,
     IWorkflowVariableStore? workflowVariables = null,
     ISharedVariableAccessPlanCache? sharedVariableAccessPlans = null,
-    IConditionalBoundarySubscriptionRepository? conditionalBoundarySubscriptions = null)
+    IConditionalBoundarySubscriptionRepository? conditionalBoundarySubscriptions = null,
+    IBusinessCalendarResolver? businessCalendars = null)
     : IWorkflowEngineService, IWorkflowJobProcessor,
       IInstanceVersionChangeBatchExecutor, IConditionalEventRuntimeCoordinator,
       IAdministrativeActionExecutor
@@ -10831,14 +10832,38 @@ public sealed partial class WorkflowEngineService(
         UserTaskDueValue? dueDate = null;
         if (!string.IsNullOrWhiteSpace(node.DueDateExpression))
         {
+            string? dueText = null;
             if (UserTaskDueRules.TryParseFixedValue(node.DueDateExpression, out var fixedValue))
             {
                 dueDate = fixedValue;
+                dueText = node.DueDateExpression;
             }
-            else if (TryEvaluateUserTaskValue(node, "dueDate", node.DueDateExpression, context, instanceId, out var raw)
-                     && !UserTaskDueRules.TryInterpretDueDateResult(raw, out dueDate, out var problem))
+            else if (TryEvaluateUserTaskValue(node, "dueDate", node.DueDateExpression, context, instanceId, out var raw))
             {
-                LogUnusableUserTaskValue(node, "dueDate", node.DueDateExpression, instanceId, problem);
+                if (UserTaskDueRules.TryInterpretDueDateResult(raw, out dueDate, out var problem))
+                {
+                    dueText = raw as string;
+                }
+                else
+                {
+                    LogUnusableUserTaskValue(node, "dueDate", node.DueDateExpression, instanceId, problem);
+                }
+            }
+
+            // With a calendar, a duration counts its working time when the work item is created; a date-time is used
+            // as is.
+            if (dueDate is not null && !string.IsNullOrWhiteSpace(node.DueDateCalendar))
+            {
+                if (UserTaskDueRules.TryApplyCalendar(dueDate, dueText ?? string.Empty, node.DueDateCalendar,
+                        out var counted, out var calendarProblem))
+                {
+                    dueDate = counted;
+                }
+                else
+                {
+                    LogUnusableUserTaskValue(node, "dueDate", node.DueDateExpression, instanceId, calendarProblem);
+                    dueDate = null;
+                }
             }
 
             if (dueDate?.After is TimeSpan after

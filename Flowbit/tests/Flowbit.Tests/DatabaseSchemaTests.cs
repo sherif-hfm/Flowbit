@@ -22,7 +22,9 @@ public sealed class DatabaseSchemaTests(PostgresApiFixture fixture)
             .Distinct()
             .ToArray();
 
-        Assert.Equal(53, mappedTables.Length);
+        Assert.Equal(55, mappedTables.Length);
+        Assert.Contains(mappedTables, table => table.Name == "business_calendars");
+        Assert.Contains(mappedTables, table => table.Name == "workflow_definition_business_calendars");
         Assert.Contains(mappedTables, table => table.Name == "local_users");
         Assert.Contains(mappedTables, table => table.Name == "user_attribute_definitions");
         Assert.Contains(mappedTables, table => table.Name == "local_refresh_sessions");
@@ -153,6 +155,75 @@ public sealed class DatabaseSchemaTests(PostgresApiFixture fixture)
             """,
             connection);
         Assert.Equal("P1D", (string?)await setting.ExecuteScalarAsync());
+    }
+
+    [Fact]
+    public async Task BusinessCalendarTablesAndExampleCalendarAreApplied()
+    {
+        await using var connection = await fixture.DataSource.OpenConnectionAsync();
+        await using (var index = new NpgsqlCommand(
+                         """
+                         SELECT indexdef
+                         FROM pg_catalog.pg_indexes
+                         WHERE schemaname = 'flowbit'
+                           AND tablename = 'business_calendars'
+                           AND indexname = 'IX_business_calendars_Name'
+                         """,
+                         connection))
+        {
+            var definition = (string?)await index.ExecuteScalarAsync();
+            Assert.NotNull(definition);
+            Assert.StartsWith("CREATE UNIQUE INDEX", definition, StringComparison.Ordinal);
+        }
+
+        await using (var foreignKeys = new NpgsqlCommand(
+                         """
+                         SELECT confdeltype::text
+                         FROM pg_catalog.pg_constraint
+                         WHERE conrelid = 'flowbit.workflow_definition_business_calendars'::regclass
+                           AND contype = 'f'
+                         """,
+                         connection))
+        {
+            var deleteRules = new List<string>();
+            await using var reader = await foreignKeys.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                deleteRules.Add(reader.GetString(0));
+            }
+
+            Assert.Equal(["c", "c"], deleteRules);
+        }
+
+        await using (var column = new NpgsqlCommand(
+                         """
+                         SELECT is_nullable, character_maximum_length
+                         FROM information_schema.columns
+                         WHERE table_schema = 'flowbit'
+                           AND table_name = 'timer_subscriptions'
+                           AND column_name = 'ScheduleCalendar'
+                         """,
+                         connection))
+        {
+            await using var reader = await column.ExecuteReaderAsync();
+            Assert.True(await reader.ReadAsync());
+            Assert.Equal("YES", reader.GetString(0));
+            Assert.Equal(100, reader.GetInt32(1));
+        }
+
+        // The name is citext, so the seeded example calendar is found ignoring case.
+        await using var example = new NpgsqlCommand(
+            """
+            SELECT "TimeZone", "WeeklyHours" -> 'monday' -> 0 ->> 'start', jsonb_array_length("Holidays")
+            FROM flowbit.business_calendars
+            WHERE "Name" = 'EXAMPLES.WEEKDAYS'
+            """,
+            connection);
+        await using var row = await example.ExecuteReaderAsync();
+        Assert.True(await row.ReadAsync());
+        Assert.Equal("Etc/UTC", row.GetString(0));
+        Assert.Equal("09:00", row.GetString(1));
+        Assert.Equal(0, row.GetInt32(2));
     }
 
     [Fact]

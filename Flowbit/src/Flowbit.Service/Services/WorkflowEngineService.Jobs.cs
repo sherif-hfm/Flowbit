@@ -318,7 +318,7 @@ public sealed partial class WorkflowEngineService
         var timer = node.Timer
             ?? throw new WorkflowDomainException(
                 $"Timer catch event #{node.Id} has no timer configuration.");
-        var schedule = WorkflowTimerSchedule.Resolve(timer, timeProvider.GetUtcNow());
+        var schedule = await ResolveTimerScheduleAsync(node, timer, timeProvider.GetUtcNow(), cancellationToken);
         var subscription = await timerSubscriptions.CreateAsync(
             BuildTimerSubscription(
                 instance,
@@ -383,7 +383,7 @@ public sealed partial class WorkflowEngineService
             var timer = boundary.Timer
                 ?? throw new WorkflowDomainException(
                     $"Timer boundary event #{boundary.Id} has no timer configuration.");
-            var schedule = WorkflowTimerSchedule.Resolve(timer, timeProvider.GetUtcNow());
+            var schedule = await ResolveTimerScheduleAsync(boundary, timer, timeProvider.GetUtcNow(), cancellationToken);
             var subscription = await timerSubscriptions.CreateAsync(
                 BuildTimerSubscription(
                     instance,
@@ -404,6 +404,31 @@ public sealed partial class WorkflowEngineService
                     schedule.FirstOccurrenceAt),
                 cancellationToken);
         }
+    }
+
+    // A duration that names a business calendar counts that calendar's working time. A calendar that cannot be used
+    // fails the activation, like other timer validation.
+    private async Task<WorkflowTimerSchedule> ResolveTimerScheduleAsync(
+        FlowNodeModel timerNode,
+        TimerDefinitionModel timer,
+        DateTimeOffset activatedAt,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(timer.Calendar) || string.IsNullOrWhiteSpace(timer.TimeDuration))
+        {
+            return WorkflowTimerSchedule.Resolve(timer, activatedAt);
+        }
+
+        if (businessCalendars is null)
+        {
+            throw new WorkflowDomainException(
+                $"Timer event #{timerNode.Id} names business calendar '{timer.Calendar.Trim()}', but business calendars are not configured.");
+        }
+
+        var lookup = await businessCalendars.GetAsync(timer.Calendar, cancellationToken);
+        return lookup.Calendar is null
+            ? throw new WorkflowDomainException($"Timer event #{timerNode.Id} cannot be scheduled: {lookup.Problem}.")
+            : WorkflowTimerSchedule.Resolve(timer, activatedAt, lookup.Calendar);
     }
 
     private async Task CancelAttachedBoundaryWaitsAsync(
@@ -733,6 +758,9 @@ public sealed partial class WorkflowEngineService
             AttachedToNodeId = attachedToNodeId,
             ScheduleKind = kind,
             ScheduleExpression = expression,
+            ScheduleCalendar = kind == TimerScheduleKinds.Duration && !string.IsNullOrWhiteSpace(timer.Calendar)
+                ? timer.Calendar.Trim()
+                : null,
             CancelActivity = cancelActivity,
             NextDueAt = dueAt
         };
@@ -3146,6 +3174,27 @@ public sealed partial class WorkflowEngineService
             subscriptionId,
             cancellationToken)
             ?? throw new WorkflowJobInvariantException("The timer-start subscription no longer exists.");
+        if (job.ScheduledOccurrenceAt is null)
+        {
+            // Only a scheduling incident's job has no occurrence. Retrying it cancels the subscription, so the next
+            // timer-start reconciliation schedules the timer start again with the calendars and time-zone data as they
+            // are then, or opens a new incident.
+            if (subscription.ActivationId == job.ActivationId && subscription.TimerNodeId == job.NodeId)
+            {
+                _ = await timerSubscriptions.CancelByIdAsync(subscription.Id, cancellationToken);
+            }
+
+            if (!await jobs.CompleteAsync(fence, cancellationToken))
+            {
+                throw new WorkflowConflictException(
+                    "The timer-start job lease was lost before completion.");
+            }
+
+            await unitOfWork.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return;
+        }
+
         if (subscription.Status != TimerSubscriptionStatuses.Active
             || subscription.ActivationId != job.ActivationId
             || subscription.TimerNodeId != job.NodeId

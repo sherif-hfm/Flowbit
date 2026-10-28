@@ -1,0 +1,752 @@
+@page "/business-calendars"
+@implements IDisposable
+@using System.Globalization
+@using System.Net
+@using Flowbit.Ui.Auth
+@inject WorkflowApiClient Api
+@inject TokenState Token
+@inject IJSRuntime JS
+
+<PageTitle>Business Calendars · Flowbit</PageTitle>
+
+<PageHeader Eyebrow="Manage" Title="Business calendars"
+            Description="Working days, hours, holidays, and time zones that timer durations and task due dates can count in. Saved due times never move when a calendar changes.">
+    <Actions>
+        <button class="btn btn-outline-primary" @onclick="OpenCreate" disabled="@(!Token.HasToken || loading || submitting)">
+            <AppIcon Name="plus" /> Add calendar
+        </button>
+        <button class="btn btn-primary" @onclick="LoadAsync" disabled="@(!Token.HasToken || loading)">
+            <AppIcon Name="refresh" /> Refresh
+        </button>
+    </Actions>
+</PageHeader>
+
+@if (!string.IsNullOrWhiteSpace(error))
+{
+    <div class="alert alert-danger" role="alert">@error</div>
+}
+@if (!string.IsNullOrWhiteSpace(success))
+{
+    <div class="alert alert-success" role="status">@success</div>
+}
+
+@if (!Token.HasToken)
+{
+    <section class="panel">
+        <EmptyState Icon="token" Title="An administrative identity is required"
+                    Description="Set an identity carrying a configured settings administrator role.">
+            <IdentityAction Class="btn btn-primary" DevelopmentLabel="Set test identity" />
+        </EmptyState>
+    </section>
+}
+else
+{
+    @if (formOpen)
+    {
+        <section class="panel mb-3" aria-labelledby="business-calendar-form-heading">
+            <div class="section-heading">
+                <div>
+                    <h2 id="business-calendar-form-heading">@(IsEditing ? $"Edit {formName}" : "Add business calendar")</h2>
+                    <p>@(IsEditing
+                        ? "Changes apply to timers and work items that start after saving; saved due times keep their value."
+                        : "Workflows name the calendar in a timer's calendar or a user task's dueDateCalendar.")</p>
+                </div>
+                <button type="button" class="btn-close" aria-label="Close business calendar form" @onclick="CloseForm" disabled="@submitting"></button>
+            </div>
+
+            @if (!string.IsNullOrWhiteSpace(formError))
+            {
+                <div class="alert alert-danger" role="alert">
+                    @formError
+                    @if (editConflict)
+                    {
+                        <button type="button" class="btn btn-sm btn-outline-danger ms-2" @onclick="ReloadEditAsync" disabled="@(loading || submitting)">
+                            Reload latest
+                        </button>
+                    }
+                </div>
+            }
+
+            <div class="form-grid">
+                <div>
+                    <label class="form-label" for="business-calendar-name">Name</label>
+                    <input id="business-calendar-name" class="form-control" maxlength="100" autocomplete="off" spellcheck="false"
+                           placeholder="uk-office" readonly="@IsEditing" @bind="formName" @bind:event="oninput" />
+                    <div class="form-text">Letters, digits, <span class="mono-id">.</span>, <span class="mono-id">_</span>, and <span class="mono-id">-</span>. It cannot change later.</div>
+                </div>
+                <div>
+                    <label class="form-label" for="business-calendar-time-zone">Time zone</label>
+                    <input id="business-calendar-time-zone" class="form-control" maxlength="100" autocomplete="off" spellcheck="false"
+                           list="business-calendar-time-zones" placeholder="Europe/London" @bind="formTimeZone" @bind:event="oninput" />
+                    <datalist id="business-calendar-time-zones">
+                        @foreach (var zone in timeZones)
+                        {
+                            <option value="@zone"></option>
+                        }
+                    </datalist>
+                    <div class="form-text">An IANA name, written exactly, such as <span class="mono-id">America/New_York</span>.</div>
+                </div>
+                <div class="full">
+                    <label class="form-label" for="business-calendar-description">Description</label>
+                    <input id="business-calendar-description" class="form-control" maxlength="1000" autocomplete="off"
+                           @bind="formDescription" @bind:event="oninput" />
+                </div>
+            </div>
+
+            <fieldset class="business-calendar-section">
+                <legend>Working hours</legend>
+                <p class="form-text mt-0">Write each day's periods, such as <span class="mono-id">09:00-12:30, 13:30-17:30</span>. Leave a day blank when it has no working hours.</p>
+                <div class="business-calendar-week">
+                    @for (var day = 0; day < BusinessCalendarText.DayNames.Length; day++)
+                    {
+                        var index = day;
+                        var id = "business-calendar-day-" + BusinessCalendarText.DayNames[index].ToLowerInvariant();
+                        <div>
+                            <label class="form-label" for="@id">@BusinessCalendarText.DayNames[index]</label>
+                            <input id="@id" class="form-control" autocomplete="off" spellcheck="false" placeholder="Not a working day"
+                                   value="@formDays[index]" @oninput="args => formDays[index] = args.Value?.ToString() ?? string.Empty" />
+                        </div>
+                    }
+                </div>
+            </fieldset>
+
+            <fieldset class="business-calendar-section">
+                <legend>Holidays</legend>
+                <p class="form-text mt-0">A holiday has no working hours, unless you enter its own hours, for example for a half day.</p>
+                @if (formHolidays.Count == 0)
+                {
+                    <p class="text-muted mb-2">No holidays.</p>
+                }
+                @for (var row = 0; row < formHolidays.Count; row++)
+                {
+                    var holiday = formHolidays[row];
+                    var number = row;
+                    <div class="business-calendar-holiday" @key="holiday">
+                        <div>
+                            <label class="form-label" for="business-calendar-holiday-date-@number">Date</label>
+                            <input id="business-calendar-holiday-date-@number" type="date" class="form-control"
+                                   value="@holiday.ShownDate" @onchange="args => holiday.DateText = args.Value?.ToString()" />
+                        </div>
+                        <div>
+                            <label class="form-label" for="business-calendar-holiday-name-@number">Name</label>
+                            <input id="business-calendar-holiday-name-@number" class="form-control" maxlength="200" autocomplete="off"
+                                   @bind="holiday.Name" @bind:event="oninput" />
+                        </div>
+                        <div>
+                            <label class="form-label" for="business-calendar-holiday-hours-@number">Working hours</label>
+                            <input id="business-calendar-holiday-hours-@number" class="form-control" autocomplete="off" spellcheck="false"
+                                   placeholder="Closed" @bind="holiday.Hours" @bind:event="oninput" />
+                        </div>
+                        <button type="button" class="btn btn-sm btn-outline-danger" aria-label="Remove holiday @(number + 1)"
+                                @onclick="() => formHolidays.Remove(holiday)">Remove</button>
+                    </div>
+                }
+                <button type="button" id="business-calendar-add-holiday" class="btn btn-sm btn-outline-primary" @onclick="AddHoliday">
+                    <AppIcon Name="plus" /> Add holiday
+                </button>
+            </fieldset>
+
+            <fieldset class="business-calendar-section business-calendar-preview">
+                <legend>Preview</legend>
+                <p class="form-text mt-0">Try this calendar before saving: a start time in its time zone and a duration such as <span class="mono-id">P3D</span> or <span class="mono-id">PT4H</span>.</p>
+                <div class="business-calendar-preview-inputs">
+                    <div>
+                        <label class="form-label" for="business-calendar-preview-start">Start</label>
+                        <input @key="previewStartGeneration" id="business-calendar-preview-start" type="datetime-local" class="form-control"
+                               @onchange="args => previewStart = args.Value?.ToString()" />
+                    </div>
+                    <div>
+                        <label class="form-label" for="business-calendar-preview-duration">Duration</label>
+                        <input id="business-calendar-preview-duration" class="form-control" autocomplete="off" spellcheck="false"
+                               @bind="previewDuration" @bind:event="oninput" />
+                    </div>
+                    <button type="button" id="business-calendar-preview" class="btn btn-outline-primary" @onclick="PreviewAsync" disabled="@(previewing || submitting)">
+                        @(previewing ? "Computing…" : "Compute due time")
+                    </button>
+                </div>
+                <p id="business-calendar-preview-result" class="business-calendar-preview-result" role="status" aria-live="polite">
+                    @if (!string.IsNullOrWhiteSpace(previewError))
+                    {
+                        <span class="text-danger">@previewError</span>
+                    }
+                    else
+                    {
+                        @previewResult
+                    }
+                </p>
+            </fieldset>
+
+            <div class="d-flex flex-wrap justify-content-end gap-2 mt-3">
+                <button type="button" class="btn btn-outline-secondary" @onclick="CloseForm" disabled="@submitting">Cancel</button>
+                <button type="button" id="business-calendar-save" class="btn btn-primary" @onclick="SaveAsync" disabled="@submitting">
+                    @(submitting ? "Saving…" : IsEditing ? "Save changes" : "Add calendar")
+                </button>
+            </div>
+        </section>
+    }
+
+    <section class="panel panel-flush" aria-labelledby="business-calendar-results-heading">
+        <div class="section-heading">
+            <div>
+                <h2 id="business-calendar-results-heading">Business calendars</h2>
+                <p>@ResultSummary A calendar that a published workflow, a running instance, or an open job uses cannot be deleted.</p>
+            </div>
+        </div>
+
+        @if (loading && calendars is null)
+        {
+            <div class="p-3" role="status"><div class="skeleton"></div></div>
+        }
+        else if (loadFailed || calendars is null)
+        {
+            <EmptyState Icon="alert" Title="Business calendars unavailable"
+                        Description="Use Refresh to retry. Authorization and API errors are shown above." />
+        }
+        else if (calendars.Count == 0)
+        {
+            <EmptyState Icon="calendar" Title="No business calendars"
+                        Description="Add a calendar so timer durations and task due dates can count working time." />
+        }
+        else
+        {
+            <div class="table-responsive">
+                <table class="table align-middle">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Time zone</th>
+                            <th>Working week</th>
+                            <th>Holidays</th>
+                            <th>Updated</th>
+                            <th><span class="visually-hidden">Actions</span></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var item in calendars)
+                        {
+                            <tr>
+                                <td>
+                                    <span class="data-title mono-id">@item.Name</span>
+                                    @if (!string.IsNullOrWhiteSpace(item.Description))
+                                    {
+                                        <span class="data-subtitle">@item.Description</span>
+                                    }
+                                </td>
+                                <td><span class="mono-id">@item.TimeZone</span></td>
+                                <td>@BusinessCalendarText.WeekSummary(item.WeeklyHours)</td>
+                                <td>@(item.Holidays.Count == 1 ? "1 holiday" : $"{item.Holidays.Count:N0} holidays")</td>
+                                <td>@item.UpdatedAt.ToLocalTime().ToString("g")</td>
+                                <td class="text-end">
+                                    <div class="d-flex justify-content-end gap-2">
+                                        <button type="button" class="btn btn-sm btn-outline-primary" @onclick="() => OpenEdit(item)" disabled="@submitting"
+                                                aria-label="Edit @item.Name">Edit</button>
+                                        <button type="button" class="btn btn-sm btn-outline-danger" @onclick="() => DeleteAsync(item)" disabled="@submitting"
+                                                aria-label="Delete @item.Name">Delete</button>
+                                    </div>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </section>
+}
+
+@code {
+    private IReadOnlyList<BusinessCalendarDto>? calendars;
+    private IReadOnlyList<string> timeZones = [];
+    private long? editingId;
+    private DateTimeOffset? expectedUpdatedAt;
+    private string? formName;
+    private string? formDescription;
+    private string? formTimeZone;
+    private string[] formDays = new string[7];
+    private List<HolidayRow> formHolidays = [];
+    // The preview start and the holiday dates are uncontrolled (see DateTimeLocalText): Blazor renders a value only
+    // when the form loads, and they keep the text their change events report. Binding them to nullable dates would
+    // clear the whole field whenever a typed leading zero briefly empties it.
+    private string? previewStart;
+    private int previewStartGeneration;
+    private string? previewDuration = "P1D";
+    private string? previewResult;
+    private string? previewError;
+    private string? error;
+    private string? success;
+    private string? formError;
+    private bool formOpen;
+    private bool editConflict;
+    private bool loading;
+    private bool loadFailed;
+    private bool submitting;
+    private bool previewing;
+    private long requestVersion;
+    private long identityVersion;
+
+    private bool IsEditing => editingId is not null;
+    private string ResultSummary => loadFailed || calendars is null
+        ? loading ? "Loading business calendars…" : "Business calendars could not be loaded."
+        : calendars.Count == 1 ? "1 calendar." : $"{calendars.Count:N0} calendars.";
+
+    private sealed class HolidayRow
+    {
+        // Rendered once for a loaded holiday; DateText follows what the input reports.
+        public string? ShownDate { get; init; }
+        public string? DateText { get; set; }
+        public string? Name { get; set; }
+        public string? Hours { get; set; }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        Token.Changed += OnTokenChanged;
+        if (Token.HasToken)
+        {
+            await LoadAsync();
+        }
+    }
+
+    private Task LoadAsync() => LoadListAsync();
+
+    // Whether this request replaced the list. A failed or superseded request leaves the previous list in place.
+    private async Task<bool> LoadListAsync()
+    {
+        var currentRequest = ++requestVersion;
+        if (!Token.HasToken)
+        {
+            calendars = null;
+            loading = false;
+            loadFailed = false;
+            error = null;
+            return false;
+        }
+
+        try
+        {
+            loading = true;
+            loadFailed = false;
+            error = null;
+            var loaded = await Api.GetBusinessCalendarsAsync();
+            var zones = timeZones.Count > 0 ? timeZones : await Api.GetBusinessCalendarTimeZonesAsync();
+            if (currentRequest != requestVersion)
+            {
+                return false;
+            }
+
+            calendars = loaded;
+            timeZones = zones;
+            return true;
+        }
+        catch (WorkflowApiException ex) when (ex.StatusCode == HttpStatusCode.Forbidden)
+        {
+            if (currentRequest != requestVersion)
+            {
+                return false;
+            }
+
+            calendars = [];
+            loadFailed = true;
+            error = "This identity does not have the configured settings administrator role.";
+            return false;
+        }
+        catch (Exception ex)
+        {
+            if (currentRequest != requestVersion)
+            {
+                return false;
+            }
+
+            loadFailed = true;
+            error = ex.Message;
+            return false;
+        }
+        finally
+        {
+            if (currentRequest == requestVersion)
+            {
+                loading = false;
+            }
+        }
+    }
+
+    private void OpenCreate()
+    {
+        ResetForm();
+        formTimeZone = "Etc/UTC";
+        for (var day = 0; day < 5; day++)
+        {
+            formDays[day] = "09:00-17:00";
+        }
+
+        formOpen = true;
+        success = null;
+    }
+
+    private void OpenEdit(BusinessCalendarDto item)
+    {
+        ResetForm();
+        editingId = item.Id;
+        expectedUpdatedAt = item.UpdatedAt;
+        formName = item.Name;
+        formDescription = item.Description;
+        formTimeZone = item.TimeZone;
+        formDays = BusinessCalendarText.Days(item.WeeklyHours).Select(BusinessCalendarText.Format).ToArray();
+        formHolidays = item.Holidays
+            .Select(holiday =>
+            {
+                var date = BusinessCalendarText.FormatDate(holiday.Date);
+                return new HolidayRow
+                {
+                    ShownDate = date,
+                    DateText = date,
+                    Name = holiday.Name,
+                    Hours = BusinessCalendarText.Format(holiday.WorkingHours)
+                };
+            })
+            .ToList();
+        formOpen = true;
+        success = null;
+    }
+
+    private void AddHoliday() => formHolidays.Add(new HolidayRow());
+
+    private void CloseForm()
+    {
+        if (submitting)
+        {
+            return;
+        }
+
+        ResetForm();
+    }
+
+    // Reads the form into the API's shapes; the API checks the times and dates themselves.
+    private bool TryBuildContent(
+        out BusinessCalendarWeekDto week,
+        out List<BusinessCalendarHolidayDto> holidays,
+        out string? problem)
+    {
+        week = new BusinessCalendarWeekDto();
+        holidays = [];
+        var days = new IReadOnlyList<WorkingPeriodDto>[7];
+        for (var day = 0; day < days.Length; day++)
+        {
+            if (!BusinessCalendarText.TryParse(formDays[day], out var periods, out var dayProblem))
+            {
+                problem = $"{BusinessCalendarText.DayNames[day]}: {dayProblem}";
+                return false;
+            }
+
+            days[day] = periods;
+        }
+
+        for (var row = 0; row < formHolidays.Count; row++)
+        {
+            var holiday = formHolidays[row];
+            if (BusinessCalendarText.ParseDate(holiday.DateText) is not { } date)
+            {
+                problem = $"Holiday {row + 1} needs a date.";
+                return false;
+            }
+
+            if (!BusinessCalendarText.TryParse(holiday.Hours, out var periods, out var hoursProblem))
+            {
+                problem = $"Holiday {date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)}: {hoursProblem}";
+                return false;
+            }
+
+            holidays.Add(new BusinessCalendarHolidayDto(
+                date,
+                string.IsNullOrWhiteSpace(holiday.Name) ? null : holiday.Name,
+                periods));
+        }
+
+        week = BusinessCalendarText.Week(days);
+        problem = null;
+        return true;
+    }
+
+    private async Task SaveAsync()
+    {
+        if (string.IsNullOrWhiteSpace(formName) || string.IsNullOrWhiteSpace(formTimeZone))
+        {
+            formError = "A name and a time zone are required.";
+            return;
+        }
+
+        if (!TryBuildContent(out var week, out var holidays, out var problem))
+        {
+            formError = problem;
+            return;
+        }
+
+        var currentIdentity = identityVersion;
+        var name = formName.Trim();
+        try
+        {
+            submitting = true;
+            formError = null;
+            editConflict = false;
+            error = success = null;
+
+            if (editingId is { } id)
+            {
+                if (expectedUpdatedAt is not { } expected)
+                {
+                    formError = "The calendar's version is missing. Reload the calendar and try again.";
+                    return;
+                }
+
+                await Api.UpdateBusinessCalendarAsync(
+                    id,
+                    new UpdateBusinessCalendarRequest(formTimeZone, week, holidays, formDescription, expected));
+                if (currentIdentity != identityVersion)
+                {
+                    return;
+                }
+
+                success = $"Business calendar {name} updated.";
+            }
+            else
+            {
+                await Api.CreateBusinessCalendarAsync(
+                    new CreateBusinessCalendarRequest(formName, formTimeZone, week, holidays, formDescription));
+                if (currentIdentity != identityVersion)
+                {
+                    return;
+                }
+
+                success = $"Business calendar {name} added.";
+            }
+
+            ResetForm();
+            await LoadAsync();
+        }
+        catch (WorkflowApiException ex) when (ex.StatusCode == HttpStatusCode.Conflict)
+        {
+            if (currentIdentity != identityVersion)
+            {
+                return;
+            }
+
+            editConflict = IsEditing;
+            formError = $"{ex.Message} Your form is preserved.";
+        }
+        catch (WorkflowApiException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+        {
+            if (currentIdentity != identityVersion)
+            {
+                return;
+            }
+
+            formError = "This business calendar no longer exists. Close the form and refresh the list.";
+        }
+        catch (WorkflowApiException ex) when (ex.StatusCode == HttpStatusCode.Forbidden)
+        {
+            if (currentIdentity != identityVersion)
+            {
+                return;
+            }
+
+            formError = "This identity does not have the configured settings administrator role.";
+        }
+        catch (Exception ex)
+        {
+            if (currentIdentity != identityVersion)
+            {
+                return;
+            }
+
+            formError = ex.Message;
+        }
+        finally
+        {
+            if (currentIdentity == identityVersion)
+            {
+                submitting = false;
+            }
+        }
+    }
+
+    private async Task PreviewAsync()
+    {
+        previewResult = previewError = null;
+        if (!TryBuildContent(out var week, out var holidays, out var problem))
+        {
+            previewError = problem;
+            return;
+        }
+
+        if (DateTimeLocalText.Parse(previewStart) is not { } start)
+        {
+            previewError = "Choose a start date and time.";
+            return;
+        }
+
+        var currentIdentity = identityVersion;
+        try
+        {
+            previewing = true;
+            var preview = await Api.PreviewBusinessCalendarAsync(new BusinessCalendarPreviewRequest(
+                formTimeZone ?? string.Empty,
+                week,
+                holidays,
+                start.ToString("yyyy-MM-dd'T'HH:mm", CultureInfo.InvariantCulture),
+                previewDuration ?? string.Empty));
+            if (currentIdentity != identityVersion)
+            {
+                return;
+            }
+
+            previewResult = BusinessCalendarText.DueText(preview);
+        }
+        catch (WorkflowApiException ex) when (ex.StatusCode == HttpStatusCode.Forbidden)
+        {
+            if (currentIdentity == identityVersion)
+            {
+                previewError = "This identity does not have the configured settings administrator role.";
+            }
+        }
+        catch (Exception ex)
+        {
+            if (currentIdentity == identityVersion)
+            {
+                previewError = ex.Message;
+            }
+        }
+        finally
+        {
+            if (currentIdentity == identityVersion)
+            {
+                previewing = false;
+            }
+        }
+    }
+
+    private async Task ReloadEditAsync()
+    {
+        if (editingId is not { } id)
+        {
+            return;
+        }
+
+        var currentIdentity = identityVersion;
+        var loaded = await LoadListAsync();
+        if (currentIdentity != identityVersion)
+        {
+            return;
+        }
+
+        // Only a list that loaded can replace the draft; otherwise the draft and the conflict stay.
+        if (!loaded)
+        {
+            formError = "The latest version could not be loaded, so your changes are kept. Try Reload latest again.";
+            editConflict = true;
+            return;
+        }
+
+        var latest = calendars?.FirstOrDefault(item => item.Id == id);
+        if (latest is null)
+        {
+            formError = "This business calendar no longer exists. Close the form and refresh the list.";
+            editConflict = false;
+            return;
+        }
+
+        OpenEdit(latest);
+    }
+
+    private async Task DeleteAsync(BusinessCalendarDto item)
+    {
+        var currentIdentity = identityVersion;
+        var confirmed = await JS.InvokeAsync<bool>(
+            "confirm",
+            $"Delete business calendar '{item.Name}'? Workflows can no longer name it.");
+        if (!confirmed || currentIdentity != identityVersion)
+        {
+            return;
+        }
+
+        try
+        {
+            submitting = true;
+            error = success = null;
+            await Api.DeleteBusinessCalendarAsync(item.Id, item.UpdatedAt);
+            if (currentIdentity != identityVersion)
+            {
+                return;
+            }
+
+            if (editingId == item.Id)
+            {
+                ResetForm();
+            }
+            success = $"Business calendar {item.Name} deleted.";
+            await LoadAsync();
+        }
+        catch (WorkflowApiException ex) when (ex.StatusCode == HttpStatusCode.Conflict)
+        {
+            if (currentIdentity == identityVersion)
+            {
+                // The API names the work that still uses the calendar, or reports a newer version.
+                error = ex.Message;
+            }
+        }
+        catch (WorkflowApiException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+        {
+            if (currentIdentity == identityVersion)
+            {
+                error = "This business calendar no longer exists. Refresh the list.";
+            }
+        }
+        catch (WorkflowApiException ex) when (ex.StatusCode == HttpStatusCode.Forbidden)
+        {
+            if (currentIdentity == identityVersion)
+            {
+                error = "This identity does not have the configured settings administrator role.";
+            }
+        }
+        catch (Exception ex)
+        {
+            if (currentIdentity == identityVersion)
+            {
+                error = ex.Message;
+            }
+        }
+        finally
+        {
+            if (currentIdentity == identityVersion)
+            {
+                submitting = false;
+            }
+        }
+    }
+
+    private void ResetForm()
+    {
+        formOpen = false;
+        editingId = null;
+        expectedUpdatedAt = null;
+        formName = formDescription = formTimeZone = formError = null;
+        formDays = Enumerable.Repeat(string.Empty, 7).ToArray();
+        formHolidays = [];
+        previewStart = null;
+        previewStartGeneration++;
+        previewDuration = "P1D";
+        previewResult = previewError = null;
+        editConflict = false;
+    }
+
+    private void OnTokenChanged() => _ = InvokeAsync(async () =>
+    {
+        identityVersion++;
+        requestVersion++;
+        calendars = null;
+        error = success = null;
+        loading = loadFailed = submitting = previewing = false;
+        ResetForm();
+        await LoadAsync();
+    });
+
+    public void Dispose() => Token.Changed -= OnTokenChanged;
+}

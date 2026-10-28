@@ -9,7 +9,8 @@ namespace Flowbit.Service.Services;
 public sealed class WorkflowDefinitionReadinessChecker(
     ISharedVariableRepository? sharedVariables = null,
     IConditionalEventDefinitionAnalyzer? conditionalEventAnalyzer = null,
-    DurableProcessingOptions? durableProcessingOptions = null)
+    DurableProcessingOptions? durableProcessingOptions = null,
+    IBusinessCalendarRepository? businessCalendars = null)
 {
     private readonly IConditionalEventDefinitionAnalyzer conditionalAnalyzer =
         conditionalEventAnalyzer ?? new ConditionalEventDefinitionAnalyzer();
@@ -93,6 +94,45 @@ public sealed class WorkflowDefinitionReadinessChecker(
             {
                 throw new WorkflowDomainException(
                     $"Shared process variable '{binding.Name}' contract does not match catalog key '{catalog.Key}'.");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Every calendar a timer or user task names must exist and be written with its exact casing, as a shared key is.
+    /// </summary>
+    public async Task ValidateBusinessCalendarReferencesAsync(
+        WorkflowModel definition,
+        CancellationToken cancellationToken)
+    {
+        var references = BusinessCalendarRules.References(definition);
+        if (references.Count == 0)
+        {
+            return;
+        }
+        if (businessCalendars is null)
+        {
+            throw new WorkflowDomainException(
+                "Business-calendar storage is not configured; definitions that name a calendar cannot be saved.");
+        }
+
+        foreach (var group in references.GroupBy(reference => reference.Name, StringComparer.OrdinalIgnoreCase))
+        {
+            var first = group.First();
+            var calendar = await businessCalendars.GetByNameAsync(first.Name, cancellationToken);
+            if (calendar is null)
+            {
+                throw new WorkflowDomainException(
+                    $"Flow node #{first.NodeId} names business calendar '{first.Name}', which does not exist. "
+                    + "Create it on the Business calendars page or correct the name.");
+            }
+
+            var miswritten = group.FirstOrDefault(reference =>
+                !string.Equals(reference.Name, calendar.Name, StringComparison.Ordinal));
+            if (miswritten.Name is not null)
+            {
+                throw new WorkflowDomainException(
+                    $"Flow node #{miswritten.NodeId} names business calendar '{miswritten.Name}', which must be written '{calendar.Name}'.");
             }
         }
     }

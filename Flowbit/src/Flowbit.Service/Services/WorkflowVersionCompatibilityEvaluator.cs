@@ -952,8 +952,13 @@ public static class WorkflowVersionCompatibilityEvaluator
             ? targetNode.CancelActivity ?? true
             : true;
 
+        // A duration's calendar belongs to its schedule, like the expression.
+        var calendar = kind == TimerScheduleKinds.Duration && !string.IsNullOrWhiteSpace(targetNode.Timer?.Calendar)
+            ? targetNode.Timer.Calendar.Trim()
+            : null;
         return string.Equals(timer.ScheduleKind, kind, StringComparison.Ordinal)
             && string.Equals(timer.ScheduleExpression, expression, StringComparison.Ordinal)
+            && string.Equals(timer.ScheduleCalendar, calendar, StringComparison.OrdinalIgnoreCase)
             && timer.AttachedToNodeId == attachedToNodeId
             && timer.CancelActivity == cancelActivity;
     }
@@ -1271,9 +1276,11 @@ public static class WorkflowVersionCompatibilityEvaluator
         json.Remove("x");
         json.Remove("y");
         json.Remove("attributes");
-        // A due date and priority are resolved when a work item is created and
-        // saved on it, so changing them affects only later work items.
+        // A due date, its calendar, and priority are resolved when a work item
+        // is created and saved on it, so changing them affects only later
+        // work items.
         json.Remove("dueDate");
+        json.Remove("dueDateCalendar");
         json.Remove("priority");
         RemoveVariablePresentation(json);
         CanonicalizeStringSet(json, "roles");

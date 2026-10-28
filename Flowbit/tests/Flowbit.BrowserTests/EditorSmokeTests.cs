@@ -877,6 +877,88 @@ public sealed class EditorSmokeTests(BrowserStackFixture stack)
         });
     }
 
+    [Theory]
+    [MemberData(nameof(EditorViewports))]
+    public async Task E11_BusinessCalendarFieldsValidateSaveAndReload(int viewportWidth, int viewportHeight)
+    {
+        await using var scenario = await CreateEditorScenarioAsync(
+            $"e11-business-calendar-{viewportWidth}x{viewportHeight}", viewportWidth, viewportHeight);
+        await scenario.RunAsync("business-calendar", async () =>
+        {
+            const string weeksProblem =
+                "dueDate 'P1W' cannot be counted in a business calendar; use whole working days and working time, such as P5D or P1DT4H.";
+            const string nameProblem =
+                "calendar 'bad name' is not a valid business calendar name; use 1 to 100 letters, digits, '.', '_', or '-', starting with a letter or digit.";
+            await OpenEditorAsync(scenario);
+            var page = scenario.Page;
+            await EditorInteractions.LoadWorkflowAsync(
+                page, EditorInteractions.FixturePath("editor-business-calendar.json"));
+
+            // The due-date calendar's status follows the due date as well as its own name.
+            await EditorInteractions.SelectNodeAsync(page, 2);
+            var dueDate = page.Locator("#user-task-dueDate-2");
+            var dueCalendar = page.Locator("#user-task-dueDateCalendar-2");
+            await dueCalendar.FillAsync("examples.weekdays");
+            await Assertions.Expect(dueCalendar).ToHaveAttributeAsync("aria-invalid", "false");
+            await dueDate.FillAsync("P1W");
+            await Assertions.Expect(dueCalendar).ToHaveAttributeAsync("aria-invalid", "true");
+            await Assertions.Expect(page.Locator("#user-task-dueDateCalendar-2-status")).ToHaveTextAsync(weeksProblem);
+            await dueDate.FillAsync("P2D");
+            await Assertions.Expect(dueCalendar).ToHaveAttributeAsync("aria-invalid", "false");
+            await Assertions.Expect(page.Locator("#user-task-dueDateCalendar-2-status")).ToHaveTextAsync(string.Empty);
+
+            // A timer's calendar is shown for a duration and checked as it is typed.
+            await EditorInteractions.SelectNodeAsync(page, 3);
+            var timerCalendar = page.Locator("#timer-calendar-3");
+            await timerCalendar.FillAsync("bad name");
+            await Assertions.Expect(timerCalendar).ToHaveAttributeAsync("aria-invalid", "true");
+            await Assertions.Expect(page.Locator("#timer-calendar-3-status")).ToHaveTextAsync(nameProblem);
+
+            // Saving is blocked with the same message.
+            await page.Locator("#fileMenuSummary").ClickAsync();
+            await page.Locator("#saveBtn").ClickAsync();
+            var errors = await EditorInteractions.WaitForValidationDialogAsync(page);
+            Assert.Contains("Timer event #3 " + nameProblem, errors, StringComparison.Ordinal);
+            await EditorInteractions.CloseValidationDialogWithEscapeAsync(page);
+
+            await timerCalendar.FillAsync("  examples.weekdays ");
+            await Assertions.Expect(timerCalendar).ToHaveAttributeAsync("aria-invalid", "false");
+            await page.Locator("#inspectorPanel").ScreenshotAsync(new LocatorScreenshotOptions
+            {
+                Path = Path.Combine(scenario.ArtifactDirectory, "business-calendar.png"),
+            });
+
+            var saved = await EditorInteractions.SaveAndCaptureDownloadAsync(
+                page, scenario, scenario.ArtifactDirectory);
+            var nodes = saved.RootElement.GetProperty("flowNodes").EnumerateArray().ToArray();
+            var task = nodes.First(node => node.GetProperty("id").GetInt32() == 2);
+            Assert.Equal("P2D", task.GetProperty("dueDate").GetString());
+            Assert.Equal("examples.weekdays", task.GetProperty("dueDateCalendar").GetString());
+            var timer = nodes.First(node => node.GetProperty("id").GetInt32() == 3).GetProperty("timer");
+            Assert.Equal("P3D", timer.GetProperty("timeDuration").GetString());
+            Assert.Equal("examples.weekdays", timer.GetProperty("calendar").GetString());
+
+            // A fresh page reloads both names into the inspector.
+            var freshPage = await scenario.Context.NewPageAsync();
+            try
+            {
+                await freshPage.GotoAsync($"{stack.EditorBaseAddress}/",
+                    new PageGotoOptions { WaitUntil = WaitUntilState.Load });
+                await freshPage.WaitForSelectorAsync("#svg");
+                await EditorInteractions.LoadSavedFileAsync(freshPage, scenario.LastSavedFile!);
+                await EditorInteractions.PinInspectorOpenAsync(freshPage);
+                await EditorInteractions.SelectNodeAsync(freshPage, 2);
+                await Assertions.Expect(freshPage.Locator("#user-task-dueDateCalendar-2")).ToHaveValueAsync("examples.weekdays");
+                await EditorInteractions.SelectNodeAsync(freshPage, 3);
+                await Assertions.Expect(freshPage.Locator("#timer-calendar-3")).ToHaveValueAsync("examples.weekdays");
+            }
+            finally
+            {
+                await freshPage.CloseAsync();
+            }
+        });
+    }
+
     // Inspector fields put a static label before their control.
     private static ILocator FormField(ILocator scope, string label) =>
         scope.Locator(".field").Filter(new LocatorFilterOptions

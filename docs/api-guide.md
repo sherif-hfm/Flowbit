@@ -28,6 +28,7 @@ All JSON property names below are the wire names. Database identifiers are integ
 - [Delegation](#delegation)
 - [Settings](#settings)
 - [AI models](#ai-models)
+- [Business calendars](#business-calendars)
 - [Shared variables](#shared-variables)
 - [Shared-variable clients](#shared-variable-clients)
 - [Retention](#retention)
@@ -2784,7 +2785,7 @@ Content-Type: application/json
 
 Every route in this section requires the Job operator role, including endpoints whose OpenAPI metadata does not repeat `401`/`403`. Lists and attempts use opaque cursors. Operational DTOs expose bounded metadata and failure summaries, not job snapshots or persisted external-response bodies. A resolved incident may remain after its completed job has been pruned, so `IncidentDetailDto.job` may be null.
 
-Job statuses: `queued`, `running`, `resultReady`, `retry`, `completed`, `incident`, `cancelled`, `skipped`. Kinds: `asyncBefore`, `asyncAfter`, `timer`, `timerStart`, `timerBoundary`, `conditionalWake`, `administrativeBatchPrepare`, `administrativeBatchExecute`, `instanceVersionChangeBatchPrepare`, `instanceVersionChangeBatchExecute`, `instanceVariableUpdateBatchPrepare`, `instanceVariableUpdateBatchExecute`. Incident statuses: `open`, `resolved`; `type` is the recorded failure category, including `automatic_loop_limit`. Repeated filters are supplied as repeated query parameters. Retry fences the original activation and queues work; it does not immediately finish the workflow. A no-longer-retryable incident/job returns `409`.
+Job statuses: `queued`, `running`, `resultReady`, `retry`, `completed`, `incident`, `cancelled`, `skipped`. Kinds: `asyncBefore`, `asyncAfter`, `timer`, `timerStart`, `timerBoundary`, `conditionalWake`, `administrativeBatchPrepare`, `administrativeBatchExecute`, `instanceVersionChangeBatchPrepare`, `instanceVersionChangeBatchExecute`, `instanceVariableUpdateBatchPrepare`, `instanceVariableUpdateBatchExecute`. Incident statuses: `open`, `resolved`; `type` is the recorded failure category, including `automatic_loop_limit` and `timer_schedule_failed`, a timer start whose first due time cannot be computed; retrying that incident schedules the timer start again. Repeated filters are supplied as repeated query parameters. Retry fences the original activation and queues work; it does not immediately finish the workflow. A no-longer-retryable incident/job returns `409`.
 
 ### GET /api/jobs
 
@@ -5148,6 +5149,273 @@ Response:
 HTTP/1.1 204 No Content
 ```
 
+## Business calendars
+
+All routes require Settings administrator permission. They manage the calendars that a timer `timeDuration` (`timer.calendar`) and a user-task `dueDate` duration (`dueDateCalendar`) can name so that they count working time; see [working-time durations](node-reference.md#working-time-durations) for how durations are counted.
+
+- **Content.** A calendar has a `name` (1–100 letters, digits, `.`, `_`, or `-`, starting with a letter or digit), an optional `description` (at most 1,000 characters), an IANA `timeZone` that the server knows, written with its exact casing, `weeklyHours`, and `holidays`.
+- **Weekly hours.** Each weekday has up to ten working periods `{ "start": "HH:mm", "end": "HH:mm" }`, in ascending order and not overlapping; an `end` of `24:00` is midnight. The week needs at least one period. Responses list all seven days, with an empty array for a day without hours.
+- **Holidays.** At most 1,000 unique dates from 1900-01-01 to 9998-12-31, each with an optional `name` of up to 200 characters and optional `workingHours`. A holiday without hours is closed; with hours, only those count, for example on a half day.
+- **Concurrency.** Names are unique ignoring case, and a duplicate returns `409`. The name cannot change. Updates and deletes send the exact `expectedUpdatedAt` from the last list, and a stale value returns `409`. Validation errors return `400` with an `error` text, and an unknown `id` returns `404`.
+- **In use.** A calendar that a published workflow definition, a running instance, or an open job uses cannot be deleted; the `409` lists those reasons. A definition that names a calendar is saved, published, or made the default only when that calendar exists, written with its exact casing; otherwise the workflow routes return `400`.
+- **Saved due times.** Editing a calendar never changes a due time that a timer or work item already saved.
+
+### GET /api/business-calendars
+
+List every calendar, ordered by name.
+
+**Access:** Settings administrator. See [authentication](#http-conventions-and-authentication).
+
+**Parameters:** none.
+
+**Body:** none.
+
+**Success:** `200` array of [BusinessCalendarDto](#schema-businesscalendardto).
+**Errors:** `401` Unauthorized; `403` Forbidden. See [error envelopes](#errors-and-concurrency).
+
+```http
+GET /api/business-calendars HTTP/1.1
+Host: localhost:5017
+Authorization: Bearer TOKEN
+```
+
+Response example:
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+[
+  {
+    "id": 1,
+    "name": "examples.weekdays",
+    "description": "Monday to Friday, 09:00 to 17:00 UTC, without holidays. Used by the example workflows.",
+    "timeZone": "Etc/UTC",
+    "weeklyHours": {
+      "monday": [{ "start": "09:00", "end": "17:00" }],
+      "tuesday": [{ "start": "09:00", "end": "17:00" }],
+      "wednesday": [{ "start": "09:00", "end": "17:00" }],
+      "thursday": [{ "start": "09:00", "end": "17:00" }],
+      "friday": [{ "start": "09:00", "end": "17:00" }],
+      "saturday": [],
+      "sunday": []
+    },
+    "holidays": [],
+    "createdAt": "2026-10-27T16:52:17+00:00",
+    "updatedAt": "2026-10-27T16:52:17+00:00"
+  }
+]
+```
+
+### POST /api/business-calendars
+
+Create a calendar.
+
+**Access:** Settings administrator. See [authentication](#http-conventions-and-authentication).
+
+**Parameters:** none.
+
+**JSON body:** [CreateBusinessCalendarRequest](#schema-createbusinesscalendarrequest).
+
+**Success:** `201` [BusinessCalendarDto](#schema-businesscalendardto) with `Location: /api/business-calendars/{id}`.
+**Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden; `409` Conflict. See [error envelopes](#errors-and-concurrency) and the family rules above.
+
+```http
+POST /api/business-calendars HTTP/1.1
+Host: localhost:5017
+Authorization: Bearer TOKEN
+Content-Type: application/json
+
+{
+  "name": "uk-office",
+  "description": "London office",
+  "timeZone": "Europe/London",
+  "weeklyHours": {
+    "monday": [{ "start": "09:00", "end": "12:30" }, { "start": "13:30", "end": "17:30" }],
+    "tuesday": [{ "start": "09:00", "end": "12:30" }, { "start": "13:30", "end": "17:30" }],
+    "wednesday": [{ "start": "09:00", "end": "12:30" }, { "start": "13:30", "end": "17:30" }],
+    "thursday": [{ "start": "09:00", "end": "12:30" }, { "start": "13:30", "end": "17:30" }],
+    "friday": [{ "start": "09:00", "end": "13:00" }]
+  },
+  "holidays": [
+    { "date": "2026-12-24", "name": "Christmas Eve", "workingHours": [{ "start": "09:00", "end": "12:00" }] },
+    { "date": "2026-12-25", "name": "Christmas Day" }
+  ]
+}
+```
+
+Response example:
+
+```http
+HTTP/1.1 201 Created
+Location: /api/business-calendars/2
+Content-Type: application/json
+
+{
+  "id": 2,
+  "name": "uk-office",
+  "description": "London office",
+  "timeZone": "Europe/London",
+  "weeklyHours": {
+    "monday": [{ "start": "09:00", "end": "12:30" }, { "start": "13:30", "end": "17:30" }],
+    "tuesday": [{ "start": "09:00", "end": "12:30" }, { "start": "13:30", "end": "17:30" }],
+    "wednesday": [{ "start": "09:00", "end": "12:30" }, { "start": "13:30", "end": "17:30" }],
+    "thursday": [{ "start": "09:00", "end": "12:30" }, { "start": "13:30", "end": "17:30" }],
+    "friday": [{ "start": "09:00", "end": "13:00" }],
+    "saturday": [],
+    "sunday": []
+  },
+  "holidays": [
+    { "date": "2026-12-24", "name": "Christmas Eve", "workingHours": [{ "start": "09:00", "end": "12:00" }] },
+    { "date": "2026-12-25", "name": "Christmas Day", "workingHours": [] }
+  ],
+  "createdAt": "2026-10-27T17:05:00+00:00",
+  "updatedAt": "2026-10-27T17:05:00+00:00"
+}
+```
+
+### PUT /api/business-calendars/{id}
+
+Replace a calendar's description, time zone, weekly hours, and holidays. The name cannot change. Timers and work items that start afterward use the new content.
+
+**Access:** Settings administrator. See [authentication](#http-conventions-and-authentication).
+
+| Parameter | Location | Type | Required | Meaning / default |
+| --- | --- | --- | --- | --- |
+| `id` | path | integer (int64) | Yes | The calendar's `id` from the list. |
+
+**JSON body:** [UpdateBusinessCalendarRequest](#schema-updatebusinesscalendarrequest).
+
+**Success:** `200` [BusinessCalendarDto](#schema-businesscalendardto) with a later `updatedAt`.
+**Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden; `404` Not Found; `409` Conflict. See [error envelopes](#errors-and-concurrency) and the family rules above.
+
+```http
+PUT /api/business-calendars/2 HTTP/1.1
+Host: localhost:5017
+Authorization: Bearer TOKEN
+Content-Type: application/json
+
+{
+  "timeZone": "Europe/London",
+  "weeklyHours": {
+    "monday": [{ "start": "08:30", "end": "16:30" }],
+    "tuesday": [{ "start": "08:30", "end": "16:30" }],
+    "wednesday": [{ "start": "08:30", "end": "16:30" }],
+    "thursday": [{ "start": "08:30", "end": "16:30" }],
+    "friday": [{ "start": "08:30", "end": "16:30" }]
+  },
+  "holidays": [],
+  "description": "London office, summer hours",
+  "expectedUpdatedAt": "2026-10-27T17:05:00+00:00"
+}
+```
+
+### DELETE /api/business-calendars/{id}
+
+Delete a calendar that nothing uses.
+
+**Access:** Settings administrator. See [authentication](#http-conventions-and-authentication).
+
+| Parameter | Location | Type | Required | Meaning / default |
+| --- | --- | --- | --- | --- |
+| `id` | path | integer (int64) | Yes | The calendar's `id` from the list. |
+| `expectedUpdatedAt` | query | string (date-time) | Yes | The calendar's exact `updatedAt` from the last list, URL-encoded. |
+
+**Body:** none.
+
+**Success:** `204` without a response body.
+**Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden; `404` Not Found; `409` Conflict when the value is stale or the calendar is in use. See [error envelopes](#errors-and-concurrency) and the family rules above.
+
+```http
+DELETE /api/business-calendars/2?expectedUpdatedAt=2026-10-27T17%3A05%3A00.0000000%2B00%3A00 HTTP/1.1
+Host: localhost:5017
+Authorization: Bearer TOKEN
+```
+
+Response when a published definition uses the calendar:
+
+```http
+HTTP/1.1 409 Conflict
+Content-Type: application/json
+
+{ "error": "Business calendar 'uk-office' cannot be deleted: 1 published workflow definition(s) use it." }
+```
+
+### POST /api/business-calendars/preview
+
+Compute a due time with a calendar that need not be saved, for checking it before saving. Nothing is stored.
+
+**Access:** Settings administrator. See [authentication](#http-conventions-and-authentication).
+
+**Parameters:** none.
+
+**JSON body:** [BusinessCalendarPreviewRequest](#schema-businesscalendarpreviewrequest).
+
+**Success:** `200` [BusinessCalendarPreviewDto](#schema-businesscalendarpreviewdto).
+**Errors:** `400` Bad Request for invalid content, a start that is not a local date and time, or a duration that a calendar cannot count; `401` Unauthorized; `403` Forbidden. See [error envelopes](#errors-and-concurrency).
+
+```http
+POST /api/business-calendars/preview HTTP/1.1
+Host: localhost:5017
+Authorization: Bearer TOKEN
+Content-Type: application/json
+
+{
+  "timeZone": "Europe/London",
+  "weeklyHours": {
+    "monday": [{ "start": "09:00", "end": "17:00" }],
+    "tuesday": [{ "start": "09:00", "end": "17:00" }],
+    "wednesday": [{ "start": "09:00", "end": "17:00" }],
+    "thursday": [{ "start": "09:00", "end": "17:00" }],
+    "friday": [{ "start": "09:00", "end": "17:00" }]
+  },
+  "holidays": [],
+  "start": "2026-03-27T14:00",
+  "duration": "P1D"
+}
+```
+
+Response example, across the London change to summer time:
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "startAt": "2026-03-27T14:00:00+00:00",
+  "dueAt": "2026-03-30T13:00:00+00:00",
+  "dueAtLocal": "2026-03-30T14:00:00+01:00"
+}
+```
+
+### GET /api/business-calendars/time-zones
+
+List the IANA time-zone ids this server knows, in ordinal order, for choosing a calendar's time zone. A Linux host lists every IANA zone; a Windows host lists one IANA zone for each Windows zone. Any id the server resolves is accepted, listed or not.
+
+**Access:** Settings administrator. See [authentication](#http-conventions-and-authentication).
+
+**Parameters:** none.
+
+**Body:** none.
+
+**Success:** `200` array of strings.
+**Errors:** `401` Unauthorized; `403` Forbidden. See [error envelopes](#errors-and-concurrency).
+
+```http
+GET /api/business-calendars/time-zones HTTP/1.1
+Host: localhost:5017
+Authorization: Bearer TOKEN
+```
+
+Response example:
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+["Africa/Abidjan", "America/New_York", "Etc/UTC", "Europe/London"]
+```
+
 ## Shared variables
 
 Catalog list/detail intentionally contains metadata only; fetch values explicitly from `/value`. The immutable contract is key, type, array/nullability, and optional validation. `hasValue:false` means no assigned value and differs from `hasValue:true,value:null` for a nullable variable. `revision` covers catalog changes; `valueRevision` tracks value changes separately. Current-value reads require Shared-variable administrator or a client with read scope; writes allow that administrator or write scope.
@@ -6462,6 +6730,86 @@ actorId is nullable in the transport schema but assignment requires a nonblank n
 
 </details>
 
+<a id="schema-businesscalendardto"></a>
+
+<details>
+<summary>BusinessCalendarDto</summary>
+
+A business calendar as settings administrators see it.
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `id` | integer (int64) | Yes | Server-generated identifier. |
+| `name` | string | Yes | The name workflows use in `timer.calendar` and `dueDateCalendar`; unique ignoring case and fixed after creation. |
+| `description` | null or string | Yes | Optional description. |
+| `timeZone` | string | Yes | IANA time-zone id in which working periods and holiday dates are read. |
+| `weeklyHours` | [BusinessCalendarWeekDto](#schema-businesscalendarweekdto) | Yes | Working periods of each weekday; all seven days are present. |
+| `holidays` | array of [BusinessCalendarHolidayDto](#schema-businesscalendarholidaydto) | Yes | Holidays in date order. |
+| `createdAt` | string (date-time) | Yes | Server creation timestamp. |
+| `updatedAt` | string (date-time) | Yes | Server last-change timestamp; send it back as `expectedUpdatedAt`. |
+
+</details>
+
+<a id="schema-businesscalendarholidaydto"></a>
+
+<details>
+<summary>BusinessCalendarHolidayDto</summary>
+
+A date in the calendar's time zone whose working hours replace the weekday's.
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `date` | string (date) | Yes | `yyyy-MM-dd`, from 1900-01-01 to 9998-12-31, unique within the calendar. |
+| `name` | null or string | No | Optional label of up to 200 characters. |
+| `workingHours` | null or array of [WorkingPeriodDto](#schema-workingperioddto) | No | Omitted or empty: the date is closed. Otherwise only these periods count, for example on a half day. Responses always include the array. |
+
+</details>
+
+<a id="schema-businesscalendarpreviewdto"></a>
+
+<details>
+<summary>BusinessCalendarPreviewDto</summary>
+
+The result of a preview.
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `startAt` | string (date-time) | Yes | The start as a UTC instant. A local time that the clock skips resolves to the moment the clock jumps; a repeated one to its first occurrence. |
+| `dueAt` | string (date-time) | Yes | The due time in UTC. |
+| `dueAtLocal` | string (date-time) | Yes | The same due time with the calendar's offset at that moment. |
+
+</details>
+
+<a id="schema-businesscalendarpreviewrequest"></a>
+
+<details>
+<summary>BusinessCalendarPreviewRequest</summary>
+
+Computes a due time with a calendar that need not be saved.
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `timeZone` | string | Yes | IANA time-zone id, as in [CreateBusinessCalendarRequest](#schema-createbusinesscalendarrequest). |
+| `weeklyHours` | [BusinessCalendarWeekDto](#schema-businesscalendarweekdto) | Yes | Working periods of each weekday. |
+| `holidays` | null or array of [BusinessCalendarHolidayDto](#schema-businesscalendarholidaydto) | No | Holidays. |
+| `start` | string | Yes | Local date and time in the calendar's time zone, `yyyy-MM-ddTHH:mm` or `yyyy-MM-ddTHH:mm:ss`, from 1900 to 9998. |
+| `duration` | string | Yes | A duration with whole days and no weeks, such as `P3D`, `PT4H`, or `P1DT4H`. |
+
+</details>
+
+<a id="schema-businesscalendarweekdto"></a>
+
+<details>
+<summary>BusinessCalendarWeekDto</summary>
+
+The working periods of each weekday. A missing or empty day has no working hours; the week needs at least one period.
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `monday`, `tuesday`, `wednesday`, `thursday`, `friday`, `saturday`, `sunday` | null or array of [WorkingPeriodDto](#schema-workingperioddto) | No | Up to ten periods in ascending order that do not overlap. Responses always include every day. |
+
+</details>
+
 <a id="schema-businesskeymodel"></a>
 
 <details>
@@ -6696,6 +7044,23 @@ Adds an AI model for the editor assistant.
 | `model` | string | Yes | The provider's model name sent with every request; 1–200 characters. |
 | `reasoningEffort` | null or string | No | `low`, `medium`, `high`; null, blank or `none` sends no reasoning effort. |
 | `apiKey` | string | Yes | Write-only provider key, 16–4,096 characters without control characters. Never returned. |
+
+</details>
+
+<a id="schema-createbusinesscalendarrequest"></a>
+
+<details>
+<summary>CreateBusinessCalendarRequest</summary>
+
+Creates a business calendar.
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `name` | string | Yes | 1–100 letters, digits, `.`, `_`, or `-`, starting with a letter or digit; trimmed and unique ignoring case. |
+| `timeZone` | string | Yes | An IANA time-zone id that the server knows, written with its exact casing, such as `Europe/London`. Windows ids are rejected. |
+| `weeklyHours` | [BusinessCalendarWeekDto](#schema-businesscalendarweekdto) | Yes | Working periods of each weekday. |
+| `holidays` | null or array of [BusinessCalendarHolidayDto](#schema-businesscalendarholidaydto) | No | Up to 1,000 holidays. |
+| `description` | null or string | No | At most 1,000 characters; blank means none. |
 
 </details>
 
@@ -6998,6 +7363,7 @@ Type-specific requirements and defaults are in BPMN support. Missing cancelActiv
 | `inheritAssignmentFromNodeId` | null or integer (int32) | No | The user-task node whose latest completed work item supplies an inherited assignment. |
 | `inboxVisibilityCondition` | null or string | No | Optional bounded expression evaluated by PostgreSQL to decide whether this user task belongs in a caller's inbox and may be accessed by that caller. Blank values normalize to null. |
 | `dueDate` | null or string | No | Optional due date: a fixed ISO-8601 duration counted from work-item creation, a fixed date-time with an offset, or an NCalc expression that gives either one as text. User tasks only. |
+| `dueDateCalendar` | null or string | No | Optional name of the [business calendar](#business-calendars) whose working time a `dueDate` duration counts. User tasks only; requires `dueDate`. See [working-time durations](node-reference.md#working-time-durations). |
 | `priority` | null or string | No | Optional NCalc expression giving the task's priority as a whole number; higher values are more urgent. User tasks only. |
 | `multiInstance` | null or [MultiInstanceModel](#schema-multiinstancemodel) | No | — |
 | `attachedToRef` | null or integer (int32) | No | Authored host node ID for the boundary. Allowed hosts depend on error/timer/conditional boundary type; see BPMN support. |
@@ -9444,6 +9810,7 @@ Timer kinds: timeDate, timeDuration, timeCycle. Worker execution is required; se
 | `timeDate` | null or string | No | Absolute timer instant; exactly one of timeDate/timeDuration/timeCycle must be nonblank. |
 | `timeDuration` | null or string | No | ISO 8601 duration (for example PT30S). |
 | `timeCycle` | null or string | No | Supported repeating ISO 8601 schedule; see BPMN support for node-specific restrictions. |
+| `calendar` | null or string | No | Optional name of the [business calendar](#business-calendars) whose working time a `timeDuration` counts. Only with `timeDuration`. See [working-time durations](node-reference.md#working-time-durations). |
 
 </details>
 
@@ -9474,6 +9841,23 @@ Replaces one configured AI model's settings. The same field rules as [CreateAiMo
 | `reasoningEffort` | null or string | No | `low`, `medium`, `high`; null, blank or `none` sends no reasoning effort. |
 | `apiKey` | null or string | No | Write-only. Null or blank keeps the stored key; a value replaces it. |
 | `expectedRevision` | integer (int64) | Yes | The model's exact `revision` from the last list. |
+
+</details>
+
+<a id="schema-updatebusinesscalendarrequest"></a>
+
+<details>
+<summary>UpdateBusinessCalendarRequest</summary>
+
+Replaces a business calendar's content. The name cannot change.
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `timeZone` | string | Yes | As in [CreateBusinessCalendarRequest](#schema-createbusinesscalendarrequest). |
+| `weeklyHours` | [BusinessCalendarWeekDto](#schema-businesscalendarweekdto) | Yes | Working periods of each weekday. |
+| `holidays` | null or array of [BusinessCalendarHolidayDto](#schema-businesscalendarholidaydto) | No | The complete holiday list; null or empty removes every holiday. |
+| `description` | null or string | No | At most 1,000 characters; blank removes the description. |
+| `expectedUpdatedAt` | string (date-time) | Yes | The calendar's exact `updatedAt` from the last list; a stale value returns `409`. |
 
 </details>
 
@@ -9997,6 +10381,20 @@ Represents a summary of a workflow definition version.
 | `isPublished` | boolean | Yes | Indicates if this version is published and can start new instances. |
 | `isDefault` | boolean | Yes | Indicates if this is the default version for its workflow key (used when starting instances by key). |
 | `createdAt` | string (date-time) | Yes | The timestamp when this version was created. |
+
+</details>
+
+<a id="schema-workingperioddto"></a>
+
+<details>
+<summary>WorkingPeriodDto</summary>
+
+A working period in the calendar's local wall-clock time, from `start` up to `end`.
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `start` | string | Yes | `HH:mm`, from `00:00` to `23:59`. |
+| `end` | string | Yes | `HH:mm` after `start`, or `24:00` for midnight at the end of the day. |
 
 </details>
 

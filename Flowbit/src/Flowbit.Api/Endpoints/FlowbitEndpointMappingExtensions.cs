@@ -35,6 +35,7 @@ public static class FlowbitEndpointMappingExtensions
         app.MapUserDelegationEndpoints();
         app.MapSettingsEndpoints();
         app.MapAiModelEndpoints();
+        app.MapBusinessCalendarEndpoints();
         app.MapRetentionEndpoints();
         app.MapSharedVariableEndpoints();
         app.MapSharedVariableClientEndpoints();

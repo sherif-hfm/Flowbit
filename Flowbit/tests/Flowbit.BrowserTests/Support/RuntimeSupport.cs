@@ -1,3 +1,4 @@
+using System.Globalization;
 using Flowbit.BrowserTests.Infrastructure;
 using Flowbit.Shared.Dtos;
 using Microsoft.Playwright;
@@ -64,6 +65,24 @@ internal static class RuntimeSupport
             ?? throw new InvalidOperationException(
                 $"Instance {instanceId} has no sole active user task " +
                 $"(active={detail.UserTasks?.ActiveCount ?? 0}, pending={detail.UserTasks?.PendingCount ?? 0}).");
+    }
+
+    /// <summary>
+    /// Types a <c>datetime-local</c> value segment by segment in en-US order, as a
+    /// user would. Blazor appends seconds to the value it sends, and a leading 0
+    /// briefly leaves the field without a value; neither may revert or clear what
+    /// was typed. The key delay lets each change event reach the server before
+    /// the next key, as it does for a person.
+    /// </summary>
+    public static async Task TypeDateTimeLocalAsync(IPage page, string selector, DateTime value)
+    {
+        var keys = new KeyboardTypeOptions { Delay = 100 };
+        await page.Locator(selector).FocusAsync();
+        await page.Keyboard.TypeAsync(value.ToString("MMddyyyy", CultureInfo.InvariantCulture), keys);
+        await page.Keyboard.PressAsync("ArrowRight");
+        await page.Keyboard.TypeAsync(value.ToString("hhmm", CultureInfo.InvariantCulture), keys);
+        await page.Keyboard.TypeAsync(value.Hour < 12 ? "A" : "P", keys);
+        await page.Keyboard.PressAsync("Tab");
     }
 
     /// <summary>
@@ -168,5 +187,19 @@ internal static class RuntimeSupport
             }
             throw new TimeoutException(failure.Message + detail, failure);
         }
+    }
+
+    /// <summary>
+    /// Types a <c>date</c> value segment by segment in en-US order, as a user
+    /// would; see <see cref="TypeDateTimeLocalAsync"/>. A leading 0 typed over a
+    /// date briefly leaves the field without a value.
+    /// </summary>
+    public static async Task TypeDateAsync(IPage page, string selector, DateOnly value)
+    {
+        await page.Locator(selector).FocusAsync();
+        await page.Keyboard.TypeAsync(
+            value.ToString("MMddyyyy", CultureInfo.InvariantCulture),
+            new KeyboardTypeOptions { Delay = 100 });
+        await page.Keyboard.PressAsync("Tab");
     }
 }

@@ -154,6 +154,17 @@ public sealed class WorkflowFixtureClient : IAsyncDisposable
     public Task DeleteAiModelAsync(string id, long expectedRevision) =>
         SendAsync(HttpMethod.Delete, $"/api/ai-models/{Uri.EscapeDataString(id)}?expectedRevision={expectedRevision}");
 
+    public Task<IReadOnlyList<BusinessCalendarDto>> ListBusinessCalendarsAsync() =>
+        SendAsync<IReadOnlyList<BusinessCalendarDto>>(HttpMethod.Get, "/api/business-calendars");
+
+    public Task DeleteBusinessCalendarAsync(long id, DateTimeOffset expectedUpdatedAt) =>
+        SendAsync(
+            HttpMethod.Delete,
+            $"/api/business-calendars/{id}?expectedUpdatedAt={Uri.EscapeDataString(expectedUpdatedAt.ToString("O", System.Globalization.CultureInfo.InvariantCulture))}");
+
+    public Task DeleteWorkflowAsync(long id) =>
+        SendAsync(HttpMethod.Delete, $"/api/workflows/{id}");
+
     public Task<IReadOnlyList<UserDelegationDto>> CreateDelegationAsync(CreateUserDelegationRequest request) =>
         SendAsync<IReadOnlyList<UserDelegationDto>>(HttpMethod.Post, "/api/user-delegations", request);
 

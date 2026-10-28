@@ -250,7 +250,7 @@ A repeatable Chromium smoke suite exists at
 real copied editor and the real published API/UI over localhost with a
 disposable PostgreSQL container; see its
 [README](Flowbit/tests/Flowbit.BrowserTests/README.md) for setup and the
-E1–E10/R1–R10 coverage matrix. It is the baseline for editor/runtime UI changes,
+E1–E11/R1–R11 coverage matrix. It is the baseline for editor/runtime UI changes,
 but it does not replace scenario-specific manual verification: the native
 file-picker success/cancel path, visual comparisons, and behaviors outside the
 matrix still need the manual steps above.
@@ -1199,6 +1199,38 @@ Storage follows the hybrid design:
   `dueStatus`, `dueFrom`/`dueTo`, and `minPriority`/`maxPriority` in
   `BuildInboxWhere`, before visibility, one-per-actor selection, count, order,
   and paging.
+- **Business calendars.** A timer `timeDuration` (`timer.calendar`) and a
+  user-task `dueDate` duration (`dueDateCalendar`) can name a calendar in
+  `business_calendars`: weekly working periods, holidays with optional hours,
+  and an IANA time zone, read with `TimeZoneInfo` and the host's data.
+  - **Counting.** `BusinessCalendar.TryAdd` counts days as working days at the
+    same time of day, then hours as working time. A local time maps to the first
+    instant the clock shows it or later. Weeks and fractional days are rejected
+    with a calendar (`TimerDefinitionRules.TryParseWorkingDuration`), and so is
+    a duration longer than the 36,525 days the calculation searches
+    (`BusinessCalendarRules.CountableDurationProblem`). Duration, date, and
+    working-period patterns read ASCII digits only, as the editor does.
+  - **Resolution.** The scoped `BusinessCalendarResolver` loads each calendar
+    once per scope without locks.
+  - **Timers.** Activation (`ResolveTimerScheduleAsync`, timer-start
+    reconciliation) computes and saves `NextDueAt` plus
+    `timer_subscriptions.ScheduleCalendar`. A missing calendar fails the
+    activation. A timer start that cannot be scheduled keeps a paused
+    subscription and a `timer_schedule_failed` incident job with no
+    `ScheduledOccurrenceAt`; retrying it cancels that subscription, and the next
+    reconciliation schedules the timer start again.
+  - **Due dates.** `ResolveUserTaskDueAndPriority` produces a working
+    `UserTaskDueValue` that `WorkflowRuntimeRepository` resolves at the work
+    item's `CreatedAt`. An uncountable due date is left null with a warning.
+  - **References and deletion.** Saving and publishing a version replaces its
+    `workflow_definition_business_calendars` rows, with calendar rows locked
+    `FOR KEY SHARE` in name order. Deleting a calendar locks it `FOR UPDATE` and
+    is refused while a published version, a running instance, or an open job
+    uses it. `WorkflowDefinitionReadinessChecker` requires named calendars to
+    exist with exact casing.
+  - **Versions and edits.** Timer contracts include the calendar;
+    `dueDateCalendar` is left out like `dueDate`. Editing a calendar never moves
+    a saved due time.
 - **Required assignment and assignment inheritance.** A normal `userTask` may set
   `requiresAssignment=true`. While its active work item has no `Assignee`, regular
   inbox and actor-scoped task reads omit it and claim/action endpoints reject it;
@@ -1340,7 +1372,9 @@ Storage follows the hybrid design:
   `AiAuthoring.Models` engine setting (matched ignoring case) holds the AI assistant's
   models and keys; the generic engine-settings service never lists it and refuses to
   create, update or delete it. It is managed only through `/ai-models` and
-  `/api/ai-models` with the same `Settings.RequiredRole` authorization.
+  `/api/ai-models` with the same `Settings.RequiredRole` authorization. Business
+  calendars (`/business-calendars`, `/api/business-calendars`) use the same role
+  and `UpdatedAt` concurrency.
 
 - **History and audit retention.** `/retention` manages seven deployment-wide
   categories through `/api/retention`, authorized by `Settings.RequiredRole`.
@@ -1450,6 +1484,11 @@ what the cross-version `workflowKey` instance search matches.
   assistant's models. Requests may carry a write-only `apiKey` (blank on update keeps
   the stored key); responses never do. Stale revisions and duplicate names return 409.
   The assistant reads only ids and names through `GET /api/workflows/ai/models`.
+- `BusinessCalendarEndpoints` (`/api/business-calendars`): settings administrators can
+  `GET /`, `POST /` (201), `PUT /{id}`, and `DELETE /{id}?expectedUpdatedAt=...`
+  business calendars, `POST /preview` a due time for an unsaved calendar, and
+  `GET /time-zones` the host's IANA ids. Duplicate names, stale timestamps, and
+  calendars in use return 409.
 - `TaskDistributionEndpoints`
   (`/api/task-distribution/workflows/{workflowKey}/tasks`): `GET /` returns a
   paged family-scoped list using the same task/instance/workflow-version,
@@ -1606,6 +1645,15 @@ what the cross-version `workflowKey` instance search matches.
   concurrency. The key input is write-only: never prefilled, cleared after save,
   cancel, identity change and disposal. The editor's `WorkflowAiPanel` offers these
   models by name and has no key field.
+- `/business-calendars` (`BusinessCalendars.razor`) - settings-administrator list,
+  creation, editing, preview, and deletion of business calendars, with one text line
+  of working periods per weekday and holiday rows; `BusinessCalendarText` parses and
+  summarizes them. The preview start (`datetime-local`) and the holiday dates
+  (`date`) are uncontrolled: each renders a value only when the form loads, under a
+  new `@key`, and keeps the text its `@onchange` reports, parsed by
+  `Components/Shared/DateTimeLocalText` and `BusinessCalendarText`. `@bind` to a
+  nullable date would clear the whole field when a typed leading zero briefly
+  empties the value.
 - `/instances/{id}` (`InstanceDetail.razor`) - claim/unclaim, take available
   sequence flows, take authorized parent-level multi-instance interrupt actions,
   view variables and history (including task-assignment/reactivation audit
@@ -1766,6 +1814,7 @@ A node in the workflow. `type` is one of `startEvent`, `userTask`, `task`,
   "inheritAssignmentFromNodeId": null, // assignment fromNode mode only
   "assignee": null,            // normal userTask only: optional NCalc username expression
   "dueDate": null,             // userTask only, e.g. "P2D": fixed duration/offset date-time or NCalc giving one as text
+  "dueDateCalendar": null,     // userTask only: business calendar whose working time a dueDate duration counts
   "priority": null,            // userTask only, e.g. "50": NCalc giving a whole number; higher = more urgent
   "variables": [ /* Variable[] */ ], // startEvent / messageStartEvent (data to start) / userTask
   "service": { /* ServiceTaskConfig */ }, // serviceTask only (REST call config)
@@ -2666,6 +2715,12 @@ when extending the model so new features stay close to BPMN terminology.
   created. The editor shows **Due date** and **Priority** fields with live
   validation from the save validator's `userTaskDueValueProblem`, and keeps
   them for multi-instance tasks.
+- **Business calendar fields**: the editor shows **Due date calendar** after
+  **Due date**, and **Business calendar** under a timer's duration, as free
+  text (the editor has no calendar list). `normalizeTimerDefinition` keeps
+  `calendar` only when named, so timers without one export unchanged. Live
+  validation and save errors come from `userTaskDueDateCalendarProblem` and
+  `timerCalendarProblem`, which mirror the server's rules.
 
 ---
 

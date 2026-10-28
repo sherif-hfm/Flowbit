@@ -58,6 +58,8 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IAiModelSettingsService>(provider => provider.GetRequiredService<AiModelSettingsService>());
         services.AddScoped<IAiModelStore>(provider => provider.GetRequiredService<AiModelSettingsService>());
         services.AddScoped<IWorkflowSettingsService, WorkflowSettingsService>();
+        services.AddScoped<IBusinessCalendarService, BusinessCalendarService>();
+        services.AddScoped<IBusinessCalendarResolver, BusinessCalendarResolver>();
         services.AddScoped<IUserDelegationService, UserDelegationService>();
         return services;
     }

@@ -141,6 +141,7 @@ internal static partial class FlowbitOpenApiEnrichment
             AddOrReplaceTag(document.Tags, "Instance Variable Update Batches", "Durable preparation and execution of bulk administrative variable updates.");
             AddOrReplaceTag(document.Tags, "Retention", "Retention policy inspection, preview, and cleanup-run control.");
             AddOrReplaceTag(document.Tags, "AI Models", "Settings-administrator management of the AI models, endpoints, and write-only keys used by the editor assistant.");
+            AddOrReplaceTag(document.Tags, "Business Calendars", "Settings-administrator management of the working days, hours, holidays, and time zones that timer durations and task due dates can count in.");
 
             document.Components ??= new OpenApiComponents();
             document.Components.SecuritySchemes ??= new Dictionary<string, IOpenApiSecurityScheme>();

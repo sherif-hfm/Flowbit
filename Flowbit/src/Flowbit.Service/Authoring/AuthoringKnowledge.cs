@@ -105,7 +105,7 @@ public static class AuthoringPackageBuilder
             nodeTypes = WorkflowAuthoringJson.NodeTypes,
             authoringReference = "docs/node-reference.md",
             examples = result.Keys.Where(key => key.StartsWith("examples/", StringComparison.Ordinal) && key.EndsWith(".json", StringComparison.Ordinal)).Select(key => "../" + key).ToArray(),
-            capabilities = new[] { "all canonical node and sequence-flow properties", "typed variables and shared bindings", "roles, claims, assignment and inbox visibility", "NCalc and JavaScript", "REST and messages", "multi-instance and FlowInfo", "timers, jobs and conditional events", "business keys and idempotency", "attributes and external IDs", "input form labels, help text, and options", "user-task due dates and priorities" }
+            capabilities = new[] { "all canonical node and sequence-flow properties", "typed variables and shared bindings", "roles, claims, assignment and inbox visibility", "NCalc and JavaScript", "REST and messages", "multi-instance and FlowInfo", "timers, jobs and conditional events", "business keys and idempotency", "attributes and external IDs", "input form labels, help text, and options", "user-task due dates and priorities", "working-time durations in business calendars" }
         }, new JsonSerializerOptions { WriteIndented = true }) + "\n";
         // Preserve the owning documents' relative structure. References to source-only code/screenshots
         // are rendered as labels, so this package never requires a repository checkout to read its guides.

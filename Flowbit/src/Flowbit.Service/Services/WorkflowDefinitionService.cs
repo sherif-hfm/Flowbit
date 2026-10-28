@@ -14,11 +14,12 @@ public sealed class WorkflowDefinitionService(
     IConditionalEventDefinitionAnalyzer? conditionalEventAnalyzer = null,
     IConditionalEventDependencyPlanCache? conditionalEventPlanCache = null,
     ISharedVariableRepository? sharedVariables = null,
-    ISharedVariableAccessPlanCache? sharedVariableAccessPlanCache = null)
+    ISharedVariableAccessPlanCache? sharedVariableAccessPlanCache = null,
+    IBusinessCalendarRepository? businessCalendars = null)
     : IWorkflowDefinitionService
 {
     private readonly WorkflowDefinitionReadinessChecker readiness =
-        new(sharedVariables, conditionalEventAnalyzer, durableProcessingOptions);
+        new(sharedVariables, conditionalEventAnalyzer, durableProcessingOptions, businessCalendars);
     private readonly IConditionalEventDefinitionAnalyzer conditionalAnalyzer =
         conditionalEventAnalyzer ?? new ConditionalEventDefinitionAnalyzer();
 
@@ -49,6 +50,7 @@ public sealed class WorkflowDefinitionService(
         WorkflowModelMigrator.Normalize(definition);
         validator.ValidateNormalized(definition);
         await readiness.ValidateSharedCatalogBindingsAsync(definition, cancellationToken);
+        await readiness.ValidateBusinessCalendarReferencesAsync(definition, cancellationToken);
         readiness.ValidateSharedServiceTaskDurability(definition);
         readiness.ValidateSharedTransactionLockOrder(definition);
         readiness.EnsureDurablePublicationAllowed(definition, publish);
@@ -78,6 +80,7 @@ public sealed class WorkflowDefinitionService(
         WorkflowModelMigrator.Normalize(definition);
         validator.ValidateNormalized(definition);
         await readiness.ValidateSharedCatalogBindingsAsync(definition, cancellationToken);
+        await readiness.ValidateBusinessCalendarReferencesAsync(definition, cancellationToken);
         readiness.ValidateSharedServiceTaskDurability(definition);
         readiness.ValidateSharedTransactionLockOrder(definition);
         readiness.EnsureDurablePublicationAllowed(definition, publish);
@@ -99,6 +102,9 @@ public sealed class WorkflowDefinitionService(
         }
         _ = conditionalAnalyzer.Analyze(definition.Definition);
         await readiness.ValidateSharedCatalogBindingsAsync(
+            definition.Definition,
+            cancellationToken);
+        await readiness.ValidateBusinessCalendarReferencesAsync(
             definition.Definition,
             cancellationToken);
         readiness.ValidateSharedServiceTaskDurability(definition.Definition);
@@ -140,6 +146,9 @@ public sealed class WorkflowDefinitionService(
         }
         _ = conditionalAnalyzer.Analyze(definition.Definition);
         await readiness.ValidateSharedCatalogBindingsAsync(
+            definition.Definition,
+            cancellationToken);
+        await readiness.ValidateBusinessCalendarReferencesAsync(
             definition.Definition,
             cancellationToken);
         readiness.ValidateSharedServiceTaskDurability(definition.Definition);

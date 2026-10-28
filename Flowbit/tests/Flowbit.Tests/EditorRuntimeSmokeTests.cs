@@ -1,5 +1,6 @@
 ﻿using System.Text.Json;
 using System.Text.RegularExpressions;
+using Flowbit.Shared.Models;
 using Jint;
 using Xunit;
 
@@ -3131,6 +3132,222 @@ public sealed class EditorRuntimeSmokeTests
         Assert.True(root.GetProperty("exportedPriorityOmitted").GetBoolean());
         Assert.True(root.GetProperty("legacyExportOmitted").GetBoolean());
         Assert.True(root.GetProperty("clearedOnTypeChange").GetBoolean());
+    }
+
+    [Fact]
+    public void DueDateCalendar_LoadEditValidateExportAndClearWithNodeType()
+    {
+        var engine = CreateEditorEngine();
+        using var result = JsonDocument.Parse(engine.Evaluate(
+            """
+            (() => {
+              loadFromObject({
+                id: 'due-calendar-editor',
+                name: 'Due calendar editor',
+                variables: [],
+                lanes: [],
+                flowNodes: [
+                  { id: 1, name: 'Start', type: 'startEvent' },
+                  { id: 2, name: 'Review', type: 'userTask', dueDate: 'P2D', dueDateCalendar: 'uk-office' },
+                  { id: 3, name: 'Legacy review', type: 'userTask', dueDate: 'PT4H', dueDateCalendar: '  ' },
+                  { id: 4, name: 'Done', type: 'endEvent' }
+                ],
+                sequenceFlows: [
+                  { id: 101, sourceRef: 1, targetRef: 2 },
+                  { id: 201, name: 'Approve', sourceRef: 2, targetRef: 3 },
+                  { id: 301, name: 'Close', sourceRef: 3, targetRef: 4 }
+                ]
+              });
+
+              const review = getNode(2);
+              const legacy = getNode(3);
+              selected = { kind: 'node', nodeId: review.id };
+              selectedNodeIds.clear();
+              selectedNodeIds.add(review.id);
+              renderInspector();
+              const fieldFor = label => inspector.children.find(child =>
+                String(child.className) === 'field' &&
+                child.children.some(item => item.tagName === 'LABEL' && item.textContent === label));
+              const dueInput = fieldFor('Due date').children.find(child => child.tagName === 'INPUT');
+              const calendarField = fieldFor('Due date calendar');
+              const calendarInput = calendarField.children.find(child => child.tagName === 'INPUT');
+              const calendarStatus = calendarField.children.find(child => child.tagName === 'P');
+              const initial = {
+                loaded: review.dueDateCalendar,
+                legacyOmitted: JSON.stringify(legacy).indexOf('dueDateCalendar') < 0,
+                value: calendarInput.value,
+                id: calendarInput.id,
+                aria: calendarInput.getAttribute('aria-invalid')
+              };
+
+              // The calendar's status follows the due date as well as its own value.
+              dueInput.value = 'P1W';
+              dueInput.oninput();
+              const weeks = { aria: calendarInput.getAttribute('aria-invalid'), status: calendarStatus.textContent };
+              dueInput.value = 'P2D';
+              dueInput.oninput();
+              calendarInput.value = 'bad name';
+              calendarInput.oninput();
+              const invalid = { status: calendarStatus.textContent, errors: prepareWorkflowExport().errors };
+
+              calendarInput.value = '  examples.weekdays  ';
+              calendarInput.oninput();
+              const exported = JSON.parse(prepareWorkflowExport().json);
+              const exportedReview = exported.flowNodes.find(node => node.id === 2);
+              const exportedLegacy = exported.flowNodes.find(node => node.id === 3);
+
+              review.type = NODE_TYPE.TASK;
+              applyTypeInvariants(review);
+
+              return JSON.stringify({
+                initial,
+                weeks,
+                invalid,
+                exportedCalendar: exportedReview.dueDateCalendar,
+                legacyExportOmitted: !Object.prototype.hasOwnProperty.call(exportedLegacy, 'dueDateCalendar'),
+                clearedOnTypeChange: !Object.prototype.hasOwnProperty.call(review, 'dueDateCalendar')
+              });
+            })()
+            """).AsString());
+
+        var root = result.RootElement;
+        var initial = root.GetProperty("initial");
+        Assert.Equal("uk-office", initial.GetProperty("loaded").GetString());
+        Assert.True(initial.GetProperty("legacyOmitted").GetBoolean());
+        Assert.Equal("uk-office", initial.GetProperty("value").GetString());
+        Assert.Equal("user-task-dueDateCalendar-2", initial.GetProperty("id").GetString());
+        Assert.Equal("false", initial.GetProperty("aria").GetString());
+
+        var weeks = root.GetProperty("weeks");
+        Assert.Equal("true", weeks.GetProperty("aria").GetString());
+        Assert.Equal(
+            UserTaskDueRules.DueDateCalendarProblem("P1W", "uk-office"),
+            weeks.GetProperty("status").GetString());
+
+        var invalid = root.GetProperty("invalid");
+        var nameProblem = UserTaskDueRules.DueDateCalendarProblem("P2D", "bad name");
+        Assert.Equal(nameProblem, invalid.GetProperty("status").GetString());
+        Assert.Equal(
+            ["User task #2 (Review) " + nameProblem],
+            invalid.GetProperty("errors").EnumerateArray().Select(error => error.GetString()));
+
+        Assert.Equal("examples.weekdays", root.GetProperty("exportedCalendar").GetString());
+        Assert.True(root.GetProperty("legacyExportOmitted").GetBoolean());
+        Assert.True(root.GetProperty("clearedOnTypeChange").GetBoolean());
+    }
+
+    [Fact]
+    public void TimerCalendar_LoadEditValidateAndExportOnlyWhenNamed()
+    {
+        var engine = CreateEditorEngine();
+        using var result = JsonDocument.Parse(engine.Evaluate(
+            """
+            (() => {
+              function descendants(root) {
+                const result = [root];
+                root.children.forEach(child => result.push(...descendants(child)));
+                return result;
+              }
+              function byData(root, key) {
+                return descendants(root).find(element => element.dataset[key] === 'true');
+              }
+              loadFromObject({
+                id: 'timer-calendar-editor',
+                name: 'Timer calendar editor',
+                variables: [],
+                lanes: [],
+                flowNodes: [
+                  { id: 1, name: 'Start', type: 'startEvent' },
+                  { id: 2, name: 'Wait', type: 'intermediateTimerCatchEvent',
+                    timer: { timeDate: null, timeDuration: 'P2D', timeCycle: null, calendar: ' uk-office ' } },
+                  { id: 3, name: 'Pause', type: 'intermediateTimerCatchEvent',
+                    timer: { timeDate: null, timeDuration: 'PT1H', timeCycle: null } },
+                  { id: 4, name: 'Done', type: 'endEvent' }
+                ],
+                sequenceFlows: [
+                  { id: 101, sourceRef: 1, targetRef: 2 },
+                  { id: 201, sourceRef: 2, targetRef: 3 },
+                  { id: 301, sourceRef: 3, targetRef: 4 }
+                ]
+              });
+
+              const wait = getNode(2);
+              const pause = getNode(3);
+              const loaded = {
+                calendar: wait.timer.calendar,
+                plainKeys: Object.keys(pause.timer).join(',')
+              };
+              selected = { kind: 'node', nodeId: wait.id };
+              selectedNodeIds.clear();
+              selectedNodeIds.add(wait.id);
+              renderInspector();
+              const calendarField = inspector.children.find(child =>
+                String(child.className) === 'field' &&
+                child.children.some(item => item.tagName === 'LABEL' && item.textContent === 'Business calendar'));
+              const calendarInput = calendarField.children.find(child => child.tagName === 'INPUT');
+              const calendarStatus = calendarField.children.find(child => child.tagName === 'P');
+              const initial = { value: calendarInput.value, id: calendarInput.id, status: calendarStatus.textContent };
+
+              // Changing the duration to weeks refreshes the calendar's status.
+              const amount = byData(inspector, 'durationAmount');
+              const unit = byData(inspector, 'durationUnit');
+              amount.value = '2';
+              unit.value = 'weeks';
+              amount.oninput();
+              const weeks = { duration: wait.timer.timeDuration, status: calendarStatus.textContent };
+              amount.value = '3';
+              unit.value = 'days';
+              amount.oninput();
+
+              calendarInput.value = 'bad name';
+              calendarInput.oninput();
+              const errors = prepareWorkflowExport().errors;
+
+              calendarInput.value = '  examples.weekdays ';
+              calendarInput.oninput();
+              const exported = JSON.parse(prepareWorkflowExport().json);
+              calendarInput.value = ' ';
+              calendarInput.oninput();
+              const cleared = JSON.parse(prepareWorkflowExport().json);
+
+              return JSON.stringify({
+                loaded,
+                initial,
+                weeks,
+                errors,
+                exportedTimer: exported.flowNodes.find(node => node.id === 2).timer,
+                exportedPlainKeys: Object.keys(exported.flowNodes.find(node => node.id === 3).timer).join(','),
+                clearedKeys: Object.keys(cleared.flowNodes.find(node => node.id === 2).timer).join(',')
+              });
+            })()
+            """).AsString());
+
+        var root = result.RootElement;
+        Assert.Equal("uk-office", root.GetProperty("loaded").GetProperty("calendar").GetString());
+        Assert.Equal("timeDate,timeDuration,timeCycle", root.GetProperty("loaded").GetProperty("plainKeys").GetString());
+        var initial = root.GetProperty("initial");
+        Assert.Equal("uk-office", initial.GetProperty("value").GetString());
+        Assert.Equal("timer-calendar-2", initial.GetProperty("id").GetString());
+        Assert.Equal(string.Empty, initial.GetProperty("status").GetString());
+
+        var weeks = root.GetProperty("weeks");
+        Assert.Equal("P2W", weeks.GetProperty("duration").GetString());
+        Assert.Equal(
+            TimerDefinitionRules.CalendarProblem(new TimerDefinitionModel { TimeDuration = "P2W", Calendar = "uk-office" }),
+            weeks.GetProperty("status").GetString());
+
+        Assert.Equal(
+            [
+                "Timer event #2 " + TimerDefinitionRules.CalendarProblem(
+                    new TimerDefinitionModel { TimeDuration = "P3D", Calendar = "bad name" })
+            ],
+            root.GetProperty("errors").EnumerateArray().Select(error => error.GetString()));
+
+        var exportedTimer = root.GetProperty("exportedTimer");
+        Assert.Equal("P3D", exportedTimer.GetProperty("timeDuration").GetString());
+        Assert.Equal("examples.weekdays", exportedTimer.GetProperty("calendar").GetString());
+        Assert.Equal("timeDate,timeDuration,timeCycle", root.GetProperty("exportedPlainKeys").GetString());
+        Assert.Equal("timeDate,timeDuration,timeCycle", root.GetProperty("clearedKeys").GetString());
     }
 
     // BEGIN STAGE 10 â€” node-type transition characterization. These tests

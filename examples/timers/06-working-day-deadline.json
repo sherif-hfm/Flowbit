@@ -1,0 +1,122 @@
+{
+  "id": "example-working-day-deadline",
+  "name": "Example 06 - Working-Day Deadline",
+  "initialEventId": 1,
+  "variables": [],
+  "lanes": [],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Start",
+      "externalId": "START_WORKING_DAY_DEADLINE_EXAMPLE",
+      "type": "startEvent",
+      "laneId": null,
+      "x": 60,
+      "y": 190,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 2,
+      "name": "Review Claim",
+      "externalId": "TASK_REVIEW_WITHIN_TWO_WORKING_DAYS",
+      "type": "userTask",
+      "laneId": null,
+      "x": 310,
+      "y": 175,
+      "roles": [],
+      "variables": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "dueDate": "P2D",
+      "dueDateCalendar": "examples.weekdays"
+    },
+    {
+      "id": 3,
+      "name": "Three Working Days",
+      "externalId": "TIMER_THREE_WORKING_DAYS",
+      "type": "timerBoundaryEvent",
+      "laneId": null,
+      "x": 430,
+      "y": 235,
+      "roles": [],
+      "variables": [],
+      "attachedToRef": 2,
+      "cancelActivity": true,
+      "timer": {
+        "timeDate": null,
+        "timeDuration": "P3D",
+        "timeCycle": null,
+        "calendar": "examples.weekdays"
+      }
+    },
+    {
+      "id": 4,
+      "name": "Escalated Review",
+      "externalId": "TASK_ESCALATED_CLAIM_REVIEW",
+      "type": "userTask",
+      "laneId": null,
+      "x": 650,
+      "y": 300,
+      "roles": [],
+      "variables": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "dueDate": "PT4H",
+      "dueDateCalendar": "examples.weekdays"
+    },
+    {
+      "id": 5,
+      "name": "Completed",
+      "externalId": "END_WORKING_DAY_DEADLINE_COMPLETED",
+      "type": "endEvent",
+      "laneId": null,
+      "x": 1030,
+      "y": 190,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "Begin review",
+      "externalId": "FLOW_BEGIN_WORKING_DAY_REVIEW",
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 201,
+      "name": "Approve",
+      "externalId": "FLOW_APPROVE_WITHIN_DEADLINE",
+      "sourceRef": 2,
+      "targetRef": 5,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 301,
+      "name": "Escalate after three working days",
+      "externalId": "FLOW_WORKING_DAY_ESCALATION",
+      "sourceRef": 3,
+      "targetRef": 4,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 401,
+      "name": "Complete escalation",
+      "externalId": "FLOW_COMPLETE_ESCALATED_CLAIM_REVIEW",
+      "sourceRef": 4,
+      "targetRef": 5,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "cancelRoles": [],
+  "unclaimRoles": [],
+  "taskAssignmentRoles": [],
+  "taskDistribution": null
+}

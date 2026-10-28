@@ -69,6 +69,12 @@ public static class WorkflowIncidentStatuses
 public static class WorkflowIncidentTypes
 {
     public const string AutomaticLoopLimit = "automatic_loop_limit";
+
+    /// <summary>
+    /// A timer start whose first due time cannot be computed, for example because its business calendar cannot count
+    /// the duration. Its subscription stays paused until the incident is retried.
+    /// </summary>
+    public const string TimerScheduleFailed = "timer_schedule_failed";
 }
 
 public static class TimerSubscriptionStatuses
@@ -299,6 +305,10 @@ public sealed record TimerSubscriptionCreateRecord
     public int? AttachedToNodeId { get; init; }
     public required string ScheduleKind { get; init; }
     public required string ScheduleExpression { get; init; }
+
+    /// <summary>The business calendar a duration was counted in; null for wall-clock schedules.</summary>
+    public string? ScheduleCalendar { get; init; }
+
     public required bool CancelActivity { get; init; }
     public required DateTimeOffset NextDueAt { get; init; }
     public long Occurrence { get; init; }
@@ -322,7 +332,11 @@ public sealed record TimerSubscriptionRecord(
     long Occurrence,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
-    DateTimeOffset? CompletedAt);
+    DateTimeOffset? CompletedAt)
+{
+    /// <summary>The business calendar a duration was counted in; null for wall-clock schedules.</summary>
+    public string? ScheduleCalendar { get; init; }
+}
 
 public sealed record ConditionalBoundarySubscriptionCreateRecord
 {

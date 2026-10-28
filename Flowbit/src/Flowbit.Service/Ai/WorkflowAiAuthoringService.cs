@@ -97,6 +97,8 @@ public sealed partial class WorkflowAiAuthoringService(
         var publicationBlockers = new List<string>();
         try { await readiness.ValidateSharedCatalogBindingsAsync(model, cancellationToken); }
         catch (WorkflowDomainException error) { saveBlockers.Add(SafeDiagnostic(error)); }
+        try { await readiness.ValidateBusinessCalendarReferencesAsync(model, cancellationToken); }
+        catch (WorkflowDomainException error) { saveBlockers.Add(SafeDiagnostic(error)); }
         try { readiness.ValidateSharedServiceTaskDurability(model); }
         catch (WorkflowDomainException error) { saveBlockers.Add(SafeDiagnostic(error)); }
         try { readiness.ValidateSharedTransactionLockOrder(model); }

@@ -485,6 +485,7 @@ public static class WorkflowModelMigrator
             node.Timer.TimeDate = TrimToNull(node.Timer.TimeDate);
             node.Timer.TimeDuration = TrimToNull(node.Timer.TimeDuration);
             node.Timer.TimeCycle = TrimToNull(node.Timer.TimeCycle);
+            node.Timer.Calendar = TrimToNull(node.Timer.Calendar);
             if (TimerDefinitionRules.TryParseTimeDate(node.Timer.TimeDate, out var timeDate))
             {
                 node.Timer.TimeDate = timeDate.ToUniversalTime().ToString("O");
@@ -573,6 +574,7 @@ public static class WorkflowModelMigrator
             node.InheritAssignmentFromNodeId = null;
             node.InboxVisibilityCondition = null;
             node.DueDateExpression = null;
+            node.DueDateCalendar = null;
             node.PriorityExpression = null;
         }
 
@@ -848,6 +850,7 @@ public static class WorkflowModelMigrator
         {
             node.InboxVisibilityCondition = TrimToNull(node.InboxVisibilityCondition);
             node.DueDateExpression = TrimToNull(node.DueDateExpression);
+            node.DueDateCalendar = TrimToNull(node.DueDateCalendar);
             node.PriorityExpression = TrimToNull(node.PriorityExpression);
 
             // Tolerant load: older documents have no claimMode.

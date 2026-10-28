@@ -7,7 +7,7 @@ legacy properties. Most ids use `example-*`; the administrative-action sample
 retains its authored `admin-action` id. The examples are intentionally focused: combine their
 patterns when building a production workflow.
 
-The catalog contains 49 workflows. Automated tests recursively discover every
+The catalog contains 50 workflows. Automated tests recursively discover every
 JSON file, deserialize it, validate it with the runtime's strict JavaScript
 parser, load and render it in the editor, and verify that this page links it.
 Those definition/editor tests do not execute integrations. The separate
@@ -161,6 +161,7 @@ attempt inspection, incident recovery, and PowerShell/Bash walkthroughs.
 | [Recurring timer start](timers/03-recurring-timer-start.json) | No values; use the manual start only for comparison. | Acknowledge each scheduled instance. | `R5/PT30S` creates five instances, 30 seconds apart. | API, database, and Worker with timer schedules enabled; no configuration. |
 | [Absolute timer start](timers/04-absolute-timer-start.json) | No values; change the authored UTC time to a near-future instant before testing. | Acknowledge the scheduled instance. | A one-time absolute schedule creates an instance at its UTC timestamp. | API, database, and Worker with timer schedules enabled; no configuration. |
 | [User-task reminder and deadline](timers/05-user-task-reminder-and-deadline.json) | No values; `remindersSent` defaults to zero. | Approve normally before one minute, or complete escalated approval after the deadline. | A recurring non-interrupting boundary records reminders while an interrupting deadline cancels the original task and escalates. | API, database, and Worker; no configuration. |
+| [Working-day deadline](timers/06-working-day-deadline.json) | No values. | Approve **Review Claim** before its deadline, or complete **Escalated Review** after it. | The review is due two working days after it is created, and an interrupting timer escalates it after three working days, both counted in the `examples.weekdays` calendar (Monday to Friday, 09:00 to 17:00 UTC), so a weekend does not count. The escalated review is due four working hours after it is created. | API and database; Worker for the deadline timer; the `examples.weekdays` business calendar, which the migration seeds when missing. |
 
 ## Trusted configuration placeholders
 
@@ -187,7 +188,7 @@ actions, and records the outcome of each test run separately.
 | Coverage layer | Included | Verification boundary |
 | --- | --- | --- |
 | Authored node and event types | All 21: four tasks, four gateways, three starts, three intermediate catches, three boundaries, three ends, and the scoped-interrupt extension. | Recursive runtime/editor validation and the explicit 21-type assertion; editor execution here uses Jint rather than a real browser. |
-| Demonstrated catalog scenarios | Claims, assignment/distribution, captured roles, task due dates and priorities, scripts, typed REST/messages, idempotency, multi-instance aggregation, timers, conditional events, retries/recovery, and scope cancellation. | The 49 definitions and category walkthroughs explain actors, inputs, prerequisites, and expected outcomes. |
+| Demonstrated catalog scenarios | Claims, assignment/distribution, captured roles, task due dates and priorities, working-time durations in a business calendar, scripts, typed REST/messages, idempotency, multi-instance aggregation, timers, conditional events, retries/recovery, and scope cancellation. | The 50 definitions and category walkthroughs explain actors, inputs, prerequisites, and expected outcomes. |
 | Focused runtime acceptance | Both REST recovery paths and boundary-order policies; both receipt/deadline paths; nested cancellation; MI role replacement/stale edits; normal versus terminate end; approval timer return; quorum cancellation before finalization. | `ExampleWorkflowAcceptanceTests` uses real HTTP and Worker processing with controlled local services. It is explicitly run outside the solution and CI; inspect its results before claiming a verified run. |
 | Browser and manual checks | New diagrams at desktop/tablet widths; incident recovery and role management at desktop, tablet, and mobile widths. | Real Chromium input, screenshots, and browser diagnostics supplement API assertions; native picker and visual-review limitations are reported separately. |
 

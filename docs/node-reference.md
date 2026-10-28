@@ -19,6 +19,7 @@ JSON blocks below are **fragments**, not standalone workflows, unless stated oth
 - [Business key configuration](#business-key-configuration)
 - [Start idempotency configuration](#start-idempotency-configuration)
 - [Timer configuration](#timer-configuration)
+- [Working-time durations](#working-time-durations)
 - [Conditional configuration](#conditional-configuration)
 - [Boundary host rules](#boundary-host-rules)
 - [Durable job policy](#durable-job-policy)
@@ -134,6 +135,7 @@ Creates waiting human work. A normal task has one work item; a multi-instance ta
 | `inheritAssignmentFromNodeId` | integer | Required for `assignmentMode: "fromNode"`; otherwise cleared | Existing user-task node ID. Inheritance prefers the source assignee, then its represented completing owner, then its completing actor. No eligible source leaves work in the assignment queue. |
 | `inboxVisibilityCondition` | string | Optional; absent/blank means no extra restriction | Bounded database expression deciding personal inbox membership and access. See the visibility contract below. |
 | `dueDate` | string | Optional; absent | Due time resolved once when the work item is created: a fixed ISO-8601 duration such as `"P2D"` counted from creation, a fixed date-time with an offset, or an NCalc expression giving either as text. Allowed on multi-instance tasks. See [due date and priority](#due-date-and-priority). |
+| `dueDateCalendar` | string | Optional; absent | Name of a [business calendar](#working-time-durations) whose working time a `dueDate` duration counts, such as `"examples.weekdays"`. Requires `dueDate`; rejected when `dueDate` is a fixed date-time. The calendar must exist, written with its exact casing. |
 | `priority` | string | Optional; absent | NCalc expression resolved once when the work item is created, giving a whole number from -2,147,483,648 to 2,147,483,647; higher is more urgent. Write it as a JSON string, such as `"50"`. See [due date and priority](#due-date-and-priority). |
 | `variables` | variable[] | Optional; `[]` | Retained node-scope declarations, using [variable properties](#variables-and-inputs). Current user-action endpoints validate and resolve inputs from the selected outgoing **flow's** `variables`; author action forms there. This node list does not create a second submission contract. |
 | `multiInstance` | object | Optional; absent means one normal work item | Repeated human work; see all properties below. |
@@ -176,6 +178,8 @@ Examples: [roles, claims, and bypass](../examples/user-tasks/01-roles-claim-and-
 | Anything else: an NCalc expression, such as `if(amount >= 10000, 'PT4H', 'P2D')` or `contractEnd` | The expression's result, which must be text in one of the two forms above. |
 
 Expressions see the same stored variables and `sys.*`, `config.*`, and `setting.*` context as the assignee expression; `FlowInfo` and gateway helper functions are not available. A `datetime` value works only if it carries an offset. For a `date` value, append a time and an offset, for example `dueDay + 'T17:00:00Z'`.
+
+With `dueDateCalendar`, a duration counts the named calendar's working time from the work item's creation, as described in [working-time durations](#working-time-durations): `"P2D"` is due two working days later, at the same time of day. The duration must use whole days and no weeks, such as `P5D` or `P1DT4H`, and be at most 36,525 days long. A date-time result ignores the calendar. A duration result with weeks or fractional days or longer than 36,525 days, or a calendar that no longer exists, leaves the work item without a due date and logs a warning. Changing `dueDateCalendar` never blocks an in-place workflow-version change.
 
 A `priority` result must be a finite number without a fractional part, so `2.0` is accepted and `2.5` or the text `'5'` is not.
 
@@ -747,8 +751,50 @@ The required `timer` object belongs only to `timerStartEvent`, `intermediateTime
 | `timeDate` | ISO-8601 timestamp string | One of the three required | Absolute date/time with `Z` or an explicit numeric UTC offset, for example `2030-01-01T09:00:00Z`. Normalized to UTC. A local timestamp without offset is invalid. |
 | `timeDuration` | ISO-8601 duration string | One of the three required | Positive fixed-unit delay, for example `PT30S`, `P2D`, or `P1W`. Supports weeks or day/hour/minute/second components and decimal components, within the runtime duration range. |
 | `timeCycle` | recurrence string | One of the three required | `R/Duration` for unbounded authored recurrence, or `R<n>/Duration` with a positive 32-bit integer occurrence count. For example `R5/PT30S`. The interval must be at least one second. |
+| `calendar` | string | Optional; absent | Name of a [business calendar](#working-time-durations) whose working time a `timeDuration` counts, such as `"examples.weekdays"`. Only allowed with `timeDuration`, which must then use whole days and no weeks and be at most 36,525 days long. The calendar must exist, written with its exact casing. |
 
-No cron, calendar month/year duration, timezone calendar, or expression/template schedule is supported. Relative waits are measured from activation; absolute dates do not move with activation. Timer jobs persist across restarts. Firing can be late when the Worker is unavailable; recurring occurrences more than one minute late skip to a later eligible occurrence. This is a durable schedule, not a hard real-time guarantee. See [timer execution semantics](bpmn-support.md#timers).
+No cron, calendar month/year duration, or expression/template schedule is supported. Relative waits are measured from activation; absolute dates do not move with activation. Timer jobs persist across restarts. Firing can be late when the Worker is unavailable; recurring occurrences more than one minute late skip to a later eligible occurrence. This is a durable schedule, not a hard real-time guarantee. See [timer execution semantics](bpmn-support.md#timers).
+
+```json
+{
+  "id": 31,
+  "name": "Escalate after three working days",
+  "type": "timerBoundaryEvent",
+  "attachedToRef": 11,
+  "timer": { "timeDuration": "P3D", "calendar": "examples.weekdays" }
+}
+```
+
+A timer that names a calendar computes its due time once, when it activates, and saves it; the timer subscription also records the calendar name. If the calendar no longer exists, the server does not know its time zone, or the calendar cannot count the duration, a timer catch or boundary fails its activation like other timer validation: the request fails, or a Worker job retries and then opens an incident. A timer start in that state is not scheduled. Its subscription stays paused with a `timer_schedule_failed` incident, and the Worker logs the reason once. Retrying the incident after fixing the cause schedules the timer start again, or opens a new incident; a version that replaces the default resolves it. A timer's calendar belongs to its schedule contract, so changing it blocks an in-place version change of an open timer, as changing its expression does.
+
+## Working-time durations
+
+A business calendar defines working time: up to ten working periods for each weekday, holidays, and an IANA time zone. Settings administrators manage calendars on the Flowbit.Ui **Business calendars** page and through the [business calendars API](api-guide.md#business-calendars). A timer `timeDuration` that names a calendar in `calendar`, and a user-task `dueDate` duration that names one in `dueDateCalendar`, count that calendar's working time instead of wall-clock time:
+
+- **Days** (`D`) count working days and keep the time of day. A working day is a date with working time. A start outside working time first moves to the next working time. If that time of day is not working time on the last day, or is exactly the start of a period, the due time is the end of the last period before it, or the end of the previous working day.
+- **Hours, minutes, and seconds** count only working time. The due time is the moment the last of that time elapses, so it can be the end of a period.
+- **Both**, such as `P1DT4H`, apply the days first and then the time.
+- **Weeks and fractional days** are rejected with a calendar, because their working length is ambiguous; write `P5D` or `P1DT4H` instead. Months and years are unsupported everywhere.
+- **Length.** A duration can be at most 36,525 days long, about 100 years, counting its days and its time together, because the calculation searches no further. Validation rejects a longer one.
+
+For a calendar with working hours Monday to Friday, 09:00 to 17:00:
+
+| Start | Duration | Due | Why |
+| --- | --- | --- | --- |
+| Mon 14:00 | `P3D` | Thu 14:00 | Three working days later, at the same time. |
+| Fri 14:00 | `P3D` | Wed 14:00 | Saturday and Sunday are not working days. |
+| Sat 10:00 | `P1D` | Mon 17:00 | The start counts from Mon 09:00, and one working day ends at Mon 17:00. |
+| Mon 08:00 | `P3D` | Wed 17:00 | Counts from Mon 09:00: Monday, Tuesday, and Wednesday. |
+| Mon 16:00 | `PT2H` | Tue 10:00 | One working hour on Monday and one on Tuesday. |
+| Thu 15:00 | `P1D` | Fri 13:00 | Friday is a holiday with hours 09:00 to 13:00, which end before 15:00. |
+| Mon 14:00 | `P3D` | Fri 14:00 | Wednesday is a holiday without hours. |
+
+Working periods are wall-clock times in the calendar's time zone, from a start up to an end; an end of `24:00` is midnight. A holiday's own hours replace the weekday's; a holiday without hours is closed. Across a daylight-saving change:
+
+- A period boundary at a local time that the clock skips falls at the moment the clock jumps, and a boundary at a repeated local time falls at its first occurrence. A period therefore lasts the real time between its boundaries, so one that contains a skipped hour is an hour shorter.
+- Days keep their wall-clock time of day, so `P1D` from Saturday 12:00 is Sunday 12:00 in a calendar that works every hour.
+
+The calculation searches up to 36,525 days, about 100 years, after the start; a calendar without enough working time in that window gives no due time. Each API and Worker host uses its own time-zone data, so keep them on the same operating-system image. The due time is computed once and saved: editing a calendar never moves a saved due time, and timers and work items that start later use the calendar as it is then. A calendar that a published definition, a running instance, or an open job uses cannot be deleted, and a definition can be saved and published only when its calendars exist.
 
 ## Conditional configuration
 

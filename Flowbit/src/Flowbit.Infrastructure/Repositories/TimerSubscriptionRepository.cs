@@ -27,6 +27,7 @@ public sealed class TimerSubscriptionRepository(AppDbContext dbContext)
             AttachedToNodeId = create.AttachedToNodeId,
             ScheduleKind = create.ScheduleKind,
             ScheduleExpression = create.ScheduleExpression,
+            ScheduleCalendar = create.ScheduleCalendar,
             CancelActivity = create.CancelActivity,
             Status = TimerSubscriptionStatuses.Active,
             NextDueAt = create.NextDueAt,
@@ -230,6 +231,13 @@ public sealed class TimerSubscriptionRepository(AppDbContext dbContext)
                 subscription.InstanceId == instanceId),
             cancellationToken);
 
+    public async Task<bool> CancelByIdAsync(
+        long subscriptionId,
+        CancellationToken cancellationToken) =>
+        await CancelAsync(
+            dbContext.TimerSubscriptions.Where(subscription => subscription.Id == subscriptionId),
+            cancellationToken) == 1;
+
     public Task<int> CancelByTokenIdsAsync(
         long instanceId,
         IReadOnlyCollection<long> tokenIds,
@@ -295,5 +303,8 @@ public sealed class TimerSubscriptionRepository(AppDbContext dbContext)
             entity.Occurrence,
             entity.CreatedAt,
             entity.UpdatedAt,
-            entity.CompletedAt);
+            entity.CompletedAt)
+        {
+            ScheduleCalendar = entity.ScheduleCalendar
+        };
 }

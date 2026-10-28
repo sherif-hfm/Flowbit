@@ -15,7 +15,8 @@ public sealed class WorkflowDefinitionRepository(
     AppDbContext dbContext,
     IMemoryCache cache,
     ISharedVariableRepository? sharedVariables = null,
-    IConditionalEventDefinitionAnalyzer? conditionalEventAnalyzer = null) : IWorkflowDefinitionRepository
+    IConditionalEventDefinitionAnalyzer? conditionalEventAnalyzer = null,
+    IBusinessCalendarRepository? businessCalendars = null) : IWorkflowDefinitionRepository
 {
     private static readonly JsonSerializerOptions CloneOptions = new(JsonSerializerDefaults.Web);
 
@@ -33,6 +34,8 @@ public sealed class WorkflowDefinitionRepository(
         sharedVariables ?? new SharedVariableRepository(dbContext);
     private readonly IConditionalEventDefinitionAnalyzer conditionalAnalyzer =
         conditionalEventAnalyzer ?? new ConditionalEventDefinitionAnalyzer();
+    private readonly IBusinessCalendarRepository businessCalendarRepository =
+        businessCalendars ?? new BusinessCalendarRepository(dbContext);
     public async Task<IReadOnlyList<WorkflowDefinitionRecord>> ListLatestAsync(CancellationToken cancellationToken)
     {
         var definitions = await dbContext.WorkflowDefinitions.AsNoTracking()
@@ -230,6 +233,7 @@ public sealed class WorkflowDefinitionRepository(
         }
         await dbContext.SaveChangesAsync(cancellationToken);
         await PersistSharedVariableBindingsAsync(entity.Id, definition, cancellationToken);
+        await PersistBusinessCalendarReferencesAsync(entity.Id, definition, cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         var record = ToRecord(entity);
 
@@ -271,6 +275,24 @@ public sealed class WorkflowDefinitionRepository(
             cancellationToken);
     }
 
+    // A version records the calendars it names when it is saved and again when it is published, with the calendars
+    // locked, so a calendar cannot be deleted while a published version or its work uses it.
+    private Task PersistBusinessCalendarReferencesAsync(
+        long workflowDefinitionId,
+        WorkflowModel definition,
+        CancellationToken cancellationToken)
+    {
+        var names = BusinessCalendarRules.References(definition)
+            .Select(reference => reference.Name)
+            .ToArray();
+        return names.Length == 0
+            ? Task.CompletedTask
+            : businessCalendarRepository.ReplaceDefinitionReferencesAsync(
+                workflowDefinitionId,
+                names,
+                cancellationToken);
+    }
+
     public async Task<bool> SetPublishedAsync(long id, bool isPublished, CancellationToken cancellationToken)
     {
         if (isPublished)
@@ -298,6 +320,7 @@ public sealed class WorkflowDefinitionRepository(
                 return true;
             }
             await EnsureSharedVariablesActiveForPublishAsync(id, cancellationToken);
+            await PersistBusinessCalendarReferencesAsync(id, target.Definition, cancellationToken);
             var scopeActive = await dbContext.WorkflowBusinessKeyScopes
                 .AnyAsync(scope => scope.WorkflowKey == target.WorkflowKey, cancellationToken);
             var hasBusinessKeys = HasBusinessKeys(target.Definition);

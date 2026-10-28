@@ -48,4 +48,6 @@ public sealed class WorkflowDefinitionEntity
 
     public List<WorkflowDefinitionSharedVariableBindingEntity> SharedVariableBindings { get; set; } = [];
 
+    public List<WorkflowDefinitionBusinessCalendarEntity> BusinessCalendarReferences { get; set; } = [];
+
 }

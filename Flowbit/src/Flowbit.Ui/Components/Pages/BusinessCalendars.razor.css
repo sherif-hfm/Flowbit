@@ -1,0 +1,59 @@
+.business-calendar-section {
+    margin: 1.25rem 0 0;
+    padding: 1rem;
+    min-width: 0;
+    border: 1px solid var(--fb-border);
+    border-radius: var(--fb-radius-sm);
+}
+
+.business-calendar-section legend {
+    float: none;
+    width: auto;
+    margin: 0 0 .25rem;
+    padding: 0 .25rem;
+    font-size: 1rem;
+    font-weight: 600;
+}
+
+.business-calendar-week {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
+    gap: .75rem 1rem;
+}
+
+.business-calendar-holiday {
+    display: grid;
+    grid-template-columns: minmax(9rem, 11rem) minmax(0, 1fr) minmax(0, 1fr) auto;
+    align-items: end;
+    gap: .75rem;
+    margin-bottom: .75rem;
+}
+
+.business-calendar-preview {
+    background: var(--fb-surface-soft);
+}
+
+.business-calendar-preview-inputs {
+    display: grid;
+    grid-template-columns: minmax(12rem, 16rem) minmax(8rem, 12rem) auto;
+    align-items: end;
+    gap: .75rem;
+}
+
+.business-calendar-preview-result {
+    min-height: 1.5rem;
+    margin: .75rem 0 0;
+    overflow-wrap: anywhere;
+}
+
+@media (max-width: 760px) {
+    .business-calendar-holiday,
+    .business-calendar-preview-inputs {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .business-calendar-holiday {
+        padding-bottom: .75rem;
+        border-bottom: 1px solid var(--fb-border);
+    }
+}

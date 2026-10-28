@@ -17,7 +17,8 @@ namespace Flowbit.Infrastructure.Repositories;
 
 public sealed partial class WorkflowRuntimeRepository(
     AppDbContext dbContext,
-    IInstanceVariableMutationTracker? variableMutationTracker = null)
+    IInstanceVariableMutationTracker? variableMutationTracker = null,
+    IBusinessCalendarResolver? businessCalendars = null)
     : IWorkflowRuntimeRepository, IWorkflowInstanceQueryRepository
 {
     private readonly HashSet<long> loadedSequenceFlowSummaryInstances = [];
@@ -1902,6 +1903,7 @@ public sealed partial class WorkflowRuntimeRepository(
                 node,
                 now,
                 status: node.AsyncBefore ? UserTaskStatuses.Pending : UserTaskStatuses.Active);
+            task.DueAt ??= await ResolveWorkingDueAtAsync(instance.Id, node, now, cancellationToken);
             task.RolePolicy = await CreateRolePolicyAsync(instance, node, now, cancellationToken);
             dbContext.UserTasks.Add(task);
         }
@@ -1973,6 +1975,7 @@ public sealed partial class WorkflowRuntimeRepository(
                     status: create.Node.AsyncBefore
                         ? UserTaskStatuses.Pending
                         : UserTaskStatuses.Active);
+                task.DueAt ??= await ResolveWorkingDueAtAsync(instance.Id, create.Node, now, cancellationToken);
                 task.RolePolicy = await CreateRolePolicyAsync(instance, create.Node, now, cancellationToken);
                 dbContext.UserTasks.Add(task);
             }
@@ -2139,6 +2142,7 @@ public sealed partial class WorkflowRuntimeRepository(
                 now,
                 claimedBy,
                 node.AsyncBefore ? UserTaskStatuses.Pending : UserTaskStatuses.Active);
+            task.DueAt ??= await ResolveWorkingDueAtAsync(instance.Id, node, now, cancellationToken);
             task.RolePolicy = await CreateRolePolicyAsync(instance, node, now, cancellationToken);
             dbContext.UserTasks.Add(task);
         }
@@ -4177,7 +4181,9 @@ public sealed partial class WorkflowRuntimeRepository(
                     "due_at",
                     NpgsqlDbType.TimestampTz)
                 {
-                    Value = (object?)node.DueDate?.ResolveAt(now) ?? DBNull.Value
+                    Value = (object?)(ResolveDueAt(node, now)
+                        ?? await ResolveWorkingDueAtAsync(instanceId, node, now, cancellationToken))
+                        ?? DBNull.Value
                 });
                 insertItems.Parameters.Add(new NpgsqlParameter(
                     "priority",
@@ -7110,11 +7116,25 @@ public sealed partial class WorkflowRuntimeRepository(
             Status = status,
             ClaimedBy = claimedBy,
             Assignee = node.Assignee,
-            DueAt = node.DueDate?.ResolveAt(now),
+            DueAt = ResolveDueAt(node, now),
             Priority = node.Priority,
             CreatedAt = now,
             UpdatedAt = now
         };
+
+    // A fixed instant or a plain duration added to the work item's creation time. A working duration is resolved
+    // through its business calendar by ResolveWorkingDueAtAsync.
+    private static DateTimeOffset? ResolveDueAt(CurrentNodeSnapshot node, DateTimeOffset createdAt) =>
+        node.DueDate is { Working: null } due ? due.ResolveAt(createdAt) : null;
+
+    private async Task<DateTimeOffset?> ResolveWorkingDueAtAsync(
+        long instanceId,
+        CurrentNodeSnapshot node,
+        DateTimeOffset createdAt,
+        CancellationToken cancellationToken) =>
+        node.DueDate?.Working is null || businessCalendars is null
+            ? null
+            : await businessCalendars.ResolveDueAtAsync(node.DueDate, createdAt, instanceId, node.Id, cancellationToken);
 
     private static void CompleteTask(UserTaskEntity? task, bool cancelled, DateTimeOffset now)
     {

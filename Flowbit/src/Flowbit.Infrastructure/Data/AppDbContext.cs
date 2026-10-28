@@ -95,6 +95,11 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
     public DbSet<EngineSettingEntity> EngineSettings => Set<EngineSettingEntity>();
 
+    public DbSet<BusinessCalendarEntity> BusinessCalendars => Set<BusinessCalendarEntity>();
+
+    public DbSet<WorkflowDefinitionBusinessCalendarEntity> WorkflowDefinitionBusinessCalendars =>
+        Set<WorkflowDefinitionBusinessCalendarEntity>();
+
     public DbSet<RetentionPolicyEntity> RetentionPolicies => Set<RetentionPolicyEntity>();
     public DbSet<RetentionCoordinatorEntity> RetentionCoordinators => Set<RetentionCoordinatorEntity>();
 
@@ -1827,6 +1832,38 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.HasIndex(e => new { e.Namespace, e.Key }).IsUnique();
         });
 
+        modelBuilder.Entity<BusinessCalendarEntity>(entity =>
+        {
+            entity.ToTable("business_calendars");
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Name).HasColumnType("citext").HasMaxLength(100).IsRequired();
+            entity.Property(e => e.Description).HasMaxLength(1000);
+            entity.Property(e => e.TimeZone).HasMaxLength(100).IsRequired();
+            entity.Property(e => e.WeeklyHours).HasColumnType("jsonb");
+            entity.Property(e => e.Holidays).HasColumnType("jsonb");
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+            entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
+            entity.HasIndex(e => e.Name).IsUnique();
+        });
+
+        modelBuilder.Entity<WorkflowDefinitionBusinessCalendarEntity>(entity =>
+        {
+            entity.ToTable("workflow_definition_business_calendars");
+            entity.HasKey(e => new { e.WorkflowDefinitionId, e.BusinessCalendarId });
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+            entity.HasIndex(e => e.BusinessCalendarId);
+            entity.HasOne(e => e.WorkflowDefinition)
+                .WithMany(e => e.BusinessCalendarReferences)
+                .HasForeignKey(e => e.WorkflowDefinitionId)
+                .OnDelete(DeleteBehavior.Cascade);
+            // Deleting a calendar is refused while it is in use; the references of unpublished versions
+            // without running work go with it, and publishing such a version checks its calendars again.
+            entity.HasOne(e => e.BusinessCalendar)
+                .WithMany(e => e.DefinitionReferences)
+                .HasForeignKey(e => e.BusinessCalendarId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
         modelBuilder.Entity<UserDelegationEntity>(entity =>
         {
             entity.ToTable("user_delegations", table =>
@@ -1971,6 +2008,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(e => e.TimerNodeName).HasMaxLength(300).IsRequired();
             entity.Property(e => e.ScheduleKind).HasMaxLength(32).IsRequired();
             entity.Property(e => e.ScheduleExpression).HasMaxLength(300).IsRequired();
+            entity.Property(e => e.ScheduleCalendar).HasMaxLength(100);
             entity.Property(e => e.Status).HasMaxLength(32).IsRequired();
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
             entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");

@@ -344,6 +344,52 @@ namespace Flowbit.Infrastructure.Data.Migrations
                         });
                 });
 
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.BusinessCalendarEntity", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.Property<JsonElement>("Holidays")
+                        .HasColumnType("jsonb");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("citext");
+
+                    b.Property<string>("TimeZone")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<JsonElement>("WeeklyHours")
+                        .HasColumnType("jsonb");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Name")
+                        .IsUnique();
+
+                    b.ToTable("business_calendars", "flowbit");
+                });
+
             modelBuilder.Entity("Flowbit.Infrastructure.Entities.ComplexGatewayStateEntity", b =>
                 {
                     b.Property<long>("Id")
@@ -2662,6 +2708,10 @@ namespace Flowbit.Infrastructure.Data.Migrations
                     b.Property<long>("Occurrence")
                         .HasColumnType("bigint");
 
+                    b.Property<string>("ScheduleCalendar")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
                     b.Property<string>("ScheduleExpression")
                         .IsRequired()
                         .HasMaxLength(300)
@@ -3110,6 +3160,26 @@ namespace Flowbit.Infrastructure.Data.Migrations
                     b.HasKey("WorkflowKey");
 
                     b.ToTable("workflow_business_key_scopes", "flowbit");
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.WorkflowDefinitionBusinessCalendarEntity", b =>
+                {
+                    b.Property<long>("WorkflowDefinitionId")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("BusinessCalendarId")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("now()");
+
+                    b.HasKey("WorkflowDefinitionId", "BusinessCalendarId");
+
+                    b.HasIndex("BusinessCalendarId");
+
+                    b.ToTable("workflow_definition_business_calendars", "flowbit");
                 });
 
             modelBuilder.Entity("Flowbit.Infrastructure.Entities.WorkflowDefinitionEntity", b =>
@@ -4892,6 +4962,25 @@ namespace Flowbit.Infrastructure.Data.Migrations
                         .OnDelete(DeleteBehavior.Restrict);
                 });
 
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.WorkflowDefinitionBusinessCalendarEntity", b =>
+                {
+                    b.HasOne("Flowbit.Infrastructure.Entities.BusinessCalendarEntity", "BusinessCalendar")
+                        .WithMany("DefinitionReferences")
+                        .HasForeignKey("BusinessCalendarId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("Flowbit.Infrastructure.Entities.WorkflowDefinitionEntity", "WorkflowDefinition")
+                        .WithMany("BusinessCalendarReferences")
+                        .HasForeignKey("WorkflowDefinitionId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("BusinessCalendar");
+
+                    b.Navigation("WorkflowDefinition");
+                });
+
             modelBuilder.Entity("Flowbit.Infrastructure.Entities.WorkflowDefinitionSharedVariableBindingEntity", b =>
                 {
                     b.HasOne("Flowbit.Infrastructure.Entities.SharedVariableEntity", "SharedVariable")
@@ -5163,6 +5252,11 @@ namespace Flowbit.Infrastructure.Data.Migrations
                     b.Navigation("Items");
                 });
 
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.BusinessCalendarEntity", b =>
+                {
+                    b.Navigation("DefinitionReferences");
+                });
+
             modelBuilder.Entity("Flowbit.Infrastructure.Entities.ComplexGatewayStateEntity", b =>
                 {
                     b.Navigation("WaitingTokens");
@@ -5263,6 +5357,8 @@ namespace Flowbit.Infrastructure.Data.Migrations
             modelBuilder.Entity("Flowbit.Infrastructure.Entities.WorkflowDefinitionEntity", b =>
                 {
                     b.Navigation("AdministrativeActionBatchItems");
+
+                    b.Navigation("BusinessCalendarReferences");
 
                     b.Navigation("InstanceHistory");
 

@@ -36,6 +36,7 @@ Choose provider-managed [OpenID Connect](docs/openid-connect.md) or [Local user 
 | Integration-driven processes | Build templated REST requests and map validated, typed response values back into the workflow. | [REST integration](examples/service-tasks/01-rest-templating-and-typed-output.json) |
 | External order intake | Start from an authenticated message, map its payload, and apply business-key and transport-idempotency rules. | [Message start](examples/messages/01-message-start-typed-mapping.json) |
 | Reminders and deadlines | Run recurring reminder branches while work stays open; interrupt and escalate when a deadline arrives. | [Reminder and escalation](examples/timers/05-user-task-reminder-and-deadline.json) |
+| Working-day SLAs | Count deadlines and timers in a business calendar's working days and hours, skipping weekends and holidays in its time zone. | [Working-day deadline](examples/timers/06-working-day-deadline.json) |
 | Risk-based escalation | Observe persisted business variables and interrupt an active review when its condition becomes true. | [Conditional boundary](examples/basics/08-interrupting-conditional-boundary.json) |
 | Evidence-aware routing | Use recorded flow actions and traversals in NCalc, JavaScript, and gateway decisions. | [FlowInfo](examples/scripts/03-flowinfo-ncalc-and-javascript.json) |
 
@@ -68,7 +69,7 @@ Follow the [Flowbit.Ui guide](docs/ui-guide.md) to import and publish a definiti
 
 ### Human work and approval teams
 
-User tasks support role-based access at both the task and action level, claim ownership, direct assignee expressions, required assignment, and claim or assignment inheritance. Runtime delegation lets authorized users act on another user's eligible work with audit attribution. A task can carry a due date and a priority, resolved when its work item is created; My work shows overdue and due-soon badges and sorts and filters by both, and the inbox APIs return them to embedding applications.
+User tasks support role-based access at both the task and action level, claim ownership, direct assignee expressions, required assignment, and claim or assignment inheritance. Runtime delegation lets authorized users act on another user's eligible work with audit attribution. A task can carry a due date and a priority, resolved when its work item is created; My work shows overdue and due-soon badges and sorts and filters by both, and the inbox APIs return them to embedding applications. Due dates and timer durations can name a business calendar, so that "two days" means two working days with its working hours, holidays, and time zone.
 
 Task and action roles can come from declared `string[]` variables. Their effective permissions are captured when work is created; separately authorized managers can update the saved role policy of waiting work. An optional inbox visibility condition filters work against persisted variables and allowed actor context before database counting and paging.
 
