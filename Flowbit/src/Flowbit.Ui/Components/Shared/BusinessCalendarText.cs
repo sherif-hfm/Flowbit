@@ -62,23 +62,40 @@ internal static class BusinessCalendarText
             ? date
             : null;
 
-    /// <summary>A summary such as <c>Mon–Fri 09:00–17:00 · Sat 10:00–14:00</c>; days with the same hours are grouped.</summary>
+    /// <summary>
+    /// A summary such as <c>Mon–Fri 09:00–17:00 · Sat 10:00–14:00</c> or <c>Sun–Thu 07:30–15:30</c>; days with the same
+    /// hours are grouped, also across the end of the week.
+    /// </summary>
     public static string WeekSummary(BusinessCalendarWeekDto week)
     {
         var days = Days(week).Select(Format).ToArray();
+
+        // Unless every day is the same, begin at the start of Monday's group, which can begin before Monday.
+        var first = 0;
+        if (days.Distinct().Count() > 1)
+        {
+            while (days[(first + days.Length - 1) % days.Length] == days[0])
+            {
+                first = (first + days.Length - 1) % days.Length;
+            }
+        }
+
+        var order = Enumerable.Range(first, days.Length).Select(day => day % days.Length).ToArray();
         var groups = new List<string>();
-        for (var start = 0; start < days.Length;)
+        for (var start = 0; start < order.Length;)
         {
             var end = start;
-            while (end + 1 < days.Length && days[end + 1] == days[start])
+            while (end + 1 < order.Length && days[order[end + 1]] == days[order[start]])
             {
                 end++;
             }
 
-            if (days[start].Length > 0)
+            if (days[order[start]].Length > 0)
             {
-                var label = start == end ? ShortDayNames[start] : ShortDayNames[start] + "–" + ShortDayNames[end];
-                groups.Add(label + " " + days[start].Replace('-', '–'));
+                var label = start == end
+                    ? ShortDayNames[order[start]]
+                    : ShortDayNames[order[start]] + "–" + ShortDayNames[order[end]];
+                groups.Add(label + " " + days[order[start]].Replace('-', '–'));
             }
 
             start = end + 1;

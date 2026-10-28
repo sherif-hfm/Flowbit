@@ -383,6 +383,29 @@ public sealed class BusinessCalendarsPageStateTests
                 Wednesday: [new("08:00", "16:00")])));
     }
 
+    [Theory]
+    [InlineData("09:00-17:00", "09:00-17:00", "09:00-17:00", "09:00-17:00", "09:00-17:00", "", "", "Mon–Fri 09:00–17:00")]
+    [InlineData("07:30-15:30", "07:30-15:30", "07:30-15:30", "07:30-15:30", "", "", "07:30-15:30", "Sun–Thu 07:30–15:30")]
+    [InlineData(
+        "08:00-16:00", "08:00-16:00", "08:00-16:00", "08:00-12:00", "", "", "08:00-16:00",
+        "Sun–Wed 08:00–16:00 · Thu 08:00–12:00")]
+    [InlineData(
+        "10:00-14:00", "09:00-17:00", "09:00-17:00", "09:00-17:00", "09:00-17:00", "10:00-14:00", "10:00-14:00",
+        "Sat–Mon 10:00–14:00 · Tue–Fri 09:00–17:00")]
+    [InlineData(
+        "09:00-17:00", "09:00-17:00", "09:00-17:00", "09:00-17:00", "09:00-17:00", "09:00-17:00", "09:00-17:00",
+        "Mon–Sun 09:00–17:00")]
+    public void DaysWithTheSameHoursAreGroupedAcrossTheEndOfTheWeek(
+        string monday, string tuesday, string wednesday, string thursday, string friday, string saturday, string sunday,
+        string summary)
+    {
+        var days = new[] { monday, tuesday, wednesday, thursday, friday, saturday, sunday }
+            .Select(text => BusinessCalendarText.TryParse(text, out var periods, out _) ? periods : throw new FormatException(text))
+            .ToList();
+
+        Assert.Equal(summary, BusinessCalendarText.WeekSummary(BusinessCalendarText.Week(days)));
+    }
+
     private static BusinessCalendarsPage Page(HttpMessageHandler handler, IJSRuntime? js = null, TokenState? token = null)
     {
         var page = new BusinessCalendarsPage();

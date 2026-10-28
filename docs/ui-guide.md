@@ -397,7 +397,7 @@ Select **Add model** in the form to save. The key field is cleared and the key i
 
 ### Business calendars
 
-**Business calendars** (`/business-calendars`) requires `Settings.RequiredRole`. Each row shows the calendar's name and description, its time zone, a summary of the working week such as **Mon–Fri 09:00–17:00**, the number of holidays, and when it last changed. A timer's `calendar` and a user task's `dueDateCalendar` name a calendar so that their durations count working time; see [working-time durations](node-reference.md#working-time-durations).
+**Business calendars** (`/business-calendars`) requires `Settings.RequiredRole`. Each row shows the calendar's name and description, its time zone, a summary of the working week such as **Mon–Fri 09:00–17:00** or **Sun–Thu 07:30–15:30** (days with the same hours are grouped, also across the end of the week), the number of holidays, and when it last changed. A timer's `calendar` and a user task's `dueDateCalendar` name a calendar so that their durations count working time; see [working-time durations](node-reference.md#working-time-durations).
 
 Choose **Add calendar** and enter:
 
