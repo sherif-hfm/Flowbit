@@ -655,11 +655,12 @@ public sealed class DurableWorkflowProcessorTests(PostgresApiFixture fixture)
     {
         await using (var promote = fixture.CreateDbContext())
         {
+            // Due a minute ago, so the job is due even when the database clock runs behind this machine's.
             var changed = await promote.WorkflowJobs
                 .Where(job => job.Id == jobId)
                 .ExecuteUpdateAsync(setters => setters
                     .SetProperty(job => job.Priority, 1_000_000)
-                    .SetProperty(job => job.DueAt, DateTimeOffset.UtcNow));
+                    .SetProperty(job => job.DueAt, DateTimeOffset.UtcNow.AddMinutes(-1)));
             Assert.Equal(1, changed);
         }
 

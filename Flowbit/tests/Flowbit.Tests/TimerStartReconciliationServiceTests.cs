@@ -176,7 +176,8 @@ public sealed class TimerStartReconciliationServiceTests(PostgresApiFixture fixt
                     && candidate.Kind == WorkflowJobKinds.TimerStart);
                 jobId = job.Id;
                 job.Priority = int.MaxValue;
-                job.DueAt = DateTimeOffset.UtcNow;
+                // Due a minute ago, so the job is due even when the database clock runs behind this machine's.
+                job.DueAt = DateTimeOffset.UtcNow.AddMinutes(-1);
                 job.MaxAttempts = 1;
                 job.RetryDelays = [];
                 await promote.SaveChangesAsync();

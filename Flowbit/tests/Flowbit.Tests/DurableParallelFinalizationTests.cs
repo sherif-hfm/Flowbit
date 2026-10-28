@@ -98,12 +98,13 @@ public sealed class DurableParallelFinalizationTests(PostgresApiFixture fixture)
                                 token => token.AutomaticActivationCount,
                                 9),
                             timeout.Token));
+                // Due a minute ago, so the job is due even when the database clock runs behind this machine's.
                 await inspect.WorkflowJobs
                     .Where(job => job.Id == jobId)
                     .ExecuteUpdateAsync(
                         setters => setters
                             .SetProperty(job => job.Priority, int.MaxValue)
-                            .SetProperty(job => job.DueAt, DateTimeOffset.UtcNow),
+                            .SetProperty(job => job.DueAt, DateTimeOffset.UtcNow.AddMinutes(-1)),
                         timeout.Token);
             }
 

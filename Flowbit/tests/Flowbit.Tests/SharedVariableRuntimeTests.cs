@@ -683,11 +683,12 @@ public sealed class SharedVariableRuntimeTests(PostgresApiFixture fixture)
     {
         await using (var db = fixture.CreateDbContext())
         {
+            // Due a minute ago, so the job is due even when the database clock runs behind this machine's.
             await db.WorkflowJobs
                 .Where(job => job.Id == jobId)
                 .ExecuteUpdateAsync(setters => setters
                     .SetProperty(job => job.Priority, int.MaxValue)
-                    .SetProperty(job => job.DueAt, DateTimeOffset.UtcNow));
+                    .SetProperty(job => job.DueAt, DateTimeOffset.UtcNow.AddMinutes(-1)));
         }
         await using var scope = fixture.Factory.Services.CreateAsyncScope();
         var jobs = scope.ServiceProvider.GetRequiredService<IWorkflowJobRepository>();
