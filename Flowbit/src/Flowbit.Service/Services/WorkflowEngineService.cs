@@ -5367,12 +5367,17 @@ public sealed partial class WorkflowEngineService(
 
                 if (BpmnFlowNodeTypes.IsTimerCatch(currentNode.Type))
                 {
+                    // One activation instant for the catch and its boundaries,
+                    // so scheduling one cannot shift another's duration base.
+                    var timerActivatedAt = timeProvider.GetUtcNow();
                     await EnsureTimerCatchWaitAsync(
                         tokenInstance,
                         token,
                         currentNode,
                         definition,
                         actor,
+                        storedOverlay,
+                        timerActivatedAt,
                         cancellationToken);
                     // A timer catch is a resting activity too. Its own catch
                     // subscription and every attached boundary subscription are
@@ -5384,6 +5389,8 @@ public sealed partial class WorkflowEngineService(
                         currentNode,
                         definition,
                         actor,
+                        storedOverlay,
+                        timerActivatedAt,
                         cancellationToken);
                     continue;
                 }
@@ -5480,6 +5487,8 @@ public sealed partial class WorkflowEngineService(
                         currentNode,
                         definition,
                         actor,
+                        storedOverlay,
+                        timeProvider.GetUtcNow(),
                         cancellationToken);
                     continue;
                 }

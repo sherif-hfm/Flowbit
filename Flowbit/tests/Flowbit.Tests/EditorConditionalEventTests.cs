@@ -1,6 +1,9 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
+using Flowbit.Service.Abstractions;
+using Flowbit.Service.Services;
+using Flowbit.Shared.Models;
 using Jint;
 using Xunit;
 
@@ -147,6 +150,72 @@ public sealed class EditorConditionalEventTests
             "Conditional catch event #2 condition cannot reference shared process variable " +
             "'approvalSignal'; copy the value into an instance variable or use a message event.",
             Validate(candidate));
+    }
+
+    [Fact]
+    public void Validator_RejectsPaddedBracketNamesLikeTheServer()
+    {
+        var candidate = ValidCandidate();
+        var conditional = (JsonObject)((JsonArray)candidate["flowNodes"]!)[1]!["conditional"]!;
+        conditional["condition"] = "'[ approved ]' != '' and [ approved ] == true";
+
+        var server = Assert.Throws<WorkflowDomainException>(() => ValidateOnServer(candidate));
+
+        Assert.Equal(
+            "Conditional catch event #2 condition references '[ approved ]' with spaces inside the brackets; "
+            + "NCalc keeps them in the name, so it never matches a stored variable. Write '[approved]'.",
+            server.Message);
+        Assert.Equal([server.Message], Validate(candidate));
+
+        // Quoted text is data, and a bracketed name without inner spaces is a reference.
+        conditional["condition"] = "[approved] == true and '[ approved ]' != ''";
+        ValidateOnServer(candidate);
+        Assert.Empty(Validate(candidate));
+    }
+
+    [Theory]
+    [InlineData("If(approved, true, false)")]
+    [InlineData("approved == true and abs(1) == 1")]
+    [InlineData("approved == true and In(approved, true)")]
+    public void Validator_RejectsBuiltInsInAnotherCasingLikeTheServer(string condition)
+    {
+        var candidate = ValidCandidate();
+        var conditional = (JsonObject)((JsonArray)candidate["flowNodes"]!)[1]!["conditional"]!;
+        conditional["condition"] = condition;
+
+        var server = Assert.Throws<WorkflowDomainException>(() => ValidateOnServer(candidate));
+
+        Assert.StartsWith(
+            "Conditional catch event #2 condition uses unsupported or non-observable function",
+            server.Message,
+            StringComparison.Ordinal);
+        Assert.Equal([server.Message], Validate(candidate));
+    }
+
+    [Fact]
+    public void Validator_NamesTheBoundaryWhoseConditionMisspellsABuiltIn()
+    {
+        var candidate = ValidConditionalBoundaryCandidate();
+        var conditional = (JsonObject)((JsonArray)candidate["flowNodes"]!)[1]!["conditional"]!;
+        conditional["condition"] = "IF (approved, true, false)";
+
+        Assert.Contains(
+            "Conditional boundary event #2 condition uses unsupported or non-observable function 'IF'; write it as 'if'.",
+            Validate(candidate));
+    }
+
+    [Theory]
+    [InlineData("if(approved, true, false)")]
+    [InlineData("approved IN (true) and Abs(1) == 1")]
+    [InlineData("approved not IN (false) and TRIM('If(') != ''")]
+    public void Validator_AcceptsBuiltInsInTheirSpellingAndTheInOperatorInAnyCasing(string condition)
+    {
+        var candidate = ValidCandidate();
+        var conditional = (JsonObject)((JsonArray)candidate["flowNodes"]!)[1]!["conditional"]!;
+        conditional["condition"] = condition;
+
+        ValidateOnServer(candidate);
+        Assert.Empty(Validate(candidate));
     }
 
     [Fact]
@@ -425,6 +494,31 @@ public sealed class EditorConditionalEventTests
             ["sharedKey"] = sharedKey,
             ["access"] = access
         });
+    }
+
+    private static void ValidateOnServer(JsonObject candidate)
+    {
+        var definition = JsonSerializer.Deserialize<WorkflowModel>(candidate.ToJsonString())!;
+        var validator = new WorkflowDefinitionValidator(
+            new ParseOnlyScriptEvaluator(),
+            new ServiceTaskOptions());
+        validator.ValidateAuthored(definition);
+        WorkflowModelMigrator.Normalize(definition);
+        validator.ValidateNormalized(definition);
+    }
+
+    private sealed class ParseOnlyScriptEvaluator : IScriptEvaluator
+    {
+        public ScriptResult Evaluate(
+            string script,
+            IScriptContext context,
+            CancellationToken cancellationToken) => new(true, null);
+
+        public bool IsValid(string script, out string? error)
+        {
+            error = null;
+            return true;
+        }
     }
 
     private static IReadOnlyList<string> Validate(JsonObject candidate)

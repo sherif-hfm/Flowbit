@@ -2,7 +2,6 @@ using System.Text.Json;
 using Flowbit.Service.Models;
 using Flowbit.Shared.Models;
 using NCalc;
-using NCalc.Helpers;
 
 namespace Flowbit.Service.Services;
 
@@ -23,14 +22,39 @@ public static class SharedVariableValueValidator
             WorkflowVariableTypes.Json
         ],
         StringComparer.Ordinal);
-    private static readonly IReadOnlySet<string> AllowedFunctions = new HashSet<string>(
-        BuiltInFunctionHelper.GetBuiltInFunctionNames()
-            .Concat([
-                "Length", "Len", "IsNullOrEmpty", "IsNullOrWhiteSpace",
-                "Contains", "StartsWith", "EndsWith", "Lower", "Upper",
-                "Trim", "IsMatch"
-            ]),
-        StringComparer.OrdinalIgnoreCase);
+    private const ExpressionOptions ValidationOptions =
+        ExpressionOptions.CaseInsensitiveStringComparer
+        | ExpressionOptions.AllowNullParameter;
+
+    /// <summary>
+    /// Validates the contract of a shared variable being created. Its
+    /// validation must also spell NCalc's built-in functions as evaluation
+    /// resolves them; with If or max it would reject every concrete value.
+    /// Existing contracts keep the casing-tolerant check of
+    /// <see cref="ValidateContract"/>, which every write repeats.
+    /// </summary>
+    public static void ValidateNewContract(
+        string key,
+        string dataType,
+        bool isArray,
+        bool nullable,
+        string? validation)
+    {
+        ValidateContract(key, dataType, isArray, nullable, validation);
+        if (string.IsNullOrWhiteSpace(validation))
+        {
+            return;
+        }
+
+        var misspelled = new Expression(validation, ValidationOptions).GetFunctionNames()
+            .FirstOrDefault(name => !SequenceFlowConditionEvaluator.IsGeneralFunction(name));
+        if (misspelled is not null)
+        {
+            throw new WorkflowDomainException(
+                $"Shared variable '{key.Trim()}' validation uses unsupported function '{misspelled}'"
+                + $"{SequenceFlowConditionEvaluator.FunctionSpellingHint(misspelled)}.");
+        }
+    }
 
     public static void ValidateContract(
         string key,
@@ -69,10 +93,7 @@ public static class SharedVariableValueValidator
 
         if (!string.IsNullOrWhiteSpace(validation))
         {
-            var expression = new Expression(
-                validation,
-                ExpressionOptions.CaseInsensitiveStringComparer
-                | ExpressionOptions.AllowNullParameter);
+            var expression = new Expression(validation, ValidationOptions);
             if (expression.HasErrors())
             {
                 throw new WorkflowDomainException(
@@ -86,8 +107,12 @@ public static class SharedVariableValueValidator
                 throw new WorkflowDomainException(
                     $"Shared variable '{trimmed}' validation may reference only 'value'; found '{invalidParameter}'.");
             }
+            // Casing-tolerant, so contracts created earlier keep accepting
+            // writes; ValidateNewContract requires the exact spelling.
             var invalidFunction = expression.GetFunctionNames()
-                .FirstOrDefault(name => !AllowedFunctions.Contains(name));
+                .FirstOrDefault(name => !SequenceFlowConditionEvaluator.IsGeneralFunction(
+                    name,
+                    ignoreBuiltInCasing: true));
             if (invalidFunction is not null)
             {
                 throw new WorkflowDomainException(

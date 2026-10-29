@@ -1,0 +1,56 @@
+{
+  "id": "acceptance-expression-timer-incident",
+  "name": "Acceptance expression timer incident",
+  "initialEventId": 1,
+  "variables": [
+    { "id": 1, "name": "recorded", "dataType": "boolean", "isArray": false, "required": false, "defaultValue": false, "validation": null }
+  ],
+  "lanes": [],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Intake Received",
+      "type": "startEvent",
+      "x": 60,
+      "y": 190,
+      "roles": [],
+      "variables": [
+        { "id": 101, "name": "slaDuration", "dataType": "string", "isArray": false, "required": false, "defaultValue": null, "validation": null }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "Record Intake",
+      "type": "scriptTask",
+      "x": 220,
+      "y": 178,
+      "roles": [],
+      "variables": [],
+      "asyncBefore": true,
+      "job": { "failureHandling": "retryFirst", "retryDelays": [ "PT2S" ] },
+      "scriptFormat": "ncalc",
+      "assignments": [ { "variable": "recorded", "expression": "true" } ]
+    },
+    {
+      "id": 3,
+      "name": "Intake SLA",
+      "type": "timerBoundaryEvent",
+      "x": 300,
+      "y": 252,
+      "roles": [],
+      "variables": [],
+      "attachedToRef": 2,
+      "cancelActivity": true,
+      "timer": { "timeDate": null, "timeDuration": "slaDuration", "timeCycle": null }
+    },
+    { "id": 4, "name": "Review Intake", "type": "userTask", "x": 480, "y": 178, "roles": [], "variables": [], "requiresClaim": false, "claimMode": "fresh" },
+    { "id": 5, "name": "Intake Reviewed", "type": "endEvent", "x": 740, "y": 190, "roles": [], "variables": [] },
+    { "id": 6, "name": "SLA Missed", "type": "endEvent", "x": 480, "y": 360, "roles": [], "variables": [] }
+  ],
+  "sequenceFlows": [
+    { "id": 101, "name": "", "sourceRef": 1, "targetRef": 2, "roles": [], "variables": [] },
+    { "id": 201, "name": "", "sourceRef": 2, "targetRef": 4, "roles": [], "variables": [] },
+    { "id": 301, "name": "", "sourceRef": 3, "targetRef": 6, "roles": [], "variables": [] },
+    { "id": 401, "name": "Reviewed", "sourceRef": 4, "targetRef": 5, "roles": [], "variables": [] }
+  ]
+}

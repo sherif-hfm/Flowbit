@@ -284,6 +284,94 @@ public sealed class HostedEditorSmokeTests(BrowserStackFixture stack)
         });
     }
 
+    [Theory]
+    [InlineData(1440, 900)]
+    [InlineData(1024, 768)]
+    public async Task H11_ExpressionTimerServerRejectionKeepsDraftThenSaves(int width, int height)
+    {
+        await using var scenario = await stack.CreateScenario($"h11-hosted-expression-timer-{width}", width, height);
+        await scenario.RunAsync("hosted-expression-timer", async () =>
+        {
+            const string typo = "if(urgnet, 'PT4H', 'P2D')";
+            const string corrected = "if(urgent, 'PT4H', 'P2D')";
+            var json = JsonNode.Parse(await File.ReadAllTextAsync(
+                EditorInteractions.FixturePath("editor-business-calendar.json")))!.AsObject();
+            json["id"] = "hosted-expression-timer-" + Guid.NewGuid().ToString("N");
+            json["flowNodes"]![0]!["variables"] = new JsonArray(new JsonObject
+            {
+                ["id"] = 101,
+                ["name"] = "urgent",
+                ["dataType"] = "boolean",
+                ["isArray"] = false,
+                ["required"] = true,
+            });
+            var model = json.Deserialize<WorkflowModel>(new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+            // Unpublished: this Worker-free stack refuses to publish timer definitions.
+            var workflow = await stack.SetupClient.CreateUnpublishedAsync(model);
+            await RuntimeSupport.ApplyIdentityAsync(scenario, "editor-admin", ["admin"]);
+            var page = await scenario.OpenUiAsync($"workflows/{workflow.Id}/edit");
+            await ReadyAsync(page);
+            var editor = page.Locator("#workflow-editor-root");
+            await EditorInteractions.PinInspectorOpenAsync(page);
+            await EditorInteractions.SelectNodeAsync(page, 3);
+            await InspectorSelect(editor, "Value").SelectOptionAsync("expression");
+            var expression = editor.Locator("#timer-expression-3");
+
+            // The editor cannot check variable names; it says so, and the server catches the typo.
+            await expression.FillAsync(typo);
+            await Assertions.Expect(expression).ToHaveAttributeAsync("aria-invalid", "false");
+            await Assertions.Expect(editor.Locator("#inspector")).ToContainTextAsync(
+                "Saving checks the expression's syntax and the variables it names");
+            await page.Locator("#save-workflow-version").ClickAsync();
+            await Assertions.Expect(page.Locator("#editor-error")).ToContainTextAsync(
+                "Timer boundary event #3 timer.timeDuration references undeclared stored variable 'urgnet'.");
+            await Assertions.Expect(expression).ToHaveValueAsync(typo);
+            await Assertions.Expect(page.Locator("#editor-status")).ToHaveTextAsync("Unsaved changes");
+            await page.ScreenshotAsync(new PageScreenshotOptions
+            {
+                Path = Path.Combine(scenario.ArtifactDirectory, "hosted-expression-rejected.png"),
+            });
+
+            await expression.FillAsync(corrected);
+            await page.Locator("#save-workflow-version").ClickAsync();
+            await Assertions.Expect(page.Locator("#editor-notice")).ToContainTextAsync("Saved unpublished version 2");
+            await Assertions.Expect(page.Locator("#editor-status")).ToHaveTextAsync("Saved");
+            var savedId = long.Parse(Regex.Match(page.Url, @"/workflows/(\d+)/edit").Groups[1].Value);
+            var saved = await stack.SetupClient.GetWorkflowAsync(savedId);
+            Assert.Equal(corrected, saved.Definition.FlowNodes.Single(node => node.Id == 3).Timer!.TimeDuration);
+
+            // The saved version reopens in Expression mode.
+            await page.ReloadAsync();
+            await ReadyAsync(page);
+            await EditorInteractions.PinInspectorOpenAsync(page);
+            await EditorInteractions.SelectNodeAsync(page, 3);
+            await Assertions.Expect(InspectorSelect(editor, "Value")).ToHaveValueAsync("expression");
+            await Assertions.Expect(expression).ToHaveValueAsync(corrected);
+
+            // At phone width the field, its help, and the page stay within the viewport.
+            await page.SetViewportSizeAsync(390, 844);
+            await page.WaitForFunctionAsync("document.querySelector('#primary-navigation').getBoundingClientRect().right <= 0");
+            await expression.ScrollIntoViewIfNeededAsync();
+            var box = await expression.BoundingBoxAsync();
+            Assert.NotNull(box);
+            Assert.InRange(box!.X, 0, 390);
+            Assert.InRange(box.X + box.Width, 0, 390);
+            await Assertions.Expect(editor.Locator("#timer-expression-3-help")).ToBeVisibleAsync();
+            Assert.True(await page.EvaluateAsync<bool>("document.documentElement.scrollWidth <= window.innerWidth + 2"));
+            await page.ScreenshotAsync(new PageScreenshotOptions
+            {
+                Path = Path.Combine(scenario.ArtifactDirectory, "hosted-expression-narrow.png"),
+            });
+            await page.SetViewportSizeAsync(width, height);
+        });
+    }
+
+    private static ILocator InspectorSelect(ILocator editor, string label) =>
+        editor.Locator("#inspector .field").Filter(new LocatorFilterOptions
+        {
+            Has = editor.Page.Locator($"xpath=./label[normalize-space(.)='{label}']"),
+        }).First.Locator("select");
+
     private static Task ReadyAsync(IPage page) => page.WaitForSelectorAsync("[data-editor-ready='true']");
 
     private static async Task ImportAsync(IPage page, string path)

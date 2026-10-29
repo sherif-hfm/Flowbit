@@ -953,6 +953,11 @@ public static class WorkflowVersionCompatibilityEvaluator
             : true;
 
         // A duration's calendar belongs to its schedule, like the expression.
+        // An NCalc schedule compares as authored text, wrapper included, so
+        // slaDuration and ${slaDuration} differ. Conditional events strip their
+        // wrapper instead; the difference is deliberate, because an open timer
+        // keeps its saved due time and only the authored contract can be
+        // compared.
         var calendar = kind == TimerScheduleKinds.Duration && !string.IsNullOrWhiteSpace(targetNode.Timer?.Calendar)
             ? targetNode.Timer.Calendar.Trim()
             : null;

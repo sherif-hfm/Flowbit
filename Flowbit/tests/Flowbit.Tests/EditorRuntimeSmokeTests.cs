@@ -3237,6 +3237,168 @@ public sealed class EditorRuntimeSmokeTests
     }
 
     [Fact]
+    public void TimerExpression_RenderSwitchModesValidateAndExportWithoutRewritingTheText()
+    {
+        var engine = CreateEditorEngine();
+        using var result = JsonDocument.Parse(engine.Evaluate(
+            """
+            (() => {
+              loadFromObject({
+                id: 'timer-expression-editor',
+                name: 'Timer expression editor',
+                variables: [
+                  { id: 1, name: 'slaDuration', dataType: 'string', defaultValue: 'P2D' },
+                  { id: 2, name: 'approvalAmount', scope: 'shared', sharedKey: 'examples.approval.amount',
+                    access: 'read', dataType: 'number', nullable: false }
+                ],
+                lanes: [],
+                flowNodes: [
+                  { id: 1, name: 'Start', type: 'startEvent', variables: [
+                    { id: 3, name: 'contractEnd', dataType: 'datetime', required: true },
+                    { id: 4, name: 'urgent', dataType: 'boolean', required: true }
+                  ] },
+                  { id: 2, name: 'Review', type: 'userTask' },
+                  { id: 3, name: 'Wait until contract end', type: 'intermediateTimerCatchEvent',
+                    timer: { timeDate: '  ${contractEnd}  ' } },
+                  { id: 4, name: 'Review deadline', type: 'timerBoundaryEvent', attachedToRef: 2, cancelActivity: true,
+                    timer: { timeDuration: "if(urgent, 'PT4H', 'P2D')", calendar: 'uk-office' } },
+                  { id: 5, name: 'Done', type: 'endEvent' },
+                  { id: 6, name: 'Escalated', type: 'endEvent' }
+                ],
+                sequenceFlows: [
+                  { id: 101, sourceRef: 1, targetRef: 2 },
+                  { id: 201, name: 'Approve', sourceRef: 2, targetRef: 3 },
+                  { id: 301, sourceRef: 3, targetRef: 5 },
+                  { id: 401, sourceRef: 4, targetRef: 6 }
+                ]
+              });
+              const fieldFor = label => inspector.children.find(child =>
+                String(child.className) === 'field' &&
+                child.children.some(item => item.tagName === 'LABEL' && item.textContent === label));
+              const child = (field, tag) => field && field.children.find(item => item.tagName === tag);
+              // selectField writes its label as markup, which the test DOM keeps as text.
+              const selectFor = label => child(inspector.children.find(item =>
+                String(item.className) === 'field' && item.innerHTML === '<label>' + label + '</label>'), 'SELECT');
+              // The test DOM does not derive a select value from its markup.
+              const chosen = select => /value="(\w+)" selected/.exec(select.innerHTML)[1];
+              const show = nodeId => {
+                selected = { kind: 'node', nodeId };
+                selectedNodeIds.clear();
+                selectedNodeIds.add(nodeId);
+                inspector.replaceChildren();
+                renderInspector();
+              };
+              const boundary = getNode(4);
+              const timerBefore = JSON.stringify(boundary.timer);
+              show(4);
+              const loaded = {
+                schedule: !!selectFor('Schedule'),
+                legacyLabel: !!selectFor('Timer expression'),
+                mode: chosen(selectFor('Value')),
+                value: child(fieldFor('Duration expression'), 'INPUT').value,
+                unchanged: JSON.stringify(boundary.timer) === timerBefore
+              };
+
+              const input = child(fieldFor('Duration expression'), 'INPUT');
+              const status = child(fieldFor('Duration expression'), 'P');
+              input.value = 'approvalAmount';
+              input.oninput();
+              const shared = {
+                status: status.textContent,
+                aria: input.getAttribute('aria-invalid'),
+                errors: prepareWorkflowExport().errors
+              };
+              input.value = 'P${days}D';
+              input.oninput();
+              const template = status.textContent;
+              input.value = "if(urgent, 'PT4H', 'P2D')";
+              input.oninput();
+
+              // Fixed controls keep the authored expression and calendar.
+              const valueSelect = selectFor('Value');
+              valueSelect.value = 'fixed';
+              valueSelect.onchange();
+              show(4);
+              const fixed = {
+                timer: JSON.stringify(boundary.timer),
+                expressionField: !!fieldFor('Duration expression'),
+                calendar: !!fieldFor('Business calendar')
+              };
+              selectFor('Value').value = 'expression';
+              selectFor('Value').onchange();
+              show(4);
+              const back = child(fieldFor('Duration expression'), 'INPUT').value;
+
+              show(3);
+              const date = {
+                mode: chosen(selectFor('Value')),
+                value: child(fieldFor('Date/time expression'), 'INPUT').value
+              };
+              const exported = JSON.parse(prepareWorkflowExport().json);
+              const errors = prepareWorkflowExport().errors;
+
+              const wait = getNode(3);
+              wait.type = 'timerStartEvent';
+              applyTypeInvariants(wait);
+              const startErrors = prepareWorkflowExport().errors;
+
+              return JSON.stringify({
+                loaded,
+                shared,
+                template,
+                fixed,
+                back,
+                date,
+                exportedDate: exported.flowNodes.find(node => node.id === 3).timer.timeDate,
+                exportedDuration: exported.flowNodes.find(node => node.id === 4).timer,
+                errors,
+                startTimer: wait.timer.timeDate,
+                startErrors
+              });
+            })()
+            """).AsString());
+
+        var root = result.RootElement;
+        var loaded = root.GetProperty("loaded");
+        Assert.True(loaded.GetProperty("schedule").GetBoolean());
+        Assert.False(loaded.GetProperty("legacyLabel").GetBoolean());
+        Assert.Equal("expression", loaded.GetProperty("mode").GetString());
+        Assert.Equal("if(urgent, 'PT4H', 'P2D')", loaded.GetProperty("value").GetString());
+        Assert.True(loaded.GetProperty("unchanged").GetBoolean());
+
+        var shared = root.GetProperty("shared");
+        Assert.Equal(
+            "timer.timeDuration references shared variable 'approvalAmount'; copy its value into an instance variable before the timer activates.",
+            shared.GetProperty("status").GetString());
+        Assert.Equal("true", shared.GetProperty("aria").GetString());
+        Assert.Equal(
+            ["Timer boundary event #4 timer.timeDuration references shared variable 'approvalAmount'; copy its value into an instance variable before the timer activates."],
+            shared.GetProperty("errors").EnumerateArray().Select(error => error.GetString()));
+        Assert.StartsWith("timeDuration 'P${days}D' inserts a value into text", root.GetProperty("template").GetString(), StringComparison.Ordinal);
+
+        var fixedMode = root.GetProperty("fixed");
+        Assert.Equal(
+            "{\"timeDate\":null,\"timeDuration\":\"if(urgent, 'PT4H', 'P2D')\",\"timeCycle\":null,\"calendar\":\"uk-office\"}",
+            fixedMode.GetProperty("timer").GetString());
+        Assert.False(fixedMode.GetProperty("expressionField").GetBoolean());
+        Assert.True(fixedMode.GetProperty("calendar").GetBoolean());
+        Assert.Equal("if(urgent, 'PT4H', 'P2D')", root.GetProperty("back").GetString());
+
+        Assert.Equal("expression", root.GetProperty("date").GetProperty("mode").GetString());
+        Assert.Equal("${contractEnd}", root.GetProperty("date").GetProperty("value").GetString());
+        Assert.Equal("${contractEnd}", root.GetProperty("exportedDate").GetString());
+        var duration = root.GetProperty("exportedDuration");
+        Assert.Equal("if(urgent, 'PT4H', 'P2D')", duration.GetProperty("timeDuration").GetString());
+        Assert.Equal("uk-office", duration.GetProperty("calendar").GetString());
+        Assert.Empty(root.GetProperty("errors").EnumerateArray());
+
+        Assert.Equal("${contractEnd}", root.GetProperty("startTimer").GetString());
+        Assert.Contains(
+            "Timer event #3 timeDate must be a fixed value on a timer start event; expressions are supported only on timer catch and boundary events.",
+            root.GetProperty("startErrors").EnumerateArray().Select(error => error.GetString()));
+    }
+
+    [Fact]
     public void TimerCalendar_LoadEditValidateAndExportOnlyWhenNamed()
     {
         var engine = CreateEditorEngine();

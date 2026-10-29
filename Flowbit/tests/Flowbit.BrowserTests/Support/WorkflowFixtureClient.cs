@@ -141,6 +141,14 @@ public sealed class WorkflowFixtureClient : IAsyncDisposable
         SendAsync<WorkflowSummaryDto>(HttpMethod.Post, "/api/workflows/",
             new CreateWorkflowRequest(definition, true));
 
+    /// <summary>
+    /// Saves an explicit model as an unpublished version. The Worker-free smoke
+    /// stack refuses to publish timer definitions, but editing them needs no Worker.
+    /// </summary>
+    public Task<WorkflowSummaryDto> CreateUnpublishedAsync(WorkflowModel definition) =>
+        SendAsync<WorkflowSummaryDto>(HttpMethod.Post, "/api/workflows/",
+            new CreateWorkflowRequest(definition, false));
+
     public Task<SharedVariableMetadataDto> CreateSharedVariableAsync(CreateSharedVariableRequest request) =>
         SendAsync<SharedVariableMetadataDto>(HttpMethod.Post, "/api/shared-variables", request);
 

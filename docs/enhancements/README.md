@@ -42,7 +42,7 @@ The order favors improvements people feel in everyday work over new runtime capa
 
 Deadline and timer follow-ups, in this order:
 
-1. [EVENT-01 Expression timers](event-01-expression-timers.md)
+1. [EVENT-01 Expression timers](event-01-expression-timers.md). Done.
 2. [UI-12 Task escalation](ui-12-task-escalation.md)
 3. [EVENT-08 Business calendars](event-08-business-calendars.md) (done) and [EVENT-09 Cron schedules for timer starts](event-09-cron-schedules.md).
 
@@ -67,7 +67,7 @@ Other items are not ranked yet.
 
 | ID | Item | Effort | Depends on | Status |
 | --- | --- | --- | --- | --- |
-| [EVENT-01](event-01-expression-timers.md) | Expression timers | M | None | Not started |
+| [EVENT-01](event-01-expression-timers.md) | Expression timers | M | None | Done |
 | [EVENT-02](event-02-message-correlation-by-business-key.md) | Message correlation by business key | M | None | Not started |
 | [EVENT-03](event-03-event-based-gateway.md) | Event-based gateway | M | None | Not started |
 | [EVENT-04](event-04-signal-events.md) | Signal events | M–L | None | Not started |

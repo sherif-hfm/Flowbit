@@ -299,12 +299,17 @@ public sealed partial class WorkflowEngineService
         }
     }
 
+    // storedValues are the activation's persisted instance variables, including
+    // writes accepted earlier in this transaction; activatedAt is shared by
+    // every timer the activation schedules.
     private async Task EnsureTimerCatchWaitAsync(
         WorkflowInstanceRecord instance,
         ExecutionTokenRecord token,
         FlowNodeModel node,
         WorkflowModel definition,
         ActorContext actor,
+        IReadOnlyDictionary<string, JsonElement> storedValues,
+        DateTimeOffset activatedAt,
         CancellationToken cancellationToken)
     {
         if (token.WaitState == ExecutionTokenWaitStates.TimerCatch
@@ -318,7 +323,15 @@ public sealed partial class WorkflowEngineService
         var timer = node.Timer
             ?? throw new WorkflowDomainException(
                 $"Timer catch event #{node.Id} has no timer configuration.");
-        var schedule = await ResolveTimerScheduleAsync(node, timer, timeProvider.GetUtcNow(), cancellationToken);
+        var schedule = await ResolveTimerScheduleAsync(
+            instance,
+            token,
+            node,
+            timer,
+            definition,
+            storedValues,
+            activatedAt,
+            cancellationToken);
         var subscription = await timerSubscriptions.CreateAsync(
             BuildTimerSubscription(
                 instance,
@@ -357,6 +370,8 @@ public sealed partial class WorkflowEngineService
         FlowNodeModel host,
         WorkflowModel definition,
         ActorContext actor,
+        IReadOnlyDictionary<string, JsonElement> storedValues,
+        DateTimeOffset activatedAt,
         CancellationToken cancellationToken)
     {
         var boundaries = definition.FlowNodes
@@ -383,7 +398,15 @@ public sealed partial class WorkflowEngineService
             var timer = boundary.Timer
                 ?? throw new WorkflowDomainException(
                     $"Timer boundary event #{boundary.Id} has no timer configuration.");
-            var schedule = await ResolveTimerScheduleAsync(boundary, timer, timeProvider.GetUtcNow(), cancellationToken);
+            var schedule = await ResolveTimerScheduleAsync(
+                instance,
+                token,
+                boundary,
+                timer,
+                definition,
+                storedValues,
+                activatedAt,
+                cancellationToken);
             var subscription = await timerSubscriptions.CreateAsync(
                 BuildTimerSubscription(
                     instance,
@@ -407,13 +430,37 @@ public sealed partial class WorkflowEngineService
     }
 
     // A duration that names a business calendar counts that calendar's working time. A calendar that cannot be used
-    // fails the activation, like other timer validation.
+    // fails the activation, like other timer validation. An expression schedule is evaluated here, once for each
+    // activation, and an unusable result fails the activation without repeating values from the instance.
     private async Task<WorkflowTimerSchedule> ResolveTimerScheduleAsync(
+        WorkflowInstanceRecord instance,
+        ExecutionTokenRecord token,
         FlowNodeModel timerNode,
         TimerDefinitionModel timer,
+        WorkflowModel definition,
+        IReadOnlyDictionary<string, JsonElement> storedValues,
         DateTimeOffset activatedAt,
         CancellationToken cancellationToken)
     {
+        if (TimerExpressionDefinitionAnalyzer.TryGetExpression(timerNode, out _, out _))
+        {
+            var entry = TimerExpressionPlanCache.Get(instance.WorkflowDefinitionId, definition)
+                .EntriesByNodeId[timerNode.Id];
+            var resolution = await ResolveTimerExpressionAsync(entry, storedValues, activatedAt, cancellationToken);
+            if (resolution.Problem is { } problem)
+            {
+                logger.LogWarning(
+                    "{Timer} could not be scheduled for instance {InstanceId}, token {TokenId}: {Problem}.",
+                    entry.Description,
+                    instance.Id,
+                    token.Id,
+                    problem);
+                throw new WorkflowDomainException($"{entry.Description} cannot be scheduled: {problem}.");
+            }
+
+            return new WorkflowTimerSchedule(resolution.DueAt, null, 1);
+        }
+
         if (string.IsNullOrWhiteSpace(timer.Calendar) || string.IsNullOrWhiteSpace(timer.TimeDuration))
         {
             return WorkflowTimerSchedule.Resolve(timer, activatedAt);
@@ -430,6 +477,62 @@ public sealed partial class WorkflowEngineService
             ? throw new WorkflowDomainException($"Timer event #{timerNode.Id} cannot be scheduled: {lookup.Problem}.")
             : WorkflowTimerSchedule.Resolve(timer, activatedAt, lookup.Calendar);
     }
+
+    // Evaluates an expression schedule and counts its result. Every failure
+    // becomes a problem that names no value; database and lookup failures still
+    // propagate as operational errors.
+    private async Task<TimerExpressionResolution> ResolveTimerExpressionAsync(
+        TimerExpressionPlanEntry entry,
+        IReadOnlyDictionary<string, JsonElement> storedValues,
+        DateTimeOffset activatedAt,
+        CancellationToken cancellationToken)
+    {
+        if (!TimerExpressionEvaluator.TryEvaluate(entry, storedValues, out var value, out var problem))
+        {
+            return new TimerExpressionResolution(default, problem);
+        }
+
+        BusinessCalendar? calendar = null;
+        if (entry.Calendar is { } calendarName)
+        {
+            if (businessCalendars is null)
+            {
+                return new TimerExpressionResolution(
+                    default,
+                    $"business calendar '{calendarName}' is named, but business calendars are not configured");
+            }
+
+            var lookup = await businessCalendars.GetAsync(calendarName, cancellationToken);
+            if (lookup.Calendar is null)
+            {
+                return new TimerExpressionResolution(default, lookup.Problem);
+            }
+
+            calendar = lookup.Calendar;
+        }
+
+        try
+        {
+            return WorkflowTimerSchedule.TryResolveExpressionResult(
+                entry.Property,
+                value,
+                activatedAt,
+                entry.Calendar,
+                calendar,
+                out var dueAt,
+                out problem)
+                ? new TimerExpressionResolution(dueAt, null)
+                : new TimerExpressionResolution(default, problem);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            return new TimerExpressionResolution(
+                default,
+                $"its due time could not be calculated ({exception.GetType().Name})");
+        }
+    }
+
+    private readonly record struct TimerExpressionResolution(DateTimeOffset DueAt, string? Problem);
 
     private async Task CancelAttachedBoundaryWaitsAsync(
         long instanceId,
@@ -1067,6 +1170,16 @@ public sealed partial class WorkflowEngineService
                         "The async-before node activation is no longer available.");
                 }
                 var stagedToken = activated ?? token;
+                // Boundary expressions read the instance variables as the host
+                // activates. Shared values are merged only afterwards, because
+                // the merge can lock shared rows and timers never read them.
+                var versions = await runtime.LoadLatestVariableVersionsAsync(
+                    instance.Id,
+                    cancellationToken);
+                var instanceStored = versions.ToDictionary(
+                    item => item.Name,
+                    item => item.Value,
+                    StringComparer.OrdinalIgnoreCase);
                 if (activated is not null)
                 {
                     await EnsureAttachedTimerBoundaryWaitsAsync(
@@ -1075,16 +1188,11 @@ public sealed partial class WorkflowEngineService
                         node,
                         workflow.Definition,
                         actor,
+                        instanceStored,
+                        timeProvider.GetUtcNow(),
                         cancellationToken);
                 }
 
-                var versions = await runtime.LoadLatestVariableVersionsAsync(
-                    instance.Id,
-                    cancellationToken);
-                var instanceStored = versions.ToDictionary(
-                    item => item.Name,
-                    item => item.Value,
-                    StringComparer.OrdinalIgnoreCase);
                 var stored = workflowVariables is null
                     ? instanceStored
                     : await workflowVariables.MergeEffectiveValuesAsync(
@@ -1329,6 +1437,15 @@ public sealed partial class WorkflowEngineService
                         "The async-before script activation is no longer available.");
                 }
                 var stagedToken = activated ?? token;
+                // As for service tasks: instance variables first, shared values
+                // after the boundaries exist.
+                var versions = await runtime.LoadLatestVariableVersionsAsync(
+                    instance.Id,
+                    cancellationToken);
+                var instanceStored = versions.ToDictionary(
+                    item => item.Name,
+                    item => item.Value,
+                    StringComparer.OrdinalIgnoreCase);
                 if (activated is not null)
                 {
                     await EnsureAttachedTimerBoundaryWaitsAsync(
@@ -1337,16 +1454,11 @@ public sealed partial class WorkflowEngineService
                         node,
                         definition,
                         actor,
+                        instanceStored,
+                        timeProvider.GetUtcNow(),
                         cancellationToken);
                 }
 
-                var versions = await runtime.LoadLatestVariableVersionsAsync(
-                    instance.Id,
-                    cancellationToken);
-                var instanceStored = versions.ToDictionary(
-                    item => item.Name,
-                    item => item.Value,
-                    StringComparer.OrdinalIgnoreCase);
                 var stored = workflowVariables is null
                     ? instanceStored
                     : await workflowVariables.MergeEffectiveValuesAsync(

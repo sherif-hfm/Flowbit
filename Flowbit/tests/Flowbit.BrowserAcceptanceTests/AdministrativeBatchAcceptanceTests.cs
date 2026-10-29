@@ -86,8 +86,12 @@ public sealed class AdministrativeBatchAcceptanceTests(AcceptanceFixture fixture
             await session.OpenBatchAsync(batch.Id);
             var link = session.Current.Locator("tbody tr a").First;
             var href = await link.GetAttributeAsync("href");
+            var linkText = await link.InnerTextAsync();
             await link.ClickAsync();
             await Assertions.Expect(session.Page).ToHaveURLAsync(new Regex(Regex.Escape(href!) + "$"));
+            // The URL changes before the instance page renders; going back sooner
+            // left the router on the instance page.
+            await Assertions.Expect(session.Page.Locator("h1")).ToHaveTextAsync(linkText, new() { Timeout = 30_000 });
             await session.Page.GoBackAsync();
             await session.StatusAsync("Completed");
             await Assertions.Expect(session.Page).ToHaveURLAsync(new Regex($"administrative-actions\\?batchId={batch.Id}$"));
@@ -106,13 +110,18 @@ public sealed class AdministrativeBatchAcceptanceTests(AcceptanceFixture fixture
             await Stack.StartWorkerAsync();
             foreach (var id in batchIds) await session.WaitBatchAsync(id, "ready");
             await Stack.StopWorkerAsync();
-            await session.OpenBatchAsync(batchIds[^1]);
+            // The Worker prepares batches in no fixed order, so start from the most recently
+            // updated one: it is on page 1, and the batch opened from page 2 differs from it.
+            await session.OpenBatchAsync(await session.NewestBatchIdAsync("ready"));
             await session.Page.GetByLabel("Filter batches by status").SelectOptionAsync("ready");
             await Assertions.Expect(session.History.Locator("tbody tr")).ToHaveCountAsync(25);
+            var firstRow = session.History.Locator("tbody tr").First;
+            var pageOneFirstId = await firstRow.Locator("td").First.InnerTextAsync();
             await session.History.GetByRole(AriaRole.Button, new() { Name = "Next", Exact = true }).ClickAsync();
             await Assertions.Expect(session.History).ToContainTextAsync("Page 2 of");
+            // The pager changes before page 2's rows arrive; read the row once it has.
+            await Assertions.Expect(firstRow.Locator("td").First).Not.ToHaveTextAsync(pageOneFirstId, new() { Timeout = 30_000 });
             await Assertions.Expect(session.Current).ToContainTextAsync("Page 1 of 1");
-            var firstRow = session.History.Locator("tbody tr").First;
             var openedId = long.Parse((await firstRow.Locator("td").First.InnerTextAsync()).TrimStart('#'));
             await firstRow.GetByRole(AriaRole.Button, new() { Name = "Open", Exact = true }).PressAsync("Enter");
             await Assertions.Expect(session.Current.Locator(".page-eyebrow")).ToHaveTextAsync($"Batch #{openedId}");
@@ -502,11 +511,18 @@ public sealed class AdministrativeBatchAcceptanceTests(AcceptanceFixture fixture
             return (await response.Content.ReadFromJsonAsync<AdministrativeActionBatchDetailDto>(ScenarioCancellation.Token))!;
         }
 
+        internal async Task<long> NewestBatchIdAsync(string status)
+        {
+            var page = await http.GetFromJsonAsync<PagedResult<AdministrativeActionBatchSummaryDto>>(
+                $"/api/administrative-action-batches?page=1&pageSize=1&status={status}", ScenarioCancellation.Token);
+            return Assert.Single(page!.Items).Id;
+        }
         internal async Task OpenPageAsync() => await scenario.OpenUiAsync("administrative-actions");
         internal async Task OpenBatchAsync(long id)
         {
             await scenario.OpenUiAsync($"administrative-actions?batchId={id}");
-            await Assertions.Expect(Current.Locator(".page-eyebrow")).ToHaveTextAsync($"Batch #{id}");
+            // The batch section renders after several page loads; allow for a busy machine.
+            await Assertions.Expect(Current.Locator(".page-eyebrow")).ToHaveTextAsync($"Batch #{id}", new() { Timeout = 30_000 });
         }
         internal async Task SelectWorkflowAsync(WorkflowSummaryDto workflow)
         {
@@ -536,15 +552,49 @@ public sealed class AdministrativeBatchAcceptanceTests(AcceptanceFixture fixture
                     animation.effect?.getComputedTiming().iterations === Infinity)
                 """, null, new() { Timeout = 5_000 });
             Assert.True(await Page.EvaluateAsync<bool>("() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 2"));
-            await Page.Locator("h1").HoverAsync();
-            await Page.Mouse.WheelAsync(0, -await Page.EvaluateAsync<int>("() => document.documentElement.scrollHeight"));
-            await Page.WaitForFunctionAsync("() => window.scrollY <= 1");
+            await ScrollToTopAsync();
             await Page.ScreenshotAsync(new() { Path = Path.Combine(scenario.ArtifactDirectory, name + ".png"), FullPage = true });
             // A whole tall section may be centered with its status out of view.
             var heading = target.Locator(".section-heading").First;
             await (await heading.CountAsync() > 0 ? heading : target).ScrollIntoViewIfNeededAsync();
+            await SettledScrollYAsync();
             await Page.ScreenshotAsync(new() { Path = Path.Combine(scenario.ArtifactDirectory, name + "-viewport.png") });
         }
+        // Bootstrap's reboot gives the page `scroll-behavior: smooth`, so focus
+        // changes, Blazor's navigation reset and Playwright's own actionability
+        // scrolling all animate. Hovering the heading could start such a scroll
+        // (it can sit under the sticky top bar), and on a busy machine that
+        // animation outlived a single wheel input and left the page at the
+        // heading. Point at the top bar's padding, which starts no scroll, and
+        // wheel until the page rests at the top.
+        private async Task ScrollToTopAsync()
+        {
+            var bar = await Page.Locator("header.topbar").BoundingBoxAsync()
+                ?? throw new InvalidOperationException("The app top bar is not rendered.");
+            await Page.Mouse.MoveAsync(bar.X + bar.Width * 0.6f, bar.Y + 4);
+            for (var wheel = 0; ; wheel++)
+            {
+                var y = await SettledScrollYAsync();
+                if (y <= 1) return;
+                if (wheel == 5) throw new TimeoutException($"The page stayed {y}px from the top after five wheel inputs.");
+                await Page.Mouse.WheelAsync(0, -(float)(y + Page.ViewportSize!.Height));
+            }
+        }
+        // Resolves once the page's scroll position is unchanged for ten animation
+        // frames, so a smooth scroll in progress finishes before it is read.
+        private Task<double> SettledScrollYAsync() => Page.EvaluateAsync<double>("""
+            () => new Promise(resolve => {
+              const deadline = performance.now() + 5000;
+              let last = NaN, same = 0;
+              const tick = () => {
+                same = scrollY === last ? same + 1 : 0;
+                last = scrollY;
+                if (same >= 10 || performance.now() > deadline) resolve(scrollY);
+                else requestAnimationFrame(tick);
+              };
+              requestAnimationFrame(tick);
+            })
+            """);
         internal async Task ScreenshotsAsync(string name, ILocator? target = null)
         {
             foreach (var (width, height) in new[] { (1440, 900), (1024, 768), (390, 844) })

@@ -1,0 +1,106 @@
+{
+  "id": "example-contract-end-wait",
+  "name": "Example 07 - Contract End Wait",
+  "initialEventId": 1,
+  "variables": [],
+  "lanes": [],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Contract Signed",
+      "externalId": "START_CONTRACT_END_WAIT_EXAMPLE",
+      "type": "startEvent",
+      "laneId": null,
+      "x": 60,
+      "y": 190,
+      "roles": [],
+      "variables": [
+        {
+          "id": 101,
+          "name": "contractEnd",
+          "dataType": "datetime",
+          "isArray": false,
+          "nullable": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": "IsMatch(contractEnd, '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(:[0-9]{2}([.,][0-9]{1,7})?)?(Z|[+-][0-9]{2}:[0-9]{2})$')",
+          "label": "Contract end",
+          "helpText": "Date and time with Z or an explicit offset, such as 2026-12-31T17:00:00+01:00."
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "Wait Until Contract End",
+      "externalId": "TIMER_WAIT_UNTIL_CONTRACT_END",
+      "type": "intermediateTimerCatchEvent",
+      "laneId": null,
+      "x": 300,
+      "y": 190,
+      "roles": [],
+      "variables": [],
+      "timer": {
+        "timeDate": "${contractEnd}",
+        "timeDuration": null,
+        "timeCycle": null
+      }
+    },
+    {
+      "id": 3,
+      "name": "Renew or Close Contract",
+      "externalId": "TASK_RENEW_OR_CLOSE_CONTRACT",
+      "type": "userTask",
+      "laneId": null,
+      "x": 500,
+      "y": 178,
+      "roles": [],
+      "variables": [],
+      "requiresClaim": false,
+      "claimMode": "fresh"
+    },
+    {
+      "id": 4,
+      "name": "Contract Handled",
+      "externalId": "END_CONTRACT_HANDLED",
+      "type": "endEvent",
+      "laneId": null,
+      "x": 820,
+      "y": 190,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "Wait for the contract end",
+      "externalId": "FLOW_WAIT_FOR_CONTRACT_END",
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 201,
+      "name": "Contract ended",
+      "externalId": "FLOW_CONTRACT_ENDED",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 301,
+      "name": "Handle",
+      "externalId": "FLOW_HANDLE_CONTRACT",
+      "sourceRef": 3,
+      "targetRef": 4,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "cancelRoles": [],
+  "unclaimRoles": [],
+  "taskAssignmentRoles": [],
+  "taskDistribution": null
+}

@@ -4,7 +4,6 @@ using System.Text.RegularExpressions;
 using Flowbit.Service.Abstractions;
 using Flowbit.Shared.Models;
 using NCalc;
-using NCalc.Helpers;
 
 namespace Flowbit.Service.Services;
 
@@ -25,14 +24,6 @@ public sealed class WorkflowDefinitionValidator(
 {
     private readonly IConditionalEventDefinitionAnalyzer conditionalAnalyzer =
         conditionalEventAnalyzer ?? new ConditionalEventDefinitionAnalyzer();
-    private static readonly HashSet<string> SharedValidationFunctions = new(
-        BuiltInFunctionHelper.GetBuiltInFunctionNames()
-            .Concat([
-                "Length", "Len", "IsNullOrEmpty", "IsNullOrWhiteSpace",
-                "Contains", "StartsWith", "EndsWith", "Lower", "Upper",
-                "Trim", "IsMatch"
-            ]),
-        StringComparer.OrdinalIgnoreCase);
     private static readonly HashSet<string> ReservedIdempotencyHeaders = new(StringComparer.OrdinalIgnoreCase)
     {
         "Authorization",
@@ -431,6 +422,8 @@ public sealed class WorkflowDefinitionValidator(
 
         _ = InboxVisibilityConditionCompiler.CompileAll(definition);
         _ = conditionalAnalyzer.Analyze(definition);
+        ConditionalEventDefinitionAnalyzer.RejectUnresolvableNames(definition);
+        _ = TimerExpressionDefinitionAnalyzer.Analyze(definition);
     }
 
     private static void ValidateRoleSources(WorkflowModel definition)
@@ -2386,18 +2379,22 @@ public sealed class WorkflowDefinitionValidator(
                 $"Timer event #{node.Id} must define exactly one of timeDate, timeDuration, or timeCycle.");
         }
 
-        if (timer.TimeDate is not null
-            && !TimerDefinitionRules.TryParseTimeDate(timer.TimeDate, out _))
+        // A catch or boundary may compute its date or duration with an NCalc
+        // expression; its references are analyzed with the whole definition.
+        var allowExpressions = BpmnFlowNodeTypes.IsTimerCatch(node.Type)
+            || BpmnFlowNodeTypes.IsTimerBoundary(node.Type);
+        foreach (var (property, value) in new[]
+                 {
+                     (TimerDefinitionRules.TimeDateProperty, timer.TimeDate),
+                     (TimerDefinitionRules.TimeDurationProperty, timer.TimeDuration)
+                 })
         {
-            throw new WorkflowDomainException(
-                $"Timer event #{node.Id} timeDate must be an ISO-8601 timestamp with an explicit UTC offset.");
-        }
-
-        if (timer.TimeDuration is not null
-            && !TimerDefinitionRules.TryParseFixedDuration(timer.TimeDuration, out _))
-        {
-            throw new WorkflowDomainException(
-                $"Timer event #{node.Id} timeDuration must be a positive fixed-unit ISO-8601 duration.");
+            if (value is not null
+                && TimerDefinitionRules.ClassifyScheduleValue(property, value, allowExpressions) is
+                    { Kind: TimerScheduleValueKind.Invalid, Problem: { } problem })
+            {
+                throw new WorkflowDomainException($"Timer event #{node.Id} {problem}");
+            }
         }
 
         if (TimerDefinitionRules.CalendarProblem(timer) is { } calendarProblem)
@@ -3077,12 +3074,15 @@ public sealed class WorkflowDefinitionValidator(
                 + $"found '{invalidParameter}'.");
         }
 
+        // Saving only: NCalc resolves its built-ins in their exact spelling, so
+        // a validation with If or max would reject every concrete value.
         var invalidFunction = expression.GetFunctionNames()
-            .FirstOrDefault(name => !SharedValidationFunctions.Contains(name));
+            .FirstOrDefault(name => !SequenceFlowConditionEvaluator.IsGeneralFunction(name));
         if (invalidFunction is not null)
         {
             throw new WorkflowDomainException(
-                $"Shared process variable '{variable.Name}' validation uses unsupported function '{invalidFunction}'.");
+                $"Shared process variable '{variable.Name}' validation uses unsupported function '{invalidFunction}'"
+                + $"{SequenceFlowConditionEvaluator.FunctionSpellingHint(invalidFunction)}.");
         }
     }
 
@@ -3484,6 +3484,8 @@ public sealed class WorkflowDefinitionValidator(
                 $"User task #{node.Id} cardinalityExpression");
             Check(node.Message?.HeaderValidation, false,
                 $"Flow node #{node.Id} headerValidation");
+            Check(node.Timer?.TimeDate, false, $"Timer event #{node.Id} timeDate");
+            Check(node.Timer?.TimeDuration, false, $"Timer event #{node.Id} timeDuration");
 
             foreach (var variable in node.Variables)
             {
@@ -3602,6 +3604,8 @@ public sealed class WorkflowDefinitionValidator(
                 $"User task #{node.Id} cardinalityExpression");
             Check(node.Message?.HeaderValidation, null, false,
                 $"Flow node #{node.Id} headerValidation");
+            Check(node.Timer?.TimeDate, null, false, $"Timer event #{node.Id} timeDate");
+            Check(node.Timer?.TimeDuration, null, false, $"Timer event #{node.Id} timeDuration");
 
             foreach (var variable in node.Variables)
             {

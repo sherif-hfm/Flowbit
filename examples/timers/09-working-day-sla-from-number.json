@@ -1,0 +1,166 @@
+{
+  "id": "example-working-day-sla-from-number",
+  "name": "Example 09 - Working-Day SLA From a Number",
+  "initialEventId": 1,
+  "variables": [
+    {
+      "id": 1,
+      "name": "slaDuration",
+      "dataType": "string",
+      "isArray": false,
+      "nullable": false,
+      "required": false,
+      "defaultValue": "P5D",
+      "validation": null
+    }
+  ],
+  "lanes": [],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Case Opened",
+      "externalId": "START_WORKING_DAY_SLA_EXAMPLE",
+      "type": "startEvent",
+      "laneId": null,
+      "x": 60,
+      "y": 190,
+      "roles": [],
+      "variables": [
+        {
+          "id": 101,
+          "name": "slaDays",
+          "dataType": "number",
+          "isArray": false,
+          "nullable": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": "slaDays >= 1 and slaDays <= 20 and Round(slaDays, 0) == slaDays",
+          "label": "SLA in working days",
+          "helpText": "A whole number of working days from 1 to 20."
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "Build SLA Duration",
+      "externalId": "SCRIPT_BUILD_SLA_DURATION",
+      "type": "scriptTask",
+      "laneId": null,
+      "x": 240,
+      "y": 178,
+      "roles": [],
+      "variables": [],
+      "scriptFormat": "javascript",
+      "assignments": [],
+      "script": "// A timer expression cannot join text and a number, so the duration text is built here.\nexecution.setVariable('slaDuration', 'P' + execution.getVariable('slaDays') + 'D');",
+      "usesFlowInfo": false
+    },
+    {
+      "id": 3,
+      "name": "Resolve Case",
+      "externalId": "TASK_RESOLVE_CASE_WITHIN_SLA",
+      "type": "userTask",
+      "laneId": null,
+      "x": 500,
+      "y": 175,
+      "roles": [],
+      "variables": [],
+      "requiresClaim": false,
+      "claimMode": "fresh"
+    },
+    {
+      "id": 4,
+      "name": "SLA Working Days",
+      "externalId": "TIMER_SLA_WORKING_DAYS",
+      "type": "timerBoundaryEvent",
+      "laneId": null,
+      "x": 620,
+      "y": 235,
+      "roles": [],
+      "variables": [],
+      "attachedToRef": 3,
+      "cancelActivity": true,
+      "timer": {
+        "timeDate": null,
+        "timeDuration": "slaDuration",
+        "timeCycle": null,
+        "calendar": "examples.weekdays"
+      }
+    },
+    {
+      "id": 5,
+      "name": "Escalated Case",
+      "externalId": "TASK_ESCALATED_CASE",
+      "type": "userTask",
+      "laneId": null,
+      "x": 840,
+      "y": 300,
+      "roles": [],
+      "variables": [],
+      "requiresClaim": false,
+      "claimMode": "fresh"
+    },
+    {
+      "id": 6,
+      "name": "Case Closed",
+      "externalId": "END_CASE_CLOSED",
+      "type": "endEvent",
+      "laneId": null,
+      "x": 1200,
+      "y": 190,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "Open case",
+      "externalId": "FLOW_OPEN_CASE",
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 201,
+      "name": "Start the SLA",
+      "externalId": "FLOW_START_SLA",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 301,
+      "name": "Resolve",
+      "externalId": "FLOW_RESOLVE_WITHIN_SLA",
+      "sourceRef": 3,
+      "targetRef": 6,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 401,
+      "name": "Escalate after the SLA",
+      "externalId": "FLOW_ESCALATE_AFTER_SLA",
+      "sourceRef": 4,
+      "targetRef": 5,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 501,
+      "name": "Complete escalation",
+      "externalId": "FLOW_COMPLETE_SLA_ESCALATION",
+      "sourceRef": 5,
+      "targetRef": 6,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "cancelRoles": [],
+  "unclaimRoles": [],
+  "taskAssignmentRoles": [],
+  "taskDistribution": null
+}

@@ -463,7 +463,7 @@ Creates instances on a persisted schedule belonging to the published default wor
 
 | Property | Type | Required / default | Meaning and constraints |
 | --- | --- | --- | --- |
-| `timer` | [timer configuration](#timer-configuration) | Required | Exactly one absolute date, relative duration, or recurrence expression. Relative timing is based on schedule activation. |
+| `timer` | [timer configuration](#timer-configuration) | Required | Exactly one fixed absolute date, relative duration, or recurrence. A timer start cannot use an [expression schedule](#expression-schedules). Relative timing is based on schedule activation. |
 
 There are no event-specific input variables or roles. Use top-level process-variable defaults to initialize scheduler-created instances; `variables` is omitted from canonical timer-start JSON. `businessKey` and `idempotency` are rejected.
 
@@ -525,7 +525,7 @@ Persists a timed wait. The Worker resumes the token when its scheduled occurrenc
 
 | Property | Type | Required / default | Meaning and constraints |
 | --- | --- | --- | --- |
-| `timer` | [timer configuration](#timer-configuration) | Required | Exactly one timer expression. Relative durations start when the wait is activated. |
+| `timer` | [timer configuration](#timer-configuration) | Required | Exactly one schedule. `timeDate` and `timeDuration` may be [expressions](#expression-schedules). Relative durations start when the wait is activated. |
 
 ```json
 {
@@ -592,7 +592,7 @@ Attaches a deadline or reminder to an active host. An interrupting timer cancels
 | --- | --- | --- | --- |
 | `attachedToRef` | integer | Required | Existing eligible host ID; see [boundary host rules](#boundary-host-rules). |
 | `cancelActivity` | Boolean | Optional; `true` | `true` interrupts the host; `false` creates sibling work without completing the host. |
-| `timer` | [timer configuration](#timer-configuration) | Required | Exactly one timer expression, activated with the host. |
+| `timer` | [timer configuration](#timer-configuration) | Required | Exactly one schedule, activated with the host. `timeDate` and `timeDuration` may be [expressions](#expression-schedules). |
 
 ```json
 {
@@ -744,16 +744,16 @@ Both start-idempotency and catch-delivery header names reject these reserved nam
 
 ## Timer configuration
 
-The required `timer` object belongs only to `timerStartEvent`, `intermediateTimerCatchEvent`, and `timerBoundaryEvent`. Set **exactly one** nonblank property; every expression is limited to 128 characters after trimming.
+The required `timer` object belongs only to `timerStartEvent`, `intermediateTimerCatchEvent`, and `timerBoundaryEvent`. Set **exactly one** nonblank property, its *schedule value*; every schedule value is limited to 128 UTF-16 code units after trimming. On a timer catch or boundary, `timeDate` and `timeDuration` may be fixed values or [NCalc expressions](#expression-schedules).
 
 | Property | Type | Required / default | Meaning and constraints |
 | --- | --- | --- | --- |
-| `timeDate` | ISO-8601 timestamp string | One of the three required | Absolute date/time with `Z` or an explicit numeric UTC offset, for example `2030-01-01T09:00:00Z`. Normalized to UTC. A local timestamp without offset is invalid. |
-| `timeDuration` | ISO-8601 duration string | One of the three required | Positive fixed-unit delay, for example `PT30S`, `P2D`, or `P1W`. Supports weeks or day/hour/minute/second components and decimal components, within the runtime duration range. |
-| `timeCycle` | recurrence string | One of the three required | `R/Duration` for unbounded authored recurrence, or `R<n>/Duration` with a positive 32-bit integer occurrence count. For example `R5/PT30S`. The interval must be at least one second. |
-| `calendar` | string | Optional; absent | Name of a [business calendar](#working-time-durations) whose working time a `timeDuration` counts, such as `"examples.weekdays"`. Only allowed with `timeDuration`, which must then use whole days and no weeks and be at most 36,525 days long. The calendar must exist, written with its exact casing. |
+| `timeDate` | ISO-8601 timestamp string or expression | One of the three required | Absolute date/time with `Z` or an explicit numeric UTC offset, for example `2030-01-01T09:00:00Z`. Normalized to UTC. A local timestamp without offset is invalid. |
+| `timeDuration` | ISO-8601 duration string or expression | One of the three required | Positive fixed-unit delay, for example `PT30S`, `P2D`, or `P1W`. Supports weeks or day/hour/minute/second components and decimal components, within the runtime duration range. |
+| `timeCycle` | recurrence string | One of the three required | `R/Duration` for unbounded authored recurrence, or `R<n>/Duration` with a positive 32-bit integer occurrence count. For example `R5/PT30S`. The interval must be at least one second. Always a fixed value. |
+| `calendar` | string | Optional; absent | Name of a [business calendar](#working-time-durations) whose working time a `timeDuration` counts, such as `"examples.weekdays"`. Only allowed with `timeDuration`, which must then use whole days and no weeks and be at most 36,525 days long. The calendar must exist, written with its exact casing, and is never an expression. |
 
-No cron, calendar month/year duration, or expression/template schedule is supported. Relative waits are measured from activation; absolute dates do not move with activation. Timer jobs persist across restarts. Firing can be late when the Worker is unavailable; recurring occurrences more than one minute late skip to a later eligible occurrence. This is a durable schedule, not a hard real-time guarantee. See [timer execution semantics](bpmn-support.md#timers).
+No cron or calendar month/year duration is supported, and a `timeCycle` or a timer start cannot use an expression. Relative waits are measured from activation; absolute dates do not move with activation. Timer jobs persist across restarts. Firing can be late when the Worker is unavailable; recurring occurrences more than one minute late skip to a later eligible occurrence. This is a durable schedule, not a hard real-time guarantee. See [timer execution semantics](bpmn-support.md#timers).
 
 ```json
 {
@@ -766,6 +766,34 @@ No cron, calendar month/year duration, or expression/template schedule is suppor
 ```
 
 A timer that names a calendar computes its due time once, when it activates, and saves it; the timer subscription also records the calendar name. If the calendar no longer exists, the server does not know its time zone, or the calendar cannot count the duration, a timer catch or boundary fails its activation like other timer validation: the request fails, or a Worker job retries and then opens an incident. A timer start in that state is not scheduled. Its subscription stays paused with a `timer_schedule_failed` incident, and the Worker logs the reason once. Retrying the incident after fixing the cause schedules the timer start again, or opens a new incident; a version that replaces the default resolves it. A timer's calendar belongs to its schedule contract, so changing it blocks an in-place version change of an open timer, as changing its expression does.
+
+### Expression schedules
+
+On an `intermediateTimerCatchEvent` or `timerBoundaryEvent`, a `timeDate` or `timeDuration` that is not a fixed value is an NCalc expression, optionally wrapped in one whole-value `${...}`. The engine evaluates it once, when the timer activates (when a token reaches the catch, or when the boundary's host activates), and saves the resulting UTC due time.
+
+```json
+{
+  "id": 4,
+  "name": "Review deadline",
+  "type": "timerBoundaryEvent",
+  "attachedToRef": 2,
+  "timer": { "timeDuration": "if(urgent, 'PT4H', 'P2D')", "calendar": "examples.weekdays" }
+}
+```
+
+- **Inputs.** An expression reads only declared, persisted instance variables: process variables, start, node, and action inputs, and service/message output, status, error, and idempotency targets. Shared aliases, `sys.*`, `config.*`, `setting.*`, `mi.*`, `gateway.*`, `FlowInfo`, and gateway and multi-instance helpers are rejected; copy such a value into an instance variable before the timer activates. NCalc's built-in functions and Flowbit's string helpers are available; there are no date functions. NCalc resolves each built-in only in its own spelling, `Max`, `Round`, and the other maths functions capitalized and `if`, `in`, and `ifs` in lowercase, so saving rejects another casing such as `If` or `max` and names the one to use; the string helpers accept any casing.
+- **Result.** The expression must give text that is a fixed value for its property: a date-time with `Z` or a `±hh:mm` offset for `timeDate`, or a positive fixed-unit duration for `timeDuration`, which with a `calendar` must also be countable (whole days, no weeks, at most 36,525 days). A number, Boolean, list, object, no value, or blank text fails.
+- **`datetime` inputs need an explicit offset.** The `datetime` variable type also accepts text the timer grammar rejects: no offset (`2026-12-01T09:30:00`, `2026-12-01T09:30`), more than seven fractional digits, or an hour-only offset such as `+02`. Such a value fails at activation. Flowbit.Ui's date-time controls always send an offset, but HTTP callers, mapped outputs, and scripts may not, so give the input a `validation` rule that requires one, as the [contract end example](../examples/timers/07-contract-end-wait.json) does.
+- **Building text.** Two strings join, so `endDate + 'T17:00:00Z'` turns a `date` input into a valid `timeDate`. A string and a number do not (`'P' + days + 'D'` fails), so build a duration from a number in a JavaScript script task first, as the [working-day SLA example](../examples/timers/09-working-day-sla-from-number.json) does.
+- **`${...}` is a wrapper, not a template.** Unlike service-task URLs and variable defaults, a schedule never inserts values into text; `P${days}D` is rejected.
+- **Text that looks fixed stays fixed.** Text evidently meant as a fixed value is never read as an expression: `P1Y`, `p2d`, `PT0S`, `-P1D`, `2026-11-01`, an offset-free timestamp, recurrence text such as `R/P1D`, and a valid value for the other property (a duration in `timeDate`) are all rejected. Reference a variable whose name looks like a value in brackets, such as `[PT1H]`. A quoted literal, such as `'PT30S'`, must itself be a valid value.
+- **Validation.** Saving through the API checks the expression's syntax, functions, references, and context, and evaluates an expression that reads no variables. It also rejects a bracketed name with spaces inside the brackets, such as `[ slaDuration ]`, because NCalc keeps the spaces in the name and the expression could never read the value. The editor checks fixed forms, length, shared and bracketed context references, such padded names, the casing of built-in functions, and calendar combinations; only the API checks NCalc syntax and variable names.
+- **Activation and failures.** The expression reads the instance's stored values at activation, including values written earlier in the same transition, but not the output of the activity a boundary guards. A variable with no value, an unusable result, or a calendar that cannot count the result fails the activation: the request returns `400` and changes nothing, or a Worker job retries and then opens an incident. The message names the node, property, and cause but never a value, for example `Timer boundary event #4 timer.timeDuration cannot be scheduled: variable 'slaDuration' has no value.` Each failure also writes one warning log without values.
+- **The saved schedule stands.** The timer subscription keeps the authored text and the resolved due time. Changing a variable or calendar later, restarting the Worker, retrying a fired timer, or a compatible version change never recomputes it; a host that is entered again gets a new activation and a new evaluation.
+- **Already-due timers.** A date at or before activation is saved as is and is due at once, but the host still starts. An interrupting boundary on a user task creates the work item and interrupts it when the Worker runs. A staged service or script task commits its boundaries before its body runs, so a service task's HTTP call can run while the timer interrupts the task; the late result is discarded, but the external effect has happened.
+- **Version changes.** An open expression timer is compatible only with the same authored text, wrapper included: `slaDuration` and `${slaDuration}` differ, and a changed expression blocks the change even if it would give the same due time.
+
+The Flowbit.Ui inspector offers a **Fixed value** or **Expression** choice for these properties. See [correcting a schedule](developer-guide.md#expression-timers) for recovery and the [example catalog](../examples/README.md#durable-jobs-and-timers) for runnable workflows.
 
 ## Working-time durations
 
@@ -802,10 +830,10 @@ The required `conditional` object belongs only to `intermediateConditionalCatchE
 
 | Property | Type | Required / default | Meaning and constraints |
 | --- | --- | --- | --- |
-| `condition` | NCalc expression string | Required | Nonblank after trimming/optional legacy `${...}` wrapper removal; at most 4,000 Unicode scalar values. Must reference 1–64 distinct declared, persisted instance variables. Unknown variables/functions, shared aliases, `sys.*`, `config.*`, `setting.*`, `mi.*`, `gateway.*`, `FlowInfo`, and gateway/MI helper functions are rejected. |
+| `condition` | NCalc expression string | Required | Nonblank after trimming/optional legacy `${...}` wrapper removal; at most 4,000 Unicode scalar values. Must reference 1–64 distinct declared, persisted instance variables. Unknown variables/functions, shared aliases, `sys.*`, `config.*`, `setting.*`, `mi.*`, `gateway.*`, `FlowInfo`, and gateway/MI helper functions are rejected. Write a bracketed name without spaces inside the brackets: saving rejects `[ approved ]`, because NCalc keeps the spaces in the name and the condition could never see the value. Saving also rejects a built-in function in a casing NCalc does not resolve, such as `If` for `if` or `max` for `Max`. |
 | `deliveryMode` | string enum | Optional; `atomic` | `atomic` evaluates and advances in the writer's transaction. `durableAsync` latches a true occurrence and creates a persisted Worker job in that transaction; later false values cannot retract that captured occurrence. Omitted/null/blank means `atomic`; recognized casing is canonicalized and unknown values are invalid. |
 
-Conditions support NCalc built-ins plus the pure string helpers `Length`, `Len`, `IsNullOrEmpty`, `IsNullOrWhiteSpace`, `Contains`, `StartsWith`, `EndsWith`, `Lower`, `Upper`, `Trim`, and `IsMatch`. The engine extracts dependencies from the parsed expression and reevaluates affected waits against the complete post-write-batch current-value snapshot. This includes supported variable producers such as user actions, messages, scripts/service outputs, and administrative variable updates. Shared aliases are rejected in both delivery modes. See the [conditional runtime reference](../Flowbit/README.md#intermediate-conditional-catch-events) for persistence and version-switch restrictions.
+Conditions support NCalc built-ins plus the pure string helpers `Length`, `Len`, `IsNullOrEmpty`, `IsNullOrWhiteSpace`, `Contains`, `StartsWith`, `EndsWith`, `Lower`, `Upper`, `Trim`, and `IsMatch`. NCalc resolves each built-in only in its own spelling: the maths functions capitalized, such as `Max`, `Round`, and `Abs`, and `if`, `in`, and `ifs` in lowercase. The string helpers accept any casing. A condition saved before this check with another casing keeps running, but never becomes true. The engine extracts dependencies from the parsed expression and reevaluates affected waits against the complete post-write-batch current-value snapshot. This includes supported variable producers such as user actions, messages, scripts/service outputs, and administrative variable updates. Shared aliases are rejected in both delivery modes. See the [conditional runtime reference](../Flowbit/README.md#intermediate-conditional-catch-events) for persistence and version-switch restrictions.
 
 ## Boundary host rules
 

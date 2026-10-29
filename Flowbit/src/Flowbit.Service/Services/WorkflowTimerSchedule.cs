@@ -90,6 +90,81 @@ public sealed record WorkflowTimerSchedule(
         throw new WorkflowDomainException("Timer configuration has no schedule.");
     }
 
+    /// <summary>
+    /// Resolves the due time of a timeDate or timeDuration that an expression
+    /// gave when its timer activated. A duration that names a calendar is
+    /// counted in <paramref name="calendar"/>, which the caller loads. Problems
+    /// never repeat the value, because it can come from instance data.
+    /// </summary>
+    public static bool TryResolveExpressionResult(
+        string property,
+        string value,
+        DateTimeOffset activatedAt,
+        string? calendarName,
+        BusinessCalendar? calendar,
+        out DateTimeOffset dueAt,
+        out string? problem)
+    {
+        dueAt = default;
+        problem = null;
+        if (string.Equals(property, TimerDefinitionRules.TimeDateProperty, StringComparison.Ordinal))
+        {
+            if (!TimerDefinitionRules.TryParseTimeDate(value, out var timestamp))
+            {
+                problem = $"the expression gave text that is not {TimerDefinitionRules.TimeDateFormDescription}";
+                return false;
+            }
+
+            dueAt = timestamp.ToUniversalTime();
+            return true;
+        }
+
+        if (!TimerDefinitionRules.TryParseFixedDuration(value, out var duration))
+        {
+            problem = $"the expression gave text that is not {TimerDefinitionRules.TimeDurationFormDescription}";
+            return false;
+        }
+
+        var start = activatedAt.ToUniversalTime();
+        if (calendarName is null)
+        {
+            if (DateTimeOffset.MaxValue - start < duration)
+            {
+                problem = "the duration it gave passes the largest supported date";
+                return false;
+            }
+
+            dueAt = start + duration;
+            return true;
+        }
+
+        if (!TimerDefinitionRules.TryParseWorkingDuration(value, out var working))
+        {
+            problem = $"business calendar '{calendarName}' cannot count the duration it gave; use {BusinessCalendarRules.WorkingDurationRuleDescription}";
+            return false;
+        }
+
+        if (!BusinessCalendarRules.FitsSearchWindow(working))
+        {
+            problem = $"the duration it gave is longer than business calendar '{calendarName}' can count; use {BusinessCalendarRules.WorkingDurationLimitDescription}";
+            return false;
+        }
+
+        if (calendar is null || !string.Equals(calendar.Name, calendarName, StringComparison.OrdinalIgnoreCase))
+        {
+            problem = $"business calendar '{calendarName}' was not loaded";
+            return false;
+        }
+
+        if (!calendar.TryAdd(start, working, out dueAt, out var calendarProblem))
+        {
+            problem = $"business calendar '{calendar.Name}' cannot count the duration it gave: {calendarProblem}";
+            return false;
+        }
+
+        return true;
+    }
+
     private static WorkflowTimerSchedule ResolveWorkingDuration(
         TimerDefinitionModel timer,
         DateTimeOffset activatedAt,

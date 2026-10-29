@@ -89,6 +89,141 @@ public sealed class ConditionalEventDefinitionTests
         Assert.Contains(expectedMessage, error.Message, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData("[ Amount ] >= 10", "[ Amount ]", "[Amount]")]
+    [InlineData("[Amount ] >= 10", "[Amount ]", "[Amount]")]
+    [InlineData("Approved == true and [ approved] == true", "[ approved]", "[approved]")]
+    public async Task CreateAsync_RejectsBracketedNamesWithSpacesInsideTheBrackets(
+        string condition,
+        string padded,
+        string corrected)
+    {
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateDefinitionService().CreateAsync(
+                CreateDefinition(condition),
+                publish: false,
+                CancellationToken.None));
+
+        Assert.Equal(
+            $"Conditional catch event #2 condition references '{padded}' with spaces inside the brackets; "
+            + "NCalc keeps them in the name, so it never matches a stored variable. "
+            + $"Write '{corrected}'.",
+            error.Message);
+    }
+
+    [Fact]
+    public async Task CreateAsync_NamesAConditionalBoundaryWithAPaddedBracketName()
+    {
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateDefinitionService().CreateAsync(
+                CreateBoundaryDefinition("[ amount ] >= 80", deliveryMode: null, cancelActivity: null),
+                publish: false,
+                CancellationToken.None));
+
+        Assert.StartsWith(
+            "Conditional boundary event #4 condition references '[ amount ]' with spaces inside the brackets;",
+            error.Message,
+            StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("[ sys.now ] != null", "non-observable context parameter 'sys.now'.")]
+    [InlineData("[ Missing ] > 0", "undeclared stored variable 'Missing'.")]
+    public async Task CreateAsync_ReportsPaddedContextAndUndeclaredNamesAsBefore(
+        string condition,
+        string expectedEnding)
+    {
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateDefinitionService().CreateAsync(
+                CreateDefinition(condition),
+                publish: false,
+                CancellationToken.None));
+
+        Assert.EndsWith(expectedEnding, error.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("[Amount] >= 10")]
+    [InlineData("Amount >= 10 and '[ Amount ]' == '[ Amount ]'")]
+    public void Validate_AcceptsBracketsWithoutInnerSpacesAndQuotedText(string condition)
+    {
+        var validator = CreateValidator();
+        var definition = CreateDefinition(condition);
+
+        validator.ValidateAuthored(definition);
+        WorkflowModelMigrator.Normalize(definition);
+        validator.ValidateNormalized(definition);
+    }
+
+    [Theory]
+    [InlineData("If(Approved, Amount > 1, false)", "If", "if")]
+    [InlineData("max(Amount, 5) > 10", "max", "Max")]
+    [InlineData("if(Approved, max(Amount, 5) > 10, false)", "max", "Max")]
+    public async Task CreateAsync_RejectsBuiltInFunctionsInAnotherCasing(
+        string condition,
+        string written,
+        string spelling)
+    {
+        var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
+            CreateDefinitionService().CreateAsync(
+                CreateDefinition(condition),
+                publish: false,
+                CancellationToken.None));
+
+        Assert.Equal(
+            $"Conditional catch event #2 condition uses unsupported or non-observable function '{written}'; "
+            + $"write it as '{spelling}'.",
+            error.Message);
+    }
+
+    [Theory]
+    [InlineData("Max(Amount, 5) > 10 and if(Approved, true, false)")]
+    [InlineData("Sin(Amount) == 0")]
+    [InlineData("LEN('x') > 0 and Amount > 0")]
+    public void Validate_AcceptsBuiltInsInTheirSpellingAndHelpersInAnyCasing(string condition)
+    {
+        var validator = CreateValidator();
+        var definition = CreateDefinition(condition);
+
+        validator.ValidateAuthored(definition);
+        WorkflowModelMigrator.Normalize(definition);
+        validator.ValidateNormalized(definition);
+    }
+
+    [Fact]
+    public void Analyze_KeepsAcceptingBuiltInsInAnotherCasingSavedEarlier()
+    {
+        // Only saving rejects the casing. A definition saved earlier keeps
+        // running as before, where NCalc does not resolve If and the
+        // condition stays false.
+        var plan = analyzer.Analyze(CreateDefinition("If(Approved, true, false)"));
+
+        Assert.Equal(["Approved"], plan.EventsByNodeId[2].Dependencies.ToArray());
+        var values = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Approved"] = JsonSerializer.SerializeToElement(true)
+        };
+        Assert.True(SequenceFlowConditionEvaluator.Evaluate("if(Approved, true, false)", values));
+        Assert.False(SequenceFlowConditionEvaluator.Evaluate("If(Approved, true, false)", values));
+    }
+
+    [Fact]
+    public void Analyze_KeepsAcceptingPaddedBracketNamesSavedEarlier()
+    {
+        // Only saving rejects padded names. Runtime analysis keeps accepting a
+        // definition saved earlier, so its instances run as before, where the
+        // condition never sees the value.
+        var plan = analyzer.Analyze(CreateDefinition("[ Amount ] >= 10"));
+
+        Assert.Equal(["Amount"], plan.EventsByNodeId[2].Dependencies.ToArray());
+        var values = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Amount"] = JsonSerializer.SerializeToElement(20)
+        };
+        Assert.True(SequenceFlowConditionEvaluator.Evaluate("[Amount] >= 10", values));
+        Assert.False(SequenceFlowConditionEvaluator.Evaluate("[ Amount ] >= 10", values));
+    }
+
     [Fact]
     public void Analyze_ExtractsAstDependenciesOnceAndUsesDeclaredCasing()
     {
@@ -522,13 +657,17 @@ public sealed class ConditionalEventDefinitionTests
         var analyzer = new ConditionalEventDefinitionAnalyzer();
         return new WorkflowDefinitionService(
             null!,
-            new WorkflowDefinitionValidator(
-                new ParseOnlyScriptEvaluator(),
-                new ServiceTaskOptions(),
-                analyzer),
+            CreateValidator(analyzer),
             NullLogger<WorkflowDefinitionService>.Instance,
             conditionalEventAnalyzer: analyzer);
     }
+
+    private static WorkflowDefinitionValidator CreateValidator(
+        ConditionalEventDefinitionAnalyzer? analyzer = null) =>
+        new(
+            new ParseOnlyScriptEvaluator(),
+            new ServiceTaskOptions(),
+            analyzer ?? new ConditionalEventDefinitionAnalyzer());
 
     private sealed class ParseOnlyScriptEvaluator : IScriptEvaluator
     {

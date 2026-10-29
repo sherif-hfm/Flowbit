@@ -59,7 +59,7 @@ public sealed class SharedVariableService(
         var description = NormalizeBounded(request.Description, 1000, "description");
         var reason = NormalizeBounded(request.Reason, 1000, "reason");
         var requestId = NormalizeRequestId(request.RequestId);
-        SharedVariableValueValidator.ValidateContract(
+        SharedVariableValueValidator.ValidateNewContract(
             key,
             request.DataType,
             request.IsArray,

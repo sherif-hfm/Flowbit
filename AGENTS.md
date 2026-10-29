@@ -250,7 +250,7 @@ A repeatable Chromium smoke suite exists at
 real copied editor and the real published API/UI over localhost with a
 disposable PostgreSQL container; see its
 [README](Flowbit/tests/Flowbit.BrowserTests/README.md) for setup and the
-E1–E11/R1–R11 coverage matrix. It is the baseline for editor/runtime UI changes,
+E1–E12/R1–R11 coverage matrix. It is the baseline for editor/runtime UI changes,
 but it does not replace scenario-specific manual verification: the native
 file-picker success/cancel path, visual comparisons, and behaviors outside the
 matrix still need the manual steps above.
@@ -658,8 +658,14 @@ Storage follows the hybrid design:
   both delivery modes. Definition analysis extracts dependencies from NCalc's
   parsed AST and rejects undeclared variables, unknown functions, and
   non-observable `sys.*`, `config.*`, `setting.*`, `mi.*`, and `gateway.*`
-  context. Built-in NCalc functions and Flowbit's pure string helpers are
-  available; `FlowInfo` and gateway/multi-instance helpers are not.
+  context. Saving also rejects names NCalc never resolves
+  (`ConditionalEventDefinitionAnalyzer.RejectUnresolvableNames`): a bracketed
+  name with spaces inside its brackets (`[ approved ]`) and a built-in function
+  in another casing (`If`, `max`); runtime analysis still accepts definitions
+  saved earlier. Built-in NCalc functions, in the spellings of
+  `SequenceFlowConditionEvaluator.BuiltInFunctionSpellings`, and Flowbit's pure
+  string helpers, in any casing, are available; `FlowInfo` and
+  gateway/multi-instance helpers are not.
   The condition is evaluated against the transaction's complete PostgreSQL
   current-variable snapshot when the token enters the event, and thereafter only
   when a complete transactional variable-write batch changes one of its
@@ -791,7 +797,8 @@ Storage follows the hybrid design:
   `${ ... }` wrapper is stripped, and invalid or unresolvable expressions
   evaluate to `false`. Conditions are also parse-checked when a definition is
   created/updated. Beyond NCalc's built-ins (`Min`, `Max`, `if`, `in`, math
-  helpers), `SequenceFlowConditionEvaluator` registers **custom helper functions**
+  helpers, which resolve only in that exact spelling,
+  `BuiltInFunctionSpellings`), `SequenceFlowConditionEvaluator` registers **custom helper functions**
   (case-insensitive names, wired once in `CreateExpression` so evaluation and
   parse-checking agree): `Length(s)` / `Len(s)`, `IsNullOrEmpty(s)`,
   `IsNullOrWhiteSpace(s)`, `Contains(s, sub)`, `StartsWith(s, prefix)`,
@@ -1231,6 +1238,42 @@ Storage follows the hybrid design:
   - **Versions and edits.** Timer contracts include the calendar;
     `dueDateCalendar` is left out like `dueDate`. Editing a calendar never moves
     a saved due time.
+- **Expression timers.** On an `intermediateTimerCatchEvent` or
+  `timerBoundaryEvent`, a `timeDate` or `timeDuration` that is not a fixed value
+  is an NCalc expression (optional whole-value `${...}` wrapper) over declared,
+  persisted instance variables; timer starts and `timeCycle` stay fixed.
+  - **Classification.** `TimerDefinitionRules.ClassifyScheduleValue` shares
+    UI-04's intended-fixed rule and `QuotedLiteral`; text that is evidently a
+    fixed value, the other property's value, recurrence text, or `${...}` inside
+    text is rejected rather than read as an expression. The editor's
+    `classifyTimerScheduleValue` must give the same results.
+  - **Analysis.** `TimerExpressionDefinitionAnalyzer` runs last in
+    `ValidateNormalized`, only for expression values. It rejects undeclared
+    references, ambiguous casing of referenced names, shared aliases, `sys.*`,
+    `config.*`, `setting.*`, `mi.*`, `gateway.*`, and functions evaluation
+    would not resolve, including a built-in in another casing (`If`, `max`;
+    `SequenceFlowConditionEvaluator.IsGeneralFunction`), then bracketed names
+    with spaces inside the brackets (`FindPaddedParameter`, shared with
+    conditional events), and evaluates a variable-free expression at once.
+    Unlike conditional events, which shipped earlier, these rules also apply
+    when the plan cache analyzes a definition at activation.
+  - **Activation.** `ResolveTimerScheduleAsync` evaluates once per activation
+    from the activation's stored instance values and one shared `activatedAt`.
+    Staged service/script jobs read instance variables before their boundaries
+    and merge shared values after them. Results must be text in the property's
+    fixed grammar; a `datetime` without an offset fails.
+  - **Failures.** Every evaluation or arithmetic failure becomes a value-free
+    `WorkflowDomainException` naming the node, property, and cause, plus one
+    value-free warning log. Never copy an NCalc message (it can contain values)
+    or throw `WorkflowConflictException` (the Worker completes such a job as
+    stale). Synchronous requests roll back with `400`; Worker jobs retry, then
+    open an incident.
+  - **Persistence and versions.** `ScheduleExpression` keeps the authored text
+    and `NextDueAt` the result; nothing re-evaluates a saved schedule. Version
+    contracts compare authored text, wrapper included.
+  - **Reactivation.** The preview blocks a target whose expression boundary
+    cannot be scheduled (`timer_boundary_unresolvable`) and warns about an
+    already-due timer boundary (`timer_boundary_already_due`).
 - **Required assignment and assignment inheritance.** A normal `userTask` may set
   `requiresAssignment=true`. While its active work item has no `Assignee`, regular
   inbox and actor-scoped task reads omit it and claim/action endpoints reject it;
@@ -1847,7 +1890,8 @@ boundary requires no incoming flow plus `attachedToRef`. Both require exactly
 one unconditional outgoing flow. The condition must reference 1-64 declared stored
 instance variables and cannot depend on `sys.*`, `config.*`, `setting.*`, `mi.*`,
 `gateway.*`, `FlowInfo`, or gateway/multi-instance functions, because only
-stored-variable writes can wake it.
+stored-variable writes can wake it. Write bracketed names without inner spaces
+and built-ins in NCalc's spelling: saving rejects `[ approved ]` and `If(...)`.
 
 ### Assignment
 An ordered variable write performed by a `scriptTask` node during its pass-through
@@ -2192,6 +2236,11 @@ The authoring and publication contract is:
   or published. Its `dataType`, `isArray`, `nullable`, and normalized validation
   expression must match exactly. A definition requests access; it cannot change
   the catalog contract or lifecycle.
+- A validation expression must write NCalc's built-ins in their own spelling
+  (`if`, `Max`). `SharedVariableValueValidator.ValidateNewContract` rejects
+  another casing when a catalog entry is created, and the definition validator
+  when a binding is saved. `ValidateContract`, which every write repeats, stays
+  casing-tolerant, so entries created earlier keep their behavior.
 - `read` permits evaluation and templating only. Every authored producer target
   (mapping, assignment, submitted value, service status, or error variable) must
   bind to `readWrite`. JavaScript has a dynamic target name, so any shared alias
@@ -2721,6 +2770,20 @@ when extending the model so new features stay close to BPMN terminology.
   `calendar` only when named, so timers without one export unchanged. Live
   validation and save errors come from `userTaskDueDateCalendarProblem` and
   `timerCalendarProblem`, which mirror the server's rules.
+- **Timer schedule input**: the timer **Schedule** selector picks the property.
+  On a catch or boundary, **Value** offers **Fixed value** (the date/time and
+  duration controls) or **Expression** (a text field). The choice is inspector
+  state only (`timerInputModes`, keyed by node object), inferred from the text
+  on load; switching never rewrites the text. `timerScheduleValueProblems`
+  feeds both the live field and save validation.
+- **Built-in function casing**: `misspelledBuiltInCall` finds an NCalc built-in
+  written in another casing (`If`, `max`) without a parser, so the timer
+  expression field, the conditional **Condition (NCalc)** field, and save
+  validation report it with the server's message. A name counts as a call only
+  where an operand belongs, so the `in` operator keeps any casing.
+  `NCALC_BUILT_IN_SPELLINGS` must equal
+  `SequenceFlowConditionEvaluator.BuiltInFunctionSpellings`; a test compares
+  them.
 
 ---
 

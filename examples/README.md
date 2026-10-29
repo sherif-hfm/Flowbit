@@ -7,7 +7,7 @@ legacy properties. Most ids use `example-*`; the administrative-action sample
 retains its authored `admin-action` id. The examples are intentionally focused: combine their
 patterns when building a production workflow.
 
-The catalog contains 50 workflows. Automated tests recursively discover every
+The catalog contains 53 workflows. Automated tests recursively discover every
 JSON file, deserialize it, validate it with the runtime's strict JavaScript
 parser, load and render it in the editor, and verify that this page links it.
 Those definition/editor tests do not execute integrations. The separate
@@ -162,6 +162,9 @@ attempt inspection, incident recovery, and PowerShell/Bash walkthroughs.
 | [Absolute timer start](timers/04-absolute-timer-start.json) | No values; change the authored UTC time to a near-future instant before testing. | Acknowledge the scheduled instance. | A one-time absolute schedule creates an instance at its UTC timestamp. | API, database, and Worker with timer schedules enabled; no configuration. |
 | [User-task reminder and deadline](timers/05-user-task-reminder-and-deadline.json) | No values; `remindersSent` defaults to zero. | Approve normally before one minute, or complete escalated approval after the deadline. | A recurring non-interrupting boundary records reminders while an interrupting deadline cancels the original task and escalates. | API, database, and Worker; no configuration. |
 | [Working-day deadline](timers/06-working-day-deadline.json) | No values. | Approve **Review Claim** before its deadline, or complete **Escalated Review** after it. | The review is due two working days after it is created, and an interrupting timer escalates it after three working days, both counted in the `examples.weekdays` calendar (Monday to Friday, 09:00 to 17:00 UTC), so a weekend does not count. The escalated review is due four working hours after it is created. | API and database; Worker for the deadline timer; the `examples.weekdays` business calendar, which the migration seeds when missing. |
+| [Contract end wait](timers/07-contract-end-wait.json) | Supply `contractEnd` with `Z` or an explicit offset; for a test, use a time a minute or two ahead, such as the current UTC time plus two minutes. Its validation rule rejects a value without an offset at the start. | Wait until the contract end, then complete **Renew or Close Contract**. | The timer catch's `timeDate` expression `${contractEnd}` is evaluated once when the token reaches it, and the due time is saved; changing `contractEnd` afterwards does not move it. | API, database, and Worker; no configuration. |
+| [Urgency review deadline](timers/08-urgency-review-deadline.json) | Supply Boolean `urgent`. | Approve **Review Request** in time, or complete **Escalated Review** after the deadline. | The interrupting boundary's `timeDuration` expression `if(urgent, 'PT2M', 'PT10M')` gives two minutes for an urgent request and ten otherwise, chosen when the review starts. | API, database, and Worker; no configuration. |
+| [Working-day SLA from a number](timers/09-working-day-sla-from-number.json) | Supply a whole number `slaDays` from 1 to 20. | Resolve **Resolve Case** in time, or complete **Escalated Case** after the SLA. | A JavaScript script task turns the number into a duration such as `P2D`, because a timer expression cannot join text and a number; the boundary counts that duration in the `examples.weekdays` calendar. | API and database; Worker for the SLA timer; the `examples.weekdays` business calendar, which the migration seeds when missing. |
 
 ## Trusted configuration placeholders
 

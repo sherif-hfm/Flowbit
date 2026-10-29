@@ -1,0 +1,130 @@
+{
+  "id": "example-urgency-review-deadline",
+  "name": "Example 08 - Urgency Review Deadline",
+  "initialEventId": 1,
+  "variables": [],
+  "lanes": [],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Request Received",
+      "externalId": "START_URGENCY_REVIEW_DEADLINE_EXAMPLE",
+      "type": "startEvent",
+      "laneId": null,
+      "x": 60,
+      "y": 190,
+      "roles": [],
+      "variables": [
+        {
+          "id": 101,
+          "name": "urgent",
+          "dataType": "boolean",
+          "isArray": false,
+          "nullable": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": null,
+          "label": "Urgent request",
+          "helpText": "Urgent requests escalate after two minutes; others after ten."
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "Review Request",
+      "externalId": "TASK_REVIEW_REQUEST_BY_URGENCY",
+      "type": "userTask",
+      "laneId": null,
+      "x": 290,
+      "y": 175,
+      "roles": [],
+      "variables": [],
+      "requiresClaim": false,
+      "claimMode": "fresh"
+    },
+    {
+      "id": 3,
+      "name": "Urgency Deadline",
+      "externalId": "TIMER_URGENCY_DEADLINE",
+      "type": "timerBoundaryEvent",
+      "laneId": null,
+      "x": 410,
+      "y": 235,
+      "roles": [],
+      "variables": [],
+      "attachedToRef": 2,
+      "cancelActivity": true,
+      "timer": {
+        "timeDate": null,
+        "timeDuration": "if(urgent, 'PT2M', 'PT10M')",
+        "timeCycle": null
+      }
+    },
+    {
+      "id": 4,
+      "name": "Escalated Review",
+      "externalId": "TASK_ESCALATED_URGENCY_REVIEW",
+      "type": "userTask",
+      "laneId": null,
+      "x": 630,
+      "y": 300,
+      "roles": [],
+      "variables": [],
+      "requiresClaim": false,
+      "claimMode": "fresh"
+    },
+    {
+      "id": 5,
+      "name": "Reviewed",
+      "externalId": "END_URGENCY_REVIEWED",
+      "type": "endEvent",
+      "laneId": null,
+      "x": 1000,
+      "y": 190,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "Begin review",
+      "externalId": "FLOW_BEGIN_URGENCY_REVIEW",
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 201,
+      "name": "Approve",
+      "externalId": "FLOW_APPROVE_BEFORE_URGENCY_DEADLINE",
+      "sourceRef": 2,
+      "targetRef": 5,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 301,
+      "name": "Escalate after the deadline",
+      "externalId": "FLOW_URGENCY_ESCALATION",
+      "sourceRef": 3,
+      "targetRef": 4,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 401,
+      "name": "Complete escalation",
+      "externalId": "FLOW_COMPLETE_URGENCY_ESCALATION",
+      "sourceRef": 4,
+      "targetRef": 5,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "cancelRoles": [],
+  "unclaimRoles": [],
+  "taskAssignmentRoles": [],
+  "taskDistribution": null
+}

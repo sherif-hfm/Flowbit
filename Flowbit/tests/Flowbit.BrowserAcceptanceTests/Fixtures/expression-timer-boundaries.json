@@ -1,0 +1,59 @@
+{
+  "id": "acceptance-expression-timer-boundaries",
+  "name": "Acceptance expression timer boundaries",
+  "initialEventId": 1,
+  "variables": [],
+  "lanes": [],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Request Received",
+      "type": "startEvent",
+      "x": 60,
+      "y": 190,
+      "roles": [],
+      "variables": [
+        { "id": 101, "name": "reminderAfter", "dataType": "string", "isArray": false, "required": true, "defaultValue": null, "validation": null },
+        { "id": 102, "name": "deadline", "dataType": "datetime", "isArray": false, "required": true, "defaultValue": null, "validation": null }
+      ]
+    },
+    { "id": 2, "name": "Review Request", "type": "userTask", "x": 220, "y": 178, "roles": [], "variables": [], "requiresClaim": false, "claimMode": "fresh" },
+    {
+      "id": 3,
+      "name": "Reminder Due",
+      "type": "timerBoundaryEvent",
+      "x": 250,
+      "y": 252,
+      "roles": [],
+      "variables": [],
+      "attachedToRef": 2,
+      "cancelActivity": false,
+      "timer": { "timeDate": null, "timeDuration": "${reminderAfter}", "timeCycle": null }
+    },
+    {
+      "id": 4,
+      "name": "Review Deadline",
+      "type": "timerBoundaryEvent",
+      "x": 340,
+      "y": 252,
+      "roles": [],
+      "variables": [],
+      "attachedToRef": 2,
+      "cancelActivity": true,
+      "timer": { "timeDate": "deadline", "timeDuration": null, "timeCycle": null }
+    },
+    { "id": 5, "name": "Send Reminder", "type": "userTask", "x": 220, "y": 360, "roles": [], "variables": [], "requiresClaim": false, "claimMode": "fresh" },
+    { "id": 6, "name": "Escalated Review", "type": "userTask", "x": 480, "y": 360, "roles": [], "variables": [], "requiresClaim": false, "claimMode": "fresh" },
+    { "id": 7, "name": "Approved", "type": "endEvent", "x": 560, "y": 190, "roles": [], "variables": [] },
+    { "id": 8, "name": "Reminder Sent", "type": "endEvent", "x": 260, "y": 520, "roles": [], "variables": [] },
+    { "id": 9, "name": "Escalation Closed", "type": "endEvent", "x": 720, "y": 372, "roles": [], "variables": [] }
+  ],
+  "sequenceFlows": [
+    { "id": 101, "name": "", "sourceRef": 1, "targetRef": 2, "roles": [], "variables": [] },
+    { "id": 201, "name": "Approve", "sourceRef": 2, "targetRef": 7, "roles": [], "variables": [] },
+    { "id": 301, "name": "", "sourceRef": 3, "targetRef": 5, "roles": [], "variables": [] },
+    { "id": 401, "name": "", "sourceRef": 4, "targetRef": 6, "roles": [], "variables": [] },
+    { "id": 501, "name": "Reminder sent", "sourceRef": 5, "targetRef": 8, "roles": [], "variables": [] },
+    { "id": 601, "name": "Close escalation", "sourceRef": 6, "targetRef": 9, "roles": [], "variables": [] }
+  ]
+}

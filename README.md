@@ -37,6 +37,7 @@ Choose provider-managed [OpenID Connect](docs/openid-connect.md) or [Local user 
 | External order intake | Start from an authenticated message, map its payload, and apply business-key and transport-idempotency rules. | [Message start](examples/messages/01-message-start-typed-mapping.json) |
 | Reminders and deadlines | Run recurring reminder branches while work stays open; interrupt and escalate when a deadline arrives. | [Reminder and escalation](examples/timers/05-user-task-reminder-and-deadline.json) |
 | Working-day SLAs | Count deadlines and timers in a business calendar's working days and hours, skipping weekends and holidays in its time zone. | [Working-day deadline](examples/timers/06-working-day-deadline.json) |
+| Deadlines from request data | Take a timer's date or duration from the instance's own data, such as a contract end date or an SLA chosen by urgency; the due time is saved when the timer starts. | [Contract end wait](examples/timers/07-contract-end-wait.json) |
 | Risk-based escalation | Observe persisted business variables and interrupt an active review when its condition becomes true. | [Conditional boundary](examples/basics/08-interrupting-conditional-boundary.json) |
 | Evidence-aware routing | Use recorded flow actions and traversals in NCalc, JavaScript, and gateway decisions. | [FlowInfo](examples/scripts/03-flowinfo-ncalc-and-javascript.json) |
 

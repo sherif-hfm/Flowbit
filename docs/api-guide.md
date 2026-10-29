@@ -1110,6 +1110,8 @@ Content-Type: application/json
 }
 ```
 
+A target's timer boundaries are activated again by a reactivation. The preview evaluates them against the instance's current variables: a target whose [expression](node-reference.md#expression-schedules) boundary cannot be scheduled is not offered, with blocker code `timer_boundary_unresolvable` when no target remains; a boundary, fixed or expression, whose date is already due adds a `timer_boundary_already_due` warning with the target's `nodeId` and the boundary's id in `stateId`, because it interrupts or fires for the reactivated task as soon as the Worker runs. A commit repeats the assessment, so it refuses a target the preview refused with `409`.
+
 ### POST /api/instances/{id}/reactivation
 
 Atomically creates a fresh user-task activation for an eligible completed or cancelled instance while preserving its prior runtime history. The response's `lastReactivationTokenId` is the new root token: execution positions with it or a later token ID belong to the new run.
@@ -7169,7 +7171,7 @@ Administrative form of delegation creation. The authenticated administrator rema
 | `nullable` | boolean | No | — Default: `false`. |
 | `hasValue` | boolean | No | False means unset; true with null is an explicit null value. Default: `false`. |
 | `value` | null or [JsonElement](#schema-jsonelement) | No | Conditionally required when hasValue is true; omit when creating an unset variable. See the create-null limitation in Shared variables. |
-| `validation` | null or string | No | Optional expression at most 4000 Unicode scalars using the parameter value; no alias-key binding. Explicit permitted null skips validation. |
+| `validation` | null or string | No | Optional expression at most 4000 Unicode scalars using the parameter value; no alias-key binding. Explicit permitted null skips validation. NCalc built-in functions must use NCalc's spelling, such as `if` and `Max`; another casing returns `400`, because it would reject every non-null value. |
 | `description` | null or string | No | — |
 | `requestId` | null or string | No | Optional identifier up to 300 scalars, scoped by caller kind and caller ID across keys. Identical retries return the original result; reuse for a different key/operation/body returns 409. |
 | `reason` | null or string | No | Human-readable audit reason; required where non-null in version-change/reactivation requests. |
@@ -9801,14 +9803,14 @@ Machine credentials for the workflow-family task-distribution API.
 <details>
 <summary>TimerDefinitionModel</summary>
 
-BPMN-aligned timer expression. Exactly one member must be nonblank.
+BPMN-aligned timer schedule. Exactly one member must be nonblank. On a timer catch or boundary event, timeDate and timeDuration may also be NCalc expressions over stored instance variables, evaluated when the timer activates.
 
 Timer kinds: timeDate, timeDuration, timeCycle. Worker execution is required; see BPMN support for node-specific allowed forms.
 
 | Field | JSON type / schema | Required | Meaning / default |
 | --- | --- | --- | --- |
-| `timeDate` | null or string | No | Absolute timer instant; exactly one of timeDate/timeDuration/timeCycle must be nonblank. |
-| `timeDuration` | null or string | No | ISO 8601 duration (for example PT30S). |
+| `timeDate` | null or string | No | Absolute timer instant, or on a catch or boundary an [expression](node-reference.md#expression-schedules) that gives one, such as `${contractEnd}`; exactly one of timeDate/timeDuration/timeCycle must be nonblank. |
+| `timeDuration` | null or string | No | ISO 8601 duration (for example PT30S), or on a catch or boundary an [expression](node-reference.md#expression-schedules) that gives one, such as `if(urgent, 'PT4H', 'P2D')`. An activation whose expression cannot be scheduled fails with `400` and a message that names the node and property but no value. |
 | `timeCycle` | null or string | No | Supported repeating ISO 8601 schedule; see BPMN support for node-specific restrictions. |
 | `calendar` | null or string | No | Optional name of the [business calendar](#business-calendars) whose working time a `timeDuration` counts. Only with `timeDuration`. See [working-time durations](node-reference.md#working-time-durations). |
 

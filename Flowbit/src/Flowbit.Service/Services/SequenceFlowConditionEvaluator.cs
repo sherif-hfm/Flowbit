@@ -27,8 +27,9 @@ namespace Flowbit.Service.Services;
 /// Invalid or unresolvable expressions evaluate to <c>false</c>.
 ///
 /// In addition to the built-in NCalc functions (e.g. <c>Min</c>, <c>Max</c>,
-/// <c>if</c>, <c>in</c>, math helpers), the following custom helper functions are
-/// registered (names are case-insensitive):
+/// <c>if</c>, <c>in</c>, math helpers), which resolve only in their exact
+/// spelling (<see cref="BuiltInFunctionSpellings"/>), the following custom helper
+/// functions are registered (names are case-insensitive):
 ///   - <c>Length(s)</c> / <c>Len(s)</c> - character count of a string, or element
 ///     count of an array variable
 ///   - <c>IsNullOrEmpty(s)</c>, <c>IsNullOrWhiteSpace(s)</c>
@@ -263,6 +264,18 @@ public static class SequenceFlowConditionEvaluator
     }
 
     /// <summary>
+    /// Evaluates an expression whose optional "${ ... }" wrapper the caller has
+    /// already removed and returns its raw typed result, with objects preserved.
+    /// Every parse and evaluation exception passes through: NCalc's messages can
+    /// repeat variable values, so a caller that reports failures without values
+    /// handles the exceptions itself.
+    /// </summary>
+    internal static object? EvaluateUnwrapped(
+        string expression,
+        IReadOnlyDictionary<string, JsonElement> variables) =>
+        CreateExpression(expression, variables, preserveComplexTypes: true).Evaluate();
+
+    /// <summary>
     /// Builds an <see cref="Expression"/> with the shared options, the supplied
     /// instance variables as parameters (when given), and the custom helper
     /// functions registered. Both <see cref="Evaluate"/> and <see cref="IsValid"/>
@@ -472,6 +485,50 @@ public static class SequenceFlowConditionEvaluator
             helpersAllowed,
             waitingForStartAllowed,
             out error);
+
+    // With the options above, NCalc resolves a built-in function only in this
+    // spelling: the maths functions capitalized, and if, in, and ifs in
+    // lowercase. BuiltInFunctionHelper lists them all in lowercase, so it
+    // cannot tell. Flowbit's string helpers below match any casing.
+    internal static readonly IReadOnlySet<string> BuiltInFunctionSpellings = new HashSet<string>(
+        [
+            "Abs", "Acos", "Asin", "Atan", "Atan2", "Ceiling", "Cos", "EscapeLike", "Exp",
+            "Floor", "IEEERemainder", "Ln", "Log", "Log10", "Max", "Min", "Pow", "Round",
+            "Sign", "Sin", "Sqrt", "Tan", "Truncate", "if", "ifs", "in"
+        ],
+        StringComparer.Ordinal);
+
+    private static readonly IReadOnlySet<string> BuiltInFunctionsIgnoringCase =
+        new HashSet<string>(BuiltInFunctionSpellings, StringComparer.OrdinalIgnoreCase);
+
+    private static readonly IReadOnlySet<string> StringHelperNames = new HashSet<string>(
+        [
+            "Length", "Len", "IsNullOrEmpty", "IsNullOrWhiteSpace", "Contains",
+            "StartsWith", "EndsWith", "Lower", "Upper", "Trim", "IsMatch"
+        ],
+        StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Whether evaluation resolves a function without workflow context: an
+    /// NCalc built-in in its exact spelling, or one of Flowbit's string helpers
+    /// in any casing. Checks that must keep accepting definitions saved earlier
+    /// pass <paramref name="ignoreBuiltInCasing"/>. FlowInfo and the gateway
+    /// and multi-instance helpers need their own context and are not included.
+    /// </summary>
+    internal static bool IsGeneralFunction(string name, bool ignoreBuiltInCasing = false) =>
+        StringHelperNames.Contains(name)
+        || (ignoreBuiltInCasing ? BuiltInFunctionsIgnoringCase : BuiltInFunctionSpellings).Contains(name);
+
+    /// <summary>
+    /// Follows an unsupported-function message: "; write it as 'if'" for a
+    /// built-in written in another casing, such as If, otherwise empty.
+    /// </summary>
+    internal static string FunctionSpellingHint(string name) =>
+        BuiltInFunctionSpellings.FirstOrDefault(spelling =>
+                string.Equals(spelling, name, StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(spelling, name, StringComparison.Ordinal)) is { } spelling
+            ? $"; write it as '{spelling}'"
+            : string.Empty;
 
     private static bool TryEvaluateMultiInstanceFunction(
         string name,

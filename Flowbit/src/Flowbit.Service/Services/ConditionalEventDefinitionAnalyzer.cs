@@ -5,7 +5,6 @@ using Flowbit.Service.Models;
 using Flowbit.Shared.Models;
 using NCalc;
 using NCalc.Exceptions;
-using NCalc.Helpers;
 
 namespace Flowbit.Service.Services;
 
@@ -20,15 +19,6 @@ public sealed class ConditionalEventDefinitionAnalyzer
     private const ExpressionOptions Options =
         ExpressionOptions.CaseInsensitiveStringComparer
         | ExpressionOptions.AllowNullParameter;
-
-    private static readonly HashSet<string> AllowedFunctions = new(
-        BuiltInFunctionHelper.GetBuiltInFunctionNames()
-            .Concat([
-                "Length", "Len", "IsNullOrEmpty", "IsNullOrWhiteSpace",
-                "Contains", "StartsWith", "EndsWith", "Lower", "Upper",
-                "Trim", "IsMatch"
-            ]),
-        StringComparer.OrdinalIgnoreCase);
 
     private static readonly string[] NonObservablePrefixes =
         ["sys.", "config.", "setting.", "mi.", "gateway."];
@@ -107,9 +97,13 @@ public sealed class ConditionalEventDefinitionAnalyzer
                         + $"'{conditional.Condition}'.");
                 }
 
+                // Ignoring a built-in's casing keeps definitions saved earlier
+                // running; saving rejects it (RejectUnresolvableNames).
                 var unknownFunction = parsed.GetFunctionNames()
                     .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .FirstOrDefault(function => !AllowedFunctions.Contains(function));
+                    .FirstOrDefault(function => !SequenceFlowConditionEvaluator.IsGeneralFunction(
+                        function,
+                        ignoreBuiltInCasing: true));
                 if (unknownFunction is not null)
                 {
                     throw new WorkflowDomainException(
@@ -293,6 +287,82 @@ public sealed class ConditionalEventDefinitionAnalyzer
         return dependencies.ToImmutableArray();
     }
 
+    /// <summary>
+    /// Rejects names that evaluation never resolves, which would leave the
+    /// condition false: a built-in function in another casing, such as If for
+    /// if, and a bracketed name with spaces inside its brackets, such as
+    /// [ approved ], which dependency analysis trims but NCalc reads with the
+    /// spaces. Only saving applies these rules: <see cref="Analyze"/> still
+    /// accepts definitions saved earlier, so their instances run as before.
+    /// </summary>
+    internal static void RejectUnresolvableNames(WorkflowModel definition)
+    {
+        ArgumentNullException.ThrowIfNull(definition);
+        foreach (var node in (definition.FlowNodes ?? [])
+                     .Where(node => node is not null
+                         && BpmnFlowNodeTypes.IsConditionalEvent(node.Type))
+                     .OrderBy(node => node.Id))
+        {
+            var condition = ConditionalDefinitionRules.NormalizeCondition(
+                node.Conditional?.Condition);
+            if (condition is null)
+            {
+                continue;
+            }
+
+            string? misspelled;
+            string? padded;
+            try
+            {
+                var parsed = new Expression(condition, Options);
+                if (parsed.HasErrors())
+                {
+                    continue;
+                }
+
+                misspelled = parsed.GetFunctionNames().FirstOrDefault(function =>
+                    !SequenceFlowConditionEvaluator.IsGeneralFunction(function));
+                padded = FindPaddedParameter(parsed.GetParameterNames());
+            }
+            catch (NCalcException)
+            {
+                // Dependency analysis reports an invalid condition.
+                continue;
+            }
+
+            if (misspelled is not null)
+            {
+                throw new WorkflowDomainException(
+                    $"{Describe(node)} condition uses unsupported "
+                    + $"or non-observable function '{misspelled}'"
+                    + $"{SequenceFlowConditionEvaluator.FunctionSpellingHint(misspelled)}.");
+            }
+
+            if (padded is not null)
+            {
+                throw new WorkflowDomainException(
+                    $"{Describe(node)} condition {PaddedBracketProblem(padded)}");
+            }
+        }
+    }
+
+    /// <summary>
+    /// The first NCalc parameter name with spaces around it, which only a
+    /// bracketed name such as [ approved ] produces, or null. Timer
+    /// expressions share this rule.
+    /// </summary>
+    internal static string? FindPaddedParameter(IEnumerable<string> parameters) =>
+        parameters.FirstOrDefault(name =>
+            name.Trim() is { Length: > 0 } trimmed && trimmed.Length != name.Length);
+
+    /// <summary>
+    /// Explains a name that <see cref="FindPaddedParameter"/> found, after the
+    /// subject that names the expression.
+    /// </summary>
+    internal static string PaddedBracketProblem(string padded) =>
+        $"references '[{padded}]' with spaces inside the brackets; NCalc keeps them "
+        + $"in the name, so it never matches a stored variable. Write '[{padded.Trim()}]'.";
+
     private static string Describe(FlowNodeModel node) =>
         BpmnFlowNodeTypes.IsConditionalBoundary(node.Type)
             ? $"Conditional boundary event #{node.Id}"
@@ -301,43 +371,11 @@ public sealed class ConditionalEventDefinitionAnalyzer
     private static IReadOnlyDictionary<string, string> BuildCanonicalVariableMap(
         WorkflowModel definition)
     {
-        var names = new List<(string Name, string Owner)>();
-
-        AddVariables(definition.Variables, "process variables");
-        foreach (var node in definition.FlowNodes ?? [])
-        {
-            if (node is null) continue;
-            AddVariables(node.Variables, $"flow node #{node.Id}");
-            AddTarget(node.Service?.StatusVariable, $"service task #{node.Id} statusVariable");
-            foreach (var mapping in node.Service?.OutputMappings ?? [])
-            {
-                if (mapping is not null)
-                {
-                    AddTarget(mapping.Variable, $"service task #{node.Id} output mapping");
-                }
-            }
-            foreach (var mapping in node.Message?.OutputMappings ?? [])
-            {
-                if (mapping is not null)
-                {
-                    AddTarget(mapping.Variable, $"message event #{node.Id} output mapping");
-                }
-            }
-            AddTarget(node.ErrorVariable, $"error boundary event #{node.Id} errorVariable");
-            AddTarget(node.Idempotency?.Variable, $"entry event #{node.Id} idempotency variable");
-        }
-        foreach (var flow in definition.SequenceFlows ?? [])
-        {
-            if (flow is not null)
-            {
-                AddVariables(flow.Variables, $"sequence flow #{flow.Id}");
-            }
-        }
-
         var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var group in names.GroupBy(item => item.Name, StringComparer.OrdinalIgnoreCase))
+        foreach (var group in DeclaredStoredVariableNames(definition)
+                     .GroupBy(name => name, StringComparer.OrdinalIgnoreCase))
         {
-            var spellings = group.Select(item => item.Name)
+            var spellings = group
                 .Distinct(StringComparer.Ordinal)
                 .Order(StringComparer.Ordinal)
                 .ToArray();
@@ -352,23 +390,68 @@ public sealed class ConditionalEventDefinitionAnalyzer
         }
 
         return result;
+    }
 
-        void AddVariables(IEnumerable<VariableModel>? variables, string owner)
+    /// <summary>
+    /// The trimmed names of every statically declared, persisted instance
+    /// variable producer, in declaration order and with repeats: process, node,
+    /// and sequence-flow variables plus service/message output targets, status
+    /// and error targets, and entry idempotency targets. Timer expressions share
+    /// this vocabulary.
+    /// </summary>
+    internal static IReadOnlyList<string> DeclaredStoredVariableNames(WorkflowModel definition)
+    {
+        var names = new List<string>();
+
+        AddVariables(definition.Variables);
+        foreach (var node in definition.FlowNodes ?? [])
+        {
+            if (node is null) continue;
+            AddVariables(node.Variables);
+            AddTarget(node.Service?.StatusVariable);
+            foreach (var mapping in node.Service?.OutputMappings ?? [])
+            {
+                if (mapping is not null)
+                {
+                    AddTarget(mapping.Variable);
+                }
+            }
+            foreach (var mapping in node.Message?.OutputMappings ?? [])
+            {
+                if (mapping is not null)
+                {
+                    AddTarget(mapping.Variable);
+                }
+            }
+            AddTarget(node.ErrorVariable);
+            AddTarget(node.Idempotency?.Variable);
+        }
+        foreach (var flow in definition.SequenceFlows ?? [])
+        {
+            if (flow is not null)
+            {
+                AddVariables(flow.Variables);
+            }
+        }
+
+        return names;
+
+        void AddVariables(IEnumerable<VariableModel>? variables)
         {
             foreach (var variable in variables ?? [])
             {
                 if (variable is not null)
                 {
-                    AddTarget(variable.Name, owner);
+                    AddTarget(variable.Name);
                 }
             }
         }
 
-        void AddTarget(string? value, string owner)
+        void AddTarget(string? value)
         {
             if (!string.IsNullOrWhiteSpace(value))
             {
-                names.Add((value.Trim(), owner));
+                names.Add(value.Trim());
             }
         }
     }

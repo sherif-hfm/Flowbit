@@ -447,6 +447,36 @@ demonstrates a message wait cancelled by its deadline; a late delivery returns
 
 Atomic conditional catches evaluate within the variable writer's transaction. Durable conditional catches latch a true result and queue a wake that remains valid even if a later write makes the condition false. Conditional boundaries may also create sibling work or interrupt a host. Account for those transitions when your application updates variables administratively or submits outputs.
 
+### Expression timers
+
+A timer catch or boundary can take its date or duration from instance data, such as `"timeDate": "${contractEnd}"` or `"timeDuration": "if(urgent, 'PT4H', 'P2D')"`. The engine evaluates the expression once, when the timer activates, from the instance's stored variables, and saves the due time. The [node reference](node-reference.md#expression-schedules) lists the rules. For an integration they mean:
+
+- **Send `datetime` values with an offset.** `2026-12-01T09:30:00+01:00` and `2026-12-01T08:30:00Z` work; `2026-12-01T09:30:00` is a valid `datetime` variable but fails when the timer activates. A `validation` rule on the input rejects such a value at the start instead:
+
+  ```http
+  POST /api/instances HTTP/1.1
+  Authorization: Bearer <token>
+  Content-Type: application/json
+
+  {
+    "workflowId": 42,
+    "variables": { "contractEnd": "2026-12-01T09:30:00+01:00" }
+  }
+  ```
+
+  The [contract end example](../examples/timers/07-contract-end-wait.json) shows the rule.
+- **Write the input before the timer activates.** A boundary sees values stored when its host activates, including values written earlier in the same transition; it cannot read the output of the activity it guards. Shared variables and `sys.*`, `config.*`, and `setting.*` context are not available, so copy such a value into an instance variable first.
+- **A failed activation is the caller's error.** A missing variable or an unusable result rejects the request that reached the timer (start, action, message delivery, or administrative action) with `400` and changes nothing. The message names the node and property, never the value:
+
+  ```json
+  { "error": "Timer boundary event #4 timer.timeDuration cannot be scheduled: variable 'slaDuration' has no value." }
+  ```
+
+  The caller is often not the person who can fix the data, and a synchronous failure leaves no incident; operators see it as a warning log. Inside a Worker job the same failure retries and then opens an incident.
+- **Correcting a schedule.** Before a schedule is saved, correct the variable (for example with `PATCH /api/instances/{id}/variables`) and repeat the request, or retry the incident. After it is saved, the due time stands: later variable or calendar changes, Worker restarts, retries of a fired timer, and compatible version changes keep it. For a timer boundary on a user task, an administrator can take the boundary action at once, which always interrupts the task, or move the task on with a direct-flow action; a timer catch, or a boundary on another kind of host, can only wait or have its instance cancelled.
+- **Version changes compare text.** An open expression timer allows an in-place version change only when the target authors the same text, `${...}` wrapper included.
+- **Reactivation.** The [reactivation preview](api-guide.md#get-apiinstancesidreactivation) refuses a target whose expression timer boundary cannot be scheduled (`timer_boundary_unresolvable`) and warns when a timer boundary would already be due (`timer_boundary_already_due`); a commit for a refused target returns `409`.
+
 ## Read progress, search, and audit
 
 Use the resource that matches the question:

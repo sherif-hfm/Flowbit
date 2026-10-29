@@ -96,7 +96,7 @@ Output mappings are typed contracts with required fields, defaults, and validati
 
 ### Timers
 
-Each timer specifies exactly one fixed schedule:
+Each timer specifies exactly one schedule:
 
 | Property | Example value | Meaning |
 | --- | --- | --- |
@@ -104,7 +104,9 @@ Each timer specifies exactly one fixed schedule:
 | `timeDuration` | `"PT30S"` | Positive fixed duration from activation. |
 | `timeCycle` | `"R5/PT30S"` | Five occurrences at a 30-second interval; `R/PT30S` has no authored count limit. |
 
-A `timeDuration` can name a business calendar in `calendar`; it then counts that calendar's working days and working hours in its time zone, and the due time is saved when the timer activates. A timer start whose calendar cannot give a due time opens a `timer_schedule_failed` incident instead of being scheduled. See [working-time durations](node-reference.md#working-time-durations). Calendar months/years, cron, and expression-based schedules are unsupported, and a `timeCycle` cannot name a calendar. Recurring intervals must be at least one second. The schedule is persisted, but firing can be late if the Worker is unavailable or busy. Recurring misfires more than one minute late skip to a subsequent eligible occurrence; a finite timer catch with no remaining occurrence opens an incident rather than inventing a trigger.
+On an intermediate timer catch or a timer boundary, `timeDate` and `timeDuration` can also be NCalc expressions over declared, persisted instance variables, such as `"${contractEnd}"` or `"if(urgent, 'PT4H', 'P2D')"`. Each is evaluated once, when the timer activates, and its due time is saved; later variable changes do not move it. See [expression schedules](node-reference.md#expression-schedules). Timer starts and `timeCycle` remain fixed, and expressions cannot read shared variables or `sys.*`, `config.*`, or `setting.*` context.
+
+A `timeDuration` can name a business calendar in `calendar`; it then counts that calendar's working days and working hours in its time zone, and the due time is saved when the timer activates. A timer start whose calendar cannot give a due time opens a `timer_schedule_failed` incident instead of being scheduled. See [working-time durations](node-reference.md#working-time-durations). Calendar months/years, cron, expression-based timer starts and cycles, and calendars chosen by an expression are unsupported, and a `timeCycle` cannot name a calendar. Recurring intervals must be at least one second. The schedule is persisted, but firing can be late if the Worker is unavailable or busy. Recurring misfires more than one minute late skip to a subsequent eligible occurrence; a finite timer catch with no remaining occurrence opens an incident rather than inventing a trigger.
 
 Timer starts follow the published default definition's schedule activation. Switching defaults or unpublishing affects those schedules through reconciliation. A normal intermediate catch consumes a trigger and leaves the wait; recurring boundary timers can create several sibling reminders while their host remains active.
 
@@ -121,7 +123,7 @@ A conditional definition fragment is:
 }
 ```
 
-The expression must reference 1–64 declared, persisted **instance variables**, within 4,000 Unicode scalar values. Shared aliases and non-observable `sys.*`, `config.*`, `setting.*`, `mi.*`, `gateway.*`, and `FlowInfo` are rejected. Supported pure NCalc functions may be used. This is change-driven evaluation of committed variable batches, not polling arbitrary external conditions.
+The expression must reference 1–64 declared, persisted **instance variables**, within 4,000 Unicode scalar values. Shared aliases and non-observable `sys.*`, `config.*`, `setting.*`, `mi.*`, `gateway.*`, and `FlowInfo` are rejected, and saving rejects a bracketed name with spaces inside the brackets, such as `[ approved ]`, which could never match a variable. Supported pure NCalc functions may be used, in the spelling NCalc resolves (`Max`, but `if`); saving rejects another casing. This is change-driven evaluation of committed variable batches, not polling arbitrary external conditions.
 
 - Missing `deliveryMode` means `atomic`: evaluate and advance within the writer's transaction.
 - `durableAsync`: when true, latch the occurrence and persist its job and exact activation fence in that transaction. The Worker later advances it even if another write has made the expression false.

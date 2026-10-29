@@ -395,6 +395,13 @@ follow an attached error boundary without persisting a partial batch. Lease
 loss, archived keys, database errors, broken invariants, and concurrent value
 changes remain operational conflicts or incidents.
 
+A validation must write NCalc's built-in functions in their own spelling, such
+as `if` and `Max`: creating a shared variable
+(`SharedVariableValueValidator.ValidateNewContract`) and saving a definition
+binding reject another casing, which would reject every concrete value. The
+contract check that every write repeats stays casing-tolerant, so shared
+variables created earlier behave as before.
+
 Shared aliases are rejected in conditional catches for both default `atomic`
 and `durableAsync` delivery. Copy a required catalog value into an instance
 variable when a workflow needs a state snapshot, or use a message event when an
@@ -480,7 +487,12 @@ values. It uses NCalc built-ins and Flowbit's pure string helpers, must referenc
 `scope: "shared"` alias, undeclared variables, unknown functions, `FlowInfo`,
 gateway/multi-instance helpers, or non-observable `sys.*`, `config.*`,
 `setting.*`, `mi.*`, and `gateway.*` context. Shared aliases are rejected for
-both delivery modes. The node must
+both delivery modes. Saving also rejects a bracketed name with spaces inside
+its brackets, such as `[ approved ]`: NCalc keeps the spaces in the name, so
+the condition could never see the value. It likewise rejects a built-in
+function in a casing NCalc does not resolve, such as `If` for `if` or `max`
+for `Max`. Runtime analysis still accepts definitions saved earlier, so their
+instances run as before. The node must
 have at least one incoming flow and exactly one unconditional outgoing flow; it
 cannot carry task, role, variable, async-job, or another event type's metadata.
 `deliveryMode` accepts `atomic` or `durableAsync`; omission means `atomic`, and
@@ -734,7 +746,9 @@ execution, not to every child item. Conditional catches may use
 `conditional.deliveryMode: "durableAsync"` to enqueue control work. Definitions
 may also use
 `timerStartEvent`, `intermediateTimerCatchEvent`, and `timerBoundaryEvent` with
-exactly one fixed ISO-8601 `timeDate`, `timeDuration`, or `timeCycle` schedule.
+exactly one ISO-8601 `timeDate`, `timeDuration`, or `timeCycle` schedule. On a
+catch or boundary, `timeDate` and `timeDuration` may be NCalc expressions (see
+[expression timers](#expression-timers)).
 Timer boundaries may be interrupting or noninterrupting and may recur.
 
 The worker leases bounded work with PostgreSQL `FOR UPDATE SKIP LOCKED`.
@@ -1390,7 +1404,7 @@ dotnet test ./tests/Flowbit.BrowserTests/Flowbit.BrowserTests.csproj -c Release 
 ```
 
 Set `FLOWBIT_BROWSER_HEADED=1` to launch Chromium headed for local diagnosis.
-The suite covers editor E1–E11 and runtime R1–R11 scenarios (see the project
+The suite covers editor E1–E12 and runtime R1–R11 scenarios (see the project
 README); manual native-picker and full acceptance checks remain the caller's
 responsibility.
 
@@ -1680,6 +1694,18 @@ A timer `timeDuration` can name a calendar in `timer.calendar`, and a user-task 
 - **Version compatibility.** The timer node contract keeps `timer.calendar`, and `TimerDescriptorMatches` compares `ScheduleCalendar` ignoring case. `CanonicalNode` drops `dueDateCalendar`.
 
 See [working-time durations](../docs/node-reference.md#working-time-durations).
+
+### Expression timers
+
+A timer catch's or boundary's `timeDate` or `timeDuration` that is not a fixed value is an NCalc expression evaluated once per activation. See [expression schedules](../docs/node-reference.md#expression-schedules).
+
+- **Classification.** `TimerDefinitionRules.ClassifyScheduleValue` decides fixed, expression, or unusable. It shares UI-04's intended-fixed rule and `QuotedLiteral` with `UserTaskDueRules`, and adds signed durations, other scripts' digits, recurrence text, the other property's values, and `${...}` inside text. The editor's `classifyTimerScheduleValue` mirrors it; tests run both over the same fixtures.
+- **Analysis.** `TimerExpressionDefinitionAnalyzer` checks syntax, functions, and references with NCalc's AST over the stored-variable vocabulary of `ConditionalEventDefinitionAnalyzer.DeclaredStoredVariableNames`, rejecting shared aliases and `sys.*`, `config.*`, `setting.*`, `mi.*`, and `gateway.*`, any function evaluation would not resolve, including an NCalc built-in in another casing such as `If` or `max` (`SequenceFlowConditionEvaluator.BuiltInFunctionSpellings` lists the spellings), then any bracketed name with spaces inside the brackets, such as `[ slaDuration ]`, which NCalc would never match, and evaluating a variable-free expression at once. It runs last in `ValidateNormalized`, only for expression values, so fixed-only definitions validate as before. `TimerExpressionPlanCache` keeps one plan per immutable definition id and repeats the analysis for cached or older definitions.
+- **Activation.** `ResolveTimerScheduleAsync` receives the activation's stored instance values and one `activatedAt` shared by a catch and its boundaries or by a host's boundaries. Synchronous routing passes `storedOverlay`; staged service and script jobs read `LoadLatestVariableVersionsAsync` before activating boundaries and merge shared values only afterwards, because that merge can lock shared rows. `TimerExpressionEvaluator` reads only the plan's referenced names, and `WorkflowTimerSchedule.TryResolveExpressionResult` counts a duration in its literal calendar.
+- **Failures.** Every evaluation and arithmetic failure becomes a `WorkflowDomainException` whose message names the node, property, and cause but no value or NCalc message, because those can contain instance data that would reach job failures, incidents, and logs. One value-free warning is logged per failure. A `WorkflowConflictException` would complete a Worker job as stale, so it is never used here.
+- **Persistence.** `BuildTimerSubscription` stores the authored text in `ScheduleExpression` and the resolved due time in `NextDueAt`; nothing re-evaluates a saved schedule. Firing, restart recovery, retries of a scheduled timer, and administrative timer actions never call the evaluator.
+- **Reactivation.** `EvaluateReactivationTimerBoundariesAsync` evaluates a target's timer boundaries in the preview: an unresolvable expression blocks the target (`timer_boundary_unresolvable`), and an already-due boundary, fixed or expression, adds a `timer_boundary_already_due` warning. The commit repeats the assessment.
+- **Version compatibility.** Open timers compare authored text, wrapper included; conditional events strip their wrapper instead.
 
 ### Conditions are visibility and execution guards
 

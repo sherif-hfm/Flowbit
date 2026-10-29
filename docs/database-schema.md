@@ -914,9 +914,9 @@ One row per armed timer. A definition-level timer start has no instance or token
 | `WorkflowDefinitionId`, `WorkflowKey`, `TimerNodeId`, `TimerNodeName` | Version and timer node. |
 | `InstanceId`, `TokenId`, `ActivationId` | Instance fence; null for timer starts. |
 | `AttachedToNodeId`, `CancelActivity` | Host node and interrupting flag, for boundaries only. |
-| `ScheduleKind`, `ScheduleExpression` | `timeDate`, `timeDuration`, or `timeCycle`, plus the ISO-8601 value. |
+| `ScheduleKind`, `ScheduleExpression` | `timeDate`, `timeDuration`, or `timeCycle`, plus the schedule value as authored, after trimming: an ISO-8601 value, or the NCalc text of an [expression schedule](node-reference.md#expression-schedules), never its result. Version changes compare this text. |
 | `ScheduleCalendar` | The business calendar a `timeDuration` was counted in; null for wall-clock schedules. Version changes compare it, ignoring case, with the target timer's calendar. |
-| `NextDueAt`, `Occurrence` | Next due time and occurrence counter for recurring timers. |
+| `NextDueAt`, `Occurrence` | Next due time, in UTC, and occurrence counter for recurring timers. For an expression schedule, `NextDueAt` is the due time its result gave when the timer activated; it is never recomputed. The timer job's `ScheduledOccurrenceAt` keeps the same occurrence, while its `DueAt` can move for a delivery retry. |
 | `Status`, `CompletedAt` | `active`, `paused`, `completed`, or `cancelled`. |
 
 - **Primary key:** `Id`

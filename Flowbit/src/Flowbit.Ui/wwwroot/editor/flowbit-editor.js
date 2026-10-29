@@ -935,6 +935,9 @@ let diagramSearchIndex = -1;
 let snapToGrid = false;
 let gridSize = DEFAULT_GRID_SIZE;
 let instanceOverlay = new Map(); // viewer only: node id -> { state, badge, label }
+// Inspector-only: the Fixed value / Expression choice a user made for a timer
+// node's schedule, by node object. Unset choices are inferred from the value.
+const timerInputModes = new WeakMap();
 let notifiedViewerSelection = null;
 let pendingViewerFit = false;
 
@@ -4369,19 +4372,25 @@ function renderConditionalSection(node) {
   conditionInput.parentElement?.appendChild(dependencyStatus);
 
   const updateDependencyStatus = () => {
-    const referencedShared = sharedVariablesReferencedByExpression(
-      typeof conditional.condition === "string" ? conditional.condition : "");
-    if (referencedShared.length === 0) {
-      conditionInput.setAttribute("aria-invalid", "false");
-      dependencyStatus.textContent = "";
-      return;
+    const condition = typeof conditional.condition === "string" ? conditional.condition : "";
+    const problems = [];
+    const referencedShared = sharedVariablesReferencedByExpression(condition);
+    if (referencedShared.length > 0) {
+      const aliases = referencedShared.map(variable => `'${variable.name.trim()}'`);
+      problems.push(aliases.length === 1
+        ? `Conditional events cannot reference shared process variable ${aliases[0]}. Copy the value into an instance variable or use a message event.`
+        : `Conditional events cannot reference shared process variables ${aliases.join(", ")}. Copy the values into instance variables or use message events.`);
     }
+    const misspelled = misspelledBuiltInCall(condition);
+    if (misspelled) {
+      problems.push("The condition uses unsupported or non-observable function " +
+        misspelledBuiltInText(misspelled) + ".");
+    }
+    const padded = paddedBracketReference(condition);
+    if (padded) problems.push("The condition " + paddedBracketProblem(padded));
 
-    conditionInput.setAttribute("aria-invalid", "true");
-    const aliases = referencedShared.map(variable => `'${variable.name.trim()}'`);
-    dependencyStatus.textContent = aliases.length === 1
-      ? `Conditional events cannot reference shared process variable ${aliases[0]}. Copy the value into an instance variable or use a message event.`
-      : `Conditional events cannot reference shared process variables ${aliases.join(", ")}. Copy the values into instance variables or use message events.`;
+    conditionInput.setAttribute("aria-invalid", problems.length > 0 ? "true" : "false");
+    dependencyStatus.textContent = problems.join(" ");
   };
   conditionInput.addEventListener("input", updateDependencyStatus);
   updateDependencyStatus();
@@ -4811,7 +4820,8 @@ function renderDurationEditor(parent, label, value, onChange, options = {}) {
     const belowMinimum = seconds != null && options.minimumSeconds != null && seconds < options.minimumSeconds;
     advancedStatus.classList.toggle("is-error", seconds == null || belowMinimum);
     advancedStatus.textContent = seconds == null
-      ? "Enter a positive fixed-unit ISO duration."
+      ? (options.describeInvalid && options.describeInvalid(rawInput.value)) ||
+        "Enter a positive fixed-unit ISO duration."
       : belowMinimum
         ? `The interval must be at least ${options.minimumSeconds} second${options.minimumSeconds === 1 ? "" : "s"}.`
         : "Valid ISO duration.";
@@ -4973,7 +4983,7 @@ function renderCycleEditor(parent, value, onChange) {
   return wrapper;
 }
 
-function renderAbsoluteTimerEditor(parent, value, onChange) {
+function renderAbsoluteTimerEditor(parent, value, onChange, options = {}) {
   const original = typeof value === "string" ? value : value == null ? "" : String(value);
   const localValue = isoToBrowserLocalDateTime(value);
   const wrapper = document.createElement("div");
@@ -5023,7 +5033,8 @@ function renderAbsoluteTimerEditor(parent, value, onChange) {
     const parsed = parseTimerTimeDate(rawInput.value);
     advancedStatus.classList.toggle("is-error", parsed == null);
     advancedStatus.textContent = parsed == null
-      ? "Enter a valid date/time with Z or an explicit UTC offset."
+      ? (options.describeInvalid && options.describeInvalid(rawInput.value)) ||
+        "Enter a valid date/time with Z or an explicit UTC offset."
       : `Valid instant · UTC ${parsed.canonical}`;
   };
   const refreshPreview = iso => {
@@ -5219,7 +5230,7 @@ function renderTimerSection(node) {
     const malformed = document.createElement("p");
     malformed.className = "empty-note";
     malformed.style.color = "var(--warning-text)";
-    malformed.textContent = "The imported timer configuration is malformed. Choose a timer expression to replace it.";
+    malformed.textContent = "The imported timer configuration is malformed. Choose a schedule to replace it.";
     inspector.appendChild(malformed);
     const reset = document.createElement("button");
     reset.textContent = "Reset timer configuration";
@@ -5235,7 +5246,7 @@ function renderTimerSection(node) {
   const selectedKind = node.timer.timeDate != null
     ? "timeDate"
     : node.timer.timeCycle != null ? "timeCycle" : "timeDuration";
-  selectField("Timer expression", [
+  selectField("Schedule", [
     { value: "timeDate", label: "Absolute date/time" },
     { value: "timeDuration", label: "Duration after activation" },
     { value: "timeCycle", label: "Repeating cycle" }
@@ -5248,31 +5259,129 @@ function renderTimerSection(node) {
     renderInspector();
   });
 
-  if (selectedKind === "timeDate") {
-    renderAbsoluteTimerEditor(inspector, node.timer.timeDate ?? "", value => {
-      node.timer.timeDate = value;
+  // A catch or boundary may compute its date or duration with an expression.
+  // The choice only selects the control; switching keeps the authored text.
+  const inputMode = selectedKind !== "timeCycle" && timerScheduleExpressionsAllowed(node.type)
+    ? timerInputMode(node, selectedKind)
+    : "fixed";
+  if (selectedKind !== "timeCycle" && timerScheduleExpressionsAllowed(node.type)) {
+    selectField("Value", [
+      { value: "fixed", label: "Fixed value" },
+      { value: "expression", label: "Expression" }
+    ], inputMode, value => {
+      timerInputModes.set(node, { property: selectedKind, mode: value });
+      renderInspector();
     });
-  } else if (selectedKind === "timeCycle") {
+  }
+
+  let refreshCalendar = () => {};
+  if (selectedKind === "timeCycle") {
     renderCycleEditor(inspector, node.timer.timeCycle ?? "", value => {
       node.timer.timeCycle = value;
     });
+  } else if (inputMode === "expression") {
+    renderTimerExpressionEditor(node, selectedKind, () => refreshCalendar());
+  } else if (selectedKind === "timeDate") {
+    renderAbsoluteTimerEditor(inspector, node.timer.timeDate ?? "", value => {
+      node.timer.timeDate = value;
+    }, { describeInvalid: text => describeTimerAdvancedValue(node, "timeDate", text) });
   } else {
-    let refreshCalendar = () => {};
     renderDurationEditor(inspector, "Duration after activation", node.timer.timeDuration ?? "", value => {
       node.timer.timeDuration = value;
       refreshCalendar();
-    }, { defaultUnit: "hours" });
-    refreshCalendar = renderTimerCalendarField(node);
+    }, {
+      defaultUnit: "hours",
+      describeInvalid: text => describeTimerAdvancedValue(node, "timeDuration", text)
+    });
   }
+  if (selectedKind === "timeDuration") refreshCalendar = renderTimerCalendarField(node);
   const hint = document.createElement("p");
   hint.className = "empty-note";
-  hint.textContent = selectedKind === "timeDate"
-    ? "Choose a local date and time. Flowbit saves the equivalent UTC instant with a Z offset."
-    : selectedKind === "timeCycle"
-      ? "Choose whether the interval repeats forever or a fixed number of times. Recurring intervals must be at least one second."
-      : "Choose an amount and unit. Fixed weeks, days, hours, minutes, and seconds are supported; calendar years and months are not. " +
-        "With a business calendar, days keep the time of day on later working days and hours count only working hours; weeks cannot be used.";
+  hint.textContent = inputMode === "expression"
+    ? "Evaluated once, from stored instance variables, when the timer activates; the due time is saved, and later " +
+      "variable changes do not move it. A datetime value needs an explicit offset such as Z or +02:00. " +
+      (options.mode === "hosted"
+        ? "Saving checks the expression's syntax and the variables it names; this field checks only the parts it can without an NCalc parser."
+        : "This standalone editor cannot check NCalc syntax or variable names, so an export does not prove the expression is valid; saving through the API checks them.")
+    : selectedKind === "timeDate"
+      ? "Choose a local date and time. Flowbit saves the equivalent UTC instant with a Z offset."
+      : selectedKind === "timeCycle"
+        ? "Choose whether the interval repeats forever or a fixed number of times. Recurring intervals must be at least one second."
+        : "Choose an amount and unit. Fixed weeks, days, hours, minutes, and seconds are supported; calendar years and months are not. " +
+          "With a business calendar, days keep the time of day on later working days and hours count only working hours; weeks cannot be used.";
   inspector.appendChild(hint);
+}
+// Infers Fixed value or Expression from the authored text unless the user
+// chose one for this property. Text the fixed controls cannot show, other than
+// a malformed fixed value, opens as an expression so it stays editable.
+function timerInputMode(node, property) {
+  const chosen = timerInputModes.get(node);
+  if (chosen && chosen.property === property) return chosen.mode;
+  const value = node.timer[property];
+  if (!hasText(value)) return "fixed";
+  const trimmed = value.trim();
+  const classified = classifyTimerScheduleValue(property, trimmed, true);
+  if (classified.kind !== "invalid") return classified.kind;
+  const looksFixed = validatorTimeDate(trimmed) || validatorFixedDurationSeconds(trimmed) !== null ||
+    TIMER_RECURRENCE.test(trimmed) || USER_TASK_INTENDED_FIXED_DUE_VALUE.test(trimmed) ||
+    TIMER_INTENDED_DURATION.test(trimmed);
+  return looksFixed ? "fixed" : "expression";
+}
+// The fixed controls' raw ISO field accepts any text. Say what the text would
+// be once saved: an expression reopens in Expression mode after a reload.
+function describeTimerAdvancedValue(node, property, text) {
+  if (!hasText(text)) return null;
+  const classified = classifyTimerScheduleValue(
+    property, text, timerScheduleExpressionsAllowed(node.type));
+  return classified.kind === "expression"
+    ? "This text is an expression, not a fixed value. Choose Expression above to edit and check it as one."
+    : classified.problem;
+}
+function renderTimerExpressionEditor(node, property, onChange) {
+  const f = document.createElement("div");
+  f.className = "field";
+  const inputId = "timer-expression-" + String(node.id);
+  const labelElement = document.createElement("label");
+  labelElement.htmlFor = inputId;
+  labelElement.textContent = property === "timeDate" ? "Date/time expression" : "Duration expression";
+  const input = document.createElement("input");
+  input.type = "text";
+  input.id = inputId;
+  input.spellcheck = false;
+  input.autocomplete = "off";
+  input.placeholder = property === "timeDate" ? "${contractEnd}" : "if(urgent, 'PT4H', 'P2D')";
+  const current = node.timer[property];
+  input.value = typeof current === "string" ? current : String(current ?? "");
+  const help = document.createElement("p");
+  help.className = "empty-note";
+  help.id = inputId + "-help";
+  help.textContent = property === "timeDate"
+    ? "NCalc over stored instance variables that gives a date-time with an offset, such as ${contractEnd} or " +
+      "endDate + 'T17:00:00Z'. At most 128 characters."
+    : "NCalc over stored instance variables that gives a duration, such as if(urgent, 'PT4H', 'P2D'). " +
+      "Use [name] for a variable whose name looks like a duration. At most 128 characters.";
+  const status = document.createElement("p");
+  status.className = "expression-validation";
+  status.setAttribute("role", "status");
+  status.setAttribute("aria-live", "polite");
+  status.id = inputId + "-status";
+  input.setAttribute("aria-describedby", status.id + " " + help.id);
+  const updateValidation = () => {
+    const problems = timerScheduleValueProblems(node.type, property, input.value, model.variables);
+    input.setAttribute("aria-invalid", problems.length ? "true" : "false");
+    status.textContent = problems.map(problem => problem.text).join(" ");
+  };
+  input.oninput = () => {
+    node.timer[property] = input.value;
+    updateValidation();
+    onChange();
+  };
+  f.appendChild(labelElement);
+  f.appendChild(input);
+  f.appendChild(status);
+  f.appendChild(help);
+  inspector.appendChild(f);
+  updateValidation();
 }
 // The calendar is free text: the editor has no list of calendars, and the
 // server checks that the named calendar exists when the definition is saved.
@@ -9438,6 +9547,9 @@ function validateFlowInfoUsage(ctx) {
         false);
       validateFlowInfoExpression(ctx, node && node.activationCondition,
         label + " activationCondition", false);
+      const timer = node && node.timer && typeof node.timer === "object" ? node.timer : null;
+      validateFlowInfoExpression(ctx, timer && timer.timeDate, label + " timer timeDate", false);
+      validateFlowInfoExpression(ctx, timer && timer.timeDuration, label + " timer timeDuration", false);
 
       const serviceMappings = node && node.service && node.service.outputMappings;
       for (const mapping of Array.isArray(serviceMappings) ? serviceMappings : []) {
@@ -9595,6 +9707,10 @@ function validateGatewayExpressionUsage(ctx) {
         ctx,
         node && node.multiInstance && node.multiInstance.cardinalityExpression,
         label + " cardinality expression", null, false);
+      const timer = node && node.timer && typeof node.timer === "object" ? node.timer : null;
+      validateGatewayExpression(ctx, timer && timer.timeDate, label + " timer timeDate", null, false);
+      validateGatewayExpression(ctx, timer && timer.timeDuration,
+        label + " timer timeDuration", null, false);
       validateVariables(node && node.variables, label);
 
       const serviceMappings = node && node.service && node.service.outputMappings;
@@ -9866,9 +9982,131 @@ function timerCalendarProblem(timer) {
   if (!hasText(timer.timeDuration)) {
     return "names a calendar, but only a timeDuration can be counted in a business calendar.";
   }
-  return validatorFixedDurationSeconds(timer.timeDuration) !== null
-    ? countableDurationProblem("timeDuration", timer.timeDuration.trim())
+  // A quoted literal is as fixed as a bare value; any other expression's
+  // result is checked when the timer activates.
+  const duration = timer.timeDuration.trim();
+  const fixedText = validatorFixedDurationSeconds(duration) !== null
+    ? duration
+    : quotedUserTaskLiteral(unwrapTimerExpression(duration) || "");
+  return fixedText !== null && validatorFixedDurationSeconds(fixedText) !== null
+    ? countableDurationProblem("timeDuration", fixedText.trim())
     : null;
+}
+// Timer schedule values. These mirror TimerDefinitionRules on the server: a
+// timer catch or boundary may compute its timeDate or timeDuration with an
+// NCalc expression, while text that is evidently a fixed value is never read
+// as one. The due-date rule above is shared; timers add signed durations,
+// other scripts' digits, recurrence text, and the other property's values.
+// NCalc syntax and variable references are checked by the server.
+const TIMER_DATE_FORM = "an ISO-8601 timestamp with an explicit UTC offset";
+const TIMER_DURATION_FORM = "a positive fixed-unit ISO-8601 duration";
+const TIMER_INTENDED_DURATION = /^[+-]?\s*[Pp](?=[^\p{Nd}]*\p{Nd})[\p{Nd}TtYyWwDdHhMmSs.,]+$/u;
+const TIMER_RECURRENCE = /^[Rr][0-9]*\s*\//;
+const TIMER_CONTEXT_PREFIXES = ["sys.", "config.", "setting.", "mi.", "gateway."];
+function unwrapTimerExpression(trimmed) {
+  let expression = trimmed;
+  if (expression.startsWith("${") && expression.endsWith("}")) {
+    expression = expression.slice(2, -1).trim();
+  }
+  return expression || null;
+}
+function timerScheduleExpressionsAllowed(nodeType) {
+  return nodeType === "intermediateTimerCatchEvent" || nodeType === "timerBoundaryEvent";
+}
+function classifyTimerScheduleValue(property, value, allowExpressions) {
+  const isDate = property === "timeDate";
+  const form = isDate ? TIMER_DATE_FORM : TIMER_DURATION_FORM;
+  const mustBe = property + " must be " + form;
+  const invalid = problem => ({ kind: "invalid", expression: null, problem });
+  const isFixedDate = text => validatorTimeDate(text);
+  const isFixedDuration = text => validatorFixedDurationSeconds(text) !== null;
+  const trimmed = typeof value === "string" ? value.trim() : "";
+  if (!trimmed) return invalid(mustBe + ".");
+  if (trimmed.length > 128) return invalid(property + " must contain at most 128 characters.");
+  if (isDate ? isFixedDate(trimmed) : isFixedDuration(trimmed)) {
+    return { kind: "fixed", expression: null, problem: null };
+  }
+  if (isDate ? isFixedDuration(trimmed) : isFixedDate(trimmed)) {
+    return invalid(mustBe + "; '" + trimmed + "' is " +
+      (isDate ? "a duration, which belongs in timeDuration." : "a date-time, which belongs in timeDate."));
+  }
+  if (TIMER_RECURRENCE.test(trimmed)) {
+    return invalid(mustBe + "; '" + trimmed + "' is a repeating cycle, which belongs in timeCycle.");
+  }
+  if (USER_TASK_INTENDED_FIXED_DUE_VALUE.test(trimmed) || TIMER_INTENDED_DURATION.test(trimmed)) {
+    return invalid(mustBe + ".");
+  }
+  if (!allowExpressions) {
+    return invalid(property + " must be a fixed value on a timer start event; " +
+      "expressions are supported only on timer catch and boundary events.");
+  }
+  const expression = unwrapTimerExpression(trimmed);
+  if (expression === null) return invalid(mustBe + ".");
+  // Elsewhere ${...} inserts a value into text; a schedule is one expression.
+  if (expression.includes("${")) {
+    return invalid(property + " '" + trimmed + "' inserts a value into text with ${...}, " +
+      "which timer schedules do not do; write one NCalc expression, optionally wrapped in a single ${...}.");
+  }
+  const literal = quotedUserTaskLiteral(expression);
+  if (literal !== null && !(isDate ? isFixedDate(literal) : isFixedDuration(literal))) {
+    return invalid(property + " '" + literal + "' is not " + form + ".");
+  }
+  return { kind: "expression", expression, problem: null };
+}
+// A bracketed context name such as [sys.now] outside quoted text. Bare names
+// are left to the server's parser rather than guessed at here.
+function timerExpressionContextReference(expression) {
+  const pattern = /\[\s*([^\]]*?)\s*\]/g;
+  let match;
+  while ((match = pattern.exec(expression)) !== null) {
+    if (isInsideQuotedExpressionText(expression, match.index)) continue;
+    const name = match[1];
+    const lower = name.toLowerCase();
+    if (TIMER_CONTEXT_PREFIXES.some(prefix => lower.startsWith(prefix))) return name;
+  }
+  return null;
+}
+// Problems with a timer's timeDate or timeDuration that the editor can find
+// without an NCalc parser. A value problem starts with the property name,
+// as in "Timer event #4 timeDuration ..."; an expression problem starts with
+// "timer.<property>", as in "Timer boundary event #4 timer.timeDuration ...".
+// The inspector field and save validation share them.
+function timerScheduleValueProblems(nodeType, property, value, processVariables) {
+  const classified = classifyTimerScheduleValue(
+    property, value, timerScheduleExpressionsAllowed(nodeType));
+  if (classified.kind === "invalid") return [{ scope: "value", text: classified.problem }];
+  if (classified.kind === "fixed") return [];
+  // As on the server, a misspelled built-in is reported before the names.
+  const misspelled = misspelledBuiltInCall(classified.expression);
+  if (misspelled) {
+    return [{
+      scope: "expression",
+      text: "timer." + property + " uses unsupported function " + misspelledBuiltInText(misspelled) + "."
+    }];
+  }
+  const problems = [];
+  const context = timerExpressionContextReference(classified.expression);
+  if (context) {
+    problems.push({
+      scope: "expression",
+      text: "timer." + property + " references runtime context '" + context +
+        "'; timer expressions can read only declared stored instance variables."
+    });
+  }
+  for (const variable of saveSharedVariablesReferencedByExpression(
+      classified.expression, processVariables)) {
+    problems.push({
+      scope: "expression",
+      text: "timer." + property + " references shared variable '" + variable.name.trim() +
+        "'; copy its value into an instance variable before the timer activates."
+    });
+  }
+  // As on the server, a padded name is reported once the other checks pass.
+  const padded = problems.length === 0 ? paddedBracketReference(classified.expression) : null;
+  if (padded) {
+    problems.push({ scope: "expression", text: "timer." + property + " " + paddedBracketProblem(padded) });
+  }
+  return problems;
 }
 function userTaskDueDateCalendarProblem(dueDate, calendar) {
   if (calendar === undefined || calendar === null) return null;
@@ -10512,12 +10750,14 @@ function validateSaveAsyncJobsAndTimers(ctx) {
       errors.push(label + " must define exactly one of timeDate, timeDuration, or timeCycle.");
       continue;
     }
-    if (configured[0] === "timeDate" && !validatorTimeDate(timer.timeDate)) {
-      errors.push(label + " timeDate must be an ISO-8601 timestamp with an explicit UTC offset.");
-    }
-    if (configured[0] === "timeDuration" &&
-        validatorFixedDurationSeconds(timer.timeDuration) == null) {
-      errors.push(label + " timeDuration must be a positive fixed-unit ISO-8601 duration.");
+    if (configured[0] === "timeDate" || configured[0] === "timeDuration") {
+      const expressionLabel = (node.type === "timerBoundaryEvent"
+        ? "Timer boundary event #"
+        : "Timer catch event #") + String(node.id);
+      for (const problem of timerScheduleValueProblems(
+          node.type, configured[0], timer[configured[0]], ctx.processVariables)) {
+        errors.push((problem.scope === "value" ? label : expressionLabel) + " " + problem.text);
+      }
     }
     const calendarProblem = timerCalendarProblem(timer);
     if (calendarProblem) errors.push(label + " " + calendarProblem);
@@ -10730,6 +10970,99 @@ function validateSaveTimerCatches(ctx) {
   }
 }
 
+// A bracketed name with spaces inside its brackets, such as [ approved ],
+// outside quoted text. NCalc keeps the spaces in the name, so no stored
+// variable can match it; the server rejects it in conditional events and timer
+// expressions.
+function paddedBracketReference(expression) {
+  if (typeof expression !== "string") return null;
+  const pattern = /\[([^\]]*)\]/g;
+  let match;
+  while ((match = pattern.exec(expression)) !== null) {
+    if (isInsideQuotedExpressionText(expression, match.index)) continue;
+    const name = match[1].trim();
+    if (name && name !== match[1]) return match[0];
+  }
+  return null;
+}
+function paddedBracketProblem(reference) {
+  return "references '" + reference + "' with spaces inside the brackets; NCalc keeps them " +
+    "in the name, so it never matches a stored variable. Write '[" +
+    reference.slice(1, -1).trim() + "]'.";
+}
+// NCalc resolves each built-in function only in this spelling, as the
+// server's SequenceFlowConditionEvaluator.BuiltInFunctionSpellings lists:
+// the maths functions capitalized, and if, in, and ifs in lowercase.
+// Flowbit's string helpers accept any casing.
+const NCALC_BUILT_IN_SPELLINGS = [
+  "Abs", "Acos", "Asin", "Atan", "Atan2", "Ceiling", "Cos", "EscapeLike", "Exp",
+  "Floor", "IEEERemainder", "Ln", "Log", "Log10", "Max", "Min", "Pow", "Round",
+  "Sign", "Sin", "Sqrt", "Tan", "Truncate", "if", "ifs", "in"
+];
+const NCALC_WORD_OPERATORS = ["and", "or", "not", "in", "like"];
+// The first call to an NCalc built-in written in another casing, such as
+// If(...) for if(...), with the spelling NCalc resolves, or null. A name is a
+// call only where an operand belongs, so the in operator, which takes any
+// casing as in x IN (1, 2) or x not IN (1, 2), is not one. Quoted text and
+// [name] or {name} parameters are skipped.
+function misspelledBuiltInCall(expression) {
+  if (typeof expression !== "string") return null;
+  const tokens = [];
+  for (let index = 0; index < expression.length;) {
+    const ch = expression[index];
+    if (/\s/.test(ch)) {
+      index++;
+    } else if (ch === "'" || ch === "\"") {
+      // NCalc escapes a quote with a backslash, never by doubling it.
+      let end = index + 1;
+      while (end < expression.length && expression[end] !== ch) {
+        end += expression[end] === "\\" ? 2 : 1;
+      }
+      tokens.push({ kind: "operand" });
+      index = end + 1;
+    } else if (ch === "[" || ch === "{") {
+      const end = expression.indexOf(ch === "[" ? "]" : "}", index);
+      tokens.push({ kind: "operand" });
+      index = end < 0 ? expression.length : end + 1;
+    } else if (/[A-Za-z_$]/.test(ch)) {
+      let end = index + 1;
+      while (end < expression.length && /[A-Za-z0-9_$]/.test(expression[end])) end++;
+      tokens.push({ kind: "word", text: expression.slice(index, end) });
+      index = end;
+    } else if (/[0-9.]/.test(ch)) {
+      let end = index + 1;
+      while (end < expression.length && /[A-Za-z0-9_.]/.test(expression[end])) end++;
+      tokens.push({ kind: "operand" });
+      index = end;
+    } else {
+      tokens.push({ kind: "punct", text: ch });
+      index++;
+    }
+  }
+  const isWord = (token, text) => !!token && token.kind === "word" &&
+    (text === undefined ? NCALC_WORD_OPERATORS : [text]).includes(token.text.toLowerCase());
+  // An operand, and so a call, may follow nothing, an operator, an opening
+  // parenthesis, or a comma.
+  const operandMayFollow = token => !token ||
+    (token.kind === "punct" ? token.text !== ")" : isWord(token));
+  for (let position = 0; position + 1 < tokens.length; position++) {
+    const token = tokens[position];
+    const next = tokens[position + 1];
+    if (token.kind !== "word" || next.kind !== "punct" || next.text !== "(") continue;
+    const before = tokens[position - 1];
+    const lower = token.text.toLowerCase();
+    // In x not in (1, 2), not is part of the binary operator.
+    const notIn = lower === "in" && isWord(before, "not") && !operandMayFollow(tokens[position - 2]);
+    if (notIn || !operandMayFollow(before)) continue;
+    const spelling = NCALC_BUILT_IN_SPELLINGS.find(candidate => candidate.toLowerCase() === lower);
+    if (spelling && spelling !== token.text) return { name: token.text, spelling };
+  }
+  return null;
+}
+// "'If'; write it as 'if'" for a call that misspelledBuiltInCall found.
+function misspelledBuiltInText(call) {
+  return "'" + call.name + "'; write it as '" + call.spelling + "'";
+}
 function validateSaveConditionalEvents(ctx) {
   const errors = ctx.errors;
   const nodes = ctx.nodes;
@@ -10780,6 +11113,13 @@ function validateSaveConditionalEvents(ctx) {
       errors.push(label + " condition cannot reference shared process variable '" +
         variable.name.trim() + "'; copy the value into an instance variable or use a message event.");
     }
+    const misspelled = misspelledBuiltInCall(conditional.condition);
+    if (misspelled) {
+      errors.push(label + " condition uses unsupported or non-observable function " +
+        misspelledBuiltInText(misspelled) + ".");
+    }
+    const padded = paddedBracketReference(conditional.condition);
+    if (padded) errors.push(label + " condition " + paddedBracketProblem(padded));
     if (conditional.deliveryMode !== undefined && conditional.deliveryMode !== null &&
         conditional.deliveryMode !== "atomic" &&
         conditional.deliveryMode !== "durableAsync") {

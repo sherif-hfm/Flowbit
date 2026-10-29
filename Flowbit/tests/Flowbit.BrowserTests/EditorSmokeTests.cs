@@ -959,6 +959,116 @@ public sealed class EditorSmokeTests(BrowserStackFixture stack)
         });
     }
 
+    [Theory]
+    [MemberData(nameof(EditorViewports))]
+    public async Task E12_ExpressionTimerScheduleValidateUndoSaveAndReload(int viewportWidth, int viewportHeight)
+    {
+        await using var scenario = await CreateEditorScenarioAsync(
+            $"e12-expression-timer-{viewportWidth}x{viewportHeight}", viewportWidth, viewportHeight);
+        await scenario.RunAsync("expression-timer", async () =>
+        {
+            const string templateProblem =
+                "timeDuration 'Due ${days}D' inserts a value into text with ${...}, which timer schedules do not do; " +
+                "write one NCalc expression, optionally wrapped in a single ${...}.";
+            const string contextProblem =
+                "timer.timeDuration references runtime context 'sys.now'; timer expressions can read only declared stored instance variables.";
+            const string wrapped = "${if(urgent, 'PT4H', 'P2D')}";
+            await OpenEditorAsync(scenario);
+            var page = scenario.Page;
+            await EditorInteractions.LoadWorkflowAsync(
+                page, EditorInteractions.FixturePath("editor-business-calendar.json"));
+
+            // The boundary's fixed duration opens in Fixed value mode; Expression keeps its text.
+            await EditorInteractions.SelectNodeAsync(page, 3);
+            var inspector = page.Locator("#inspector");
+            var schedule = FormField(inspector, "Schedule").Locator("select");
+            var valueMode = FormField(inspector, "Value").Locator("select");
+            await Assertions.Expect(schedule).ToHaveValueAsync("timeDuration");
+            await Assertions.Expect(valueMode).ToHaveValueAsync("fixed");
+            await valueMode.SelectOptionAsync("expression");
+            var expression = page.Locator("#timer-expression-3");
+            var status = page.Locator("#timer-expression-3-status");
+            await Assertions.Expect(expression).ToHaveValueAsync("P3D");
+            await Assertions.Expect(expression).ToHaveAttributeAsync("aria-invalid", "false");
+
+            // Text with an inserted value and a runtime context name are reported as they are typed.
+            await expression.FillAsync("Due ${days}D");
+            await Assertions.Expect(expression).ToHaveAttributeAsync("aria-invalid", "true");
+            await Assertions.Expect(status).ToHaveTextAsync(templateProblem);
+            await expression.FillAsync("if([sys.now] > reviewBy, 'PT1H', 'P2D')");
+            await Assertions.Expect(status).ToHaveTextAsync(contextProblem);
+
+            // Saving is blocked with the same message, named for the boundary.
+            await page.Locator("#fileMenuSummary").ClickAsync();
+            await page.Locator("#saveBtn").ClickAsync();
+            var errors = await EditorInteractions.WaitForValidationDialogAsync(page);
+            Assert.Contains("Timer boundary event #3 " + contextProblem, errors, StringComparison.Ordinal);
+            await EditorInteractions.CloseValidationDialogWithEscapeAsync(page);
+
+            // A wrapped expression is accepted, and its duration can count working time.
+            await expression.FillAsync(wrapped);
+            await Assertions.Expect(expression).ToHaveAttributeAsync("aria-invalid", "false");
+            await Assertions.Expect(status).ToHaveTextAsync(string.Empty);
+            var calendar = page.Locator("#timer-calendar-3");
+            await calendar.FillAsync("examples.weekdays");
+            await Assertions.Expect(calendar).ToHaveAttributeAsync("aria-invalid", "false");
+            await Assertions.Expect(inspector).ToContainTextAsync(
+                "This standalone editor cannot check NCalc syntax or variable names");
+            await page.Locator("#inspectorPanel").ScreenshotAsync(new LocatorScreenshotOptions
+            {
+                Path = Path.Combine(scenario.ArtifactDirectory, "expression-timer.png"),
+            });
+
+            // The fixed controls say the text is an expression rather than a malformed duration.
+            await valueMode.SelectOptionAsync("fixed");
+            await Assertions.Expect(page.Locator("#inspector details[data-advanced-iso='true'] p.duration-preview"))
+                .ToHaveTextAsync("This text is an expression, not a fixed value. Choose Expression above to edit and check it as one.");
+            await valueMode.SelectOptionAsync("expression");
+            await Assertions.Expect(expression).ToHaveValueAsync(wrapped);
+
+            // A schedule change is one history entry; undo and redo keep the expression text.
+            await schedule.SelectOptionAsync("timeDate");
+            await Assertions.Expect(page.Locator("#timer-expression-3")).ToHaveCountAsync(0);
+            await page.Keyboard.PressAsync("Control+z");
+            await Assertions.Expect(schedule).ToHaveValueAsync("timeDuration");
+            await Assertions.Expect(valueMode).ToHaveValueAsync("expression");
+            await Assertions.Expect(expression).ToHaveValueAsync(wrapped);
+            await Assertions.Expect(calendar).ToHaveValueAsync("examples.weekdays");
+            await page.Keyboard.PressAsync("Control+y");
+            await Assertions.Expect(schedule).ToHaveValueAsync("timeDate");
+            await page.Keyboard.PressAsync("Control+z");
+            await Assertions.Expect(expression).ToHaveValueAsync(wrapped);
+
+            var saved = await EditorInteractions.SaveAndCaptureDownloadAsync(
+                page, scenario, scenario.ArtifactDirectory);
+            var timer = saved.RootElement.GetProperty("flowNodes").EnumerateArray()
+                .First(node => node.GetProperty("id").GetInt32() == 3).GetProperty("timer");
+            Assert.Equal(wrapped, timer.GetProperty("timeDuration").GetString());
+            Assert.True(!timer.TryGetProperty("timeDate", out var timeDate) || timeDate.ValueKind == JsonValueKind.Null);
+            Assert.Equal("examples.weekdays", timer.GetProperty("calendar").GetString());
+
+            // A fresh page infers Expression mode from the saved text.
+            var freshPage = await scenario.Context.NewPageAsync();
+            try
+            {
+                await freshPage.GotoAsync($"{stack.EditorBaseAddress}/",
+                    new PageGotoOptions { WaitUntil = WaitUntilState.Load });
+                await freshPage.WaitForSelectorAsync("#svg");
+                await EditorInteractions.LoadSavedFileAsync(freshPage, scenario.LastSavedFile!);
+                await EditorInteractions.PinInspectorOpenAsync(freshPage);
+                await EditorInteractions.SelectNodeAsync(freshPage, 3);
+                var freshInspector = freshPage.Locator("#inspector");
+                await Assertions.Expect(FormField(freshInspector, "Value").Locator("select")).ToHaveValueAsync("expression");
+                await Assertions.Expect(freshPage.Locator("#timer-expression-3")).ToHaveValueAsync(wrapped);
+                await Assertions.Expect(freshPage.Locator("#timer-calendar-3")).ToHaveValueAsync("examples.weekdays");
+            }
+            finally
+            {
+                await freshPage.CloseAsync();
+            }
+        });
+    }
+
     // Inspector fields put a static label before their control.
     private static ILocator FormField(ILocator scope, string label) =>
         scope.Locator(".field").Filter(new LocatorFilterOptions

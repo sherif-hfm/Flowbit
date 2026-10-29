@@ -600,7 +600,8 @@ public static class JobFailureHandling
 }
 
 /// <summary>
-/// BPMN-aligned timer expression. Exactly one member must be nonblank.
+/// BPMN-aligned timer schedule. Exactly one member must be nonblank. On a timer catch or boundary event, timeDate and
+/// timeDuration may also be NCalc expressions over stored instance variables, evaluated when the timer activates.
 /// </summary>
 public sealed class TimerDefinitionModel
 {
@@ -690,6 +691,25 @@ public static class ConditionalDefinitionRules
     }
 }
 
+/// <summary>The kind of an authored timeDate or timeDuration value.</summary>
+public enum TimerScheduleValueKind
+{
+    /// <summary>A fixed date-time or duration.</summary>
+    Fixed,
+
+    /// <summary>An NCalc expression whose text result is evaluated when the timer activates.</summary>
+    Expression,
+
+    /// <summary>A value that can never be used.</summary>
+    Invalid
+}
+
+/// <summary>
+/// A classified timeDate or timeDuration. <see cref="Expression"/> is the NCalc text without its optional ${...}
+/// wrapper, and <see cref="Problem"/> explains an invalid value.
+/// </summary>
+public readonly record struct TimerScheduleValue(TimerScheduleValueKind Kind, string? Expression, string? Problem);
+
 /// <summary>
 /// Shared authoring/runtime rules for Flowbit's fixed-unit ISO-8601 timer subset.
 /// Calendar years/months and cron syntax are deliberately unsupported.
@@ -697,6 +717,10 @@ public static class ConditionalDefinitionRules
 public static class TimerDefinitionRules
 {
     public const int MaxExpressionLength = 128;
+    public const string TimeDateProperty = "timeDate";
+    public const string TimeDurationProperty = "timeDuration";
+    public const string TimeDateFormDescription = "an ISO-8601 timestamp with an explicit UTC offset";
+    public const string TimeDurationFormDescription = "a positive fixed-unit ISO-8601 duration";
     public const int MaxRetryDelays = 10;
     public const int MaxBoundaryTimersPerHost = BoundaryEventRules.MaxObservableBoundariesPerHost;
     public static readonly TimeSpan MinimumRecurringInterval = TimeSpan.FromSeconds(1);
@@ -714,6 +738,26 @@ public static class TimerDefinitionRules
     private static readonly Regex IsoDateWithOffsetPattern = new(
         @"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(?::[0-9]{2}(?:[\.,][0-9]{1,7})?)?(?:Z|[+-][0-9]{2}:[0-9]{2})$",
         RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+
+    // Bare text that is evidently meant as a fixed value but does not parse,
+    // such as p2d, P1Y, or 2026-11-01. NCalc would read it as a variable name
+    // or as arithmetic, so it could never give a usable value. Digits are
+    // ASCII, as in the editor.
+    private static readonly Regex IntendedFixedValuePattern = new(
+        @"^(?:[Pp](?=[^0-9]*[0-9])[0-9TtYyWwDdHhMmSs.,]+|[0-9]{4}-[0-9]{2}-[0-9]{2}(?:[Tt ].*)?)$",
+        RegexOptions.CultureInvariant);
+
+    // A duration that a timer also treats as evidently fixed: signed, which
+    // NCalc would read as minus a variable, or with another script's digits,
+    // which NCalc cannot parse.
+    private static readonly Regex IntendedTimerDurationPattern = new(
+        @"^[+-]?\s*[Pp](?=[^\p{Nd}]*\p{Nd})[\p{Nd}TtYyWwDdHhMmSs.,]+$",
+        RegexOptions.CultureInvariant);
+
+    // Recurrence text belongs in timeCycle. NCalc would read R/P1D as R divided by P1D.
+    private static readonly Regex RecurrencePattern = new(
+        @"^[Rr][0-9]*\s*/",
+        RegexOptions.CultureInvariant);
 
     public static int CountConfiguredExpressions(TimerDefinitionModel timer) =>
         (string.IsNullOrWhiteSpace(timer.TimeDate) ? 0 : 1)
@@ -839,10 +883,175 @@ public static class TimerDefinitionRules
             return "names a calendar, but only a timeDuration can be counted in a business calendar.";
         }
 
-        return TryParseFixedDuration(timer.TimeDuration, out _)
-            ? BusinessCalendarRules.CountableDurationProblem("timeDuration", timer.TimeDuration.Trim())
+        // A quoted literal is as fixed as a bare value; any other expression's
+        // result is checked when it is evaluated.
+        var duration = timer.TimeDuration.Trim();
+        var fixedText = TryParseFixedDuration(duration, out _)
+            ? duration
+            : QuotedLiteral(ConditionalDefinitionRules.NormalizeCondition(duration));
+        return fixedText is not null && TryParseFixedDuration(fixedText, out _)
+            ? BusinessCalendarRules.CountableDurationProblem("timeDuration", fixedText.Trim())
             : null;
     }
+
+    /// <summary>
+    /// Whether trimmed text is evidently meant as a fixed due date or timer value
+    /// but does not parse. User-task due dates and timers share this rule.
+    /// </summary>
+    public static bool IsIntendedFixedValue(string trimmed) => IntendedFixedValuePattern.IsMatch(trimmed);
+
+    /// <summary>
+    /// Returns the text of an expression that is a single quoted string
+    /// literal, in single or double quotes, without quotes of the same kind or
+    /// escapes inside; returns null for any other expression.
+    /// </summary>
+    public static string? QuotedLiteral(string? expression)
+    {
+        var trimmed = expression?.Trim();
+        if (trimmed is not { Length: >= 2 } || trimmed[0] is not ('\'' or '"'))
+        {
+            return null;
+        }
+
+        var quote = trimmed[0];
+        return trimmed[^1] == quote
+               && trimmed.IndexOf(quote, 1) == trimmed.Length - 1
+               && !trimmed.Contains('\\')
+            ? trimmed[1..^1]
+            : null;
+    }
+
+    /// <summary>
+    /// Classifies an authored timeDate or timeDuration as a fixed value, an
+    /// NCalc expression evaluated when the timer activates, or a value that can
+    /// never be used. Only timer catch and boundary events allow expressions.
+    /// Text that is evidently meant as a fixed value is never read as an
+    /// expression; a variable with such a name is referenced as [PT1H].
+    /// </summary>
+    public static TimerScheduleValue ClassifyScheduleValue(string property, string? value, bool allowExpressions)
+    {
+        var isDate = string.Equals(property, TimeDateProperty, StringComparison.Ordinal);
+        var form = isDate ? TimeDateFormDescription : TimeDurationFormDescription;
+        var mustBe = $"{property} must be {form}";
+        var trimmed = value?.Trim() ?? string.Empty;
+        if (trimmed.Length == 0)
+        {
+            return Invalid($"{mustBe}.");
+        }
+
+        if (trimmed.Length > MaxExpressionLength)
+        {
+            return Invalid($"{property} must contain at most {MaxExpressionLength} characters.");
+        }
+
+        if (isDate ? TryParseTimeDate(trimmed, out _) : TryParseFixedDuration(trimmed, out _))
+        {
+            return new TimerScheduleValue(TimerScheduleValueKind.Fixed, null, null);
+        }
+
+        if (isDate ? TryParseFixedDuration(trimmed, out _) : TryParseTimeDate(trimmed, out _))
+        {
+            return Invalid(isDate
+                ? $"{mustBe}; '{trimmed}' is a duration, which belongs in timeDuration."
+                : $"{mustBe}; '{trimmed}' is a date-time, which belongs in timeDate.");
+        }
+
+        if (RecurrencePattern.IsMatch(trimmed))
+        {
+            return Invalid($"{mustBe}; '{trimmed}' is a repeating cycle, which belongs in timeCycle.");
+        }
+
+        if (IntendedFixedValuePattern.IsMatch(trimmed) || IntendedTimerDurationPattern.IsMatch(trimmed))
+        {
+            return Invalid($"{mustBe}.");
+        }
+
+        if (!allowExpressions)
+        {
+            return Invalid(
+                $"{property} must be a fixed value on a timer start event; expressions are supported only on timer catch and boundary events.");
+        }
+
+        var expression = ConditionalDefinitionRules.NormalizeCondition(trimmed);
+        if (expression is null)
+        {
+            return Invalid($"{mustBe}.");
+        }
+
+        // Elsewhere ${...} inserts a value into text; a schedule is one expression.
+        if (expression.Contains("${", StringComparison.Ordinal))
+        {
+            return Invalid(
+                $"{property} '{trimmed}' inserts a value into text with ${{...}}, which timer schedules do not do; write one NCalc expression, optionally wrapped in a single ${{...}}.");
+        }
+
+        if (QuotedLiteral(expression) is { } literal
+            && !(isDate ? TryParseTimeDate(literal, out _) : TryParseFixedDuration(literal, out _)))
+        {
+            return Invalid($"{property} '{literal}' is not {form}.");
+        }
+
+        return new TimerScheduleValue(TimerScheduleValueKind.Expression, expression, null);
+
+        static TimerScheduleValue Invalid(string problem) =>
+            new(TimerScheduleValueKind.Invalid, null, problem);
+    }
+
+    /// <summary>
+    /// Interprets the result of a timer expression. It must be text that is a
+    /// fixed value for the property; anything else is unusable and reported
+    /// through <paramref name="problem"/>, which never repeats the value because
+    /// it can come from instance data.
+    /// </summary>
+    public static bool TryInterpretExpressionResult(
+        string property,
+        object? result,
+        out string text,
+        out string? problem)
+    {
+        text = string.Empty;
+        problem = null;
+        if (result is not string value)
+        {
+            problem = result is null
+                ? "the expression gave no value"
+                : $"the expression gave {DescribeResultKind(result)}, not text";
+            return false;
+        }
+
+        var trimmed = value.Trim();
+        if (trimmed.Length == 0)
+        {
+            problem = "the expression gave blank text";
+            return false;
+        }
+
+        if (trimmed.Length > MaxExpressionLength)
+        {
+            problem = $"the expression gave text longer than {MaxExpressionLength} characters";
+            return false;
+        }
+
+        var isDate = string.Equals(property, TimeDateProperty, StringComparison.Ordinal);
+        if (!(isDate ? TryParseTimeDate(trimmed, out _) : TryParseFixedDuration(trimmed, out _)))
+        {
+            problem = $"the expression gave text that is not {(isDate ? TimeDateFormDescription : TimeDurationFormDescription)}";
+            return false;
+        }
+
+        text = trimmed;
+        return true;
+    }
+
+    private static string DescribeResultKind(object result) => result switch
+    {
+        bool => "a Boolean",
+        sbyte or byte or short or ushort or int or uint or long or ulong or float or double or decimal => "a number",
+        JsonElement { ValueKind: JsonValueKind.Object } => "an object",
+        System.Collections.IEnumerable => "a list",
+        DateTime or DateTimeOffset => "a date value",
+        _ => "a value of another type"
+    };
 
     public static bool TryParseTimeCycle(
         string? value,
@@ -1042,14 +1251,6 @@ public static class UserTaskDueRules
         @"^[+-]?[0-9]+$",
         RegexOptions.CultureInvariant);
 
-    // Bare text that is evidently meant as a fixed value but does not parse,
-    // such as p2d, P1Y, or 2026-11-01. NCalc would read it as a variable name
-    // or as arithmetic, so it could never give a usable due date. Digits are
-    // ASCII, as in the editor.
-    private static readonly Regex IntendedFixedValuePattern = new(
-        @"^(?:[Pp](?=[^0-9]*[0-9])[0-9TtYyWwDdHhMmSs.,]+|[0-9]{4}-[0-9]{2}-[0-9]{2}(?:[Tt ].*)?)$",
-        RegexOptions.CultureInvariant);
-
     /// <summary>
     /// Parses a fixed due value: a positive fixed-unit duration or a date-time
     /// with an explicit offset, using the timer grammar.
@@ -1074,24 +1275,9 @@ public static class UserTaskDueRules
 
     /// <summary>
     /// Returns the text of an expression that is a single quoted string
-    /// literal, in single or double quotes, without quotes of the same kind or
-    /// escapes inside; returns null for any other expression.
+    /// literal; see <see cref="TimerDefinitionRules.QuotedLiteral"/>.
     /// </summary>
-    public static string? QuotedLiteral(string? expression)
-    {
-        var trimmed = expression?.Trim();
-        if (trimmed is not { Length: >= 2 } || trimmed[0] is not ('\'' or '"'))
-        {
-            return null;
-        }
-
-        var quote = trimmed[0];
-        return trimmed[^1] == quote
-               && trimmed.IndexOf(quote, 1) == trimmed.Length - 1
-               && !trimmed.Contains('\\')
-            ? trimmed[1..^1]
-            : null;
-    }
+    public static string? QuotedLiteral(string? expression) => TimerDefinitionRules.QuotedLiteral(expression);
 
     /// <summary>
     /// Describes why an authored due date can never be used, or returns null.
@@ -1114,7 +1300,7 @@ public static class UserTaskDueRules
                 : $"dueDate '{literal}' is not {DueDateFormsDescription}.";
         }
 
-        return IntendedFixedValuePattern.IsMatch(trimmed)
+        return TimerDefinitionRules.IsIntendedFixedValue(trimmed)
             ? $"dueDate '{trimmed}' is not {DueDateFormsDescription}."
             : null;
     }

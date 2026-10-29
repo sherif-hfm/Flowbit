@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using Jint;
+using Flowbit.Service.Services;
 using Flowbit.Shared.Models;
 using Xunit;
 
@@ -2731,6 +2732,163 @@ public sealed class EditorValidatorTests
         {
             Assert.Equal(["Timer event #1 " + serverProblem], errors);
         }
+    }
+
+    [Theory]
+    [MemberData(nameof(TimerExpressionRulesTests.Classifications), MemberType = typeof(TimerExpressionRulesTests))]
+    public void Validator_ClassifiesTimerScheduleValuesLikeTheServer(
+        string property,
+        string value,
+        bool allowExpressions,
+        string kind,
+        string? expressionOrProblem)
+    {
+        var model = allowExpressions
+            ? TimerExpressionDefinitionTests.Model(
+                property == "timeDate" ? value : "contractEnd",
+                property == "timeDuration" ? value : "PT1H")
+            : CreateTimerStartModel(new TimerDefinitionModel { TimeDuration = value });
+        var nodeId = !allowExpressions ? 1 : property == "timeDate" ? 3 : 4;
+
+        var errors = ValidateJson(JsonSerializer.Serialize(model));
+
+        if (kind == "Invalid")
+        {
+            Assert.Equal([$"Timer event #{nodeId} {expressionOrProblem}"], errors);
+        }
+        else
+        {
+            Assert.Empty(errors);
+        }
+    }
+
+    [Theory]
+    [InlineData("approvalAmount")]
+    [InlineData("if([sys.now] > '2030', 'PT1H', 'P1D')")]
+    [InlineData("if(urgent, 'PT1H', [config.sla])")]
+    [InlineData("[ slaDuration ]")]
+    [InlineData("if(urgent, [fallbackSla ], 'P2D')")]
+    [InlineData("if([ sys.now ] > '2030', 'PT1H', 'P1D')")]
+    [InlineData("[ approvalAmount ]")]
+    public void Validator_RejectsSharedContextAndPaddedTimerReferencesLikeTheServer(string duration)
+    {
+        var server = Assert.Throws<WorkflowDomainException>(() =>
+            TimerExpressionDefinitionTests.Validate(TimerExpressionDefinitionTests.Model("contractEnd", duration)));
+
+        var errors = ValidateJson(JsonSerializer.Serialize(TimerExpressionDefinitionTests.Model("contractEnd", duration)));
+
+        Assert.Equal([server.Message], errors);
+    }
+
+    // The function is reported before the context, shared, and padded names.
+    [Theory]
+    [InlineData("contractEnd", "If(urgent, 'PT4H', 'P2D')")]
+    [InlineData("contractEnd", "if(max(1, 2) > 1 and urgent, 'PT4H', 'P2D')")]
+    [InlineData("contractEnd", "if(urgent, If(urgent, 'PT4H', 'P1D'), 'P2D')")]
+    [InlineData("contractEnd", "If([sys.now] > '2030', 'PT1H', 'P1D')")]
+    [InlineData("contractEnd", "IF (approvalAmount > 1, 'PT1H', [ fallbackSla ])")]
+    [InlineData("${If(urgent, contractEnd, contractEnd)}", "PT1H")]
+    public void Validator_RejectsBuiltInsInAnotherCasingInTimerExpressionsLikeTheServer(string date, string duration)
+    {
+        var server = Assert.Throws<WorkflowDomainException>(() =>
+            TimerExpressionDefinitionTests.Validate(TimerExpressionDefinitionTests.Model(date, duration)));
+
+        var errors = Validate(TimerExpressionDefinitionTests.Model(date, duration));
+
+        Assert.Equal([server.Message], errors);
+    }
+
+    [Theory]
+    [InlineData("if(fallbackSla IN ('P1D', 'P2D'), fallbackSla, 'P2D')")]
+    [InlineData("if(fallbackSla not IN ('P1D') and Max(1, 2) > 1, 'PT4H', TRIM(fallbackSla))")]
+    [InlineData("if(Contains(fallbackSla, 'If('), 'PT4H', {fallbackSla})")]
+    public void Validator_AcceptsTimerExpressionsThatSpellBuiltInsAsNCalcResolvesThem(string duration)
+    {
+        TimerExpressionDefinitionTests.Validate(TimerExpressionDefinitionTests.Model("contractEnd", duration));
+
+        Assert.Empty(Validate(TimerExpressionDefinitionTests.Model("contractEnd", duration)));
+    }
+
+    // Each row parses in NCalc; the editor must find the same misspelled
+    // built-in call, with the same hint, without a parser.
+    [Theory]
+    [InlineData("If(urgent, 'PT4H', 'P2D')")]
+    [InlineData("if(urgent, 'PT4H', 'P2D')")]
+    [InlineData("IF (urgent, 'PT4H', 'P2D')")]
+    [InlineData("if(max(1, 2) > 1 and urgent, 'PT4H', 'P2D')")]
+    [InlineData("if(urgent, If(urgent, 'PT4H', 'P1D'), 'P2D')")]
+    [InlineData("Ifs(urgent, 1, 2)")]
+    [InlineData("fallbackSla IN ('P1D', 'P2D')")]
+    [InlineData("fallbackSla in('P1D', 'P2D')")]
+    [InlineData("fallbackSla not IN ('P1D', 'P2D')")]
+    [InlineData("fallbackSla NOT In ('P1D', 'P2D')")]
+    [InlineData("not IN(fallbackSla, 'P1D')")]
+    [InlineData("urgent and In(fallbackSla, 'P1D')")]
+    [InlineData("urgent AND IN (fallbackSla, 'P1D')")]
+    [InlineData("amount IN (Max(1, 2), 3)")]
+    [InlineData("amount IN (max(1, 2), 3)")]
+    [InlineData("x LIKE ('a%') and x NOT LIKE ('b%')")]
+    [InlineData("'If(' + \"If(\" + 'a\\'If(' + fallbackSla")]
+    [InlineData("[If] == 1 and {If} == 1 and [ x ] IN (1) and {x} IN (1) and $x IN (1)")]
+    [InlineData("TRIM(fallbackSla) == Trim('x') and Contains(fallbackSla, 'x') and Pow(2, 3) == 8")]
+    [InlineData("ROUND(amount, 0) > 1")]
+    [InlineData("!If(urgent, true, false)")]
+    [InlineData("-abs(amount) < 0")]
+    [InlineData("amount * Abs(amount) > 1 ? If(urgent, 1, 2) : 3")]
+    [InlineData("(If(urgent, 1, 2)) == 1")]
+    [InlineData("sin(0) == SIN(0) and Sin(0) == 0")]
+    [InlineData("ieeeremainder(5, 3) == 2")]
+    [InlineData("IEEERemainder(5, 3) == 2 and Log10(100) == 2 and EscapeLike('a') == 'a'")]
+    [InlineData("log10(100) == 2")]
+    [InlineData("true and If(urgent, true, false)")]
+    [InlineData("null == If(urgent, null, 1)")]
+    [InlineData("1.5e3 > Max(1, 2)")]
+    public void Validator_FindsTheMisspelledBuiltInThatNCalcWouldNotResolve(string expression)
+    {
+        var parsed = new NCalc.Expression(
+            expression,
+            NCalc.ExpressionOptions.CaseInsensitiveStringComparer | NCalc.ExpressionOptions.AllowNullParameter);
+        Assert.False(parsed.HasErrors(), expression);
+        var misspelled = parsed.GetFunctionNames().FirstOrDefault(name =>
+            !SequenceFlowConditionEvaluator.IsGeneralFunction(name)
+            && SequenceFlowConditionEvaluator.IsGeneralFunction(name, ignoreBuiltInCasing: true));
+
+        var engine = CreateValidatorEngine();
+        engine.SetValue("expression", expression);
+        var found = engine.Evaluate(
+            "(call => call ? misspelledBuiltInText(call) : null)(misspelledBuiltInCall(expression))");
+
+        Assert.Equal(
+            misspelled is null
+                ? null
+                : $"'{misspelled}'{SequenceFlowConditionEvaluator.FunctionSpellingHint(misspelled)}",
+            found.IsNull() ? null : found.AsString());
+    }
+
+    [Fact]
+    public void Validator_ListsTheBuiltInSpellingsTheServerResolves()
+    {
+        var spellings = JsonSerializer.Deserialize<string[]>(
+            CreateValidatorEngine().Evaluate("JSON.stringify(NCALC_BUILT_IN_SPELLINGS)").AsString())!;
+
+        Assert.Equal(
+            SequenceFlowConditionEvaluator.BuiltInFunctionSpellings.Order(StringComparer.Ordinal),
+            spellings.Order(StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public void Validator_LeavesUndeclaredTimerReferencesToTheServerButRejectsFlowInfo()
+    {
+        // Without an NCalc parser the editor cannot know every name an expression reads.
+        Assert.Empty(ValidateJson(JsonSerializer.Serialize(
+            TimerExpressionDefinitionTests.Model("contractEnd", "missingSla"))));
+
+        var errors = ValidateJson(JsonSerializer.Serialize(
+            TimerExpressionDefinitionTests.Model("contractEnd", "if(FlowInfo(201, 'actions.count') > 0, 'PT1H', 'P1D')")));
+
+        Assert.Contains(
+            "Flow node #4 timer timeDuration cannot use FlowInfo; it is supported only in conditional gateway flows, multi-instance completion conditions, and NCalc script assignments.",
+            errors);
     }
 
     [Fact]

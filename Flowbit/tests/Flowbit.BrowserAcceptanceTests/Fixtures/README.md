@@ -40,3 +40,19 @@ service starts before the application hosts and supplies its URL/credential
 through matching API and Worker workflow context configuration. The message
 client uses the seeded example client ID and a fixture-owned secret. Actual
 HTTP actions and Worker attempts establish each scenario's evidence.
+
+The EVENT-01 expression-timer scenarios use the canonical
+[contract end wait](../../../../examples/timers/07-contract-end-wait.json) and two
+definitions kept here, because each needs a timing or failure the catalog's
+examples do not give:
+
+- `expression-timer-boundaries.json`: user task `#2` **Review Request** carries a
+  non-interrupting boundary `#3` with `timeDuration` `${reminderAfter}` (leading to
+  **Send Reminder** `#5`) and an interrupting boundary `#4` with the raw `timeDate`
+  expression `deadline` (leading to **Escalated Review** `#6`). The scenario
+  supplies `PT25S` and a deadline 60 seconds ahead.
+- `expression-timer-incident.json`: an `asyncBefore` script task `#2` with
+  `retryDelays` `["PT2S"]` carries an interrupting boundary `#3` whose
+  `timeDuration` is the optional start variable `slaDuration`. Started without a
+  value, the Worker's two attempts fail and open an incident; an administrative
+  variable update supplies `PT1H` before the incident is retried.

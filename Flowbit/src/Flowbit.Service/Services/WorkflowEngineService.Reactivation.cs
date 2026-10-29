@@ -360,6 +360,7 @@ public sealed partial class WorkflowEngineService
             instance.Id,
             cancellationToken);
         var targets = new List<InstanceReactivationTargetDto>();
+        var timerWarnings = new List<InstanceReactivationIssueDto>();
         foreach (var visit in visits
                      .OrderByDescending(candidate => candidate.CompletedAt ?? candidate.UpdatedAt)
                      .ThenByDescending(candidate => candidate.NodeExecutionId))
@@ -407,6 +408,18 @@ public sealed partial class WorkflowEngineService
                 continue;
             }
 
+            var timerBlocker = await EvaluateReactivationTimerBoundariesAsync(
+                workflow,
+                node,
+                currentVariables,
+                timerWarnings,
+                cancellationToken);
+            if (timerBlocker is not null)
+            {
+                targetBlockers.Add(timerBlocker);
+                continue;
+            }
+
             targets.Add(new InstanceReactivationTargetDto(
                 node.Id,
                 node.Name,
@@ -435,7 +448,7 @@ public sealed partial class WorkflowEngineService
             new InstanceReactivationIssueDto(
                 "repeated_side_effects",
                 "Continuing from an earlier task can repeat downstream external side effects; reactivation does not undo prior work.")
-        };
+        }.Concat(timerWarnings).ToArray();
         return new ReactivationAssessment(
             targets,
             blockers,
@@ -593,6 +606,91 @@ public sealed partial class WorkflowEngineService
             }
         }
         return null;
+    }
+
+    // A reactivated task activates its timer boundaries again. An expression
+    // that cannot be resolved from the current variables would fail the
+    // commit, so that target is not offered. A boundary that is already due
+    // would interrupt or remind the reactivated task as soon as the Worker
+    // runs; that is a warning, for fixed dates as well as expressions.
+    private async Task<InstanceReactivationIssueDto?> EvaluateReactivationTimerBoundariesAsync(
+        WorkflowDefinitionRecord workflow,
+        FlowNodeModel target,
+        IReadOnlyDictionary<string, JsonElement> currentVariables,
+        ICollection<InstanceReactivationIssueDto> warnings,
+        CancellationToken cancellationToken)
+    {
+        var boundaries = workflow.Definition.FlowNodes
+            .Where(node =>
+                BpmnFlowNodeTypes.IsTimerBoundary(node.Type)
+                && node.AttachedToRef == target.Id)
+            .OrderBy(node => node.Id)
+            .ToArray();
+        if (boundaries.Length == 0)
+        {
+            return null;
+        }
+
+        var now = timeProvider.GetUtcNow();
+        var dueWarnings = new List<InstanceReactivationIssueDto>();
+        foreach (var boundary in boundaries)
+        {
+            DateTimeOffset? dueAt = null;
+            if (TimerExpressionDefinitionAnalyzer.TryGetExpression(boundary, out _, out _))
+            {
+                TimerExpressionPlanEntry entry;
+                try
+                {
+                    entry = TimerExpressionPlanCache.Get(workflow.Id, workflow.Definition)
+                        .EntriesByNodeId[boundary.Id];
+                }
+                catch (WorkflowDomainException)
+                {
+                    return Unresolvable(boundary, "its expression is not valid in this workflow version");
+                }
+
+                var resolution = await ResolveTimerExpressionAsync(
+                    entry,
+                    currentVariables,
+                    now,
+                    cancellationToken);
+                if (resolution.Problem is { } problem)
+                {
+                    return Unresolvable(boundary, problem);
+                }
+
+                dueAt = resolution.DueAt;
+            }
+            else if (TimerDefinitionRules.TryParseTimeDate(boundary.Timer?.TimeDate, out var fixedDate))
+            {
+                dueAt = fixedDate.ToUniversalTime();
+            }
+
+            if (dueAt <= now)
+            {
+                dueWarnings.Add(new InstanceReactivationIssueDto(
+                    "timer_boundary_already_due",
+                    (boundary.CancelActivity ?? true)
+                        ? $"Timer boundary '{boundary.Name}' is already due, so it interrupts user task '{target.Name}' as soon as the Worker runs."
+                        : $"Timer boundary '{boundary.Name}' is already due, so it fires for user task '{target.Name}' as soon as the Worker runs.",
+                    target.Id,
+                    boundary.Id));
+            }
+        }
+
+        foreach (var warning in dueWarnings)
+        {
+            warnings.Add(warning);
+        }
+
+        return null;
+
+        InstanceReactivationIssueDto Unresolvable(FlowNodeModel boundary, string problem) =>
+            new(
+                "timer_boundary_unresolvable",
+                $"Timer boundary '{boundary.Name}' on user task '{target.Name}' cannot be scheduled: {problem}.",
+                target.Id,
+                boundary.Id);
     }
 
     private static string? FindUnsafeReactivationTopology(

@@ -280,7 +280,7 @@ public sealed class SharedVariableRepository(AppDbContext dbContext) : ISharedVa
         CancellationToken cancellationToken)
     {
         var key = command.Key.Trim();
-        SharedVariableValueValidator.ValidateContract(
+        SharedVariableValueValidator.ValidateNewContract(
             key,
             command.DataType,
             command.IsArray,

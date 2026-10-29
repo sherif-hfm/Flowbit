@@ -31,7 +31,8 @@ FullyQualifiedName~InstanceDetailAcceptanceTests` or
 For all canonical-example runtime, editor, and UI scenarios, append
 `--filter FullyQualifiedName~ExampleWorkflow`. Use
 `--filter FullyQualifiedName~ExampleWorkflowAcceptanceTests` for runtime-only
-coverage.
+coverage, and `--filter FullyQualifiedName~ExpressionTimerAcceptanceTests` for
+the expression-timer scenarios.
 
 Run final regressions separately:
 
@@ -114,6 +115,7 @@ and timestamps. Native save dialogs and visual review remain manual gates.
 | Canonical messages and scopes | Timely receipt versus 30-second deadline; rejection of late delivery without mapped writes; inner MI/message/timer cancellation with surviving outer work; ordinary versus terminate end with live siblings. |
 | Canonical role management | One completed, one active, one pending child; policy replacement preserves ownership/history, applies when pending work activates, and distinguishes identical versus conflicting stale edits. |
 | Existing example corrections | Two-step approval's actual one-minute timer return; quorum `joinCancellation` cancels the third review before finalization. |
+| Expression timers (EVENT-01), 1440×900 and 390×844 | The canonical contract-end wait's `${contractEnd}` job is due exactly at the supplied time, on instance detail and in the **Operations** due-time title; an administrative variable update moves the input a day later and the fixture restarts the Worker, yet the saved time fires and **Renew or Close Contract** opens. **Administrative actions** lists the waiting review with both boundaries and their saved due times; a non-interrupting `${reminderAfter}` boundary then adds **Send Reminder** beside the open review, the raw `deadline` boundary then interrupts it, and after completion the reactivation preview warns `timer_boundary_already_due` for that boundary on instance detail. A staged script's boundary that reads a missing `slaDuration` fails both Worker attempts with the job's value-free failure description, and **Operations** lists the open `job_execution_failed` incident; after the value is repaired through the API, keyboard Retry schedules the boundary an hour ahead and the intake continues. |
 
 Runtime viewports are 1440×900, 1024×768 and 390×844. Administrative cases that
 are not viewport theories capture the relevant state at all three sizes.
@@ -122,9 +124,22 @@ filters, both multi-instance modes, timer actions, skipped/ineligible/failed
 items, interrupted cancellation/recovery, denied/cleared identities, and
 history/items loading and recovery. Administrative captures retain both full
 pages and section viewports, after finite CSS transitions settle; full pages
-are returned to the top with real wheel input before capture.
+are returned to the top with real wheel input before capture. Bootstrap gives
+the page `scroll-behavior: smooth`, so focus changes, Blazor's navigation reset
+and Playwright's own actionability scrolling animate. The helper therefore
+points at the sticky top bar's padding rather than hovering the page heading
+(which can start such a scroll), waits until the scroll position is unchanged
+for ten animation frames, and repeats the wheel until the page rests at the top;
+it waits the same way before each section-viewport capture.
 [Fixture prerequisites](Fixtures/README.md) document the new instance-detail
 definition; administrative variants reuse the existing smoke definition.
+The expression-timer cases retain full-page `contract-waiting`,
+`contract-operations`, `contract-fired`, `boundaries-waiting`,
+`administrative-boundaries`, `reminder-fired`,
+`deadline-fired`, `reactivation-warning`, `incident-open`, and `incident-resolved`
+screenshots at both viewports, and check the last page of each case for
+horizontal overflow. Their due times come from instance data supplied at start, so
+each case waits about a minute of real time for its timers.
 
 The example retry mock accepts `POST /retry` with
 `X-Example-Credential`, `X-Flowbit-Job-Id`, and `X-Flowbit-Job-Attempt`.
