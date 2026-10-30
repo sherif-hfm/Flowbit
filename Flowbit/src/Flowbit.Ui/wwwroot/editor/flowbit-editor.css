@@ -1126,8 +1126,63 @@
   .flowbit-editor .field textarea[aria-invalid="true"] { border-color: var(--validation-error); }
   .flowbit-editor .field textarea[aria-invalid="true"]:focus { box-shadow: 0 0 0 3px color-mix(in srgb, var(--validation-error) 24%, transparent); }
   .flowbit-editor .expression-validation { margin: 6px 0 0; color: var(--validation-error); font-size: 12px; line-height: 1.4; }
-  .flowbit-editor .expression-help { margin-top: -5px; overflow-wrap: anywhere; }
-  .flowbit-editor .expression-help code { color: var(--text); }
+  .flowbit-editor .field.has-inspector-help { display: flex; flex-wrap: wrap; align-items: flex-start; }
+  .flowbit-editor .field.has-inspector-help > * { flex: 0 0 100%; min-width: 0; }
+  .flowbit-editor .field.has-inspector-help > label { flex: 0 1 auto; max-width: calc(100% - 24px); }
+  .flowbit-editor .field.has-inspector-help > .inspector-help-toggle { flex: 0 0 24px; }
+  .flowbit-editor .inspector-content h2.has-inspector-help,
+  .flowbit-editor .inspector-content h3.has-inspector-help { display: flex; align-items: center; }
+  .flowbit-editor button.inspector-help-toggle {
+    display: inline-flex;
+    flex: 0 0 24px;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    min-height: 0;
+    margin: -5px 0 0;
+    padding: 0;
+    color: var(--muted);
+    background: transparent;
+    border: 0;
+    border-radius: 6px;
+  }
+  .flowbit-editor .inspector-content h2 > button.inspector-help-toggle,
+  .flowbit-editor .inspector-content h3 > button.inspector-help-toggle { margin-block: -5px; }
+  .flowbit-editor button.inspector-help-toggle:hover { color: var(--text); background: var(--panel-3); }
+  .flowbit-editor button.inspector-help-toggle:active { transform: none; }
+  .flowbit-editor button.inspector-help-toggle[aria-expanded="true"] { color: var(--accent-2); }
+  .flowbit-editor .inspector-help-toggle svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  .flowbit-editor .inspector-help {
+    margin: 6px 0 0;
+    padding: 8px 10px;
+    color: var(--muted);
+    background: color-mix(in srgb, var(--panel-2) 72%, transparent);
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    font-size: 12px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+  }
+  .flowbit-editor .inspector-help[hidden] { display: none; }
+  .flowbit-editor h2 + .inspector-help,
+  .flowbit-editor h3 + .inspector-help { margin: 0 0 10px; }
+  .flowbit-editor .inspector-help p { margin: 0; }
+  .flowbit-editor .inspector-help p + p { margin-top: 6px; }
+  .flowbit-editor .inspector-help code { color: var(--text); }
+  .flowbit-editor .inspector-help-examples-title { margin: 8px 0 4px; font-size: 11px; }
+  .flowbit-editor .inspector-help-examples { display: flex; flex-wrap: wrap; gap: 4px; }
+  .flowbit-editor button.inspector-help-example {
+    min-height: 0;
+    padding: 2px 7px;
+    border-radius: 6px;
+    font-family: monospace;
+    font-size: 11px;
+    font-weight: 400;
+    line-height: 1.5;
+    text-align: left;
+    overflow-wrap: anywhere;
+  }
   .flowbit-editor .inspector-card {
     padding: 11px;
     background: var(--card-bg);

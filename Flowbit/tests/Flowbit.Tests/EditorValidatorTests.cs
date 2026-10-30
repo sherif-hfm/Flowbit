@@ -1187,9 +1187,9 @@ public sealed class EditorValidatorTests
         Assert.Contains("Contains(FlowInfo(201, 'actions.last.userRoles'), 'Manager')", html, StringComparison.Ordinal);
         Assert.Contains("FlowInfo(201, 'actions.last.userRoles')", html, StringComparison.Ordinal);
         Assert.Contains("execution.getFlowInfo(201).actions.last.userRoles", html, StringComparison.Ordinal);
-        Assert.Contains("CountFlow/PercentFlow use this multi-instance execution", html, StringComparison.Ordinal);
-        Assert.Contains("action-time userRoles", html, StringComparison.Ordinal);
-        Assert.Contains("parentInterrupt row", html, StringComparison.Ordinal);
+        Assert.Contains("`CountFlow` and `PercentFlow` use this multi-instance execution", html, StringComparison.Ordinal);
+        Assert.Contains("action-time `userRoles`", html, StringComparison.Ordinal);
+        Assert.Contains("`parentInterrupt` row", html, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -1278,7 +1278,7 @@ public sealed class EditorValidatorTests
 
         Assert.Contains("Enable instance-wide FlowInfo evidence", html, StringComparison.Ordinal);
         Assert.Contains("usesFlowInfo", html, StringComparison.Ordinal);
-        Assert.Contains("Dynamic <code>eval</code>/<code>Function</code> compilation is disabled", html, StringComparison.Ordinal);
+        Assert.Contains("Dynamic `eval`/`Function` compilation is disabled", html, StringComparison.Ordinal);
     }
 
     private static WorkflowModel BuildScriptTaskModel() => new()

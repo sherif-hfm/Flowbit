@@ -134,7 +134,8 @@ The key pieces:
 - **Inspector**: The right-hand `<aside id="inspector">` is a context panel that
   edits whatever is selected (a flow node, a sequence flow, or a lane). Built
   dynamically via `field()`, `selectField()`, `variableRow()`, and
-  `variableCheckbox()` helpers. The Type selector's graph-changing body lives in
+  `variableCheckbox()` helpers; `attachInspectorHelp()` adds a field's or
+  heading's info button and help. The Type selector's graph-changing body lives in
   the named helper `changeNodeTypeFromInspector(node, nextType)` (before
   `renderNodeInspector()`); it returns `false` for a rejected transition (end
   target with outgoing flows, or declined gateway-semantics confirmation) and
@@ -250,7 +251,7 @@ A repeatable Chromium smoke suite exists at
 real copied editor and the real published API/UI over localhost with a
 disposable PostgreSQL container; see its
 [README](Flowbit/tests/Flowbit.BrowserTests/README.md) for setup and the
-E1–E12/R1–R11 coverage matrix. It is the baseline for editor/runtime UI changes,
+E1–E13/R1–R11 coverage matrix. It is the baseline for editor/runtime UI changes,
 but it does not replace scenario-specific manual verification: the native
 file-picker success/cancel path, visual comparisons, and behaviors outside the
 matrix still need the manual steps above.
@@ -2770,6 +2771,14 @@ when extending the model so new features stay close to BPMN terminology.
   `calendar` only when named, so timers without one export unchanged. Live
   validation and save errors come from `userTaskDueDateCalendarProblem` and
   `timerCalendarProblem`, which mirror the server's rules.
+- **Inspector help**: explain a field or section with `attachInspectorHelp()`, and
+  use an always-visible `.empty-note` only for warnings, empty states, and status
+  lines that depend on the current state. Write examples a user can keep, and give
+  the field a matching placeholder. Open help is per-mount inspector state
+  (`openInspectorHelp`), so it survives `renderInspector()` and never reaches the
+  document or its history. An example replaces the field's value with `insertText`,
+  so undo inside the field stays native, and the editor-root listeners record one
+  history entry.
 - **Timer schedule input**: the timer **Schedule** selector picks the property.
   On a catch or boundary, **Value** offers **Fixed value** (the date/time and
   duration controls) or **Expression** (a text field). The choice is inspector
@@ -2790,8 +2799,9 @@ when extending the model so new features stay close to BPMN terminology.
 ## Common tasks for an AI editing this project
 
 - **Add a new field to a node/flow/variable**: update the relevant
-  `render*Inspector` function (UI), the `loadFromObject` normalizer (persistence),
-  and `seedSample` if the example should show it. `save()` needs no change since
+  `render*Inspector` function (UI, with `attachInspectorHelp()` for any
+  explanation), the `loadFromObject` normalizer (persistence), and `seedSample`
+  if the example should show it. `save()` needs no change since
   it serializes `model` directly.
 - **Add a new node type**: extend `NODE_TYPE`/`NODE_TYPE_OPTIONS` (editor), add
   matching CSS under `.node.<type>`, update geometry (`nodeSize`, `borderPoint`)

@@ -2944,9 +2944,9 @@ public sealed class EditorRuntimeSmokeTests
                 status: status.textContent,
                 automaticOmitted: JSON.stringify(automatic).indexOf('inboxVisibilityCondition') < 0,
                 legacyOmitted: JSON.stringify(legacy).indexOf('inboxVisibilityCondition') < 0,
-                helpVisible: inspector.children.some(child =>
-                  String(child.className).includes('expression-help') &&
-                  String(child.innerHTML).includes('PostgreSQL'))
+                helpAvailable: conditionField.children.some(child =>
+                  child.className === 'inspector-help' &&
+                  child.children[0].children[0].textContent.includes('PostgreSQL'))
               };
 
               input.value = "Contains([department], 'ops')";
@@ -2993,7 +2993,7 @@ public sealed class EditorRuntimeSmokeTests
         Assert.Equal(string.Empty, initial.GetProperty("status").GetString());
         Assert.True(initial.GetProperty("automaticOmitted").GetBoolean());
         Assert.True(initial.GetProperty("legacyOmitted").GetBoolean());
-        Assert.True(initial.GetProperty("helpVisible").GetBoolean());
+        Assert.True(initial.GetProperty("helpAvailable").GetBoolean());
 
         var invalid = root.GetProperty("invalid");
         Assert.Equal("Contains([department], 'ops')", invalid.GetProperty("stored").GetString());
@@ -3006,6 +3006,162 @@ public sealed class EditorRuntimeSmokeTests
         Assert.True(valid.GetProperty("persisted").GetBoolean());
         Assert.True(root.GetProperty("blankIsNull").GetBoolean());
         Assert.True(root.GetProperty("clearedOnTypeChange").GetBoolean());
+    }
+
+    [Fact]
+    public void InspectorHelp_StartsClosedSurvivesRebuildsAndNeverTouchesTheDocument()
+    {
+        var engine = CreateEditorEngine();
+        using var result = JsonDocument.Parse(engine.Evaluate(
+            """
+            (() => {
+              loadFromObject({
+                id: 'inspector-help',
+                name: 'Inspector help',
+                variables: [],
+                lanes: [],
+                flowNodes: [
+                  { id: 1, name: 'First review', type: 'userTask' },
+                  { id: 2, name: 'Second review', type: 'userTask' }
+                ],
+                sequenceFlows: []
+              });
+              const selectNode = id => {
+                selected = { kind: 'node', nodeId: id };
+                selectedNodeIds.clear();
+                selectedNodeIds.add(id);
+                renderInspector();
+              };
+              const dueField = id => inspector.children.find(child =>
+                child.children.some(inner => inner.id === 'user-task-dueDate-' + id));
+              const partOf = (fieldElement, className) =>
+                fieldElement.children.find(child => child.className === className);
+
+              selectNode(1);
+              commitHistory();
+              const documentBefore = JSON.stringify(model);
+              const undoCountBefore = undoHistory.length;
+              const toggle = partOf(dueField(1), 'inspector-help-toggle');
+              const panel = partOf(dueField(1), 'inspector-help');
+              const closed = {
+                hidden: panel.hidden,
+                expanded: toggle.getAttribute('aria-expanded'),
+                controlsPanel: toggle.getAttribute('aria-controls') === panel.id
+              };
+
+              toggle.onclick();
+              const opened = { hidden: panel.hidden, expanded: toggle.getAttribute('aria-expanded') };
+
+              renderInspector();
+              const rebuiltPanel = partOf(dueField(1), 'inspector-help');
+              const rebuiltToggle = partOf(dueField(1), 'inspector-help-toggle');
+              const afterRebuild = {
+                hidden: rebuiltPanel.hidden,
+                expanded: rebuiltToggle.getAttribute('aria-expanded')
+              };
+
+              selectNode(2);
+              const otherTaskHidden = partOf(dueField(2), 'inspector-help').hidden;
+              partOf(dueField(2), 'inspector-help-toggle').onclick();
+              const closedAgainHidden = partOf(dueField(2), 'inspector-help').hidden;
+              commitHistory();
+              const documentUnchanged = JSON.stringify(model) === documentBefore &&
+                undoHistory.length === undoCountBefore;
+
+              // The stub's dispatchEvent runs listeners only, so forward it to the field's handler.
+              selectNode(1);
+              const input = dueField(1).children.find(child => child.id === 'user-task-dueDate-1');
+              input.addEventListener('input', () => input.oninput());
+              const examples = partOf(partOf(dueField(1), 'inspector-help'), 'inspector-help-examples');
+              const exampleTexts = examples.children.map(example => example.textContent);
+              examples.children[0].onclick();
+              const afterExample = { value: input.value, stored: getNode(1).dueDate };
+
+              const inboxField = inspector.children.find(child =>
+                String(child.innerHTML).includes('Inbox visibility condition'));
+              const codeTexts = partOf(inboxField, 'inspector-help').children[1].children
+                .filter(child => child.tagName === 'CODE')
+                .map(child => child.textContent);
+
+              return JSON.stringify({
+                closed, opened, afterRebuild, otherTaskHidden, closedAgainHidden,
+                documentUnchanged, exampleTexts, afterExample, codeTexts
+              });
+            })()
+            """).AsString());
+
+        var root = result.RootElement;
+        var closed = root.GetProperty("closed");
+        Assert.True(closed.GetProperty("hidden").GetBoolean());
+        Assert.Equal("false", closed.GetProperty("expanded").GetString());
+        Assert.True(closed.GetProperty("controlsPanel").GetBoolean());
+
+        var opened = root.GetProperty("opened");
+        Assert.False(opened.GetProperty("hidden").GetBoolean());
+        Assert.Equal("true", opened.GetProperty("expanded").GetString());
+
+        var afterRebuild = root.GetProperty("afterRebuild");
+        Assert.False(afterRebuild.GetProperty("hidden").GetBoolean());
+        Assert.Equal("true", afterRebuild.GetProperty("expanded").GetString());
+
+        Assert.False(root.GetProperty("otherTaskHidden").GetBoolean());
+        Assert.True(root.GetProperty("closedAgainHidden").GetBoolean());
+        Assert.True(root.GetProperty("documentUnchanged").GetBoolean());
+
+        Assert.Equal(
+            ["P2D", "2030-01-31T17:00:00Z", "if(amount > 1000, 'PT4H', 'P2D')"],
+            root.GetProperty("exampleTexts").EnumerateArray().Select(text => text.GetString()));
+        var afterExample = root.GetProperty("afterExample");
+        Assert.Equal("P2D", afterExample.GetProperty("value").GetString());
+        Assert.Equal("P2D", afterExample.GetProperty("stored").GetString());
+        Assert.Contains("Number(expr)",
+            root.GetProperty("codeTexts").EnumerateArray().Select(text => text.GetString()));
+    }
+
+    [Fact]
+    public void InspectorNotes_KeepOnlyShortTextInlineOnEveryNodeType()
+    {
+        var engine = CreateEditorEngine();
+        using var result = JsonDocument.Parse(engine.Evaluate(
+            """
+            (() => {
+              const inlineNotes = element => [
+                ...(String(element.className).includes('empty-note') ? [element] : []),
+                ...(element.children || []).flatMap(inlineNotes)
+              ];
+              const longNotes = [];
+              const helpCounts = {};
+              for (const { value: type } of NODE_TYPE_OPTIONS) {
+                loadFromObject({
+                  id: 'notes-' + type,
+                  name: 'Notes',
+                  variables: [],
+                  lanes: [],
+                  flowNodes: [{ id: 1, name: 'Node', type }],
+                  sequenceFlows: []
+                });
+                selected = { kind: 'node', nodeId: 1 };
+                selectedNodeIds.clear();
+                selectedNodeIds.add(1);
+                renderInspector();
+                for (const note of inlineNotes(inspector)) {
+                  if (!note.style.color && note.textContent.length > 140) {
+                    longNotes.push(type + ': ' + note.textContent);
+                  }
+                }
+                const countHelp = element => (element.className === 'inspector-help' ? 1 : 0) +
+                  (element.children || []).reduce((sum, child) => sum + countHelp(child), 0);
+                helpCounts[type] = countHelp(inspector);
+              }
+              return JSON.stringify({ longNotes, helpCounts });
+            })()
+            """).AsString());
+
+        var root = result.RootElement;
+        Assert.Empty(root.GetProperty("longNotes").EnumerateArray().Select(note => note.GetString()));
+        var helpCounts = root.GetProperty("helpCounts");
+        Assert.True(helpCounts.GetProperty("userTask").GetInt32() >= 5);
+        Assert.True(helpCounts.GetProperty("serviceTask").GetInt32() >= 4);
     }
 
     [Fact]
@@ -5578,6 +5734,8 @@ public sealed class EditorRuntimeSmokeTests
             focus() {},
             blur() {},
             click() {},
+            select() {},
+            scrollIntoView() {},
             setPointerCapture() {},
             releasePointerCapture() {},
             getBoundingClientRect() {
@@ -5620,6 +5778,9 @@ public sealed class EditorRuntimeSmokeTests
             }
           };
         }
+        function Event(type, options = {}) {
+          return { ...fakePointerEvent(type, null, 0, 0, 0), bubbles: options.bubbles === true };
+        }
         const fakeElements = new Map();
         const documentEventListeners = {};
         const document = {
@@ -5638,6 +5799,7 @@ public sealed class EditorRuntimeSmokeTests
             return fakeElement();
           },
           querySelectorAll() { return []; },
+          execCommand() { return false; },
           createElement: fakeElement,
           createElementNS(_namespace, tag) { return fakeElement(tag); },
           createTextNode(text) {

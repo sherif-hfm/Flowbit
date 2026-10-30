@@ -1069,6 +1069,82 @@ public sealed class EditorSmokeTests(BrowserStackFixture stack)
         });
     }
 
+    [Theory]
+    [MemberData(nameof(EditorViewports))]
+    public async Task E13_InspectorHelpOpensOnDemandAndExamplesFillTheField(int viewportWidth, int viewportHeight)
+    {
+        await using var scenario = await CreateEditorScenarioAsync(
+            $"e13-inspector-help-{viewportWidth}x{viewportHeight}", viewportWidth, viewportHeight);
+        await scenario.RunAsync("inspector-help", async () =>
+        {
+            await OpenEditorAsync(scenario);
+            var page = scenario.Page;
+            await EditorInteractions.LoadWorkflowAsync(
+                page, EditorInteractions.FixturePath("editor-basic.json"));
+            await EditorInteractions.SelectNodeAsync(page, 2);
+
+            var inspector = page.Locator("#inspector");
+            var dueDate = page.Locator("#user-task-dueDate-2");
+            var field = FormField(inspector, "Due date");
+            var toggle = field.GetByRole(AriaRole.Button, new LocatorGetByRoleOptions { Name = "Help for Due date" });
+            var help = field.Locator(".inspector-help");
+            var undo = page.Locator("#undoBtn");
+
+            // Help starts closed, and opening or closing it is not a document change.
+            await Assertions.Expect(help).ToBeHiddenAsync();
+            await Assertions.Expect(toggle).ToHaveAttributeAsync("aria-expanded", "false");
+            await toggle.ClickAsync();
+            await Assertions.Expect(help).ToBeVisibleAsync();
+            await Assertions.Expect(toggle).ToHaveAttributeAsync("aria-expanded", "true");
+            await Assertions.Expect(help).ToContainTextAsync("a duration counted from creation");
+            await Assertions.Expect(undo).ToBeDisabledAsync();
+
+            // The keyboard closes and reopens it without moving focus.
+            await toggle.FocusAsync();
+            await page.Keyboard.PressAsync("Enter");
+            await Assertions.Expect(help).ToBeHiddenAsync();
+            await page.Keyboard.PressAsync("Space");
+            await Assertions.Expect(help).ToBeVisibleAsync();
+            await Assertions.Expect(toggle).ToBeFocusedAsync();
+            await page.Locator("#inspectorPanel").ScreenshotAsync(new LocatorScreenshotOptions
+            {
+                Path = Path.Combine(scenario.ArtifactDirectory, "inspector-help.png"),
+            });
+
+            // An example fills the field and is one history entry.
+            await help.GetByRole(AriaRole.Button, new LocatorGetByRoleOptions { Name = "P2D", Exact = true }).ClickAsync();
+            await Assertions.Expect(dueDate).ToHaveValueAsync("P2D");
+            await Assertions.Expect(dueDate).ToBeFocusedAsync();
+            await Assertions.Expect(undo).ToBeEnabledAsync();
+            await toggle.FocusAsync();
+            await page.Keyboard.PressAsync("Control+z");
+            await Assertions.Expect(dueDate).ToHaveValueAsync(string.Empty);
+            await Assertions.Expect(undo).ToBeDisabledAsync();
+            await page.Keyboard.PressAsync("Control+y");
+            await Assertions.Expect(dueDate).ToHaveValueAsync("P2D");
+
+            // Inside the field, undo is the browser's own and restores the replaced text.
+            await help.GetByRole(AriaRole.Button, new LocatorGetByRoleOptions { Name = "if(amount > 1000, 'PT4H', 'P2D')", Exact = true }).ClickAsync();
+            await Assertions.Expect(dueDate).ToHaveValueAsync("if(amount > 1000, 'PT4H', 'P2D')");
+            await page.Keyboard.PressAsync("Control+z");
+            await Assertions.Expect(dueDate).ToHaveValueAsync("P2D");
+
+            // Open help survives the inspector rebuild when the selection changes.
+            await EditorInteractions.SelectNodeAsync(page, 3);
+            await Assertions.Expect(dueDate).ToHaveCountAsync(0);
+            await EditorInteractions.SelectNodeAsync(page, 2);
+            await Assertions.Expect(help).ToBeVisibleAsync();
+
+            // The help never reaches the saved document.
+            var saved = await EditorInteractions.SaveAndCaptureDownloadAsync(
+                page, scenario, scenario.ArtifactDirectory);
+            var task = saved.RootElement.GetProperty("flowNodes").EnumerateArray()
+                .First(node => node.GetProperty("id").GetInt32() == 2);
+            Assert.Equal("P2D", task.GetProperty("dueDate").GetString());
+            Assert.DoesNotContain("a duration counted from creation", saved.RootElement.GetRawText(), StringComparison.Ordinal);
+        });
+    }
+
     // Inspector fields put a static label before their control.
     private static ILocator FormField(ILocator scope, string label) =>
         scope.Locator(".field").Filter(new LocatorFilterOptions

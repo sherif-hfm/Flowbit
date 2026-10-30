@@ -938,6 +938,8 @@ let instanceOverlay = new Map(); // viewer only: node id -> { state, badge, labe
 // Inspector-only: the Fixed value / Expression choice a user made for a timer
 // node's schedule, by node object. Unset choices are inferred from the value.
 const timerInputModes = new WeakMap();
+const openInspectorHelp = new Set();
+let inspectorHelpSequence = 0;
 let notifiedViewerSelection = null;
 let pendingViewerFit = false;
 
@@ -3374,13 +3376,11 @@ function addWorkflowRolesSection() {
   rolesFieldGeneric(model, "unclaimRoles", "Roles allowed to unclaim a task", () => {});
   rolesFieldGeneric(model, "taskAssignmentRoles", "Roles allowed to manage task assignments", () => {});
   const roleManagementOwner = { taskRoleManagementRoles: normalizeRoles(model.taskRoleManagementRoles) };
-  rolesFieldGeneric(roleManagementOwner, "taskRoleManagementRoles", "Roles allowed to manage waiting-task roles", () => {
+  const roleManagementField = rolesFieldGeneric(roleManagementOwner, "taskRoleManagementRoles", "Roles allowed to manage waiting-task roles", () => {
     model.taskRoleManagementRoles = roleManagementOwner.taskRoleManagementRoles;
   });
-  const roleManagementHint = document.createElement("p");
-  roleManagementHint.className = "empty-note";
-  roleManagementHint.textContent = "Empty disables role management. These managers may inspect and replace roles on waiting tasks without receiving assignment or user-action permissions.";
-  inspector.appendChild(roleManagementHint);
+  attachInspectorHelp(roleManagementField, "workflow-role-managers",
+    "Empty disables role management. These managers may inspect and replace roles on waiting tasks without receiving assignment or user-action permissions.");
 
   const distributionToggle = variableCheckbox(
     "Enable external task distributor",
@@ -3393,12 +3393,10 @@ function addWorkflowRolesSection() {
     });
   distributionToggle.style.marginTop = "12px";
   inspector.appendChild(distributionToggle);
+  attachInspectorHelp(distributionToggle, "workflow-task-distributor",
+    "Machine API credentials for active tasks across every version of this workflow key. Values may be literal or use `${setting.*}` / `${config.*}`. Calls use `X-Client-Id` and `X-Client-Secret`.");
 
   if (model.taskDistribution) {
-    const distributionHint = document.createElement("p");
-    distributionHint.className = "empty-note";
-    distributionHint.textContent = "Machine API credentials for active tasks across every version of this workflow key. Values may be literal or use ${setting.*} / ${config.*}. Calls use X-Client-Id and X-Client-Secret.";
-    inspector.appendChild(distributionHint);
     field("Distributor client id", "text", model.taskDistribution.clientId || "", value => {
       model.taskDistribution.clientId = value;
     });
@@ -3420,11 +3418,8 @@ function addProcessVariablesSection() {
   title.textContent = "Process variables";
   title.style.marginTop = "16px";
   inspector.appendChild(title);
-
-  const hint = document.createElement("p");
-  hint.className = "empty-note";
-  hint.textContent = "Declare instance variables or bind a local alias to a deployment-wide shared variable. Shared declarations snapshot the catalog contract. Conditional waits may use atomic or durable async delivery, but their conditions may reference instance variables only.";
-  inspector.appendChild(hint);
+  attachInspectorHelp(title, "process-variables",
+    "Declare instance variables or bind a local alias to a deployment-wide shared variable. Shared declarations snapshot the catalog contract. Conditional waits may use atomic or durable async delivery, but their conditions may reference instance variables only.");
 
   if (model.variables.length === 0) {
     const p = document.createElement("p");
@@ -3613,11 +3608,8 @@ function renderNodeInspector() {
     topologyInput.value = gatewayBehavior(node);
     topologyField.appendChild(topologyInput);
     inspector.appendChild(topologyField);
-
-    const topologyHint = document.createElement("p");
-    topologyHint.className = "empty-note";
-    topologyHint.textContent = "Use a separate gateway for each direction: a split has exactly one incoming and at least two outgoing flows; a merge has at least two incoming and exactly one outgoing flow.";
-    inspector.appendChild(topologyHint);
+    attachInspectorHelp(topologyField, "gateway-topology",
+      "Use a separate gateway for each direction: a split has exactly one incoming and at least two outgoing flows; a merge has at least two incoming and exactly one outgoing flow.");
 
     for (const message of gatewayTopologyWarnings(node)) {
       const warning = document.createElement("p");
@@ -3631,13 +3623,13 @@ function renderNodeInspector() {
   renderJoinCancellationSection(node);
 
   if (isComplexGatewayType(node.type)) {
-    textareaField("Activation condition", node.activationCondition ?? "", v => {
+    const activationInput = textareaField("Activation condition", node.activationCondition ?? "", v => {
       node.activationCondition = v;
     }, 4);
-    const activationHint = document.createElement("p");
-    activationHint.className = "empty-note";
-    activationHint.innerHTML = "Required NCalc expression. Use <code>IncomingCount(301)</code> with a literal incoming flow id and <code>TotalIncomingCount()</code>. Outgoing conditions may inspect <code>[gateway.waitingForStart]</code> to distinguish activation from reset.";
-    inspector.appendChild(activationHint);
+    activationInput.placeholder = "TotalIncomingCount() >= 2";
+    attachInspectorHelp(activationInput, "complex-activation",
+      "Required NCalc expression. Use `IncomingCount(301)` with a literal incoming flow id and `TotalIncomingCount()`. Outgoing conditions may inspect `[gateway.waitingForStart]` to distinguish activation from reset.",
+      ["TotalIncomingCount() >= 2", "IncomingCount(301) >= 1"]);
   }
 
   if (isConditionalEventType(node.type)) {
@@ -3661,15 +3653,12 @@ function renderNodeInspector() {
         label: `#${node.gatewayRef} (missing or not an eligible split)`
       });
     }
-    selectField("Interrupt gateway", options, node.gatewayRef ?? "", v => {
+    const interruptField = selectField("Interrupt gateway", options, node.gatewayRef ?? "", v => {
       node.gatewayRef = v ? +v : null;
       renderDiagramLayers();
     });
-
-    const interruptHint = document.createElement("p");
-    interruptHint.className = "empty-note";
-    interruptHint.textContent = "Entering this event cancels active work descended from the nearest matching fork activation, then follows its one authored continuation. If no matching activation is active, it continues without cancellation.";
-    inspector.appendChild(interruptHint);
+    attachInspectorHelp(interruptField, "scoped-interrupt",
+      "Entering this event cancels active work descended from the nearest matching fork activation, then follows its one authored continuation. If no matching activation is active, it continues without cancellation.");
 
     const riskyJoin = findReachableForbiddenMergeFromInterrupt(node);
     if (riskyJoin) {
@@ -3682,23 +3671,23 @@ function renderNodeInspector() {
   }
 
   if (isErrorEndEventType(node.type)) {
-    field("Error code", "text", node.errorCode ?? "", v => {
+    const errorCodeInput = field("Error code", "text", node.errorCode ?? "", v => {
       node.errorCode = v;
     });
-    textareaField("Error description (optional)", node.errorDescription ?? "", v => {
+    errorCodeInput.placeholder = "EXAMPLE.REST_FAILURE";
+    attachInspectorHelp(errorCodeInput, "error-end-code", "A stable business-facing identifier.");
+    const errorDescriptionInput = textareaField("Error description (optional)", node.errorDescription ?? "", v => {
       node.errorDescription = v.trim() ? v : null;
     }, 4);
-    const faultHint = document.createElement("p");
-    faultHint.className = "empty-note";
-    faultHint.textContent = "The code is a stable business-facing identifier. The node name is used as the runtime description when this field is empty.";
-    inspector.appendChild(faultHint);
+    attachInspectorHelp(errorDescriptionInput, "error-end-description",
+      "The node name is used as the runtime description when this field is empty.");
   }
 
   if (isUserTaskType(node.type)) {
     roleSourceField(node, () => { renderNodes(); renderEdges(); });
     renderInboxVisibilityConditionField(node);
     if (!node.multiInstance) {
-      inspector.appendChild(
+      const assignmentToggle = inspector.appendChild(
         variableCheckbox("Requires direct assignment", node.requiresAssignment, checked => {
           node.requiresAssignment = checked;
           if (checked) {
@@ -3714,13 +3703,11 @@ function renderNodeInspector() {
           render();
         })
       );
+      attachInspectorHelp(assignmentToggle, "user-task-requires-assignment",
+        "Until an assignee is resolved or supplied by an assignment manager or the optional external distributor, this active task is hidden from every regular inbox.");
     }
 
     if (node.requiresAssignment) {
-      const assignmentHint = document.createElement("p");
-      assignmentHint.className = "empty-note";
-      assignmentHint.textContent = "Until an assignee is resolved or supplied by an assignment manager or the optional external distributor, this active task is hidden from every regular inbox.";
-      inspector.appendChild(assignmentHint);
       selectField("Assignment mode", ASSIGNMENT_MODE_OPTIONS,
         node.assignmentMode || ASSIGNMENT_MODE.FRESH, v => {
           node.assignmentMode = v;
@@ -3765,16 +3752,15 @@ function renderNodeInspector() {
     }
 
     if (!node.multiInstance && (!node.requiresAssignment || node.assignmentMode === ASSIGNMENT_MODE.FRESH)) {
-      const assigneeHint = document.createElement("p");
-      assigneeHint.className = "empty-note";
-      assigneeHint.textContent = node.requiresAssignment
-        ? "Optional NCalc expression resolved once when the task is created. A missing or invalid result leaves the task hidden for an assignment manager or the optional external distributor."
-        : "Optional NCalc expression resolved once when the task is created. Use a variable name such as approverUser, or a quoted literal such as 'alice'. A runtime resolution failure creates a shared-pool task.";
-      inspector.appendChild(assigneeHint);
-      field("Assignee expression", "text", node.assignee ?? "", v => {
+      const assigneeInput = field("Assignee expression", "text", node.assignee ?? "", v => {
         node.assignee = v.trim() ? v : null;
         renderNodes();
       });
+      assigneeInput.placeholder = "approverUser";
+      attachInspectorHelp(assigneeInput, "user-task-assignee", node.requiresAssignment
+        ? "Optional NCalc expression resolved once when the task is created. A missing or invalid result leaves the task hidden for an assignment manager or the optional external distributor."
+        : "Optional NCalc expression resolved once when the task is created. Use a variable name or a quoted literal. A runtime resolution failure creates a shared-pool task.",
+        ["approverUser", "'alice'"]);
     }
 
     renderUserTaskDueFields(node);
@@ -3784,7 +3770,7 @@ function renderNodeInspector() {
       renderNodes();
     }
 
-    inspector.appendChild(variableCheckbox("Multi-instance", !!node.multiInstance, checked => {
+    const multiInstanceToggle = inspector.appendChild(variableCheckbox("Multi-instance", !!node.multiInstance, checked => {
       node.multiInstance = checked ? {
         mode: "parallel", source: "collection", collectionVariable: "",
         cardinalityExpression: null, onePerActor: false,
@@ -3800,16 +3786,22 @@ function renderNodeInspector() {
       outgoingFlows(node.id).forEach(applyFlowInvariants);
       render();
     }));
+    attachInspectorHelp(multiInstanceToggle, "multi-instance",
+      "Every non-default outcome requires a unique priority and completion condition. Exactly one engine-only default fallback is required and has neither.");
     if (node.multiInstance) {
       selectField("Execution mode", MULTI_INSTANCE_MODE_OPTIONS, node.multiInstance.mode, v => {
         node.multiInstance.mode = v;
         renderNodes();
       });
-      selectField("Completion evaluation", MULTI_INSTANCE_COMPLETION_EVALUATION_OPTIONS,
+      const completionEvaluationField = selectField("Completion evaluation", MULTI_INSTANCE_COMPLETION_EVALUATION_OPTIONS,
         node.multiInstance.completionEvaluation, v => {
           node.multiInstance.completionEvaluation = v;
           renderInspector();
         });
+      attachInspectorHelp(completionEvaluationField, "multi-instance-completion", [
+        "Completion conditions follow this timing and may use `CountFlow(id)`, `PercentFlow(id)`, `FlowInfo(id, 'path')`, `[mi.total]`, `[mi.completed]`, and `[mi.remaining]`.",
+        "`FlowInfo` reads instance-lifetime action/traversal summaries; `CountFlow` and `PercentFlow` remain scoped to this multi-instance execution."
+      ]);
       selectField("Instance source", MULTI_INSTANCE_SOURCE_OPTIONS, node.multiInstance.source, v => {
         node.multiInstance.source = v;
         if (v === "collection") {
@@ -3834,9 +3826,11 @@ function renderNodeInspector() {
         field("Cardinality expression", "text", node.multiInstance.cardinalityExpression || "", v => {
           node.multiInstance.cardinalityExpression = v;
         });
-        inspector.appendChild(variableCheckbox("One task per actor", !!node.multiInstance.onePerActor, checked => {
+        const onePerActorToggle = inspector.appendChild(variableCheckbox("One task per actor", !!node.multiInstance.onePerActor, checked => {
           node.multiInstance.onePerActor = checked;
         }));
+        attachInspectorHelp(onePerActorToggle, "multi-instance-one-per-actor",
+          "Requires as many distinct eligible users as there are items.");
       }
       const results = (model.variables || [])
         .filter(v => v.dataType === "json" && !v.isArray &&
@@ -3846,12 +3840,10 @@ function renderNodeInspector() {
           value: v.name,
           label: isSharedProcessVariable(v) ? `${v.name} (shared read/write)` : v.name
         }));
-      selectField("Result JSON variable", [{ value: "", label: "— select json —" }].concat(results),
+      const resultVariableField = selectField("Result JSON variable", [{ value: "", label: "— select json —" }].concat(results),
         node.multiInstance.resultVariable || "", v => { node.multiInstance.resultVariable = v; });
-      const miHint = document.createElement("p");
-      miHint.className = "empty-note";
-      miHint.textContent = "Every non-default outcome requires a unique priority and completion condition. Exactly one engine-only default fallback is required and has neither. Conditions follow the selected evaluation timing and may use CountFlow(id), PercentFlow(id), FlowInfo(id, 'path'), [mi.total], [mi.completed], and [mi.remaining]. FlowInfo reads instance-lifetime action/traversal summaries; CountFlow and PercentFlow remain scoped to this multi-instance execution. Result rows include kind and the completing actor's action-time userRoles; cancelled rows use null, and a direct parent interrupt appends one parentInterrupt row. One task per actor requires that many distinct eligible users.";
-      inspector.appendChild(miHint);
+      attachInspectorHelp(resultVariableField, "multi-instance-result",
+        "Result rows include `kind` and the completing actor's action-time `userRoles`; cancelled rows use null, and a direct parent interrupt appends one `parentInterrupt` row.");
     }
   }
 
@@ -3870,11 +3862,8 @@ function renderNodeInspector() {
     hostInput.value = host ? `#${host.id} ${host.name}` : "(missing host)";
     hostField.appendChild(hostInput);
     inspector.appendChild(hostField);
-
-    const bhint = document.createElement("p");
-    bhint.className = "empty-note";
-    bhint.textContent = "When the host task fails, the token exits through this boundary's single outgoing flow (the error path).";
-    inspector.appendChild(bhint);
+    attachInspectorHelp(hostField, "error-boundary-host",
+      "When the host task fails, the token exits through this boundary's single outgoing flow (the error path).");
 
     const errorVariableInput = field("Error variable (optional)", "text", node.errorVariable ?? "", v => {
       node.errorVariable = v.trim() ? v : null;
@@ -3897,17 +3886,15 @@ function renderNodeInspector() {
     hostInput.value = host ? `#${host.id} ${host.name}` : "(missing host)";
     hostField.appendChild(hostInput);
     inspector.appendChild(hostField);
-    inspector.appendChild(variableCheckbox(
+    const interruptToggle = inspector.appendChild(variableCheckbox(
       "Interrupt attached activity",
       node.cancelActivity === true,
       checked => { node.cancelActivity = checked; renderInspector(); }));
-    const hint = document.createElement("p");
-    hint.className = "empty-note";
     const eventName = isConditionalBoundaryEventType(node.type) ? "condition" : "timer";
-    hint.textContent = node.cancelActivity === false
-      ? `When the ${eventName} triggers, a sibling execution follows the boundary path while the attached activity keeps waiting.`
-      : `When the ${eventName} triggers, the attached activity and its open work are cancelled before the boundary path continues.`;
-    inspector.appendChild(hint);
+    attachInspectorHelp(interruptToggle, "boundary-interrupt", [
+      `Checked: when the ${eventName} triggers, the attached activity and its open work are cancelled before the boundary path continues.`,
+      `Unchecked: when the ${eventName} triggers, a sibling execution follows the boundary path while the attached activity keeps waiting.`
+    ]);
   }
 
   if (isTimerEventType(node.type)) {
@@ -3934,7 +3921,7 @@ function renderNodeInspector() {
 
   if (isStartEventType(node.type)) {
     rolesField(node, () => { renderNodes(); renderEdges(); });
-    renderStartVariablesSection(node, "Variables on the start event are the data required to start the workflow.");
+    renderStartVariablesSection(node);
     renderIdempotencySection(node);
     renderBusinessKeySection(node);
   }
@@ -4002,18 +3989,15 @@ function renderNodeInspector() {
   inspector.appendChild(del);
 }
 
-function renderStartVariablesSection(node, hint) {
+function renderStartVariablesSection(node) {
   node.variables = node.variables || [];
 
   const variablesTitle = document.createElement("h2");
   variablesTitle.textContent = "Variables";
   variablesTitle.style.marginTop = "16px";
   inspector.appendChild(variablesTitle);
-
-  const hintEl = document.createElement("p");
-  hintEl.className = "empty-note";
-  hintEl.textContent = hint;
-  inspector.appendChild(hintEl);
+  attachInspectorHelp(variablesTitle, "start-variables",
+    "Variables on the start event are the data required to start the workflow.");
 
   if (node.variables.length === 0) {
     const p = document.createElement("p");
@@ -4093,6 +4077,9 @@ function renderJoinCancellationSection(node) {
     });
   toggle.style.marginTop = "12px";
   inspector.appendChild(toggle);
+  attachInspectorHelp(toggle, "join-cancellation", isExclusiveGatewayType(node.type)
+    ? "An Exclusive merge fires on the first arrival, so this makes the first branch win. Only unfinished work descended from the selected split activation is cancelled; unrelated instance work is preserved."
+    : "When this merge fires under its normal join rule, unfinished work descended from the selected split activation is cancelled. Unrelated instance work is preserved.");
   if (!configured) return;
 
   const configIsObject = typeof node.joinCancellation === "object" &&
@@ -4119,13 +4106,6 @@ function renderJoinCancellationSection(node) {
     renderInspector();
     renderDiagramLayers();
   });
-
-  const hint = document.createElement("p");
-  hint.className = "empty-note";
-  hint.textContent = isExclusiveGatewayType(node.type)
-    ? "An Exclusive merge fires on the first arrival, so this makes the first branch win. Only unfinished work descended from the selected split activation is cancelled; unrelated instance work is preserved."
-    : "When this merge fires under its normal join rule, unfinished work descended from the selected split activation is cancelled. Unrelated instance work is preserved.";
-  inspector.appendChild(hint);
 
   const currentRefIsEligible = Number.isInteger(currentRef) && currentRef > 0 &&
     eligibleSplits.some(split => split.id === currentRef);
@@ -4170,14 +4150,12 @@ function renderServiceSection(node) {
   title.textContent = "REST call";
   title.style.marginTop = "16px";
   inspector.appendChild(title);
-
-  const hint = document.createElement("p");
-  hint.className = "empty-note";
-  hint.textContent = "Calls a REST endpoint automatically. Use ${variableName} in the URL, headers, and body.";
-  inspector.appendChild(hint);
+  attachInspectorHelp(title, "service-rest",
+    "Calls a REST endpoint automatically. Use `${variableName}` in the URL, headers, and body.");
 
   selectField("Method", HTTP_METHODS, service.method, v => { service.method = v; });
-  field("URL", "text", service.url, v => { service.url = v; });
+  const urlInput = field("URL", "text", service.url, v => { service.url = v; });
+  urlInput.placeholder = "https://api.example.com/credit/${customerId}";
   field("Timeout (seconds)", "number", service.timeoutSeconds, v => {
     const n = Math.round(+v);
     service.timeoutSeconds = Number.isFinite(n) && n > 0 ? n : 1;
@@ -4245,31 +4223,27 @@ function renderServiceSection(node) {
   bodyTitle.style.marginTop = "16px";
   inspector.appendChild(bodyTitle);
 
-  const bodyHint = document.createElement("p");
-  bodyHint.className = "empty-note";
-  bodyHint.textContent = "Optional JSON body template. Placeholders insert the variable's JSON value, e.g. { \"amount\": ${amount} }.";
-  inspector.appendChild(bodyHint);
-
   const bodyField = document.createElement("div");
   bodyField.className = "field";
   const bodyInput = document.createElement("textarea");
   bodyInput.value = service.body || "";
   bodyInput.rows = 5;
+  bodyInput.placeholder = '{ "amount": ${amount} }';
   bodyInput.style.cssText = "width:100%;font-family:monospace;resize:vertical";
   bodyInput.oninput = () => { service.body = bodyInput.value; };
   bodyField.appendChild(bodyInput);
   inspector.appendChild(bodyField);
+  attachInspectorHelp(bodyTitle, "service-body",
+    "Optional JSON body template. Placeholders insert the variable's JSON value.",
+    ['{ "amount": ${amount} }'], bodyInput);
 
   // Output mappings
   const outTitle = document.createElement("h2");
   outTitle.textContent = "Response mappings";
   outTitle.style.marginTop = "16px";
   inspector.appendChild(outTitle);
-
-  const outHint = document.createElement("p");
-  outHint.className = "empty-note";
-  outHint.textContent = "Each mapping creates or updates a typed instance variable, or a shared alias with read/write access. Read-only shared aliases are not offered as targets. The response path may be blank only when a default value is configured.";
-  inspector.appendChild(outHint);
+  attachInspectorHelp(outTitle, "service-response-mappings",
+    "Each mapping creates or updates a typed instance variable, or a shared alias with read/write access. Read-only shared aliases are not offered as targets. The response path may be blank only when a default value is configured.");
 
   service.outputMappings.forEach((mapping, index) => {
     const box = document.createElement("div");
@@ -4394,6 +4368,12 @@ function renderConditionalSection(node) {
   };
   conditionInput.addEventListener("input", updateDependencyStatus);
   updateDependencyStatus();
+  conditionInput.placeholder = "approved == true";
+  attachInspectorHelp(conditionInput, "conditional-condition", (isConditionalBoundaryEventType(node.type)
+    ? "The boundary captures each false-to-true transition while its host is active; a non-interrupting boundary rearms after the expression becomes false. "
+    : "The event waits until this NCalc expression over persisted instance variables becomes true. ") +
+    "Shared process variables are not supported.",
+    ["approved == true"]);
 
   const currentMode = conditional.deliveryMode == null
     ? CONDITIONAL_DELIVERY_MODE.ATOMIC
@@ -4405,7 +4385,7 @@ function renderConditionalSection(node) {
       label: String(currentMode) + " (unsupported imported value)"
     });
   }
-  selectField("Delivery mode", options, currentMode, value => {
+  const deliveryField = selectField("Delivery mode", options, currentMode, value => {
     if (value === CONDITIONAL_DELIVERY_MODE.ATOMIC) {
       delete conditional.deliveryMode;
     } else {
@@ -4413,17 +4393,10 @@ function renderConditionalSection(node) {
     }
     renderInspector();
   });
-
-  const hint = document.createElement("p");
-  hint.className = "empty-note";
-  hint.innerHTML = (isConditionalBoundaryEventType(node.type)
-    ? "The boundary captures each false-to-true transition while its host is active; a non-interrupting boundary rearms after the expression becomes false. "
-    : "The event waits until this NCalc expression over persisted instance variables becomes true. ") +
-    "Shared process variables are not supported. <b>Atomic</b> evaluates " +
-    "and captures the event in the variable writer transaction. <b>Durable async</b> " +
-    "persists the capture in that transaction, then a worker continues its path. Atomic is " +
-    "the default and is omitted from saved JSON.";
-  inspector.appendChild(hint);
+  attachInspectorHelp(deliveryField, "conditional-delivery", [
+    "Atomic evaluates and captures the event in the variable writer transaction. It is the default and is omitted from saved JSON.",
+    "Durable async persists the capture in that transaction, then a worker continues its path."
+  ]);
 }
 
 function renderMessageSection(node) {
@@ -4436,13 +4409,9 @@ function renderMessageSection(node) {
   title.textContent = isStart ? "Message (start)" : "Message (delivery)";
   title.style.marginTop = "16px";
   inspector.appendChild(title);
-
-  const hint = document.createElement("p");
-  hint.className = "empty-note";
-  hint.textContent = isStart
-    ? "Starts a new instance when a message is delivered to POST /api/workflows/{workflowKey}/message-start. Credential/header templates can use ${config.*}, ${setting.*}, and non-caller-controlled system values; no instance or caller variables exist yet. The caller authenticates with X-Client-Id, X-Client-Secret, and the required header below."
-    : "Rests until a message is delivered to POST /api/instances/{id}/message. All fields accept ${variableName} (incl. ${config.*} / ${setting.*}). The caller authenticates with the client id/secret (X-Client-Id / X-Client-Secret headers) and the required header below.";
-  inspector.appendChild(hint);
+  attachInspectorHelp(title, "message", isStart
+    ? "Starts a new instance when a message is delivered to `POST /api/workflows/{workflowKey}/message-start`. Credential/header templates can use `${config.*}`, `${setting.*}`, and non-caller-controlled system values; no instance or caller variables exist yet. The caller authenticates with `X-Client-Id`, `X-Client-Secret`, and the required header below."
+    : "Rests until a message is delivered to `POST /api/instances/{id}/message`. All fields accept `${variableName}` (incl. `${config.*}` / `${setting.*}`). The caller authenticates with the client id/secret (`X-Client-Id` / `X-Client-Secret` headers) and the required header below.");
 
   field("Client id", "text", message.clientId, v => { message.clientId = v; });
   field("Client secret", "password", message.clientSecret, v => { message.clientSecret = v; });
@@ -4455,7 +4424,7 @@ function renderMessageSection(node) {
   inspector.appendChild(secretHint);
 
   if (!isStart) {
-    inspector.appendChild(variableCheckbox(
+    const deliveryIdempotencyToggle = inspector.appendChild(variableCheckbox(
       "Enable delivery idempotency",
       message.deliveryIdempotency === true,
       checked => {
@@ -4468,21 +4437,19 @@ function renderMessageSection(node) {
         }
         renderInspector();
       }));
+    attachInspectorHelp(deliveryIdempotencyToggle, "message-delivery-idempotency",
+      "The header carries transport metadata only; no implicit workflow variable is created. The key is unique for this instance and every committed retry returns 409.");
     if (message.deliveryIdempotency === true) {
       field("Idempotency header name", "text", message.deliveryIdempotencyHeaderName,
         value => { message.deliveryIdempotencyHeaderName = value; });
     }
-    const idempotencyHint = document.createElement("p");
-    idempotencyHint.className = "empty-note";
-    idempotencyHint.textContent = "The header carries transport metadata only; no implicit workflow variable is created. The key is unique for this instance and every committed retry returns 409.";
-    inspector.appendChild(idempotencyHint);
   }
 
-  const valHint = document.createElement("p");
-  valHint.className = "empty-note";
-  valHint.textContent = "Optional NCalc rule evaluated with the incoming header value bound as `header` (plus instance vars/context); must be truthy. e.g. Len(header) >= 8";
-  inspector.appendChild(valHint);
-  field("Header validation (NCalc, optional)", "text", message.headerValidation, v => { message.headerValidation = v; });
+  const headerValidationInput = field("Header validation (NCalc, optional)", "text", message.headerValidation, v => { message.headerValidation = v; });
+  headerValidationInput.placeholder = "Len(header) >= 8";
+  attachInspectorHelp(headerValidationInput, "message-header-validation",
+    "Optional NCalc rule evaluated with the incoming header value bound as `header` (plus instance vars/context); must be truthy.",
+    ["Len(header) >= 8"]);
 
   // Message starts and catches share the typed mapping contract. Start mappings
   // additionally declare the variables available during instance creation.
@@ -4490,13 +4457,9 @@ function renderMessageSection(node) {
   outTitle.textContent = "Output mappings";
   outTitle.style.marginTop = "16px";
   inspector.appendChild(outTitle);
-
-  const outHint = document.createElement("p");
-  outHint.className = "empty-note";
-  outHint.textContent = isStart
+  attachInspectorHelp(outTitle, "message-output-mappings", isStart
     ? "Each mapping declares a typed start output. It may target a compatible shared alias with read/write access. The payload path may be blank only when a default value is configured."
-    : "Each mapping creates or updates a typed instance variable, or a shared alias with read/write access. The payload path may be blank only when a default value is configured.";
-  inspector.appendChild(outHint);
+    : "Each mapping creates or updates a typed instance variable, or a shared alias with read/write access. The payload path may be blank only when a default value is configured.");
 
   message.outputMappings.forEach((mapping, index) => {
     const box = document.createElement("div");
@@ -4566,11 +4529,22 @@ function renderScriptSection(node) {
   title.style.marginTop = "16px";
   inspector.appendChild(title);
 
-  selectField("Format", SCRIPT_FORMAT_OPTIONS, node.scriptFormat, v => {
+  const formatField = selectField("Format", SCRIPT_FORMAT_OPTIONS, node.scriptFormat, v => {
     node.scriptFormat = v;
     applyTypeInvariants(node);
     renderInspector();
   });
+  attachInspectorHelp(formatField, "script-format", node.scriptFormat === SCRIPT_FORMAT.JAVASCRIPT
+    ? [
+        "Runs in a sandboxed JavaScript engine (Jint) with a bound `execution` object and no filesystem, network, or CLR access.",
+        "Available: `execution.getVariable(name)`, `execution.setVariable(name, value)`, `execution.getVariables()`, `execution.hasVariable(name)`, and, when FlowInfo is enabled, `execution.getFlowInfo(201).actions.last.userRoles`.",
+        "`setVariable` targets must be declared process variables (declared under the Workflow panel) and shared targets must have read/write access; the value is coerced to the declared data type and its validation rule re-checked.",
+        "Dynamic `eval`/`Function` compilation is disabled; execution and JSON values are bounded by server-configured limits."
+      ]
+    : [
+        "Sets instance process variables and shared aliases with read/write access during the pass-through hop. Evaluated in order and coerced to the target contract.",
+        "Each expression is NCalc and may read other variables (including shared read-only aliases and earlier assignments in this list), `sys.*`/`config.*` context (use `[sys.user]` bracket syntax for dotted names), and instance-lifetime flow summaries such as `FlowInfo(201, 'actions.last.userRoles')`."
+      ]);
 
   if (node.scriptFormat === SCRIPT_FORMAT.JAVASCRIPT) {
     renderJavaScriptSection(node);
@@ -4590,11 +4564,8 @@ function renderErrorBoundarySection(hostNode) {
   title.textContent = "Error boundary";
   title.style.marginTop = "16px";
   inspector.appendChild(title);
-
-  const hint = document.createElement("p");
-  hint.className = "empty-note";
-  hint.textContent = "When this task fails (HTTP error / timeout / script error), route the token out an error path instead of rolling back. Attach an error boundary event, then draw its single outgoing flow.";
-  inspector.appendChild(hint);
+  attachInspectorHelp(title, "error-boundary",
+    "When this task fails (HTTP error / timeout / script error), route the token out an error path instead of rolling back. Attach an error boundary event, then draw its single outgoing flow.");
 
   const existing = findErrorBoundary(hostNode.id);
   if (existing) {
@@ -5069,6 +5040,8 @@ function renderAsyncJobSection(node) {
   title.textContent = "Durable async";
   title.style.marginTop = "16px";
   inspector.appendChild(title);
+  attachInspectorHelp(title, "durable-async",
+    "Async before pauses before activation. Async after commits completion and queues outgoing routing. Multi-instance settings wrap the parent task body.");
 
   inspector.appendChild(variableCheckbox("Async before", node.asyncBefore === true, checked => {
     if (!checked && findObservableBoundaries(node.id).length > 0 &&
@@ -5091,11 +5064,6 @@ function renderAsyncJobSection(node) {
     if (node.asyncBefore !== true && node.asyncAfter !== true) node.job = null;
     renderInspector();
   }));
-
-  const hint = document.createElement("p");
-  hint.className = "empty-note";
-  hint.textContent = "Async before pauses before activation. Async after commits completion and queues outgoing routing. Multi-instance settings wrap the parent task body.";
-  inspector.appendChild(hint);
 
   if (node.asyncBefore !== true && node.asyncAfter !== true) {
     if (isServiceTaskType(node.type)) {
@@ -5246,7 +5214,7 @@ function renderTimerSection(node) {
   const selectedKind = node.timer.timeDate != null
     ? "timeDate"
     : node.timer.timeCycle != null ? "timeCycle" : "timeDuration";
-  selectField("Schedule", [
+  const scheduleField = selectField("Schedule", [
     { value: "timeDate", label: "Absolute date/time" },
     { value: "timeDuration", label: "Duration after activation" },
     { value: "timeCycle", label: "Repeating cycle" }
@@ -5295,21 +5263,19 @@ function renderTimerSection(node) {
     });
   }
   if (selectedKind === "timeDuration") refreshCalendar = renderTimerCalendarField(node);
-  const hint = document.createElement("p");
-  hint.className = "empty-note";
-  hint.textContent = inputMode === "expression"
-    ? "Evaluated once, from stored instance variables, when the timer activates; the due time is saved, and later " +
-      "variable changes do not move it. A datetime value needs an explicit offset such as Z or +02:00. " +
-      (options.mode === "hosted"
-        ? "Saving checks the expression's syntax and the variables it names; this field checks only the parts it can without an NCalc parser."
-        : "This standalone editor cannot check NCalc syntax or variable names, so an export does not prove the expression is valid; saving through the API checks them.")
-    : selectedKind === "timeDate"
+  if (inputMode !== "expression") {
+    attachInspectorHelp(scheduleField, "timer-schedule", selectedKind === "timeDate"
       ? "Choose a local date and time. Flowbit saves the equivalent UTC instant with a Z offset."
       : selectedKind === "timeCycle"
         ? "Choose whether the interval repeats forever or a fixed number of times. Recurring intervals must be at least one second."
-        : "Choose an amount and unit. Fixed weeks, days, hours, minutes, and seconds are supported; calendar years and months are not. " +
-          "With a business calendar, days keep the time of day on later working days and hours count only working hours; weeks cannot be used.";
-  inspector.appendChild(hint);
+        : "Choose an amount and unit. Fixed weeks, days, hours, minutes, and seconds are supported; calendar years and months are not.");
+  } else if (options.mode !== "hosted") {
+    // Stays visible: an export that looks valid may still fail when saved through the API.
+    const standaloneNote = document.createElement("p");
+    standaloneNote.className = "empty-note";
+    standaloneNote.textContent = "This standalone editor cannot check NCalc syntax or variable names, so an export does not prove the expression is valid; saving through the API checks them.";
+    inspector.appendChild(standaloneNote);
+  }
 }
 // Infers Fixed value or Expression from the authored text unless the user
 // chose one for this property. Text the fixed controls cannot show, other than
@@ -5352,20 +5318,12 @@ function renderTimerExpressionEditor(node, property, onChange) {
   input.placeholder = property === "timeDate" ? "${contractEnd}" : "if(urgent, 'PT4H', 'P2D')";
   const current = node.timer[property];
   input.value = typeof current === "string" ? current : String(current ?? "");
-  const help = document.createElement("p");
-  help.className = "empty-note";
-  help.id = inputId + "-help";
-  help.textContent = property === "timeDate"
-    ? "NCalc over stored instance variables that gives a date-time with an offset, such as ${contractEnd} or " +
-      "endDate + 'T17:00:00Z'. At most 128 characters."
-    : "NCalc over stored instance variables that gives a duration, such as if(urgent, 'PT4H', 'P2D'). " +
-      "Use [name] for a variable whose name looks like a duration. At most 128 characters.";
   const status = document.createElement("p");
   status.className = "expression-validation";
   status.setAttribute("role", "status");
   status.setAttribute("aria-live", "polite");
   status.id = inputId + "-status";
-  input.setAttribute("aria-describedby", status.id + " " + help.id);
+  input.setAttribute("aria-describedby", status.id);
   const updateValidation = () => {
     const problems = timerScheduleValueProblems(node.type, property, input.value, model.variables);
     input.setAttribute("aria-invalid", problems.length ? "true" : "false");
@@ -5379,9 +5337,20 @@ function renderTimerExpressionEditor(node, property, onChange) {
   f.appendChild(labelElement);
   f.appendChild(input);
   f.appendChild(status);
-  f.appendChild(help);
   inspector.appendChild(f);
   updateValidation();
+  attachInspectorHelp(input, "timer-expression", [
+    (property === "timeDate"
+      ? "NCalc that gives a date-time with an offset such as Z or +02:00. "
+      : "NCalc that gives a duration. Use `[name]` for a variable whose name looks like a duration. ") +
+      "At most 128 characters.",
+    "Evaluated once, from stored instance variables, when the timer activates; the due time is saved, and later variable changes do not move it.",
+    ...(options.mode === "hosted"
+      ? ["Saving checks the expression's syntax and the variables it names; this field checks only the parts it can without an NCalc parser."]
+      : [])
+  ], property === "timeDate"
+    ? ["${contractEnd}", "endDate + 'T17:00:00Z'"]
+    : ["if(urgent, 'PT4H', 'P2D')"]);
 }
 // The calendar is free text: the editor has no list of calendars, and the
 // server checks that the named calendar exists when the definition is saved.
@@ -5422,6 +5391,8 @@ function renderTimerCalendarField(node) {
   f.appendChild(status);
   inspector.appendChild(f);
   updateValidation();
+  attachInspectorHelp(input, "timer-calendar",
+    "The name of a business calendar. Days then keep the time of day on later working days, and hours count only working hours; weeks cannot be used.");
   return updateValidation;
 }
 
@@ -5576,11 +5547,6 @@ function addErrorBoundary(hostNode) {
 function renderAssignmentsSection(node) {
   node.assignments = normalizeAssignments(node.assignments);
 
-  const hint = document.createElement("p");
-  hint.className = "empty-note";
-  hint.textContent = "Sets instance process variables and shared aliases with read/write access during the pass-through hop. Each expression is NCalc and may read other variables (including shared read-only aliases and earlier assignments in this list), sys.*/config.* context (use [sys.user] bracket syntax for dotted names), and instance-lifetime flow summaries such as FlowInfo(201, 'actions.last.userRoles'). Evaluated in order and coerced to the target contract.";
-  inspector.appendChild(hint);
-
   const allDeclared = (model.variables || []).filter(v => v.name && v.name.trim());
   const declared = allDeclared.filter(isWritableProcessVariable);
   if (declared.length === 0) {
@@ -5649,18 +5615,6 @@ function renderJavaScriptSection(node) {
     "Enable instance-wide FlowInfo evidence",
     node.usesFlowInfo,
     checked => { node.usesFlowInfo = checked; }));
-
-  const hint = document.createElement("p");
-  hint.className = "empty-note";
-  hint.innerHTML = "Runs in a sandboxed JavaScript engine (Jint) with a bound <code>execution</code> object " +
-    "- no filesystem/network/CLR access. <code>execution.getVariable(name)</code>, " +
-    "<code>execution.setVariable(name, value)</code>, <code>execution.getVariables()</code>, " +
-    "<code>execution.hasVariable(name)</code>, and, when FlowInfo is enabled above, " +
-    "<code>execution.getFlowInfo(201).actions.last.userRoles</code>. <b>setVariable</b> targets must be declared process " +
-    "variables (declared under the Workflow panel) and shared targets must have read/write access; the value is coerced to the declared data type " +
-    "and its validation rule re-checked. Dynamic <code>eval</code>/<code>Function</code> compilation is disabled; " +
-    "execution and JSON values are bounded by server-configured limits.";
-  inspector.appendChild(hint);
 
   const declared = (model.variables || []).filter(v => v.name && v.name.trim());
   if (declared.length === 0) {
@@ -6069,7 +6023,7 @@ function renderFlowInspector() {
   renderAttributesSection(flow);
 
   if (conditionalGateway) {
-    inspector.appendChild(
+    const defaultToggle = inspector.appendChild(
       variableCheckbox("Default flow", flow.isDefault, checked => {
         flow.isDefault = checked;
         if (checked) {
@@ -6091,32 +6045,31 @@ function renderFlowInspector() {
         renderEdges();
       })
     );
-    if (flow.isDefault) {
-      const defaultHint = document.createElement("p");
-      defaultHint.className = "empty-note";
-      defaultHint.textContent = requiresGatewayDefault(source)
-        ? "Required fallback: taken only when no conditional branch matches."
-        : "Optional fallback: used when no Complex outgoing condition matches.";
-      inspector.appendChild(defaultHint);
-    } else {
-      field("Condition", "text", flow.condition ?? "", v => {
+    attachInspectorHelp(defaultToggle, "flow-default", requiresGatewayDefault(source)
+      ? "Required fallback: taken only when no conditional branch matches."
+      : "Optional fallback: used when no Complex outgoing condition matches.");
+    if (!flow.isDefault) {
+      const conditionInput = field("Condition", "text", flow.condition ?? "", v => {
         flow.condition = v.trim() ? v : null;
         renderEdges();
       });
+      conditionInput.placeholder = "amount > 1000";
+      attachInspectorHelp(conditionInput, "flow-gateway-condition", complexGateway
+        ? "Required NCalc expression evaluated during activation and reset. Use `[gateway.waitingForStart]` to select phase-specific output; reset may intentionally match no flow."
+        : inclusiveGateway
+          ? "Required NCalc expression. Every true branch is selected from one routing snapshot; priorities are not used."
+          : "Required NCalc expression. Helpers: `Len(s)`, `IsNullOrEmpty(s)`, `Contains(s, sub)`, `StartsWith(s, p)`, `EndsWith(s, p)`, `Lower(s)`, `Upper(s)`, `Trim(s)`, `IsMatch(s, pattern)`.",
+        complexGateway
+          ? ["[gateway.waitingForStart]", "not [gateway.waitingForStart]"]
+          : ["amount > 1000", "Contains(FlowInfo(201, 'actions.last.userRoles'), 'Manager')"]);
       if (exclusiveGateway) {
-        field("Condition priority", "number", flow.conditionPriority ?? "", v => {
+        const priorityInput = field("Condition priority", "number", flow.conditionPriority ?? "", v => {
           flow.conditionPriority = v.trim() === "" ? null : Number(v);
           renderEdges();
         });
+        attachInspectorHelp(priorityInput, "flow-condition-priority",
+          "Lower positive priorities are evaluated first.");
       }
-      const condHint = document.createElement("p");
-      condHint.className = "empty-note";
-      condHint.textContent = complexGateway
-        ? "Required NCalc expression evaluated during activation and reset. Use [gateway.waitingForStart] to select phase-specific output; reset may intentionally match no flow."
-        : inclusiveGateway
-          ? "Required NCalc expression. Every true branch is selected from one routing snapshot; priorities are not used."
-          : 'Required NCalc expression. Lower positive priorities are evaluated first. Example: amount > 1000, or Contains(FlowInfo(201, \'actions.last.userRoles\'), \'Manager\'). Other helpers: Len(s), IsNullOrEmpty(s), Contains(s, sub), StartsWith(s, p), EndsWith(s, p), Lower(s), Upper(s), Trim(s), IsMatch(s, pattern).';
-      inspector.appendChild(condHint);
     }
   } else {
     if (gateway || scopedInterrupt) {
@@ -6169,20 +6122,18 @@ function renderFlowInspector() {
         }));
       }
       if (flow.isSelectable !== false && !flow.isDefault) {
-        roleSourceField(flow, () => renderEdges());
-        const rolesHint = document.createElement("p");
-        rolesHint.className = "empty-note";
-        rolesHint.textContent = 'Roles restrict who can take this specific action in addition to the task\'s own roles. An empty literal role list allows anyone who can act on the task. A role variable must resolve to a nonempty role list when the task is created.';
-        inspector.appendChild(rolesHint);
-        field("Condition", "text", flow.condition ?? "", v => {
+        const roleSource = roleSourceField(flow, () => renderEdges());
+        attachInspectorHelp(roleSource, "flow-action-roles",
+          "Roles restrict who can take this specific action in addition to the task's own roles. An empty literal role list allows anyone who can act on the task. A role variable must resolve to a nonempty role list when the task is created.");
+        const conditionInput = field("Condition", "text", flow.condition ?? "", v => {
           flow.condition = v.trim() ? v : null;
           if (flow.condition && flow.isDefault) flow.isDefault = false;
           renderEdges();
         });
-        const condHint = document.createElement("p");
-        condHint.className = "empty-note";
-        condHint.textContent = 'Stored-state NCalc visibility rule, e.g. amount > 5000. The API hides the action and re-checks the same stored values when it is submitted. Values entered for this action cannot unlock it.';
-        inspector.appendChild(condHint);
+        conditionInput.placeholder = "amount > 5000";
+        attachInspectorHelp(conditionInput, "flow-action-condition",
+          "Stored-state NCalc visibility rule. The API hides the action and re-checks the same stored values when it is submitted. Values entered for this action cannot unlock it.",
+          ["amount > 5000"]);
       } else {
         const engineHint = document.createElement("p");
         engineHint.className = "empty-note";
@@ -6207,16 +6158,16 @@ function renderFlowInspector() {
           field("Completion priority", "number", flow.completionPriority ?? "", v => {
             flow.completionPriority = v ? Math.max(1, Math.round(+v)) : null;
           });
-          field("Completion condition", "text", flow.completionCondition ?? "", v => {
+          const completionInput = field("Completion condition", "text", flow.completionCondition ?? "", v => {
             flow.completionCondition = v.trim() ? v : null;
           });
-          const completionHint = document.createElement("p");
-          completionHint.className = "empty-note";
+          completionInput.placeholder = "CountFlow(201) >= 3";
           const timing = source.multiInstance.completionEvaluation === "afterAll"
             ? "Evaluated only after all items complete."
             : "Evaluated after each item completes.";
-          completionHint.textContent = `${timing} Example: CountFlow(201) >= 3 or Contains(FlowInfo(201, 'actions.last.userRoles'), 'Manager'). CountFlow/PercentFlow use this multi-instance execution; FlowInfo uses instance-lifetime summaries.`;
-          inspector.appendChild(completionHint);
+          attachInspectorHelp(completionInput, "flow-completion-condition",
+            timing + " `CountFlow` and `PercentFlow` use this multi-instance execution; `FlowInfo` uses instance-lifetime summaries.",
+            ["CountFlow(201) >= 3", "Contains(FlowInfo(201, 'actions.last.userRoles'), 'Manager')"]);
         }
       }
       if (source && source.requiresClaim && flow.isSelectable !== false) {
@@ -6228,11 +6179,9 @@ function renderFlowInspector() {
           })
         );
         if (flow.canActWithoutClaim) {
-          rolesFieldGeneric(flow, "canActWithoutClaimRoles", "Can act without claim roles", () => renderEdges());
-          const bypassRolesHint = document.createElement("p");
-          bypassRolesHint.className = "empty-note";
-          bypassRolesHint.textContent = 'These roles are required only when the actor does not own the claim. Task roles and action roles still apply. Empty = any otherwise-authorized actor.';
-          inspector.appendChild(bypassRolesHint);
+          const bypassRolesField = rolesFieldGeneric(flow, "canActWithoutClaimRoles", "Can act without claim roles", () => renderEdges());
+          attachInspectorHelp(bypassRolesField, "flow-bypass-roles",
+            "These roles are required only when the actor does not own the claim. Task roles and action roles still apply. Empty = any otherwise-authorized actor.");
         }
       }
     }
@@ -6286,6 +6235,92 @@ function renderFlowInspector() {
 }
 
 /* ---------- Inspector helpers ---------- */
+// Adds an info button beside a field's label or a section heading. The target
+// is a heading, a .field, or a field's input or textarea. Help opens below the
+// field, so the control being used does not move. Backticks mark code in the
+// text, and an array gives one paragraph per item. An example replaces the
+// value of exampleInput when clicked. Which help is open is inspector state: it
+// survives inspector rebuilds and is never part of the document or its history.
+function attachInspectorHelp(target, key, text, examples = [], exampleInput = target) {
+  const isHeading = target.tagName === "H2" || target.tagName === "H3";
+  const isControl = target.tagName === "INPUT" || target.tagName === "TEXTAREA";
+  const host = isControl ? target.parentNode : target;
+  const label = isHeading ? target : host.querySelector("label");
+  const name = label ? label.textContent.trim() : "";
+
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "inspector-help-toggle";
+  toggle.title = name ? `Help for ${name}` : "Help";
+  toggle.setAttribute("aria-label", toggle.title);
+  toggle.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v5.5"/><path d="M12 7.5h.01"/></svg>';
+
+  const panel = document.createElement("div");
+  panel.className = "inspector-help";
+  panel.id = `inspector-help-${++inspectorHelpSequence}`;
+  toggle.setAttribute("aria-controls", panel.id);
+  (Array.isArray(text) ? text : [text]).forEach(paragraph => {
+    const p = document.createElement("p");
+    paragraph.split("`").forEach((part, index) => {
+      if (!part) return;
+      if (index % 2 === 0) {
+        p.appendChild(document.createTextNode(part));
+      } else {
+        const code = document.createElement("code");
+        code.textContent = part;
+        p.appendChild(code);
+      }
+    });
+    panel.appendChild(p);
+  });
+  if (examples.length > 0) {
+    const examplesTitle = document.createElement("div");
+    examplesTitle.className = "inspector-help-examples-title";
+    examplesTitle.textContent = "Insert an example";
+    panel.appendChild(examplesTitle);
+    const list = document.createElement("div");
+    list.className = "inspector-help-examples";
+    examples.forEach(example => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "inspector-help-example";
+      button.textContent = example;
+      button.onclick = () => {
+        exampleInput.focus();
+        exampleInput.select();
+        // insertText keeps the field's own undo, which assigning its value would clear.
+        if (!document.execCommand("insertText", false, example)) {
+          exampleInput.value = example;
+          exampleInput.dispatchEvent(new Event("input", { bubbles: true }));
+        }
+      };
+      list.appendChild(button);
+    });
+    panel.appendChild(list);
+  }
+
+  const setOpen = open => {
+    panel.hidden = !open;
+    toggle.setAttribute("aria-expanded", String(open));
+  };
+  setOpen(openInspectorHelp.has(key));
+  toggle.onclick = () => {
+    const open = panel.hidden;
+    if (open) openInspectorHelp.add(key);
+    else openInspectorHelp.delete(key);
+    setOpen(open);
+    if (open) panel.scrollIntoView({ block: "nearest" });
+  };
+
+  host.classList.add("has-inspector-help");
+  if (isHeading) {
+    host.appendChild(toggle);
+    host.parentNode.insertBefore(panel, host.nextSibling);
+  } else {
+    host.insertBefore(toggle, label ? label.nextSibling : null);
+    host.appendChild(panel);
+  }
+}
 function field(label, type, value, onInput, disabled = false) {
   const f = document.createElement("div");
   f.className = "field";
@@ -6349,53 +6384,34 @@ function renderInboxVisibilityConditionField(node) {
   f.appendChild(status);
   inspector.appendChild(f);
   updateValidation();
-
-  const help = document.createElement("p");
-  help.className = "empty-note expression-help";
-  help.innerHTML =
-    "Evaluated in PostgreSQL before inbox count, ordering, and paging; a missing, " +
-    "invalid, or non-true result hides the task. References use brackets, for example " +
-    "<code>[sys.claim.department] == [department]</code>, " +
-    "<code>[amount] + [tax] &gt; Number([config.approvalLimit])</code>, or " +
-    "<code>[requestedAmount] &lt;= [setting.approvalLimit]</code>. Date/time example: " +
-    "<code>[startDate] &lt; [endDate] and [submittedAt] &lt; [sys.now]</code>. Supports " +
-    "<code>and/or/not</code> (or <code>&amp;&amp;/||/!</code>), comparisons, numeric " +
-    "<code>+ - * / %</code>, parentheses, booleans, strings, and " +
-    "<code>Number(expr)</code>. Strings are not ordered and numeric strings require " +
-    "<code>Number()</code>; string equality is case-insensitive without trimming. " +
-    "Dates use <code>yyyy-MM-dd</code>; datetimes are RFC3339 instants. Supported " +
-    "context is <code>sys.user</code>, <code>sys.actingFor</code>, " +
-    "<code>sys.now</code>, <code>sys.today</code>, instance/workflow/node IDs and " +
-    "names, allowlisted <code>sys.claim.*</code>, and any <code>config.*</code> or " +
-    "<code>setting.*</code> key. <code>sys.roles</code> and <code>mi.*</code> are " +
-    "unsupported. In bracket keys, escape <code>]</code> as <code>\\]</code> and " +
-    "<code>\\</code> as <code>\\\\</code>. Limits: 4 KiB UTF-8 source, depth 8, " +
-    "64 instructions, 16 comparisons, 8 distinct instance-variable references, " +
-    "16 external references, 16 literals, 512-byte string literals, 128-character " +
-    "numeric text, and exponent magnitude 100.";
-  inspector.appendChild(help);
+  attachInspectorHelp(input, "user-task-inbox-visibility", [
+    "Evaluated in PostgreSQL before inbox count, ordering, and paging; a missing, invalid, or non-true result hides the task. References use brackets.",
+    "Supports `and/or/not` (or `&&/||/!`), comparisons, numeric `+ - * / %`, parentheses, booleans, strings, and `Number(expr)`. Strings are not ordered and numeric strings require `Number()`; string equality is case-insensitive without trimming. Dates use `yyyy-MM-dd`; datetimes are RFC3339 instants.",
+    "Supported context is `sys.user`, `sys.actingFor`, `sys.now`, `sys.today`, instance/workflow/node IDs and names, allowlisted `sys.claim.*`, and any `config.*` or `setting.*` key. `sys.roles` and `mi.*` are unsupported. In bracket keys, escape `]` as `\\]` and `\\` as `\\\\`."
+  ], [
+    "[sys.claim.department] == [department]",
+    "[amount] + [tax] > Number([config.approvalLimit])",
+    "[requestedAmount] <= [setting.approvalLimit]",
+    "[startDate] < [endDate] and [submittedAt] < [sys.now]"
+  ]);
 }
 function renderUserTaskDueFields(node) {
-  const hint = document.createElement("p");
-  hint.className = "empty-note";
-  hint.textContent =
-    "Optional. Resolved once when each work item is created; a multi-instance task " +
-    "resolves them once for all its items. Due date: a duration such as P2D, counted " +
-    "from creation, a date-time with an offset such as 2030-01-31T17:00:00Z, or an " +
-    "NCalc expression that gives one as text, such as if(amount > 1000, 'PT4H', 'P2D'). " +
-    "Due date calendar: the name of a business calendar; a duration then counts its working " +
-    "days and hours. Priority: an NCalc expression that gives a whole number; higher is more " +
-    "urgent. A result that cannot be used leaves the value empty.";
-  inspector.appendChild(hint);
   // The calendar's problems depend on the due date, so each change refreshes every field.
   const refreshers = [];
   const refreshAll = () => refreshers.forEach(refresh => refresh());
-  refreshers.push(renderUserTaskDueField(node, "dueDate", "Due date", "P2D", refreshAll));
-  refreshers.push(renderUserTaskDueField(node, "dueDateCalendar", "Due date calendar", "examples.weekdays",
-    refreshAll, () => userTaskDueDateCalendarProblem(node.dueDate, node.dueDateCalendar)));
-  refreshers.push(renderUserTaskDueField(node, "priority", "Priority", "50", refreshAll));
+  refreshers.push(renderUserTaskDueField(node, "dueDate", "Due date", "P2D", {
+    text: "Optional. Resolved once when each work item is created, or once for all items of a multi-instance task. Use a duration counted from creation, a date-time with an offset, or an NCalc expression that gives one as text. A result that cannot be used leaves the value empty.",
+    examples: ["P2D", "2030-01-31T17:00:00Z", "if(amount > 1000, 'PT4H', 'P2D')"]
+  }, refreshAll));
+  refreshers.push(renderUserTaskDueField(node, "dueDateCalendar", "Due date calendar", "examples.weekdays", {
+    text: "Optional. The name of a business calendar; a duration then counts its working days and hours."
+  }, refreshAll, () => userTaskDueDateCalendarProblem(node.dueDate, node.dueDateCalendar)));
+  refreshers.push(renderUserTaskDueField(node, "priority", "Priority", "50", {
+    text: "Optional. An NCalc expression that gives a whole number; higher is more urgent. Resolved once when each work item is created, or once for all items of a multi-instance task. A result that cannot be used leaves the value empty.",
+    examples: ["50", "if(amount > 1000, 80, 40)"]
+  }, refreshAll));
 }
-function renderUserTaskDueField(node, property, label, placeholder, onChanged, problemOf) {
+function renderUserTaskDueField(node, property, label, placeholder, help, onChanged, problemOf) {
   const f = document.createElement("div");
   f.className = "field";
   const inputId = "user-task-" + property + "-" + String(node.id);
@@ -6432,6 +6448,7 @@ function renderUserTaskDueField(node, property, label, placeholder, onChanged, p
   f.appendChild(status);
   inspector.appendChild(f);
   updateValidation();
+  attachInspectorHelp(input, "user-task-" + property, help.text, help.examples);
   return updateValidation;
 }
 function selectField(label, options, value, onChange) {
@@ -6444,6 +6461,7 @@ function selectField(label, options, value, onChange) {
   sel.onchange = () => onChange(sel.value);
   f.appendChild(sel);
   inspector.appendChild(f);
+  return f;
 }
 function renderAttributesSection(owner) {
   const title = document.createElement("h2");
@@ -6627,6 +6645,11 @@ function variableRow(owner, variable, hideRequired) {
     };
     scopeField.appendChild(scopeSelect);
     box.appendChild(scopeField);
+    attachInspectorHelp(scopeField, `variable-scope:${variable.id}`, isSharedProcessVariable(variable)
+      ? (isWritableProcessVariable(variable)
+          ? "Shared binding: all workflow instances read the catalog value and this workflow may update it."
+          : "Shared binding: all workflow instances read the catalog value; producer targets are disabled for this alias.")
+      : "Instance variable: initialized at start, then updated by workflow producers.");
 
     if (isSharedProcessVariable(variable)) {
       const keyField = document.createElement("div");
@@ -6638,10 +6661,8 @@ function variableRow(owner, variable, hideRequired) {
       keyInput.placeholder = "finance.usdToSar";
       keyInput.oninput = () => { variable.sharedKey = keyInput.value; };
       keyField.appendChild(keyInput);
-      const keyHint = document.createElement("p");
-      keyHint.className = "empty-note";
-      keyHint.textContent = "The API matches this deployment-wide key case-insensitively. The variable name above remains the local expression alias.";
-      keyField.appendChild(keyHint);
+      attachInspectorHelp(keyInput, `variable-shared-key:${variable.id}`,
+        "The API matches this deployment-wide key case-insensitively. The variable name above remains the local expression alias.");
       box.appendChild(keyField);
 
       const accessField = document.createElement("div");
@@ -6697,15 +6718,6 @@ function variableRow(owner, variable, hideRequired) {
 
   if (hideRequired) {
     // Process variables are computed or shared bindings; required is meaningless.
-    const note = document.createElement("p");
-    note.className = "empty-note";
-    note.textContent = isSharedProcessVariable(variable)
-      ? (isWritableProcessVariable(variable)
-          ? "Shared binding: all workflow instances read the catalog value and this workflow may update it."
-          : "Shared binding: all workflow instances read the catalog value; producer targets are disabled for this alias.")
-      : "Instance variable: initialized at start, then updated by workflow producers.";
-    note.style.margin = "0";
-    box.appendChild(note);
     box.appendChild(variableCheckbox("Allow null", !!variable.nullable, checked => {
       variable.nullable = checked;
       renderInspector();
@@ -6749,12 +6761,10 @@ function variableRow(owner, variable, hideRequired) {
   valInput.placeholder = "e.g. amount > 0 and amount <= 10000, or Len(name) <= 50";
   valInput.oninput = () => { variable.validation = valInput.value.trim() === "" ? null : valInput.value; };
   valField.appendChild(valInput);
-  const valHint = document.createElement("p");
-  valHint.className = "empty-note";
-  valHint.textContent = isSharedProcessVariable(variable)
+  attachInspectorHelp(valInput, `variable-validation:${variable.id}`, isSharedProcessVariable(variable)
     ? "Snapshot the catalog validation exactly. Import/publish fails if this contract differs from the current shared-variable catalog."
-    : 'NCalc expression checked at start / flow-take. Helper functions: Len(s), IsNullOrEmpty(s), Contains(s, sub), StartsWith(s, p), EndsWith(s, p), Lower(s), Upper(s), Trim(s), IsMatch(s, pattern).';
-  valField.appendChild(valHint);
+    : "NCalc expression checked at start / flow-take. Helper functions: `Len(s)`, `IsNullOrEmpty(s)`, `Contains(s, sub)`, `StartsWith(s, p)`, `EndsWith(s, p)`, `Lower(s)`, `Upper(s)`, `Trim(s)`, `IsMatch(s, pattern)`.",
+    isSharedProcessVariable(variable) ? [] : ["amount > 0 and amount <= 10000", "Len(name) <= 50"]);
   box.appendChild(valField);
 
   if (!hideRequired) {
@@ -6970,7 +6980,7 @@ function variableCheckbox(label, checked, onChange) {
 }
 function roleSourceField(owner, onChange) {
   const usesVariable = owner.rolesVariable != null;
-  selectField("Role source", [
+  const sourceField = selectField("Role source", [
     { value: "literal", label: "Literal roles" },
     { value: "variable", label: "Variable (captured on entry)" }
   ], usesVariable ? "variable" : "literal", value => {
@@ -6985,7 +6995,7 @@ function roleSourceField(owner, onChange) {
   });
   if (!usesVariable) {
     rolesField(owner, onChange);
-    return;
+    return sourceField;
   }
   const variables = (model.variables || []).filter(variable =>
     variable && variable.dataType === "string" && variable.isArray &&
@@ -6995,6 +7005,8 @@ function roleSourceField(owner, onChange) {
   const label = document.createElement("label");
   label.textContent = "Role variable (string[])";
   const input = document.createElement("select");
+  input.id = "role-variable-select";
+  label.htmlFor = input.id;
   input.setAttribute("aria-label", label.textContent);
   const appendOption = (value, text) => {
     const option = document.createElement("option");
@@ -7012,13 +7024,12 @@ function roleSourceField(owner, onChange) {
   }
   input.value = selectedVariable ? selectedVariable.name : owner.rolesVariable;
   input.onchange = () => { owner.rolesVariable = input.value; onChange(); };
-  label.appendChild(input);
   fieldElement.appendChild(label);
+  fieldElement.appendChild(input);
   inspector.appendChild(fieldElement);
-  const hint = document.createElement("p");
-  hint.className = "empty-note";
-  hint.textContent = "Read once when work is created, including pending reviewers. Later variable changes do not change waiting-task permissions. The value must contain 1–100 roles of at most 300 characters each; missing or invalid values prevent task creation.";
-  inspector.appendChild(hint);
+  attachInspectorHelp(fieldElement, "role-variable",
+    "Read once when work is created, including pending reviewers. Later variable changes do not change waiting-task permissions. The value must contain 1–100 roles of at most 300 characters each; missing or invalid values prevent task creation.");
+  return sourceField;
 }
 function rolesField(owner, onChange) {
   rolesFieldGeneric(owner, "roles", "Roles", onChange);
@@ -7066,6 +7077,7 @@ function rolesFieldGeneric(owner, key, label, onChange) {
   f.appendChild(input);
 
   inspector.appendChild(f);
+  return f;
 }
 function addVariable(owner) {
   owner.variables = owner.variables || [];
@@ -7114,11 +7126,8 @@ function renderBusinessKeySection(node) {
   title.textContent = "Domain business key";
   title.style.marginTop = "16px";
   inspector.appendChild(title);
-
-  const hint = document.createElement("p");
-  hint.className = "empty-note";
-  hint.textContent = "Prevents two instances in this workflow family from representing the same business object. Once enabled, every start and message-start event must configure a required scalar string variable with no default.";
-  inspector.appendChild(hint);
+  attachInspectorHelp(title, "business-key",
+    "Prevents two instances in this workflow family from representing the same business object. Once enabled, every start and message-start event must configure a required scalar string variable with no default.");
 
   inspector.appendChild(variableCheckbox("Enable business keys", node.businessKey != null, checked => {
     const entries = model.flowNodes.filter(n => isStartEventType(n.type) || isMessageStartEventType(n.type));
@@ -7151,11 +7160,8 @@ function renderIdempotencySection(node) {
   title.textContent = "Transport idempotency";
   title.style.marginTop = "16px";
   inspector.appendChild(title);
-
-  const hint = document.createElement("p");
-  hint.className = "empty-note";
-  hint.textContent = "Prevents transport retries from creating another instance across this workflow family. The normalized header value is also persisted as an implicit string variable. This is separate from the domain business key.";
-  inspector.appendChild(hint);
+  attachInspectorHelp(title, "start-idempotency",
+    "Prevents transport retries from creating another instance across this workflow family. The normalized header value is also persisted as an implicit string variable. This is separate from the domain business key.");
 
   inspector.appendChild(variableCheckbox("Enable idempotency", node.idempotency != null, checked => {
     if (checked) {

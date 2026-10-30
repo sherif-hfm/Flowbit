@@ -320,7 +320,12 @@ public sealed class HostedEditorSmokeTests(BrowserStackFixture stack)
             // The editor cannot check variable names; it says so, and the server catches the typo.
             await expression.FillAsync(typo);
             await Assertions.Expect(expression).ToHaveAttributeAsync("aria-invalid", "false");
-            await Assertions.Expect(editor.Locator("#inspector")).ToContainTextAsync(
+            var expressionField = editor.Locator("#inspector .field")
+                .Filter(new LocatorFilterOptions { Has = page.Locator("#timer-expression-3") });
+            var expressionHelp = expressionField.Locator(".inspector-help");
+            await expressionField.Locator(".inspector-help-toggle").ClickAsync();
+            await Assertions.Expect(expressionHelp).ToBeVisibleAsync();
+            await Assertions.Expect(expressionHelp).ToContainTextAsync(
                 "Saving checks the expression's syntax and the variables it names");
             await page.Locator("#save-workflow-version").ClickAsync();
             await Assertions.Expect(page.Locator("#editor-error")).ToContainTextAsync(
@@ -356,7 +361,12 @@ public sealed class HostedEditorSmokeTests(BrowserStackFixture stack)
             Assert.NotNull(box);
             Assert.InRange(box!.X, 0, 390);
             Assert.InRange(box.X + box.Width, 0, 390);
-            await Assertions.Expect(editor.Locator("#timer-expression-3-help")).ToBeVisibleAsync();
+            await expressionField.Locator(".inspector-help-toggle").ClickAsync();
+            await Assertions.Expect(expressionHelp).ToBeVisibleAsync();
+            var helpBox = await expressionHelp.BoundingBoxAsync();
+            Assert.NotNull(helpBox);
+            Assert.InRange(helpBox!.X, 0, 390);
+            Assert.InRange(helpBox.X + helpBox.Width, 0, 390);
             Assert.True(await page.EvaluateAsync<bool>("document.documentElement.scrollWidth <= window.innerWidth + 2"));
             await page.ScreenshotAsync(new PageScreenshotOptions
             {
