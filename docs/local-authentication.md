@@ -124,7 +124,7 @@ Claims use `{ "type": "team", "value": "one" }` entries. Attributes are a JSON o
 
 Token responses contain `accessToken`, `tokenType` (`Bearer`), `expiresAt`, `refreshToken`, `refreshExpiresAt`, and `actor` (`user`, `roles`). Token-bearing responses are not cacheable. Send access credentials using `Authorization: Bearer <accessToken>`. Refresh credentials are not bearer tokens. The token/refresh/logout routes do not require a bearer; refresh/logout authenticate the supplied opaque refresh credential.
 
-Errors are generally `{ "code": "...", "error": "..." }`: invalid configuration `400`, invalid credentials/session `401`, missing management permission `403`, missing resource/wrong mode `404`, duplicate username/attribute or stale revision `409`, and throttling `429`. Framework body-binding/authentication failures can have a different or empty body. Login, refresh and logout share a per-IP limit of 30 requests/minute per API process; database lockout is shared across replicas. Status and password changes do not automatically replay failed workflow commands.
+Errors are generally `{ "code": "...", "error": "..." }`: invalid configuration `400`, invalid credentials/session `401`, missing management permission `403`, missing resource/wrong mode `404`, duplicate username/attribute or stale revision `409`, and throttling `429`. A body that cannot be bound returns `{ "error": "..." }` without a code, and a framework authentication failure can have an empty body. Login, refresh and logout share a per-IP limit of 30 requests/minute per API process; database lockout is shared across replicas. Status and password changes do not automatically replay failed workflow commands.
 
 ## Sessions and operational limits
 

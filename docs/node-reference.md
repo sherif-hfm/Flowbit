@@ -567,8 +567,11 @@ Catches a failure of its attached service or script task and routes through an e
 
 | Property | Type | Required / default | Meaning and constraints |
 | --- | --- | --- | --- |
-| `attachedToRef` | integer | Required | ID of an existing `serviceTask` or `scriptTask`. A host may have at most one error boundary. |
-| `errorVariable` | string | Optional; absent | Captures the failure reason. Must be a nonblank name of at most 300 Unicode scalar values when configured, without `sys.`, `config.`, `setting.`, or `mi.` prefix. It can be an implicit runtime output; if a same-name process variable exists, it must be scalar `string`. It must not collide case-insensitively with the host service's status/output targets. |
+| `attachedToRef` | integer | Required | ID of an existing `serviceTask` or `scriptTask`. A REST service task may have up to eight error boundaries, including at most one catch-all. A script task has at most one, which is always a catch-all. |
+| `errorVariable` | string | Optional; absent | Captures the failure reason. Must be a nonblank name of at most 300 Unicode scalar values when configured, without `sys.`, `config.`, `setting.`, or `mi.` prefix. It can be an implicit runtime output; if a same-name process variable exists, it must be scalar `string`. It must not collide case-insensitively with the host service's status/output targets. Several boundaries on one host may share a variable; only the selected boundary writes it. |
+| `errorMatch` | object | Optional; absent | REST service host only. The HTTP statuses this boundary catches. Absent or `null` means catch-all. An empty matcher is invalid; it never becomes a catch-all. |
+| `errorMatch.httpStatusCodes` | integer array | Optional | Exact statuses from `100` through `599`. `null` means omitted. |
+| `errorMatch.httpStatusRanges` | object array | Optional | Inclusive `{ "from", "to" }` ranges, both required integers from `100` through `599` with `from` below `to`. `null` means omitted. Use an exact status for a single value. |
 
 ```json
 {
@@ -581,6 +584,81 @@ Catches a failure of its attached service or script task and routes through an e
 ```
 
 The example assumes node `10` is a service/script task. Error boundaries always replace the failed host's continuation; `cancelActivity` is not supported. For async hosts, the host's [durable-job policy](#durable-job-policy) determines whether the boundary or retries are attempted first. See the [script boundary example](../examples/scripts/04-javascript-error-boundary.json).
+
+#### HTTP status matching
+
+These node fragments assume REST host `10` exists. Each boundary also needs its own outgoing flow:
+
+```json
+[
+  {
+    "id": 30,
+    "name": "Duplicate request",
+    "type": "errorBoundaryEvent",
+    "attachedToRef": 10,
+    "errorMatch": { "httpStatusCodes": [409] },
+    "errorVariable": "integrationFailure"
+  },
+  {
+    "id": 31,
+    "name": "Correct request data",
+    "type": "errorBoundaryEvent",
+    "attachedToRef": 10,
+    "errorMatch": { "httpStatusRanges": [{ "from": 400, "to": 499 }] },
+    "errorVariable": "integrationFailure"
+  },
+  {
+    "id": 32,
+    "name": "Integration unavailable",
+    "type": "errorBoundaryEvent",
+    "attachedToRef": 10,
+    "errorMatch": { "httpStatusRanges": [{ "from": 500, "to": 599 }] },
+    "errorVariable": "integrationFailure"
+  },
+  {
+    "id": 33,
+    "name": "Other integration failure",
+    "type": "errorBoundaryEvent",
+    "attachedToRef": 10,
+    "errorVariable": "integrationFailure"
+  }
+]
+```
+
+Selection runs once a task has failed, and uses the status of that invocation: an exact status first, then a range, then the catch-all. Definition order and node IDs never decide the winner. It does not read `statusVariable`, the response body, the error text, or any variable.
+
+| Rule | Detail |
+| --- | --- |
+| Limits | At most 32 selectors in one matcher, counted across both arrays before any deduplication. |
+| Within one matcher | Rejects duplicate statuses, overlapping ranges, and a status inside its own range. |
+| Across one host | Rejects a status on two boundaries and ranges that intersect, so `400-450` and `450-499` conflict while `400-449` and `450-499` do not. A status inside another boundary's range is valid, and the status wins. The same status on different hosts is valid. |
+| JSON types | Numeric strings, fractions, booleans, null elements, and unknown matcher members are rejected. A misspelled selector cannot widen routing. |
+| Other nodes | `errorMatch` is rejected on a script host or any other node type. It is not silently discarded. |
+
+What each failure can match:
+
+| Failure | Selection |
+| --- | --- |
+| Completed HTTP status such as `409` or `503` | Exact, then range, then catch-all. |
+| Body over the size limit, or connection lost while reading the body | The status already received, even though the call did not complete. |
+| HTTP `200` whose output mapping or status write fails | `200` may match a boundary, since the task did fail. A successful task never takes an error boundary. |
+| Timeout, including one during the body, preflight failure, or status `0` | Catch-all only. `0` is not a valid selector. |
+| Completed status outside `100..599`, such as `600` | Catch-all only. `statusVariable` still receives the actual status. |
+| Script failure | Catch-all only. |
+
+Caller cancellation, stale activations, output-version conflicts, and database failures are not task failures, and no boundary handles them.
+
+The service-task HTTP client follows redirects, so selection sees the final response. A `3xx` selector matches only a response the client does not follow, such as `304` or a redirect with no `Location`.
+
+With no match, the failure behaves as if no boundary were attached: a synchronous transition rolls back with `400`, and durable work follows its retries and incident handling. **A host with matchers and no catch-all therefore does not catch timeouts, network failures, or unmatched statuses.**
+
+Only the selected boundary's `errorVariable` and continuation are committed. An error boundary takes precedence over a conditional boundary on the same host, even one whose condition reads `statusVariable`: the host's conditional boundaries are cancelled before anything observes the failure's status or error variable. A conditional catch on another token still sees them. A failure with no match rolls its status write back with the attempt, so it triggers no condition. See the [HTTP status routing example](../examples/service-tasks/04-rest-http-status-routing.json) and the [durable example](../examples/durable-jobs/04-rest-status-routing-and-retries.json).
+
+**Retries are per host.** With an async host, [`job.failureHandling`](#durable-job-policy) applies to every status:
+
+- With the default `boundaryFirst`, a matching failure routes on its first occurrence. Attaching a `5xx` boundary therefore stops automatic retries for those statuses. Leave `5xx` unmatched to retry it, which ends in an incident when retries run out.
+- With `retryFirst`, every failure is retried first, so a `409` is sent again for each configured retry before it routes.
+- One host cannot route `409` immediately, retry `503`, and then route the exhausted `503`.
 
 ### timerBoundaryEvent
 
@@ -1045,7 +1123,7 @@ Only `task`, `userTask`, `serviceTask`, and `scriptTask` support these node prop
 | `asyncBefore` | boolean | Optional; `false`. | Persist a job and commit before activating the task. A REST transition touching shared-variable bindings requires `true`. |
 | `asyncAfter` | boolean | Optional; `false`. | Persist a job after completion and before traversing the chosen outgoing flow. |
 | `job` | object | Optional; engine policy. | Overrides failure handling/retries for authored task jobs. Requires at least one async flag to be true. |
-| `job.failureHandling` | string | Optional; `"boundaryFirst"`. | `boundaryFirst` uses a matching error boundary before retries; `retryFirst` retries first, then considers the error boundary after exhaustion. An unresolved failure becomes an incident. |
+| `job.failureHandling` | string | Optional; `"boundaryFirst"`. | `boundaryFirst` uses a matching error boundary before retries, and retries a failure with no match; `retryFirst` retries first, then considers the error boundary after exhaustion, using the final attempt's result. An unresolved failure becomes an incident. See [HTTP status matching](#http-status-matching). |
 | `job.retryDelays` | array of strings | Optional/null; `["PT10S", "PT1M", "PT5M"]`. | Delay before each retry, up to 10 positive fixed-unit ISO-8601 durations, each at most 128 characters. `[]` explicitly disables automatic retries. The initial attempt is additional to the retries. Calendar months/years and nonpositive delays are invalid. |
 
 For multi-instance tasks the async flags apply to the parent execution, not independently to each child. Workers must be deployed for jobs to advance. A durable REST call may be repeated after a failure; remote side effects need their own idempotency contract. See [durable execution](bpmn-support.md#synchronous-and-durable-execution).

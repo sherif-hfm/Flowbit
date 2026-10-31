@@ -422,6 +422,24 @@ The `active` business key becomes reusable after completion, fault, or cancellat
 
 Without an asynchronous boundary, automatic tasks, scripts, REST services, and gateways run as part of the initiating engine transition until the instance reaches a wait or end. A slow synchronous service call can therefore extend the initiating API request. A modeled error boundary can route a service/script failure into business handling; an unhandled failure may reject the transition.
 
+A REST service task can route different HTTP failures to different paths by attaching several error boundaries with an `errorMatch`:
+
+```json
+{
+  "id": 30,
+  "name": "Duplicate request",
+  "type": "errorBoundaryEvent",
+  "attachedToRef": 10,
+  "errorMatch": { "httpStatusCodes": [409] }
+}
+```
+
+An exact status wins over a range, and a range wins over a catch-all. Only the selected boundary's error output and continuation are committed. With no match, a synchronous transition rolls back and returns `400`, while durable work retries and then opens an incident, so add a catch-all if timeouts and network failures need a route. See [HTTP status matching](node-reference.md#http-status-matching) for the rules.
+
+A failed handler path can call the service again. On an async host, the boundary and its path run in the job's finalization transaction until the next durable step. If that part fails while job attempts remain, for example at a gateway with no matching route, finalization rolls back and the next attempt repeats the REST call, then selects from the new result. A service or script task on the path is a durable job of its own, so its failure does not repeat this call. Treat this like any other at-least-once delivery below.
+
+A running task's boundaries are part of its contract. Adding or removing a boundary, or changing its matcher, attachment, error output, or continuation, blocks a version change while that task has an open durable job. Reordering selectors or changing an omitted catch-all to an explicit `null` does not.
+
 `asyncBefore` and `asyncAfter` create durable transaction boundaries on supported task types. Timer events and `conditional.deliveryMode: "durableAsync"` also need Worker processing. Configure the Worker and publication gate as described in [deployment](deployment.md); publishing a durable definition is not proof that a worker is processing it.
 
 Durable external work is **at least once**. The worker stages work, invokes the external operation outside the long-running database transaction, and validates its lease/activation and output versions when finalizing. If a worker fails after a remote system commits but before Flowbit records success, the same work may be attempted again. The remote API must deduplicate effects.

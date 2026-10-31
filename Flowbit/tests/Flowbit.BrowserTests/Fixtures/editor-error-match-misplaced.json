@@ -1,0 +1,41 @@
+{
+  "id": "browser-editor-error-match-misplaced",
+  "name": "Browser editor misplaced error match",
+  "initialEventId": 1,
+  "variables": [],
+  "lanes": [],
+  "flowNodes": [
+    { "id": 1, "name": "Submitted", "type": "startEvent", "x": 60, "y": 90 },
+    {
+      "id": 2,
+      "name": "Calculate",
+      "type": "scriptTask",
+      "x": 220,
+      "y": 240,
+      "scriptFormat": "ncalc",
+      "assignments": []
+    },
+    {
+      "id": 3,
+      "name": "Done",
+      "type": "endEvent",
+      "x": 620,
+      "y": 240,
+      "errorMatch": { "httpStatusCodes": [409] }
+    },
+    {
+      "id": 4,
+      "name": "Calculation failed",
+      "type": "errorBoundaryEvent",
+      "x": 220,
+      "y": 240,
+      "attachedToRef": 2,
+      "errorMatch": { "httpStatusCodes": [500] }
+    }
+  ],
+  "sequenceFlows": [
+    { "id": 101, "name": "", "sourceRef": 1, "targetRef": 2 },
+    { "id": 201, "name": "", "sourceRef": 2, "targetRef": 3 },
+    { "id": 401, "name": "", "sourceRef": 4, "targetRef": 3 }
+  ]
+}

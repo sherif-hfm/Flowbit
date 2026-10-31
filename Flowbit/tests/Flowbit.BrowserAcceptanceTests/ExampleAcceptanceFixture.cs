@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Globalization;
 using System.Net;
 using Flowbit.BrowserTests.Infrastructure;
 using Microsoft.AspNetCore.Builder;
@@ -60,6 +61,7 @@ public sealed class ExampleRetryService : IAsyncDisposable
     private readonly ConcurrentDictionary<long, int> counts = new();
     private readonly ConcurrentDictionary<long, byte> recovered = new();
     private readonly ConcurrentQueue<ExampleRetryRequest> requests = new();
+    private readonly ConcurrentDictionary<string, int> stockAttempts = new(StringComparer.Ordinal);
     private WebApplication? app;
     public string BaseAddress { get; private set; } = string.Empty;
     public IReadOnlyList<ExampleRetryRequest> Requests => requests.ToArray();
@@ -93,8 +95,67 @@ public sealed class ExampleRetryService : IAsyncDisposable
             requests.Enqueue(new(jobId, attempt, mode, context.Response.StatusCode));
             await context.Response.WriteAsJsonAsync(new { ok = success });
         });
+        app.MapPost("/orders/{orderId}/submit", context => RespondAsync(context, (string)context.Request.RouteValues["orderId"]!, 0));
+        app.MapPost("/stock/{scenario}", context =>
+        {
+            var scenario = (string)context.Request.RouteValues["scenario"]!;
+            var attempt = stockAttempts.AddOrUpdate(scenario, 0, (_, previous) => previous + 1);
+            return RespondAsync(context, scenario, attempt);
+        });
         await app.StartAsync();
         BaseAddress = app.Urls.Single();
+    }
+
+    public int StockCalls(string scenario) =>
+        stockAttempts.TryGetValue(scenario, out var attempt) ? attempt + 1 : 0;
+
+    // The scenario's first segment picks the behavior and the rest keeps it unique:
+    // status-409-x answers 409, sequence-503-409-x answers each status in turn,
+    // lost-503-x drops the connection mid-body, hang-x never answers in time,
+    // late-409-x answers after four seconds, and stall-409-x leaves its first call
+    // open until the caller goes away, then answers the next one.
+    private static async Task RespondAsync(HttpContext context, string scenario, int attempt)
+    {
+        if (context.Request.Headers.Authorization != $"Bearer {Credential}")
+        {
+            context.Response.StatusCode = 401;
+            return;
+        }
+        var parts = scenario.Split('-');
+        switch (parts[0])
+        {
+            case "status":
+                context.Response.StatusCode = int.Parse(parts[1], CultureInfo.InvariantCulture);
+                break;
+            case "sequence":
+                var statuses = parts.Skip(1).Where(part => int.TryParse(part, out _)).ToArray();
+                context.Response.StatusCode = int.Parse(statuses[Math.Min(attempt, statuses.Length - 1)], CultureInfo.InvariantCulture);
+                break;
+            case "lost":
+                context.Response.StatusCode = int.Parse(parts[1], CultureInfo.InvariantCulture);
+                context.Response.ContentLength = 1000;
+                await context.Response.WriteAsync("partial");
+                await context.Response.Body.FlushAsync();
+                // A reset can overtake data the client has not read, which would lose the
+                // status too, so give it time to read the headers first.
+                await Task.Delay(TimeSpan.FromMilliseconds(500), context.RequestAborted);
+                context.Abort();
+                break;
+            case "hang":
+                await Task.Delay(TimeSpan.FromSeconds(30), context.RequestAborted);
+                break;
+            case "late":
+                await Task.Delay(TimeSpan.FromSeconds(4), context.RequestAborted);
+                context.Response.StatusCode = int.Parse(parts[1], CultureInfo.InvariantCulture);
+                break;
+            case "stall":
+                if (attempt == 0)
+                {
+                    await Task.Delay(TimeSpan.FromMinutes(3), context.RequestAborted);
+                }
+                context.Response.StatusCode = int.Parse(parts[1], CultureInfo.InvariantCulture);
+                break;
+        }
     }
 
     public async ValueTask DisposeAsync()

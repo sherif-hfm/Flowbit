@@ -251,7 +251,7 @@ A repeatable Chromium smoke suite exists at
 real copied editor and the real published API/UI over localhost with a
 disposable PostgreSQL container; see its
 [README](Flowbit/tests/Flowbit.BrowserTests/README.md) for setup and the
-E1–E13/R1–R11 coverage matrix. It is the baseline for editor/runtime UI changes,
+E1–E18/R1–R11 coverage matrix. It is the baseline for editor/runtime UI changes,
 but it does not replace scenario-specific manual verification: the native
 file-picker success/cancel path, visual comparisons, and behaviors outside the
 matrix still need the manual steps above.
@@ -714,10 +714,11 @@ Storage follows the hybrid design:
   subscription/occurrence job fences. The instance lock serializes writers,
   host completion, timer firing, cancellation, and workers. Successful user,
   message, service, and script outputs are evaluated before normal host exit;
-  service/script error boundaries keep failure precedence. An already-running
-  external call cannot be physically preempted, but its fenced late result is
-  rejected after interruption. Exact active boundary contracts are required for
-  version switching. The additive migration must precede all API, Worker, and
+  service/script error boundaries keep failure precedence, because a resumed
+  failure holds the conditional drain until selection has cancelled the host's
+  subscriptions. An already-running external call cannot be physically preempted,
+  but its fenced late result is rejected after interruption. Exact active boundary
+  contracts are required for version switching. The additive migration must precede all API, Worker, and
   editor upgrades; mixed legacy replicas are unsupported and no backfill runs.
 - **Service tasks** select a connector through `service.type`; `rest` is the only
   connector implemented today, while the explicit discriminator keeps the model
@@ -999,7 +1000,15 @@ Storage follows the hybrid design:
   `WorkflowDomainException` (rollback + 400) - the historical no-boundary
   default. A boundary is pass-through (it auto-advances its one unconditional
   error flow, history note `error` then `boundary`) and may have no incoming
-  flows; at most one boundary per host. An `errorEndEvent` must have at least
+  flows. A script host has at most one boundary. A REST service host has at
+  most eight, each with an optional `errorMatch` of HTTP statuses and inclusive
+  ranges (`ErrorBoundaryMatchRules`), and at most one catch-all. Selection uses
+  the failed invocation's status (`TaskExecutionOutcome.HttpStatusCode`): exact,
+  then range, then catch-all; status `0`, statuses outside `100..599`, and
+  scripts reach only the catch-all, and no match behaves like no boundary. A
+  durable host's job policy applies to the result of each attempt, and its
+  snapshot and output fence cover every boundary's error variable. An
+  `errorEndEvent` must have at least
   one incoming flow and no outgoing flows. Newly authored definitions give it a
   required stable `errorCode` (case-sensitive, up to 300 characters, matching
   `[A-Za-z0-9][A-Za-z0-9._-]*`) and an optional `errorDescription` (up to 1000
@@ -1630,6 +1639,10 @@ what the cross-version `workflowKey` instance search matches.
 - `WorkflowDomainException` maps to problem responses for invalid operations
   (unpublished workflow, missing variable, bad claim, unavailable flow,
   gateway with no matching/default flow, etc.).
+- A request that cannot be bound returns its status with `{"error": ...}` in every
+  environment: `RouteHandlerOptions.ThrowOnBadRequest` is on, a middleware inside
+  the request log catches `BadHttpRequestException`, and `JsonReadError` words a
+  JSON failure with its cause and path, naming no .NET type.
 
 ### Blazor UI pages
 
@@ -1868,6 +1881,7 @@ A node in the workflow. `type` is one of `startEvent`, `userTask`, `task`,
   "attachedToRef": null,       // boundary events only: attached host node id
   "cancelActivity": true,      // timer/conditional boundary only; omitted means true
   "errorVariable": null,       // errorBoundaryEvent only, optional: captures the failure reason
+  "errorMatch": null,          // errorBoundaryEvent on a REST host only: { httpStatusCodes, httpStatusRanges }; null = catch-all
   "message": { /* MessageCatchConfig */ }, // intermediateMessageCatchEvent only (see MessageCatchConfig)
   "conditional": { /* ConditionalDefinition */ } // conditional catch/boundary only
 }
@@ -1991,7 +2005,9 @@ Node kinds and their outgoing-flow rules:
   optional `errorVariable` capturing the failure reason. With no boundary
   attached, a failure fails the transition (rollback + 400). A boundary is
   pass-through (auto-advances its single unconditional error flow) and may have
-  no incoming flows; at most one boundary per host.
+  no incoming flows. A script host has at most one; a REST service host has up
+  to eight, selected by HTTP status through `errorMatch`, with at most one
+  catch-all.
 - **`intermediateMessageCatchEvent`**: a resting node (like a `userTask`) that
   waits for an external system to deliver a message via
   `POST /api/instances/{id}/message`; a thin double-ring circle with an envelope
@@ -2353,9 +2369,16 @@ script, worker, and repository paths: when the catalog contract has
 Concrete values run the same type/array and validation pipeline everywhere.
 Script contract failures are task failures, and validation plus persistence must
 sit inside task-failure conversion so an attached error boundary is followed and
-no partial batch commits. Database failures, lost durable-job leases, archived
+no partial batch commits. Because a boundary commits whatever was staged,
+`WorkflowVariableStore.WriteAsync` validates the whole batch against its locked
+catalog rows before staging any write, and a durable script failure fences its
+boundary's error variable (`EnsureScriptErrorVariableCurrentAsync`) before routing
+can overwrite it. Database failures, lost durable-job leases, archived
 keys, invariants, and optimistic/value-revision conflicts remain operational
-conflicts/incidents and must not be converted into authored business errors.
+conflicts/incidents and must not be converted into authored business errors. In a
+job, a conflict is stale only when the job has lost its work: while a token still
+waits on it, or its timer boundary still has that occurrence to fire,
+`JobStillOwnsItsWorkAsync` opens a `job_conflict` incident instead of completing it.
 
 JWT users follow the existing shared-variable administrator policy. API clients
 authenticate separately and require exact `shared-variables.read` and/or
@@ -2620,7 +2643,7 @@ when extending the model so new features stay close to BPMN terminology.
 | `type: "endEvent"` | None End Event | Terminal marker; thick-ring circle. Requires an incoming flow and has no outgoing flow. |
 | `type: "terminateEndEvent"` | Terminate End Event | Thick-ring terminate marker. Completes the triggering token, cancels all other instance work and active gateway scopes, and completes the instance with completion kind `terminate`. |
 | `type: "errorEndEvent"` | Error End Event | Terminal throwing marker; thick-ring circle with a filled error glyph. Requires an incoming flow, has no outgoing flow, and ends the instance with `Faulted`. Its required static `errorCode` and optional description are operational fault metadata; there is no subprocess propagation, so it is normally reached through an explicitly modeled error path. |
-| `type: "errorBoundaryEvent"` | Error Boundary Event (interrupting) | Attached to a `serviceTask`/`scriptTask`; catches the host's runtime failures and routes out the boundary's single error flow. Simplified: interrupting only; catch-all (no error code match); at most one per host. |
+| `type: "errorBoundaryEvent"` | Error Boundary Event (interrupting) | Attached to a `serviceTask`/`scriptTask`; catches the host's runtime failures and routes out the boundary's single error flow. Simplified: interrupting only; a REST host selects among up to eight by HTTP status, exact before range before catch-all, and a script host has one catch-all; no named error codes. |
 | `type: "intermediateMessageCatchEvent"` | Intermediate Message Catch Event | A resting node that waits for a message delivered via `POST /api/instances/{id}/message`; thin double-ring circle with an envelope glyph. Auth is the node-config client id/secret + a required custom header (with optional NCalc validation), not the user JWT. Parallel waits are selected by exact `catchEvent` external ID when instance-only addressing is ambiguous. No cross-instance message-name/signal matching; timer boundaries support timeout or reminder paths. |
 | `type: "intermediateConditionalCatchEvent"` | Intermediate Conditional Catch Event | A resting double-ring event with a conditional/document glyph. It observes declared persisted instance variables only; shared aliases are rejected. It evaluates on entry and dependency-changing write batches and follows one fixed unconditional flow. Flowbit adds `atomic` and PostgreSQL-backed `durableAsync` delivery policies for transactionally safe wakeup. |
 | `type: "conditionalBoundaryEvent"` | Conditional Boundary Event | Attached to a durable activity and observes declared persisted instance variables. Missing `cancelActivity` is interrupting (solid ring); `false` is non-interrupting (dashed ring) and retriggers on each false-to-true edge. Flowbit applies its `atomic`/`durableAsync` delivery policies and persistent activation/occurrence fencing. |
@@ -2778,7 +2801,14 @@ when extending the model so new features stay close to BPMN terminology.
   (`openInspectorHelp`), so it survives `renderInspector()` and never reaches the
   document or its history. An example replaces the field's value with `insertText`,
   so undo inside the field stays native, and the editor-root listeners record one
-  history entry.
+  history entry. The help panel also joins its control's `aria-describedby`, and
+  still describes it while closed.
+- **Inspector field names**: `renderInspector()` ends with `linkInspectorLabels()`,
+  which points each `.field > label` at the control beside it, so a field needs only
+  those two elements to be named. A control with no such label sets its own
+  `aria-label`, and code that redraws fields without `renderInspector()` calls
+  `linkInspectorLabels(container)` on what it drew. Browser scenario E18 checks every
+  node type.
 - **Timer schedule input**: the timer **Schedule** selector picks the property.
   On a catch or boundary, **Value** offers **Fixed value** (the date/time and
   duration controls) or **Expression** (a text field). The choice is inspector

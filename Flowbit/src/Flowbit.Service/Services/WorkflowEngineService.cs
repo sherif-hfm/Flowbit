@@ -5229,17 +5229,24 @@ public sealed partial class WorkflowEngineService(
                 instance.WorkflowDefinitionId,
                 definition)
             ?? ConditionalEventDependencyPlan.Empty;
-        routingSteps += await DrainConditionalVariableChangesAsync(
-            instance,
-            definition,
-            conditionalPlan,
-            actor,
-            storedOverlay,
-            flowInfo,
-            queue,
-            conditionalDurableTokenIds,
-            maxRoutingSteps - routingSteps,
-            cancellationToken);
+        // A resumed failure has already stored its status. Nothing may observe
+        // that batch until the loop has selected a boundary for the failed host
+        // and cancelled the host's conditions, or thrown because none matches.
+        var resumesFailedActivity = resume is { ActivityAlreadyExecuted: true, Outcome.Success: false };
+        if (!resumesFailedActivity)
+        {
+            routingSteps += await DrainConditionalVariableChangesAsync(
+                instance,
+                definition,
+                conditionalPlan,
+                actor,
+                storedOverlay,
+                flowInfo,
+                queue,
+                conditionalDurableTokenIds,
+                maxRoutingSteps - routingSteps,
+                cancellationToken);
+        }
 
         while (true)
         {
@@ -5289,33 +5296,36 @@ public sealed partial class WorkflowEngineService(
                     FaultDescription = token.FaultDescription
                 };
 
-                routingSteps += await EnsureAttachedConditionalBoundarySubscriptionsAsync(
-                    tokenInstance,
-                    token,
-                    currentNode,
-                    definition,
-                    conditionalPlan,
-                    actor,
-                    storedOverlay,
-                    flowInfo,
-                    queue,
-                    conditionalDurableTokenIds,
-                    maxRoutingSteps - routingSteps,
-                    cancellationToken);
-                var tokenAfterBoundaryEntry = await runtime.GetExecutionTokenAsync(
-                    token.Id,
-                    false,
-                    cancellationToken);
-                if (!IsSameRunnableActivation(token, tokenAfterBoundaryEntry))
-                {
-                    // An initially true interrupting boundary captured this host
-                    // before its durable wait or automatic activity was started.
-                    continue;
-                }
-                token = tokenAfterBoundaryEntry!;
-
                 var resumesCurrentActivation = resume is not null
                     && resume.ActivationId == token.ActivationId;
+                if (!(resumesFailedActivity && resumesCurrentActivation))
+                {
+                    routingSteps += await EnsureAttachedConditionalBoundarySubscriptionsAsync(
+                        tokenInstance,
+                        token,
+                        currentNode,
+                        definition,
+                        conditionalPlan,
+                        actor,
+                        storedOverlay,
+                        flowInfo,
+                        queue,
+                        conditionalDurableTokenIds,
+                        maxRoutingSteps - routingSteps,
+                        cancellationToken);
+                    var tokenAfterBoundaryEntry = await runtime.GetExecutionTokenAsync(
+                        token.Id,
+                        false,
+                        cancellationToken);
+                    if (!IsSameRunnableActivation(token, tokenAfterBoundaryEntry))
+                    {
+                        // An initially true interrupting boundary captured this host
+                        // before its durable wait or automatic activity was started.
+                        continue;
+                    }
+                    token = tokenAfterBoundaryEntry!;
+                }
+
                 var isExternalOrCpuActivity =
                     BpmnFlowNodeTypes.IsServiceTask(currentNode.Type)
                     || BpmnFlowNodeTypes.IsScriptTask(currentNode.Type);
@@ -5523,7 +5533,14 @@ public sealed partial class WorkflowEngineService(
                 FlowNodeModel? taskFailureBoundary = null;
                 if (outcome is { Success: false })
                 {
-                    taskFailureBoundary = FindErrorBoundary(definition, currentNode.Id);
+                    // A durable job already selected and logged this outcome
+                    // before deciding whether to retry it.
+                    var selection = SelectErrorBoundary(definition, currentNode.Id, outcome);
+                    if (!(resumesCurrentActivation && resume!.ActivityAlreadyExecuted))
+                    {
+                        LogErrorBoundarySelection(definition, instance.Id, currentNode.Id, outcome, selection, retrying: false);
+                    }
+                    taskFailureBoundary = selection.Boundary;
                     if (taskFailureBoundary is null)
                     {
                         throw new WorkflowDomainException(
@@ -8857,7 +8874,9 @@ public sealed partial class WorkflowEngineService(
                     actor,
                     cancellationToken);
                 await unitOfWork.SaveChangesAsync(cancellationToken);
-                return TaskExecutionOutcome.Fail(mappingStatusFailure ?? mappingFailure);
+                return TaskExecutionOutcome.Fail(
+                    mappingStatusFailure ?? mappingFailure,
+                    SelectableHttpStatus(result));
             }
 
             logger.LogInformation("Service task #{NodeId} on instance {InstanceId} succeeded with HTTP {StatusCode}.", node.Id, instance.Id, result.StatusCode);
@@ -8884,8 +8903,12 @@ public sealed partial class WorkflowEngineService(
 
         var reason = result.Error ?? $"HTTP status {result.StatusCode}";
         return TaskExecutionOutcome.Fail(
-            failedStatusWrite ?? $"Service task #{node.Id} REST call failed ({reason}).");
+            failedStatusWrite ?? $"Service task #{node.Id} REST call failed ({reason}).",
+            SelectableHttpStatus(result));
     }
+
+    private static int? SelectableHttpStatus(ServiceTaskResult result) =>
+        ErrorBoundaryMatchRules.IsSelectableStatus(result.StatusCode) ? result.StatusCode : null;
 
     private static bool IsJsonRequest(IReadOnlyList<ServiceTaskHeader> headers)
     {
@@ -10957,13 +10980,66 @@ public sealed partial class WorkflowEngineService(
         int nodeId) =>
         GatewayTopologyCache.Get(definitionId, definition).IncomingFlows(nodeId);
 
-    // Resolves the errorBoundaryEvent attached to a host activity, or null when
-    // none is attached. Definition validation enforces at most one boundary per host;
-    // FirstOrDefault keeps this defensive against a hand-seeded definition that
-    // somehow violates that invariant (avoids an uncaught InvalidOperationException).
-    private static FlowNodeModel? FindErrorBoundary(WorkflowModel definition, int hostNodeId) =>
-        definition.FlowNodes.FirstOrDefault(n =>
-            BpmnFlowNodeTypes.IsErrorBoundary(n.Type) && n.AttachedToRef == hostNodeId);
+    // Resolves the errorBoundaryEvent that catches a failed outcome; its Boundary
+    // is null when none matches. Ambiguous stored data never takes an arbitrary
+    // branch: a job opens an incident at once, because a domain failure would be
+    // retried and repeat the external call; a synchronous transition rolls back.
+    private ErrorBoundarySelection SelectErrorBoundary(
+        WorkflowModel definition,
+        int hostNodeId,
+        TaskExecutionOutcome outcome)
+    {
+        var selection = ErrorBoundaryMatchRules.Select(definition, hostNodeId, outcome.HttpStatusCode);
+        if (selection.Problem is not null)
+        {
+            throw _processingJobId is null
+                ? new WorkflowDomainException(selection.Problem)
+                : new WorkflowJobInvariantException(selection.Problem);
+        }
+
+        return selection;
+    }
+
+    // One line per failed attempt, holding only identifiers, the status, and the
+    // tier: never the failure reason, a response body, or a variable value.
+    private void LogErrorBoundarySelection(
+        WorkflowModel definition,
+        long instanceId,
+        int hostNodeId,
+        TaskExecutionOutcome outcome,
+        ErrorBoundarySelection selection,
+        bool retrying)
+    {
+        if (selection.Boundary is null)
+        {
+            logger.LogWarning(
+                "Failed task #{NodeId} on instance {InstanceId} with HTTP status {HttpStatus} matched no error boundary; it has {BoundaryCount} attached.",
+                hostNodeId,
+                instanceId,
+                outcome.HttpStatusCode,
+                ErrorBoundaryMatchRules.GetErrorBoundaries(definition, hostNodeId).Count);
+        }
+        else if (retrying)
+        {
+            logger.LogInformation(
+                "Failed task #{NodeId} on instance {InstanceId} with HTTP status {HttpStatus} matches error boundary #{BoundaryId} by {MatchTier}, but will retry first.",
+                hostNodeId,
+                instanceId,
+                outcome.HttpStatusCode,
+                selection.Boundary.Id,
+                selection.Tier);
+        }
+        else
+        {
+            logger.LogInformation(
+                "Failed task #{NodeId} on instance {InstanceId} with HTTP status {HttpStatus} selected error boundary #{BoundaryId} by {MatchTier}.",
+                hostNodeId,
+                instanceId,
+                outcome.HttpStatusCode,
+                selection.Boundary.Id,
+                selection.Tier);
+        }
+    }
 
     // FlowInfo is opt-in per definition. Definitions that never reference it keep
     // the historical hot path: no summary query and no occurrence/summary writes.
@@ -11509,12 +11585,14 @@ public sealed partial class WorkflowEngineService(
 
     // Outcome of executing a serviceTask/scriptTask in the pass-through loop. On
     // Success the loop advances down the node's single outgoing flow. On Failure
-    // the loop looks up an attached errorBoundaryEvent: if found the token routes
-    // out the boundary's error flow; otherwise the loop throws (rollback + 400),
-    // matching the historical no-boundary default (onError:fail).
-    private sealed record TaskExecutionOutcome(bool Success, string? Reason)
+    // the loop selects an attached errorBoundaryEvent: if one matches the token
+    // routes out the boundary's error flow; otherwise the loop throws (rollback +
+    // 400), matching the historical no-boundary default (onError:fail).
+    // HttpStatusCode is the invocation's selectable status, null when it has none.
+    private sealed record TaskExecutionOutcome(bool Success, string? Reason, int? HttpStatusCode = null)
     {
         public static TaskExecutionOutcome Ok() => new(true, null);
-        public static TaskExecutionOutcome Fail(string reason) => new(false, reason);
+        public static TaskExecutionOutcome Fail(string reason, int? httpStatusCode = null) =>
+            new(false, reason, httpStatusCode);
     }
 }

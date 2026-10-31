@@ -1,0 +1,276 @@
+{
+  "id": "example-rest-http-status-routing",
+  "name": "Service Task Example 04 - REST HTTP Status Routing",
+  "initialEventId": 1,
+  "variables": [
+    {
+      "id": 1,
+      "name": "serviceStatus",
+      "dataType": "number",
+      "isArray": false,
+      "required": false,
+      "defaultValue": 0
+    },
+    {
+      "id": 2,
+      "name": "integrationFailure",
+      "dataType": "string",
+      "isArray": false,
+      "required": false,
+      "defaultValue": ""
+    }
+  ],
+  "lanes": [
+    {
+      "id": 1,
+      "name": "Submit Order",
+      "externalId": "LANE_SUBMIT_ORDER",
+      "x": 30,
+      "y": 30,
+      "w": 1060,
+      "h": 720
+    }
+  ],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Start Order Submission",
+      "externalId": "START_ORDER_SUBMISSION",
+      "type": "startEvent",
+      "laneId": 1,
+      "x": 70,
+      "y": 205,
+      "roles": [
+        "ExampleRequester"
+      ],
+      "variables": [
+        {
+          "id": 1,
+          "name": "orderId",
+          "dataType": "string",
+          "isArray": false,
+          "required": true,
+          "validation": "Length(orderId) > 0"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "Submit Order",
+      "externalId": "SERVICE_SUBMIT_ORDER",
+      "type": "serviceTask",
+      "laneId": 1,
+      "x": 320,
+      "y": 190,
+      "roles": [],
+      "variables": [],
+      "service": {
+        "type": "rest",
+        "method": "POST",
+        "url": "${config.exampleApiBaseUrl}/orders/${orderId}/submit",
+        "headers": [
+          {
+            "name": "Authorization",
+            "value": "Bearer ${config.exampleApiToken}"
+          }
+        ],
+        "body": null,
+        "timeoutSeconds": 5,
+        "statusVariable": "serviceStatus",
+        "outputMappings": []
+      }
+    },
+    {
+      "id": 3,
+      "name": "Duplicate Order",
+      "externalId": "BOUNDARY_DUPLICATE_ORDER",
+      "type": "errorBoundaryEvent",
+      "laneId": 1,
+      "x": 320,
+      "y": 190,
+      "roles": [],
+      "variables": [],
+      "attachedToRef": 2,
+      "errorVariable": "integrationFailure",
+      "errorMatch": {
+        "httpStatusCodes": [
+          409
+        ]
+      }
+    },
+    {
+      "id": 4,
+      "name": "Rejected Order Data",
+      "externalId": "BOUNDARY_REJECTED_ORDER_DATA",
+      "type": "errorBoundaryEvent",
+      "laneId": 1,
+      "x": 320,
+      "y": 190,
+      "roles": [],
+      "variables": [],
+      "attachedToRef": 2,
+      "errorVariable": "integrationFailure",
+      "errorMatch": {
+        "httpStatusRanges": [
+          {
+            "from": 400,
+            "to": 499
+          }
+        ]
+      }
+    },
+    {
+      "id": 5,
+      "name": "Order Service Unavailable",
+      "externalId": "BOUNDARY_ORDER_SERVICE_UNAVAILABLE",
+      "type": "errorBoundaryEvent",
+      "laneId": 1,
+      "x": 320,
+      "y": 190,
+      "roles": [],
+      "variables": [],
+      "attachedToRef": 2,
+      "errorVariable": "integrationFailure",
+      "errorMatch": {
+        "httpStatusRanges": [
+          {
+            "from": 500,
+            "to": 599
+          }
+        ]
+      }
+    },
+    {
+      "id": 6,
+      "name": "Other Integration Failure",
+      "externalId": "BOUNDARY_OTHER_INTEGRATION_FAILURE",
+      "type": "errorBoundaryEvent",
+      "laneId": 1,
+      "x": 320,
+      "y": 190,
+      "roles": [],
+      "variables": [],
+      "attachedToRef": 2,
+      "errorVariable": "integrationFailure"
+    },
+    {
+      "id": 7,
+      "name": "Order Accepted",
+      "externalId": "END_ORDER_ACCEPTED",
+      "type": "endEvent",
+      "laneId": 1,
+      "x": 880,
+      "y": 100,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 8,
+      "name": "Order Already Submitted",
+      "externalId": "END_ORDER_ALREADY_SUBMITTED",
+      "type": "endEvent",
+      "laneId": 1,
+      "x": 880,
+      "y": 230,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 9,
+      "name": "Order Data Needs Correction",
+      "externalId": "END_ORDER_DATA_NEEDS_CORRECTION",
+      "type": "endEvent",
+      "laneId": 1,
+      "x": 880,
+      "y": 360,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 10,
+      "name": "Order Service Down",
+      "externalId": "END_ORDER_SERVICE_DOWN",
+      "type": "errorEndEvent",
+      "laneId": 1,
+      "x": 880,
+      "y": 490,
+      "roles": [],
+      "variables": [],
+      "errorCode": "EXAMPLE.ORDER_SERVICE_DOWN",
+      "errorDescription": "The order service answered with a server error."
+    },
+    {
+      "id": 11,
+      "name": "No Usable Response",
+      "externalId": "END_NO_USABLE_RESPONSE",
+      "type": "errorEndEvent",
+      "laneId": 1,
+      "x": 880,
+      "y": 620,
+      "roles": [],
+      "variables": [],
+      "errorCode": "EXAMPLE.ORDER_NO_RESPONSE",
+      "errorDescription": "The order service gave no response status that a matcher can use."
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "Submit",
+      "externalId": "FLOW_START_TO_SUBMIT",
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 201,
+      "name": "Accepted",
+      "externalId": "FLOW_SUBMIT_TO_ACCEPTED",
+      "sourceRef": 2,
+      "targetRef": 7,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 301,
+      "name": "Duplicate",
+      "externalId": "FLOW_DUPLICATE_TO_END",
+      "sourceRef": 3,
+      "targetRef": 8,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 401,
+      "name": "Fix data",
+      "externalId": "FLOW_REJECTED_TO_END",
+      "sourceRef": 4,
+      "targetRef": 9,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 501,
+      "name": "Unavailable",
+      "externalId": "FLOW_UNAVAILABLE_TO_END",
+      "sourceRef": 5,
+      "targetRef": 10,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 601,
+      "name": "No status",
+      "externalId": "FLOW_OTHER_TO_END",
+      "sourceRef": 6,
+      "targetRef": 11,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "cancelRoles": [],
+  "unclaimRoles": [],
+  "taskAssignmentRoles": [],
+  "taskDistribution": null
+}

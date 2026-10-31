@@ -191,6 +191,93 @@ public sealed class WorkflowAiWorkflowCheckTests
         Assert.Equal("malformed-json", Assert.Single(WorkflowAiWorkflowCheck.CheckItems("lane", "{\"id\":1,").Errors).Code);
     }
 
+    private static string MatcherWorkflow(string firstMatcher, string secondMatcher) => $$"""
+        {
+          "id": "ai-matchers", "name": "AI matchers", "initialEventId": 1, "variables": [], "lanes": [],
+          "flowNodes": [
+            { "id": 1, "name": "Start", "type": "startEvent" },
+            { "id": 2, "name": "Call", "type": "serviceTask", "service": { "type": "rest", "method": "GET", "url": "https://tests.local/call", "timeoutSeconds": 5 } },
+            { "id": 3, "name": "End", "type": "endEvent" },
+            { "id": 30, "name": "First", "type": "errorBoundaryEvent", "attachedToRef": 2, "errorMatch": {{firstMatcher}} },
+            { "id": 31, "name": "Second", "type": "errorBoundaryEvent", "attachedToRef": 2, "errorMatch": {{secondMatcher}} }
+          ],
+          "sequenceFlows": [
+            { "id": 101, "sourceRef": 1, "targetRef": 2 },
+            { "id": 201, "sourceRef": 2, "targetRef": 3 },
+            { "id": 3001, "sourceRef": 30, "targetRef": 3 },
+            { "id": 3101, "sourceRef": 31, "targetRef": 3 }
+          ]
+        }
+        """;
+
+    [Fact]
+    public void ValidMatchersPassTheWorkflowCheck()
+    {
+        var result = Checker().Check(MatcherWorkflow("""{ "httpStatusCodes": [409] }""", """{ "httpStatusRanges": [{ "from": 400, "to": 499 }] }"""));
+
+        Assert.True(result.Valid, string.Join("; ", result.Errors.Select(error => error.Describe())));
+    }
+
+    [Theory]
+    [InlineData("""{ "httpStatusCodes": ["409"] }""", "wrong-type", "/flowNodes/3/errorMatch/httpStatusCodes/0")]
+    [InlineData("""{ "httpStatusRangez": [] }""", "unknown-property", "/flowNodes/3/errorMatch/httpStatusRangez")]
+    [InlineData("""{ "httpStatusRanges": [{ "from": 400 }] }""", "missing-property", "/flowNodes/3/errorMatch/httpStatusRanges/0")]
+    [InlineData("""{ "httpStatusRanges": [null] }""", "wrong-type", "/flowNodes/3/errorMatch/httpStatusRanges/0")]
+    public void AMalformedMatcherIsReportedWithItsCodePathAndElement(string matcher, string code, string path)
+    {
+        var result = Checker().Check(MatcherWorkflow(matcher, """{ "httpStatusCodes": [410] }"""));
+
+        Assert.False(result.Valid);
+        var error = Assert.Single(result.Errors);
+        Assert.Equal(code, error.Code);
+        Assert.Equal(path, error.Path);
+        Assert.Contains("node 30 (errorBoundaryEvent", error.Where);
+    }
+
+    [Theory]
+    [InlineData("""{ "httpStatusCodes": [409] }""", """{ "httpStatusCodes": [409] }""", "#30", "#31")]
+    [InlineData("""{ "httpStatusRanges": [{ "from": 400, "to": 450 }] }""", """{ "httpStatusRanges": [{ "from": 450, "to": 499 }] }""", "#30", "#31")]
+    [InlineData("""{ }""", """{ "httpStatusCodes": [410] }""", "#30", "errorMatch")]
+    public void AMatcherThatBreaksADefinitionRuleNamesTheBoundary(string first, string second, string expected, string alsoExpected)
+    {
+        var result = Checker().Check(MatcherWorkflow(first, second));
+
+        Assert.False(result.Valid);
+        var line = Assert.Single(result.Errors).Describe();
+        Assert.Contains(expected, line);
+        Assert.Contains(alsoExpected, line);
+    }
+
+    [Fact]
+    public void AMatcherOnAnotherNodeTypeIsReported()
+    {
+        var misplaced = MatcherWorkflow("""{ "httpStatusCodes": [409] }""", """{ "httpStatusCodes": [410] }""")
+            .Replace("""{ "id": 3, "name": "End", "type": "endEvent" }""", """{ "id": 3, "name": "End", "type": "endEvent", "errorMatch": { "httpStatusCodes": [409] } }""", StringComparison.Ordinal);
+
+        var result = Checker().Check(misplaced);
+
+        Assert.False(result.Valid);
+        Assert.Contains("errorMatch", Assert.Single(result.Errors).Describe());
+    }
+
+    [Theory]
+    [InlineData("""{ "httpStatusCodes": [409] }""", 0)]
+    [InlineData("""{ "httpStatusCodes": ["409"] }""", 1)]
+    [InlineData("""{ "httpStatusRangez": [] }""", 1)]
+    [InlineData("""{ "httpStatusRanges": [{ "from": 400 }] }""", 1)]
+    // validate_item checks structure only, which its tool description says; validate_workflow catches these.
+    [InlineData("""{ "httpStatusCodes": [700] }""", 0)]
+    [InlineData("""{ }""", 0)]
+    public void TheItemCheckCoversAMatchersStructureOnly(string matcher, int expectedErrors)
+    {
+        var result = WorkflowAiWorkflowCheck.CheckItems(
+            "node",
+            $$"""{ "id": 30, "name": "b", "type": "errorBoundaryEvent", "attachedToRef": 2, "errorMatch": {{matcher}} }""");
+
+        Assert.Null(result.Refusal);
+        Assert.Equal(expectedErrors, result.Errors.Count);
+    }
+
     [Fact]
     public void RedactionPlaceholdersStayTheSameForAConversationsNonce()
     {

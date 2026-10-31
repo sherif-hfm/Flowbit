@@ -71,6 +71,12 @@ public static class WorkflowIncidentTypes
     public const string AutomaticLoopLimit = "automatic_loop_limit";
 
     /// <summary>
+    /// A conflict in a job that still owns its work, such as a write to an archived shared key. Completing the job
+    /// would strand its token, so it waits for an operator to correct the cause and retry.
+    /// </summary>
+    public const string JobConflict = "job_conflict";
+
+    /// <summary>
     /// A timer start whose first due time cannot be computed, for example because its business calendar cannot count
     /// the duration. Its subscription stays paused until the incident is retried.
     /// </summary>

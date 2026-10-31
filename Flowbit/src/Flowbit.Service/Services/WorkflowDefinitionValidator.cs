@@ -60,6 +60,7 @@ public sealed class WorkflowDefinitionValidator(
         ValidateAuthoredInboxVisibilityMetadata(definition);
         ValidateAuthoredUserTaskDueMetadata(definition);
         ValidateAuthoredConditionalEventMetadata(definition);
+        ValidateAuthoredErrorMatchMetadata(definition);
         ValidateAuthoredSharedVariableMetadata(definition);
         ValidateRoleSources(definition);
     }
@@ -598,6 +599,22 @@ public sealed class WorkflowDefinitionValidator(
             {
                 throw new WorkflowDomainException(
                     $"{description} cannot define task, role, variable, async, or other event metadata.");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Rejects an HTTP status matcher on a node that cannot use it, which the
+    /// tolerant migrator would otherwise discard.
+    /// </summary>
+    private static void ValidateAuthoredErrorMatchMetadata(WorkflowModel definition)
+    {
+        foreach (var node in definition.FlowNodes ?? [])
+        {
+            if (node.ErrorMatch is not null && !BpmnFlowNodeTypes.IsErrorBoundary(node.Type))
+            {
+                throw new WorkflowDomainException(
+                    $"Flow node #{node.Id} defines errorMatch but is not an error boundary event.");
             }
         }
     }
@@ -2009,9 +2026,9 @@ public sealed class WorkflowDefinitionValidator(
         string? Validation);
 
     // An errorBoundaryEvent is attached to exactly one serviceTask/scriptTask
-    // (attachedToRef), has no incoming sequence flows (it is reached by the
-    // engine's error routing, not a normal flow), and at most one boundary may
-    // be attached to a given host.
+    // (attachedToRef) and has no incoming sequence flows (it is reached by the
+    // engine's error routing, not a normal flow). A script host allows one
+    // catch-all; a REST host allows several boundaries with HTTP status matchers.
     private static void ValidateErrorBoundary(
         FlowNodeModel node,
         WorkflowModel definition,
@@ -2048,12 +2065,11 @@ public sealed class WorkflowDefinitionValidator(
                 $"Error boundary event #{node.Id} must have one unconditional outgoing sequence flow without user-action or multi-instance metadata.");
         }
 
-        var siblings = definition.FlowNodes.Count(n =>
-            BpmnFlowNodeTypes.IsErrorBoundary(n.Type) && n.AttachedToRef == node.AttachedToRef);
-        if (siblings > 1)
+        if (ErrorBoundaryMatchRules.FindHostProblem(
+                host,
+                ErrorBoundaryMatchRules.GetErrorBoundaries(definition, host.Id)) is { } hostProblem)
         {
-            throw new WorkflowDomainException(
-                $"Host node #{host.Id} has {siblings} error boundary events; at most one is allowed.");
+            throw new WorkflowDomainException(hostProblem);
         }
 
         if (!string.IsNullOrWhiteSpace(node.ErrorVariable))

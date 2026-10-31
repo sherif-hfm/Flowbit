@@ -202,6 +202,8 @@ public sealed class HostedEditorSmokeTests(BrowserStackFixture stack)
             scenario.ExpectDialogOnce("confirm", "Leave the editor? Unsaved changes will be lost.", accept: true);
             await page.GetByRole(AriaRole.Link, new PageGetByRoleOptions { Name = "Back to Workflows", Exact = true }).Last.ClickAsync();
             await Assertions.Expect(page).ToHaveURLAsync(new Regex("/workflows$"));
+            // The URL changes first. The editor's unsaved-changes guard lasts until it is removed.
+            await Assertions.Expect(page.Locator("#workflow-editor-root")).ToHaveCountAsync(0);
             await scenario.OpenUiAsync("workflows/9223372036854775807/edit");
             await Assertions.Expect(page.Locator("#editor-error")).ToContainTextAsync("was not found");
             await Assertions.Expect(page.Locator("#save-workflow-version")).ToBeDisabledAsync();
@@ -373,6 +375,242 @@ public sealed class HostedEditorSmokeTests(BrowserStackFixture stack)
                 Path = Path.Combine(scenario.ArtifactDirectory, "hosted-expression-narrow.png"),
             });
             await page.SetViewportSizeAsync(width, height);
+        });
+    }
+
+    // The page also loads Bootstrap, whose .badge would stop the summary wrapping.
+    [Theory]
+    [InlineData(1440, 900)]
+    [InlineData(1024, 768)]
+    [InlineData(390, 844)]
+    public async Task H12_BoundaryListFitsTheInspectorAndKeepsKeyboardFocus(int width, int height)
+    {
+        // The canvas needs a wide viewport to reach a node, so narrow it once the inspector is pinned.
+        await using var scenario = await stack.CreateScenario($"h12-hosted-boundary-list-{width}", 1440, 900);
+        await scenario.RunAsync("hosted-boundary-list", async () =>
+        {
+            var workflow = await stack.SetupClient.CreateAndPublishAsync(
+                Path.Combine(stack.RepositoryRoot, "examples", "service-tasks", "04-rest-http-status-routing.json"));
+            await RuntimeSupport.ApplyIdentityAsync(scenario, "editor-admin", ["admin"]);
+            var page = await scenario.OpenUiAsync($"workflows/{workflow.Id}/edit");
+            await ReadyAsync(page);
+            var editor = page.Locator("#workflow-editor-root");
+            await Assertions.Expect(editor.Locator("#wfName")).ToHaveValueAsync(workflow.Name);
+            await EditorInteractions.PinInspectorOpenAsync(page);
+            await EditorInteractions.SelectMoveToolAsync(page);
+            var inspector = editor.Locator("#inspector");
+            await editor.Locator("g.node[data-id='2']").ClickAsync(new LocatorClickOptions { Force = true });
+
+            // Other inspector cards use the same class, so they lose the pill too.
+            var flowBadge = inspector.Locator(".inspector-card .badge").Filter(new LocatorFilterOptions { HasText = "flow #" }).First;
+            await Assertions.Expect(flowBadge).ToHaveCSSAsync("white-space", "normal");
+            await Assertions.Expect(flowBadge).ToHaveCSSAsync("padding-left", "0px");
+            await Assertions.Expect(flowBadge).ToHaveCSSAsync("display", "block");
+
+            var heading = inspector.GetByRole(AriaRole.Heading, new LocatorGetByRoleOptions { Name = "Error boundaries" });
+            await Assertions.Expect(heading).ToBeVisibleAsync();
+            await page.SetViewportSizeAsync(width, height);
+            await heading.ScrollIntoViewIfNeededAsync();
+
+            var layout = await page.EvaluateAsync<JsonElement>("""
+                () => {
+                  const inspector = document.querySelector('#inspector');
+                  const rows = [...inspector.querySelectorAll('.error-boundary-row')].map(row => {
+                    const badge = row.querySelector('.badge');
+                    const text = document.createRange();
+                    text.selectNodeContents(badge);
+                    return {
+                      textRight: text.getBoundingClientRect().right,
+                      removeLeft: row.querySelector('button:last-child').getBoundingClientRect().left,
+                      whiteSpace: getComputedStyle(badge).whiteSpace,
+                      textAlign: getComputedStyle(badge).textAlign
+                    };
+                  });
+                  return { overflow: inspector.scrollWidth - inspector.clientWidth, pageOverflow: document.documentElement.scrollWidth - innerWidth, rows };
+                }
+                """);
+            var rows = layout.GetProperty("rows").EnumerateArray().ToArray();
+            Assert.Equal(4, rows.Length);
+            Assert.All(rows, row =>
+            {
+                Assert.True(row.GetProperty("textRight").GetDouble() <= row.GetProperty("removeLeft").GetDouble(), row.GetRawText());
+                Assert.Equal("normal", row.GetProperty("whiteSpace").GetString());
+                Assert.Equal("left", row.GetProperty("textAlign").GetString());
+            });
+            Assert.True(layout.GetProperty("overflow").GetDouble() <= 0, layout.GetRawText());
+            Assert.True(layout.GetProperty("pageOverflow").GetDouble() <= 2, layout.GetRawText());
+            await page.ScreenshotAsync(new PageScreenshotOptions
+            {
+                Path = Path.Combine(scenario.ArtifactDirectory, "hosted-boundary-list.png"),
+            });
+
+            // Focus stays inside the editor, which is what lets its shortcuts apply here.
+            ILocator Remove(int id) => inspector.GetByRole(AriaRole.Button, new LocatorGetByRoleOptions { Name = $"Remove error boundary event #{id}" });
+            await Remove(5).FocusAsync();
+            await page.Keyboard.PressAsync("Enter");
+            await Assertions.Expect(Remove(6)).ToBeFocusedAsync();
+            await Assertions.Expect(inspector.Locator(".error-boundary-row")).ToHaveCountAsync(3);
+            await Assertions.Expect(page.Locator("#editor-status")).ToHaveTextAsync("Unsaved changes");
+            await page.Keyboard.PressAsync("Control+z");
+            await Assertions.Expect(page.Locator("#editor-status")).ToHaveTextAsync("Saved");
+
+            await page.SetViewportSizeAsync(1440, 900);
+            await editor.Locator("g.node[data-id='2']").ClickAsync(new LocatorClickOptions { Force = true });
+            await page.SetViewportSizeAsync(width, height);
+            await inspector.Locator(".error-boundary-open").First.FocusAsync();
+            await page.Keyboard.PressAsync("Enter");
+            await Assertions.Expect(inspector.GetByRole(AriaRole.Heading, new LocatorGetByRoleOptions { Name = "Node #3" })).ToBeFocusedAsync();
+            await page.Keyboard.PressAsync("Tab");
+            await Assertions.Expect(inspector.Locator(".field").Filter(new LocatorFilterOptions
+            {
+                Has = page.Locator("xpath=./label[normalize-space(.)='Name']"),
+            }).First.Locator("input")).ToBeFocusedAsync();
+        });
+    }
+
+    [Fact]
+    public async Task H13_ImportPageNamesWhatIsWrongWithARejectedMatcher()
+    {
+        await using var scenario = await stack.CreateScenario("h13-import-rejected-matcher", 1440, 900);
+        await scenario.RunAsync("import-rejected-matcher", async () =>
+        {
+            await RuntimeSupport.ApplyIdentityAsync(scenario, "editor-admin", ["admin"]);
+            var page = await scenario.OpenUiAsync("workflows");
+            await Assertions.Expect(page.Locator(".app-shell")).ToHaveAttributeAsync("data-interactive", "true");
+
+            string Document(string matcher)
+            {
+                var document = JsonNode.Parse(File.ReadAllText(EditorInteractions.FixturePath("editor-error-boundaries.json")))!;
+                document["id"] = $"browser-import-{Guid.NewGuid():N}";
+                var nodes = document["flowNodes"]!.AsArray();
+                // Ends 4 and 5 have no incoming flow in this fixture, so they would fail first.
+                foreach (var unused in nodes.Where(node => node!["id"]!.GetValue<int>() is 4 or 5).ToArray())
+                {
+                    nodes.Remove(unused);
+                }
+                nodes.Add(JsonNode.Parse(
+                    $$"""{ "id": 7, "name": "Boundary", "type": "errorBoundaryEvent", "laneId": 1, "x": 0, "y": 0, "attachedToRef": 2, "errorMatch": {{matcher}} }"""));
+                document["sequenceFlows"]!.AsArray().Add(JsonNode.Parse("""{ "id": 701, "name": "", "sourceRef": 7, "targetRef": 6 }"""));
+                return document.ToJsonString();
+            }
+
+            var alert = page.Locator(".alert.alert-danger");
+            var index = 0;
+            foreach (var (matcher, expected) in new (string Matcher, string? Expected)[]
+            {
+                ("""{ "httpStatusCodes": ["409"] }""", "The value has the wrong JSON type. Path: $.flowNodes[4].errorMatch.httpStatusCodes[0]"),
+                ("""{ "httpStatusRangez": [{ "from": 400, "to": 499 }] }""", "Unknown property 'httpStatusRangez'. Path: $.flowNodes[4].errorMatch.httpStatusRangez"),
+                ("""{ "httpStatusCodes": [null] }""", "The value has the wrong JSON type. Path: $.flowNodes[4].errorMatch.httpStatusCodes[0]"),
+                ("""{ }""", "Error boundary event #7 on host node #2: errorMatch must list at least one HTTP status or range; remove errorMatch to catch every failure."),
+                ("""{ "httpStatusCodes": [700] }""", "Error boundary event #7 on host node #2: errorMatch.httpStatusCodes[0] is 700; a status must be from 100 through 599."),
+                ("""{ "httpStatusCodes": [503, 409] }""", null)
+            })
+            {
+                var name = $"import-{index++}.json";
+                var path = Path.Combine(scenario.ArtifactDirectory, name);
+                await File.WriteAllTextAsync(path, Document(matcher));
+                await page.Locator("#workflow-json-file").SetInputFilesAsync(path);
+                await Assertions.Expect(page.Locator(".summary-item").Filter(new LocatorFilterOptions { HasText = name })).ToHaveCountAsync(1);
+                var import = page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { NameRegex = new Regex("^Import ") });
+                await Assertions.Expect(import).ToBeEnabledAsync();
+                await import.ClickAsync();
+                if (expected is null)
+                {
+                    await Assertions.Expect(alert).ToHaveCountAsync(0);
+                }
+                else
+                {
+                    await Assertions.Expect(alert).ToHaveTextAsync(expected);
+                }
+            }
+        });
+    }
+
+    // A large file reads slowly enough that a quick click lands before the read ends.
+    [Fact]
+    public async Task H14_ImportOnlySubmitsTheFileLastSelected()
+    {
+        await using var scenario = await stack.CreateScenario("h14-import-file-race", 1440, 900);
+        await scenario.RunAsync("import-file-race", async () =>
+        {
+            await RuntimeSupport.ApplyIdentityAsync(scenario, "editor-admin", ["admin"]);
+            var page = await scenario.OpenUiAsync("workflows");
+            await Assertions.Expect(page.Locator(".app-shell")).ToHaveAttributeAsync("data-interactive", "true");
+            var picker = page.Locator("#workflow-json-file");
+            var import = page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { NameRegex = new Regex("^Import ") });
+            var summary = page.Locator(".summary-item");
+            var run = Guid.NewGuid().ToString("N");
+
+            async Task<(string Key, string Path)> WriteAsync(string label, int padding)
+            {
+                var document = JsonNode.Parse(File.ReadAllText(EditorInteractions.FixturePath("editor-basic.json")))!;
+                var key = $"browser-import-{label}-{run}";
+                document["id"] = key;
+                document["name"] = key;
+                var path = Path.Combine(scenario.ArtifactDirectory, $"{label}.json");
+                await File.WriteAllTextAsync(path, document.ToJsonString() + new string(' ', padding));
+                return (key, path);
+            }
+
+            async Task<string[]> ImportedKeysAsync() =>
+                (await stack.SetupClient.ListWorkflowsAsync())
+                    .Select(workflow => workflow.WorkflowKey)
+                    .Where(key => key.EndsWith(run, StringComparison.Ordinal))
+                    .ToArray();
+
+            const int Large = 1_900_000;
+
+            // A second selection takes the first file's contents off the page at once.
+            var first = await WriteAsync("first", 0);
+            await picker.SetInputFilesAsync(first.Path);
+            await Assertions.Expect(summary.Filter(new LocatorFilterOptions { HasText = "first.json" })).ToHaveCountAsync(1);
+            await Assertions.Expect(import).ToBeEnabledAsync();
+
+            // Records whether Import stayed available for the first file during the read of the
+            // second, and whether the page locked itself during the import.
+            await page.EvaluateAsync("""
+                firstKey => {
+                    const section = document.querySelector('#import-workflow');
+                    const picker = section.querySelector('#workflow-json-file');
+                    const button = [...section.querySelectorAll('button')].find(item => item.textContent.trim().startsWith('Import '));
+                    const watch = { firstImportable: false, pickerLocked: false };
+                    picker.addEventListener('change', () => {
+                        new MutationObserver(() => {
+                            const preview = section.querySelector('pre');
+                            if (!button.disabled && preview && preview.textContent.includes(firstKey)) watch.firstImportable = true;
+                        }).observe(section, { subtree: true, childList: true, attributes: true });
+                        new MutationObserver(() => {
+                            if (picker.disabled) watch.pickerLocked = true;
+                        }).observe(picker, { attributes: true, attributeFilter: ['disabled'] });
+                    });
+                    window.importWatch = watch;
+                }
+                """, first.Key);
+            var second = await WriteAsync("second", Large);
+            await picker.SetInputFilesAsync(second.Path);
+
+            // The click waits for the button, so it cannot reach the old file.
+            await import.ClickAsync();
+            await Assertions.Expect(summary).ToHaveCountAsync(0);
+            await Assertions.Expect(page.Locator(".alert.alert-danger")).ToHaveCountAsync(0);
+            Assert.Equal(new[] { second.Key }, await ImportedKeysAsync());
+            Assert.False(await page.EvaluateAsync<bool>("window.importWatch.firstImportable"));
+            Assert.True(await page.EvaluateAsync<bool>("window.importWatch.pickerLocked"));
+
+            // A slow read that a newer selection overtakes is ignored when it finishes.
+            var slow = await WriteAsync("slow", Large);
+            var quick = await WriteAsync("quick", 0);
+            await picker.SetInputFilesAsync(slow.Path);
+            await picker.SetInputFilesAsync(quick.Path);
+            var quickSummary = summary.Filter(new LocatorFilterOptions { HasText = "quick.json" });
+            await Assertions.Expect(quickSummary).ToHaveCountAsync(1);
+            await page.WaitForTimeoutAsync(1500);
+            await Assertions.Expect(quickSummary).ToHaveCountAsync(1);
+            await Assertions.Expect(page.Locator("#import-workflow pre")).ToContainTextAsync(quick.Key);
+            await import.ClickAsync();
+            await Assertions.Expect(summary).ToHaveCountAsync(0);
+            await Assertions.Expect(page.Locator(".alert.alert-danger")).ToHaveCountAsync(0);
+            Assert.Equal(new[] { quick.Key, second.Key }, (await ImportedKeysAsync()).Order(StringComparer.Ordinal));
         });
     }
 

@@ -273,6 +273,38 @@ public sealed class WorkflowVariableStore(
             index++;
         }
 
+        // Capture pre-write values once so no-op writes can avoid local
+        // conditional reevaluation. The repository performs the authoritative
+        // comparison and suppresses its durable wake expansion as well.
+        if (sharedWrites.Count > 0)
+        {
+            await sharedVariables.PrelockDefinitionKeysForLegacyAllocatorAsync(
+                SharedCatalogKeys(bindings.Values),
+                cancellationToken);
+            var sharedKeys = sharedWrites.Select(item => item.Binding.SharedKey!)
+                .Distinct(StringComparer.Ordinal)
+                .Order(StringComparer.Ordinal)
+                .ToArray();
+            _ = await sharedVariables.LockCurrentAsync(
+                sharedKeys,
+                includeArchived: false,
+                cancellationToken);
+
+            // An error boundary can catch a refused value and commit this
+            // transaction, so the whole batch is checked before any of it is staged.
+            var catalog = await sharedVariables.GetManyByKeyAsync(
+                sharedKeys,
+                includeArchived: false,
+                cancellationToken);
+            foreach (var (_, write, binding) in sharedWrites)
+            {
+                if (catalog.TryGetValue(binding.SharedKey!, out var variable))
+                {
+                    SharedVariableValueValidator.Validate(variable, write.Value);
+                }
+            }
+        }
+
         var results = new WorkflowVariableWriteResult[writes.Count];
         foreach (var (writeIndex, write) in instanceWrites)
         {
@@ -293,23 +325,6 @@ public sealed class WorkflowVariableStore(
                 null,
                 null,
                 ValueChanged: true);
-        }
-
-        // Capture pre-write values once so no-op writes can avoid local
-        // conditional reevaluation. The repository performs the authoritative
-        // comparison and suppresses its durable wake expansion as well.
-        if (sharedWrites.Count > 0)
-        {
-            await sharedVariables.PrelockDefinitionKeysForLegacyAllocatorAsync(
-                SharedCatalogKeys(bindings.Values),
-                cancellationToken);
-            _ = await sharedVariables.LockCurrentAsync(
-                sharedWrites.Select(item => item.Binding.SharedKey!)
-                    .Distinct(StringComparer.Ordinal)
-                    .Order(StringComparer.Ordinal)
-                    .ToArray(),
-                includeArchived: false,
-                cancellationToken);
         }
 
         foreach (var (writeIndex, write, binding) in sharedWrites

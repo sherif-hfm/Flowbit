@@ -228,10 +228,7 @@ public sealed class AdministrativeActionsSmokeTests(BrowserStackFixture stack)
         await Assertions.Expect(page.Locator("#history")).ToContainTextAsync("supervisor");
         await Assertions.Expect(page.Locator($"#history a[href='administrative-actions?batchId={batchId}']"))
             .ToBeVisibleAsync();
-        await page.Locator("h1").HoverAsync();
-        await page.Mouse.WheelAsync(0, -await page.EvaluateAsync<int>(
-            "() => document.documentElement.scrollHeight"));
-        await page.WaitForFunctionAsync("() => window.scrollY <= 1");
+        await PageScrolling.ScrollToTopAsync(page);
         await page.ScreenshotAsync(new PageScreenshotOptions
         {
             Path = Path.Combine(scenario.ArtifactDirectory, $"administrative-instance-refreshed-{instanceId}.png"),

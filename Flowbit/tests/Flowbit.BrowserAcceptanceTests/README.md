@@ -126,11 +126,18 @@ history/items loading and recovery. Administrative captures retain both full
 pages and section viewports, after finite CSS transitions settle; full pages
 are returned to the top with real wheel input before capture. Bootstrap gives
 the page `scroll-behavior: smooth`, so focus changes, Blazor's navigation reset
-and Playwright's own actionability scrolling animate. The helper therefore
+and Playwright's own actionability scrolling animate. Chromium follows the host
+for this animation, and with Windows animations off every scroll lands at once
+and hides timing mistakes, so this suite launches it with
+`--enable-smooth-scrolling`. The shared `PageScrolling` helper
+(`Flowbit.BrowserTests/Support`) therefore
 points at the sticky top bar's padding rather than hovering the page heading
 (which can start such a scroll), waits until the scroll position is unchanged
 for ten animation frames, and repeats the wheel until the page rests at the top;
-it waits the same way before each section-viewport capture.
+it waits the same way before each section-viewport capture. Instance-detail
+section navigation waits for the scroll to end before checking where the section
+landed, and presses the tab again, up to three times, if a panel that finished
+loading moved the section out of view.
 [Fixture prerequisites](Fixtures/README.md) document the new instance-detail
 definition; administrative variants reuse the existing smoke definition.
 The expression-timer cases retain full-page `contract-waiting`,
@@ -163,6 +170,29 @@ screenshots and at least two natural polling cycles, the test releases the
 service and restarts the Worker. It uses the normal lease duration and a bounded
 recovery wait. The harmless external call may repeat after interruption; the
 test asserts that committed workflow action evidence does not duplicate.
+
+HTTP status routing on error boundaries uses the catalog's
+[status routing](../../../examples/service-tasks/04-rest-http-status-routing.json) and
+[durable retry](../../../examples/durable-jobs/04-rest-status-routing-and-retries.json)
+examples against a controlled service in `ExampleAcceptanceFixture`, whose scenario
+names select a status, a status sequence, a connection lost mid-body, no answer in
+time, an answer after four seconds, or a first call left open. It needs the same Worker stack and retains
+`status-matchers-diagram.png` and `status-matchers-hosted.png` at 1440x900,
+1024x768, and 390x844:
+
+| Scenario | Coverage |
+| --- | --- |
+| `HttpStatusRoutingSelectsExactThenRangeThenCatchAll` | Real `409`, `422`, `503`, a lost body after `503`, and a timeout each reach only their own boundary and end event. |
+| `DurableStatusRoutingUsesTheCurrentAttempt` | A real Worker routes a match on its first attempt, and a later attempt's status decides after an unmatched `503`. |
+| `DurableUnmatchedStatusRetriesThenOpensARecoverableIncident` | An unmatched status makes three attempts and opens an incident with no boundary visit; a manual retry then routes from the new response. |
+| `DurableRetryFirstRetriesEveryFailureThenUsesTheFinalAttempt` | With `retryFirst` and a real Worker, a `409` is called three times and then routes; the final attempt decides between `503, 409` and `409, 503`, the second of which opens an incident; and `409, 200` takes the normal flow. |
+| `DurableMatchingBoundaryBeatsAConditionOnTheFailedCallsStatus` | A conditional boundary on `statusVariable` does not fire when an error boundary matches, and the error path can still read the real status. |
+| `DurableUnmatchedStatusOpensAnIncidentInsteadOfTakingACondition` | With no match and no retries left, the same condition does not fire: an incident opens and the instance stays running. |
+| `DurableLateMatchingResultAfterAnInterruptingTimerIsDiscarded` | An interrupting timer wins while the call is open. The `409` that arrives four seconds later opens no incident and takes no boundary. |
+| `DurableWorkerStoppedMidCallRoutesOnceAfterItRestarts` | Stopping the Worker with a call open leaves its lease to expire. The restarted Worker calls again and routes once, with no incident. |
+| `UnmatchedStatusIncidentRecoversThroughOperationsAndTheDiagram` | At 1440x900 and 390x844 the unmatched incident appears on Operations, **Retry** works from the keyboard, the new `409` selects the boundary, and the read-only diagram shows the result. Retains `unmatched-status-incident.png` and `unmatched-status-recovered-diagram.png`. |
+| `ArchivedSharedKeyConflictRecoversThroughOperations` | At 1440x900 and 390x844 a shared key is retired: a new default without it, the old version unpublished, then the archive. A completed instance reactivated afterwards writes that key through a real Worker, which opens a `job_conflict` incident rather than stranding it. **Operations** shows the incident, and after the key is reactivated **Retry** from the keyboard finishes the instance with the value written. Retains `archived-key-incident.png`. |
+| `StatusMatchersInTheHostedEditorAndReadOnlyDiagram` | The read-only diagram shows each matcher label and no authoring control. The hosted editor edits a matcher with live validation at each viewport and saves a version the API returns in canonical order. |
 
 ## Historical comparisons and manual checks
 

@@ -70,6 +70,27 @@ public sealed class OpenApiContractTests
                 || name.Contains("IWorkflow", StringComparison.Ordinal));
     }
 
+    [Fact]
+    public async Task ErrorBoundaryMatcherSchemasDescribeThePublicContract()
+    {
+        await using var factory = new WorkflowInstanceDetailEndpointTests.DetailApiFactory();
+        await using var scope = factory.Services.CreateAsyncScope();
+        var provider = scope.ServiceProvider.GetRequiredKeyedService<IOpenApiDocumentProvider>("v1");
+        var document = await provider.GetOpenApiDocumentAsync();
+        var schemas = document.Components!.Schemas!;
+
+        var range = schemas["HttpStatusRangeModel"];
+        Assert.Equal(["from", "to"], range.Required!.Order());
+        Assert.Equal("An inclusive HTTP status range.", range.Description);
+        Assert.Equal("First status, from 100 through 599 and below to.", range.Properties!["from"].Description);
+        Assert.Equal("Last status, from 100 through 599.", range.Properties!["to"].Description);
+
+        var matcher = schemas["ErrorBoundaryMatchModel"];
+        Assert.Equal("The HTTP statuses an error boundary catches.", matcher.Description);
+        Assert.Empty(matcher.Required ?? new HashSet<string>());
+        Assert.False(matcher.AdditionalPropertiesAllowed);
+    }
+
     private static void AssertRoleOperation(
         Microsoft.OpenApi.OpenApiDocument document,
         string path,

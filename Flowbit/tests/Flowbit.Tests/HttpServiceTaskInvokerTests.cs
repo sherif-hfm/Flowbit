@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Net;
+using System.Net.Sockets;
 using System.Text;
 using Microsoft.Extensions.Logging.Abstractions;
 using Flowbit.Infrastructure.Http;
@@ -190,6 +191,44 @@ public sealed class HttpServiceTaskInvokerTests
         Assert.False(sent);
         Assert.Contains("configuration is invalid", result.Error, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain(value, result.Error, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(503)]
+    [InlineData(200)]
+    public async Task InvokeAsync_KeepsReceivedStatusWhenConnectionIsLostMidBody(int status)
+    {
+        // A real socket, because that is what raises the real HttpIOException.
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        var server = Task.Run(async () =>
+        {
+            using var socket = await listener.AcceptTcpClientAsync();
+            var stream = socket.GetStream();
+            var buffer = new byte[4096];
+            var received = new StringBuilder();
+            while (!received.ToString().Contains("\r\n\r\n", StringComparison.Ordinal))
+            {
+                var read = await stream.ReadAsync(buffer);
+                if (read == 0) break;
+                received.Append(Encoding.ASCII.GetString(buffer, 0, read));
+            }
+            var head = $"HTTP/1.1 {status} Test\r\nContent-Length: 1000\r\nConnection: close\r\n\r\npartial";
+            await stream.WriteAsync(Encoding.ASCII.GetBytes(head));
+            await stream.FlushAsync();
+        });
+        using var client = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
+
+        var result = await CreateInvoker(client).InvokeAsync(
+            Request($"http://127.0.0.1:{port}/work"),
+            CancellationToken.None);
+        await server;
+
+        Assert.False(result.Completed);
+        Assert.Equal(status, result.StatusCode);
+        Assert.Equal("Transport request failed.", result.Error);
+        Assert.Null(result.Body);
     }
 
     private static HttpServiceTaskInvoker CreateInvoker(

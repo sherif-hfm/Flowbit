@@ -407,6 +407,104 @@ public sealed class WorkflowVersionCompatibilityEvaluatorTests
         AssertCodes(result, WorkflowVersionCompatibilityCodes.OpenJobContractChanged);
     }
 
+    [Theory]
+    [InlineData("matcher")]
+    [InlineData("error-output")]
+    [InlineData("continuation")]
+    [InlineData("added-boundary")]
+    public void Open_job_blocks_changes_to_an_error_boundary_contract(string change)
+    {
+        var sourceModel = ServiceJobWithMatcher();
+        var targetModel = Clone(sourceModel);
+        var boundary = targetModel.FlowNodes.Single(node => node.Id == 7);
+        switch (change)
+        {
+            case "matcher": boundary.ErrorMatch = new ErrorBoundaryMatchModel { HttpStatusCodes = [409] }; break;
+            case "error-output": boundary.ErrorVariable = "failure"; break;
+            case "continuation": targetModel.SequenceFlows.Single(flow => flow.SourceRef == 7).TargetRef = 3; break;
+            case "added-boundary":
+                targetModel.FlowNodes.Add(new FlowNodeModel
+                {
+                    Id = 8,
+                    Name = "Catch all",
+                    Type = BpmnFlowNodeTypes.ErrorBoundaryEvent,
+                    AttachedToRef = 2
+                });
+                targetModel.SequenceFlows.Add(Flow(801, 8, 3));
+                break;
+        }
+        var source = Definition(11, 1, sourceModel);
+
+        var result = WorkflowVersionCompatibilityEvaluator.Evaluate(
+            Context(source, Definition(12, 2, targetModel)) with { OpenJobs = [Job(source)] });
+
+        AssertCodes(result, WorkflowVersionCompatibilityCodes.OpenJobContractChanged);
+    }
+
+    [Fact]
+    public void Selector_order_and_explicit_null_do_not_change_an_open_job_contract()
+    {
+        var sourceModel = ServiceJobWithMatcher();
+        var targetModel = Clone(sourceModel);
+        targetModel.FlowNodes.Single(node => node.Id == 7).ErrorMatch = new ErrorBoundaryMatchModel
+        {
+            HttpStatusCodes = [503, 409],
+            HttpStatusRanges = []
+        };
+        WorkflowModelMigrator.Normalize(sourceModel);
+        WorkflowModelMigrator.Normalize(targetModel);
+        var source = Definition(11, 1, sourceModel);
+
+        var result = WorkflowVersionCompatibilityEvaluator.Evaluate(
+            Context(source, Definition(12, 2, targetModel)) with { OpenJobs = [Job(source)] });
+
+        Assert.True(result.IsCompatible);
+        Assert.Empty(result.Blockers);
+    }
+
+    [Fact]
+    public void A_matcher_does_not_block_a_version_change_for_work_waiting_elsewhere()
+    {
+        var sourceModel = ServiceJobWithMatcher();
+        var targetModel = Clone(sourceModel);
+        targetModel.FlowNodes.Single(node => node.Id == 7).ErrorMatch =
+            new ErrorBoundaryMatchModel { HttpStatusCodes = [409] };
+
+        var result = WorkflowVersionCompatibilityEvaluator.Evaluate(
+            Context(Definition(11, 1, sourceModel), Definition(12, 2, targetModel)));
+
+        Assert.True(result.IsCompatible);
+    }
+
+    private static WorkflowModel ServiceJobWithMatcher()
+    {
+        var model = BasicModel(BpmnFlowNodeTypes.ServiceTask);
+        var service = model.FlowNodes.Single(node => node.Id == 2);
+        service.AsyncBefore = true;
+        service.Service = new ServiceTaskModel
+        {
+            Type = ServiceConnectorTypes.Rest,
+            Method = "GET",
+            Url = "https://source.example/work"
+        };
+        model.FlowNodes.Add(new FlowNodeModel
+        {
+            Id = 7,
+            Name = "Conflict",
+            Type = BpmnFlowNodeTypes.ErrorBoundaryEvent,
+            AttachedToRef = 2,
+            ErrorMatch = new ErrorBoundaryMatchModel { HttpStatusCodes = [409, 503] }
+        });
+        model.FlowNodes.Add(new FlowNodeModel
+        {
+            Id = 9,
+            Name = "Handled",
+            Type = BpmnFlowNodeTypes.EndEvent
+        });
+        model.SequenceFlows.Add(Flow(701, 7, 9));
+        return model;
+    }
+
     [Fact]
     public void Attribute_only_changes_do_not_change_durable_node_or_flow_contracts()
     {

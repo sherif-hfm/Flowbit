@@ -5,6 +5,7 @@ using System.Text.Json;
 using Flowbit.BrowserTests.Infrastructure;
 using Flowbit.BrowserTests.Support;
 using Flowbit.Shared.Dtos;
+using Flowbit.Shared.Models;
 using Microsoft.Playwright;
 using Xunit;
 
@@ -14,6 +15,247 @@ namespace Flowbit.BrowserAcceptanceTests;
 public sealed class ExampleWorkflowUiTests(ExampleAcceptanceFixture fixture)
 {
     private BrowserStackFixture Stack => fixture.Stack;
+
+    [Theory]
+    [InlineData(1440, 900)]
+    [InlineData(1024, 768)]
+    [InlineData(390, 844)]
+    public async Task StatusMatchersInTheHostedEditorAndReadOnlyDiagram(int width, int height)
+    {
+        await using var scenario = await Stack.CreateScenario($"example-status-matchers-ui-{width}x{height}", width, height);
+        await scenario.RunAsync("status-matchers-ui", async () =>
+        {
+            await using var actor = await ApplyActorAsync(scenario, "example-operator", ["admin", "ExampleRequester", "ExampleOperator"]);
+            var workflow = await Stack.SetupClient.CreateAndPublishAsync(Catalog("service-tasks/04-rest-http-status-routing.json"));
+            var instance = await actor.Runtime.StartInstanceAsync(workflow.Id,
+                new() { ["orderId"] = JsonSerializer.SerializeToElement("status-409") });
+
+            // The read-only diagram shows every matcher and offers no authoring control.
+            var page = await scenario.OpenUiAsync($"instances/{instance.Id}");
+            await WaitForInteractiveAsync(page);
+            var markers = page.Locator(".flow-marker-status");
+            await Assertions.Expect(markers.Filter(new LocatorFilterOptions { HasText = "409" })).ToHaveCountAsync(1);
+            await Assertions.Expect(markers.Filter(new LocatorFilterOptions { HasText = "400–499" })).ToHaveCountAsync(1);
+            await Assertions.Expect(markers.Filter(new LocatorFilterOptions { HasText = "All failures" })).ToHaveCountAsync(1);
+            await Assertions.Expect(page.Locator("g.node.instance-ended[data-id='8']")).ToHaveCountAsync(1);
+            await Assertions.Expect(page.GetByText("+ Add status")).ToHaveCountAsync(0);
+            await AssertNoHorizontalScrollAsync(page);
+            await CaptureAsync(scenario, "status-matchers-diagram");
+
+            // The hosted editor edits a matcher and saves it through the API.
+            // The canvas needs a wide viewport to reach a node, so narrow it once the inspector is pinned.
+            await page.SetViewportSizeAsync(1440, 900);
+            page = await scenario.OpenUiAsync($"workflows/{workflow.Id}/edit");
+            var editor = page.Locator("#workflow-editor-root");
+            await Assertions.Expect(editor.Locator("#wfName")).ToHaveValueAsync(workflow.Name);
+            await editor.Locator("g.node[data-id='3']").ClickAsync(new LocatorClickOptions { Force = true });
+            var inspector = editor.Locator("#inspector");
+            await Assertions.Expect(inspector).ToContainTextAsync("Failures caught");
+            await EditorInteractions.PinInspectorOpenAsync(page);
+            await page.SetViewportSizeAsync(width, height);
+            await inspector.GetByRole(AriaRole.Button, new LocatorGetByRoleOptions { Name = "+ Add status" }).ClickAsync();
+            var status = inspector.GetByRole(AriaRole.Textbox, new LocatorGetByRoleOptions { Name = "Exact HTTP status 2" });
+            await Assertions.Expect(status).ToBeFocusedAsync();
+            await page.Keyboard.TypeAsync("40x");
+            await Assertions.Expect(status).ToHaveAttributeAsync("aria-invalid", "true");
+            await Assertions.Expect(inspector.Locator(".error-match .expression-validation")).ToContainTextAsync("whole number");
+            await status.FillAsync("410");
+            await Assertions.Expect(status).ToHaveAttributeAsync("aria-invalid", "false");
+            var statusBox = await status.BoundingBoxAsync();
+            Assert.InRange(statusBox!.X, 0, width);
+            Assert.InRange(statusBox.X + statusBox.Width, 0, width);
+            await CaptureAsync(scenario, "status-matchers-hosted");
+
+            await page.Locator("#save-workflow-version").ClickAsync();
+            await Assertions.Expect(page.Locator("#editor-notice")).ToContainTextAsync("Saved unpublished version");
+            var savedId = long.Parse(System.Text.RegularExpressions.Regex.Match(page.Url, @"/workflows/(\d+)/edit").Groups[1].Value);
+            var saved = await Stack.SetupClient.GetWorkflowAsync(savedId);
+            var boundary = saved.Definition.FlowNodes.Single(node => node.Id == 3);
+            Assert.Equal([409, 410], boundary.ErrorMatch!.HttpStatusCodes);
+        });
+    }
+
+    private static async Task AssertNoHorizontalScrollAsync(IPage page) =>
+        Assert.True(await page.EvaluateAsync<bool>(
+            "document.documentElement.scrollWidth <= document.documentElement.clientWidth"));
+
+    [Theory]
+    [InlineData(1440, 900)]
+    [InlineData(390, 844)]
+    public async Task UnmatchedStatusIncidentRecoversThroughOperationsAndTheDiagram(int width, int height)
+    {
+        await using var scenario = await Stack.CreateScenario($"example-unmatched-status-ui-{width}x{height}", width, height);
+        await scenario.RunAsync("unmatched-status-ui", async () =>
+        {
+            await Stack.StartWorkerAsync();
+            await using var actor = await ApplyActorAsync(scenario, "example-operator", ["admin", "ExampleRequester", "ExampleOperator"]);
+            var workflow = await Stack.SetupClient.CreateAndPublishAsync(Catalog("durable-jobs/04-rest-status-routing-and-retries.json"));
+            var stock = $"sequence-503-503-503-409-ui{width}-x{Guid.NewGuid().ToString("N")[..6]}";
+            var instance = await actor.Runtime.StartInstanceAsync(workflow.Id,
+                new() { ["scenario"] = JsonSerializer.SerializeToElement(stock) });
+            await WaitUntilAsync(async () =>
+                (await ReadAsync<PagedResult<IncidentSummaryDto>>(actor.Http, $"/api/incidents?instanceId={instance.Id}"))
+                    .Items.Any(item => item.Status == "open"));
+
+            await scenario.OpenUiAsync("operations");
+            await WaitForInteractiveAsync(scenario.Page);
+            var row = scenario.Page.Locator("section[aria-labelledby='incident-heading'] tbody tr")
+                .Filter(new LocatorFilterOptions { HasText = workflow.WorkflowKey });
+            await Assertions.Expect(row).ToContainTextAsync($"Instance #{instance.Id}");
+            await CaptureAsync(scenario, "unmatched-status-incident");
+
+            // The manual retry calls again, and its 409 selects the exact boundary.
+            var retry = row.GetByRole(AriaRole.Button, new LocatorGetByRoleOptions { Name = "Retry", Exact = true });
+            await retry.FocusAsync();
+            await retry.PressAsync("Enter");
+            await WaitUntilAsync(async () => (await actor.Runtime.GetInstanceAsync(instance.Id)).Status == "completed");
+
+            var page = await scenario.OpenUiAsync($"instances/{instance.Id}");
+            await WaitForInteractiveAsync(page);
+            await Assertions.Expect(page.Locator(".flow-marker-status").Filter(new LocatorFilterOptions { HasText = "409" })).ToHaveCountAsync(1);
+            await Assertions.Expect(page.Locator("g.node.instance-ended[data-id='6']")).ToHaveCountAsync(1);
+            await Assertions.Expect(page.Locator("#inspector")).ToHaveCountAsync(0);
+            await AssertNoHorizontalScrollAsync(page);
+            await CaptureAsync(scenario, "unmatched-status-recovered-diagram");
+        });
+    }
+
+    // A running instance or published definition blocks an archive, so a validated
+    // workflow reaches an archived key through an old instance reactivated afterwards.
+    [Theory]
+    [InlineData(1440, 900)]
+    [InlineData(390, 844)]
+    public async Task ArchivedSharedKeyConflictRecoversThroughOperations(int width, int height)
+    {
+        await using var scenario = await Stack.CreateScenario($"example-archived-key-ui-{width}x{height}", width, height);
+        await scenario.RunAsync("archived-key-ui", async () =>
+        {
+            await Stack.StartWorkerAsync();
+            await using var actor = await ApplyActorAsync(scenario, "example-operator", ["admin", "ExampleRequester", "ExampleOperator"]);
+            var suffix = Guid.NewGuid().ToString("N");
+            var sharedKey = $"acceptance.archived.{suffix}";
+            var workflowKey = $"acceptance-archived-key-{suffix}";
+            await Stack.SetupClient.CreateSharedVariableAsync(new CreateSharedVariableRequest(
+                sharedKey,
+                WorkflowVariableTypes.Number,
+                IsArray: false,
+                Nullable: false,
+                HasValue: true,
+                JsonSerializer.SerializeToElement(-1)));
+            var workflow = await Stack.SetupClient.CreateAndPublishAsync(new WorkflowModel
+            {
+                Id = workflowKey,
+                Name = "Retired shared key",
+                InitialEventId = 1,
+                Variables =
+                [
+                    new VariableModel
+                    {
+                        Id = 1,
+                        Name = "sharedNumber",
+                        Scope = VariableScopes.Shared,
+                        SharedKey = sharedKey,
+                        Access = SharedVariableAccessModes.ReadWrite,
+                        DataType = WorkflowVariableTypes.Number
+                    }
+                ],
+                FlowNodes =
+                [
+                    new FlowNodeModel { Id = 1, Name = "Start", Type = BpmnFlowNodeTypes.StartEvent },
+                    new FlowNodeModel { Id = 5, Name = "Review", Type = BpmnFlowNodeTypes.UserTask },
+                    new FlowNodeModel
+                    {
+                        Id = 10,
+                        Name = "Record the number",
+                        Type = BpmnFlowNodeTypes.ScriptTask,
+                        AsyncBefore = true,
+                        Job = new JobPolicyModel { FailureHandling = JobFailureHandling.BoundaryFirst, RetryDelays = [] },
+                        ScriptFormat = ScriptFormats.JavaScript,
+                        UsesFlowInfo = false,
+                        Script = "execution.setVariable('sharedNumber', 5);"
+                    },
+                    new FlowNodeModel { Id = 2, Name = "End", Type = BpmnFlowNodeTypes.EndEvent }
+                ],
+                SequenceFlows =
+                [
+                    new SequenceFlowModel { Id = 101, SourceRef = 1, TargetRef = 5 },
+                    new SequenceFlowModel { Id = 501, Name = "Done", SourceRef = 5, TargetRef = 10 },
+                    new SequenceFlowModel { Id = 1001, SourceRef = 10, TargetRef = 2 }
+                ]
+            });
+            var instance = await actor.Runtime.StartInstanceAsync(workflow.Id);
+
+            async Task CompleteReviewAsync()
+            {
+                var task = Assert.Single(await actor.Runtime.GetInboxAsync(instance.Id));
+                await actor.Runtime.TakeUserTaskFlowAsync(task.UserTaskId, 501);
+            }
+
+            async Task PostAsync(string path, object? body = null)
+            {
+                using var response = await actor.Http.PostAsync(path, body is null ? null : JsonContent.Create(body, body.GetType()));
+                Assert.True(response.IsSuccessStatusCode, $"{path}: {(int)response.StatusCode} {await response.Content.ReadAsStringAsync()}");
+            }
+
+            await CompleteReviewAsync();
+            await WaitUntilAsync(async () => (await actor.Runtime.GetInstanceAsync(instance.Id)).Status == "completed");
+
+            // Retire the key: a new default without it, the old version unpublished, then the archive.
+            var replacement = await Stack.SetupClient.CreateAndPublishAsync(new WorkflowModel
+            {
+                Id = workflowKey,
+                Name = "Retired shared key",
+                InitialEventId = 1,
+                Variables = [],
+                FlowNodes =
+                [
+                    new FlowNodeModel { Id = 1, Name = "Start", Type = BpmnFlowNodeTypes.StartEvent },
+                    new FlowNodeModel { Id = 2, Name = "End", Type = BpmnFlowNodeTypes.EndEvent }
+                ],
+                SequenceFlows = [new SequenceFlowModel { Id = 101, SourceRef = 1, TargetRef = 2 }]
+            });
+            await PostAsync($"/api/workflows/{replacement.Id}/set-default");
+            await PostAsync($"/api/workflows/{workflow.Id}/unpublish");
+            var catalog = await ReadAsync<SharedVariableMetadataDto>(actor.Http, $"/api/shared-variables/{sharedKey}");
+            await PostAsync($"/api/shared-variables/{sharedKey}/archive", new ArchiveSharedVariableRequest(catalog.Revision));
+
+            var preview = await ReadAsync<InstanceReactivationPreviewDto>(actor.Http, $"/api/instances/{instance.Id}/reactivation");
+            await PostAsync(
+                $"/api/instances/{instance.Id}/reactivation",
+                new ReactivateInstanceRequest(5, preview.WorkflowId, preview.ExpectedUpdatedAt, "Review again"));
+            await CompleteReviewAsync();
+
+            IncidentSummaryDto? incident = null;
+            await WaitUntilAsync(async () =>
+            {
+                var page = await ReadAsync<PagedResult<IncidentSummaryDto>>(actor.Http, $"/api/incidents?instanceId={instance.Id}");
+                incident = page.Items.SingleOrDefault(item => item.Status == "open");
+                return incident is not null;
+            });
+            Assert.Equal("job_conflict", incident!.Type);
+            var detail = await ReadAsync<IncidentDetailDto>(actor.Http, $"/api/incidents/{incident.Id}");
+            Assert.Contains("archived", detail.Details);
+            Assert.Equal("running", (await actor.Runtime.GetInstanceAsync(instance.Id)).Status);
+
+            await scenario.OpenUiAsync("operations");
+            await WaitForInteractiveAsync(scenario.Page);
+            var row = scenario.Page.Locator("section[aria-labelledby='incident-heading'] tbody tr")
+                .Filter(new LocatorFilterOptions { HasText = workflowKey });
+            await Assertions.Expect(row).ToContainTextAsync("Workflow job conflict at node #10.");
+            await AssertNoHorizontalScrollAsync(scenario.Page);
+            await CaptureAsync(scenario, "archived-key-incident");
+
+            // The reason is corrected, so the keyboard retry runs the script again and finishes.
+            catalog = await ReadAsync<SharedVariableMetadataDto>(actor.Http, $"/api/shared-variables/{sharedKey}");
+            await PostAsync($"/api/shared-variables/{sharedKey}/reactivate", new ReactivateSharedVariableRequest(catalog.Revision));
+            var retry = row.GetByRole(AriaRole.Button, new LocatorGetByRoleOptions { Name = "Retry", Exact = true });
+            await retry.FocusAsync();
+            await retry.PressAsync("Enter");
+            await WaitUntilAsync(async () => (await actor.Runtime.GetInstanceAsync(instance.Id)).Status == "completed");
+            var shared = await ReadAsync<SharedVariableValueDto>(actor.Http, $"/api/shared-variables/{sharedKey}/value");
+            Assert.Equal(5, shared.Value!.Value.GetInt32());
+        });
+    }
 
     [Theory]
     [InlineData(1440, 900)]

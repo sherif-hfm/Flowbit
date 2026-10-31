@@ -119,6 +119,8 @@ public sealed class InstanceDetailAcceptanceTests(AcceptanceFixture fixture)
 
             await page.Locator("#shared-variables a.section-link").ClickAsync();
             await Assertions.Expect(page).ToHaveURLAsync(new Regex("/shared-variables$"));
+            // Going back before the catalog renders can leave it on screen under the instance URL.
+            await Assertions.Expect(page.Locator("h1")).ToHaveTextAsync("Shared variables");
             await page.GoBackAsync();
             await WaitForInteractiveAsync(page);
             await Assertions.Expect(page.Locator("#shared-variables")).ToContainTextAsync(binding.Key);
@@ -416,19 +418,36 @@ public sealed class InstanceDetailAcceptanceTests(AcceptanceFixture fixture)
         await Assertions.Expect(page.Locator($"#{section}")).ToBeVisibleAsync();
     }
 
+    private const string SectionInViewport = """
+        id => { const r = document.getElementById(id)?.getBoundingClientRect();
+            return r && r.top >= -2 && r.top < window.innerHeight - 20; }
+        """;
+
     private static async Task NavigateSectionAsync(IPage page, string section)
     {
         var tab = page.Locator($".status-tab[href='#{section}']");
-        await tab.FocusAsync();
-        await tab.PressAsync("Enter");
-        await AssertSectionVisibleInViewportAsync(page, section);
+        // A panel above the section can finish loading after the browser chose
+        // where to scroll, which leaves the section below the viewport. The
+        // layout has settled by the next press; a broken tab fails all of them.
+        for (var press = 1; ; press++)
+        {
+            await tab.FocusAsync();
+            await tab.PressAsync("Enter");
+            // The page starts scrolling just before it records the hash.
+            await page.WaitForFunctionAsync("id => location.hash === '#' + id", section, new() { Timeout = 10_000 });
+            var y = await PageScrolling.SettledScrollYAsync(page);
+            if (await page.EvaluateAsync<bool>(SectionInViewport, section)) return;
+            if (press == 3) throw new TimeoutException($"Section {section} stayed out of view at scroll {y} after three presses.");
+        }
     }
 
-    private static async Task AssertSectionVisibleInViewportAsync(IPage page, string section) =>
-        await page.WaitForFunctionAsync("""
-            id => { const r = document.getElementById(id)?.getBoundingClientRect();
-                return r && r.top >= -2 && r.top < window.innerHeight - 20; }
-            """, section, new() { Timeout = 10_000 });
+    private static async Task AssertSectionVisibleInViewportAsync(IPage page, string section)
+    {
+        await page.WaitForFunctionAsync(SectionInViewport, section, new() { Timeout = 10_000 });
+        // The section enters the viewport before a smooth scroll ends.
+        await PageScrolling.SettledScrollYAsync(page);
+        Assert.True(await page.EvaluateAsync<bool>(SectionInViewport, section), $"Section {section} did not stay in view.");
+    }
 
     private static async Task CaptureAsync(BrowserScenario scenario, string state, int width, int height)
     {
@@ -436,13 +455,7 @@ public sealed class InstanceDetailAcceptanceTests(AcceptanceFixture fixture)
         Assert.True(await page.EvaluateAsync<bool>(
             "() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 2"),
             $"The {state} document overflows at {width}x{height}.");
-        // Section navigation leaves focus on an anchor. Scroll the document
-        // beneath a noninteractive heading so keyboard focus cannot consume
-        // the capture reset or move it back to that section.
-        await page.Locator("h1").HoverAsync();
-        await page.Mouse.WheelAsync(0, -await page.EvaluateAsync<int>(
-            "() => document.documentElement.scrollHeight"));
-        await page.WaitForFunctionAsync("() => window.scrollY <= 1");
+        await PageScrolling.ScrollToTopAsync(page);
         await page.ScreenshotAsync(new() { Path = Path.Combine(scenario.ArtifactDirectory, $"{state}-{width}x{height}.png"), FullPage = true });
         foreach (var container in await page.Locator(".table-responsive").AllAsync())
         {

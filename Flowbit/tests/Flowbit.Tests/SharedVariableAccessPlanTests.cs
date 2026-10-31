@@ -214,6 +214,115 @@ public sealed class SharedVariableAccessPlanTests
     }
 
     [Fact]
+    public void Plan_LocksEveryMatchingBoundarysErrorVariableOnTheHost()
+    {
+        var definition = CreateMatchingBoundariesDefinition(writesAlphaAfterBoundary: false);
+
+        var plan = SharedVariableAccessPlanner.Build(definition, new ConditionalEventDefinitionAnalyzer());
+
+        Assert.Equal(
+            ["beta", "gamma", "zeta"],
+            plan.ForNode(2).ProducerAliases.Order(StringComparer.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void LockOrder_FollowsTheContinuationOfEveryMatchingBoundary()
+    {
+        var safe = CreateMatchingBoundariesDefinition(writesAlphaAfterBoundary: false);
+        var analyzer = new ConditionalEventDefinitionAnalyzer();
+        var safePlan = analyzer.Analyze(safe);
+        SharedVariableTransactionLockOrderValidator.Validate(
+            safe,
+            SharedVariableAccessPlanner.Build(safe, safePlan),
+            safePlan);
+
+        var definition = CreateMatchingBoundariesDefinition(writesAlphaAfterBoundary: true);
+        var conditionalPlan = analyzer.Analyze(definition);
+
+        var error = Assert.Throws<WorkflowDomainException>(() =>
+            SharedVariableTransactionLockOrderValidator.Validate(
+                definition,
+                SharedVariableAccessPlanner.Build(definition, conditionalPlan),
+                conditionalPlan));
+
+        Assert.Contains("tests.lock.a", error.Message, StringComparison.Ordinal);
+        Assert.Contains("tests.lock.z", error.Message, StringComparison.Ordinal);
+    }
+
+    // The second boundary's continuation is the only path that can descend, so a
+    // check that followed just the first boundary would accept this definition.
+    private static WorkflowModel CreateMatchingBoundariesDefinition(bool writesAlphaAfterBoundary) => new()
+    {
+        Id = "shared-matching-boundaries",
+        Name = "Shared matching boundaries",
+        InitialEventId = 1,
+        Variables =
+        [
+            SharedBinding(1, "zeta", "tests.lock.z"),
+            SharedBinding(2, "alpha", "tests.lock.a"),
+            SharedBinding(3, "beta", "tests.lock.y"),
+            SharedBinding(4, "gamma", "tests.lock.x")
+        ],
+        FlowNodes =
+        [
+            new FlowNodeModel { Id = 1, Name = "Start", Type = BpmnFlowNodeTypes.StartEvent },
+            new FlowNodeModel
+            {
+                Id = 2,
+                Name = "Call",
+                Type = BpmnFlowNodeTypes.ServiceTask,
+                AsyncBefore = true,
+                Service = new ServiceTaskModel
+                {
+                    Url = "https://tests.local/call",
+                    Method = "GET",
+                    StatusVariable = "zeta"
+                }
+            },
+            new FlowNodeModel
+            {
+                Id = 3,
+                Name = "Conflict",
+                Type = BpmnFlowNodeTypes.ErrorBoundaryEvent,
+                AttachedToRef = 2,
+                ErrorVariable = "beta",
+                ErrorMatch = new ErrorBoundaryMatchModel { HttpStatusCodes = [409] }
+            },
+            new FlowNodeModel
+            {
+                Id = 4,
+                Name = "Server error",
+                Type = BpmnFlowNodeTypes.ErrorBoundaryEvent,
+                AttachedToRef = 2,
+                ErrorVariable = "gamma",
+                ErrorMatch = new ErrorBoundaryMatchModel
+                {
+                    HttpStatusRanges = [new HttpStatusRangeModel { From = 500, To = 599 }]
+                }
+            },
+            new FlowNodeModel
+            {
+                Id = 5,
+                Name = "Handle server error",
+                Type = BpmnFlowNodeTypes.ScriptTask,
+                ScriptFormat = ScriptFormats.NCalc,
+                Assignments = writesAlphaAfterBoundary
+                    ? [new AssignmentModel { Variable = "alpha", Expression = "1" }]
+                    : []
+            },
+            new FlowNodeModel { Id = 6, Name = "End", Type = BpmnFlowNodeTypes.EndEvent }
+        ],
+        SequenceFlows =
+        [
+            new SequenceFlowModel { Id = 101, SourceRef = 1, TargetRef = 2 },
+            new SequenceFlowModel { Id = 201, SourceRef = 2, TargetRef = 6 },
+            new SequenceFlowModel { Id = 301, SourceRef = 3, TargetRef = 6 },
+            new SequenceFlowModel { Id = 401, SourceRef = 4, TargetRef = 5 },
+            new SequenceFlowModel { Id = 501, SourceRef = 5, TargetRef = 6 }
+        ]
+    };
+
+    [Fact]
     public void LockOrder_RejectsLocalAtomicContinuationsInReverseOrder()
     {
         var definition = CreateErrorBoundaryConditionalDefinition();

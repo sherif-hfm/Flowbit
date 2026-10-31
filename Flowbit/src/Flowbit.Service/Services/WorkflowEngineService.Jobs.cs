@@ -1065,6 +1065,24 @@ public sealed partial class WorkflowEngineService
         catch (WorkflowConflictException ex)
         {
             unitOfWork.DiscardChanges();
+            if (await JobStillOwnsItsWorkAsync(lease.Job, cancellationToken))
+            {
+                if (await jobs.OpenIncidentAsync(
+                        fence,
+                        WorkflowIncidentTypes.JobConflict,
+                        $"Workflow job conflict at node #{lease.Job.NodeId}.",
+                        LimitJobFailure(ex.Message),
+                        cancellationToken) is not null)
+                {
+                    logger.LogWarning(
+                        "Workflow job {JobId} still owns its work and hit a conflict: {Reason}",
+                        lease.Job.Id,
+                        ex.Message);
+                    WorkflowJobRuntimeTelemetry.RecordConflict();
+                    WorkflowJobRuntimeTelemetry.RecordIncident();
+                }
+                return;
+            }
             if (lease.Job.Kind == WorkflowJobKinds.ConditionalWake)
             {
                 ConditionalEventRuntimeTelemetry.RecordStale("worker");
@@ -1118,6 +1136,46 @@ public sealed partial class WorkflowEngineService
             _processingJobId = previousProcessingJobId;
             _processingJobInstanceId = previousProcessingInstanceId;
         }
+    }
+
+    // A conflict is stale only when the job has lost its work. A token waiting on
+    // this job, or a timer boundary with this occurrence still to fire, has nothing
+    // else that can move it, so completing the job would strand that work silently.
+    private async Task<bool> JobStillOwnsItsWorkAsync(
+        WorkflowJobRecord job,
+        CancellationToken cancellationToken)
+    {
+        if (job.TokenId is not long tokenId)
+        {
+            return false;
+        }
+
+        var token = await runtime.GetExecutionTokenAsync(tokenId, false, cancellationToken);
+        if (token is null
+            || token.Status != ExecutionTokenRecordStatuses.Active
+            || token.ActivationId != job.ActivationId)
+        {
+            return false;
+        }
+
+        if (token.WaitingJobId == job.Id)
+        {
+            return true;
+        }
+
+        if (job.Kind != WorkflowJobKinds.TimerBoundary)
+        {
+            return false;
+        }
+
+        var subscriptions = await timerSubscriptions.ListForActivationAsync(
+            token.Id,
+            token.ActivationId,
+            cancellationToken);
+        return subscriptions.Any(subscription =>
+            subscription.Id == job.TimerSubscriptionId
+            && subscription.Status == TimerSubscriptionStatuses.Active
+            && subscription.NextDueAt == job.ScheduledOccurrenceAt);
     }
 
     private async Task StageAndInvokeServiceJobAsync(
@@ -1240,18 +1298,7 @@ public sealed partial class WorkflowEngineService
                         LimitJobFailure(ex.Message));
                 }
 
-                var boundaryErrorVariable =
-                    FindErrorBoundary(workflow.Definition, node.Id)?.ErrorVariable;
-                var outputNames = (node.Service?.OutputMappings ?? [])
-                    .Select(mapping => mapping.Variable)
-                    .Concat(string.IsNullOrWhiteSpace(node.Service?.StatusVariable)
-                        ? []
-                        : [node.Service!.StatusVariable!])
-                    .Concat(string.IsNullOrWhiteSpace(boundaryErrorVariable)
-                        ? []
-                        : [boundaryErrorVariable])
-                    .Where(name => !string.IsNullOrWhiteSpace(name))
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                var outputNames = ServiceOutputTargets(node, workflow.Definition)
                     .ToHashSet(StringComparer.OrdinalIgnoreCase);
                 var outputVersions = versions
                     .Where(item => outputNames.Contains(item.Name))
@@ -1509,12 +1556,13 @@ public sealed partial class WorkflowEngineService
                 {
                     outputVersions[variable.Name!] = 0;
                 }
-                var boundaryErrorVariable =
-                    FindErrorBoundary(definition, node.Id)?.ErrorVariable;
-                if (!string.IsNullOrWhiteSpace(boundaryErrorVariable)
-                    && !outputVersions.ContainsKey(boundaryErrorVariable))
+                foreach (var boundary in ErrorBoundaryMatchRules.GetErrorBoundaries(definition, node.Id))
                 {
-                    outputVersions[boundaryErrorVariable] = 0;
+                    if (!string.IsNullOrWhiteSpace(boundary.ErrorVariable)
+                        && !outputVersions.ContainsKey(boundary.ErrorVariable))
+                    {
+                        outputVersions[boundary.ErrorVariable] = 0;
+                    }
                 }
                 Dictionary<string, long>? inputSharedRevisions = null;
                 var sharedOutputValueVersions = new Dictionary<string, long>(
@@ -1759,7 +1807,7 @@ public sealed partial class WorkflowEngineService
             activityAlreadyExecuted = true;
 
             if (outcome is { Success: false }
-                && ShouldRetryBeforeBoundary(job, definition, node))
+                && ShouldRetryBeforeBoundary(job, definition, instance.Id, node, outcome))
             {
                 throw new RetryableWorkflowJobException(outcome.Reason ?? "Service task failed.");
             }
@@ -1777,39 +1825,19 @@ public sealed partial class WorkflowEngineService
             }
             if (job.Error is JsonElement error)
             {
-                var boundaryErrorVariable =
-                    FindErrorBoundary(definition, node.Id)?.ErrorVariable;
-                if (!string.IsNullOrWhiteSpace(boundaryErrorVariable))
-                {
-                    await EnsureOutputVersionsCurrentAsync(
-                        instance.Id,
-                        snapshot.OutputVariableVersions
-                            .Where(pair => string.Equals(
-                                pair.Key,
-                                boundaryErrorVariable,
-                                StringComparison.OrdinalIgnoreCase))
-                            .ToDictionary(
-                                pair => pair.Key,
-                            pair => pair.Value,
-                            StringComparer.OrdinalIgnoreCase),
-                        snapshot.SharedOutputValueVersions?
-                            .Where(pair => string.Equals(
-                                pair.Key,
-                                boundaryErrorVariable,
-                                StringComparison.OrdinalIgnoreCase))
-                            .ToDictionary(
-                                pair => pair.Key,
-                                pair => pair.Value,
-                                StringComparer.OrdinalIgnoreCase),
-                        definition,
-                        cancellationToken);
-                }
                 var reason = error.ValueKind == JsonValueKind.String
                     ? error.GetString()
                     : error.GetRawText();
                 outcome = TaskExecutionOutcome.Fail(
                     reason ?? $"Script task #{node.Id} failed.");
-                if (ShouldRetryBeforeBoundary(job, definition, node))
+                await EnsureScriptErrorVariableCurrentAsync(
+                    instance.Id,
+                    node,
+                    definition,
+                    snapshot,
+                    outcome,
+                    cancellationToken);
+                if (ShouldRetryBeforeBoundary(job, definition, instance.Id, node, outcome))
                 {
                     throw new RetryableWorkflowJobException(outcome.Reason!);
                 }
@@ -1851,6 +1879,17 @@ public sealed partial class WorkflowEngineService
                 {
                     outcome = TaskExecutionOutcome.Fail(
                         $"Script task #{node.Id} failed: {ex.Message}");
+                    await EnsureScriptErrorVariableCurrentAsync(
+                        instance.Id,
+                        node,
+                        definition,
+                        snapshot,
+                        outcome,
+                        cancellationToken);
+                    if (ShouldRetryBeforeBoundary(job, definition, instance.Id, node, outcome))
+                    {
+                        throw new RetryableWorkflowJobException(outcome.Reason!);
+                    }
                 }
             }
             activityAlreadyExecuted = true;
@@ -2075,12 +2114,12 @@ public sealed partial class WorkflowEngineService
         {
             targets.Add(node.Service.StatusVariable);
         }
-        var boundaryErrorVariable =
-            FindErrorBoundary(definition, node.Id)?.ErrorVariable;
-        if (!string.IsNullOrWhiteSpace(boundaryErrorVariable))
-        {
-            targets.Add(boundaryErrorVariable);
-        }
+        // Any attached boundary may end up writing its error variable, so a job
+        // snapshots and fences all of them before the call's result is known.
+        targets.AddRange(ErrorBoundaryMatchRules.GetErrorBoundaries(definition, node.Id)
+            .Select(boundary => boundary.ErrorVariable)
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Select(name => name!));
         return targets.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
     }
 
@@ -2263,7 +2302,9 @@ public sealed partial class WorkflowEngineService
                 token.CurrentNodeExecutionId,
                 actor,
                 cancellationToken);
-            return TaskExecutionOutcome.Fail(statusFailure ?? mappingFailure);
+            return TaskExecutionOutcome.Fail(
+                statusFailure ?? mappingFailure,
+                SelectableHttpStatus(result));
         }
 
         var failedStatusWrite = await TryWriteStatusVariableAsTaskOutputAsync(
@@ -2278,7 +2319,8 @@ public sealed partial class WorkflowEngineService
             cancellationToken);
         var reason = result.Error ?? $"HTTP status {result.StatusCode}";
         return TaskExecutionOutcome.Fail(
-            failedStatusWrite ?? $"Service task #{node.Id} REST call failed ({reason}).");
+            failedStatusWrite ?? $"Service task #{node.Id} REST call failed ({reason}).",
+            SelectableHttpStatus(result));
     }
 
     private Dictionary<string, JsonElement> EvaluateStagedScript(
@@ -2472,6 +2514,35 @@ public sealed partial class WorkflowEngineService
         }
     }
 
+    // A failed script's only output is its boundary's error variable, so only that
+    // variable has to be unchanged since the snapshot before routing overwrites it.
+    private async Task EnsureScriptErrorVariableCurrentAsync(
+        long instanceId,
+        FlowNodeModel node,
+        WorkflowModel definition,
+        WorkflowJobSnapshotRecord snapshot,
+        TaskExecutionOutcome outcome,
+        CancellationToken cancellationToken)
+    {
+        var errorVariable = ErrorBoundaryMatchRules
+            .Select(definition, node.Id, outcome.HttpStatusCode).Boundary?.ErrorVariable;
+        if (string.IsNullOrWhiteSpace(errorVariable))
+        {
+            return;
+        }
+
+        await EnsureOutputVersionsCurrentAsync(
+            instanceId,
+            snapshot.OutputVariableVersions
+                .Where(pair => string.Equals(pair.Key, errorVariable, StringComparison.OrdinalIgnoreCase))
+                .ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase),
+            snapshot.SharedOutputValueVersions?
+                .Where(pair => string.Equals(pair.Key, errorVariable, StringComparison.OrdinalIgnoreCase))
+                .ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase),
+            definition,
+            cancellationToken);
+    }
+
     private static ServiceTaskResult ReadServiceTaskResult(WorkflowJobRecord job)
     {
         if (job.Result is not JsonElement result
@@ -2483,13 +2554,22 @@ public sealed partial class WorkflowEngineService
         return parsed;
     }
 
-    private static bool ShouldRetryBeforeBoundary(
+    // Selects even when retryFirst would retry anyway, so ambiguous stored data
+    // stops at the first failure instead of repeating the external call.
+    private bool ShouldRetryBeforeBoundary(
         WorkflowJobRecord job,
         WorkflowModel definition,
-        FlowNodeModel node) =>
-        job.AttemptCount < job.MaxAttempts
-        && (job.FailureHandling == WorkflowJobFailureHandling.RetryFirst
-            || FindErrorBoundary(definition, node.Id) is null);
+        long instanceId,
+        FlowNodeModel node,
+        TaskExecutionOutcome outcome)
+    {
+        var selection = SelectErrorBoundary(definition, node.Id, outcome);
+        var retrying = job.AttemptCount < job.MaxAttempts
+            && (job.FailureHandling == WorkflowJobFailureHandling.RetryFirst
+                || selection.Boundary is null);
+        LogErrorBoundarySelection(definition, instanceId, node.Id, outcome, selection, retrying);
+        return retrying;
+    }
 
     private static ExecutionTokenRecord RequireFencedToken(
         WorkflowInstanceRecord instance,

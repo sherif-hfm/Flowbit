@@ -390,10 +390,15 @@ missing an effective legacy write during replacement.
 
 An accepted JSON null for a `nullable: true` catalog contract skips custom
 validation everywhere: API writes, synchronous and asynchronous scripts, and
-repository writes. A script value-contract failure is a task failure and can
-follow an attached error boundary without persisting a partial batch. Lease
-loss, archived keys, database errors, broken invariants, and concurrent value
-changes remain operational conflicts or incidents.
+repository writes. A script or REST output value-contract failure is a task
+failure and can follow an attached error boundary without persisting a partial
+batch: `WorkflowVariableStore.WriteAsync` checks every shared value against its
+locked catalog row before it stages any write, because the boundary commits the
+transaction. A durable script failure also checks its boundary's error variable
+against the job snapshot before routing writes it, so a concurrent change opens
+`output_version_conflict` instead of being overwritten, and a retry works from a
+new snapshot. Lease loss, archived keys, database errors, broken invariants, and
+concurrent value changes remain operational conflicts or incidents.
 
 A validation must write NCalc's built-in functions in their own spelling, such
 as `if` and `Max`: creating a shared variable
@@ -551,7 +556,7 @@ Omitting `cancelActivity` makes the boundary interrupting; omitting
 unconditional outgoing flow. It may attach to a normal or multi-instance user
 task, an intermediate message/timer wait, or a `task`, `serviceTask`, or
 `scriptTask` with `asyncBefore: true`. A host may own at most eight timer and
-conditional boundaries combined; its optional error boundary is counted
+conditional boundaries combined; its optional error boundaries are counted
 separately. No HTTP endpoint manually triggers a conditional boundary.
 
 Every host activation owns persisted subscription rows fenced by instance,
@@ -575,8 +580,10 @@ jobs carry both subscription and occurrence fences, so multiple rearmed edges
 can remain queued concurrently and stale/duplicate workers cannot repeat an
 effect. Successful user actions, message outputs, service mappings, and script
 writes are evaluated while the host is still active; an interrupting match wins
-over normal completion. Service/script failure handling still gives an attached
-error boundary precedence.
+over normal completion. A failed service or script is different: job finalization
+holds the conditional drain until the loop has selected the failed host's error
+boundary and cancelled the host's conditional subscriptions, or thrown because
+none matches. Conditional catches on other tokens still observe the status.
 
 The instance row remains the transaction-serialization lock. Completion versus
 capture, timer versus conditional interruption, and competing variable writers
@@ -759,6 +766,32 @@ and finalization transactions, so the external/CPU-heavy body holds neither an
 instance lock nor a database transaction. Output targets use variable-version
 conflict detection; a concurrent write opens an incident instead of silently
 overwriting it.
+
+A conflict ends a job quietly only when the job is stale, meaning it has lost its
+work. While its token still waits on it, or its timer boundary still has that
+occurrence to fire, nothing else can move that work, so the job opens a
+`job_conflict` incident instead (`JobStillOwnsItsWorkAsync`). A write to an
+archived shared key is one cause. A running instance or published definition
+blocks the archive, but an older instance reactivated after its key was retired
+can still reach it. A manual retry runs the job again, including a REST call, so
+correct the cause first.
+
+A REST service task may have up to eight error boundaries with HTTP status
+matchers (`ErrorBoundaryMatchRules`). A failed outcome carries its usable status
+(`TaskExecutionOutcome.HttpStatusCode`, null for status `0`, statuses outside
+`100..599`, preflight failures, and scripts), and selection runs once per failed
+attempt: exact status, then range, then catch-all. The persisted
+`ServiceTaskResult` is the only input on a durable resume, so an old staged
+result needs no change and no call is repeated. `boundaryFirst` routes a match
+at once and retries a failure with no match; `retryFirst` retries first and
+routes on the final attempt's result. Ambiguous stored data throws rather than
+choosing: `WorkflowDomainException` in a synchronous transition, and
+`WorkflowJobInvariantException` in a job, because a domain failure would be
+retried and repeat the external call. The job snapshot and output fence cover
+the error variables of every boundary on the host, since the result is not yet
+known, so a write to an unselected boundary's variable still conflicts.
+`HttpServiceTaskInvoker` treats `IOException` as a transport failure, so a
+connection lost mid-body keeps the received status.
 
 Worker defaults are eight total slots, six activity slots, and four concurrent
 activity jobs per instance. Two slots therefore remain available for
@@ -1404,7 +1437,7 @@ dotnet test ./tests/Flowbit.BrowserTests/Flowbit.BrowserTests.csproj -c Release 
 ```
 
 Set `FLOWBIT_BROWSER_HEADED=1` to launch Chromium headed for local diagnosis.
-The suite covers editor E1–E12 and runtime R1–R11 scenarios (see the project
+The suite covers editor E1–E18 and runtime R1–R11 scenarios (see the project
 README); manual native-picker and full acceptance checks remain the caller's
 responsibility.
 

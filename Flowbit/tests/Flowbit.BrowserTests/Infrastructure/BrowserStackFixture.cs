@@ -463,7 +463,13 @@ public sealed class BrowserStackFixture : IAsyncLifetime
     private async Task StartBrowserAsync()
     {
         playwright = await Playwright.CreateAsync();
-        var launch = new BrowserTypeLaunchOptions { Headless = Headless };
+        var launch = new BrowserTypeLaunchOptions
+        {
+            Headless = Headless,
+            // Chromium otherwise follows the host: with Windows animations off,
+            // smooth scrolls land at once and hide scroll-timing mistakes in tests.
+            Args = IsAcceptance ? ["--enable-smooth-scrolling"] : null,
+        };
         try
         {
             browser = await playwright.Chromium.LaunchAsync(launch);

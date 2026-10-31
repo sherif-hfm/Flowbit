@@ -325,9 +325,7 @@ public sealed class ExpressionTimerAcceptanceTests(ExampleAcceptanceFixture fixt
     {
         // A scrolled page would draw the sticky app shell mid-capture; return to the top with the wheel.
         var page = scenario.Page;
-        await page.Locator("h1").HoverAsync();
-        await page.Mouse.WheelAsync(0, -await page.EvaluateAsync<int>("() => document.documentElement.scrollHeight"));
-        await page.WaitForFunctionAsync("() => window.scrollY <= 1");
+        await PageScrolling.ScrollToTopAsync(page);
         await page.ScreenshotAsync(new PageScreenshotOptions
         {
             Path = Path.Combine(scenario.ArtifactDirectory, name + ".png"), FullPage = true,

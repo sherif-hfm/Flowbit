@@ -891,7 +891,7 @@ Snapshots have no outgoing foreign keys. Retention removes orphaned snapshots to
 
 ### `workflow_incidents`
 
-Opened when durable work cannot continue on its own, for example exhausted retries, an output conflict, `automatic_loop_limit`, or `timer_schedule_failed` for a timer start whose first due time cannot be computed. At most one incident is open per job.
+Opened when durable work cannot continue on its own, for example exhausted retries, an output conflict, `job_conflict` for a conflict in a job that still owns its work, `automatic_loop_limit`, or `timer_schedule_failed` for a timer start whose first due time cannot be computed. At most one incident is open per job.
 
 | Column | Meaning |
 | --- | --- |

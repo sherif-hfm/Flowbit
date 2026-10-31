@@ -525,6 +525,14 @@ public sealed class FlowNodeModel
     public string? ErrorVariable { get; set; }
 
     /// <summary>
+    /// errorBoundaryEvent on a REST service task only: the HTTP statuses this
+    /// boundary catches. Absent or null means it catches every failure.
+    /// </summary>
+    [JsonPropertyName("errorMatch")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public ErrorBoundaryMatchModel? ErrorMatch { get; set; }
+
+    /// <summary>
     /// Stable, business-facing fault code thrown by an errorEndEvent.
     /// </summary>
     [JsonPropertyName("errorCode")]
@@ -563,6 +571,53 @@ public sealed class FlowNodeModel
     [JsonPropertyName("joinCancellation")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public JoinCancellationModel? JoinCancellation { get; set; }
+}
+
+// The strict attributes stop the web JSON defaults from reading "409" as a number
+// or dropping a misspelled selector, either of which would change what the
+// boundary routes.
+/// <summary>
+/// The HTTP statuses an error boundary catches.
+/// </summary>
+[JsonNumberHandling(JsonNumberHandling.Strict)]
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed class ErrorBoundaryMatchModel
+{
+    /// <summary>
+    /// Exact statuses from 100 through 599. Null means no exact selectors.
+    /// </summary>
+    [JsonPropertyName("httpStatusCodes")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<int>? HttpStatusCodes { get; set; }
+
+    /// <summary>
+    /// Inclusive status ranges. Null means no range selectors.
+    /// </summary>
+    [JsonPropertyName("httpStatusRanges")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<HttpStatusRangeModel>? HttpStatusRanges { get; set; }
+}
+
+// A missing endpoint binds as 0, so the match rules can report it with the
+// boundary's id. The published schema still marks both endpoints required.
+/// <summary>
+/// An inclusive HTTP status range.
+/// </summary>
+[JsonNumberHandling(JsonNumberHandling.Strict)]
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed class HttpStatusRangeModel
+{
+    /// <summary>
+    /// First status, from 100 through 599 and below to.
+    /// </summary>
+    [JsonPropertyName("from")]
+    public int From { get; set; }
+
+    /// <summary>
+    /// Last status, from 100 through 599.
+    /// </summary>
+    [JsonPropertyName("to")]
+    public int To { get; set; }
 }
 
 /// <summary>

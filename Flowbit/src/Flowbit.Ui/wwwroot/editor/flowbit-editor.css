@@ -1191,6 +1191,19 @@
   }
   .flowbit-editor .inspector-card.clickable { cursor: pointer; transition: border-color .15s, background .15s; }
   .flowbit-editor .inspector-card.clickable:hover { background: var(--panel-2); border-color: var(--accent); }
+  .flowbit-editor .error-boundary-row { display: flex; align-items: center; gap: 8px; }
+  .flowbit-editor .error-boundary-row > button:last-child { flex: none; width: auto; padding: 5px 10px; font-size: 12px; }
+  .flowbit-editor .error-boundary-open { flex: 1; min-width: 0; display: grid; gap: 2px; padding: 0; background: none; border: 0; box-shadow: none; color: var(--text); text-align: left; overflow-wrap: anywhere; }
+  .flowbit-editor .error-boundary-open:hover .error-boundary-name { color: var(--accent); }
+  .flowbit-editor .error-boundary-name { font-size: 12px; font-weight: 650; }
+  .flowbit-editor .error-match { display: grid; gap: 8px; }
+  .flowbit-editor .error-match-title { font-size: 12px; font-weight: 650; color: var(--text); }
+  .flowbit-editor .error-match-row { display: flex; align-items: center; gap: 6px; }
+  .flowbit-editor .error-match-row input { flex: 1; min-width: 0; }
+  .flowbit-editor .error-match-row input[aria-invalid="true"] { border-color: var(--validation-error); }
+  .flowbit-editor .error-match-row button { flex: none; width: auto; padding: 5px 10px; font-size: 12px; }
+  .flowbit-editor .error-match-dash { flex: none; color: var(--muted); }
+  .flowbit-editor .error-match .expression-validation:empty { display: none; }
   .flowbit-editor .duration-builder { padding: 10px; background: color-mix(in srgb, var(--panel-2) 72%, transparent); border: 1px solid var(--border); border-radius: 9px; }
   .flowbit-editor .duration-builder > label { font-weight: 650; color: var(--text); }
   .flowbit-editor .duration-input-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
@@ -1223,7 +1236,8 @@
   .flowbit-editor .empty-note { color: var(--muted); font-size: 13px; line-height: 1.5; }
   .flowbit-editor .row { display: flex; gap: 8px; }
   .flowbit-editor .row > * { flex: 1; }
-  .flowbit-editor .badge { font-size: 11px; color: var(--muted); }
+  /* The hosted page also loads Bootstrap, whose .badge is a centred, bold, unwrapped pill. */
+  .flowbit-editor .badge { display: block; padding: 0; font-size: 11px; font-weight: inherit; line-height: inherit; color: var(--muted); text-align: inherit; white-space: normal; }
   .flowbit-editor .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
   .flowbit-editor .chip {
     display: inline-flex;
@@ -1415,6 +1429,7 @@
   .flowbit-editor .flow-marker-condition { fill: var(--flow-condition); }
   .flowbit-editor .flow-marker-default { fill: var(--flow-default); }
   .flowbit-editor .flow-marker-interrupt { fill: var(--flow-interrupt); }
+  .flowbit-editor .flow-marker-status { font-weight: 650; }
   .flowbit-editor #svg[data-label-mode="off"] .edge:not(.selected):not(.hovered) .flow-label-name { display: none; }
   .flowbit-editor #svg[data-label-mode="smart"][data-zoom-level="medium"]
     .edge:not(.trace-active):not(.selected):not(.hovered) .flow-label-name { display: none; }

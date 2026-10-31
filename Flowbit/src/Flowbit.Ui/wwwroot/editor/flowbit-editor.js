@@ -1243,8 +1243,40 @@ function selectedLane() {
   }
   return null;
 }
-function findErrorBoundary(hostNodeId) {
-  return model.flowNodes.find(n => n.type === NODE_TYPE.ERROR_BOUNDARY_EVENT && n.attachedToRef === hostNodeId);
+function errorBoundariesOf(hostNodeId) {
+  return model.flowNodes.filter(n => n.type === NODE_TYPE.ERROR_BOUNDARY_EVENT && n.attachedToRef === hostNodeId);
+}
+
+// What a boundary catches, as selectors in canonical order: ["409", "400–499"].
+function errorMatchSelectorLabels(match) {
+  const canonical = canonicalizeErrorMatch(match);
+  return [
+    ...(canonical.httpStatusCodes || []).map(String),
+    ...(canonical.httpStatusRanges || []).map(range => `${range.from}–${range.to}`)
+  ];
+}
+
+// The full description used in tooltips, accessible names, and the inspector.
+function errorBoundaryCatchText(boundary) {
+  if (boundary.errorMatch == null) return "All failures";
+  return errorMatchProblems(boundary.errorMatch).length > 0
+    ? "Invalid match"
+    : `HTTP ${errorMatchSelectorLabels(boundary.errorMatch).join(", ")}`;
+}
+
+// Single catch-all boundaries show no summary, so existing diagrams do not change.
+function errorBoundaryShowsCatchText(boundary) {
+  return boundary.errorMatch != null || errorBoundariesOf(boundary.attachedToRef).length > 1;
+}
+
+function errorBoundaryFlowSummary(boundary) {
+  if (boundary.errorMatch == null || errorMatchProblems(boundary.errorMatch).length > 0) {
+    return errorBoundaryCatchText(boundary);
+  }
+  const labels = errorMatchSelectorLabels(boundary.errorMatch);
+  return labels.length > 3
+    ? `${labels.slice(0, 2).join(", ")} +${labels.length - 2}`
+    : labels.join(", ");
 }
 function findTimerBoundaries(hostNodeId) {
   return model.flowNodes
@@ -1774,7 +1806,7 @@ function applyTypeInvariants(node) {
     delete node.message;
   } else if (isErrorBoundaryEventType(node.type)) {
     // A boundary event is attached to a service/script task; it carries only
-    // attachedToRef and the optional errorVariable, nothing else.
+    // attachedToRef and the optional errorVariable and errorMatch, nothing else.
     node.requiresClaim = false;
     node.claimMode = CLAIM_MODE.FRESH;
     node.inheritClaimFromNodeId = null;
@@ -2382,6 +2414,34 @@ function seedSample() {
 /* ---------- Geometry ---------- */
 // The render position of a node: boundary events are anchored to their host's
 // border and move with the host, so their position is derived, not stored.
+// How far along the host border a boundary sits. Equal spacing measures along the
+// border, so two boundaries either side of a corner are closer than that spacing.
+// Once they would touch, each corner holds a boundary and the others share the
+// sides by length, which keeps every neighbour at least the side spacing apart.
+function boundaryPerimeterDistance(index, count, hostSize) {
+  if (count <= 1) return 0;
+  const perimeter = 2 * (hostSize.w + hostSize.h);
+  const spacing = perimeter / count;
+  if (spacing >= BOUNDARY_D * Math.SQRT2 || count <= 4) return index * spacing;
+  const sides = [hostSize.w, hostSize.h, hostSize.w, hostSize.h];
+  const shares = sides.map(side => side / perimeter * (count - 4));
+  const onSide = shares.map(Math.floor);
+  const unplaced = count - 4 - onSide.reduce((sum, value) => sum + value, 0);
+  [0, 1, 2, 3]
+    .sort((left, right) => (shares[right] - onSide[right]) - (shares[left] - onSide[left]))
+    .slice(0, unplaced)
+    .forEach(side => { onSide[side]++; });
+  let remaining = index;
+  let sideStart = 0;
+  for (let side = 0; side < sides.length; side++) {
+    const points = onSide[side] + 1;
+    if (remaining < points) return sideStart + remaining * sides[side] / points;
+    remaining -= points;
+    sideStart += sides[side];
+  }
+  return 0;
+}
+
 function nodePosition(node) {
   if (isBoundaryEventType(node.type)) {
     const host = getNode(node.attachedToRef);
@@ -2392,15 +2452,12 @@ function nodePosition(node) {
           candidate.attachedToRef === host.id)
         .sort((left, right) => left.id - right.id);
       const index = Math.max(0, siblings.findIndex(candidate => candidate.id === node.id));
-      const perimeter = 2 * (hs.w + hs.h);
-      let distance = siblings.length > 1
-        ? index * perimeter / siblings.length
-        : 0;
+      let distance = boundaryPerimeterDistance(index, siblings.length, hs);
       let centerX;
       let centerY;
       // Distribute all attached boundaries around the complete host border.
-      // This keeps the supported eight timer/conditional boundaries (plus an error
-      // boundary on service/script tasks) usable even on compact catch events.
+      // This keeps the supported eight timer/conditional boundaries (plus up to
+      // eight error boundaries on a REST task) usable even on compact catch events.
       if (distance <= hs.w) {
         centerX = host.x + hs.w - distance;
         centerY = host.y + hs.h;
@@ -2556,7 +2613,9 @@ function renderNodes() {
     });
     const marker = model.initialEventId === node.id ? " · START" : "";
     const roles = node.rolesVariable != null ? truncateText(`$${node.rolesVariable}`, 20) : roleSummary(node.roles, 20);
-    appendSvgTitle(g, `#${node.id} · ${typeLabel(node.type)} · ${node.name || "Unnamed"}${node.rolesVariable != null ? ` · Role variable: ${node.rolesVariable} (captured on entry)` : roles ? ` · Roles: ${normalizeRoles(node.roles).join(", ")}` : ""}${instanceMarker?.label ? ` · ${instanceMarker.label}` : ""}`);
+    const catchText = isErrorBoundaryEventType(node.type) && errorBoundaryShowsCatchText(node)
+      ? ` · Catches: ${errorBoundaryCatchText(node)}` : "";
+    appendSvgTitle(g, `#${node.id} · ${typeLabel(node.type)} · ${node.name || "Unnamed"}${catchText}${node.rolesVariable != null ? ` · Role variable: ${node.rolesVariable} (captured on entry)` : roles ? ` · Roles: ${normalizeRoles(node.roles).join(", ")}` : ""}${instanceMarker?.label ? ` · ${instanceMarker.label}` : ""}`);
 
     if (isBoundaryEventType(node.type)) {
       const r = BOUNDARY_D / 2;
@@ -2681,6 +2740,14 @@ function flowLabelInfo(flow, source) {
   const completionCondition = typeof flow.completionCondition === "string"
     ? flow.completionCondition.trim() : "";
   const markers = [];
+  const showsCatchText = isErrorBoundaryEventType(source.type) && errorBoundaryShowsCatchText(source);
+  if (showsCatchText) {
+    markers.push({
+      text: errorBoundaryFlowSummary(source),
+      className: "flow-marker-status",
+      label: errorBoundaryCatchText(source)
+    });
+  }
   if (condition || completionCondition) {
     markers.push({ text: "◆", className: "flow-marker-condition", label: "Condition configured" });
   }
@@ -2696,12 +2763,16 @@ function flowLabelInfo(flow, source) {
     `Flow #${flow.id}${name ? `: ${name}` : ""}`,
     `${source?.name || `#${flow.sourceRef}`} → ${target?.name || `#${flow.targetRef}`}`
   ];
+  if (showsCatchText) titleLines.push(`Catches: ${errorBoundaryCatchText(source)}`);
   if (flow.externalId) titleLines.push(`External ID: ${flow.externalId}`);
   if (metadata.length) titleLines.push(metadata.join(" · "));
   if (condition) titleLines.push(`Condition: ${condition}`);
   if (completionCondition) titleLines.push(`Completion: ${completionCondition}`);
   if (variables.length) titleLines.push(`Variables: ${variables.join(", ")}`);
-  const markerWidth = markers.length * 12;
+  const markerWidth = markers.reduce((width, marker) => {
+    const length = Array.from(marker.text).length;
+    return width + (length === 1 ? 12 : length * 6.2 + 6);
+  }, 0);
   const estimatedNameWidth = Math.min(220, Array.from(name).length * 6.2);
   return {
     name,
@@ -3318,6 +3389,23 @@ function updateInspectorItemDeleteButtons() {
 
 /* ---------- Inspector ---------- */
 function renderInspector() {
+  renderInspectorContent();
+  linkInspectorLabels();
+}
+
+// Fields write a label beside their control, so one pass names them all.
+function linkInspectorLabels(scope = inspector) {
+  scope.querySelectorAll(".field > label").forEach(label => {
+    if (label.control) return;
+    let control = label.nextElementSibling;
+    while (control && !control.matches("input, select, textarea")) control = control.nextElementSibling;
+    if (!control) return;
+    if (!control.id) control.id = `inspector-control-${++inspectorHelpSequence}`;
+    label.htmlFor = control.id;
+  });
+}
+
+function renderInspectorContent() {
   inspectorItemDeleteButtons = [];
   inspector.innerHTML = "";
   // A viewer has no inspector; its host describes the selected node.
@@ -3470,9 +3558,18 @@ function changeNodeTypeFromInspector(node, nextType) {
     alert("Remove all outgoing sequence flows before changing this node to an end event.");
     return false;
   }
+  const previousType = node.type;
+  if (isServiceTaskType(previousType) && isScriptTaskType(nextType)) {
+    // A script failure has no HTTP status, and a filter must never quietly
+    // become a catch-all, so these boundaries have to go first.
+    const filtered = errorBoundariesOf(node.id).filter(boundary => boundary.errorMatch != null);
+    if (filtered.length > 0) {
+      alert(`A script task cannot use HTTP status matchers. Remove them from these error boundaries first: ${filtered.map(boundary => `#${boundary.id}`).join(", ")}.`);
+      return false;
+    }
+  }
   const businessKeysEnabled = model.flowNodes.some(n =>
     (isStartEventType(n.type) || isMessageStartEventType(n.type)) && n.businessKey != null);
-  const previousType = node.type;
   const changesGatewaySemantics = previousType !== nextType &&
     (isGatewayType(previousType) || isGatewayType(nextType));
   if (changesGatewaySemantics) {
@@ -3488,6 +3585,9 @@ function changeNodeTypeFromInspector(node, nextType) {
     node.variables = materializeMessageStartVariables(node);
   }
   node.type = nextType;
+  if (isErrorBoundaryEventType(previousType) && !isErrorBoundaryEventType(nextType)) {
+    delete node.errorMatch;
+  }
   if (!isUserTaskType(nextType)) {
     delete node.rolesVariable;
     outgoingFlows(node.id).forEach(flow => { delete flow.rolesVariable; });
@@ -3851,6 +3951,23 @@ function renderNodeInspector() {
     renderAsyncJobSection(node);
   }
 
+  if (node.errorMatch != null && !isErrorBoundaryEventType(node.type)) {
+    // Imported data this node cannot use. It fails save until it is removed.
+    const warning = document.createElement("p");
+    warning.className = "empty-note";
+    warning.style.color = "var(--warning-text)";
+    warning.textContent = "Warning: this node has an imported errorMatch, but only an error boundary event can use one. Remove it before saving.";
+    inspector.appendChild(warning);
+    const removeMatcher = document.createElement("button");
+    removeMatcher.type = "button";
+    removeMatcher.textContent = "Remove errorMatch";
+    removeMatcher.onclick = () => {
+      delete node.errorMatch;
+      renderInspector();
+    };
+    inspector.appendChild(removeMatcher);
+  }
+
   if (isErrorBoundaryEventType(node.type)) {
     const host = getNode(node.attachedToRef);
     const hostField = document.createElement("div");
@@ -3864,6 +3981,8 @@ function renderNodeInspector() {
     inspector.appendChild(hostField);
     attachInspectorHelp(hostField, "error-boundary-host",
       "When the host task fails, the token exits through this boundary's single outgoing flow (the error path).");
+
+    renderErrorMatchSection(node, host);
 
     const errorVariableInput = field("Error variable (optional)", "text", node.errorVariable ?? "", v => {
       node.errorVariable = v.trim() ? v : null;
@@ -4226,6 +4345,7 @@ function renderServiceSection(node) {
   const bodyField = document.createElement("div");
   bodyField.className = "field";
   const bodyInput = document.createElement("textarea");
+  bodyInput.setAttribute("aria-label", bodyTitle.textContent);
   bodyInput.value = service.body || "";
   bodyInput.rows = 5;
   bodyInput.placeholder = '{ "amount": ${amount} }';
@@ -4557,43 +4677,285 @@ function renderScriptSection(node) {
 
 // Renders the "Error boundary" sub-panel inside a service/script task
 // inspector. A boundary event is the host's failure handler: when the task's
-// runtime call fails, the token routes out the boundary's single error flow
-// instead of failing the transition. Without a boundary, a failure rolls back.
+// runtime call fails, the token routes out one boundary's single error flow
+// instead of failing the transition. Without a match, a failure rolls back.
 function renderErrorBoundarySection(hostNode) {
+  const isRestHost = isRestErrorBoundaryHost(hostNode);
   const title = document.createElement("h2");
-  title.textContent = "Error boundary";
+  title.textContent = isRestHost ? "Error boundaries" : "Error boundary";
   title.style.marginTop = "16px";
   inspector.appendChild(title);
-  attachInspectorHelp(title, "error-boundary",
-    "When this task fails (HTTP error / timeout / script error), route the token out an error path instead of rolling back. Attach an error boundary event, then draw its single outgoing flow.");
+  attachInspectorHelp(title, "error-boundary", isRestHost
+    ? [
+        "When this task fails (HTTP error, timeout, or a failed output mapping), route the token out an error path instead of rolling back. Attach an error boundary event, then draw its single outgoing flow.",
+        "Several boundaries can match different HTTP statuses. An exact status wins over a range, and a range wins over the catch-all. A failure with no response status, such as a timeout, reaches only the catch-all."
+      ]
+    : "When this task fails, route the token out an error path instead of rolling back. Attach an error boundary event, then draw its single outgoing flow.");
 
-  const existing = findErrorBoundary(hostNode.id);
-  if (existing) {
-    const box = document.createElement("div");
-    box.className = "field inspector-card clickable";
-    const out = outgoingFlows(existing.id);
+  const boundaries = errorBoundariesOf(hostNode.id);
+  boundaries.forEach((boundary, index) => {
+    const row = document.createElement("div");
+    row.className = "field inspector-card error-boundary-row";
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "error-boundary-open";
+    const out = outgoingFlows(boundary.id);
     const tgt = out.length ? getNode(out[0].targetRef) : null;
-    box.innerHTML = `<div class="badge">boundary #${existing.id} · error → ${tgt ? '#' + tgt.id + ' ' + tgt.name : 'no flow yet'}</div>`;
-    box.onclick = () => select('node', existing.id);
-    inspector.appendChild(box);
-
-    const delBtn = document.createElement("button");
-    delBtn.textContent = "Remove error boundary event";
-    delBtn.className = "danger";
-    delBtn.style.width = "100%";
-    delBtn.style.marginTop = "8px";
+    const name = document.createElement("span");
+    name.className = "error-boundary-name";
+    name.textContent = `#${boundary.id} ${boundary.name || "Unnamed"}`;
+    const summary = document.createElement("span");
+    summary.className = "badge";
+    summary.textContent = `${errorBoundaryCatchText(boundary)} → ${tgt ? `#${tgt.id} ${tgt.name}` : "no flow yet"}`;
+    open.appendChild(name);
+    open.appendChild(summary);
+    // The inspector redraw removes the pressed button, so focus moves to the
+    // boundary's heading: the next Tab reaches its first field, and a phone keeps
+    // its on-screen keyboard closed.
+    open.onclick = () => {
+      select("node", boundary.id);
+      const heading = inspector.querySelector("h2");
+      heading.tabIndex = -1;
+      heading.focus();
+    };
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "danger";
+    remove.dataset.errorBoundaryRemove = "true";
+    remove.textContent = "Remove";
+    remove.setAttribute("aria-label", `Remove error boundary event #${boundary.id}`);
     configureInspectorItemDeleteButton(
-      delBtn, "Switch to Select to remove this boundary event");
-    delBtn.onclick = () => deleteNode(existing.id);
-    inspector.appendChild(delBtn);
-  } else {
+      remove, "Switch to Select to remove this boundary event");
+    // Stay on the host, whose list and missing-catch-all warning this changes,
+    // with focus on the row that took this place, the row before it, or Add.
+    remove.onclick = () => {
+      if (!deleteNode(boundary.id)) return;
+      select("node", hostNode.id);
+      const remaining = inspector.querySelectorAll("[data-error-boundary-remove]");
+      (remaining[index] ?? remaining[index - 1] ?? inspector.querySelector("[data-error-boundary-add]"))?.focus();
+    };
+    row.appendChild(open);
+    row.appendChild(remove);
+    inspector.appendChild(row);
+  });
+
+  const limit = isRestHost ? ERROR_BOUNDARIES_PER_REST_HOST : 1;
+  if (boundaries.length < limit) {
     const addBtn = document.createElement("button");
+    addBtn.dataset.errorBoundaryAdd = "true";
     addBtn.textContent = "+ Add error boundary event";
     addBtn.style.width = "100%";
     addBtn.style.marginTop = "8px";
     addBtn.onclick = () => addErrorBoundary(hostNode);
     inspector.appendChild(addBtn);
   }
+
+  if (isRestHost && boundaries.length > 0 && boundaries.every(boundary => boundary.errorMatch != null)) {
+    const warning = document.createElement("p");
+    warning.className = "empty-note";
+    warning.style.color = "var(--warning-text)";
+    warning.textContent = "Warning: no boundary catches all failures, so timeouts, network failures, and unmatched statuses are not caught.";
+    inspector.appendChild(warning);
+  }
+}
+
+// Text that is a plain whole number becomes that number; anything else stays as
+// typed, so it remains visible and fails validation instead of being truncated.
+function parseHttpStatusInput(text) {
+  const trimmed = text.trim();
+  return /^[1-9][0-9]{0,8}$/.test(trimmed) ? Number(trimmed) : text;
+}
+
+function httpStatusInputText(value) {
+  return value === null || value === undefined ? ""
+    : typeof value === "object" ? JSON.stringify(value)
+    : String(value);
+}
+
+// Returns the matcher as an object with both arrays, replacing malformed imported
+// parts only when the user adds a selector to them.
+function editableErrorMatch(node) {
+  const current = node.errorMatch;
+  if (current === null || typeof current !== "object" || Array.isArray(current)) {
+    node.errorMatch = { httpStatusCodes: [], httpStatusRanges: [] };
+    return node.errorMatch;
+  }
+  if (!Array.isArray(current.httpStatusCodes)) current.httpStatusCodes = [];
+  if (!Array.isArray(current.httpStatusRanges)) current.httpStatusRanges = [];
+  return current;
+}
+
+function renderErrorMatchSection(node, host) {
+  const hasMatcher = node.errorMatch != null;
+  const isRestHost = isRestErrorBoundaryHost(host);
+  // A script host offers nothing to choose unless imported data needs clearing.
+  if (!isRestHost && !hasMatcher) return;
+
+  const modeField = selectField("Failures caught", [
+    { value: "all", label: "Catch all failures" },
+    { value: "http", label: "Match HTTP status" }
+  ], hasMatcher ? "http" : "all", value => {
+    if (value === "all") {
+      const other = errorBoundariesOf(node.attachedToRef)
+        .find(boundary => boundary.id !== node.id && boundary.errorMatch == null);
+      if (other) {
+        alert(`Error boundary #${other.id} already catches all failures on this host, and a host can have only one catch-all.`);
+      } else {
+        delete node.errorMatch;
+      }
+    } else {
+      node.errorMatch = { httpStatusCodes: [], httpStatusRanges: [] };
+    }
+    renderInspector();
+    renderDiagramLayers();
+    inspector.querySelector("[data-error-match-mode]")?.focus();
+  });
+  modeField.children[modeField.children.length - 1].dataset.errorMatchMode = "true";
+  attachInspectorHelp(modeField, "error-match", [
+    "An exact status wins over a range on another boundary, and a range wins over the catch-all. Range endpoints are inclusive.",
+    "A failure with no usable response status, such as a timeout or a status outside 100-599, reaches only the catch-all.",
+    "A boundary runs only after a task failure. A `200` matcher catches a 200 response whose output mapping failed, never a successful task.",
+    "Attaching a boundary affects retries on an async task. With boundaryFirst a matching failure routes at once instead of retrying; with retryFirst it routes only after retries run out."
+  ]);
+  if (!hasMatcher) return;
+
+  if (!isRestHost) {
+    const warning = document.createElement("p");
+    warning.className = "empty-note";
+    warning.style.color = "var(--warning-text)";
+    warning.textContent = "Warning: HTTP status matchers work only on a REST service task. Choose Catch all failures to remove this one.";
+    inspector.appendChild(warning);
+    return;
+  }
+
+  const match = node.errorMatch;
+  const isObject = typeof match === "object" && !Array.isArray(match);
+  const codes = isObject && Array.isArray(match.httpStatusCodes) ? match.httpStatusCodes : [];
+  const ranges = isObject && Array.isArray(match.httpStatusRanges) ? match.httpStatusRanges : [];
+  const statusId = `error-match-status-${++inspectorHelpSequence}`;
+  const status = document.createElement("p");
+  status.className = "expression-validation";
+  status.id = statusId;
+  status.setAttribute("role", "status");
+  status.setAttribute("aria-live", "polite");
+  const updateValidation = () => {
+    const problems = errorMatchProblems(node.errorMatch);
+    status.textContent = problems.join(" ");
+    statusInputs.forEach(input => {
+      const value = parseHttpStatusInput(input.value);
+      input.setAttribute("aria-invalid", isSelectableHttpStatus(value) ? "false" : "true");
+    });
+  };
+  const statusInputs = [];
+  const statusInput = (labelText, value, onValue) => {
+    const input = document.createElement("input");
+    input.type = "text";
+    input.inputMode = "numeric";
+    input.spellcheck = false;
+    input.value = httpStatusInputText(value);
+    input.setAttribute("aria-label", labelText);
+    input.setAttribute("aria-describedby", statusId);
+    input.oninput = () => {
+      onValue(parseHttpStatusInput(input.value));
+      updateValidation();
+      renderDiagramLayers();
+    };
+    statusInputs.push(input);
+    return input;
+  };
+  const rowRemove = (labelText, onRemove) => {
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.textContent = "Remove";
+    remove.setAttribute("aria-label", labelText);
+    remove.onclick = onRemove;
+    return remove;
+  };
+  // Row edits redraw the inspector, so focus moves to the control that replaces
+  // the one the user just pressed or to the row they just added.
+  const redraw = focusKey => {
+    renderInspector();
+    renderDiagramLayers();
+    inspector.querySelector(`[data-error-match-focus="${focusKey}"]`)?.focus();
+  };
+
+  const box = document.createElement("div");
+  box.className = "field inspector-card error-match";
+
+  const codesLabel = document.createElement("div");
+  codesLabel.className = "error-match-title";
+  codesLabel.textContent = "Exact statuses";
+  box.appendChild(codesLabel);
+  codes.forEach((code, index) => {
+    const row = document.createElement("div");
+    row.className = "error-match-row";
+    const input = statusInput(`Exact HTTP status ${index + 1}`, code, value => { codes[index] = value; });
+    input.placeholder = "409";
+    input.dataset.errorMatchFocus = `code-${index}`;
+    row.appendChild(input);
+    row.appendChild(rowRemove(`Remove exact HTTP status ${index + 1}`, () => {
+      codes.splice(index, 1);
+      redraw("add-code");
+    }));
+    box.appendChild(row);
+  });
+  const addCode = document.createElement("button");
+  addCode.type = "button";
+  addCode.textContent = "+ Add status";
+  addCode.dataset.errorMatchFocus = "add-code";
+  addCode.onclick = () => {
+    const editable = editableErrorMatch(node);
+    editable.httpStatusCodes.push(null);
+    redraw(`code-${editable.httpStatusCodes.length - 1}`);
+  };
+  box.appendChild(addCode);
+
+  const rangesLabel = document.createElement("div");
+  rangesLabel.className = "error-match-title";
+  rangesLabel.textContent = "Status ranges";
+  box.appendChild(rangesLabel);
+  ranges.forEach((range, index) => {
+    const row = document.createElement("div");
+    row.className = "error-match-row";
+    const rangeIsObject = range !== null && typeof range === "object" && !Array.isArray(range);
+    // Keep a malformed imported row in place until the user types over it.
+    const editableRange = () => {
+      if (!(ranges[index] !== null && typeof ranges[index] === "object" && !Array.isArray(ranges[index]))) {
+        ranges[index] = { from: null, to: null };
+      }
+      return ranges[index];
+    };
+    const from = statusInput(`Range ${index + 1} from`, rangeIsObject ? range.from : range, value => { editableRange().from = value; });
+    from.placeholder = "400";
+    from.dataset.errorMatchFocus = `range-${index}`;
+    const to = statusInput(`Range ${index + 1} to`, rangeIsObject ? range.to : null, value => { editableRange().to = value; });
+    to.placeholder = "499";
+    const dash = document.createElement("span");
+    dash.className = "error-match-dash";
+    dash.textContent = "–";
+    dash.setAttribute("aria-hidden", "true");
+    row.appendChild(from);
+    row.appendChild(dash);
+    row.appendChild(to);
+    row.appendChild(rowRemove(`Remove status range ${index + 1}`, () => {
+      ranges.splice(index, 1);
+      redraw("add-range");
+    }));
+    box.appendChild(row);
+  });
+  const addRange = document.createElement("button");
+  addRange.type = "button";
+  addRange.textContent = "+ Add range";
+  addRange.dataset.errorMatchFocus = "add-range";
+  addRange.onclick = () => {
+    const editable = editableErrorMatch(node);
+    editable.httpStatusRanges.push({ from: null, to: null });
+    redraw(`range-${editable.httpStatusRanges.length - 1}`);
+  };
+  box.appendChild(addRange);
+  box.appendChild(status);
+  inspector.appendChild(box);
+  updateValidation();
 }
 
 const FRIENDLY_DURATION_UNITS = [
@@ -5514,6 +5876,9 @@ function addConditionalBoundary(hostNode) {
 // Creates an errorBoundaryEvent attached to a host service/script task and
 // immediately enters connect mode from it so the user can draw the error path.
 function addErrorBoundary(hostNode) {
+  // Only the first boundary is a catch-all. A later one starts with an empty
+  // matcher that blocks save until configured, rather than inventing a status.
+  const needsMatcher = errorBoundariesOf(hostNode.id).length > 0;
   const boundary = {
     id: nextNodeId(),
     name: hostNode.name ? `${hostNode.name} error` : "Error",
@@ -5533,7 +5898,8 @@ function addErrorBoundary(hostNode) {
     variables: [],
     assignee: null,
     attachedToRef: hostNode.id,
-    errorVariable: null
+    errorVariable: null,
+    ...(needsMatcher ? { errorMatch: { httpStatusCodes: [], httpStatusRanges: [] } } : {})
   };
   model.flowNodes.push(boundary);
   applyTypeInvariants(boundary);
@@ -5662,6 +6028,8 @@ function renderJavaScriptSection(node) {
   scriptField.appendChild(labelContainer);
 
   const scriptInput = document.createElement("textarea");
+  scriptInput.id = `inspector-control-${++inspectorHelpSequence}`;
+  label.htmlFor = scriptInput.id;
   scriptInput.value = node.script;
   scriptInput.rows = 12;
   scriptInput.spellcheck = false;
@@ -6304,6 +6672,14 @@ function attachInspectorHelp(target, key, text, examples = [], exampleInput = ta
     toggle.setAttribute("aria-expanded", String(open));
   };
   setOpen(openInspectorHelp.has(key));
+  // A closed panel still describes its control, so nobody has to open it to hear the help.
+  const control = exampleInput !== target || isControl
+    ? exampleInput
+    : isHeading ? null : host.querySelector("input, select, textarea");
+  if (control) {
+    const describedBy = control.getAttribute("aria-describedby");
+    control.setAttribute("aria-describedby", describedBy ? `${describedBy} ${panel.id}` : panel.id);
+  }
   toggle.onclick = () => {
     const open = panel.hidden;
     if (open) openInspectorHelp.add(key);
@@ -6960,6 +7336,7 @@ function renderVariableOptions(container, variable) {
   if (count >= VARIABLE_OPTION_LIMIT) {
     container.appendChild(formNote(`Maximum ${VARIABLE_OPTION_LIMIT} options.`));
   }
+  linkInspectorLabels(container);
 }
 function variableCheckbox(label, checked, onChange) {
   const f = document.createElement("div");
@@ -10847,10 +11224,148 @@ function validateSaveServiceTasks(ctx) {
   }
 }
 
+const ERROR_MATCH_MAX_SELECTORS = 32;
+const ERROR_BOUNDARIES_PER_REST_HOST = 8;
+
+function isSelectableHttpStatus(value) {
+  return Number.isInteger(value) && value >= 100 && value <= 599;
+}
+
+function isRestErrorBoundaryHost(host) {
+  if (!host || host.type !== "serviceTask" || !host.service) return false;
+  return host.service.type == null || host.service.type === "rest";
+}
+
+// Mirrors ErrorBoundaryMatchRules.FindMatcherProblem, which stops at its first
+// problem. Reads imported data as it is: nothing here coerces or repairs a value.
+function errorMatchProblems(match) {
+  if (match === null || typeof match !== "object" || Array.isArray(match)) {
+    return ["errorMatch must be an object."];
+  }
+  const problems = [];
+  for (const key of Object.keys(match)) {
+    if (key !== "httpStatusCodes" && key !== "httpStatusRanges") {
+      problems.push(`errorMatch has an unsupported property "${key}".`);
+    }
+  }
+  const codes = match.httpStatusCodes ?? [];
+  const ranges = match.httpStatusRanges ?? [];
+  if (!Array.isArray(codes)) problems.push("errorMatch.httpStatusCodes must be an array.");
+  if (!Array.isArray(ranges)) problems.push("errorMatch.httpStatusRanges must be an array.");
+  if (!Array.isArray(codes) || !Array.isArray(ranges)) return problems;
+  if (codes.length + ranges.length === 0) {
+    problems.push("errorMatch must list at least one HTTP status or range; use a catch-all to catch every failure.");
+  }
+  if (codes.length + ranges.length > ERROR_MATCH_MAX_SELECTORS) {
+    problems.push(`errorMatch has ${codes.length + ranges.length} selectors; at most ${ERROR_MATCH_MAX_SELECTORS} are allowed.`);
+  }
+  const seen = new Set();
+  codes.forEach((code, index) => {
+    if (!isSelectableHttpStatus(code)) {
+      problems.push(`errorMatch.httpStatusCodes[${index}] must be a whole number from 100 through 599.`);
+    } else if (seen.has(code)) {
+      problems.push(`errorMatch.httpStatusCodes lists ${code} more than once.`);
+    }
+    seen.add(code);
+  });
+  const validRanges = [];
+  ranges.forEach((range, index) => {
+    const path = `errorMatch.httpStatusRanges[${index}]`;
+    if (range === null || typeof range !== "object" || Array.isArray(range)) {
+      problems.push(`${path} must be an object with from and to.`);
+      return;
+    }
+    for (const key of Object.keys(range)) {
+      if (key !== "from" && key !== "to") problems.push(`${path} has an unsupported property "${key}".`);
+    }
+    if (!isSelectableHttpStatus(range.from) || !isSelectableHttpStatus(range.to)) {
+      problems.push(`${path} needs from and to as whole numbers from 100 through 599.`);
+      return;
+    }
+    if (range.from >= range.to) {
+      problems.push(`${path} is ${range.from}-${range.to}; from must be less than to. Use a status for a single value.`);
+      return;
+    }
+    const overlapped = validRanges.find(other => range.from <= other.to && other.from <= range.to);
+    if (overlapped) {
+      problems.push(`${path} (${range.from}-${range.to}) overlaps ${overlapped.from}-${overlapped.to} in the same errorMatch.`);
+    }
+    validRanges.push(range);
+  });
+  for (const range of validRanges) {
+    const inside = [...seen].find(code => isSelectableHttpStatus(code) && code >= range.from && code <= range.to);
+    if (inside !== undefined) {
+      problems.push(`errorMatch lists ${inside}, which ${range.from}-${range.to} in the same errorMatch already covers.`);
+    }
+  }
+  return problems;
+}
+
+// A valid matcher in the canonical order; invalid data is returned unchanged so
+// the validator can report it. Always returns a new object for a valid matcher.
+function canonicalizeErrorMatch(match) {
+  if (errorMatchProblems(match).length > 0) return match;
+  const canonical = {};
+  if (match.httpStatusCodes?.length) {
+    canonical.httpStatusCodes = [...match.httpStatusCodes].sort((left, right) => left - right);
+  }
+  if (match.httpStatusRanges?.length) {
+    canonical.httpStatusRanges = match.httpStatusRanges
+      .map(range => ({ from: range.from, to: range.to }))
+      .sort((left, right) => left.from - right.from || left.to - right.to);
+  }
+  return canonical;
+}
+
+function validateSaveErrorBoundaryHost(ctx, host, boundaries) {
+  const errors = ctx.errors;
+  const hostLabel = "Host node #" + String(host.id);
+  if (!isRestErrorBoundaryHost(host)) {
+    if (boundaries.length > 1) errors.push(hostLabel + " has more than one error boundary event.");
+    return;
+  }
+  if (boundaries.length > ERROR_BOUNDARIES_PER_REST_HOST) {
+    errors.push(`${hostLabel} has ${boundaries.length} error boundary events; at most ${ERROR_BOUNDARIES_PER_REST_HOST} are allowed.`);
+  }
+  const catchAlls = boundaries.filter(boundary => boundary.errorMatch == null);
+  if (catchAlls.length > 1) {
+    errors.push(`${hostLabel} has more than one catch-all error boundary event: #${catchAlls[0].id} and #${catchAlls[1].id}.`);
+  }
+  const exactOwners = new Map();
+  const rangeOwners = [];
+  for (const boundary of boundaries) {
+    const match = boundary.errorMatch;
+    if (match === null || typeof match !== "object" || Array.isArray(match)) continue;
+    for (const code of Array.isArray(match.httpStatusCodes) ? match.httpStatusCodes : []) {
+      if (!isSelectableHttpStatus(code)) continue;
+      if (exactOwners.has(code) && exactOwners.get(code) !== boundary) {
+        errors.push(`Error boundary events #${exactOwners.get(code).id} and #${boundary.id} on host node #${host.id} both match HTTP status ${code}.`);
+      } else {
+        exactOwners.set(code, boundary);
+      }
+    }
+    for (const range of Array.isArray(match.httpStatusRanges) ? match.httpStatusRanges : []) {
+      if (!range || !isSelectableHttpStatus(range.from) || !isSelectableHttpStatus(range.to) ||
+          range.from >= range.to) continue;
+      for (const other of rangeOwners) {
+        if (other.boundary !== boundary && range.from <= other.range.to && other.range.from <= range.to) {
+          errors.push(`Error boundary events #${other.boundary.id} (${other.range.from}-${other.range.to}) and #${boundary.id} (${range.from}-${range.to}) on host node #${host.id} have overlapping HTTP status ranges.`);
+        }
+      }
+      rangeOwners.push({ boundary, range });
+    }
+  }
+}
+
 function validateSaveErrorBoundaries(ctx) {
   const errors = ctx.errors;
   const nodes = ctx.nodes;
   const flows = ctx.flows;
+  const boundariesByHost = new Map();
+  for (const node of nodes.filter(candidate => candidate && candidate.errorMatch != null &&
+      candidate.type !== "errorBoundaryEvent")) {
+    errors.push("Flow node #" + String(node.id) + " defines errorMatch but is not an error boundary event.");
+  }
   for (const node of nodes.filter(candidate => candidate && candidate.type === "errorBoundaryEvent")) {
     const label = "Error boundary event #" + String(node.id);
     const host = nodes.find(candidate => candidate && candidate.id === node.attachedToRef);
@@ -10866,9 +11381,16 @@ function validateSaveErrorBoundaries(ctx) {
       errors.push(label + " must have one unconditional outgoing sequence flow without " +
         "user-action or multi-instance metadata.");
     }
-    if (nodes.filter(candidate => candidate && candidate.type === "errorBoundaryEvent" &&
-        candidate.attachedToRef === node.attachedToRef).length > 1) {
-      errors.push("Host node #" + String(node.attachedToRef) + " has more than one error boundary event.");
+    if (host) {
+      if (!boundariesByHost.has(host)) boundariesByHost.set(host, []);
+      boundariesByHost.get(host).push(node);
+    }
+    if (node.errorMatch != null && host) {
+      if (!isRestErrorBoundaryHost(host)) {
+        errors.push(`${label} defines errorMatch, but host node #${host.id} is not a REST service task.`);
+      } else {
+        errorMatchProblems(node.errorMatch).forEach(problem => errors.push(`${label}: ${problem}`));
+      }
     }
     if (!hasText(node.errorVariable)) continue;
     validateRuntimeOutputTarget(ctx, label + " errorVariable", node.errorVariable, "string");
@@ -10884,6 +11406,9 @@ function validateSaveErrorBoundaries(ctx) {
         errors.push(label + " errorVariable collides with a host service output target.");
       }
     }
+  }
+  for (const [host, boundaries] of boundariesByHost) {
+    validateSaveErrorBoundaryHost(ctx, host, boundaries);
   }
 }
 
@@ -11804,6 +12329,10 @@ function prepareWorkflowExport(candidate = model) {
   // long enough for validateModelForSave to report them.
   exportModel.flowNodes.forEach(node => {
     canonicalizeAttributeKeys(node);
+    if (isErrorBoundaryEventType(node.type)) {
+      if (node.errorMatch == null) delete node.errorMatch;
+      else node.errorMatch = canonicalizeErrorMatch(node.errorMatch);
+    }
     if (isErrorEndEventType(node.type)) {
       node.errorCode = typeof node.errorCode === "string" ? node.errorCode.trim() : "";
       node.errorDescription = typeof node.errorDescription === "string" && node.errorDescription.trim()
@@ -12215,6 +12744,11 @@ function normalizeLoadedModel(obj) {
           : undefined,
         attachedToRef: typeof s.attachedToRef === "number" ? s.attachedToRef : null,
         errorVariable: (typeof s.errorVariable === "string" && s.errorVariable.trim()) ? s.errorVariable : null,
+        // Keep every non-null matcher on any node type: an invalid one stays
+        // visible and fails save, and never turns into a catch-all.
+        errorMatch: s.errorMatch == null
+          ? undefined
+          : JSON.parse(JSON.stringify(s.errorMatch)),
         errorCode: isErrorEndEventType(s.type) && typeof s.errorCode === "string" ? s.errorCode.trim() : undefined,
         errorDescription: isErrorEndEventType(s.type) && typeof s.errorDescription === "string" && s.errorDescription.trim()
           ? s.errorDescription.trim() : undefined,

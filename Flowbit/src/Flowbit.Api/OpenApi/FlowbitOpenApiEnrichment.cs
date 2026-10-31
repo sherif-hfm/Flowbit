@@ -1,5 +1,6 @@
 using System.Text.RegularExpressions;
 using Flowbit.Shared.Dtos;
+using Flowbit.Shared.Models;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.OpenApi;
 using Microsoft.OpenApi;
@@ -78,6 +79,12 @@ internal static partial class FlowbitOpenApiEnrichment
                 schema.Description = context.JsonPropertyInfo is { } property
                     ? DescribeSchemaProperty(property.DeclaringType, property.Name)
                     : $"JSON representation of {HumanizeTypeName(context.JsonTypeInfo.Type.Name)}.";
+            }
+
+            if (context.JsonPropertyInfo is null
+                && context.JsonTypeInfo.Type == typeof(HttpStatusRangeModel))
+            {
+                schema.Required = new HashSet<string>(StringComparer.Ordinal) { "from", "to" };
             }
 
             return Task.CompletedTask;
@@ -218,7 +225,7 @@ internal static partial class FlowbitOpenApiEnrichment
                 "202" => "The durable operation was accepted or joined. The response reports current preparation or execution state; acceptance does not mean every item has completed.",
                 "204" => "The operation succeeded and returns no response body.",
                 "302" => "Redirect to the Development Swagger UI at /swagger. This is documentation discovery, not a health check.",
-                "400" => "The request is malformed or violates a Flowbit domain rule. The response normally contains a human-readable error diagnostic; framework binding failures can use Problem Details.",
+                "400" => "The request is malformed or violates a Flowbit domain rule. The response normally contains a human-readable error diagnostic; for a JSON body that cannot be read, it names the cause and the JSON path.",
                 "401" => "Authentication failed or required bearer or machine credentials were not supplied. The response can be empty or contain a diagnostic error object.",
                 "403" => "The authenticated caller lacks the required administrator, manager, role, or scope permission. The response can be empty or contain a diagnostic error object.",
                 "404" => "The resource does not exist or is intentionally hidden by actor-scoped authorization.",

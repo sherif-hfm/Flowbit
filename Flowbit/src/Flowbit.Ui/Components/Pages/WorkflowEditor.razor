@@ -98,7 +98,8 @@
         lastHostState = value;
     }
 
-    private static string DisplayError(Exception exception) => exception.Message.Split('\n', 2)[0].Trim();
+    private static string DisplayError(Exception exception) =>
+        exception is JsonException json ? JsonReadError.Describe(json) : exception.Message.Split('\n', 2)[0].Trim();
 
     protected override async Task OnParametersSetAsync()
     {

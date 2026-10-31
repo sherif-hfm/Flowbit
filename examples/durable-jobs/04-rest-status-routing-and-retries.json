@@ -1,0 +1,201 @@
+{
+  "id": "example-durable-rest-status-routing-and-retries",
+  "name": "Durable Job Example 04 - REST Status Routing and Retries",
+  "initialEventId": 1,
+  "variables": [
+    {
+      "id": 1,
+      "name": "integrationFailure",
+      "dataType": "string",
+      "isArray": false,
+      "required": false,
+      "defaultValue": ""
+    }
+  ],
+  "lanes": [
+    {
+      "id": 1,
+      "name": "Reserve Stock",
+      "externalId": "LANE_RESERVE_STOCK",
+      "x": 30,
+      "y": 30,
+      "w": 1000,
+      "h": 500
+    }
+  ],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Start Reservation",
+      "externalId": "START_RESERVATION",
+      "type": "startEvent",
+      "laneId": 1,
+      "x": 70,
+      "y": 205,
+      "roles": [
+        "ExampleRequester"
+      ],
+      "variables": [
+        {
+          "id": 1,
+          "name": "scenario",
+          "dataType": "string",
+          "isArray": false,
+          "required": true,
+          "validation": "Length(scenario) > 0"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "Reserve Stock",
+      "externalId": "SERVICE_RESERVE_STOCK",
+      "type": "serviceTask",
+      "laneId": 1,
+      "x": 320,
+      "y": 190,
+      "roles": [],
+      "variables": [],
+      "asyncBefore": true,
+      "job": {
+        "failureHandling": "boundaryFirst",
+        "retryDelays": [
+          "PT2S",
+          "PT2S"
+        ]
+      },
+      "service": {
+        "type": "rest",
+        "method": "POST",
+        "url": "${config.exampleApiBaseUrl}/stock/${scenario}",
+        "headers": [
+          {
+            "name": "Authorization",
+            "value": "Bearer ${config.exampleApiToken}"
+          },
+          {
+            "name": "Idempotency-Key",
+            "value": "stock-${sys.jobId}"
+          }
+        ],
+        "body": null,
+        "timeoutSeconds": 5,
+        "outputMappings": []
+      }
+    },
+    {
+      "id": 3,
+      "name": "Already Reserved",
+      "externalId": "BOUNDARY_ALREADY_RESERVED",
+      "type": "errorBoundaryEvent",
+      "laneId": 1,
+      "x": 320,
+      "y": 190,
+      "roles": [],
+      "variables": [],
+      "attachedToRef": 2,
+      "errorVariable": "integrationFailure",
+      "errorMatch": {
+        "httpStatusCodes": [
+          409
+        ]
+      }
+    },
+    {
+      "id": 4,
+      "name": "Rejected Request",
+      "externalId": "BOUNDARY_REJECTED_REQUEST",
+      "type": "errorBoundaryEvent",
+      "laneId": 1,
+      "x": 320,
+      "y": 190,
+      "roles": [],
+      "variables": [],
+      "attachedToRef": 2,
+      "errorVariable": "integrationFailure",
+      "errorMatch": {
+        "httpStatusRanges": [
+          {
+            "from": 400,
+            "to": 499
+          }
+        ]
+      }
+    },
+    {
+      "id": 5,
+      "name": "Stock Reserved",
+      "externalId": "END_STOCK_RESERVED",
+      "type": "endEvent",
+      "laneId": 1,
+      "x": 820,
+      "y": 100,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 6,
+      "name": "Reservation Existed",
+      "externalId": "END_RESERVATION_EXISTED",
+      "type": "endEvent",
+      "laneId": 1,
+      "x": 820,
+      "y": 240,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 7,
+      "name": "Request Needs Correction",
+      "externalId": "END_REQUEST_NEEDS_CORRECTION",
+      "type": "endEvent",
+      "laneId": 1,
+      "x": 820,
+      "y": 380,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "Queue the call",
+      "externalId": "FLOW_START_TO_RESERVE",
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 201,
+      "name": "Reserved",
+      "externalId": "FLOW_RESERVE_TO_RESERVED",
+      "sourceRef": 2,
+      "targetRef": 5,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 301,
+      "name": "Duplicate",
+      "externalId": "FLOW_ALREADY_RESERVED_TO_END",
+      "sourceRef": 3,
+      "targetRef": 6,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 401,
+      "name": "Fix request",
+      "externalId": "FLOW_REJECTED_TO_END",
+      "sourceRef": 4,
+      "targetRef": 7,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "cancelRoles": [],
+  "unclaimRoles": [],
+  "taskAssignmentRoles": [],
+  "taskDistribution": null
+}

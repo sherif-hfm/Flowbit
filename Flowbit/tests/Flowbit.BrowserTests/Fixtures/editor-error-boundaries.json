@@ -1,0 +1,29 @@
+{
+  "id": "browser-editor-error-boundaries",
+  "name": "Browser editor error boundaries",
+  "initialEventId": 1,
+  "variables": [],
+  "lanes": [
+    { "id": 1, "name": "Integration", "x": 20, "y": 20, "w": 980, "h": 620 }
+  ],
+  "flowNodes": [
+    { "id": 1, "name": "Submitted", "type": "startEvent", "laneId": 1, "x": 60, "y": 90 },
+    {
+      "id": 2,
+      "name": "Call service",
+      "type": "serviceTask",
+      "laneId": 1,
+      "x": 220,
+      "y": 240,
+      "service": { "type": "rest", "method": "GET", "url": "https://tests.local/call", "timeoutSeconds": 5 }
+    },
+    { "id": 3, "name": "Done", "type": "endEvent", "laneId": 1, "x": 620, "y": 60 },
+    { "id": 4, "name": "Duplicate", "type": "endEvent", "laneId": 1, "x": 620, "y": 200 },
+    { "id": 5, "name": "Correct data", "type": "endEvent", "laneId": 1, "x": 620, "y": 340 },
+    { "id": 6, "name": "Other failure", "type": "endEvent", "laneId": 1, "x": 620, "y": 480 }
+  ],
+  "sequenceFlows": [
+    { "id": 101, "name": "", "sourceRef": 1, "targetRef": 2 },
+    { "id": 201, "name": "", "sourceRef": 2, "targetRef": 3 }
+  ]
+}

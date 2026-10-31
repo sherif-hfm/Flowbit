@@ -909,6 +909,15 @@ public static class WorkflowModelMigrator
             node.ErrorVariable = string.IsNullOrWhiteSpace(node.ErrorVariable)
                 ? null
                 : node.ErrorVariable.Trim();
+            if (node.ErrorMatch is not null)
+            {
+                ErrorBoundaryMatchRules.Canonicalize(node.ErrorMatch);
+            }
+        }
+        else
+        {
+            // Create/version authoring rejects this before normalization.
+            node.ErrorMatch = null;
         }
     }
 

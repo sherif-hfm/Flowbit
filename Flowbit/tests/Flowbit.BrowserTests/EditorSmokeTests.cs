@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Flowbit.BrowserTests.Infrastructure;
 using Flowbit.BrowserTests.Support;
 using Microsoft.Playwright;
@@ -1146,6 +1147,407 @@ public sealed class EditorSmokeTests(BrowserStackFixture stack)
     }
 
     // Inspector fields put a static label before their control.
+    [Theory]
+    [MemberData(nameof(EditorViewports))]
+    public async Task E14_ErrorBoundaryMatchersAuthorValidateUndoSaveAndReload(int viewportWidth, int viewportHeight)
+    {
+        await using var scenario = await CreateEditorScenarioAsync(
+            $"e14-error-boundary-matchers-{viewportWidth}x{viewportHeight}", viewportWidth, viewportHeight);
+        scenario.ExpectDialogOnce(
+            "alert",
+            "Error boundary #7 already catches all failures on this host, and a host can have only one catch-all.",
+            accept: true);
+        scenario.ExpectDialogOnce(
+            "alert",
+            "A script task cannot use HTTP status matchers. Remove them from these error boundaries first: #8, #9.",
+            accept: true);
+        await scenario.RunAsync("error-boundary-matchers", async () =>
+        {
+            await OpenEditorAsync(scenario);
+            var page = scenario.Page;
+            await EditorInteractions.LoadWorkflowAsync(
+                page, EditorInteractions.FixturePath("editor-error-boundaries.json"));
+            await EditorInteractions.SelectMoveToolAsync(page);
+            var inspector = page.Locator("#inspector");
+            var flowLabels = page.Locator(".flow-marker-status");
+
+            async Task AddBoundaryToAsync(int targetNodeId)
+            {
+                await EditorInteractions.SelectNodeAsync(page, 2);
+                await inspector.GetByRole(AriaRole.Button, new LocatorGetByRoleOptions { Name = "+ Add error boundary event" }).ClickAsync();
+                await EditorInteractions.ClickCenterAsync(page, await EditorInteractions.GetNodeBoxAsync(page, targetNodeId));
+                await page.Keyboard.PressAsync("Escape");
+            }
+
+            // The first boundary is a catch-all, and alone it shows no flow summary.
+            await AddBoundaryToAsync(6);
+            await Assertions.Expect(flowLabels).ToHaveCountAsync(0);
+            await EditorInteractions.SelectNodeAsync(page, 7);
+            await Assertions.Expect(FormField(inspector, "Failures caught").Locator("select")).ToHaveValueAsync("all");
+
+            // A second one starts incomplete, and saving says so.
+            await AddBoundaryToAsync(4);
+            await EditorInteractions.SelectNodeAsync(page, 8);
+            await Assertions.Expect(FormField(inspector, "Failures caught").Locator("select")).ToHaveValueAsync("http");
+            await Assertions.Expect(inspector.Locator(".error-match .expression-validation")).ToContainTextAsync("at least one");
+            await Assertions.Expect(page.Locator(".flow-marker-status").Filter(new LocatorFilterOptions { HasText = "All failures" })).ToHaveCountAsync(1);
+            var incomplete = await SaveExpectingValidationAsync(page);
+            Assert.Contains("#8", incomplete, StringComparison.Ordinal);
+            Assert.Contains("at least one", incomplete, StringComparison.Ordinal);
+            await EditorInteractions.CloseValidationDialogWithEscapeAsync(page);
+
+            // A second catch-all is refused, and the matcher stays.
+            await FormField(inspector, "Failures caught").Locator("select").SelectOptionAsync("all");
+            await Assertions.Expect(FormField(inspector, "Failures caught").Locator("select")).ToHaveValueAsync("http");
+            await Assertions.Expect(FormField(inspector, "Failures caught").Locator("select")).ToBeFocusedAsync();
+
+            // Typing is live: a partial value is marked, and the finished status labels the flow.
+            await inspector.GetByRole(AriaRole.Button, new LocatorGetByRoleOptions { Name = "+ Add status" }).ClickAsync();
+            var status = inspector.GetByRole(AriaRole.Textbox, new LocatorGetByRoleOptions { Name = "Exact HTTP status 1" });
+            await Assertions.Expect(status).ToBeFocusedAsync();
+            await page.Keyboard.TypeAsync("40x");
+            await Assertions.Expect(status).ToHaveAttributeAsync("aria-invalid", "true");
+            await Assertions.Expect(page.Locator(".flow-marker-status").Filter(new LocatorFilterOptions { HasText = "Invalid match" })).ToHaveCountAsync(1);
+            await status.FillAsync("409");
+            await Assertions.Expect(status).ToHaveAttributeAsync("aria-invalid", "false");
+            await Assertions.Expect(inspector.Locator(".error-match .expression-validation")).ToBeEmptyAsync();
+            await Assertions.Expect(page.Locator(".flow-marker-status").Filter(new LocatorFilterOptions { HasText = "409" })).ToHaveCountAsync(1);
+
+            // A range on a third boundary may contain another boundary's exact status.
+            await AddBoundaryToAsync(5);
+            await EditorInteractions.SelectNodeAsync(page, 9);
+            await inspector.GetByRole(AriaRole.Button, new LocatorGetByRoleOptions { Name = "+ Add range" }).ClickAsync();
+            await inspector.GetByRole(AriaRole.Textbox, new LocatorGetByRoleOptions { Name = "Range 1 from" }).FillAsync("400");
+            await inspector.GetByRole(AriaRole.Textbox, new LocatorGetByRoleOptions { Name = "Range 1 to" }).FillAsync("499");
+            await Assertions.Expect(page.Locator(".flow-marker-status").Filter(new LocatorFilterOptions { HasText = "400–499" })).ToHaveCountAsync(1);
+            await page.Locator("#inspectorPanel").ScreenshotAsync(new LocatorScreenshotOptions
+            {
+                Path = Path.Combine(scenario.ArtifactDirectory, "error-match-inspector.png"),
+            });
+            await page.ScreenshotAsync(new PageScreenshotOptions
+            {
+                Path = Path.Combine(scenario.ArtifactDirectory, "error-match-diagram.png"),
+            });
+
+            // The same status on two boundaries is reported on save.
+            await inspector.GetByRole(AriaRole.Button, new LocatorGetByRoleOptions { Name = "+ Add status" }).ClickAsync();
+            await inspector.GetByRole(AriaRole.Textbox, new LocatorGetByRoleOptions { Name = "Exact HTTP status 1" }).FillAsync("409");
+            var duplicate = await SaveExpectingValidationAsync(page);
+            Assert.Contains("covers", duplicate, StringComparison.Ordinal);
+            Assert.Contains("both match HTTP status 409", duplicate, StringComparison.Ordinal);
+            await EditorInteractions.CloseValidationDialogWithEscapeAsync(page);
+            await inspector.GetByRole(AriaRole.Button, new LocatorGetByRoleOptions { Name = "Remove exact HTTP status 1" }).ClickAsync();
+            await Assertions.Expect(inspector.GetByRole(AriaRole.Button, new LocatorGetByRoleOptions { Name = "+ Add status" })).ToBeFocusedAsync();
+
+            // A service task keeps its matchers rather than becoming a script task.
+            await EditorInteractions.SelectNodeAsync(page, 2);
+            await EditorInteractions.SelectTypeAsync(page, "scriptTask");
+            await Assertions.Expect(EditorInteractions.TypeSelect(page)).ToHaveValueAsync("serviceTask");
+
+            // Removing the catch-all warns on the host, and undo clears the warning.
+            var warning = inspector.GetByText("no boundary catches all failures");
+            await Assertions.Expect(warning).ToHaveCountAsync(0);
+            await inspector.GetByRole(AriaRole.Button, new LocatorGetByRoleOptions { Name = "Remove error boundary event #7" }).ClickAsync();
+            await Assertions.Expect(warning).ToBeVisibleAsync();
+            await inspector.Locator(".inspector-help-toggle").First.FocusAsync();
+            await page.Keyboard.PressAsync("Control+z");
+            await EditorInteractions.SelectNodeAsync(page, 2);
+            await Assertions.Expect(warning).ToHaveCountAsync(0);
+
+            // The host still moves with all its boundaries attached.
+            var hostBefore = await EditorInteractions.GetNodeBoxAsync(page, 2);
+            var boundaryBefore = await EditorInteractions.GetNodeBoxAsync(page, 8);
+            await EditorInteractions.DragAsync(
+                page,
+                hostBefore.X + hostBefore.Width / 2,
+                hostBefore.Y + hostBefore.Height / 2,
+                hostBefore.X + hostBefore.Width / 2 + 40,
+                hostBefore.Y + hostBefore.Height / 2 + 30);
+            var boundaryAfter = await EditorInteractions.GetNodeBoxAsync(page, 8);
+            Assert.True(boundaryAfter.X > boundaryBefore.X, "An attached boundary follows its host.");
+
+            // The saved document holds the matchers and round-trips through a reload.
+            var saved = await EditorInteractions.SaveAndCaptureDownloadAsync(
+                page, scenario, scenario.ArtifactDirectory);
+            var nodes = saved.RootElement.GetProperty("flowNodes").EnumerateArray()
+                .ToDictionary(node => node.GetProperty("id").GetInt32());
+            Assert.False(nodes[7].TryGetProperty("errorMatch", out _));
+            Assert.Equal([409], nodes[8].GetProperty("errorMatch").GetProperty("httpStatusCodes").EnumerateArray().Select(code => code.GetInt32()));
+            Assert.False(nodes[8].GetProperty("errorMatch").TryGetProperty("httpStatusRanges", out _));
+            Assert.Equal(
+                400,
+                nodes[9].GetProperty("errorMatch").GetProperty("httpStatusRanges")[0].GetProperty("from").GetInt32());
+            await EditorInteractions.LoadSavedFileAsync(
+                page, scenario.LastSavedFile!);
+            await Assertions.Expect(page.Locator(".flow-marker-status")).ToHaveCountAsync(3);
+        });
+    }
+
+    [Theory]
+    [MemberData(nameof(EditorViewports))]
+    public async Task E16_TheMaximumBoundaryCountKeepsEveryHitTargetUsable(int viewportWidth, int viewportHeight)
+    {
+        await using var scenario = await CreateEditorScenarioAsync(
+            $"e16-maximum-boundaries-{viewportWidth}x{viewportHeight}", viewportWidth, viewportHeight);
+        await scenario.RunAsync("maximum-boundaries", async () =>
+        {
+            await OpenEditorAsync(scenario);
+            var page = scenario.Page;
+            await EditorInteractions.LoadWorkflowAsync(
+                page, EditorInteractions.FixturePath("editor-maximum-boundaries.json"));
+            await EditorInteractions.SelectMoveToolAsync(page);
+
+            var boundaryIds = Enumerable.Range(10, 16).ToArray();
+            var boxes = new List<LocatorBoundingBoxResult>();
+            foreach (var id in boundaryIds)
+            {
+                boxes.Add(await EditorInteractions.GetNodeBoxAsync(page, id));
+            }
+            for (var left = 0; left < boxes.Count; left++)
+            {
+                for (var right = left + 1; right < boxes.Count; right++)
+                {
+                    var overlaps = boxes[left].X < boxes[right].X + boxes[right].Width
+                        && boxes[right].X < boxes[left].X + boxes[left].Width
+                        && boxes[left].Y < boxes[right].Y + boxes[right].Height
+                        && boxes[right].Y < boxes[left].Y + boxes[left].Height;
+                    Assert.False(overlaps, $"Boundaries #{boundaryIds[left]} and #{boundaryIds[right]} overlap.");
+                }
+            }
+
+            // Every boundary is reachable with a real click on its own circle.
+            foreach (var (id, box) in boundaryIds.Zip(boxes))
+            {
+                await EditorInteractions.ClickCenterAsync(page, box);
+                await Assertions.Expect(page.Locator("#inspector")).ToContainTextAsync($"Node #{id}");
+            }
+            await page.ScreenshotAsync(new PageScreenshotOptions
+            {
+                Path = Path.Combine(scenario.ArtifactDirectory, "maximum-boundaries.png"),
+            });
+        });
+    }
+
+    [Theory]
+    [MemberData(nameof(EditorViewports))]
+    public async Task E15_ImportedMatcherOnAWrongNodeCanBeRemoved(int viewportWidth, int viewportHeight)
+    {
+        await using var scenario = await CreateEditorScenarioAsync(
+            $"e15-imported-matcher-{viewportWidth}x{viewportHeight}", viewportWidth, viewportHeight);
+        await scenario.RunAsync("imported-matcher", async () =>
+        {
+            await OpenEditorAsync(scenario);
+            var page = scenario.Page;
+            await EditorInteractions.LoadWorkflowAsync(
+                page, EditorInteractions.FixturePath("editor-error-match-misplaced.json"));
+            var errors = await SaveExpectingValidationAsync(page);
+            Assert.Contains("Flow node #3 defines errorMatch", errors, StringComparison.Ordinal);
+            Assert.Contains("#4", errors, StringComparison.Ordinal);
+            await EditorInteractions.CloseValidationDialogWithEscapeAsync(page);
+
+            var inspector = page.Locator("#inspector");
+            await EditorInteractions.SelectNodeAsync(page, 3);
+            await inspector.GetByRole(AriaRole.Button, new LocatorGetByRoleOptions { Name = "Remove errorMatch" }).ClickAsync();
+            await Assertions.Expect(inspector.GetByRole(AriaRole.Button, new LocatorGetByRoleOptions { Name = "Remove errorMatch" })).ToHaveCountAsync(0);
+
+            await EditorInteractions.SelectNodeAsync(page, 4);
+            await FormField(inspector, "Failures caught").Locator("select").SelectOptionAsync("all");
+
+            var saved = await EditorInteractions.SaveAndCaptureDownloadAsync(
+                page, scenario, scenario.ArtifactDirectory);
+            Assert.DoesNotContain("errorMatch", saved.RootElement.GetRawText(), StringComparison.Ordinal);
+        });
+    }
+
+    [Theory]
+    [MemberData(nameof(EditorViewports))]
+    public async Task E17_MatcherEditsUndoRedoAndKeepKeyboardFocus(int viewportWidth, int viewportHeight)
+    {
+        await using var scenario = await CreateEditorScenarioAsync(
+            $"e17-matcher-history-{viewportWidth}x{viewportHeight}", viewportWidth, viewportHeight);
+        await scenario.RunAsync("matcher-history", async () =>
+        {
+            await OpenEditorAsync(scenario);
+            var page = scenario.Page;
+            await EditorInteractions.LoadWorkflowAsync(
+                page, EditorInteractions.FixturePath("editor-error-boundaries.json"));
+            await EditorInteractions.SelectMoveToolAsync(page);
+            var inspector = page.Locator("#inspector");
+            var status = inspector.GetByRole(AriaRole.Textbox, new LocatorGetByRoleOptions { Name = "Exact HTTP status 1" });
+            var addStatus = inspector.GetByRole(AriaRole.Button, new LocatorGetByRoleOptions { Name = "+ Add status" });
+            var addBoundary = inspector.GetByRole(AriaRole.Button, new LocatorGetByRoleOptions { Name = "+ Add error boundary event" });
+            ILocator Remove(int id) => inspector.GetByRole(AriaRole.Button, new LocatorGetByRoleOptions { Name = $"Remove error boundary event #{id}" });
+
+            foreach (var target in new[] { 6, 4, 5 })
+            {
+                await EditorInteractions.SelectNodeAsync(page, 2);
+                await addBoundary.ClickAsync();
+                await EditorInteractions.ClickCenterAsync(page, await EditorInteractions.GetNodeBoxAsync(page, target));
+                await page.Keyboard.PressAsync("Escape");
+            }
+
+            // Each step undoes and redoes on its own, and the flow label follows.
+            await EditorInteractions.SelectNodeAsync(page, 8);
+            await addStatus.ClickAsync();
+            await page.Keyboard.TypeAsync("409");
+            await Assertions.Expect(page.Locator(".flow-marker-status").Filter(new LocatorFilterOptions { HasText = "409" })).ToHaveCountAsync(1);
+            // Leaving the field commits its typing as one history entry.
+            await inspector.Locator(".inspector-help-toggle").First.FocusAsync();
+            await page.WaitForTimeoutAsync(700);
+
+            async Task PressThenReselectAsync(string shortcut)
+            {
+                await page.Keyboard.PressAsync(shortcut);
+                await EditorInteractions.SelectNodeAsync(page, 8);
+                await inspector.Locator(".inspector-help-toggle").First.FocusAsync();
+            }
+
+            await PressThenReselectAsync("Control+z");
+            await Assertions.Expect(status).ToHaveValueAsync(string.Empty);
+            await Assertions.Expect(page.Locator(".flow-marker-status").Filter(new LocatorFilterOptions { HasText = "409" })).ToHaveCountAsync(0);
+            await PressThenReselectAsync("Control+z");
+            await Assertions.Expect(status).ToHaveCountAsync(0);
+            await PressThenReselectAsync("Control+y");
+            await Assertions.Expect(status).ToHaveValueAsync(string.Empty);
+            await PressThenReselectAsync("Control+y");
+            await Assertions.Expect(status).ToHaveValueAsync("409");
+            await Assertions.Expect(page.Locator(".flow-marker-status").Filter(new LocatorFilterOptions { HasText = "409" })).ToHaveCountAsync(1);
+
+            // Inside the field, undo stays the browser's own.
+            await status.FocusAsync();
+            await page.Keyboard.PressAsync("End");
+            await page.Keyboard.TypeAsync("9");
+            await Assertions.Expect(status).ToHaveValueAsync("4099");
+            await Assertions.Expect(status).ToHaveAttributeAsync("aria-invalid", "true");
+            await page.Keyboard.PressAsync("Control+z");
+            await Assertions.Expect(status).ToHaveValueAsync("409");
+            await Assertions.Expect(status).ToBeFocusedAsync();
+            await Assertions.Expect(status).ToHaveAttributeAsync("aria-invalid", "false");
+
+            // Removing from the list moves focus to the row that took its place.
+            await EditorInteractions.SelectNodeAsync(page, 2);
+            await Remove(8).FocusAsync();
+            await page.Keyboard.PressAsync("Enter");
+            await Assertions.Expect(Remove(9)).ToBeFocusedAsync();
+            await Assertions.Expect(Remove(8)).ToHaveCountAsync(0);
+
+            // From the last row it moves to the row before, and then on to the add button.
+            await page.Keyboard.PressAsync("Enter");
+            await Assertions.Expect(Remove(7)).ToBeFocusedAsync();
+            await page.Keyboard.PressAsync("Enter");
+            await Assertions.Expect(addBoundary).ToBeFocusedAsync();
+
+            // Undo restores them, and opening one starts at its heading, then its fields.
+            foreach (var _ in new[] { 7, 9, 8 })
+            {
+                await page.Keyboard.PressAsync("Control+z");
+                await EditorInteractions.SelectNodeAsync(page, 2);
+                await addBoundary.FocusAsync();
+            }
+            await Assertions.Expect(inspector.Locator(".error-boundary-row")).ToHaveCountAsync(3);
+            await inspector.Locator(".error-boundary-open").Nth(1).FocusAsync();
+            await page.Keyboard.PressAsync("Enter");
+            await Assertions.Expect(inspector.GetByRole(AriaRole.Heading, new LocatorGetByRoleOptions { Name = "Node #8" })).ToBeFocusedAsync();
+            await page.Keyboard.PressAsync("Tab");
+            await Assertions.Expect(FormInput(inspector, "Name")).ToBeFocusedAsync();
+        });
+    }
+
+    // An unnamed control is announced only by its role, so it reads as a bare "combobox".
+    [Fact]
+    public async Task E18_EveryInspectorControlIsNamedAndDescribedByItsHelp()
+    {
+        await using var scenario = await CreateEditorScenarioAsync("e18-inspector-names", 1440, 900);
+        await scenario.RunAsync("inspector-names", async () =>
+        {
+            await OpenEditorAsync(scenario);
+            var page = scenario.Page;
+            await EditorInteractions.LoadWorkflowAsync(
+                page, EditorInteractions.FixturePath("editor-inspector-census.json"));
+            var inspector = page.Locator("#inspector");
+
+            // Search selects by id at any zoom, which a click on a small boundary circle cannot.
+            async Task SelectAsync(string query, string heading)
+            {
+                await page.EvaluateAsync("document.activeElement?.blur()");
+                await page.Keyboard.PressAsync("/");
+                await Assertions.Expect(page.Locator("#diagramSearchInput")).ToBeFocusedAsync();
+                await page.Keyboard.PressAsync("Control+a");
+                await page.Keyboard.TypeAsync(query);
+                await page.Keyboard.PressAsync("Enter");
+                await Assertions.Expect(inspector.GetByRole(AriaRole.Heading, new LocatorGetByRoleOptions { Name = heading, Exact = true })).ToHaveCountAsync(1);
+            }
+
+            // Opens every collapsed form section first, so its fields are in the tree too.
+            var unnamed = new List<string>();
+            async Task CollectUnnamedAsync(string selection)
+            {
+                await page.EvaluateAsync("document.querySelectorAll('#inspector details').forEach(item => { item.open = true; })");
+                var snapshot = (await inspector.AriaSnapshotAsync()).Split('\n');
+                unnamed.AddRange(snapshot
+                    .Select((line, index) => (line, index))
+                    .Where(item => Regex.IsMatch(item.line, "^\\s*- (textbox|combobox|listbox|checkbox|radio|spinbutton|slider|switch|searchbox)(?! \")"))
+                    .Select(item => $"{selection}: {item.line.Trim()} (after: {snapshot[Math.Max(item.index - 1, 0)].Trim()})"));
+            }
+
+            await CollectUnnamedAsync("the workflow");
+            await SelectAsync("Everything", "Lane #1");
+            await CollectUnnamedAsync("the lane");
+            foreach (var node in Enumerable.Range(1, 28))
+            {
+                await SelectAsync($"#{node}", $"Node #{node}");
+                await CollectUnnamedAsync($"node #{node}");
+            }
+            foreach (var flow in new[] { 101, 201, 301, 401, 402, 901, 1001, 1002, 1101, 1201 })
+            {
+                await SelectAsync($"#{flow}", $"Flow #{flow}");
+                await CollectUnnamedAsync($"flow #{flow}");
+            }
+            Assert.True(unnamed.Count == 0, $"Unnamed controls:\n{string.Join('\n', unnamed)}");
+
+            // A hand-built field and a helper-built one, each named by its own label.
+            await SelectAsync("#26", "Node #26");
+            var failures = inspector.GetByRole(AriaRole.Combobox, new LocatorGetByRoleOptions { Name = "Failures caught", Exact = true });
+            await Assertions.Expect(failures).ToHaveCountAsync(1);
+            await Assertions.Expect(inspector.GetByRole(AriaRole.Textbox, new LocatorGetByRoleOptions { Name = "Name", Exact = true })).ToHaveValueAsync("Failed call");
+
+            // A closed help panel still describes its control, and opening it changes nothing.
+            var help = inspector.GetByRole(AriaRole.Button, new LocatorGetByRoleOptions { Name = "Help for Failures caught" });
+            var description = new Regex("An exact status wins over a range");
+            await Assertions.Expect(inspector.Locator(".inspector-help:visible")).ToHaveCountAsync(0);
+            await Assertions.Expect(failures).ToHaveAccessibleDescriptionAsync(description);
+            await help.ClickAsync();
+            await Assertions.Expect(failures).ToHaveAccessibleDescriptionAsync(description);
+            await help.ClickAsync();
+
+            // The label belongs to its control: clicking it moves focus there.
+            await inspector.Locator(".field").Filter(new LocatorFilterOptions
+            {
+                Has = page.Locator("xpath=./label[normalize-space(.)='Failures caught']"),
+            }).Locator("xpath=./label").ClickAsync();
+            await Assertions.Expect(failures).ToBeFocusedAsync();
+
+            // A row added without rebuilding the inspector is named as well.
+            await SelectAsync("#1", "Node #1");
+            await inspector.GetByRole(AriaRole.Button, new LocatorGetByRoleOptions { Name = "+ Add option" }).First.ClickAsync();
+            await Assertions.Expect(inspector.GetByRole(AriaRole.Textbox, new LocatorGetByRoleOptions { Name = "Option 2 value", Exact = true })).ToHaveCountAsync(1);
+            await CollectUnnamedAsync("a new form option");
+            Assert.True(unnamed.Count == 0, $"Unnamed controls:\n{string.Join('\n', unnamed)}");
+
+            // The service body has no label of its own, so it borrows its heading's words.
+            await SelectAsync("#6", "Node #6");
+            await Assertions.Expect(inspector.GetByRole(AriaRole.Textbox, new LocatorGetByRoleOptions { Name = "Body", Exact = true }))
+                .ToHaveAccessibleDescriptionAsync(new Regex("JSON body template"));
+        });
+    }
+
+    private static async Task<string> SaveExpectingValidationAsync(IPage page)
+    {
+        await page.Locator("#fileMenuSummary").ClickAsync();
+        await page.Locator("#saveBtn").ClickAsync();
+        return await EditorInteractions.WaitForValidationDialogAsync(page);
+    }
+
     private static ILocator FormField(ILocator scope, string label) =>
         scope.Locator(".field").Filter(new LocatorFilterOptions
         {

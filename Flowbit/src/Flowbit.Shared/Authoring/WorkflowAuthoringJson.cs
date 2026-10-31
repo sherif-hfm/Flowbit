@@ -131,7 +131,8 @@ public static class WorkflowAuthoringJson
         : type == typeof(SequenceFlowModel) ? ["id", "sourceRef", "targetRef"]
         : type == typeof(LaneModel) ? ["id", "name"]
         : type == typeof(VariableModel) ? ["id", "name", "dataType"]
-        : type == typeof(VariableOptionModel) ? ["value"] : [];
+        : type == typeof(VariableOptionModel) ? ["value"]
+        : type == typeof(HttpStatusRangeModel) ? ["from", "to"] : [];
 
     private static bool AllowsNull(PropertyInfo property) => NullableProperties.GetOrAdd(property, item =>
         Nullable.GetUnderlyingType(item.PropertyType) is not null

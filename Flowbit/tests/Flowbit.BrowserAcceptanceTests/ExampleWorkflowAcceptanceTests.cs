@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Flowbit.BrowserTests.Infrastructure;
 using Flowbit.Shared.Dtos;
 using Xunit;
@@ -100,6 +101,259 @@ public sealed partial class ExampleWorkflowAcceptanceTests(ExampleAcceptanceFixt
             Assert.Contains(visits, visit => visit.NodeId == 5);
             Assert.DoesNotContain(visits, visit => visit.NodeId == 8);
             await ActAsync(client, instance.Id, 6, 601);
+        });
+    }
+
+    [Theory]
+    [InlineData("status-409", 3, 8, "completed", 409)]
+    [InlineData("status-422", 4, 9, "completed", 422)]
+    [InlineData("status-503", 5, 10, "faulted", 503)]
+    [InlineData("lost-503", 5, 10, "faulted", 503)]
+    [InlineData("hang", 6, 11, "faulted", 0)]
+    public async Task HttpStatusRoutingSelectsExactThenRangeThenCatchAll(
+        string orderId, int boundary, int end, string status, int expectedStatus)
+    {
+        await using var scenario = await Stack.CreateScenario($"examples-status-routing-{orderId}");
+        await scenario.RunAsync("HTTP status routing without a Worker job", async () =>
+        {
+            await using var client = await CreateAsync(scenario, "example-operator", OperatorRoles);
+            var workflow = await client.Workflows.CreateAndPublishAsync(Example("service-tasks/04-rest-http-status-routing.json"));
+            var instance = await client.Workflows.StartInstanceAsync(workflow.Id, Variables(("orderId", orderId)));
+
+            var detail = await client.Workflows.GetInstanceAsync(instance.Id);
+            Assert.Equal(status, detail.Status);
+            Assert.Equal(expectedStatus, Value(detail, "serviceStatus").GetInt32());
+            Assert.Contains("REST call failed", Value(detail, "integrationFailure").GetString());
+            var visits = await client.ExecutionsAsync(instance.Id);
+            Assert.Contains(visits, visit => visit.NodeId == boundary);
+            Assert.Contains(visits, visit => visit.NodeId == end);
+            Assert.DoesNotContain(visits, visit => visit.NodeId == 7);
+            Assert.Empty(visits.Where(visit => visit.NodeId is >= 3 and <= 6 && visit.NodeId != boundary));
+        });
+    }
+
+    [Theory]
+    [InlineData("status-409-boundary-first", 1, 3)]
+    [InlineData("status-422-boundary-first", 1, 4)]
+    [InlineData("sequence-503-409-later-attempt", 2, 3)]
+    public async Task DurableStatusRoutingUsesTheCurrentAttempt(string stockScenario, int attempts, int boundary)
+    {
+        await using var scenario = await Stack.CreateScenario($"examples-durable-status-{stockScenario}");
+        await scenario.RunAsync("durable status routing through a real Worker", async () =>
+        {
+            await using var client = await CreateAsync(scenario, "example-operator", OperatorRoles);
+            await Stack.StartWorkerAsync();
+            var workflow = await client.Workflows.CreateAndPublishAsync(Example("durable-jobs/04-rest-status-routing-and-retries.json"));
+            var instance = await client.Workflows.StartInstanceAsync(workflow.Id, Variables(("scenario", stockScenario)));
+
+            await UntilAsync(() => client.Workflows.GetInstanceAsync(instance.Id), detail => detail.Status == "completed", "the boundary route to finish");
+
+            var job = Assert.Single(await client.JobsAsync(instance.Id), job => job.NodeId == 2 && job.Kind == "asyncBefore");
+            Assert.Equal(attempts, (await client.AttemptsAsync(job.Id)).Count);
+            Assert.Empty(await client.IncidentsAsync(instance.Id));
+            var visits = await client.ExecutionsAsync(instance.Id);
+            Assert.Contains(visits, visit => visit.NodeId == boundary);
+            Assert.DoesNotContain(visits, visit => visit.NodeId == 5);
+        });
+    }
+
+    [Fact]
+    public async Task DurableUnmatchedStatusRetriesThenOpensARecoverableIncident()
+    {
+        await using var scenario = await Stack.CreateScenario("examples-durable-status-unmatched");
+        await scenario.RunAsync("an unmatched status exhausts retries", async () =>
+        {
+            await using var client = await CreateAsync(scenario, "example-operator", OperatorRoles);
+            await Stack.StartWorkerAsync();
+            var workflow = await client.Workflows.CreateAndPublishAsync(Example("durable-jobs/04-rest-status-routing-and-retries.json"));
+            var instance = await client.Workflows.StartInstanceAsync(workflow.Id, Variables(("scenario", "sequence-503-503-503-409-recovered")));
+
+            var jobs = await UntilAsync(() => client.JobsAsync(instance.Id),
+                rows => rows.Any(job => job.NodeId == 2 && job.Status == "incident"),
+                "retries to run out");
+            var job = Assert.Single(jobs, job => job.NodeId == 2 && job.Kind == "asyncBefore");
+            Assert.Equal(3, (await client.AttemptsAsync(job.Id)).Count);
+            var incident = Assert.Single(await client.IncidentsAsync(instance.Id));
+            Assert.DoesNotContain(await client.ExecutionsAsync(instance.Id), visit => visit.NodeId is 3 or 4);
+
+            // A manual retry calls again, and the new response selects the boundary.
+            await client.PostAsync<RetryIncidentResultDto>($"/api/incidents/{incident.Id}/retry");
+            await UntilAsync(() => client.Workflows.GetInstanceAsync(instance.Id), detail => detail.Status == "completed", "the recovered route to finish");
+            Assert.Contains(await client.ExecutionsAsync(instance.Id), visit => visit.NodeId == 3);
+        });
+    }
+
+    // A copy of the durable example, changed for one scenario and named uniquely.
+    private string DurableStatusExample(BrowserScenario scenario, Action<JsonNode> change)
+    {
+        var definition = JsonNode.Parse(File.ReadAllText(Example("durable-jobs/04-rest-status-routing-and-retries.json")))!;
+        change(definition);
+        definition["id"] = $"example-durable-status-{Guid.NewGuid():N}";
+        var path = Path.Combine(scenario.ArtifactDirectory, "durable-status-example.json");
+        File.WriteAllText(path, definition.ToJsonString());
+        return path;
+    }
+
+    private static JsonNode FlowNode(JsonNode definition, int id) =>
+        definition["flowNodes"]!.AsArray().Single(node => node!["id"]!.GetValue<int>() == id)!;
+
+    private static string UniqueStock(string scenario) => $"{scenario}-x{Guid.NewGuid().ToString("N")[..6]}";
+
+    [Theory]
+    [InlineData("status-409", 3, 3)]
+    [InlineData("sequence-503-409", 3, 3)]
+    [InlineData("sequence-409-503", 3, 0)]
+    [InlineData("sequence-409-200", 2, 5)]
+    public async Task DurableRetryFirstRetriesEveryFailureThenUsesTheFinalAttempt(string stockScenario, int attempts, int expectedNode)
+    {
+        await using var scenario = await Stack.CreateScenario($"examples-retry-first-{stockScenario}");
+        await scenario.RunAsync("retryFirst through a real Worker", async () =>
+        {
+            await using var client = await CreateAsync(scenario, "example-operator", OperatorRoles);
+            await Stack.StartWorkerAsync();
+            var workflow = await client.Workflows.CreateAndPublishAsync(DurableStatusExample(scenario, definition =>
+            {
+                var job = FlowNode(definition, 2)["job"]!;
+                job["failureHandling"] = "retryFirst";
+                job["retryDelays"] = new JsonArray("PT1S", "PT1S");
+            }));
+            var instance = await client.Workflows.StartInstanceAsync(workflow.Id, Variables(("scenario", UniqueStock(stockScenario))));
+
+            if (expectedNode == 0)
+            {
+                await UntilAsync(() => client.IncidentsAsync(instance.Id), rows => rows.Count > 0, "an incident for the unmatched final status");
+            }
+            else
+            {
+                await UntilAsync(() => client.Workflows.GetInstanceAsync(instance.Id), detail => detail.Status == "completed", "the final attempt's route");
+            }
+
+            var job = Assert.Single(await client.JobsAsync(instance.Id), item => item.NodeId == 2 && item.Kind == "asyncBefore");
+            Assert.Equal(attempts, (await client.AttemptsAsync(job.Id)).Count);
+            var visits = await client.ExecutionsAsync(instance.Id);
+            Assert.Equal(expectedNode == 0, (await client.IncidentsAsync(instance.Id)).Count > 0);
+            if (expectedNode == 0)
+            {
+                Assert.DoesNotContain(visits, visit => visit.NodeId is 3 or 4 or 5);
+            }
+            else
+            {
+                Assert.Contains(visits, visit => visit.NodeId == expectedNode);
+            }
+        });
+    }
+
+    // Declares a status variable, and a conditional boundary that a stored status would trigger.
+    private static void WatchStatus(JsonNode definition)
+    {
+        definition["variables"]!.AsArray().Add(JsonNode.Parse("""{ "id": 2, "name": "httpStatus", "dataType": "number", "isArray": false, "required": false, "defaultValue": 0 }"""));
+        FlowNode(definition, 2)["service"]!["statusVariable"] = "httpStatus";
+        definition["flowNodes"]!.AsArray().Add(JsonNode.Parse("""{ "id": 8, "name": "Status Watch", "type": "conditionalBoundaryEvent", "laneId": 1, "x": 320, "y": 190, "roles": [], "variables": [], "attachedToRef": 2, "cancelActivity": true, "conditional": { "condition": "httpStatus > 0" } }"""));
+        definition["flowNodes"]!.AsArray().Add(JsonNode.Parse("""{ "id": 9, "name": "Status Seen", "type": "endEvent", "laneId": 1, "x": 820, "y": 400, "roles": [], "variables": [] }"""));
+        definition["sequenceFlows"]!.AsArray().Add(JsonNode.Parse("""{ "id": 801, "name": "Seen", "sourceRef": 8, "targetRef": 9, "roles": [], "variables": [] }"""));
+    }
+
+    [Fact]
+    public async Task DurableMatchingBoundaryBeatsAConditionOnTheFailedCallsStatus()
+    {
+        await using var scenario = await Stack.CreateScenario("examples-status-condition-precedence");
+        await scenario.RunAsync("error boundary precedence through a real Worker", async () =>
+        {
+            await using var client = await CreateAsync(scenario, "example-operator", OperatorRoles);
+            await Stack.StartWorkerAsync();
+            var workflow = await client.Workflows.CreateAndPublishAsync(DurableStatusExample(scenario, WatchStatus));
+            var instance = await client.Workflows.StartInstanceAsync(workflow.Id, Variables(("scenario", UniqueStock("status-409"))));
+
+            var detail = await UntilAsync(() => client.Workflows.GetInstanceAsync(instance.Id), item => item.Status == "completed", "the error route");
+
+            Assert.Equal(409, Value(detail, "httpStatus").GetInt32());
+            var visits = await client.ExecutionsAsync(instance.Id);
+            Assert.Contains(visits, visit => visit.NodeId == 3);
+            Assert.DoesNotContain(visits, visit => visit.NodeId is 8 or 9);
+            Assert.Empty(await client.IncidentsAsync(instance.Id));
+        });
+    }
+
+    [Fact]
+    public async Task DurableUnmatchedStatusOpensAnIncidentInsteadOfTakingACondition()
+    {
+        await using var scenario = await Stack.CreateScenario("examples-status-condition-unmatched");
+        await scenario.RunAsync("an unmatched status with a condition on it", async () =>
+        {
+            await using var client = await CreateAsync(scenario, "example-operator", OperatorRoles);
+            await Stack.StartWorkerAsync();
+            var workflow = await client.Workflows.CreateAndPublishAsync(DurableStatusExample(scenario, definition =>
+            {
+                WatchStatus(definition);
+                FlowNode(definition, 2)["job"]!["retryDelays"] = new JsonArray();
+            }));
+            var instance = await client.Workflows.StartInstanceAsync(workflow.Id, Variables(("scenario", UniqueStock("status-503"))));
+
+            await UntilAsync(() => client.IncidentsAsync(instance.Id), rows => rows.Count > 0, "the incident");
+
+            var detail = await client.Workflows.GetInstanceAsync(instance.Id);
+            Assert.Equal("running", detail.Status);
+            Assert.Equal(0, Value(detail, "httpStatus").GetInt32());
+            Assert.DoesNotContain(await client.ExecutionsAsync(instance.Id), visit => visit.NodeId is 8 or 9);
+        });
+    }
+
+    [Fact]
+    public async Task DurableLateMatchingResultAfterAnInterruptingTimerIsDiscarded()
+    {
+        await using var scenario = await Stack.CreateScenario("examples-status-late-result");
+        await scenario.RunAsync("a real timer wins while the call is open", async () =>
+        {
+            await using var client = await CreateAsync(scenario, "example-operator", OperatorRoles);
+            await Stack.StartWorkerAsync();
+            var workflow = await client.Workflows.CreateAndPublishAsync(DurableStatusExample(scenario, definition =>
+            {
+                FlowNode(definition, 2)["service"]!["timeoutSeconds"] = 10;
+                definition["flowNodes"]!.AsArray().Add(JsonNode.Parse("""{ "id": 8, "name": "Deadline", "type": "timerBoundaryEvent", "laneId": 1, "x": 320, "y": 190, "roles": [], "variables": [], "attachedToRef": 2, "cancelActivity": true, "timer": { "timeDuration": "PT1S" } }"""));
+                definition["flowNodes"]!.AsArray().Add(JsonNode.Parse("""{ "id": 9, "name": "Timed Out", "type": "endEvent", "laneId": 1, "x": 820, "y": 400, "roles": [], "variables": [] }"""));
+                definition["sequenceFlows"]!.AsArray().Add(JsonNode.Parse("""{ "id": 801, "name": "Too late", "sourceRef": 8, "targetRef": 9, "roles": [], "variables": [] }"""));
+            }));
+            var stock = UniqueStock("late-409");
+            var instance = await client.Workflows.StartInstanceAsync(workflow.Id, Variables(("scenario", stock)));
+
+            await UntilAsync(() => client.Workflows.GetInstanceAsync(instance.Id), detail => detail.Status == "completed", "the timer route");
+            // The service answers after four seconds; give that answer time to arrive.
+            await Task.Delay(TimeSpan.FromSeconds(6));
+
+            Assert.Equal(1, fixture.Service.StockCalls(stock));
+            var visits = await client.ExecutionsAsync(instance.Id);
+            Assert.Contains(visits, visit => visit.NodeId == 9);
+            Assert.DoesNotContain(visits, visit => visit.NodeId is 3 or 4 or 5);
+            Assert.Empty(await client.IncidentsAsync(instance.Id));
+            Assert.Equal("completed", (await client.Workflows.GetInstanceAsync(instance.Id)).Status);
+        });
+    }
+
+    [Fact]
+    public async Task DurableWorkerStoppedMidCallRoutesOnceAfterItRestarts()
+    {
+        await using var scenario = await Stack.CreateScenario("examples-status-worker-restart");
+        await scenario.RunAsync("a real Worker restart with a call open", async () =>
+        {
+            await using var client = await CreateAsync(scenario, "example-operator", OperatorRoles);
+            await Stack.StartWorkerAsync();
+            var workflow = await client.Workflows.CreateAndPublishAsync(DurableStatusExample(scenario, definition =>
+                FlowNode(definition, 2)["service"]!["timeoutSeconds"] = 90));
+            var stock = UniqueStock("stall-409");
+            var instance = await client.Workflows.StartInstanceAsync(workflow.Id, Variables(("scenario", stock)));
+
+            await UntilAsync(() => Task.FromResult(fixture.Service.StockCalls(stock)), calls => calls == 1, "the first call to start");
+            await Stack.StopWorkerAsync();
+            await Stack.StartWorkerAsync();
+            await UntilAsync(
+                () => client.Workflows.GetInstanceAsync(instance.Id),
+                detail => detail.Status == "completed",
+                "the expired lease to be retried and routed",
+                TimeSpan.FromSeconds(150));
+
+            Assert.Equal(2, fixture.Service.StockCalls(stock));
+            Assert.Single(await client.ExecutionsAsync(instance.Id), visit => visit.NodeId == 3);
+            Assert.Empty(await client.IncidentsAsync(instance.Id));
         });
     }
 

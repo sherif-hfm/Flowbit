@@ -11,6 +11,7 @@ the JSON—they do not invoke the endpoint.
 | --- | --- | --- | --- | --- |
 | [`01-rest-templating-and-typed-output.json`](01-rest-templating-and-typed-output.json) | Required `requestId` and `customerId`; optional `locale`, `quantity`, `urgent`, and `requestTags` have defaults. Start as `ExampleRequester`. | `ExampleReviewer` takes **Complete review** after the call succeeds. | URL/header/body placeholders are rendered; a 2xx mock response atomically writes the status plus declared and dynamic typed outputs. | API and database, a local/private mock API, and the two trusted configuration values below. No Worker. |
 | [`02-rest-error-boundary-and-error-end.json`](02-rest-error-boundary-and-error-end.json) | Required `requestId` and `resourceId`. Start as `ExampleRequester`. | `ExampleOperator` supplies `retryReason` and takes **Retry REST call**, or takes **End with domain fault** with the optional `faultNote`. | A non-2xx/timeout/network failure writes `serviceStatus`, captures `serviceError`, and rests at the operator task. The terminal action faults the instance with `EXAMPLE.REST_FAILURE`. | API and database, a local/private failing mock route, and the two trusted configuration values below. No Worker. |
+| [`04-rest-http-status-routing.json`](04-rest-http-status-routing.json) | Required `orderId`. Start as `ExampleRequester`. | None; the service response decides the route. | See the [status routing contract](#status-routing-mock-contract). | API, database, controlled mock, and both configuration references below. |
 | [`03-rest-shared-variable-output.json`](03-rest-shared-variable-output.json) | No start values. Before import, create active shared key `examples.service.status` as a non-nullable scalar string with no validation rule. | Start the workflow; no user action is required. | The worker invokes `GET /shared-state` through an async-before job and atomically stores the response `status` in the shared catalog. A caught failure reaches `EXAMPLE.SHARED_STATUS_FAILURE`. | API, database, Worker, a local/private mock route, `${config.exampleApiBaseUrl}`, and the shared catalog prerequisite. |
 
 ## Required trusted configuration
@@ -115,3 +116,22 @@ The attached boundary catches the failure. `serviceStatus` becomes `503`, and
 return 2xx before choosing **Retry REST call** to reach **Unexpected REST
 Success**, or leave it failing and choose **End with domain fault** to finish
 with instance status `Faulted` and fault code `EXAMPLE.REST_FAILURE`.
+
+## Status routing mock contract
+
+For `04-rest-http-status-routing.json`, start with a value such as
+`{ "orderId": "order-1001" }` and have the mock answer
+`POST /orders/order-1001/submit` as follows. The instance needs no action, and
+`serviceStatus` records the status in every case except a timeout.
+
+| Mock behavior | Selected boundary | Result |
+| --- | --- | --- |
+| 2xx | None; a successful task takes no boundary | **Order Accepted** |
+| `409` | **Duplicate Order**, by exact status | **Order Already Submitted** |
+| `422` or another `4xx` | **Rejected Order Data**, by range | **Order Data Needs Correction** |
+| `503` or another `5xx` | **Order Service Unavailable**, by range | **Order Service Down**, `Faulted` with `EXAMPLE.ORDER_SERVICE_DOWN` |
+| No answer within 5 seconds, or a status outside `100..599` | **Other Integration Failure**, the catch-all | **No Usable Response**, `Faulted` with `EXAMPLE.ORDER_NO_RESPONSE` |
+
+Only the selected boundary writes `integrationFailure`. Without the catch-all, a
+timeout would reject the start with `400`. See
+[HTTP status matching](../../docs/node-reference.md#http-status-matching).

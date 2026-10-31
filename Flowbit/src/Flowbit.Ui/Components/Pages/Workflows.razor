@@ -25,7 +25,7 @@
         <div><h2 id="import-workflow-heading">Import editor JSON</h2><p>Select a workflow JSON file, such as one exported by <code>flowbit-editor.html</code> or written by an AI agent with the Flowbit skill. Files are limited to 2 MB.</p></div>
     </div>
     <label class="form-label" for="workflow-json-file">Workflow definition file</label>
-    <InputFile id="workflow-json-file" @key="inputFileKey" OnChange="OnInputFileChange" class="form-control" accept=".json,application/json" />
+    <InputFile id="workflow-json-file" @key="inputFileKey" OnChange="OnInputFileChange" class="form-control" accept=".json,application/json" disabled="@importing" />
     @if (!string.IsNullOrWhiteSpace(workflowJson))
     {
         <div class="summary-grid my-3">
@@ -182,6 +182,7 @@
     private string? error;
     private string? fileName;
     private long? fileSize;
+    private long fileSelection;
     private object inputFileKey = new();
     private bool publishOnImport = true;
     private bool importing;
@@ -237,24 +238,34 @@
 
     private async Task OnInputFileChange(InputFileChangeEventArgs e)
     {
+        // The old file goes first, so Import has nothing to submit until this one is
+        // read. A read that finishes after a newer selection no longer belongs to the page.
+        var selection = ++fileSelection;
+        error = null;
+        workflowJson = null;
+        fileName = null;
+        fileSize = null;
         try
         {
-            error = null;
             var file = e.File;
-            fileName = file.Name;
-            fileSize = file.Size;
 
             // Restrict file size to 2MB (2 * 1024 * 1024 bytes)
             using var stream = file.OpenReadStream(maxAllowedSize: 2 * 1024 * 1024);
             using var reader = new StreamReader(stream);
-            workflowJson = await reader.ReadToEndAsync();
+            var contents = await reader.ReadToEndAsync();
+            if (selection == fileSelection)
+            {
+                workflowJson = contents;
+                fileName = file.Name;
+                fileSize = file.Size;
+            }
         }
         catch (Exception ex)
         {
-            error = $"Failed to read file: {ex.Message}";
-            workflowJson = null;
-            fileName = null;
-            fileSize = null;
+            if (selection == fileSelection)
+            {
+                error = $"Failed to read file: {ex.Message}";
+            }
         }
     }
 
@@ -267,11 +278,16 @@
             var definition = JsonSerializer.Deserialize<WorkflowModel>(workflowJson ?? string.Empty, JsonOptions)
                 ?? throw new InvalidOperationException("Workflow JSON could not be parsed.");
             await Api.CreateWorkflowAsync(new CreateWorkflowRequest(definition, Publish: publishOnImport));
+            fileSelection++;
             workflowJson = null;
             fileName = null;
             fileSize = null;
             inputFileKey = new object(); // Resets the InputFile component
             await ReloadVersionsAsync();
+        }
+        catch (JsonException ex)
+        {
+            error = JsonReadError.Describe(ex);
         }
         catch (Exception ex)
         {

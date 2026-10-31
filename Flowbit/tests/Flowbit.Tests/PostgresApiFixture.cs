@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Data;
 using System.Data.Common;
+using System.Globalization;
 using System.Security.Claims;
 using System.Text.Encodings.Web;
 using Microsoft.AspNetCore.Authentication;
@@ -18,6 +19,7 @@ using Npgsql;
 using Testcontainers.PostgreSql;
 using Flowbit.Infrastructure.Data;
 using Flowbit.Service.Abstractions;
+using Flowbit.Service.Services;
 using Xunit;
 
 namespace Flowbit.Tests;
@@ -41,6 +43,7 @@ public sealed class PostgresApiFixture : IAsyncLifetime
     public HttpClient Client { get; private set; } = null!;
     public ApiDbCommandCounter CommandCounter { get; } = new();
     public ServiceInvocationProbe ServiceInvocations { get; } = new();
+    public ErrorBoundaryLogProbe ErrorBoundaryLogs { get; } = new();
     public string ConnectionString => _postgres.GetConnectionString();
     public NpgsqlDataSource DataSource { get; private set; } = null!;
 
@@ -72,7 +75,8 @@ public sealed class PostgresApiFixture : IAsyncLifetime
         Factory = new WorkflowApiFactory(
             _postgres.GetConnectionString(),
             CommandCounter,
-            ServiceInvocations);
+            ServiceInvocations,
+            ErrorBoundaryLogs);
         Client = Factory.CreateClient(new WebApplicationFactoryClientOptions
         {
             AllowAutoRedirect = false
@@ -110,7 +114,8 @@ public sealed class PostgresApiFixture : IAsyncLifetime
     private sealed class WorkflowApiFactory(
         string connectionString,
         ApiDbCommandCounter commandCounter,
-        ServiceInvocationProbe serviceInvocations) : WebApplicationFactory<Program>
+        ServiceInvocationProbe serviceInvocations,
+        ErrorBoundaryLogProbe errorBoundaryLogs) : WebApplicationFactory<Program>
     {
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
@@ -142,7 +147,30 @@ public sealed class PostgresApiFixture : IAsyncLifetime
                 services.RemoveAll<IServiceTaskInvoker>();
                 services.AddSingleton(serviceInvocations);
                 services.AddScoped<IServiceTaskInvoker, DeterministicServiceTaskInvoker>();
+                // Serilog writes through a static logger that other test hosts replace,
+                // so a test reads these lines from the engine's logger itself.
+                services.AddSingleton<ILogger<WorkflowEngineService>>(provider => new ProbingEngineLogger(
+                    provider.GetRequiredService<ILoggerFactory>().CreateLogger(typeof(WorkflowEngineService).FullName!),
+                    errorBoundaryLogs));
             });
+        }
+    }
+
+    private sealed class ProbingEngineLogger(ILogger inner, ErrorBoundaryLogProbe probe) : ILogger<WorkflowEngineService>
+    {
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => inner.BeginScope(state);
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            inner.Log(logLevel, eventId, state, exception, formatter);
+            probe.Record(logLevel, formatter(state, exception), state as IEnumerable<KeyValuePair<string, object?>>);
         }
     }
 
@@ -158,6 +186,10 @@ public sealed class PostgresApiFixture : IAsyncLifetime
                 dbContext.Database.CurrentTransaction is not null,
                 dbContext.Database.GetDbConnection().State);
             await probe.WaitIfBlockedAsync(request.Url, cancellationToken);
+            if (ControlledFailure(request.Url, probe) is { } controlled)
+            {
+                return controlled;
+            }
             var body = request.Url switch
             {
                 var url when url.EndsWith("/typed-output-success", StringComparison.Ordinal) =>
@@ -178,6 +210,31 @@ public sealed class PostgresApiFixture : IAsyncLifetime
                 ? new ServiceTaskResult(true, 404, null, "No deterministic test response configured.")
                 : new ServiceTaskResult(true, 200, body, null);
         }
+
+        // /status/409 completes with that status, /lost-body/503 keeps the status
+        // of a body read that failed, /no-response has none, and
+        // /status-sequence/{unique}/503,409 uses the next status on each attempt.
+        private static ServiceTaskResult? ControlledFailure(string url, ServiceInvocationProbe probe)
+        {
+            var path = new Uri(url).AbsolutePath.Trim('/').Split('/');
+            return path switch
+            {
+                ["status", var status] => Completed(int.Parse(status, CultureInfo.InvariantCulture)),
+                ["lost-body", var status] => new ServiceTaskResult(
+                    false,
+                    int.Parse(status, CultureInfo.InvariantCulture),
+                    null,
+                    "Transport request failed."),
+                ["no-response"] => new ServiceTaskResult(false, 0, null, "Request timed out after 5s."),
+                ["status-sequence", _, var statuses] => Completed(int.Parse(
+                    statuses.Split(',')[Math.Min(probe.NextAttempt(url), statuses.Split(',').Length - 1)],
+                    CultureInfo.InvariantCulture)),
+                _ => null
+            };
+        }
+
+        private static ServiceTaskResult Completed(int status) =>
+            new(true, status, status is >= 200 and < 300 ? "{}" : null, null);
     }
 
     private sealed class TestAuthenticationHandler(
@@ -233,6 +290,28 @@ public sealed class PostgresApiFixture : IAsyncLifetime
     }
 }
 
+public sealed record ErrorBoundaryLogEntry(
+    LogLevel Level,
+    string Message,
+    IReadOnlyDictionary<string, object?> Fields);
+
+/// <summary>The engine's error-boundary selection lines, with their structured fields.</summary>
+public sealed class ErrorBoundaryLogProbe
+{
+    private readonly ConcurrentQueue<ErrorBoundaryLogEntry> entries = new();
+
+    public IReadOnlyList<ErrorBoundaryLogEntry> ForInstance(long instanceId) =>
+        entries.Where(entry => Equals(entry.Fields.GetValueOrDefault("InstanceId"), instanceId)).ToArray();
+
+    internal void Record(LogLevel level, string message, IEnumerable<KeyValuePair<string, object?>>? fields)
+    {
+        if (fields is not null && message.Contains("error boundary", StringComparison.Ordinal))
+        {
+            entries.Enqueue(new ErrorBoundaryLogEntry(level, message, fields.ToDictionary()));
+        }
+    }
+}
+
 public sealed record ServiceInvocationObservation(
     bool HasTransaction,
     ConnectionState ConnectionState);
@@ -240,11 +319,19 @@ public sealed record ServiceInvocationObservation(
 public sealed class ServiceInvocationProbe
 {
     private readonly ConcurrentQueue<ServiceInvocationObservation> observations = new();
+    private readonly ConcurrentDictionary<string, int> attempts = new(StringComparer.Ordinal);
     private readonly object blockLock = new();
     private ServiceInvocationBlock? pendingBlock;
 
     public IReadOnlyList<ServiceInvocationObservation> Snapshot() =>
         observations.ToArray();
+
+    /// <summary>Zero-based count of earlier invocations of this URL.</summary>
+    public int NextAttempt(string url) =>
+        attempts.AddOrUpdate(url, 0, (_, attempt) => attempt + 1);
+
+    public int AttemptCount(string url) =>
+        attempts.TryGetValue(url, out var attempt) ? attempt + 1 : 0;
 
     public void Record(bool hasTransaction, ConnectionState connectionState) =>
         observations.Enqueue(new ServiceInvocationObservation(

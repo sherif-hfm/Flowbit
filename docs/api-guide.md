@@ -78,7 +78,7 @@ The API does not have one universal error envelope. Clients should branch on HTT
 | Status | Contract and client behavior |
 | --- | --- |
 | `200`, `201`, `202`, `204` | Successful read/mutation, created resource, accepted durable work, or success without a response body. `201` and `202` endpoints described below set `Location`. A batch `202` means preparation is queued, not that its items have executed. |
-| `400` | Domain validation normally returns `{"error":"description"}`. Malformed transport input may instead use framework binding errors or Problem Details. Task role/claim/flow mismatches are often domain errors, not `403`. |
+| `400` | Domain validation and a request that cannot be bound both return `{"error":"description"}`. For a JSON body that cannot be read, the description gives the cause and the JSON path. Task role/claim/flow mismatches are often domain errors, not `403`. For example, an `errorMatch` listing `"409"` as a string returns `The value has the wrong JSON type. Path: $.definition.flowNodes[3].errorMatch.httpStatusCodes[0]`, and a misspelled selector returns `Unknown property 'httpStatusRangez'.` with its path. Neither names the boundary, because the request never reached validation. One that lists a duplicate status fails validation and names the boundary and host IDs. |
 | `401` | Missing/invalid JWT or machine credentials. JWT middleware may return an empty body; service authentication errors can return `{"error":"description"}`. |
 | `403` | Required OIDC API scope or administrator/manager permission missing. Endpoint filters may return an empty body; service-level forbiddance returns an `error` object. |
 | `404` | Missing resource, or an intentionally hidden personal-task/node-execution resource. Do not use detail probing to infer task availability. |
@@ -2787,7 +2787,7 @@ Content-Type: application/json
 
 Every route in this section requires the Job operator role, including endpoints whose OpenAPI metadata does not repeat `401`/`403`. Lists and attempts use opaque cursors. Operational DTOs expose bounded metadata and failure summaries, not job snapshots or persisted external-response bodies. A resolved incident may remain after its completed job has been pruned, so `IncidentDetailDto.job` may be null.
 
-Job statuses: `queued`, `running`, `resultReady`, `retry`, `completed`, `incident`, `cancelled`, `skipped`. Kinds: `asyncBefore`, `asyncAfter`, `timer`, `timerStart`, `timerBoundary`, `conditionalWake`, `administrativeBatchPrepare`, `administrativeBatchExecute`, `instanceVersionChangeBatchPrepare`, `instanceVersionChangeBatchExecute`, `instanceVariableUpdateBatchPrepare`, `instanceVariableUpdateBatchExecute`. Incident statuses: `open`, `resolved`; `type` is the recorded failure category, including `automatic_loop_limit` and `timer_schedule_failed`, a timer start whose first due time cannot be computed; retrying that incident schedules the timer start again. Repeated filters are supplied as repeated query parameters. Retry fences the original activation and queues work; it does not immediately finish the workflow. A no-longer-retryable incident/job returns `409`.
+Job statuses: `queued`, `running`, `resultReady`, `retry`, `completed`, `incident`, `cancelled`, `skipped`. Kinds: `asyncBefore`, `asyncAfter`, `timer`, `timerStart`, `timerBoundary`, `conditionalWake`, `administrativeBatchPrepare`, `administrativeBatchExecute`, `instanceVersionChangeBatchPrepare`, `instanceVersionChangeBatchExecute`, `instanceVariableUpdateBatchPrepare`, `instanceVariableUpdateBatchExecute`. Incident statuses: `open`, `resolved`; `type` is the recorded failure category, including `automatic_loop_limit`; `job_conflict`, a conflict in a job that still owns its work, whose `details` give the cause; and `timer_schedule_failed`, a timer start whose first due time cannot be computed, where retrying schedules the timer start again. Repeated filters are supplied as repeated query parameters. Retry fences the original activation and queues work; it does not immediately finish the workflow. A no-longer-retryable incident/job returns `409`.
 
 ### GET /api/jobs
 
@@ -7370,6 +7370,7 @@ Type-specific requirements and defaults are in BPMN support. Missing cancelActiv
 | `multiInstance` | null or [MultiInstanceModel](#schema-multiinstancemodel) | No | — |
 | `attachedToRef` | null or integer (int32) | No | Authored host node ID for the boundary. Allowed hosts depend on error/timer/conditional boundary type; see BPMN support. |
 | `errorVariable` | null or string | No | The variable name where the failure reason is written when caught. |
+| `errorMatch` | null or [ErrorBoundaryMatchModel](#schema-errorboundarymatchmodel) | No | errorBoundaryEvent on a REST service task only: the HTTP statuses this boundary catches. Absent or null means it catches every failure. |
 | `errorCode` | null or string | No | Stable, business-facing fault code thrown by an errorEndEvent. |
 | `errorDescription` | null or string | No | Optional public description for the fault thrown by an errorEndEvent. The node name is used at runtime when this value is omitted. |
 | `activationCondition` | null or string | No | Complex gateway only: the NCalc expression that decides when the current start/reset phase is enabled. IncomingCount(flowId) and TotalIncomingCount() are available while evaluating this expression. |
@@ -8335,6 +8336,34 @@ Bounded operations projection for a durable workflow job. Snapshots, result payl
 | `createdAt` | string (date-time) | Yes | Server creation timestamp. |
 | `updatedAt` | string (date-time) | Yes | Server last-change timestamp; preserve exact precision for optimistic commands. |
 | `completedAt` | null or string (date-time) | Yes | Nullable until completed; ISO 8601 timestamp. |
+
+</details>
+
+<a id="schema-errorboundarymatchmodel"></a>
+
+<details>
+<summary>ErrorBoundaryMatchModel</summary>
+
+The HTTP statuses an error boundary catches. Numeric strings and unknown members are rejected when the request is read. See [HTTP status matching](node-reference.md#http-status-matching).
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `httpStatusCodes` | null or array of integer (int32) | No | Exact statuses from 100 through 599. Null means no exact selectors. |
+| `httpStatusRanges` | null or array of [HttpStatusRangeModel](#schema-httpstatusrangemodel) | No | Inclusive status ranges. Null means no range selectors. |
+
+</details>
+
+<a id="schema-httpstatusrangemodel"></a>
+
+<details>
+<summary>HttpStatusRangeModel</summary>
+
+An inclusive HTTP status range.
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `from` | integer (int32) | Yes | First status, from 100 through 599 and below `to`. |
+| `to` | integer (int32) | Yes | Last status, from 100 through 599. |
 
 </details>
 

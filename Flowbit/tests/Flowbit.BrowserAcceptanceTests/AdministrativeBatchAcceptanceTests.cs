@@ -552,49 +552,14 @@ public sealed class AdministrativeBatchAcceptanceTests(AcceptanceFixture fixture
                     animation.effect?.getComputedTiming().iterations === Infinity)
                 """, null, new() { Timeout = 5_000 });
             Assert.True(await Page.EvaluateAsync<bool>("() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 2"));
-            await ScrollToTopAsync();
+            await PageScrolling.ScrollToTopAsync(Page);
             await Page.ScreenshotAsync(new() { Path = Path.Combine(scenario.ArtifactDirectory, name + ".png"), FullPage = true });
             // A whole tall section may be centered with its status out of view.
             var heading = target.Locator(".section-heading").First;
             await (await heading.CountAsync() > 0 ? heading : target).ScrollIntoViewIfNeededAsync();
-            await SettledScrollYAsync();
+            await PageScrolling.SettledScrollYAsync(Page);
             await Page.ScreenshotAsync(new() { Path = Path.Combine(scenario.ArtifactDirectory, name + "-viewport.png") });
         }
-        // Bootstrap's reboot gives the page `scroll-behavior: smooth`, so focus
-        // changes, Blazor's navigation reset and Playwright's own actionability
-        // scrolling all animate. Hovering the heading could start such a scroll
-        // (it can sit under the sticky top bar), and on a busy machine that
-        // animation outlived a single wheel input and left the page at the
-        // heading. Point at the top bar's padding, which starts no scroll, and
-        // wheel until the page rests at the top.
-        private async Task ScrollToTopAsync()
-        {
-            var bar = await Page.Locator("header.topbar").BoundingBoxAsync()
-                ?? throw new InvalidOperationException("The app top bar is not rendered.");
-            await Page.Mouse.MoveAsync(bar.X + bar.Width * 0.6f, bar.Y + 4);
-            for (var wheel = 0; ; wheel++)
-            {
-                var y = await SettledScrollYAsync();
-                if (y <= 1) return;
-                if (wheel == 5) throw new TimeoutException($"The page stayed {y}px from the top after five wheel inputs.");
-                await Page.Mouse.WheelAsync(0, -(float)(y + Page.ViewportSize!.Height));
-            }
-        }
-        // Resolves once the page's scroll position is unchanged for ten animation
-        // frames, so a smooth scroll in progress finishes before it is read.
-        private Task<double> SettledScrollYAsync() => Page.EvaluateAsync<double>("""
-            () => new Promise(resolve => {
-              const deadline = performance.now() + 5000;
-              let last = NaN, same = 0;
-              const tick = () => {
-                same = scrollY === last ? same + 1 : 0;
-                last = scrollY;
-                if (same >= 10 || performance.now() > deadline) resolve(scrollY);
-                else requestAnimationFrame(tick);
-              };
-              requestAnimationFrame(tick);
-            })
-            """);
         internal async Task ScreenshotsAsync(string name, ILocator? target = null)
         {
             foreach (var (width, height) in new[] { (1440, 900), (1024, 768), (390, 844) })

@@ -9,6 +9,7 @@ demonstration values; scheduling and Worker load may delay an attempt.
 | --- | --- | --- |
 | [Async before and after](01-async-before-after.json) | No input; complete **Inspect Result** after Worker processing. | Async-before executes the script once; async-after persists completion before routing onward. |
 | [Retries and incident recovery](02-retries-and-incident-recovery.json) | `ExampleRequester` starts with `scenario` set to `fail-once` or `recover`; `ExampleOperator` inspects the recovered result. A job operator (default `admin`) inspects attempts and retries incidents. | `retryFirst` uses `PT2S`, `PT2S`: one initial attempt plus two automatic retries. Fail-once succeeds on the second call; persistent failure opens an incident after three attempts. Correcting the mock and manually retrying the incident resumes the same job. |
+| [REST status routing and retries](04-rest-status-routing-and-retries.json) | `ExampleRequester` starts with `scenario`. A job operator retries the incident an unmatched status opens. | A matched `409` or `4xx` routes on the first attempt, while an unmatched `503` retries and then opens an incident. |
 | [Error-boundary precedence](03-error-boundary-precedence.json) | No inputs; `ExampleRequester` starts and `ExampleOperator` inspects both error values. | Two async JavaScript tasks throw deliberately. `boundaryFirst` catches on the first attempt; `retryFirst` catches after the initial attempt and two retries. Both failures are handled, so neither creates an incident. |
 
 ## Controlled REST mock contract
@@ -173,6 +174,27 @@ the first host has one attempt, the second has three, and the instance has no
 open incidents. The boundary continuation routes to the next task in each case;
 the hosts' normal-success routes are not followed. Complete the inspection
 action `601` after reviewing that evidence.
+
+## Example 04: REST status routing and retries
+
+Supply the [controlled REST mock configuration](#controlled-rest-mock-contract) to
+both API and Worker, then start the published definition as `ExampleRequester`
+with `scenario` naming the mock route `POST /stock/{scenario}`:
+
+| Mock behavior | Attempts | Result |
+| --- | --- | --- |
+| 2xx | 1 | **Stock Reserved** |
+| `409` | 1 | **Already Reserved**, then **Reservation Existed** |
+| `422` | 1 | **Rejected Request**, then **Request Needs Correction** |
+| `503` every time | 3 | An incident on **Jobs & incidents**, with no boundary visit. Correct the mock and retry the incident. |
+| `503`, then `409` | 2 | **Already Reserved**: the later attempt's result decides. |
+
+The host policy is `boundaryFirst`, so a match routes on its first occurrence and
+`503` retries only because no boundary matches it. Attaching a `500-599` boundary
+would stop those retries. Changing the policy to `retryFirst` would retry `409`
+too, sending it three times before it routes. One host cannot route `409`
+immediately, retry `503`, and then route the exhausted `503`. Each attempt sends
+the same `Idempotency-Key`, because a retried call may repeat a remote effect.
 
 ## Operations UI and acceptance
 

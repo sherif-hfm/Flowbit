@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.OpenApi;
 using Microsoft.OpenApi;
@@ -15,6 +16,7 @@ using Flowbit.Service.Authoring;
 using Flowbit.Service.DependencyInjection;
 using Flowbit.Service.Services;
 using Flowbit.Shared.Dtos;
+using Flowbit.Shared.Models;
 
 Log.Logger = new LoggerConfiguration()
     .WriteTo.Console()
@@ -333,6 +335,10 @@ try
         .AddServiceLayer()
         .AddInfrastructure(builder.Configuration);
 
+    // Outside Development a binding failure would otherwise be a bare status, with
+    // nothing to say which value was wrong. The middleware below reports it.
+    builder.Services.Configure<RouteHandlerOptions>(options => options.ThrowOnBadRequest = true);
+
     var aiOptions = WorkflowAiServiceCollectionExtensions.ReadWorkflowAiOptions(builder.Configuration);
     builder.Services.AddWorkflowAiAuthoring(aiOptions);
     builder.Services.AddSingleton<IAuthoringKnowledge, AuthoringKnowledge>();
@@ -410,6 +416,22 @@ try
     });
 
     app.UseSerilogRequestLogging();
+
+    // Inside the request log, so a request that cannot be bound is logged as the 400 it is.
+    app.Use(async (context, next) =>
+    {
+        try
+        {
+            await next(context);
+        }
+        catch (BadHttpRequestException ex) when (!context.Response.HasStarted)
+        {
+            var error = ex.InnerException is JsonException json ? JsonReadError.Describe(json) : ex.Message;
+            Log.Warning("Request could not be read: {Error}", error);
+            context.Response.StatusCode = ex.StatusCode;
+            await context.Response.WriteAsJsonAsync(new { error });
+        }
+    });
 
     if (app.Environment.IsDevelopment())
     {

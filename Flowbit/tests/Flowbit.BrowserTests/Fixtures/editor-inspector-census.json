@@ -1,0 +1,92 @@
+{
+  "id": "browser-editor-inspector-census",
+  "name": "Browser editor inspector census",
+  "initialEventId": 1,
+  "taskAssignmentRoles": ["Manager"],
+  "taskRoleManagementRoles": ["Manager"],
+  "taskDistribution": { "clientId": "census", "clientSecret": "${setting.censusSecret}" },
+  "variables": [
+    { "id": 1, "name": "amount", "dataType": "number", "isArray": false, "nullable": false, "required": false, "defaultValue": 1, "validation": "amount > 0" },
+    { "id": 2, "name": "approvers", "dataType": "string", "isArray": true, "nullable": true, "required": false, "defaultValue": null, "validation": null },
+    { "id": 3, "name": "rate", "scope": "shared", "sharedKey": "finance.rate", "access": "readWrite", "dataType": "number", "isArray": false, "nullable": false, "required": false, "defaultValue": null, "validation": null }
+  ],
+  "lanes": [
+    { "id": 1, "name": "Everything", "externalId": "LANE", "x": 20, "y": 20, "w": 1720, "h": 860 }
+  ],
+  "flowNodes": [
+    {
+      "id": 1, "name": "Start", "type": "startEvent", "laneId": 1, "x": 60, "y": 70, "roles": ["Agent"], "attributes": [{ "key": "form", "value": "census" }],
+      "businessKey": { "variable": "reference", "uniqueness": "active" },
+      "idempotency": { "headerName": "Idempotency-Key", "variable": "requestId" },
+      "variables": [
+        { "id": 1, "name": "reference", "dataType": "string", "isArray": false, "nullable": false, "required": true, "defaultValue": null, "validation": null, "label": "Reference", "helpText": "Shown on the form.", "options": [{ "value": "a", "label": "A" }] },
+        { "id": 2, "name": "note", "dataType": "string", "isArray": false, "nullable": false, "required": false, "defaultValue": "none", "validation": null }
+      ]
+    },
+    { "id": 2, "name": "Claimed", "type": "userTask", "laneId": 1, "x": 200, "y": 60, "roles": ["Agent"], "requiresClaim": true, "claimMode": "fromNode", "inheritClaimFromNodeId": 3, "assignee": "'alice'", "dueDate": "P2D", "dueDateCalendar": "Office", "priority": "50", "inboxVisibilityCondition": "amount > 0" },
+    { "id": 3, "name": "Assigned", "type": "userTask", "laneId": 1, "x": 440, "y": 60, "rolesVariable": "approvers", "requiresAssignment": true, "assignmentMode": "fromNode", "inheritAssignmentFromNodeId": 2 },
+    { "id": 4, "name": "Reviews", "type": "userTask", "laneId": 1, "x": 680, "y": 60, "multiInstance": { "mode": "parallel", "source": "cardinality", "collectionVariable": null, "cardinalityExpression": "2", "onePerActor": true, "completionEvaluation": "afterEach", "resultVariable": "results" } },
+    { "id": 5, "name": "Each approver", "type": "userTask", "laneId": 1, "x": 920, "y": 60, "multiInstance": { "mode": "sequential", "source": "collection", "collectionVariable": "approvers", "cardinalityExpression": null, "onePerActor": false, "completionEvaluation": "afterAll", "resultVariable": "approvals" } },
+    {
+      "id": 6, "name": "Call", "type": "serviceTask", "laneId": 1, "x": 1160, "y": 60, "asyncBefore": true, "asyncAfter": true,
+      "job": { "failureHandling": "retryFirst", "retryDelays": ["PT1M"], "priority": 5, "timeoutSeconds": 60 },
+      "service": {
+        "type": "rest", "method": "POST", "url": "https://tests.local/call", "body": "{ }", "timeoutSeconds": 10, "statusVariable": "status",
+        "headers": [{ "name": "X-Census", "value": "1" }],
+        "outputMappings": [{ "variable": "score", "path": "score", "dataType": "number", "isArray": false, "required": false, "defaultValue": 0, "validation": "score >= 0" }]
+      }
+    },
+    { "id": 7, "name": "Assignments", "type": "scriptTask", "laneId": 1, "x": 1420, "y": 60, "scriptFormat": "ncalc", "assignments": [{ "variable": "amount", "expression": "amount + 1" }] },
+    { "id": 8, "name": "JavaScript", "type": "scriptTask", "laneId": 1, "x": 200, "y": 230, "scriptFormat": "javascript", "script": "execution.setVariable('amount', 2);" },
+    { "id": 9, "name": "Automatic", "type": "task", "laneId": 1, "x": 440, "y": 230 },
+    { "id": 10, "name": "Exclusive", "type": "exclusiveGateway", "laneId": 1, "x": 730, "y": 235 },
+    { "id": 11, "name": "Parallel", "type": "parallelGateway", "laneId": 1, "x": 970, "y": 235 },
+    { "id": 12, "name": "Inclusive", "type": "inclusiveGateway", "laneId": 1, "x": 1210, "y": 235 },
+    { "id": 13, "name": "Complex", "type": "complexGateway", "laneId": 1, "x": 1450, "y": 235, "activationCondition": "TotalIncomingCount() >= 2" },
+    { "id": 14, "name": "Cancelling join", "type": "parallelGateway", "laneId": 1, "x": 60, "y": 400, "joinCancellation": { "gatewayRef": 11 } },
+    { "id": 15, "name": "Interrupt", "type": "scopedInterruptEvent", "laneId": 1, "x": 240, "y": 400, "gatewayRef": 11 },
+    { "id": 16, "name": "Terminate", "type": "terminateEndEvent", "laneId": 1, "x": 420, "y": 400 },
+    { "id": 17, "name": "Fault", "type": "errorEndEvent", "laneId": 1, "x": 600, "y": 400, "errorCode": "CENSUS.FAULT", "errorDescription": "Census fault" },
+    { "id": 18, "name": "End", "type": "endEvent", "laneId": 1, "x": 780, "y": 400 },
+    {
+      "id": 19, "name": "Message wait", "type": "intermediateMessageCatchEvent", "laneId": 1, "x": 960, "y": 400,
+      "message": {
+        "clientId": "census", "clientSecret": "${setting.censusSecret}", "headerName": "X-Census", "headerValue": "${setting.censusHeader}", "headerValidation": "Len(header) > 0",
+        "deliveryIdempotency": true, "deliveryIdempotencyHeaderName": "Idempotency-Key",
+        "outputMappings": [{ "variable": "reply", "path": "reply", "dataType": "string", "isArray": false, "required": false, "defaultValue": null, "validation": null }]
+      }
+    },
+    {
+      "id": 20, "name": "Message start", "type": "messageStartEvent", "laneId": 1, "x": 1140, "y": 400,
+      "idempotency": { "headerName": "X-Census-Key", "variable": "startKey" },
+      "message": {
+        "clientId": "census", "clientSecret": "${setting.censusSecret}", "headerName": "X-Census", "headerValue": "${setting.censusHeader}", "headerValidation": null,
+        "outputMappings": [{ "variable": "subject", "path": "subject", "dataType": "string", "isArray": false, "required": true, "defaultValue": null, "validation": null }]
+      }
+    },
+    { "id": 21, "name": "Timer start", "type": "timerStartEvent", "laneId": 1, "x": 1320, "y": 400, "timer": { "timeCycle": "R/PT1H" } },
+    { "id": 22, "name": "Duration", "type": "intermediateTimerCatchEvent", "laneId": 1, "x": 1500, "y": 400, "timer": { "timeDuration": "PT1H", "calendar": "Office" } },
+    { "id": 23, "name": "Date", "type": "intermediateTimerCatchEvent", "laneId": 1, "x": 60, "y": 560, "timer": { "timeDate": "2030-01-01T09:00:00Z" } },
+    { "id": 24, "name": "Expression", "type": "intermediateTimerCatchEvent", "laneId": 1, "x": 240, "y": 560, "timer": { "timeDuration": "if(amount > 1, 'PT1H', 'PT2H')" } },
+    { "id": 25, "name": "Condition", "type": "intermediateConditionalCatchEvent", "laneId": 1, "x": 420, "y": 560, "conditional": { "condition": "amount > 1", "deliveryMode": "durableAsync" } },
+    { "id": 26, "name": "Failed call", "type": "errorBoundaryEvent", "laneId": 1, "x": 0, "y": 0, "attachedToRef": 6, "errorVariable": "failure", "errorMatch": { "httpStatusCodes": [409], "httpStatusRanges": [{ "from": 500, "to": 599 }] } },
+    { "id": 27, "name": "Reminder", "type": "timerBoundaryEvent", "laneId": 1, "x": 0, "y": 0, "attachedToRef": 2, "cancelActivity": false, "timer": { "timeDuration": "PT1H" } },
+    { "id": 28, "name": "Watcher", "type": "conditionalBoundaryEvent", "laneId": 1, "x": 0, "y": 0, "attachedToRef": 3, "cancelActivity": true, "conditional": { "condition": "amount > 1" } }
+  ],
+  "sequenceFlows": [
+    { "id": 101, "name": "", "sourceRef": 1, "targetRef": 2 },
+    {
+      "id": 201, "name": "Approve", "externalId": "FLOW_APPROVE", "attributes": [{ "key": "result", "value": "approved" }], "sourceRef": 2, "targetRef": 3,
+      "roles": ["Agent"], "condition": "amount > 0", "canActWithoutClaim": true, "canActWithoutClaimRoles": ["Lead"],
+      "variables": [{ "id": 1, "name": "comment", "dataType": "string", "isArray": false, "nullable": false, "required": false, "defaultValue": null, "validation": null }]
+    },
+    { "id": 301, "name": "Send", "sourceRef": 3, "targetRef": 4, "rolesVariable": "approvers" },
+    { "id": 401, "name": "Agree", "sourceRef": 4, "targetRef": 5, "completionCondition": "CountFlow(401) >= 1", "completionPriority": 1, "interrupting": true },
+    { "id": 402, "name": "Fallback", "sourceRef": 4, "targetRef": 9, "isDefault": true, "isSelectable": false },
+    { "id": 901, "name": "", "sourceRef": 9, "targetRef": 10 },
+    { "id": 1001, "name": "Large", "sourceRef": 10, "targetRef": 11, "condition": "amount > 1", "conditionPriority": 1 },
+    { "id": 1002, "name": "Otherwise", "sourceRef": 10, "targetRef": 18, "isDefault": true },
+    { "id": 1101, "name": "", "sourceRef": 11, "targetRef": 12 },
+    { "id": 1201, "name": "Either", "sourceRef": 12, "targetRef": 13, "condition": "amount > 2" }
+  ]
+}

@@ -11,7 +11,8 @@ namespace Flowbit.Infrastructure.Http;
 /// failures (timeout / network) are reported as a non-completed result with
 /// status 0 so the engine can route to an attached errorBoundaryEvent (or, when
 /// none is attached, fail the transition); a completed call reports its real
-/// status code and body regardless of success.
+/// status code and body regardless of success. A connection lost or a size limit
+/// reached while reading the body keeps the status that was already received.
 /// </summary>
 public sealed class HttpServiceTaskInvoker(
     HttpClient httpClient,
@@ -165,6 +166,7 @@ public sealed class HttpServiceTaskInvoker(
                 $"Response body exceeded the configured {options.MaxResponseBodyBytes}-byte limit.");
         }
         catch (Exception ex) when (ex is HttpRequestException
+                                   or IOException
                                    or ArgumentException
                                    or InvalidOperationException
                                    or FormatException
