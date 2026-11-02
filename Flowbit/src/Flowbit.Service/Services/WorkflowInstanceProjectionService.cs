@@ -91,7 +91,7 @@ internal sealed class WorkflowInstanceProjectionService(
             return null;
         }
 
-        var invocation = await callActivities.GetByChildAsync(instance.Id, cancellationToken);
+        var invocation = await callActivities.GetSummaryByChildAsync(instance.Id, cancellationToken);
         if (invocation is null)
         {
             return null;
@@ -107,7 +107,46 @@ internal sealed class WorkflowInstanceProjectionService(
             parentDefinition?.Definition.FlowNodes
                 .FirstOrDefault(node => node.Id == invocation.ParentNodeId)?.Name,
             rootInstanceId,
-            instance.CallDepth);
+            instance.CallDepth,
+            await IsCancellationInProgressAsync(instance, invocation, rootInstanceId, cancellationToken));
+    }
+
+    // The instance's own call answers this for a direct child of the root, so only a deeper
+    // descendant reads its ancestry. A damaged ancestry must not break a read: transitions
+    // already fail closed on it, and that incident names the problem.
+    private async Task<bool> IsCancellationInProgressAsync(
+        WorkflowInstanceRecord instance,
+        CallInvocationRecord invocation,
+        long rootInstanceId,
+        CancellationToken cancellationToken)
+    {
+        if (instance.Status != WorkflowInstanceStatuses.Running)
+        {
+            return false;
+        }
+
+        if (invocation.State == CallInvocationStates.Cancelled)
+        {
+            return true;
+        }
+
+        if (instance.CallDepth < 2)
+        {
+            return false;
+        }
+
+        try
+        {
+            return await runtime.FindCancelledCallAboveAsync(
+                instance.Id,
+                rootInstanceId,
+                instance.CallDepth,
+                cancellationToken) is not null;
+        }
+        catch (WorkflowCallChainException)
+        {
+            return false;
+        }
     }
 
     // The definition and the history already in hand say whether this instance has made

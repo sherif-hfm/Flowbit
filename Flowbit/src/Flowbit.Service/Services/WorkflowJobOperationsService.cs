@@ -257,7 +257,8 @@ public sealed class WorkflowJobOperationsService(
             incident.Summary,
             incident.CreatedAt,
             incident.UpdatedAt,
-            incident.ResolvedAt);
+            incident.ResolvedAt,
+            incident.CallTargetInstanceId);
 
     private static string? ReadError(JsonElement? error, string propertyName)
     {

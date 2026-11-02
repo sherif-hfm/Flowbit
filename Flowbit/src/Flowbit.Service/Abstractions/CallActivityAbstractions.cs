@@ -28,10 +28,15 @@ public interface ICallActivityRepository
         long childInstanceId,
         CancellationToken cancellationToken);
 
+    /// <summary>A child's invocation without its captured contract and values.</summary>
+    Task<CallInvocationRecord?> GetSummaryByChildAsync(
+        long childInstanceId,
+        CancellationToken cancellationToken);
+
     /// <summary>
-    /// The unsettled invocations owned by tokens being cancelled. It runs no query when
-    /// every token is tracked and none rests on a call, so instances outside a call tree
-    /// pay nothing.
+    /// The unsettled invocations owned by tokens being cancelled, without their captured
+    /// contracts and values. It runs no query when every token is tracked and none rests on
+    /// a call, so instances outside a call tree pay nothing.
     /// </summary>
     Task<IReadOnlyList<CallInvocationRecord>> ListUnsettledForTokensAsync(
         long parentInstanceId,

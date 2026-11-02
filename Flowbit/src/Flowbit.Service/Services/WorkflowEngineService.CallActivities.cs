@@ -16,8 +16,13 @@ public sealed partial class WorkflowEngineService
 
     private sealed record CallFailure(string Code, string Description, string? ChildFaultCode = null)
     {
+        public string Description { get; } =
+            UnicodeText.Limit(Description, CallActivityConstraints.MaxFailureDescriptionLength);
+
         /// <summary>The bounded scalar text an attached boundary's error variable receives.</summary>
-        public string Diagnostic => $"{Code}: {Description}";
+        public string Diagnostic => UnicodeText.Limit(
+            $"{Code}: {Description}",
+            CallActivityConstraints.MaxFailureDescriptionLength);
     }
 
     private ICallActivityRepository CallActivities =>
@@ -82,8 +87,11 @@ public sealed partial class WorkflowEngineService
                 failure?.Description),
             cancellationToken);
 
+        // A caught entry creates no job, but it is still an entry. At the limit it falls through
+        // to the guard's incident, and its retry reaches the boundary from the callStart job.
         if (failure is not null
-            && SelectErrorBoundary(definition, node.Id, TaskExecutionOutcome.Fail(failure.Diagnostic)).Boundary is not null)
+            && SelectErrorBoundary(definition, node.Id, TaskExecutionOutcome.Fail(failure.Diagnostic)).Boundary is not null
+            && (await CountAutomaticActivationAsync(token, cancellationToken)).CanSchedule)
         {
             await CallActivities.SettleAsync(
                 invocation.Id,
@@ -542,9 +550,15 @@ public sealed partial class WorkflowEngineService
         var invocation = await callActivities.GetByChildAsync(instanceId, cancellationToken)
             ?? throw new WorkflowCallChainException(instanceId, "it has no incoming invocation.");
 
-        // A settled invocation was abandoned by its parent, so nothing is left to deliver.
+        // A settled invocation was abandoned by its parent, so nothing is left to deliver,
+        // and a cancel job stuck in an incident has nothing left to stop.
         if (CallInvocationStates.IsSettled(invocation.State))
         {
+            await jobs.CancelCallMessageIncidentAsync(
+                invocation.Id,
+                WorkflowJobKinds.CallCancel,
+                "callChildFinished",
+                cancellationToken);
             return;
         }
 
@@ -761,6 +775,12 @@ public sealed partial class WorkflowEngineService
                 WorkflowJobKinds.CallResume,
                 CallHistoryPayload(invocation, null),
                 cancellationToken);
+            CallActivityRuntimeTelemetry.RecordEvent(InstanceHistoryNotes.CallCompleted, null);
+            logger.LogInformation(
+                "Call invocation {InvocationId} delivered the result of child instance {ChildInstanceId} to instance {InstanceId}.",
+                invocation.Id,
+                childInstanceId,
+                instance.Id);
             return true;
         }
 
@@ -886,7 +906,12 @@ public sealed partial class WorkflowEngineService
             }
         }
 
-        var stored = await LoadInstanceVariablesAsync(instance.Id, cancellationToken);
+        // A target's rule may read a shared alias, which only the effective values contain.
+        var stored = await LoadVariablesAsync(
+            instance.Id,
+            definition,
+            cancellationToken,
+            SharedAccessScope(instance.WorkflowDefinitionId, definition, node.Id));
         var context = WithContext(stored, actor, instance, definition, node);
         try
         {
@@ -990,6 +1015,13 @@ public sealed partial class WorkflowEngineService
                     token,
                     WorkflowJobKinds.CallCancel,
                     invocation.Id),
+                cancellationToken);
+
+            // A result stuck in an incident has nothing left to deliver.
+            await jobs.CancelCallMessageIncidentAsync(
+                invocation.Id,
+                WorkflowJobKinds.CallResume,
+                "callAbandoned",
                 cancellationToken);
             logger.LogInformation(
                 "Call invocation {InvocationId} abandoned; child instance {ChildInstanceId} will be cancelled.",

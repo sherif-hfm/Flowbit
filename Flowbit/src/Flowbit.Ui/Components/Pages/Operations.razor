@@ -100,6 +100,12 @@
                                         Instance #@incident.InstanceId
                                     </a>
                                 }
+                                @if (incident.CallTargetInstanceId is long callTargetId)
+                                {
+                                    <a class="data-subtitle" href="@($"instances/{callTargetId}")">
+                                        Acts on instance #@callTargetId
+                                    </a>
+                                }
                             </td>
                             <td>
                                 <span>@incident.Summary</span>
@@ -115,12 +121,15 @@
                                                 @onclick="() => RetryIncidentAsync(incident.Id)">
                                             @(retryingIncidentId == incident.Id ? "Retrying…" : "Retry")
                                         </button>
-                                        @if (incident.InstanceId is long instanceId)
+                                        @* A call message's owner may have ended; what it acts on is what can still be cancelled. *@
+                                        @if ((incident.CallTargetInstanceId ?? incident.InstanceId) is long instanceId)
                                         {
                                             <button class="btn btn-sm btn-outline-danger"
                                                     disabled="@(retryingIncidentId is not null || cancellingInstanceId is not null)"
                                                     @onclick="() => CancelInstanceAsync(instanceId)">
-                                                @(cancellingInstanceId == instanceId ? "Cancelling…" : "Cancel instance")
+                                                @(cancellingInstanceId == instanceId
+                                                    ? "Cancelling…"
+                                                    : incident.CallTargetInstanceId is null ? "Cancel instance" : $"Cancel instance #{instanceId}")
                                             </button>
                                         }
                                     </div>

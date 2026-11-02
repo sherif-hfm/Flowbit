@@ -149,6 +149,17 @@ public interface IWorkflowJobRepository
         string reason,
         CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Cancels a call message waiting in an incident, and resolves that incident, once its
+    /// call no longer needs it. Only an incident stops at this: a queued message still runs
+    /// and completes as stale, as any other late message does.
+    /// </summary>
+    Task<int> CancelCallMessageIncidentAsync(
+        long invocationId,
+        string kind,
+        string reason,
+        CancellationToken cancellationToken);
+
     Task<int> CancelTimerJobsByTokenIdsAsync(
         long instanceId,
         IReadOnlyCollection<long> tokenIds,

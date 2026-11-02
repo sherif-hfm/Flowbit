@@ -574,7 +574,7 @@ A call crosses instances through durable jobs, so it needs Workers and matching 
 
 **Admission and capacity.** A call that passes its input, depth, and capacity checks reserves one slot until it settles. A call blocked before admission holds no slot and has an open incident; retrying repeats admission, so it can succeed once capacity frees up. An admitted retry reuses its slot. `MaxOpenInvocationsPerRoot` is a soft threshold, not an exact quota: at most `C × M` reservations can exist with `C` simultaneous admission transactions for a root and a limit of `M`, and when all `C` observe the same count `N` the bound is `N + C × (M − N)`. For example, `M = 4`, `N = 3`, and `C = 3` can reach six. Lowering a limit blocks new admissions above it without revoking reservations or cancelling work. It never shortens the ancestry check on existing descendants, which follows persisted depth up to the supported maximum of 32.
 
-**Cancellation lag.** Cancelling a parent settles its calls immediately and fences every descendant, so commands on them return `409`. The descendants become terminal only when their `callCancel` jobs run: normally moments later, longer with a backlog, and not at all while Workers are stopped. Until then their tasks stay visible. A job that exhausts its retries opens an incident, and the child stays fenced until an operator retries it. Cancellation does not undo external effects, and an in-flight REST request cannot be recalled, though its late result is fenced out.
+**Cancellation lag.** Cancelling a parent settles its calls immediately and fences every descendant, so commands on them return `409`. The descendants become terminal only when their `callCancel` jobs run: normally moments later, longer with a backlog, and not at all while Workers are stopped. Until then their tasks stay visible. A job that exhausts its retries opens an incident, and the child stays fenced until an operator retries it or cancels the child, which also closes the incident. Cancellation does not undo external effects, and an in-flight REST request cannot be recalled, though its late result is fenced out.
 
 **Rollback.** Before any call data exists, the down migration can run. Afterwards it refuses, and rollback means a forward repair or a database restore, because dropping these tables would cut live parents from their children.
 
@@ -616,7 +616,7 @@ These endpoints belong to the **Worker listener**, not the main API:
 | --- | --- | --- |
 | `GET /health/live` | 200 `Healthy` while the host responds. | Process self-check; no database check. |
 | `GET /health/ready` | 503 `Unhealthy` while migrations included in this Worker build are pending, and until the first successful queue acquisition query; then 200 `Healthy`. | Readiness is latched once both hold. It does not revert after later database outages and does not prove continuing queue progress. |
-| `GET /metrics` | 200 Prometheus text. | Queue/lease/attempt/incident and runtime measurements; restrict exposure. |
+| `GET /metrics` | 200 Prometheus text. | Queue/lease/attempt/incident, runtime, and call activity measurements; restrict exposure. |
 
 PowerShell:
 
@@ -638,7 +638,7 @@ The API has no dedicated production health endpoint in this checkout. `/` redire
 
 ### Signals and actions
 
-The `Flowbit.Runtime.CallActivities` meter exposes `flowbit.call.events`, tagged with the history note and failure code; `flowbit.call.fence_stops`; and the `flowbit.call.start_queue_age` and `flowbit.call.cancel_age` histograms. Collect them with a .NET diagnostics or OpenTelemetry listener; the Worker's Prometheus endpoint does not include this meter. Tags and logs carry invocation, root, and child identifiers, states, and stable codes, never mapped values. To see cancellations still in progress, run these read-only queries:
+The `Flowbit.Runtime.CallActivities` meter exposes `flowbit.call.events`, tagged with the history note and failure code; `flowbit.call.fence_stops`; and the `flowbit.call.start_queue_age` and `flowbit.call.cancel_age` histograms. The Worker's `/metrics` endpoint exports them as `flowbit_call_events_total{event,failure_code}`, `flowbit_call_fence_stops_total`, and the `flowbit_call_start_queue_age_seconds` and `flowbit_call_cancel_age_seconds` summaries. It counts only what that Worker process records, so calls abandoned through the API, such as a parent cancelled over HTTP, appear only on a .NET diagnostics or OpenTelemetry listener in the API process. Metric tags are stable notes and codes, logs add invocation, root, and child identifiers and states, and neither carries mapped values. To see cancellations still in progress, run these read-only queries. The second lists instances whose own call was cancelled; a deeper descendant joins it when the cascade reaches its parent, and until then its detail reports `parentCall.cancellationInProgress`:
 
 ```sql
 -- The age of open call-cancel jobs.
@@ -655,7 +655,7 @@ WHERE c."State" = 'cancelled' AND i."Status" = 'running'
 ORDER BY c."SettledAt";
 ```
 
-Observe queue depth and oldest age, timer lateness, acquisition/instance-lock latency, lease loss, retries, finalization retries, output conflicts, open incidents, and retention work. .NET meters are named `Flowbit.Worker` and `Flowbit.Runtime.Jobs`. A successful startup readiness response alone cannot detect a stuck queue; compare these signals over time and inspect Worker logs.
+Observe queue depth and oldest age, timer lateness, acquisition/instance-lock latency, lease loss, retries, finalization retries, output conflicts, open incidents, and retention work. .NET meters are named `Flowbit.Worker`, `Flowbit.Runtime.Jobs`, and `Flowbit.Runtime.CallActivities`. A successful startup readiness response alone cannot detect a stuck queue; compare these signals over time and inspect Worker logs.
 
 Use the UI Operations page or the role-protected jobs/incidents APIs. `WorkflowJobs.RequiredRole` defaults to `admin`. Collection endpoints use opaque keyset cursors; use detail/attempt endpoints to inspect evidence rather than expecting large execution snapshots in every list row.
 
@@ -673,8 +673,8 @@ complete.
 | Output-version conflict | Inspect intervening variable/shared-value changes and the failed attempt. Resolve the business state before requesting a new attempt. |
 | `job_conflict` incident | A durable job hit a conflict while its token still waited on it, or while its timer boundary still had that occurrence to fire, so it stopped rather than strand that work. **Operations** shows `Workflow job conflict at node #N.`, and `details` from `GET /api/incidents/{id}` gives the cause. One cause is a write to an archived shared key, which can happen when an older instance is reactivated after its key was retired. Correct the cause, for example by reactivating the key, then retry. The retry runs the job again, including its REST call. If the cause cannot be corrected, cancel the instance. |
 | Call stays **Blocked** or **Queued** | Read the incident's `call_*` code. `call_target_unavailable` or `call_target_incompatible`: publish a fitting default. `call_depth_exceeded` or `call_capacity_exceeded`: let open calls settle or review the limits. Then retry. A retry cannot create a second child. |
-| Parent waits with **Result ready** and an incident | Delivery failed and the frozen result is kept. Correct the parent's state, then retry; if the result itself is invalid, a retry cannot succeed, so cancel the parent. |
-| Descendant stays `running` after a parent's cancel | Check Workers and the `callCancel` query above. Retry an incident on that job; its owner may already be terminal, which is allowed. |
+| Parent waits with **Result ready** and an incident | Delivery failed and the frozen result is kept. Correct the parent's state, then retry; if the result itself is invalid, a retry cannot succeed, so cancel the parent. **Cancel instance #N** on that incident does so, and the incident closes because nothing is left to deliver. |
+| Descendant stays `running` after a parent's cancel | Check Workers and the `callCancel` query above. Retry an incident on that job; its owner may already be terminal, which is allowed. **Cancel instance #N** on that incident cancels the child directly instead, which also closes the incident. |
 | `job_invariant_violation` naming a call chain | An instance's persisted call ancestry is inconsistent, so nothing transitions on it. Investigate the rows; do not edit them to force progress. |
 | `automatic_loop_limit` incident | Fix or review the automatic loop. A manual retry grants a fresh bounded allowance to the same stable job; it is not an unlimited retry exemption. |
 | `timer_schedule_failed` incident | A timer start's first due time could not be computed: its business calendar is missing, the Worker host does not know the calendar's time zone, or the calendar cannot count the duration within 36,525 days. The timer start stays paused. Fix the calendar or the host's time-zone data, then retry the incident; the next timer-start reconciliation schedules it again or opens a new incident. |

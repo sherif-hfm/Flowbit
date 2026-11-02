@@ -456,6 +456,294 @@ public sealed class CallActivityScenarioTests(PostgresApiFixture fixture) : IAsy
     }
 
     [Fact]
+    public async Task A_cancel_incident_names_the_child_and_closes_when_the_child_is_cancelled_directly()
+    {
+        var childKey = Key("child");
+        await harness.PublishAsync(WaitingChild(childKey));
+        var parent = await harness.PublishAsync(Parent(Key("parent"), childKey));
+        var parentId = await harness.StartAsync(parent.Id);
+        await harness.DrainAsync(parentId);
+        var invocation = await harness.InvocationAsync(parentId);
+        var childId = invocation.ChildInstanceId!.Value;
+        using (var cancelled = await harness.SendAsync(HttpMethod.Post, $"/api/instances/{parentId}/cancel"))
+        {
+            Assert.True(cancelled.IsSuccessStatusCode);
+        }
+
+        var jobId = await harness.SingleJobIdAsync(invocation.Id, WorkflowJobKinds.CallCancel);
+        await using var conflicting = fixture.Factory.WithWebHostBuilder(builder => builder.ConfigureTestServices(services =>
+        {
+            var registration = services.Last(item => item.ServiceType == typeof(IWorkflowRuntimeRepository));
+            services.Remove(registration);
+            services.AddScoped(provider => ConflictingCancelRepository.Wrap(
+                (IWorkflowRuntimeRepository)registration.ImplementationFactory!(provider)));
+        }));
+        await harness.ProcessAsync(jobId, conflicting.Services);
+
+        // The owner is the cancelled parent, and the message acts on the running child.
+        var incident = await harness.OpenIncidentAsync(jobId);
+        using (var read = await harness.SendAsync(HttpMethod.Get, $"/api/incidents/{incident!.Id}"))
+        {
+            var summary = (await read.Content.ReadFromJsonAsync<IncidentDetailDto>())!.Summary;
+            Assert.Equal(parentId, summary.InstanceId);
+            Assert.Equal(childId, summary.CallTargetInstanceId);
+        }
+
+        using (var cancelled = await harness.SendAsync(HttpMethod.Post, $"/api/instances/{childId}/cancel"))
+        {
+            Assert.True(cancelled.IsSuccessStatusCode, await cancelled.Content.ReadAsStringAsync());
+        }
+
+        Assert.Equal(WorkflowInstanceStatuses.Cancelled, (await harness.DetailAsync(childId)).Status);
+        Assert.Null(await harness.OpenIncidentAsync(jobId));
+        Assert.Equal(WorkflowJobStatuses.Cancelled, await harness.JobStatusAsync(jobId));
+    }
+
+    [Fact]
+    public async Task A_conditional_interrupt_raised_by_a_calls_outputs_cancels_the_call_token_after_delivery()
+    {
+        var childKey = Key("child");
+        await harness.PublishAsync(ImmediateChild(
+            childKey,
+            variables: [Process("approved", nullable: false, defaultValue: true)]));
+        var key = Key("parent");
+        var parent = await harness.PublishAsync(new WorkflowModel
+        {
+            Id = key,
+            Name = key,
+            InitialEventId = Start,
+            Variables = [Process("managerApproved")],
+            FlowNodes =
+            [
+                new FlowNodeModel { Id = Start, Name = "Start", Type = BpmnFlowNodeTypes.StartEvent },
+                new FlowNodeModel { Id = 10, Name = "Fork", Type = BpmnFlowNodeTypes.ParallelGateway },
+                new FlowNodeModel
+                {
+                    Id = 11,
+                    Name = "Call",
+                    Type = BpmnFlowNodeTypes.CallActivity,
+                    CallActivity = new CallActivityModel
+                    {
+                        WorkflowKey = childKey,
+                        OutputMappings = [Mapping("approved", "managerApproved", WorkflowVariableTypes.Boolean)]
+                    }
+                },
+                new FlowNodeModel { Id = 12, Name = "After the call", Type = BpmnFlowNodeTypes.UserTask },
+                new FlowNodeModel
+                {
+                    Id = 13,
+                    Name = "When approved",
+                    Type = BpmnFlowNodeTypes.IntermediateConditionalCatchEvent,
+                    Conditional = new ConditionalDefinitionModel { Condition = "managerApproved == true" }
+                },
+                new FlowNodeModel { Id = 14, Name = "End call", Type = BpmnFlowNodeTypes.EndEvent },
+                new FlowNodeModel
+                {
+                    Id = 15,
+                    Name = "Interrupt",
+                    Type = BpmnFlowNodeTypes.ScopedInterruptEvent,
+                    GatewayRef = 10
+                },
+                new FlowNodeModel { Id = 16, Name = "After the interrupt", Type = BpmnFlowNodeTypes.UserTask },
+                new FlowNodeModel { Id = 17, Name = "End interrupt", Type = BpmnFlowNodeTypes.EndEvent }
+            ],
+            SequenceFlows =
+            [
+                new SequenceFlowModel { Id = 101, SourceRef = Start, TargetRef = 10 },
+                new SequenceFlowModel { Id = 1001, SourceRef = 10, TargetRef = 11 },
+                new SequenceFlowModel { Id = 1002, SourceRef = 10, TargetRef = 13 },
+                new SequenceFlowModel { Id = 1101, SourceRef = 11, TargetRef = 12 },
+                new SequenceFlowModel { Id = 1201, SourceRef = 12, TargetRef = 14, Name = "Finish" },
+                new SequenceFlowModel { Id = 1301, SourceRef = 13, TargetRef = 15 },
+                new SequenceFlowModel { Id = 1501, SourceRef = 15, TargetRef = 16 },
+                new SequenceFlowModel { Id = 1601, SourceRef = 16, TargetRef = 17, Name = "Finish" }
+            ]
+        });
+
+        var parentId = await harness.StartAsync(parent.Id);
+        await harness.DrainAsync(parentId);
+
+        var detail = await harness.DetailAsync(parentId);
+        var active = Assert.Single(detail.ExecutionPositions, position => position.TokenStatus == ExecutionTokenRecordStatuses.Active);
+        Assert.Equal(16, active.NodeId);
+        var call = Assert.Single(detail.ExecutionPositions, position => position.NodeId == 11);
+        Assert.Equal(ExecutionTokenRecordStatuses.Cancelled, call.TokenStatus);
+        Assert.Equal(ExecutionTokenTerminationReasons.GatewayScopeCancelled, call.TerminationReason);
+        Assert.Equal("true", await harness.VariableAsync(parentId, "managerApproved"));
+        Assert.Equal(CallInvocationStates.Completed, (await harness.InvocationAsync(parentId)).State);
+        Assert.DoesNotContain(detail.ExecutionPositions, position => position.NodeId == 12);
+        Assert.DoesNotContain(detail.History, item => item.SequenceFlowId == 1101);
+    }
+
+    [Fact]
+    public async Task A_gateway_after_a_call_reads_the_calls_flow_evidence_with_the_system_actor()
+    {
+        var childKey = Key("child");
+        await harness.PublishAsync(ImmediateChild(childKey));
+        var key = Key("parent");
+        var parent = await harness.PublishAsync(new WorkflowModel
+        {
+            Id = key,
+            Name = key,
+            InitialEventId = Start,
+            FlowNodes =
+            [
+                new FlowNodeModel { Id = Start, Name = "Start", Type = BpmnFlowNodeTypes.StartEvent },
+                new FlowNodeModel
+                {
+                    Id = 11,
+                    Name = "Call",
+                    Type = BpmnFlowNodeTypes.CallActivity,
+                    CallActivity = new CallActivityModel { WorkflowKey = childKey }
+                },
+                new FlowNodeModel { Id = 12, Name = "Who moved?", Type = BpmnFlowNodeTypes.ExclusiveGateway },
+                new FlowNodeModel { Id = 13, Name = "The system", Type = BpmnFlowNodeTypes.EndEvent },
+                new FlowNodeModel { Id = 14, Name = "Someone else", Type = BpmnFlowNodeTypes.EndEvent }
+            ],
+            SequenceFlows =
+            [
+                new SequenceFlowModel { Id = 101, SourceRef = Start, TargetRef = 11 },
+                new SequenceFlowModel { Id = 1101, SourceRef = 11, TargetRef = 12 },
+                new SequenceFlowModel
+                {
+                    Id = 1201,
+                    SourceRef = 12,
+                    TargetRef = 13,
+                    Condition = "FlowInfo(1101, 'traversals.last.user') == 'callActivity'",
+                    ConditionPriority = 1
+                },
+                new SequenceFlowModel { Id = 1202, SourceRef = 12, TargetRef = 14, IsDefault = true }
+            ]
+        });
+
+        var parentId = await harness.StartAsync(parent.Id);
+        await harness.DrainAsync(parentId);
+
+        var detail = await harness.DetailAsync(parentId);
+        Assert.Equal(WorkflowInstanceStatuses.Completed, detail.Status);
+        Assert.Equal(13, detail.CurrentNodeId);
+    }
+
+    [Fact]
+    public async Task An_inclusive_join_waits_for_a_branch_resting_on_a_call()
+    {
+        var childKey = Key("child");
+        await harness.PublishAsync(WaitingChild(childKey));
+        var key = Key("parent");
+        var parent = await harness.PublishAsync(new WorkflowModel
+        {
+            Id = key,
+            Name = key,
+            InitialEventId = Start,
+            FlowNodes =
+            [
+                new FlowNodeModel { Id = Start, Name = "Start", Type = BpmnFlowNodeTypes.StartEvent },
+                new FlowNodeModel { Id = 10, Name = "Split", Type = BpmnFlowNodeTypes.InclusiveGateway },
+                new FlowNodeModel
+                {
+                    Id = 11,
+                    Name = "Call",
+                    Type = BpmnFlowNodeTypes.CallActivity,
+                    CallActivity = new CallActivityModel { WorkflowKey = childKey }
+                },
+                new FlowNodeModel { Id = 12, Name = "Join", Type = BpmnFlowNodeTypes.InclusiveGateway },
+                new FlowNodeModel { Id = 13, Name = "End", Type = BpmnFlowNodeTypes.EndEvent },
+                new FlowNodeModel { Id = 14, Name = "Neither", Type = BpmnFlowNodeTypes.EndEvent }
+            ],
+            SequenceFlows =
+            [
+                new SequenceFlowModel { Id = 101, SourceRef = Start, TargetRef = 10 },
+                new SequenceFlowModel { Id = 1001, SourceRef = 10, TargetRef = 11, Condition = "1 == 1" },
+                new SequenceFlowModel { Id = 1002, SourceRef = 10, TargetRef = 12, Condition = "1 == 1" },
+                new SequenceFlowModel { Id = 1003, SourceRef = 10, TargetRef = 14, IsDefault = true },
+                new SequenceFlowModel { Id = 1101, SourceRef = 11, TargetRef = 12 },
+                new SequenceFlowModel { Id = 1201, SourceRef = 12, TargetRef = 13 }
+            ]
+        });
+
+        var parentId = await harness.StartAsync(parent.Id);
+        await harness.DrainAsync(parentId);
+
+        // Both branches were taken, and the join holds its token for the one still at the call.
+        var waiting = await harness.DetailAsync(parentId);
+        Assert.Equal(WorkflowInstanceStatuses.Running, waiting.Status);
+        var active = waiting.ExecutionPositions
+            .Where(position => position.TokenStatus == ExecutionTokenRecordStatuses.Active)
+            .Select(position => position.NodeId)
+            .Order()
+            .ToArray();
+        Assert.Equal([11, 12], active);
+
+        var invocation = await harness.InvocationAsync(parentId);
+        using (var acted = await harness.TakeChildActionAsync(invocation.ChildInstanceId!.Value))
+        {
+            Assert.True(acted.IsSuccessStatusCode, await acted.Content.ReadAsStringAsync());
+        }
+
+        await harness.DrainAsync(parentId);
+
+        var finished = await harness.DetailAsync(parentId);
+        Assert.Equal(WorkflowInstanceStatuses.Completed, finished.Status);
+        Assert.Equal(13, finished.CurrentNodeId);
+    }
+
+    [Fact]
+    public async Task Delivering_a_result_counts_as_a_completed_call_event()
+    {
+        var events = new System.Collections.Concurrent.ConcurrentBag<(string? Event, string? FailureCode)>();
+        using var listener = new System.Diagnostics.Metrics.MeterListener();
+        listener.InstrumentPublished = (instrument, meterListener) =>
+        {
+            if (instrument is { Name: "flowbit.call.events", Meter.Name: "Flowbit.Runtime.CallActivities" })
+            {
+                meterListener.EnableMeasurementEvents(instrument);
+            }
+        };
+        listener.SetMeasurementEventCallback<long>((_, _, tags, _) =>
+        {
+            string? name = null, code = null;
+            foreach (var tag in tags)
+            {
+                if (tag.Key == "event") name = tag.Value as string;
+                if (tag.Key == "failure_code") code = tag.Value as string;
+            }
+
+            events.Add((name, code));
+        });
+        listener.Start();
+
+        var childKey = Key("child");
+        await harness.PublishAsync(ImmediateChild(childKey));
+        var parent = await harness.PublishAsync(Parent(Key("parent"), childKey));
+        var parentId = await harness.StartAsync(parent.Id);
+        await harness.DrainAsync(parentId);
+
+        Assert.Equal(WorkflowInstanceStatuses.Completed, (await harness.DetailAsync(parentId)).Status);
+        Assert.Contains((InstanceHistoryNotes.CallCompleted, "none"), events);
+    }
+
+    [Fact]
+    public async Task Reads_that_describe_calls_leave_their_captured_snapshots_in_the_database()
+    {
+        var childKey = Key("child");
+        await harness.PublishAsync(WaitingChild(childKey));
+        var parent = await harness.PublishAsync(Parent(Key("parent"), childKey));
+        var parentId = await harness.StartAsync(parent.Id);
+        await harness.DrainAsync(parentId);
+        var childId = (await harness.InvocationAsync(parentId)).ChildInstanceId!.Value;
+
+        fixture.CommandCounter.Reset(captureReaderCommandTexts: true);
+        await harness.CallsAsync(parentId);
+        await harness.DetailAsync(parentId);
+        await harness.DetailAsync(childId);
+
+        var commands = fixture.CommandCounter.ReaderCommandTexts;
+        Assert.Contains(commands, text => text.Contains("call_activity_executions", StringComparison.Ordinal));
+        Assert.DoesNotContain(commands, text => text.Contains("\"InputValuesJson\"", StringComparison.Ordinal));
+        Assert.DoesNotContain(commands, text => text.Contains("\"ContractJson\"", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task Reads_of_calls_use_the_same_number_of_commands_however_many_calls_there_are()
     {
         var childKey = Key("child");

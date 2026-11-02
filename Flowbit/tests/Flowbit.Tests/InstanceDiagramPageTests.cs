@@ -125,6 +125,50 @@ public sealed class InstanceDiagramPageTests
         Assert.False(Get<bool>(page, "diagramNodeExecutionsLoading"));
     }
 
+    // An ordinary single-token instance is not polled, so nothing else would load these.
+    [Theory]
+    [InlineData("running")]
+    [InlineData("completed")]
+    public async Task TakingAnActionReloadsTheCallHistoryAndTheAdministrativeActions(string status)
+    {
+        var after = InstanceDiagramOverlayTests.Instance(status, []) with { Calls = new CallCountsDto(1, 0) };
+        var handler = new ActionHandler(after, HttpStatusCode.OK);
+        var page = ActionPage(handler);
+
+        await TakeFlowAsync(page, 201);
+
+        Assert.Null(Field(page, "error").GetValue(page));
+        Assert.Contains("POST /api/instances/42/flows/201", handler.Requests);
+        Assert.Contains("GET /api/instances/42/calls", handler.Requests);
+        Assert.Equal(1, Get<PagedResult<CallActivityExecutionDto>>(page, "calls").TotalCount);
+        Assert.Equal(1, Get<int>(page, "administrativeRefreshVersion"));
+    }
+
+    [Fact]
+    public async Task ARefusedActionShowsItsErrorAndLeavesThePageAsItWas()
+    {
+        var handler = new ActionHandler(InstanceDiagramOverlayTests.Instance("running", []), HttpStatusCode.Conflict);
+        var page = ActionPage(handler);
+
+        await TakeFlowAsync(page, 201);
+
+        Assert.NotNull(Field(page, "error").GetValue(page));
+        Assert.Contains("POST /api/instances/42/flows/201", handler.Requests);
+        Assert.DoesNotContain("GET /api/instances/42/calls", handler.Requests);
+        Assert.Equal(0, Get<int>(page, "administrativeRefreshVersion"));
+    }
+
+    private static InstanceDetailPage ActionPage(HttpMessageHandler handler)
+    {
+        var page = Page(handler, "running");
+        page.GetType().GetProperty(nameof(InstanceDetailPage.InstanceId))!.SetValue(page, 42L);
+        return page;
+    }
+
+    private static Task TakeFlowAsync(InstanceDetailPage page, int flowId) =>
+        (Task)page.GetType().GetMethod("TakeFlowAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(page, [new SequenceFlowModel { Id = flowId }])!;
+
     private static InstanceDetailPage Page(HttpMessageHandler handler, string status)
     {
         var page = new InstanceDetailPage();
@@ -167,6 +211,40 @@ public sealed class InstanceDiagramPageTests
             lock (Bodies) Bodies.Add(body);
             using var json = JsonDocument.Parse(body);
             return await responses[json.RootElement.GetProperty("nodeId").GetInt32()]();
+        }
+    }
+
+    // Answers the action, then the page's reads of the instance and its calls.
+    private sealed class ActionHandler(InstanceDetailDto instance, HttpStatusCode actionStatus) : HttpMessageHandler
+    {
+        public List<string> Requests { get; } = [];
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            var path = request.RequestUri?.AbsolutePath ?? string.Empty;
+            lock (Requests) Requests.Add($"{request.Method} {path}");
+            return Task.FromResult((request.Method.Method, path) switch
+            {
+                ("POST", "/api/instances/42/flows/201") => new HttpResponseMessage(actionStatus)
+                {
+                    Content = JsonContent.Create(instance)
+                },
+                ("GET", "/api/instances/42") => new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = JsonContent.Create(instance)
+                },
+                ("GET", "/api/instances/42/flows") => new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = JsonContent.Create(Array.Empty<SequenceFlowModel>())
+                },
+                ("GET", "/api/instances/42/calls") => new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = JsonContent.Create(new PagedResult<CallActivityExecutionDto>([], 1, 25, 1))
+                },
+                _ => new HttpResponseMessage(HttpStatusCode.NotFound)
+            });
         }
     }
 

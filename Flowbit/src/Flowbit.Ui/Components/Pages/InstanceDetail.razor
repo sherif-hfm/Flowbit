@@ -742,7 +742,7 @@ else
     // A child's result, or a cancelled parent's cascade, arrives through the Worker.
     private bool IsWaitingForCall =>
         instance?.Status == "running"
-        && (instance.Calls is { Unsettled: > 0 } || instance.ParentCall is { State: "cancelled" });
+        && (instance.Calls is { Unsettled: > 0 } || instance.ParentCall is { CancellationInProgress: true });
 
     private bool IsWaitingForMessage =>
         instance?.Status == "running"
@@ -1562,9 +1562,9 @@ else
         {
             error = null;
             await action();
-            instance ??= await Api.GetInstanceAsync(InstanceId);
-            await LoadAvailableActionsAsync();
-            await LoadDiagramNodeExecutionsAsync();
+            // An action can start a call or end the instance, and an ordinary single-token
+            // instance is not polled, so everything on the page reloads here.
+            await RefreshInstanceStateAsync();
         }
         catch (Exception ex)
         {

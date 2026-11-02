@@ -81,10 +81,10 @@ internal static class CallActivityFormatting
                 ? "Version chosen when the child starts"
                 : "No version chosen";
 
-    /// <summary>The message for a child whose parent's call has been cancelled, or null.</summary>
+    /// <summary>The message for an instance under a cancelled call at any depth, or null.</summary>
     internal static string? ParentCancellationNotice(ParentCallSummaryDto? parentCall, string? instanceStatus) =>
-        parentCall is { State: "cancelled" } && Is(instanceStatus, "running")
-            ? "The parent's call was cancelled, so this instance is being cancelled. It accepts no new actions, and a background job will finish stopping it."
+        parentCall is { CancellationInProgress: true } && Is(instanceStatus, "running")
+            ? "A call above this instance was cancelled, so this instance is being cancelled. It accepts no new actions, and a background job will finish stopping it."
             : null;
 
     private static string IncidentCount(long count) =>

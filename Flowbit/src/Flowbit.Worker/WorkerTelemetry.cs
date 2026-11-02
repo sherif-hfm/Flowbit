@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics.Metrics;
 using System.Globalization;
 using System.Text;
@@ -68,12 +69,18 @@ public sealed class WorkerTelemetry : IDisposable
     private long _runtimeAutomaticLoopLimitsTotal;
     private long _instanceLockWaitSamples;
     private long _instanceLockWaitMicroseconds;
+    private readonly ConcurrentDictionary<(string Event, string FailureCode), long> _callEvents = new();
+    private long _callFenceStopsTotal;
+    private long _callStartQueueAgeSamples;
+    private long _callStartQueueAgeMicroseconds;
+    private long _callCancelAgeSamples;
+    private long _callCancelAgeMicroseconds;
 
     public WorkerTelemetry()
     {
         _runtimeListener.InstrumentPublished = static (instrument, listener) =>
         {
-            if (instrument.Meter.Name == "Flowbit.Runtime.Jobs")
+            if (instrument.Meter.Name is "Flowbit.Runtime.Jobs" or "Flowbit.Runtime.CallActivities")
             {
                 listener.EnableMeasurementEvents(instrument);
             }
@@ -385,6 +392,8 @@ public sealed class WorkerTelemetry : IDisposable
             output,
             "flowbit_jobs_automatic_loop_limit_total",
             _runtimeAutomaticLoopLimitsTotal);
+        WriteCounter(output, "flowbit_call_fence_stops_total", _callFenceStopsTotal);
+        WriteCallEvents(output);
 
         WriteSummary(
             output,
@@ -411,6 +420,16 @@ public sealed class WorkerTelemetry : IDisposable
             "flowbit_jobs_instance_lock_wait_seconds",
             _instanceLockWaitSamples,
             _instanceLockWaitMicroseconds);
+        WriteSummary(
+            output,
+            "flowbit_call_start_queue_age_seconds",
+            _callStartQueueAgeSamples,
+            _callStartQueueAgeMicroseconds);
+        WriteSummary(
+            output,
+            "flowbit_call_cancel_age_seconds",
+            _callCancelAgeSamples,
+            _callCancelAgeMicroseconds);
         return output.ToString();
     }
 
@@ -434,7 +453,29 @@ public sealed class WorkerTelemetry : IDisposable
             case "flowbit.jobs.automatic_loop_limit":
                 Interlocked.Add(ref _runtimeAutomaticLoopLimitsTotal, measurement);
                 break;
+            case "flowbit.call.events":
+                _callEvents.AddOrUpdate(
+                    (ReadTag(tags, "event"), ReadTag(tags, "failure_code")),
+                    measurement,
+                    (_, total) => total + measurement);
+                break;
+            case "flowbit.call.fence_stops":
+                Interlocked.Add(ref _callFenceStopsTotal, measurement);
+                break;
         }
+    }
+
+    private static string ReadTag(ReadOnlySpan<KeyValuePair<string, object?>> tags, string name)
+    {
+        foreach (var tag in tags)
+        {
+            if (tag.Key == name)
+            {
+                return tag.Value as string ?? "none";
+            }
+        }
+
+        return "none";
     }
 
     private void OnRuntimeDoubleMeasurement(
@@ -443,12 +484,26 @@ public sealed class WorkerTelemetry : IDisposable
         ReadOnlySpan<KeyValuePair<string, object?>> tags,
         object? state)
     {
-        if (instrument.Name == "flowbit.jobs.instance_lock.wait")
+        switch (instrument.Name)
         {
-            RecordSample(
-                ref _instanceLockWaitSamples,
-                ref _instanceLockWaitMicroseconds,
-                measurement);
+            case "flowbit.jobs.instance_lock.wait":
+                RecordSample(
+                    ref _instanceLockWaitSamples,
+                    ref _instanceLockWaitMicroseconds,
+                    measurement);
+                break;
+            case "flowbit.call.start_queue_age":
+                RecordSample(
+                    ref _callStartQueueAgeSamples,
+                    ref _callStartQueueAgeMicroseconds,
+                    measurement * 1000d);
+                break;
+            case "flowbit.call.cancel_age":
+                RecordSample(
+                    ref _callCancelAgeSamples,
+                    ref _callCancelAgeMicroseconds,
+                    measurement * 1000d);
+                break;
         }
     }
 
@@ -481,6 +536,21 @@ public sealed class WorkerTelemetry : IDisposable
         output.Append(name).Append(' ')
             .Append(Interlocked.Read(ref value).ToString(CultureInfo.InvariantCulture))
             .AppendLine();
+    }
+
+    // The labels are stable history notes and failure codes, never ids, names, or values.
+    private void WriteCallEvents(StringBuilder output)
+    {
+        output.AppendLine("# TYPE flowbit_call_events_total counter");
+        foreach (var pair in _callEvents
+                     .OrderBy(pair => pair.Key.Event, StringComparer.Ordinal)
+                     .ThenBy(pair => pair.Key.FailureCode, StringComparer.Ordinal))
+        {
+            output.Append("flowbit_call_events_total{event=\"").Append(pair.Key.Event)
+                .Append("\",failure_code=\"").Append(pair.Key.FailureCode).Append("\"} ")
+                .Append(pair.Value.ToString(CultureInfo.InvariantCulture))
+                .AppendLine();
+        }
     }
 
     private static void WriteSummary(

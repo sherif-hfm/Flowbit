@@ -237,9 +237,11 @@ public sealed class WorkflowDefinitionService(
                 return null;
             }
 
-            if (current?.Id != deleting)
+            // The version's own flag, not the published default: a family's first version is
+            // its default even as a draft, and deleting one can promote a published successor.
+            if (!version.IsDefault)
             {
-                throw new WorkflowDomainException($"Workflow version #{deleting} is not the current default of '{workflowKey}'.");
+                throw new WorkflowDomainException($"Workflow version #{deleting} is not the default of '{workflowKey}'.");
             }
 
             var assessment = await definitions.AssessDeletionAsync(deleting, cancellationToken);

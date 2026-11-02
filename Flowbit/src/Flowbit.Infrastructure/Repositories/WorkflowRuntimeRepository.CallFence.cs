@@ -72,11 +72,27 @@ public sealed partial class WorkflowRuntimeRepository
         return true;
     }
 
+    private async Task EnsureCallFenceAsync(
+        WorkflowInstanceEntity instance,
+        CancellationToken cancellationToken)
+    {
+        if (await FindCancelledCallAboveAsync(
+                instance.Id,
+                instance.CallRootInstanceId!.Value,
+                instance.CallDepth,
+                cancellationToken) is long invocationId)
+        {
+            throw new WorkflowCallFenceException(instance.Id, invocationId);
+        }
+    }
+
     // Reads the complete incoming chain in one statement and takes no row locks. The bound
     // is the fixed supported depth plus one, so a chain longer than any legal depth fails
     // the count check rather than being truncated into something valid.
-    private async Task EnsureCallFenceAsync(
-        WorkflowInstanceEntity instance,
+    public async Task<long?> FindCancelledCallAboveAsync(
+        long instanceId,
+        long rootInstanceId,
+        int depth,
         CancellationToken cancellationToken)
     {
         var rows = await dbContext.Database
@@ -93,7 +109,7 @@ public sealed partial class WorkflowRuntimeRepository
                         ARRAY[call."ChildInstanceId"] AS "Visited",
                         FALSE AS "Cycle"
                     FROM flowbit.call_activity_executions AS call
-                    WHERE call."ChildInstanceId" = {instance.Id}
+                    WHERE call."ChildInstanceId" = {instanceId}
                     UNION ALL
                     SELECT
                         parent."Id",
@@ -129,10 +145,10 @@ public sealed partial class WorkflowRuntimeRepository
                 ORDER BY chain."Hop"
                 """)
             .ToListAsync(cancellationToken);
-        var cancelledInvocationId = CallChainFence.FindCancelledInvocation(
-            instance.Id,
-            instance.CallRootInstanceId!.Value,
-            instance.CallDepth,
+        return CallChainFence.FindCancelledInvocation(
+            instanceId,
+            rootInstanceId,
+            depth,
             rows.Select(row => new CallChainLinkRecord(
                     row.InvocationId,
                     row.ParentInstanceId,
@@ -145,10 +161,6 @@ public sealed partial class WorkflowRuntimeRepository
                     row.ParentRootInstanceId,
                     row.ParentDepth))
                 .ToList());
-        if (cancelledInvocationId is long invocationId)
-        {
-            throw new WorkflowCallFenceException(instance.Id, invocationId);
-        }
     }
 
     private sealed class CallChainRow

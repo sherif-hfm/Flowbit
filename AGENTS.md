@@ -602,7 +602,8 @@ Storage follows the hybrid design:
   - Admission counts reserved unsettled calls under the entering instance's lock,
     including its own transaction's. A blocked call has `CapacityReserved = false`
     and an incident; an admitted retry reuses its slot. Each entry counts against
-    the automatic-activation guard.
+    the automatic-activation guard, including one a boundary catches, which at the
+    limit falls through to that guard's incident instead of taking the boundary.
   - `GetInstanceForUpdateAsync` reads the complete incoming chain without locks,
     following persisted `CallDepth`, never the configured limit. A cancelled link
     throws `WorkflowCallFenceException` (409, or a stale job); an invalid chain
@@ -612,6 +613,18 @@ Storage follows the hybrid design:
     token cancellation through `CancelDurableWorkForTokensAsync`, which reaches
     `AbandonCallsForTokensAsync`. A new path must use them rather than
     `SetInstanceStatusAsync` or `CancelOtherJobsByTokenIdsAsync` directly.
+  - An incident on a call message closes when its work is gone: abandoning a call
+    closes its `callResume` incident, and a child's terminal commit closes its
+    `callCancel` incident. `CancelCallMessageIncidentAsync` writes only job, attempt,
+    and incident rows, and `CallTargetInstanceId` names the instance such a message
+    acts on, because `InstanceId` is the sender, which may have ended.
+  - Mapping sources are instance values, so capture uses `LoadInstanceVariablesAsync`.
+    Output validation does not: a target's rule may read a shared alias, so it uses
+    the effective values, and the access plan lists that read without locking it.
+  - Reads that only describe a call leave its captured contract and values in the
+    database (`WithoutSnapshots`, `GetSummaryByChildAsync`). Call and job failure text
+    goes through `UnicodeText.Limit`, never a UTF-16 slice: a split surrogate pair is
+    refused by the driver and would wedge the call.
   - The child and the parent's continuation run as the fixed actor `callActivity`.
     Never rebuild authority from a job payload. Unsettled calls block version
     changes on both sides, and a linked child cannot be reactivated.
@@ -2812,11 +2825,22 @@ when extending the model so new features stay close to BPMN terminology.
 - **Referential cleanup**: deleting a flow node also removes every sequence flow
   whose `sourceRef` or `targetRef` referenced it; deleting a lane nulls out
   `laneId` on its nodes.
-- **Call activity editing**: `node.callActivity` keeps invalid imported values and
-  selecting a node never rewrites them; only `changeNodeTypeFromInspector` clears
-  them. `callSourceDeclarations` mirrors `CallActivityRules.SourceDeclarations`
-  and lives inside the validator markers, because the Jint suites run only that
-  span.
+- **Call activity editing**: a call keeps every invalid imported value so save
+  validation can report it: `node.callActivity` and other node settings
+  (`keepImportedCallSettings`, with `applyTypeInvariants` returning early) and its
+  flows' settings and count (`keepImportedCallFlowSettings`, with `applyFlowInvariants`
+  returning early). That includes a value of the wrong JSON type, which the server's
+  binding refuses with only a path, so `validateSaveCallSettingTypes` names it. A
+  non-list `variables` is the exception: too much of the editor walks it, so
+  `refuseMalformedCallVariables` stops the import. Any node keeps an imported
+  `callOnly`, including null, and `renderCallOnlyField` or `renderMisplacedCallOnly`
+  offers its removal. Selecting or redrawing never rewrites these; only
+  `changeNodeTypeFromInspector` and **Remove these options** clear them
+  (`clearUnsupportedCallSettings`, `clearUnsupportedCallFlowSettings`).
+  `EditorCallActivityTests.Import_AgreesWithTheServerOnEveryValueOfACallsOtherSettings`
+  compares both sides value by value. `callSourceDeclarations` mirrors
+  `CallActivityRules.SourceDeclarations` and lives inside the validator markers,
+  because the Jint suites run only that span.
 - **Lane assignment is geometric**: on drag end, a node's `laneId` is set based on
   which lane its center lands in (`assignNodeLane`).
 - **Load is tolerant**: `loadFromObject()` detects the schema. A document with

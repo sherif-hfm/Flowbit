@@ -1672,14 +1672,65 @@ function normalizeTimerDefinition(value) {
   if (calendar !== null) timer.calendar = calendar;
   return timer;
 }
+// Everything a call authors lives on node.callActivity. A type change or Remove these
+// options clears the rest; nothing else does, so save validation can report an import.
+function clearUnsupportedCallSettings(node) {
+  for (const property of [
+    "asyncBefore", "asyncAfter", "job", "multiInstance", "timer", "conditional", "cancelActivity",
+    "errorMatch", "gatewayRef", "joinCancellation", "activationCondition",
+    "inboxVisibilityCondition", "dueDate", "dueDateCalendar", "priority", "rolesVariable",
+    "service", "message", "businessKey", "idempotency", "usesFlowInfo", "attachedToRef",
+    "errorVariable", "errorCode", "errorDescription", "scriptFormat", "script"
+  ]) {
+    delete node[property];
+  }
+  node.requiresClaim = false;
+  node.claimMode = CLAIM_MODE.FRESH;
+  node.inheritClaimFromNodeId = null;
+  node.requiresAssignment = false;
+  node.assignmentMode = ASSIGNMENT_MODE.FRESH;
+  node.inheritAssignmentFromNodeId = null;
+  node.roles = [];
+  node.variables = [];
+  node.assignee = null;
+  node.assignments = [];
+}
+function clearUnsupportedCallFlowSettings(flow) {
+  delete flow.rolesVariable;
+  flow.roles = [];
+  flow.variables = [];
+  flow.condition = null;
+  flow.conditionPriority = null;
+  flow.isDefault = false;
+  flow.isSelectable = true;
+  flow.canActWithoutClaim = false;
+  flow.canActWithoutClaimRoles = [];
+  flow.completionCondition = null;
+  flow.completionPriority = null;
+  flow.cancelRemainingInstances = false;
+}
+function keepFirstOutgoingFlow(node) {
+  const outgoing = outgoingFlows(node.id);
+  if (outgoing.length > 1) {
+    const keepId = outgoing[0].id;
+    model.sequenceFlows = model.sequenceFlows.filter(f => f.sourceRef !== node.id || f.id === keepId);
+  }
+}
 function applyTypeInvariants(node) {
   if (node.attributes == null) node.attributes = [];
+  if (isCallActivityType(node.type)) {
+    // Only the empty values the loader fills in go; see clearUnsupportedCallSettings.
+    if (node.attachedToRef == null) delete node.attachedToRef;
+    if (node.errorVariable == null) delete node.errorVariable;
+    if (node.multiInstance == null) delete node.multiInstance;
+    if (node.assignments == null) node.assignments = [];
+    return;
+  }
   if (isAsyncCapableTaskType(node.type)) {
     if (node.asyncBefore === undefined) node.asyncBefore = false;
     if (node.asyncAfter === undefined) node.asyncAfter = false;
     if (node.job != null) node.job = normalizeJobPolicy(node.job);
-  } else if (!isCallActivityType(node.type)) {
-    // A call keeps imported async settings so save validation can report them.
+  } else {
     delete node.asyncBefore;
     delete node.asyncAfter;
     delete node.job;
@@ -1728,9 +1779,7 @@ function applyTypeInvariants(node) {
     node.businessKey.uniqueness = canonicalizeKnownValue(
       node.businessKey.uniqueness, ["active", "all"], undefined);
   }
-  if (!isUserTaskType(node.type) && !(isCallActivityType(node.type) && node.multiInstance != null)) {
-    delete node.multiInstance;
-  }
+  if (!isUserTaskType(node.type)) delete node.multiInstance;
   if (isEndEventType(node.type)) {
     node.requiresClaim = false;
     node.claimMode = CLAIM_MODE.FRESH;
@@ -1773,22 +1822,6 @@ function applyTypeInvariants(node) {
     node.variables = [];
     node.assignee = null;
     node.service = normalizeService(node.service, model.variables);
-    node.assignments = [];
-    delete node.scriptFormat;
-    delete node.script;
-    delete node.attachedToRef;
-    delete node.errorVariable;
-    delete node.message;
-  } else if (isCallActivityType(node.type)) {
-    // A call rests while its child runs; everything it authors lives on
-    // node.callActivity, which stays as imported so save validation can report it.
-    node.requiresClaim = false;
-    node.claimMode = CLAIM_MODE.FRESH;
-    node.inheritClaimFromNodeId = null;
-    node.roles = [];
-    node.variables = [];
-    node.assignee = null;
-    delete node.service;
     node.assignments = [];
     delete node.scriptFormat;
     delete node.script;
@@ -2013,13 +2046,7 @@ function applyTypeInvariants(node) {
     }
   }
 
-  if (isSingleOutgoingType(node.type)) {
-    const outgoing = outgoingFlows(node.id);
-    if (outgoing.length > 1) {
-      const keepId = outgoing[0].id;
-      model.sequenceFlows = model.sequenceFlows.filter(f => f.sourceRef !== node.id || f.id === keepId);
-    }
-  }
+  if (isSingleOutgoingType(node.type)) keepFirstOutgoingFlow(node);
 }
 function nextCompletionPriority(flows) {
   return flows.reduce((max, flow) => Number.isInteger(flow.completionPriority) && flow.completionPriority > 0
@@ -2081,6 +2108,8 @@ function migrateLegacyUserTaskDefaultFlows() {
 function applyFlowInvariants(flow) {
   if (flow.attributes == null) flow.attributes = [];
   const source = getNode(flow.sourceRef);
+  // A call's outgoing flow keeps what was imported on it, as the call does.
+  if (source && isCallActivityType(source.type)) return;
   const isUserTaskFlow = source && source.type === NODE_TYPE.USER_TASK;
   const gateway = source && isGatewayType(source.type);
   const splitRouting = gateway && outgoingFlows(source.id).length >= 2;
@@ -3613,6 +3642,19 @@ function changeNodeTypeFromInspector(node, nextType) {
     node.variables = materializeMessageStartVariables(node);
   }
   node.type = nextType;
+  // Only an explicit type change clears call settings; selecting a node keeps
+  // invalid imported ones visible for save validation.
+  if (isCallActivityType(previousType) && !isCallActivityType(nextType)) {
+    delete node.callActivity;
+    clearUnsupportedCallSettings(node);
+    outgoingFlows(node.id).forEach(clearUnsupportedCallFlowSettings);
+  }
+  if (isCallActivityType(nextType) && !isCallActivityType(previousType)) {
+    node.callActivity = { workflowKey: "", inputMappings: [], outputMappings: [] };
+    clearUnsupportedCallSettings(node);
+    keepFirstOutgoingFlow(node);
+    outgoingFlows(node.id).forEach(clearUnsupportedCallFlowSettings);
+  }
   if (isErrorBoundaryEventType(previousType) && !isErrorBoundaryEventType(nextType)) {
     delete node.errorMatch;
   }
@@ -3633,22 +3675,6 @@ function changeNodeTypeFromInspector(node, nextType) {
   }
   if (isConditionalCatchEventType(nextType) && !isConditionalCatchEventType(previousType)) {
     node.conditional = { condition: "" };
-  }
-  // Only an explicit type change clears call settings; selecting a node keeps
-  // invalid imported ones visible for save validation.
-  if (isCallActivityType(previousType) && !isCallActivityType(nextType)) {
-    delete node.callActivity;
-    delete node.asyncBefore;
-    delete node.asyncAfter;
-    delete node.job;
-    if (!isUserTaskType(nextType)) delete node.multiInstance;
-  }
-  if (isCallActivityType(nextType) && !isCallActivityType(previousType)) {
-    node.callActivity = { workflowKey: "", inputMappings: [], outputMappings: [] };
-    delete node.asyncBefore;
-    delete node.asyncAfter;
-    delete node.job;
-    delete node.multiInstance;
   }
   if (isStartEventType(previousType) && !isStartEventType(nextType)) {
     delete node.callOnly;
@@ -4095,6 +4121,8 @@ function renderNodeInspector() {
     renderStartVariablesSection(node);
     renderIdempotencySection(node);
     renderBusinessKeySection(node);
+  } else {
+    renderMisplacedCallOnly(node);
   }
 
   if (isUserTaskType(node.type) || isMessageCatchEventType(node.type) ||
@@ -4705,7 +4733,7 @@ function renderCallOnlyField(node) {
   toggle.querySelector("input")?.setAttribute("data-call-only", "true");
   attachInspectorHelp(toggle, "call-only",
     "Hides this start from people and API callers, so only a call activity can start the workflow. Use it for fragments that rely on checks made in the parent. It is valid only on the default plain start, with no roles and no idempotency, and it does not restrict which workflows can call this one.");
-  if (node.callOnly == null || node.callOnly === false) return;
+  if (node.callOnly === undefined || node.callOnly === false) return;
   const invalidValue = typeof node.callOnly !== "boolean";
   if (!invalidValue && model.initialEventId === node.id) return;
   const warning = document.createElement("p");
@@ -4722,6 +4750,22 @@ function renderCallOnlyField(node) {
     clear.onclick = () => { delete node.callOnly; renderInspector(); };
     inspector.appendChild(clear);
   }
+}
+
+// Save refuses an imported callOnly anywhere but a start, so this is the way to remove it.
+function renderMisplacedCallOnly(node) {
+  if (node.callOnly === undefined || node.callOnly === false) return;
+  const warning = document.createElement("p");
+  warning.className = "empty-note";
+  warning.style.color = "var(--warning-text)";
+  warning.style.marginTop = "12px";
+  warning.textContent = "This imported node sets callOnly, which only a start event can use, so the workflow cannot be saved.";
+  inspector.appendChild(warning);
+  const clear = document.createElement("button");
+  clear.textContent = "Remove this value";
+  clear.style.marginTop = "8px";
+  clear.onclick = () => { delete node.callOnly; renderInspector(); };
+  inspector.appendChild(clear);
 }
 
 function callMappingTextField(box, label, value, onInput) {
@@ -4948,21 +4992,19 @@ function renderCallActivitySection(node) {
     inspector.appendChild(clear);
   }
 
-  if (node.asyncBefore != null || node.asyncAfter != null || node.job != null || node.multiInstance != null) {
+  if (hasCallAsyncSettings(node) || node.multiInstance != null || hasOtherCallRuntimeSettings(node)) {
     const warning = document.createElement("p");
     warning.className = "empty-note";
     warning.style.color = "var(--warning-text)";
-    warning.textContent = "This imported call sets async, job, or multi-instance options, which a call does not support.";
+    warning.textContent = "This imported call sets options a call does not support, such as async, job, multi-instance, or task settings.";
     inspector.appendChild(warning);
     const clear = document.createElement("button");
     clear.textContent = "Remove these options";
     clear.style.marginTop = "8px";
     clear.onclick = () => {
-      delete node.asyncBefore;
-      delete node.asyncAfter;
-      delete node.job;
-      node.multiInstance = null;
-      redrawCallSection();
+      clearUnsupportedCallSettings(node);
+      render();
+      inspector.querySelector("[data-call-section]")?.focus();
     };
     inspector.appendChild(clear);
   }
@@ -6746,6 +6788,24 @@ function renderFlowInspector() {
               flow.targetRef, v => { flow.targetRef = +v; renderDiagramLayers(); });
 
   renderAttributesSection(flow);
+
+  if (source && isCallActivityType(source.type) &&
+      (hasUnsupportedCallFlowSettings(flow) || flow.rolesVariable != null)) {
+    const warning = document.createElement("p");
+    warning.className = "empty-note";
+    warning.style.color = "var(--warning-text)";
+    warning.style.marginTop = "12px";
+    warning.textContent = "This imported flow sets options a call's outgoing flow does not support, such as a condition, roles, or variables.";
+    inspector.appendChild(warning);
+    const clear = document.createElement("button");
+    clear.textContent = "Remove these options";
+    clear.style.marginTop = "8px";
+    clear.onclick = () => {
+      clearUnsupportedCallFlowSettings(flow);
+      render();
+    };
+    inspector.appendChild(clear);
+  }
 
   if (conditionalGateway) {
     const defaultToggle = inspector.appendChild(
@@ -11419,7 +11479,7 @@ function validateSaveAsyncJobsAndTimers(ctx) {
   for (const node of nodes.filter(Boolean)) {
     const asyncMetadata = !!node.asyncBefore || !!node.asyncAfter || node.job != null;
     if (node.type === "callActivity") {
-      if (asyncMetadata) {
+      if (hasCallAsyncSettings(node)) {
         errors.push("Call activity #" + node.id +
           " cannot set asyncBefore, asyncAfter, or job; a call is always durable.");
       }
@@ -11870,24 +11930,78 @@ function callMappingNameProblem(name) {
   return CALL_RESERVED_NAME.test(name) ? "'" + name + "' uses a reserved context prefix." : null;
 }
 
+// An imported call keeps every value as authored, so these read one as the server does: a flag
+// is off only when absent or false, text is unset only when null or blank, and a list is empty
+// only when null or []. A value of the wrong type counts, because binding refuses it.
+function callFlagIsOn(value) {
+  return value !== undefined && value !== false;
+}
+function callTextIsSet(value) {
+  return value != null && (typeof value !== "string" || value.trim().length > 0);
+}
+function callListHasItems(value) {
+  return value != null && !(Array.isArray(value) && value.length === 0);
+}
+function hasCallAsyncSettings(node) {
+  return callFlagIsOn(node.asyncBefore) || callFlagIsOn(node.asyncAfter) || node.job != null;
+}
+
 // Mirrors the settings ValidateAuthoredCallActivityMetadata refuses. Async and
 // multi-instance settings have their own messages.
 function hasOtherCallRuntimeSettings(node) {
-  const isCustomized = (value, standard) => hasText(value) && value.trim().toLowerCase() !== standard;
+  const isCustomized = (value, standard) => value !== undefined &&
+    !(typeof value === "string" && value.toLowerCase() === standard);
   return node.timer != null || node.conditional != null || node.cancelActivity != null ||
     node.errorMatch != null || node.gatewayRef != null || node.joinCancellation != null ||
     node.service != null || node.message != null || node.businessKey != null ||
     node.idempotency != null || node.usesFlowInfo != null || node.attachedToRef != null ||
     node.inheritClaimFromNodeId != null || node.inheritAssignmentFromNodeId != null ||
-    node.requiresClaim === true || node.requiresAssignment === true ||
+    callFlagIsOn(node.requiresClaim) || callFlagIsOn(node.requiresAssignment) ||
     isCustomized(node.claimMode, "fresh") || isCustomized(node.assignmentMode, "fresh") ||
     isCustomized(node.scriptFormat, "ncalc") ||
-    (Array.isArray(node.roles) && node.roles.length > 0) ||
-    (Array.isArray(node.variables) && node.variables.length > 0) ||
-    (Array.isArray(node.assignments) && node.assignments.length > 0) ||
+    callListHasItems(node.roles) || callListHasItems(node.variables) || callListHasItems(node.assignments) ||
     [node.activationCondition, node.inboxVisibilityCondition, node.dueDate, node.dueDateCalendar,
       node.priority, node.rolesVariable, node.script, node.assignee, node.errorVariable,
-      node.errorCode, node.errorDescription].some(hasText);
+      node.errorCode, node.errorDescription].some(callTextIsSet);
+}
+
+// Mirrors HasUnsupportedPassThroughMetadata.
+function hasUnsupportedCallFlowSettings(flow) {
+  return (flow.isSelectable !== undefined && flow.isSelectable !== true) ||
+    callFlagIsOn(flow.isDefault) || callFlagIsOn(flow.canActWithoutClaim) ||
+    callFlagIsOn(flow.cancelRemainingInstances) ||
+    callListHasItems(flow.roles) || callListHasItems(flow.canActWithoutClaimRoles) ||
+    callListHasItems(flow.variables) ||
+    callTextIsSet(flow.condition) || callTextIsSet(flow.completionCondition) ||
+    flow.conditionPriority != null || flow.completionPriority != null;
+}
+
+const CALL_NODE_SETTING_TYPES = [
+  ["true or false", value => typeof value === "boolean",
+    ["asyncBefore", "asyncAfter", "requiresClaim", "requiresAssignment"]],
+  ["text", value => typeof value === "string", ["claimMode", "assignmentMode", "scriptFormat"]],
+  ["text", value => value == null || typeof value === "string",
+    ["assignee", "script", "errorVariable", "errorCode", "errorDescription"]],
+  ["a list", value => value == null || Array.isArray(value), ["roles", "variables", "assignments"]]
+];
+const CALL_FLOW_SETTING_TYPES = [
+  ["true or false", value => typeof value === "boolean",
+    ["isDefault", "isSelectable", "canActWithoutClaim", "cancelRemainingInstances"]],
+  ["text", value => value == null || typeof value === "string", ["condition", "completionCondition"]],
+  ["a list", value => value == null || Array.isArray(value), ["roles", "canActWithoutClaimRoles", "variables"]],
+  ["a whole number", value => value == null || Number.isInteger(value), ["conditionPriority", "completionPriority"]]
+];
+
+// The server's binding reports only a JSON path for a value of the wrong type, and the rule
+// messages name no setting, so this names each one.
+function validateSaveCallSettingTypes(errors, label, owner, settingTypes) {
+  for (const [expected, isValid, properties] of settingTypes) {
+    for (const property of properties) {
+      if (owner[property] !== undefined && !isValid(owner[property])) {
+        errors.push(label + " " + property + " must be " + expected + ".");
+      }
+    }
+  }
 }
 
 function callValueType(mapping) {
@@ -11945,7 +12059,7 @@ function validateSaveCallMappingList(ctx, label, property, mappings) {
 function validateSaveCallOnlyStarts(ctx) {
   const errors = ctx.errors;
   for (const node of ctx.nodes.filter(Boolean)) {
-    if (node.callOnly == null || node.callOnly === false) continue;
+    if (node.callOnly === undefined || node.callOnly === false) continue;
     if (node.type !== "startEvent") {
       errors.push("Flow node #" + String(node.id) + " sets callOnly but is not a start event.");
       continue;
@@ -11990,13 +12104,17 @@ function validateSaveCallActivities(ctx) {
     const outgoing = ctx.outgoingFor(node.id);
     if (outgoing.length !== 1) {
       errors.push(label + " must have exactly one outgoing sequence flow.");
-    } else if (hasUnsupportedPassThroughMetadata(outgoing[0])) {
+    } else if (hasUnsupportedCallFlowSettings(outgoing[0])) {
       errors.push(label + " must have one unconditional outgoing sequence flow without " +
         "user-action or multi-instance metadata.");
     }
     if (node.multiInstance != null) errors.push(label + " cannot define multiInstance.");
     if (hasOtherCallRuntimeSettings(node)) {
       errors.push(label + " can define only callActivity; remove its other runtime settings.");
+    }
+    validateSaveCallSettingTypes(errors, label, node, CALL_NODE_SETTING_TYPES);
+    for (const flow of outgoing) {
+      validateSaveCallSettingTypes(errors, label + " flow #" + String(flow.id), flow, CALL_FLOW_SETTING_TYPES);
     }
 
     const call = node.callActivity;
@@ -13278,6 +13396,8 @@ function normalizeLoadedModel(obj) {
   try {
   if (Array.isArray(obj.flowNodes)) {
     // Already BPMN schema.
+    const importedCallIds = new Set(obj.flowNodes.filter(s => isCallActivityType(s.type)).map(s => s.id));
+    refuseMalformedCallVariables(obj, importedCallIds);
     const loadedProcessVariables = (obj.variables || []).map(variable => normalizeVariable(variable, true));
     model = {
       id: obj.id ?? 1,
@@ -13293,7 +13413,7 @@ function normalizeLoadedModel(obj) {
         w: typeof p.w === "number" ? p.w : 300,
         h: typeof p.h === "number" ? p.h : 220
       })),
-      flowNodes: (obj.flowNodes || []).map((s, i) => ({
+      flowNodes: (obj.flowNodes || []).map((s, i) => keepImportedCallSettings(s, {
         id: s.id,
         name: s.name ?? `Node ${s.id}`,
         externalId: s.externalId ?? null,
@@ -13391,13 +13511,13 @@ function normalizeLoadedModel(obj) {
         callActivity: s.callActivity == null
           ? undefined
           : JSON.parse(JSON.stringify(s.callActivity)),
-        callOnly: s.callOnly == null || s.callOnly === false ? undefined : s.callOnly,
+        callOnly: s.callOnly === false ? undefined : s.callOnly,
         businessKey: (isStartEventType(s.type) || isMessageStartEventType(s.type)) && s.businessKey !== undefined
           ? normalizeBusinessKeyForLoad(s.businessKey) : undefined,
         idempotency: (isStartEventType(s.type) || isMessageStartEventType(s.type)) && s.idempotency !== undefined
           ? normalizeIdempotencyForLoad(s.idempotency) : undefined
       })),
-      sequenceFlows: (obj.sequenceFlows || []).map(f => ({
+      sequenceFlows: (obj.sequenceFlows || []).map(f => keepImportedCallFlowSettings(f, importedCallIds, {
         id: f.id,
         name: f.name ?? "",
         externalId: f.externalId ?? null,
@@ -13441,6 +13561,54 @@ function normalizeLoadedModel(obj) {
   } finally {
     model = previousModel;
   }
+}
+// Too much of the editor walks these lists to keep a malformed one, so it stops the import.
+function refuseMalformedCallVariables(obj, importedCallIds) {
+  for (const node of obj.flowNodes) {
+    if (isCallActivityType(node.type) && node.variables != null && !Array.isArray(node.variables)) {
+      throw new Error("Call activity #" + String(node.id) + " variables must be a list.");
+    }
+  }
+  for (const flow of obj.sequenceFlows || []) {
+    if (importedCallIds.has(flow.sourceRef) && flow.variables != null && !Array.isArray(flow.variables)) {
+      throw new Error("Sequence flow #" + String(flow.id) + " from a call activity: variables must be a list.");
+    }
+  }
+}
+// The loader drops or repairs what a node type has no use for. A call keeps these as authored,
+// so save validation can report them instead of the import changing them silently.
+function keepImportedCallSettings(source, node) {
+  if (!isCallActivityType(source.type)) return node;
+  const copy = value => JSON.parse(JSON.stringify(value));
+  for (const property of [
+    "timer", "conditional", "cancelActivity", "service", "message", "businessKey", "idempotency",
+    "assignments", "script", "usesFlowInfo", "attachedToRef", "errorVariable",
+    "errorCode", "errorDescription", "gatewayRef", "inboxVisibilityCondition",
+    "dueDate", "dueDateCalendar", "priority", "assignee", "roles", "multiInstance"
+  ]) {
+    if (source[property] != null) node[property] = copy(source[property]);
+  }
+  // The server reads blank text here as absent, but the save phase would report it.
+  const activation = source.activationCondition;
+  if (activation != null && (typeof activation !== "string" || activation.trim())) {
+    node.activationCondition = copy(activation);
+  }
+  // These have defaults on the server, which also refuses a null.
+  for (const property of ["requiresClaim", "requiresAssignment", "claimMode", "assignmentMode", "scriptFormat"]) {
+    if (source[property] !== undefined) node[property] = copy(source[property]);
+  }
+  return node;
+}
+function keepImportedCallFlowSettings(source, importedCallIds, flow) {
+  if (!importedCallIds.has(source.sourceRef)) return flow;
+  const copy = value => JSON.parse(JSON.stringify(value));
+  for (const property of ["roles", "canActWithoutClaimRoles", "completionCondition", "completionPriority"]) {
+    if (source[property] != null) flow[property] = copy(source[property]);
+  }
+  for (const property of ["isDefault", "isSelectable", "canActWithoutClaim", "cancelRemainingInstances"]) {
+    if (source[property] !== undefined) flow[property] = copy(source[property]);
+  }
+  return flow;
 }
 
 function loadFromObject(obj) {

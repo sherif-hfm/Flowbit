@@ -356,6 +356,11 @@ public sealed class WorkflowJobOperationsServiceTests
             long? exceptJobId,
             string reason,
             CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<int> CancelCallMessageIncidentAsync(
+            long invocationId,
+            string kind,
+            string reason,
+            CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<int> CancelTimerJobsByTokenIdsAsync(
             long instanceId,
             IReadOnlyCollection<long> tokenIds,

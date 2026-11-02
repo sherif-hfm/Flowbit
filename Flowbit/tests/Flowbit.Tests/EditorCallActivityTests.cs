@@ -365,6 +365,34 @@ public sealed class EditorCallActivityTests
     [InlineData("""{ "flowNodes.1.callOnly": "yes" }""", "callOnly must be true or false")]
     [InlineData("""{ "flowNodes.3.callActivity": { "workflowKey": "child" } }""", "is not a call activity")]
     [InlineData("""{ "flowNodes.3.callOnly": true }""", "is not a start event")]
+    [InlineData("""{ "flowNodes.2.roles": ["Manager"] }""", "can define only callActivity")]
+    [InlineData("""{ "flowNodes.2.variables": [{ "id": 9, "name": "note", "dataType": "string" }] }""", "can define only callActivity")]
+    [InlineData("""{ "flowNodes.2.requiresClaim": true }""", "can define only callActivity")]
+    [InlineData("""{ "flowNodes.2.claimMode": "previous" }""", "can define only callActivity")]
+    [InlineData("""{ "flowNodes.2.requiresAssignment": true }""", "can define only callActivity")]
+    [InlineData("""{ "flowNodes.2.assignmentMode": "previous" }""", "can define only callActivity")]
+    [InlineData("""{ "flowNodes.2.assignee": "'alice'" }""", "can define only callActivity")]
+    [InlineData("""{ "flowNodes.2.dueDate": "P2D" }""", "can define only callActivity")]
+    [InlineData("""{ "flowNodes.2.dueDateCalendar": "Office" }""", "can define only callActivity")]
+    [InlineData("""{ "flowNodes.2.priority": "5" }""", "can define only callActivity")]
+    [InlineData("""{ "flowNodes.2.inboxVisibilityCondition": "amount > 1" }""", "can define only callActivity")]
+    [InlineData("""{ "flowNodes.2.timer": { "timeDuration": "PT1H" } }""", "can define only callActivity")]
+    [InlineData("""{ "flowNodes.2.conditional": { "condition": "amount > 1" } }""", "can define only callActivity")]
+    [InlineData("""{ "flowNodes.2.cancelActivity": false }""", "can define only callActivity")]
+    [InlineData("""{ "flowNodes.2.service": { "type": "rest", "method": "GET", "url": "http://example.test/" } }""", "can define only callActivity")]
+    [InlineData("""{ "flowNodes.2.message": { "clientId": "a" } }""", "can define only callActivity")]
+    [InlineData("""{ "flowNodes.2.scriptFormat": "javascript" }""", "can define only callActivity")]
+    [InlineData("""{ "flowNodes.2.script": "var a = 1;" }""", "can define only callActivity")]
+    [InlineData("""{ "flowNodes.2.assignments": [{ "variable": "decision", "expression": "1" }] }""", "can define only callActivity")]
+    [InlineData("""{ "flowNodes.2.usesFlowInfo": true }""", "can define only callActivity")]
+    [InlineData("""{ "flowNodes.2.attachedToRef": 3 }""", "can define only callActivity")]
+    [InlineData("""{ "flowNodes.2.errorVariable": "decision" }""", "can define only callActivity")]
+    [InlineData("""{ "flowNodes.2.errorCode": "call.failed" }""", "can define only callActivity")]
+    [InlineData("""{ "flowNodes.2.errorDescription": "Failed." }""", "can define only callActivity")]
+    [InlineData("""{ "flowNodes.2.activationCondition": "true" }""", "can define only callActivity")]
+    [InlineData("""{ "flowNodes.2.gatewayRef": 3 }""", "can define only callActivity")]
+    [InlineData("""{ "flowNodes.2.businessKey": { "variable": "amount", "uniqueness": "active" } }""", "can define only callActivity")]
+    [InlineData("""{ "flowNodes.2.idempotency": { "headerName": "Idempotency-Key", "variable": "requestId" } }""", "can define only callActivity")]
     public void Load_KeepsInvalidImportsVisibleSoSaveCanReportThem(string change, string expected)
     {
         var engine = EditorEngine();
@@ -391,6 +419,475 @@ public sealed class EditorCallActivityTests
             """).AsString())!;
 
         Assert.Contains(errors, error => error.Contains(expected, StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("""{ "condition": "amount > 1" }""", "must have one unconditional outgoing sequence flow")]
+    [InlineData("""{ "conditionPriority": 1 }""", "must have one unconditional outgoing sequence flow")]
+    [InlineData("""{ "roles": ["Manager"] }""", "must have one unconditional outgoing sequence flow")]
+    [InlineData("""{ "rolesVariable": "managers" }""", "rolesVariable is supported only")]
+    [InlineData("""{ "variables": [{ "id": 9, "name": "note", "dataType": "string" }] }""", "must have one unconditional outgoing sequence flow")]
+    [InlineData("""{ "isDefault": true }""", "must have one unconditional outgoing sequence flow")]
+    [InlineData("""{ "isSelectable": false }""", "must have one unconditional outgoing sequence flow")]
+    [InlineData("""{ "canActWithoutClaim": true }""", "must have one unconditional outgoing sequence flow")]
+    [InlineData("""{ "canActWithoutClaim": true, "canActWithoutClaimRoles": ["Manager"] }""", "must have one unconditional outgoing sequence flow")]
+    [InlineData("""{ "completionCondition": "true" }""", "must have one unconditional outgoing sequence flow")]
+    [InlineData("""{ "completionPriority": 1 }""", "must have one unconditional outgoing sequence flow")]
+    [InlineData("""{ "cancelRemainingInstances": true }""", "must have one unconditional outgoing sequence flow")]
+    public void Load_KeepsAnImportedCallFlowsSettingsSoSaveCanReportThem(string change, string expected)
+    {
+        var json = ModelJson(model =>
+        {
+            var flow = model["sequenceFlows"]![1]!.AsObject();
+            foreach (var property in JsonNode.Parse(change)!.AsObject())
+            {
+                flow[property.Key] = property.Value!.DeepClone();
+            }
+        });
+        var engine = EditorEngine();
+        engine.SetValue("modelJson", json);
+
+        var errors = JsonSerializer.Deserialize<List<string>>(engine.Evaluate("""
+            (() => {
+              loadFromObject(JSON.parse(modelJson));
+              render();
+              return JSON.stringify(prepareWorkflowExport().errors || []);
+            })()
+            """).AsString())!;
+
+        Assert.NotNull(ServerError(json));
+        Assert.Contains(errors, error => error.Contains(expected, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Load_KeepsEveryOutgoingFlowOfAnImportedCallSoSaveCanReportThem()
+    {
+        var engine = EditorEngine();
+        engine.SetValue("modelJson", ModelJson(model => AddFlow(model, 202, 2, 3)));
+
+        using var result = JsonDocument.Parse(engine.Evaluate("""
+            (() => {
+              loadFromObject(JSON.parse(modelJson));
+              render();
+              const flows = model.sequenceFlows.filter(flow => flow.sourceRef === 2).length;
+              return JSON.stringify({ flows, errors: prepareWorkflowExport().errors || [] });
+            })()
+            """).AsString());
+
+        Assert.Equal(2, result.RootElement.GetProperty("flows").GetInt32());
+        Assert.Contains(
+            result.RootElement.GetProperty("errors").EnumerateArray(),
+            error => error.GetString()!.Contains("must have exactly one outgoing sequence flow", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Load_KeepsAnImportedCallsSettingsThroughARedraw()
+    {
+        var engine = EditorEngine();
+        engine.SetValue("modelJson", ModelJson(model =>
+        {
+            var call = Node(model, 2);
+            call["roles"] = new JsonArray("Manager");
+            call["dueDate"] = "P2D";
+            call["requiresClaim"] = true;
+            call["service"] = JsonNode.Parse("""{ "type": "rest", "method": "GET", "url": "http://example.test/" }""");
+            model["sequenceFlows"]![1]!["condition"] = "amount > 1";
+        }));
+
+        var unchanged = engine.Evaluate("""
+            (() => {
+              loadFromObject(JSON.parse(modelJson));
+              const before = JSON.stringify(model);
+              render();
+              selected = { kind: 'node', nodeId: 2 };
+              render();
+              selected = { kind: 'flow', flowId: 201 };
+              render();
+              return JSON.stringify(model) === before;
+            })()
+            """).AsBoolean();
+
+        Assert.True(unchanged);
+    }
+
+    [Fact]
+    public void Inspector_RemovesAnImportedCallsSettingsOnRequest()
+    {
+        var engine = EditorEngine();
+        engine.SetValue("modelJson", ModelJson(model =>
+        {
+            var call = Node(model, 2);
+            call["roles"] = new JsonArray("Manager");
+            call["dueDate"] = "P2D";
+            call["requiresClaim"] = true;
+            call["asyncBefore"] = true;
+            call["service"] = JsonNode.Parse("""{ "type": "rest", "method": "GET", "url": "http://example.test/" }""");
+            var flow = model["sequenceFlows"]![1]!.AsObject();
+            flow["condition"] = "amount > 1";
+            flow["conditionPriority"] = 1;
+            flow["roles"] = new JsonArray("Manager");
+        }));
+
+        using var result = JsonDocument.Parse(engine.Evaluate("""
+            (() => {
+              loadFromObject(JSON.parse(modelJson));
+              const descendants = root => {
+                const found = [root];
+                for (const child of root.children || []) found.push(...descendants(child));
+                return found;
+              };
+              const remove = () => descendants(inspector).filter(element => element.textContent === 'Remove these options').slice(-1)[0];
+              const errors = () => prepareWorkflowExport().errors || [];
+
+              const before = errors();
+              selected = { kind: 'node', nodeId: 2 };
+              renderInspector();
+              remove().onclick();
+              const afterNode = errors();
+              selected = { kind: 'flow', flowId: 201 };
+              renderInspector();
+              remove().onclick();
+              const afterFlow = errors();
+              const call = model.flowNodes.find(node => node.id === 2);
+              return JSON.stringify({
+                before, afterNode, afterFlow,
+                key: call.callActivity.workflowKey,
+                inputs: call.callActivity.inputMappings.length
+              });
+            })()
+            """).AsString());
+
+        var root = result.RootElement;
+        string[] Errors(string name) => root.GetProperty(name).EnumerateArray().Select(error => error.GetString()!).ToArray();
+        Assert.Contains(Errors("before"), error => error.Contains("can define only callActivity", StringComparison.Ordinal));
+        Assert.Contains(Errors("before"), error => error.Contains("must have one unconditional outgoing", StringComparison.Ordinal));
+        Assert.DoesNotContain(Errors("afterNode"), error => error.Contains("can define only callActivity", StringComparison.Ordinal));
+        Assert.Contains(Errors("afterNode"), error => error.Contains("must have one unconditional outgoing", StringComparison.Ordinal));
+        Assert.Empty(Errors("afterFlow"));
+
+        // What the call itself authors stays.
+        Assert.Equal("child", root.GetProperty("key").GetString());
+        Assert.Equal(1, root.GetProperty("inputs").GetInt32());
+    }
+
+    [Fact]
+    public void Inspector_OffersToRemoveARolesVariableAloneOnACallsFlow()
+    {
+        var engine = EditorEngine();
+        engine.SetValue("modelJson", ModelJson(model => model["sequenceFlows"]![1]!["rolesVariable"] = "managers"));
+
+        using var result = JsonDocument.Parse(engine.Evaluate("""
+            (() => {
+              loadFromObject(JSON.parse(modelJson));
+              const descendants = root => {
+                const found = [root];
+                for (const child of root.children || []) found.push(...descendants(child));
+                return found;
+              };
+              const before = (prepareWorkflowExport().errors || []).length;
+              selected = { kind: 'flow', flowId: 201 };
+              renderInspector();
+              descendants(inspector).filter(element => element.textContent === 'Remove these options').slice(-1)[0].onclick();
+              return JSON.stringify({ before, after: (prepareWorkflowExport().errors || []).length });
+            })()
+            """).AsString());
+
+        Assert.NotEqual(0, result.RootElement.GetProperty("before").GetInt32());
+        Assert.Equal(0, result.RootElement.GetProperty("after").GetInt32());
+    }
+
+    private static readonly string[] AnyJsonValue =
+        ["null", "0", "1", "1.5", "\"\"", "\" \"", "\"x\"", "\"false\"", "true", "false", "[]", "[1]", "[\"x\"]", "{}"];
+
+    private static readonly string[] CallNodeSettings =
+    [
+        "asyncBefore", "asyncAfter", "job", "timer", "conditional", "cancelActivity", "roles", "rolesVariable",
+        "requiresClaim", "claimMode", "inheritClaimFromNodeId", "variables", "service", "message", "businessKey",
+        "idempotency", "scriptFormat", "assignments", "script", "usesFlowInfo", "assignee", "requiresAssignment",
+        "assignmentMode", "inheritAssignmentFromNodeId", "inboxVisibilityCondition", "dueDate", "dueDateCalendar",
+        "priority", "multiInstance", "attachedToRef", "errorVariable", "errorMatch", "errorCode", "errorDescription",
+        "activationCondition", "gatewayRef", "joinCancellation", "callOnly"
+    ];
+
+    private static readonly string[] CallFlowSettings =
+    [
+        "roles", "rolesVariable", "variables", "condition", "conditionPriority", "isDefault", "isSelectable",
+        "canActWithoutClaim", "canActWithoutClaimRoles", "completionCondition", "completionPriority",
+        "cancelRemainingInstances"
+    ];
+
+    // Whatever the server refuses has to stop the import or fail save, so the file never reaches
+    // it with a value quietly changed or quietly passed along. What it accepts must still save.
+    [Fact]
+    public void Import_AgreesWithTheServerOnEveryValueOfACallsOtherSettings()
+    {
+        var engine = EditorEngine();
+        engine.Execute("""
+            function importVerdict(json) {
+              try { loadFromObject(JSON.parse(json)); } catch (error) { return JSON.stringify({ verdict: 'refused' }); }
+              try {
+                const prepared = prepareWorkflowExport();
+                return JSON.stringify(prepared.errors && prepared.errors.length
+                  ? { verdict: 'reported', errors: prepared.errors }
+                  : { verdict: 'saved', json: prepared.json });
+              } catch (error) {
+                return JSON.stringify({ verdict: 'crashed', errors: [String(error)] });
+              }
+            }
+            """);
+
+        var cases =
+            from setting in CallNodeSettings
+            from value in AnyJsonValue
+            select (Name: $"call {setting}={value}", Json: ModelJson(model => Node(model, 2)[setting] = JsonNode.Parse(value)));
+        cases = cases.Concat(
+            from setting in CallFlowSettings
+            from value in AnyJsonValue
+            select (Name: $"call's flow {setting}={value}", Json: ModelJson(model => model["sequenceFlows"]![1]![setting] = JsonNode.Parse(value))));
+        cases = cases.Concat(
+            from node in new[] { 1, 3 }
+            from value in AnyJsonValue
+            select (Name: $"node {node} callOnly={value}", Json: ModelJson(model => Node(model, node)["callOnly"] = JsonNode.Parse(value))));
+
+        var disagreements = new List<string>();
+        foreach (var (name, json) in cases)
+        {
+            var serverError = ServerError(json);
+            engine.SetValue("caseJson", json);
+            using var editor = JsonDocument.Parse(engine.Evaluate("importVerdict(caseJson)").AsString());
+            var verdict = editor.RootElement.GetProperty("verdict").GetString();
+            if (verdict == "crashed")
+            {
+                disagreements.Add($"{name}: saving threw {editor.RootElement.GetProperty("errors")[0].GetString()}");
+            }
+            else if (serverError is not null && verdict == "saved")
+            {
+                disagreements.Add($"{name}: the server refuses it ({serverError}), but the editor saved it");
+            }
+            else if (serverError is null && verdict != "saved")
+            {
+                // The server's migrator drops bypass roles with no bypass, and the editor names them.
+                if (name != "call's flow canActWithoutClaimRoles=[\"x\"]")
+                {
+                    disagreements.Add($"{name}: the server accepts it, but the editor {verdict} it: {editor.RootElement}");
+                }
+            }
+            else if (serverError is null && ServerError(editor.RootElement.GetProperty("json").GetString()!) is { } exportError)
+            {
+                disagreements.Add($"{name}: the server refuses what the editor exported: {exportError}");
+            }
+        }
+
+        Assert.True(disagreements.Count == 0, $"{disagreements.Count} disagreements:\n" + string.Join("\n", disagreements));
+    }
+
+    // Every setting holds the value at once, so one redraw reaches whatever reads any of them.
+    [Theory]
+    [InlineData("null")]
+    [InlineData("0")]
+    [InlineData("1.5")]
+    [InlineData("\"\"")]
+    [InlineData("\"x\"")]
+    [InlineData("true")]
+    [InlineData("[1]")]
+    [InlineData("{}")]
+    public void Load_RedrawsAndSavesACallWhoseSettingsAllHoldAMalformedValue(string value)
+    {
+        var engine = EditorEngine();
+        engine.SetValue("modelJson", ModelJson(model =>
+        {
+            foreach (var setting in CallNodeSettings.Where(setting => setting != "variables"))
+            {
+                Node(model, 2)[setting] = JsonNode.Parse(value);
+            }
+
+            foreach (var setting in CallFlowSettings.Where(setting => setting != "variables"))
+            {
+                model["sequenceFlows"]![1]![setting] = JsonNode.Parse(value);
+            }
+
+            Node(model, 1)["callOnly"] = JsonNode.Parse(value);
+            Node(model, 3)["callOnly"] = JsonNode.Parse(value);
+        }));
+
+        using var result = JsonDocument.Parse(engine.Evaluate("""
+            (() => {
+              loadFromObject(JSON.parse(modelJson));
+              const loaded = JSON.stringify(model);
+              render();
+              for (const nodeId of [1, 2, 3]) {
+                selected = { kind: 'node', nodeId };
+                render();
+              }
+              selected = { kind: 'flow', flowId: 201 };
+              render();
+              return JSON.stringify({ unchanged: JSON.stringify(model) === loaded, errors: prepareWorkflowExport().errors || [] });
+            })()
+            """).AsString());
+
+        Assert.True(result.RootElement.GetProperty("unchanged").GetBoolean(), "A redraw must not rewrite an imported value.");
+        if (ServerError(engine.GetValue("modelJson").AsString()) is not null)
+        {
+            Assert.NotEmpty(result.RootElement.GetProperty("errors").EnumerateArray());
+        }
+    }
+
+    // The three the review named, and what each save reports about them.
+    [Theory]
+    [InlineData(1, "callOnly", "null", "Start event #1 callOnly must be true or false.")]
+    [InlineData(3, "callOnly", "null", "Flow node #3 sets callOnly but is not a start event.")]
+    [InlineData(null, "completionPriority", "1.5", "Call activity #2 flow #201 completionPriority must be a whole number.")]
+    [InlineData(null, "isSelectable", "\"false\"", "Call activity #2 flow #201 isSelectable must be true or false.")]
+    [InlineData(null, "isDefault", "0", "Call activity #2 flow #201 isDefault must be true or false.")]
+    [InlineData(null, "condition", "5", "Call activity #2 flow #201 condition must be text.")]
+    [InlineData(null, "roles", "5", "Call activity #2 flow #201 roles must be a list.")]
+    [InlineData(2, "requiresClaim", "0", "Call activity #2 requiresClaim must be true or false.")]
+    [InlineData(2, "asyncBefore", "null", "Call activity #2 asyncBefore must be true or false.")]
+    [InlineData(2, "claimMode", "5", "Call activity #2 claimMode must be text.")]
+    [InlineData(2, "assignee", "5", "Call activity #2 assignee must be text.")]
+    [InlineData(2, "roles", "5", "Call activity #2 roles must be a list.")]
+    public void Load_KeepsAMalformedValueAsAuthoredAndSaveNamesIt(int? nodeId, string setting, string value, string expected)
+    {
+        var engine = EditorEngine();
+        engine.SetValue("modelJson", ModelJson(model =>
+        {
+            JsonNode owner = nodeId is int id ? Node(model, id) : model["sequenceFlows"]![1]!;
+            owner[setting] = JsonNode.Parse(value);
+        }));
+        engine.SetValue("nodeId", nodeId is int node ? node : -1);
+        engine.SetValue("setting", setting);
+
+        using var result = JsonDocument.Parse(engine.Evaluate("""
+            (() => {
+              loadFromObject(JSON.parse(modelJson));
+              render();
+              const owner = nodeId === -1
+                ? model.sequenceFlows.find(flow => flow.id === 201)
+                : model.flowNodes.find(node => node.id === nodeId);
+              const prepared = prepareWorkflowExport();
+              return JSON.stringify({ kept: owner[setting], errors: prepared.errors || [], json: prepared.json });
+            })()
+            """).AsString());
+
+        Assert.Equal(JsonNode.Parse(value)?.ToJsonString(), JsonNode.Parse(result.RootElement.GetProperty("kept").GetRawText())?.ToJsonString());
+        Assert.Contains(expected, result.RootElement.GetProperty("errors").EnumerateArray().Select(error => error.GetString()));
+        Assert.Equal(JsonValueKind.Null, result.RootElement.GetProperty("json").ValueKind);
+    }
+
+    [Theory]
+    [InlineData("0")]
+    [InlineData("5")]
+    [InlineData("\"note\"")]
+    [InlineData("{}")]
+    public void Load_RefusesMalformedVariablesOnACallOrItsFlowAndKeepsTheCurrentDocument(string value)
+    {
+        var engine = EditorEngine();
+        engine.SetValue("callJson", ModelJson(model => Node(model, 2)["variables"] = JsonNode.Parse(value)));
+        engine.SetValue("flowJson", ModelJson(model => model["sequenceFlows"]![1]!["variables"] = JsonNode.Parse(value)));
+        engine.SetValue("modelJson", BaseModel);
+
+        using var result = JsonDocument.Parse(engine.Evaluate("""
+            (() => {
+              loadFromObject(JSON.parse(modelJson));
+              const before = JSON.stringify(model);
+              const refusal = json => {
+                try { loadFromObject(JSON.parse(json)); return null; } catch (error) { return String(error.message); }
+              };
+              const onCall = refusal(callJson);
+              const onFlow = refusal(flowJson);
+              return JSON.stringify({ onCall, onFlow, unchanged: JSON.stringify(model) === before });
+            })()
+            """).AsString());
+
+        Assert.Equal("Call activity #2 variables must be a list.", result.RootElement.GetProperty("onCall").GetString());
+        Assert.Equal("Sequence flow #201 from a call activity: variables must be a list.", result.RootElement.GetProperty("onFlow").GetString());
+        Assert.True(result.RootElement.GetProperty("unchanged").GetBoolean());
+    }
+
+    [Theory]
+    [InlineData(1, "null", "not true or false")]
+    [InlineData(3, "null", "only a start event can use")]
+    [InlineData(3, "true", "only a start event can use")]
+    [InlineData(2, "null", "only a start event can use")]
+    public void Inspector_ShowsAnImportedCallOnlyAndRemovesIt(int nodeId, string value, string warning)
+    {
+        var engine = EditorEngine();
+        engine.SetValue("modelJson", ModelJson(model => Node(model, nodeId)["callOnly"] = JsonNode.Parse(value)));
+        engine.SetValue("nodeId", nodeId);
+
+        using var result = JsonDocument.Parse(engine.Evaluate("""
+            (() => {
+              loadFromObject(JSON.parse(modelJson));
+              const descendants = root => {
+                const found = [root];
+                for (const child of root.children || []) found.push(...descendants(child));
+                return found;
+              };
+              const before = prepareWorkflowExport().errors || [];
+              selected = { kind: 'node', nodeId };
+              renderInspector();
+              const shown = descendants(inspector).map(element => element.textContent).join(' | ');
+              descendants(inspector).filter(element => element.textContent === 'Remove this value').slice(-1)[0].onclick();
+              const node = model.flowNodes.find(candidate => candidate.id === nodeId);
+              return JSON.stringify({
+                before,
+                shown,
+                removed: !Object.prototype.hasOwnProperty.call(node, 'callOnly'),
+                after: prepareWorkflowExport().errors || []
+              });
+            })()
+            """).AsString());
+
+        Assert.NotEmpty(result.RootElement.GetProperty("before").EnumerateArray());
+        Assert.Contains(warning, result.RootElement.GetProperty("shown").GetString());
+        Assert.True(result.RootElement.GetProperty("removed").GetBoolean());
+        Assert.Empty(result.RootElement.GetProperty("after").EnumerateArray());
+    }
+
+    [Fact]
+    public void Inspector_RemovesAMalformedSettingFromACallAndItsFlow()
+    {
+        var engine = EditorEngine();
+        engine.SetValue("modelJson", ModelJson(model =>
+        {
+            var call = Node(model, 2);
+            call["requiresClaim"] = 0;
+            call["asyncAfter"] = JsonNode.Parse("null");
+            call["assignee"] = 5;
+            call["roles"] = 5;
+            call["multiInstance"] = false;
+            call["claimMode"] = JsonNode.Parse("null");
+            var flow = model["sequenceFlows"]![1]!.AsObject();
+            flow["isSelectable"] = "false";
+            flow["completionPriority"] = 1.5;
+            flow["roles"] = 5;
+            flow["condition"] = false;
+        }));
+
+        using var result = JsonDocument.Parse(engine.Evaluate("""
+            (() => {
+              loadFromObject(JSON.parse(modelJson));
+              const descendants = root => {
+                const found = [root];
+                for (const child of root.children || []) found.push(...descendants(child));
+                return found;
+              };
+              const remove = () => descendants(inspector).filter(element => element.textContent === 'Remove these options').slice(-1)[0];
+              const before = prepareWorkflowExport().errors || [];
+              selected = { kind: 'node', nodeId: 2 };
+              renderInspector();
+              remove().onclick();
+              selected = { kind: 'flow', flowId: 201 };
+              renderInspector();
+              remove().onclick();
+              const prepared = prepareWorkflowExport();
+              return JSON.stringify({ before, after: prepared.errors || [], json: prepared.json });
+            })()
+            """).AsString());
+
+        Assert.NotEmpty(result.RootElement.GetProperty("before").EnumerateArray());
+        Assert.Empty(result.RootElement.GetProperty("after").EnumerateArray());
+        Assert.Null(ServerError(result.RootElement.GetProperty("json").GetString()!));
     }
 
     [Fact]
@@ -451,6 +948,111 @@ public sealed class EditorCallActivityTests
         Assert.Equal(0, root.GetProperty("fresh").GetProperty("inputs").GetInt32());
         Assert.True(root.GetProperty("startToTask").GetBoolean());
         Assert.True(root.GetProperty("flagCleared").GetBoolean());
+    }
+
+    // A call keeps malformed values only while it is a call; leaving it must not pass them on.
+    [Theory]
+    [InlineData("userTask")]
+    [InlineData("task")]
+    public void TypeChange_AwayFromACallClearsWhatTheImportKept(string nextType)
+    {
+        var engine = EditorEngine();
+        engine.SetValue("modelJson", ModelJson(model =>
+        {
+            var call = Node(model, 2);
+            call["requiresClaim"] = 0;
+            call["roles"] = 5;
+            call["assignee"] = 5;
+            call["claimMode"] = JsonNode.Parse("null");
+            var flow = model["sequenceFlows"]![1]!.AsObject();
+            flow["condition"] = 5;
+            flow["roles"] = 5;
+            flow["isSelectable"] = "false";
+            flow["completionPriority"] = 1.5;
+            flow["canActWithoutClaim"] = 0;
+        }));
+        engine.SetValue("nextType", nextType);
+
+        using var result = JsonDocument.Parse(engine.Evaluate("""
+            (() => {
+              loadFromObject(JSON.parse(modelJson));
+              const before = prepareWorkflowExport().errors || [];
+              const changed = changeNodeTypeFromInspector(model.flowNodes.find(node => node.id === 2), nextType);
+              render();
+              const prepared = prepareWorkflowExport();
+              return JSON.stringify({ before, changed, after: prepared.errors || [], json: prepared.json });
+            })()
+            """).AsString());
+
+        Assert.NotEmpty(result.RootElement.GetProperty("before").EnumerateArray());
+        Assert.True(result.RootElement.GetProperty("changed").GetBoolean());
+        Assert.Empty(result.RootElement.GetProperty("after").EnumerateArray());
+        Assert.Null(ServerError(result.RootElement.GetProperty("json").GetString()!));
+    }
+
+    [Fact]
+    public void TypeChange_ToACallClearsWhatACallCannotKeep()
+    {
+        var engine = EditorEngine();
+        engine.SetValue("modelJson", ModelJson(model =>
+        {
+            AddNode(model, """
+                { "id": 4, "name": "Review", "type": "userTask", "roles": ["Manager"], "requiresClaim": true,
+                  "dueDate": "P2D", "priority": "5", "assignee": "'alice'", "asyncBefore": true,
+                  "variables": [{ "id": 9, "name": "note", "dataType": "string" }] }
+                """);
+            model["sequenceFlows"]![0]!["targetRef"] = 4;
+            model["sequenceFlows"]!.AsArray().Add(JsonNode.Parse("""
+                { "id": 401, "name": "Approve", "sourceRef": 4, "targetRef": 2, "roles": ["Manager"],
+                  "condition": "amount > 1", "variables": [{ "id": 10, "name": "reason", "dataType": "string" }] }
+                """));
+            AddFlow(model, 402, 4, 3);
+        }));
+
+        using var result = JsonDocument.Parse(engine.Evaluate("""
+            (() => {
+              loadFromObject(JSON.parse(modelJson));
+              const node = model.flowNodes.find(item => item.id === 4);
+              const accepted = changeNodeTypeFromInspector(node, 'callActivity');
+              node.callActivity.workflowKey = 'other';
+              const flows = model.sequenceFlows.filter(flow => flow.sourceRef === 4);
+              const flow = flows[0];
+              return JSON.stringify({
+                accepted,
+                flowCount: flows.length,
+                flowId: flow.id,
+                flowRoles: flow.roles.length,
+                flowVariables: flow.variables.length,
+                flowCondition: flow.condition,
+                roles: node.roles.length,
+                variables: node.variables.length,
+                requiresClaim: node.requiresClaim,
+                dueDate: node.dueDate === undefined,
+                priority: node.priority === undefined,
+                assignee: node.assignee,
+                asyncBefore: node.asyncBefore === undefined,
+                errors: (prepareWorkflowExport().errors || [])
+              });
+            })()
+            """).AsString());
+
+        var root = result.RootElement;
+        Assert.True(root.GetProperty("accepted").GetBoolean());
+        Assert.Equal(1, root.GetProperty("flowCount").GetInt32());
+        Assert.Equal(401, root.GetProperty("flowId").GetInt32());
+        Assert.Equal(0, root.GetProperty("flowRoles").GetInt32());
+        Assert.Equal(0, root.GetProperty("flowVariables").GetInt32());
+        Assert.Equal(JsonValueKind.Null, root.GetProperty("flowCondition").ValueKind);
+        Assert.Equal(0, root.GetProperty("roles").GetInt32());
+        Assert.Equal(0, root.GetProperty("variables").GetInt32());
+        Assert.False(root.GetProperty("requiresClaim").GetBoolean());
+        Assert.True(root.GetProperty("dueDate").GetBoolean());
+        Assert.True(root.GetProperty("priority").GetBoolean());
+        Assert.Equal(JsonValueKind.Null, root.GetProperty("assignee").ValueKind);
+        Assert.True(root.GetProperty("asyncBefore").GetBoolean());
+        Assert.DoesNotContain(
+            root.GetProperty("errors").EnumerateArray(),
+            error => error.GetString()!.Contains("Call activity #4", StringComparison.Ordinal));
     }
 
     [Fact]

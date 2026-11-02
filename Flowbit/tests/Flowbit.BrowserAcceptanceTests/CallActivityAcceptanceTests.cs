@@ -194,6 +194,124 @@ public sealed class CallActivityAcceptanceTests(ExampleAcceptanceFixture fixture
         });
     }
 
+    [Theory]
+    [InlineData(1440, 900)]
+    [InlineData(390, 844)]
+    public async Task ADeepDescendantExplainsACancellationAboveItsOwnRunningCall(int width, int height)
+    {
+        await using var scenario = await Stack.CreateScenario(
+            $"call-deep-cancel-{width}x{height}", width, height, scenarioTimeout: ScenarioBudget);
+        await scenario.RunAsync("deep cancellation in progress", async () =>
+        {
+            await Stack.StartWorkerAsync();
+            await using var actor = await ApplyActorAsync(scenario, "call-operator", OperatorRoles);
+            var (_, middle) = await PublishPairAsync("call-activities/02-purchase-request-call.json");
+
+            // The same example calls the example that calls the child.
+            var topModel = ReadModel("call-activities/02-purchase-request-call.json");
+            topModel.Id = $"{topModel.Id}-top-{Guid.NewGuid().ToString("N")[..8]}";
+            topModel.CancelRoles = ["admin"];
+            var topCall = topModel.FlowNodes.Single(node => node.Type == BpmnFlowNodeTypes.CallActivity).CallActivity!;
+            topCall.WorkflowKey = middle.WorkflowKey;
+            topCall.InputMappings.Single(mapping => mapping.Variable == "amount").Variable = "requestedAmount";
+            topCall.OutputMappings.Single().SourceVariable = "managerApproved";
+            var top = await Stack.SetupClient.CreateAndPublishAsync(topModel);
+
+            var instance = await actor.Runtime.StartInstanceAsync(top.Id, Inputs());
+            var call = await UntilAsync(() => SoleCallAsync(actor, instance.Id),
+                item => item.ChildInstanceId is not null, "the Worker to start the middle instance");
+            var middleId = call.ChildInstanceId!.Value;
+            var nested = await UntilAsync(() => SoleCallAsync(actor, middleId),
+                item => item.ChildInstanceId is not null, "the Worker to start the deepest instance");
+            var deepestId = nested.ChildInstanceId!.Value;
+            await Stack.StopWorkerAsync();
+
+            using (var cancelled = await actor.Http.PostAsync($"/api/instances/{instance.Id}/cancel", null, ScenarioCancellation.Token))
+            {
+                Assert.True(cancelled.IsSuccessStatusCode, await cancelled.Content.ReadAsStringAsync());
+            }
+
+            using (var refused = await actor.Http.PostAsJsonAsync(
+                       $"/api/instances/{deepestId}/flows/201", new { }, ScenarioCancellation.Token))
+            {
+                Assert.Equal(HttpStatusCode.Conflict, refused.StatusCode);
+            }
+
+            var page = scenario.Page;
+            await scenario.OpenUiAsync($"instances/{deepestId}");
+            await WaitForInteractiveAsync(page);
+            var section = page.Locator("#call-activities");
+            await Assertions.Expect(section).ToContainTextAsync("is being cancelled");
+            await AssertNoHorizontalOverflowAsync(page);
+            await CaptureAsync(scenario, "deepest-cancellation-in-progress");
+
+            // Each Worker job stops one level, so the notice stays until the last one runs.
+            await Stack.StartWorkerAsync();
+            await UntilAsync(() => actor.Runtime.GetInstanceAsync(deepestId),
+                detail => detail.Status == "cancelled", "the cascade to reach the deepest instance");
+            await scenario.OpenUiAsync($"instances/{deepestId}");
+            await WaitForInteractiveAsync(page);
+            await Assertions.Expect(page.Locator("#call-activities")).Not.ToContainTextAsync("is being cancelled");
+        });
+    }
+
+    [Theory]
+    [InlineData(1440, 900)]
+    [InlineData(390, 844)]
+    public async Task AnIncidentOnACallResultCancelsTheParentItActsOn(int width, int height)
+    {
+        await using var scenario = await Stack.CreateScenario(
+            $"call-result-incident-{width}x{height}", width, height, scenarioTimeout: ScenarioBudget);
+        await scenario.RunAsync("result incident", async () =>
+        {
+            await Stack.StartWorkerAsync();
+            await using var actor = await ApplyActorAsync(scenario, "call-operator", OperatorRoles);
+
+            // The parent's own rule refuses the approval its child reports.
+            var (_, parent) = await PublishPairAsync(
+                "call-activities/02-purchase-request-call.json",
+                cancelRoles: ["admin"],
+                customizeParent: model => model.Variables.Single(variable => variable.Name == "managerApproved").Validation = "managerApproved == false");
+            var instance = await actor.Runtime.StartInstanceAsync(parent.Id, Inputs());
+            var call = await UntilAsync(() => SoleCallAsync(actor, instance.Id),
+                item => item.ChildInstanceId is not null, "the Worker to start the child");
+            var childId = call.ChildInstanceId!.Value;
+            await ActAsync(actor, childId, 2, 201);
+
+            var incident = (await UntilAsync(() => IncidentsAsync(actor, childId),
+                items => items.Count > 0, "the delivery's incident")).Single();
+            Assert.Equal(CallFailureCodes.OutputInvalid, incident.Type);
+            Assert.Equal(childId, incident.InstanceId);
+            Assert.Equal(instance.Id, incident.CallTargetInstanceId);
+            Assert.Equal("completed", (await actor.Runtime.GetInstanceAsync(childId)).Status);
+
+            var page = scenario.Page;
+            await scenario.OpenUiAsync("operations");
+            await WaitForInteractiveAsync(page);
+            var row = page.Locator("section[aria-labelledby='incident-heading'] tbody tr")
+                .Filter(new LocatorFilterOptions { HasText = $"Instance #{childId}" });
+            await Assertions.Expect(row).ToContainTextAsync($"Acts on instance #{instance.Id}");
+            var cancel = row.GetByRole(AriaRole.Button, new LocatorGetByRoleOptions { Name = $"Cancel instance #{instance.Id}", Exact = true });
+            await Assertions.Expect(cancel).ToBeVisibleAsync();
+            await AssertNoHorizontalOverflowAsync(page);
+            await CaptureAsync(scenario, "call-result-incident");
+
+            await cancel.ClickAsync();
+            await Assertions.Expect(page.GetByRole(AriaRole.Status).Filter(new LocatorFilterOptions
+            {
+                HasText = $"Instance #{instance.Id} was cancelled"
+            })).ToBeVisibleAsync();
+
+            // The parent is what stopped, and the finished child keeps its outcome.
+            Assert.Equal("cancelled", (await actor.Runtime.GetInstanceAsync(instance.Id)).Status);
+            Assert.Equal("completed", (await actor.Runtime.GetInstanceAsync(childId)).Status);
+            await Assertions.Expect(row).ToHaveCountAsync(0);
+            var after = await IncidentsAsync(actor, childId);
+            Assert.Equal("resolved", Assert.Single(after).Status);
+            await CaptureAsync(scenario, "call-result-incident-closed");
+        });
+    }
+
     [Fact]
     public async Task ACallWithNoTargetOpensAnIncidentWhoseRetryStartsTheChild()
     {
@@ -343,9 +461,214 @@ public sealed class CallActivityAcceptanceTests(ExampleAcceptanceFixture fixture
         });
     }
 
+    [Fact]
+    public async Task ADefaultDraftCanBeDeletedFromTheWorkflowsPage()
+    {
+        await using var scenario = await Stack.CreateScenario(
+            "call-delete-default-draft", 1440, 900, scenarioTimeout: ScenarioBudget);
+        await scenario.RunAsync("default draft deletion", async () =>
+        {
+            await using var actor = await ApplyActorAsync(scenario, "call-operator", OperatorRoles);
+
+            // A family's first version is its default even before it is published.
+            var key = $"example-call-draft-{Guid.NewGuid().ToString("N")[..8]}";
+            var draft = await Stack.SetupClient.CreateUnpublishedAsync(ChildModel(key));
+            Assert.True(draft.IsDefault);
+            Assert.False(draft.IsPublished);
+
+            var page = scenario.Page;
+            await scenario.OpenUiAsync("workflows");
+            await WaitForInteractiveAsync(page);
+            await page.Locator(".accordion-button", new PageLocatorOptions { HasText = key }).ClickAsync();
+            await page.Locator($"#delete-version-{draft.Id}").ClickAsync();
+            var dialog = page.GetByRole(AriaRole.Dialog);
+            await Assertions.Expect(dialog).ToContainTextAsync($"Delete default version {draft.Version}?");
+            await Assertions.Expect(dialog).ToContainTextAsync("No published default would remain after this deletion");
+            await Assertions.Expect(dialog).ToContainTextAsync("No published workflow calls this family.");
+            await page.ScreenshotAsync(new PageScreenshotOptions
+            {
+                Path = Path.Combine(scenario.ArtifactDirectory, "delete-default-draft-confirmation.png")
+            });
+
+            await dialog.GetByRole(AriaRole.Button, new LocatorGetByRoleOptions { Name = "Delete version", Exact = true }).ClickAsync();
+            await Assertions.Expect(dialog).ToHaveCountAsync(0);
+            await Assertions.Expect(page.Locator($"#delete-version-{draft.Id}")).ToHaveCountAsync(0);
+            using var read = await actor.Http.GetAsync($"/api/workflows/{draft.Id}", ScenarioCancellation.Token);
+            Assert.Equal(HttpStatusCode.NotFound, read.StatusCode);
+        });
+    }
+
+    // An ordinary single-token instance is not polled, so the action itself has to reload the page.
+    [Theory]
+    [InlineData(1440, 900)]
+    [InlineData(390, 844)]
+    public async Task ATaskActionThatEndsInAFailedCallShowsItWithoutARefresh(int width, int height)
+    {
+        await using var scenario = await Stack.CreateScenario(
+            $"call-action-ends-{width}", width, height, scenarioTimeout: ScenarioBudget);
+        await scenario.RunAsync("action-ends", async () =>
+        {
+            await using var actor = await ApplyActorAsync(scenario, "call-operator", OperatorRoles);
+            var childKey = await PublishRequiredAmountChildAsync();
+            var parent = await Stack.SetupClient.CreateAndPublishAsync(TaskThenFailingCall(childKey));
+            var instance = await actor.Runtime.StartInstanceAsync(parent.Id, new Dictionary<string, JsonElement>());
+            await scenario.OpenUiAsync($"instances/{instance.Id}");
+            await WaitForInteractiveAsync(scenario.Page);
+            var page = scenario.Page;
+            await Assertions.Expect(page.Locator("#call-activities")).ToHaveCountAsync(0);
+
+            await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Take action" }).First.ClickAsync();
+
+            var section = page.Locator("#call-activities");
+            await Assertions.Expect(section).ToContainTextAsync("Failed");
+            await Assertions.Expect(section).ToContainTextAsync("call_input_invalid");
+            await Assertions.Expect(section).Not.ToContainTextAsync("Loading calls");
+            await Assertions.Expect(Summary(page)).ToContainTextAsync("Completed");
+            await Assertions.Expect(page.Locator("section, .panel").Filter(new LocatorFilterOptions
+            {
+                Has = page.GetByRole(AriaRole.Heading, new PageGetByRoleOptions { Name = "Administrative actions" })
+            }).First).ToContainTextAsync("No active human-task positions");
+            await CaptureAsync(scenario, $"action-ends-{width}");
+        });
+    }
+
+    [Fact]
+    public async Task ATaskActionAddsALaterCallBesideAnEarlierOneWhileTheInstanceRuns()
+    {
+        await using var scenario = await Stack.CreateScenario(
+            "call-action-running", 1440, 900, scenarioTimeout: ScenarioBudget);
+        await scenario.RunAsync("action-running", async () =>
+        {
+            await Stack.StartWorkerAsync();
+            await using var actor = await ApplyActorAsync(scenario, "call-operator", OperatorRoles);
+            var childKey = await PublishRequiredAmountChildAsync();
+            var earlierKey = $"review-child-{Guid.NewGuid().ToString("N")[..8]}";
+            await Stack.SetupClient.CreateAndPublishAsync(RequiredAmountChild(earlierKey, requiresAmount: false));
+            var model = TaskThenFailingCall(childKey);
+
+            // An admitted call first, then the task, and a second task once the later call fails.
+            model.FlowNodes.Add(new FlowNodeModel
+            {
+                Id = 9,
+                Name = "Earlier call",
+                Type = BpmnFlowNodeTypes.CallActivity,
+                CallActivity = new CallActivityModel { WorkflowKey = earlierKey }
+            });
+            model.FlowNodes.Add(new FlowNodeModel { Id = 7, Name = "Handle it", Type = BpmnFlowNodeTypes.UserTask });
+            model.SequenceFlows.Single(flow => flow.Id == 101).TargetRef = 9;
+            model.SequenceFlows.Add(new SequenceFlowModel { Id = 901, SourceRef = 9, TargetRef = 6 });
+            model.SequenceFlows.Single(flow => flow.SourceRef == 4).TargetRef = 7;
+            model.SequenceFlows.Add(new SequenceFlowModel { Id = 701, Name = "Done", SourceRef = 7, TargetRef = 5 });
+            var parent = await Stack.SetupClient.CreateAndPublishAsync(model);
+            var instance = await actor.Runtime.StartInstanceAsync(parent.Id, new Dictionary<string, JsonElement>());
+            await UntilAsync(() => actor.Runtime.GetInstanceAsync(instance.Id), AtNode(6), "the first task");
+
+            await scenario.OpenUiAsync($"instances/{instance.Id}");
+            await WaitForInteractiveAsync(scenario.Page);
+            var page = scenario.Page;
+            var section = page.Locator("#call-activities");
+            await Assertions.Expect(section).ToContainTextAsync("Earlier call");
+            await Assertions.Expect(section).Not.ToContainTextAsync("Later call");
+
+            await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Take action" }).First.ClickAsync();
+
+            await Assertions.Expect(section).ToContainTextAsync("Later call");
+            await Assertions.Expect(section).ToContainTextAsync("Earlier call");
+            await Assertions.Expect(section).ToContainTextAsync("call_input_invalid");
+            await Assertions.Expect(Summary(page)).ToContainTextAsync("Handle it");
+            await Assertions.Expect(page.Locator("section, .panel").Filter(new LocatorFilterOptions
+            {
+                Has = page.GetByRole(AriaRole.Heading, new PageGetByRoleOptions { Name = "Administrative actions" })
+            }).First).ToContainTextAsync("Handle it");
+            await CaptureAsync(scenario, "action-running");
+        });
+    }
+
+    private async Task<string> PublishRequiredAmountChildAsync()
+    {
+        var key = $"review-child-{Guid.NewGuid().ToString("N")[..8]}";
+        await Stack.SetupClient.CreateAndPublishAsync(RequiredAmountChild(key, requiresAmount: true));
+        return key;
+    }
+
+    private static WorkflowModel RequiredAmountChild(string key, bool requiresAmount) => new()
+    {
+        Id = key,
+        Name = key,
+        InitialEventId = 1,
+        FlowNodes =
+        [
+            new FlowNodeModel
+            {
+                Id = 1,
+                Name = "Start",
+                Type = BpmnFlowNodeTypes.StartEvent,
+                Variables = requiresAmount
+                    ? [new VariableModel { Id = 1, Name = "amount", DataType = WorkflowVariableTypes.Number, Required = true }]
+                    : []
+            },
+            new FlowNodeModel { Id = 2, Name = "End", Type = BpmnFlowNodeTypes.EndEvent }
+        ],
+        SequenceFlows = [new SequenceFlowModel { Id = 101, SourceRef = 1, TargetRef = 2 }]
+    };
+
+    // Start -> task -> call that fails on entry -> boundary -> end, with the mapped input never supplied.
+    private static WorkflowModel TaskThenFailingCall(string childKey)
+    {
+        var key = $"review-parent-{Guid.NewGuid().ToString("N")[..8]}";
+        return new WorkflowModel
+        {
+            Id = key,
+            Name = key,
+            InitialEventId = 1,
+            FlowNodes =
+            [
+                new FlowNodeModel
+                {
+                    Id = 1,
+                    Name = "Start",
+                    Type = BpmnFlowNodeTypes.StartEvent,
+                    Variables = [new VariableModel { Id = 1, Name = "amount", DataType = WorkflowVariableTypes.Number, Required = false }]
+                },
+                new FlowNodeModel { Id = 6, Name = "Continue", Type = BpmnFlowNodeTypes.UserTask },
+                new FlowNodeModel
+                {
+                    Id = 2,
+                    Name = "Later call",
+                    Type = BpmnFlowNodeTypes.CallActivity,
+                    CallActivity = new CallActivityModel
+                    {
+                        WorkflowKey = childKey,
+                        InputMappings =
+                        [
+                            new CallVariableMappingModel
+                            {
+                                SourceVariable = "amount",
+                                Variable = "amount",
+                                DataType = WorkflowVariableTypes.Number,
+                                Required = true
+                            }
+                        ]
+                    }
+                },
+                new FlowNodeModel { Id = 3, Name = "End", Type = BpmnFlowNodeTypes.EndEvent },
+                new FlowNodeModel { Id = 4, Name = "Call failed", Type = BpmnFlowNodeTypes.ErrorBoundaryEvent, AttachedToRef = 2 },
+                new FlowNodeModel { Id = 5, Name = "Handled", Type = BpmnFlowNodeTypes.EndEvent }
+            ],
+            SequenceFlows =
+            [
+                new SequenceFlowModel { Id = 101, SourceRef = 1, TargetRef = 6 },
+                new SequenceFlowModel { Id = 601, Name = "Continue to call", SourceRef = 6, TargetRef = 2 },
+                new SequenceFlowModel { Id = 201, SourceRef = 2, TargetRef = 3 },
+                new SequenceFlowModel { Id = 401, SourceRef = 4, TargetRef = 5 }
+            ]
+        };
+    }
+
     private async Task<(WorkflowSummaryDto Child, WorkflowSummaryDto Parent)> PublishPairAsync(
         string parentPath,
-        IReadOnlyList<string>? cancelRoles = null)
+        IReadOnlyList<string>? cancelRoles = null,
+        Action<WorkflowModel>? customizeParent = null)
     {
         var suffix = Guid.NewGuid().ToString("N")[..8];
         var childKey = $"example-call-manager-approval-{suffix}";
@@ -354,6 +677,7 @@ public sealed class CallActivityAcceptanceTests(ExampleAcceptanceFixture fixture
         parent.Id = $"{parent.Id}-{suffix}";
         parent.FlowNodes.Single(node => node.Type == BpmnFlowNodeTypes.CallActivity).CallActivity!.WorkflowKey = childKey;
         if (cancelRoles is not null) parent.CancelRoles = cancelRoles.ToList();
+        customizeParent?.Invoke(parent);
         return (child, await Stack.SetupClient.CreateAndPublishAsync(parent));
     }
 

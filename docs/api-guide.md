@@ -507,15 +507,15 @@ Lists the published versions that call a family and whether each passes the cont
 | --- | --- | --- | --- | --- |
 | `workflowKey` | path | string | Yes | The family being called. |
 | `candidateId` | query | integer (int64) | No | Check against this published version of the family, as set-default would. |
-| `deletingId` | query | integer (int64) | No | Check against what would remain after deleting this version, which must be the current default. |
+| `deletingId` | query | integer (int64) | No | Check against what would remain after deleting this version, which must be the family's default. A family's first version is its default even as an unpublished draft. |
 | `page`, `pageSize` | query | integer (int32) | No | Defaults 1 and 50; `pageSize` is capped at 200. |
 
 **Body:** none.
 
 **Success:** `200` [CallersPreviewDto](#schema-callerspreviewdto).
-**Errors:** `400` both selectors together, an unpublished candidate, or a deletion selector that is not the current default; `401` Unauthorized; `403` Forbidden; `404` a missing or wrong-family version ID. See [error envelopes](#errors-and-concurrency) and the family rules above.
+**Errors:** `400` both selectors together, an unpublished candidate, or a deletion selector that is not the family's default; `401` Unauthorized; `403` Forbidden; `404` a missing or wrong-family version ID. See [error envelopes](#errors-and-concurrency) and the family rules above.
 
-Omitting both selectors checks the current default; a family with no published default, or none at all, returns `noDefault: true`. An allowed deletion checks the actual successor, using the same selection as `DELETE /api/workflows/{id}`; with no successor, `effectiveTargetId` is null, `noDefault` is true, and every caller is unavailable. A blocked deletion has `deletionAllowed: false`, lists its blockers, and checks callers against the unchanged default. Compatibility never blocks a command, and the preview does not promise that the result stays the same until you send one.
+Omitting both selectors checks the current default; a family with no published default, or none at all, returns `noDefault: true`. An allowed deletion checks the actual successor, using the same selection as `DELETE /api/workflows/{id}`; with no successor, `effectiveTargetId` is null, `noDefault` is true, and every caller is unavailable. A default draft previews the same way, so a published version its deletion would promote is the one checked. A blocked deletion has `deletionAllowed: false`, lists its blockers, and checks callers against the unchanged default. Compatibility never blocks a command, and the preview does not promise that the result stays the same until you send one.
 
 ```http
 GET /api/workflows/manager-approval/callers?candidateId=42&pageSize=25 HTTP/1.1
@@ -7785,6 +7785,7 @@ Bounded operations projection for an unresolved or historical workflow incident.
 | `createdAt` | string (date-time) | Yes | Server creation timestamp. |
 | `updatedAt` | string (date-time) | Yes | Server last-change timestamp; preserve exact precision for optimistic commands. |
 | `resolvedAt` | null or string (date-time) | Yes | — |
+| `callTargetInstanceId` | integer (int64) | No | On a call message's incident, the instance the message acts on: the parent for `callResume` and the child for `callCancel`. `instanceId` is the sender, which may already have ended. Omitted on every other incident. |
 
 </details>
 
@@ -9558,12 +9559,13 @@ The call that started a child instance. Relations grant no task, claim, cancella
 | Field | JSON type / schema | Required | Meaning / default |
 | --- | --- | --- | --- |
 | `invocationId` | integer (int64) | Yes | — |
-| `state` | string | Yes | `queued`, `running`, `resultReady`, `completed`, `failed`, or `cancelled`. `cancelled` on a running child means its cancellation is in progress. |
+| `state` | string | Yes | `queued`, `running`, `resultReady`, `completed`, `failed`, or `cancelled`. This describes the instance's own call only, so a deeper descendant's stays `running` until the cancellation reaches its parent. |
 | `parentInstanceId` | integer (int64) | Yes | — |
 | `parentNodeId` | integer (int32) | Yes | — |
 | `parentNodeName` | null or string | Yes | — |
 | `rootInstanceId` | integer (int64) | Yes | — |
 | `depth` | integer (int32) | Yes | This child's depth; a direct child of a root is 1. |
+| `cancellationInProgress` | boolean | Yes | True while this running instance is being stopped because its own call or a call above it was cancelled. Commands on it return `409`. |
 
 </details>
 

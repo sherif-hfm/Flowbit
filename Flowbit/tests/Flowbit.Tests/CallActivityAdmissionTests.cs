@@ -514,6 +514,123 @@ public sealed class CallActivityAdmissionTests(PostgresApiFixture fixture) : IAs
         Assert.True(cleanup.IsSuccessStatusCode);
     }
 
+    // An entry a boundary catches creates no job, but it still counts: the guard's rule is about
+    // entries, and otherwise a loop of failing calls is bounded only per transaction.
+    [Fact]
+    public async Task A_caught_entry_counts_against_the_guard_and_its_retry_reaches_the_boundary()
+    {
+        var parent = await harness.PublishAsync(await TwoCallsThatFailOnEntryAsync());
+        await SetAutomaticActivationLimitAsync("1");
+        try
+        {
+            var parentId = await harness.StartAsync(parent.Id);
+
+            // The first entry used the allowance, so the second pauses before it can fail.
+            Assert.Equal(WorkflowInstanceStatuses.Running, (await harness.DetailAsync(parentId)).Status);
+            var calls = (await harness.CallsAsync(parentId)).Items;
+            Assert.Equal(2, calls.Count);
+            Assert.Equal(CallInvocationStates.Queued, calls[0].State);
+            Assert.False(calls[0].CapacityReserved);
+            Assert.Equal(CallFailureCodes.InputInvalid, calls[0].FailureCode);
+            Assert.Equal(CallInvocationStates.Failed, calls[1].State);
+            Assert.Equal(1, await AutomaticActivationCountAsync(parentId));
+            await using var db = fixture.CreateDbContext();
+            var incident = await db.WorkflowIncidents.AsNoTracking()
+                .SingleAsync(item => item.InstanceId == parentId && item.Status == WorkflowIncidentStatuses.Open);
+            Assert.Equal(WorkflowIncidentTypes.AutomaticLoopLimit, incident.Type);
+
+            await harness.RetryIncidentAsync(incident.Id);
+            await harness.ProcessAsync(incident.JobId!.Value);
+
+            var detail = await harness.DetailAsync(parentId);
+            Assert.Equal(WorkflowInstanceStatuses.Completed, detail.Status);
+            Assert.Equal(BoundaryEnd, detail.CurrentNodeId);
+            Assert.All(
+                (await harness.CallsAsync(parentId)).Items,
+                call => Assert.Equal(CallInvocationStates.Failed, call.State));
+            Assert.False(await db.WorkflowIncidents.AsNoTracking()
+                .AnyAsync(item => item.InstanceId == parentId && item.Status == WorkflowIncidentStatuses.Open));
+        }
+        finally
+        {
+            await SetAutomaticActivationLimitAsync(null);
+        }
+    }
+
+    [Fact]
+    public async Task Caught_entries_within_the_guard_each_count_once_and_take_their_boundaries()
+    {
+        var parent = await harness.PublishAsync(await TwoCallsThatFailOnEntryAsync());
+        await SetAutomaticActivationLimitAsync("2");
+        try
+        {
+            var parentId = await harness.StartAsync(parent.Id);
+
+            var detail = await harness.DetailAsync(parentId);
+            Assert.Equal(WorkflowInstanceStatuses.Completed, detail.Status);
+            Assert.Equal(BoundaryEnd, detail.CurrentNodeId);
+            Assert.Equal(2, await AutomaticActivationCountAsync(parentId));
+            await using var db = fixture.CreateDbContext();
+            Assert.False(await db.WorkflowIncidents.AsNoTracking().AnyAsync(item => item.InstanceId == parentId));
+        }
+        finally
+        {
+            await SetAutomaticActivationLimitAsync(null);
+        }
+    }
+
+    // Start -> call -> boundary -> second call -> boundary -> end, with the mapped input never supplied.
+    private async Task<WorkflowModel> TwoCallsThatFailOnEntryAsync()
+    {
+        var childKey = Key("child");
+        await harness.PublishAsync(ImmediateChild(childKey, startInputs: [Input("amount")]));
+        var model = Parent(
+            Key("parent"),
+            childKey,
+            withBoundary: true,
+            startInputs: [Input("amount", required: false)],
+            inputs: [Mapping("amount", "amount")]);
+        const int secondCall = 6;
+        const int secondBoundary = 7;
+        var second = CallNode(secondCall, childKey);
+        second.CallActivity!.InputMappings = [Mapping("amount", "amount")];
+        model.FlowNodes.Add(second);
+        model.FlowNodes.Add(new FlowNodeModel
+        {
+            Id = secondBoundary,
+            Name = "Second call failed",
+            Type = BpmnFlowNodeTypes.ErrorBoundaryEvent,
+            AttachedToRef = secondCall
+        });
+        model.SequenceFlows.Single(flow => flow.SourceRef == Boundary).TargetRef = secondCall;
+        model.SequenceFlows.Add(new SequenceFlowModel { Id = 601, SourceRef = secondCall, TargetRef = End });
+        model.SequenceFlows.Add(new SequenceFlowModel { Id = 701, SourceRef = secondBoundary, TargetRef = BoundaryEnd });
+        return model;
+    }
+
+    private async Task SetAutomaticActivationLimitAsync(string? limit)
+    {
+        await using var scope = fixture.Factory.Services.CreateAsyncScope();
+        var settings = scope.ServiceProvider.GetRequiredService<Flowbit.Service.Abstractions.IEngineSettingsRepository>();
+        if (limit is null)
+        {
+            await settings.DeleteAsync(WorkflowAutomaticActivationGuard.SettingKey, CancellationToken.None);
+        }
+        else
+        {
+            await settings.SetAsync(WorkflowAutomaticActivationGuard.SettingKey, limit, CancellationToken.None);
+        }
+    }
+
+    private async Task<int> AutomaticActivationCountAsync(long instanceId)
+    {
+        await using var db = fixture.CreateDbContext();
+        return await db.ExecutionTokens.AsNoTracking()
+            .Where(token => token.InstanceId == instanceId)
+            .Select(token => token.AutomaticActivationCount)
+            .SingleAsync();
+    }
+
     private static FlowNodeModel CallNode(int id, string targetKey) => new()
     {
         Id = id,

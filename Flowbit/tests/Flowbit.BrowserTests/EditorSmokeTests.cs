@@ -1704,6 +1704,14 @@ public sealed class EditorSmokeTests(BrowserStackFixture stack)
             node["asyncBefore"] = true;
             node["callActivity"] = System.Text.Json.Nodes.JsonNode.Parse(
                 """{ "workflowKey": "manager-approval", "versionBinding": "exact", "inputMappings": "amount" }""");
+            node["roles"] = new System.Text.Json.Nodes.JsonArray("Manager");
+            node["dueDate"] = "P2D";
+            node["requiresClaim"] = 0;
+            document["sequenceFlows"]![1]!["condition"] = "amount > 1";
+            document["sequenceFlows"]![1]!["completionPriority"] = 1.5;
+            document["sequenceFlows"]![1]!["isSelectable"] = "false";
+            document["flowNodes"]![0]!["callOnly"] = null;
+            document["flowNodes"]![2]!["callOnly"] = null;
             var path = Path.Combine(scenario.ArtifactDirectory, "imported-call.json");
             await File.WriteAllTextAsync(path, document.ToJsonString());
             await EditorInteractions.LoadSavedFileAsync(page, path);
@@ -1717,16 +1725,59 @@ public sealed class EditorSmokeTests(BrowserStackFixture stack)
             Assert.Contains("cannot set asyncBefore", errors);
             Assert.Contains("unsupported callActivity.versionBinding", errors);
             Assert.Contains("mappings must be an array", errors);
+            Assert.Contains("can define only callActivity", errors);
+            Assert.Contains("must have one unconditional outgoing sequence flow", errors);
+            Assert.Contains("Call activity #2 requiresClaim must be true or false.", errors);
+            Assert.Contains("Call activity #2 flow #201 completionPriority must be a whole number.", errors);
+            Assert.Contains("Call activity #2 flow #201 isSelectable must be true or false.", errors);
+            Assert.Contains("Start event #1 callOnly must be true or false.", errors);
+            Assert.Contains("Flow node #3 sets callOnly but is not a start event.", errors);
             await EditorInteractions.CloseValidationDialogWithEscapeAsync(page);
 
+            // A start and any other node show their imported callOnly, each with its own way out.
+            await EditorInteractions.SelectNodeAsync(page, 1);
+            await Assertions.Expect(inspector).ToContainTextAsync("not true or false");
+            await inspector.GetByRole(AriaRole.Button, new LocatorGetByRoleOptions { Name = "Remove this value" }).ClickAsync();
+            await EditorInteractions.SelectNodeAsync(page, 3);
+            await Assertions.Expect(inspector).ToContainTextAsync("only a start event can use");
+            await inspector.GetByRole(AriaRole.Button, new LocatorGetByRoleOptions { Name = "Remove this value" }).ClickAsync();
+            await EditorInteractions.SelectNodeAsync(page, 2);
+
+            await Assertions.Expect(inspector).ToContainTextAsync("options a call does not support");
             await inspector.GetByRole(AriaRole.Button, new LocatorGetByRoleOptions { Name = "Remove these options" }).ClickAsync();
+            await Assertions.Expect(inspector).Not.ToContainTextAsync("options a call does not support");
             await inspector.GetByRole(AriaRole.Button, new LocatorGetByRoleOptions { Name = "Use the published default" }).ClickAsync();
             await inspector.GetByRole(AriaRole.Button, new LocatorGetByRoleOptions { Name = "Replace it with an empty list" }).ClickAsync();
+
+            // The flow still holds its condition, and its own inspector names and removes it.
+            await page.Locator("#fileMenuSummary").ClickAsync();
+            await page.Locator("#saveBtn").ClickAsync();
+            errors = await EditorInteractions.WaitForValidationDialogAsync(page);
+            Assert.DoesNotContain("can define only callActivity", errors);
+            Assert.Contains("must have one unconditional outgoing sequence flow", errors);
+            await EditorInteractions.CloseValidationDialogWithEscapeAsync(page);
+            await EditorInteractions.SelectFlowAsync(page, 201);
+            await Assertions.Expect(inspector).ToContainTextAsync("options a call's outgoing flow does not support");
+            await inspector.GetByRole(AriaRole.Button, new LocatorGetByRoleOptions { Name = "Remove these options" }).ClickAsync();
+            await Assertions.Expect(inspector).Not.ToContainTextAsync("options a call's outgoing flow does not support");
+
             using var saved = await EditorInteractions.SaveAndCaptureDownloadAsync(page, scenario, scenario.ArtifactDirectory);
             var call = saved.RootElement.GetProperty("flowNodes").EnumerateArray()
                 .Single(item => item.GetProperty("id").GetInt32() == 2);
             Assert.False(call.TryGetProperty("asyncBefore", out _));
+            Assert.False(call.TryGetProperty("dueDate", out _));
+            Assert.Equal(0, call.GetProperty("roles").GetArrayLength());
             Assert.Equal(0, call.GetProperty("callActivity").GetProperty("inputMappings").GetArrayLength());
+            Assert.False(call.GetProperty("requiresClaim").GetBoolean());
+            var flow = saved.RootElement.GetProperty("sequenceFlows").EnumerateArray()
+                .Single(item => item.GetProperty("id").GetInt32() == 201);
+            Assert.True(!flow.TryGetProperty("condition", out var condition) || condition.ValueKind == System.Text.Json.JsonValueKind.Null);
+            Assert.True(!flow.TryGetProperty("completionPriority", out var priority) || priority.ValueKind == System.Text.Json.JsonValueKind.Null);
+            Assert.True(flow.GetProperty("isSelectable").GetBoolean());
+            foreach (var other in saved.RootElement.GetProperty("flowNodes").EnumerateArray())
+            {
+                Assert.False(other.TryGetProperty("callOnly", out _));
+            }
         });
     }
 }

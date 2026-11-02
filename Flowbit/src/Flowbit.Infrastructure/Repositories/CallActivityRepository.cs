@@ -1,3 +1,4 @@
+using System.Linq.Expressions;
 using System.Text.Json;
 using Flowbit.Infrastructure.Data;
 using Flowbit.Infrastructure.Entities;
@@ -13,6 +14,37 @@ namespace Flowbit.Infrastructure.Repositories;
 public sealed class CallActivityRepository(AppDbContext dbContext) : ICallActivityRepository
 {
     private static readonly JsonSerializerOptions ContractOptions = new(JsonSerializerDefaults.Web);
+
+    // An invocation without its captured contract and values, for reads that only describe
+    // it. A snapshot can reach a mebibyte, so a page of them is not free to load and discard.
+    private static readonly Expression<Func<CallActivityExecutionEntity, CallActivityExecutionEntity>> WithoutSnapshots =
+        call => new CallActivityExecutionEntity
+        {
+            Id = call.Id,
+            ParentInstanceId = call.ParentInstanceId,
+            ParentTokenId = call.ParentTokenId,
+            ActivationId = call.ActivationId,
+            ParentNodeId = call.ParentNodeId,
+            ParentNodeExecutionId = call.ParentNodeExecutionId,
+            RootInstanceId = call.RootInstanceId,
+            ChildDepth = call.ChildDepth,
+            ParentDefinitionId = call.ParentDefinitionId,
+            TargetWorkflowKey = call.TargetWorkflowKey,
+            ChildDefinitionId = call.ChildDefinitionId,
+            ChildStartEventId = call.ChildStartEventId,
+            ChildInstanceId = call.ChildInstanceId,
+            State = call.State,
+            CapacityReserved = call.CapacityReserved,
+            FailureCode = call.FailureCode,
+            FailureDescription = call.FailureDescription,
+            ChildFaultCode = call.ChildFaultCode,
+            CausedBy = call.CausedBy,
+            CreatedAt = call.CreatedAt,
+            UpdatedAt = call.UpdatedAt,
+            AdmittedAt = call.AdmittedAt,
+            StartedAt = call.StartedAt,
+            SettledAt = call.SettledAt
+        };
 
     public async Task<CallInvocationRecord> AddInvocationAsync(
         CallInvocationCreateRecord create,
@@ -81,6 +113,17 @@ public sealed class CallActivityRepository(AppDbContext dbContext) : ICallActivi
         return entity is null ? null : ToRecord(entity);
     }
 
+    public async Task<CallInvocationRecord?> GetSummaryByChildAsync(
+        long childInstanceId,
+        CancellationToken cancellationToken)
+    {
+        var entity = await dbContext.CallActivityExecutions.AsNoTracking()
+            .Where(call => call.ChildInstanceId == childInstanceId)
+            .Select(WithoutSnapshots)
+            .SingleOrDefaultAsync(cancellationToken);
+        return entity is null ? null : ToRecord(entity);
+    }
+
     public async Task<IReadOnlyList<CallInvocationRecord>> ListUnsettledForTokensAsync(
         long parentInstanceId,
         IReadOnlyCollection<long> tokenIds,
@@ -106,6 +149,7 @@ public sealed class CallActivityRepository(AppDbContext dbContext) : ICallActivi
                 && tokenIds.Contains(call.ParentTokenId)
                 && (call.State == CallInvocationStates.Queued || call.State == CallInvocationStates.Running))
             .OrderBy(call => call.Id)
+            .Select(WithoutSnapshots)
             .ToListAsync(cancellationToken);
         return entities.Select(ToRecord).ToList();
     }
@@ -306,6 +350,7 @@ public sealed class CallActivityRepository(AppDbContext dbContext) : ICallActivi
             .OrderByDescending(call => call.Id)
             .Skip((page - 1) * pageSize)
             .Take(pageSize)
+            .Select(WithoutSnapshots)
             .ToListAsync(cancellationToken);
         if (entities.Count == 0)
         {
@@ -336,7 +381,8 @@ public sealed class CallActivityRepository(AppDbContext dbContext) : ICallActivi
             .ToDictionaryAsync(result => result.InvocationId, result => result.Outcome, cancellationToken);
 
         // Incidents on the invocation's own jobs, because callResume belongs to the child
-        // and callCancel to the parent, plus those on the child's other durable work.
+        // and callCancel to the parent, plus those on the child's other durable work,
+        // which includes the jobs of the child's own calls.
         var ownJobIncidents = await dbContext.WorkflowIncidents.AsNoTracking()
             .Where(incident =>
                 incident.Status == WorkflowIncidentStatuses.Open
@@ -351,7 +397,9 @@ public sealed class CallActivityRepository(AppDbContext dbContext) : ICallActivi
                 incident.Status == WorkflowIncidentStatuses.Open
                 && incident.InstanceId != null
                 && childIds.Contains(incident.InstanceId.Value)
-                && (incident.Job == null || incident.Job.CallInvocationId == null))
+                && (incident.Job == null
+                    || incident.Job.CallInvocationId == null
+                    || !invocationIds.Contains(incident.Job.CallInvocationId.Value)))
             .GroupBy(incident => incident.InstanceId!.Value)
             .Select(group => new { InstanceId = group.Key, Count = group.LongCount() })
             .ToDictionaryAsync(group => group.InstanceId, group => group.Count, cancellationToken);
@@ -406,6 +454,7 @@ public sealed class CallActivityRepository(AppDbContext dbContext) : ICallActivi
                 call.ParentInstanceId == parentInstanceId
                 && tokenIds.Contains(call.ParentTokenId)
                 && (call.State == CallInvocationStates.Queued || call.State == CallInvocationStates.Running))
+            .Select(WithoutSnapshots)
             .ToListAsync(cancellationToken);
         return entities
             .GroupBy(call => call.ParentTokenId)
@@ -509,9 +558,9 @@ public sealed class CallActivityRepository(AppDbContext dbContext) : ICallActivi
     }
 
     private static string? Bound(string? description) =>
-        description is { Length: > CallActivityConstraints.MaxFailureDescriptionLength }
-            ? description[..CallActivityConstraints.MaxFailureDescriptionLength]
-            : description;
+        description is null
+            ? null
+            : UnicodeText.Limit(description, CallActivityConstraints.MaxFailureDescriptionLength);
 
     private sealed record StoredSnapshot(
         Dictionary<string, JsonElement> Values,

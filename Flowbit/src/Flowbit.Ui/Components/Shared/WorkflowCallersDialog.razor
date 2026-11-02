@@ -38,7 +38,7 @@
             @if (preview.NoDefault)
             {
                 <div class="alert alert-warning" role="status">
-                    @(preview.Mode == CallersPreviewModes.Deletion
+                    @(preview.DeletionAllowed == true
                         ? "No published default would remain after this deletion, so every call to this family would fail to start until a version is published and made the default."
                         : "This family has no published default, so every call to it fails to start until a version is published and made the default.")
                 </div>

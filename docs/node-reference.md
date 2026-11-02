@@ -431,7 +431,7 @@ Each mapping copies one whole variable, so it has no path, expression, default, 
 
 **Version.** The Worker selects the family's published default when it creates the child, and the visit keeps that version. A child that already exists keeps its version when the default changes. A default that no longer fits fails that visit; it never selects another version or drops a mapping.
 
-**Values.** Input and output snapshots are each limited to 1 MiB. The child's start validation runs over the complete input overlay, and this workflow's process-variable validation runs over the complete output overlay. Outputs are all written or none are, and they cannot include the attached boundary's `errorVariable`.
+**Values.** Input and output snapshots are each limited to 1 MiB. The child's start validation runs over the complete input overlay, and this workflow's process-variable validation runs over the complete output overlay. That validation can read a shared alias, which it sees at its current catalog value when the result is delivered, so retrying a refused result reads it again. Outputs are all written or none are, and they cannot include the attached boundary's `errorVariable`.
 
 **Identity.** The child starts as the fixed system actor `callActivity`, with no roles, claims, or delegation, and this workflow continues as the same actor after delivery. In the child, `sys.user` is therefore `callActivity`, so an `assignee` expression or `${sys.user}` default that relies on the starter produces a value no real user owns. Pass a requester or approver as an ordinary mapped input instead. The child's own tasks keep their roles, assignment, and action checks.
 
@@ -444,7 +444,7 @@ Each mapping copies one whole variable, so it has no path, expression, default, 
 | The result is invalid (`call_output_invalid`) | Takes the boundary. | Opens a retryable incident; this workflow keeps waiting. The child stays completed. |
 | A job inside the child has an incident | The call keeps waiting: this is not a fault. | The call keeps waiting: this is not a fault. |
 
-A `terminateEndEvent` in the child is a successful completion of that child only. Calls may appear in loops, in parallel branches, and inside other calls. Each visit gets its own child, each call entry counts against `Workflow.Async.MaxConsecutiveAutomaticActivations`, and nesting is limited by [`WorkflowCallActivities`](deployment.md#configuration). External effects a child has already performed are not undone when a call is cancelled.
+A `terminateEndEvent` in the child is a successful completion of that child only. Calls may appear in loops, in parallel branches, and inside other calls. Each visit gets its own child, each call entry counts against `Workflow.Async.MaxConsecutiveAutomaticActivations`, including one that its error boundary catches before a child exists, and nesting is limited by [`WorkflowCallActivities`](deployment.md#configuration). External effects a child has already performed are not undone when a call is cancelled.
 
 See the [call activity examples](../examples/call-activities/README.md).
 

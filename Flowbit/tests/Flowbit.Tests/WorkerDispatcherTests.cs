@@ -245,6 +245,36 @@ public sealed class WorkerDispatcherTests
             StringComparison.Ordinal);
     }
 
+    // The limit lands inside a surrogate pair at one padding, and the database driver refuses
+    // half a pair, so recording this failure would itself fail.
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    public async Task UnhandledFailureWithALongMessageIsCutBetweenCharacters(int padding)
+    {
+        var repository = new DispatcherJobRepository([NewLease(1)])
+        {
+            ScheduleRetryResult = true
+        };
+        var message = new string('x', padding) + string.Concat(Enumerable.Repeat("\U0001F600", 1200));
+        await using var services = NewServices(repository, new ThrowingProcessor(message));
+        using var telemetry = new WorkerTelemetry();
+        using var dispatcher = NewDispatcher(
+            services,
+            new DelayWakeupSignal(),
+            NewOptions(maxConcurrency: 1),
+            telemetry);
+
+        await dispatcher.StartAsync(CancellationToken.None);
+        await repository.RecoveryRecorded.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await dispatcher.StopAsync(CancellationToken.None);
+
+        var description = Assert.Single(repository.ScheduledRetries).Failure.FailureDescription!;
+        new System.Text.UTF8Encoding(false, throwOnInvalidBytes: true).GetByteCount(description);
+        Assert.Equal(1000, description.EnumerateRunes().Count());
+        Assert.EndsWith("\U0001F600", description);
+    }
+
     [Fact]
     public async Task UnhandledFailureOnTheFinalAttemptOpensAnIncident()
     {
@@ -510,12 +540,12 @@ public sealed class WorkerDispatcherTests
         }
     }
 
-    private sealed class ThrowingProcessor : IWorkflowJobProcessor
+    private sealed class ThrowingProcessor(string message = "Finalizer defect.") : IWorkflowJobProcessor
     {
         public Task ProcessAsync(
             WorkflowJobLeaseRecord lease,
             CancellationToken cancellationToken) =>
-            throw new NotSupportedException("Finalizer defect.");
+            throw new NotSupportedException(message);
     }
 
     private sealed class DelayWakeupSignal : IJobWakeupSignal
@@ -690,6 +720,7 @@ public sealed class WorkerDispatcherTests
         public Task<int> CancelByTokenIdsAsync(long instanceId, IReadOnlyCollection<long> tokenIds, string reason, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<int> CancelByTimerSubscriptionIdsAsync(IReadOnlyCollection<long> timerSubscriptionIds, string reason, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<int> CancelOtherJobsByTokenIdsAsync(long instanceId, IReadOnlyCollection<long> tokenIds, long? exceptJobId, string reason, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<int> CancelCallMessageIncidentAsync(long invocationId, string kind, string reason, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<int> CancelTimerJobsByTokenIdsAsync(long instanceId, IReadOnlyCollection<long> tokenIds, long? exceptJobId, string reason, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<long> CountOpenByInstanceAsync(long instanceId, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<WorkflowJobQueueStatisticsRecord> GetQueueStatisticsAsync(CancellationToken cancellationToken) => throw new NotSupportedException();

@@ -307,6 +307,44 @@ public sealed class CallActivityOperationsTests(PostgresApiFixture fixture) : IA
     }
 
     [Fact]
+    public async Task A_default_draft_previews_its_deletion_so_the_workflows_page_can_delete_it()
+    {
+        // A family's first version is its default even before it is published.
+        var childKey = Key("child");
+        var draft = await PublishDraftAsync(ImmediateChild(childKey));
+
+        var preview = await CallersAsync(childKey, $"deletingId={draft.Id}");
+
+        Assert.Equal(CallersPreviewModes.Deletion, preview.Mode);
+        Assert.True(preview.DeletionAllowed);
+        Assert.True(preview.NoDefault);
+        Assert.Null(preview.EffectiveTargetId);
+        Assert.Empty(preview.Callers.Items);
+
+        using var deleted = await harness.SendAsync(HttpMethod.Delete, $"/api/workflows/{draft.Id}");
+        Assert.True(deleted.IsSuccessStatusCode, await deleted.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task A_default_draft_with_a_published_successor_previews_that_successor()
+    {
+        var childKey = Key("child");
+        var draft = await PublishDraftAsync(ImmediateChild(childKey));
+        var published = await harness.PublishAsync(ImmediateChild(childKey));
+
+        var preview = await CallersAsync(childKey, $"deletingId={draft.Id}");
+
+        Assert.True(preview.DeletionAllowed);
+        Assert.False(preview.NoDefault);
+        Assert.Equal(published.Id, preview.EffectiveTargetId);
+
+        // The successor is the default the page would have promised.
+        using var deleted = await harness.SendAsync(HttpMethod.Delete, $"/api/workflows/{draft.Id}");
+        Assert.True(deleted.IsSuccessStatusCode, await deleted.Content.ReadAsStringAsync());
+        Assert.Equal(published.Id, (await CallersAsync(childKey)).EffectiveTargetId);
+    }
+
+    [Fact]
     public async Task The_callers_route_rejects_bad_selectors_and_returns_metadata_on_an_empty_page()
     {
         var childKey = Key("child");

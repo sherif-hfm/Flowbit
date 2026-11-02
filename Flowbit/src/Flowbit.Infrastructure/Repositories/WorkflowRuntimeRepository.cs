@@ -7042,29 +7042,10 @@ public sealed partial class WorkflowRuntimeRepository(
         nodeExecution.UpdatedAt = now;
     }
 
-    private static string? LimitNodeExecutionErrorDescription(string? description)
-    {
-        if (string.IsNullOrEmpty(description))
-        {
-            return description;
-        }
-
-        var builder = new StringBuilder(
-            Math.Min(description.Length, ErrorEndConstraints.MaxDescriptionLength));
-        var count = 0;
-        foreach (var rune in description.EnumerateRunes())
-        {
-            if (count == ErrorEndConstraints.MaxDescriptionLength)
-            {
-                return builder.ToString();
-            }
-
-            builder.Append(rune.ToString());
-            count++;
-        }
-
-        return description;
-    }
+    private static string? LimitNodeExecutionErrorDescription(string? description) =>
+        string.IsNullOrEmpty(description)
+            ? description
+            : UnicodeText.Limit(description, ErrorEndConstraints.MaxDescriptionLength);
 
     private static ExecutionTokenEntity NewToken(
         WorkflowInstanceEntity instance,

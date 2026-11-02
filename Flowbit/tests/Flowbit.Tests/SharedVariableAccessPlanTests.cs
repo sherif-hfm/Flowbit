@@ -40,6 +40,72 @@ public sealed class SharedVariableAccessPlanTests
 
     }
 
+    // A call writes only instance variables, but delivery checks each target's rule.
+    [Fact]
+    public void Build_PlansTheSharedReadsOfACallsOutputTargetsWithoutLockingThem()
+    {
+        var definition = new WorkflowModel
+        {
+            Id = "call-output-reads",
+            Name = "Call output reads",
+            Variables =
+            [
+                new VariableModel
+                {
+                    Id = 1,
+                    Name = "limit",
+                    Scope = VariableScopes.Shared,
+                    SharedKey = "tests.limit",
+                    Access = SharedVariableAccessModes.ReadWrite,
+                    DataType = WorkflowVariableTypes.Number
+                },
+                new VariableModel
+                {
+                    Id = 2,
+                    Name = "unrelated",
+                    Scope = VariableScopes.Shared,
+                    SharedKey = "tests.unrelated",
+                    Access = SharedVariableAccessModes.Read,
+                    DataType = WorkflowVariableTypes.Number
+                },
+                new VariableModel
+                {
+                    Id = 3,
+                    Name = "total",
+                    DataType = WorkflowVariableTypes.Number,
+                    Nullable = true,
+                    Validation = "total <= limit"
+                },
+                new VariableModel { Id = 4, Name = "other", DataType = WorkflowVariableTypes.Number, Nullable = true }
+            ],
+            FlowNodes =
+            [
+                new FlowNodeModel
+                {
+                    Id = 2,
+                    Name = "Call",
+                    Type = BpmnFlowNodeTypes.CallActivity,
+                    CallActivity = new CallActivityModel
+                    {
+                        WorkflowKey = "child",
+                        OutputMappings =
+                        [
+                            new CallVariableMappingModel { SourceVariable = "a", Variable = "total", DataType = WorkflowVariableTypes.Number },
+                            new CallVariableMappingModel { SourceVariable = "b", Variable = "other", DataType = WorkflowVariableTypes.Number },
+                            new CallVariableMappingModel { SourceVariable = "c", Variable = "undeclared", DataType = WorkflowVariableTypes.Number },
+                            new CallVariableMappingModel { SourceVariable = "d", Variable = "", DataType = WorkflowVariableTypes.Number }
+                        ]
+                    }
+                }
+            ]
+        };
+
+        var plan = SharedVariableAccessPlanner.Build(definition, new ConditionalEventDefinitionAnalyzer());
+
+        Assert.Equal(["limit"], plan.ForNode(2).ReadAliases);
+        Assert.Empty(plan.ForNode(2).LockAliases);
+    }
+
     [Fact]
     public void Cache_AnalyzesImmutableDefinitionOnlyOncePerId()
     {

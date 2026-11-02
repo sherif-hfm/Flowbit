@@ -277,6 +277,21 @@ public static class EditorInteractions
         await Assertions.Expect(page.Locator("#inspector")).ToContainTextAsync($"Node #{nodeId}");
     }
 
+    /// <summary>Selects a sequence flow with a stationary click on the middle of its path.</summary>
+    public static async Task SelectFlowAsync(IPage page, int flowId)
+    {
+        var point = await page.EvaluateAsync<float[]>("""
+            flowId => {
+                const path = document.querySelector(`#edges .edge-path-layer [data-flow='${flowId}'] path`);
+                const middle = path.getPointAtLength(path.getTotalLength() / 2);
+                const screen = new DOMPoint(middle.x, middle.y).matrixTransform(path.getScreenCTM());
+                return [screen.x, screen.y];
+            }
+            """, flowId);
+        await page.Mouse.ClickAsync(point[0], point[1]);
+        await Assertions.Expect(page.Locator("#inspector")).ToContainTextAsync($"Flow #{flowId}");
+    }
+
     /// <summary>
     /// Changes the selected node's Type through the real select control. Any
     /// guard dialog is answered by the scenario's registered dialog handlers.

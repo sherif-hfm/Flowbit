@@ -84,6 +84,44 @@ public sealed class WorkerOperationalSurfaceTests
     }
 
     [Fact]
+    public void CallActivityMeasurementsReachThePrometheusExport()
+    {
+        using var telemetry = new WorkerTelemetry();
+        using var callMeter = new Meter("Flowbit.Runtime.CallActivities");
+
+        // Real calls in other tests can add to the unlabeled totals, never the unique label.
+        var events = callMeter.CreateCounter<long>("flowbit.call.events");
+        events.Add(
+            3,
+            new KeyValuePair<string, object?>("event", "workerSurfaceTest"),
+            new KeyValuePair<string, object?>("failure_code", "call_surface_test"));
+        callMeter.CreateCounter<long>("flowbit.call.fence_stops").Add(2);
+        callMeter.CreateHistogram<double>("flowbit.call.start_queue_age", "s").Record(1.5);
+        callMeter.CreateHistogram<double>("flowbit.call.cancel_age", "s").Record(0.25);
+
+        var metrics = telemetry.ExportPrometheus();
+
+        Assert.Contains("# TYPE flowbit_call_events_total counter", metrics, StringComparison.Ordinal);
+        Assert.Contains(
+            "flowbit_call_events_total{event=\"workerSurfaceTest\",failure_code=\"call_surface_test\"} 3",
+            metrics,
+            StringComparison.Ordinal);
+        Assert.True(ReadMetric(metrics, "flowbit_call_fence_stops_total") >= 2);
+        Assert.True(ReadMetric(metrics, "flowbit_call_start_queue_age_seconds_count") >= 1);
+        Assert.True(ReadMetric(metrics, "flowbit_call_start_queue_age_seconds_sum") >= 1.5);
+        Assert.True(ReadMetric(metrics, "flowbit_call_cancel_age_seconds_count") >= 1);
+        Assert.True(ReadMetric(metrics, "flowbit_call_cancel_age_seconds_sum") >= 0.25);
+    }
+
+    private static double ReadMetric(string metrics, string name)
+    {
+        var line = Assert.Single(
+            metrics.Split('\n'),
+            candidate => candidate.StartsWith(name + " ", StringComparison.Ordinal));
+        return double.Parse(line[(name.Length + 1)..], System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    [Fact]
     public void HealthListenUrlMustBeAnAbsoluteHttpEndpoint()
     {
         var options = new WorkerOptions { HealthListenUrl = "not-a-url" };

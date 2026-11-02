@@ -703,22 +703,7 @@ public sealed partial class WorkflowEngineService
                     "An automatic-activation job does not match its execution-token fence.");
             }
 
-            var configuredGuard = await engineSettings.GetByKeyAsync(
-                WorkflowAutomaticActivationGuard.SettingKey,
-                cancellationToken);
-            var decision = WorkflowAutomaticActivationGuard.EvaluateNext(
-                activationToken.AutomaticActivationCount,
-                configuredGuard?.Value);
-            if (!await runtime.SetExecutionTokenAutomaticActivationCountAsync(
-                    activationToken.Id,
-                    activationToken.ActivationId,
-                    decision.PersistedCount,
-                    cancellationToken))
-            {
-                throw new WorkflowConflictException(
-                    "The execution token changed while its automatic-activation count was being updated.");
-            }
-
+            var decision = await CountAutomaticActivationAsync(activationToken, cancellationToken);
             create = create with
             {
                 AutomaticActivationCount = decision.ShouldOpenIncident
@@ -780,6 +765,29 @@ public sealed partial class WorkflowEngineService
         }
 
         return await jobs.EnqueueAsync(create, cancellationToken);
+    }
+
+    private async Task<WorkflowAutomaticActivationDecision> CountAutomaticActivationAsync(
+        ExecutionTokenRecord token,
+        CancellationToken cancellationToken)
+    {
+        var configuredGuard = await engineSettings.GetByKeyAsync(
+            WorkflowAutomaticActivationGuard.SettingKey,
+            cancellationToken);
+        var decision = WorkflowAutomaticActivationGuard.EvaluateNext(
+            token.AutomaticActivationCount,
+            configuredGuard?.Value);
+        if (!await runtime.SetExecutionTokenAutomaticActivationCountAsync(
+                token.Id,
+                token.ActivationId,
+                decision.PersistedCount,
+                cancellationToken))
+        {
+            throw new WorkflowConflictException(
+                "The execution token changed while its automatic-activation count was being updated.");
+        }
+
+        return decision;
     }
 
     private async Task<IReadOnlyList<WorkflowJobRecord>> EnqueueInstanceJobsAsync(
@@ -2896,11 +2904,7 @@ public sealed partial class WorkflowEngineService
         return TimeSpan.FromTicks(Math.Max(1, delay.Ticks + adjustment));
     }
 
-    private static string LimitJobFailure(string value)
-    {
-        const int maxLength = 1000;
-        return value.Length <= maxLength ? value : value[..maxLength];
-    }
+    private static string LimitJobFailure(string value) => UnicodeText.Limit(value, 1000);
 
     private sealed class WorkflowOutputVersionConflictException(string message)
         : InvalidOperationException(message);

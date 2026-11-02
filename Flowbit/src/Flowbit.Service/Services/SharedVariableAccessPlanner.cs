@@ -169,6 +169,15 @@ public static class SharedVariableAccessPlanner
             {
                 if (IsWritableShared(mapping?.Variable, out var alias)) nodePlan.Producers.Add(alias);
             }
+            // A call writes only instance variables, but a target's rule may read a shared alias.
+            foreach (var mapping in node.CallActivity?.OutputMappings ?? [])
+            {
+                if (!string.IsNullOrWhiteSpace(mapping?.Variable)
+                    && variables.TryGetValue(mapping.Variable, out var target))
+                {
+                    AddExpressionReads(nodePlan, target.Validation);
+                }
+            }
             foreach (var assignment in node.Assignments ?? [])
             {
                 if (IsWritableShared(assignment?.Variable, out var alias)) nodePlan.Producers.Add(alias);

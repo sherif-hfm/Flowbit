@@ -167,7 +167,7 @@ A `callActivity` invokes a reusable workflow; it does not embed a subprocess. Th
 | Success | A child's normal or terminate end, followed by valid output delivery. |
 | Failure | Child fault or independent cancellation takes the one catch-all error boundary, or faults the parent. Failures before the child exists and invalid outputs take the boundary, or open a retryable incident while the parent keeps waiting. |
 | Cancellation | Cancelling a parent, or the branch holding a call, settles the call in that transaction and stops new work on its descendants at once. Durable jobs then cancel them, so a descendant may stay `running` until a Worker has run. External effects are not undone. |
-| Limits | `WorkflowCallActivities:MaxDepth` bounds nesting exactly; `MaxOpenInvocationsPerRoot` is a soft threshold on open calls in a tree. Each call entry counts against the automatic-activation guard. |
+| Limits | `WorkflowCallActivities:MaxDepth` bounds nesting exactly; `MaxOpenInvocationsPerRoot` is a soft threshold on open calls in a tree. Each call entry, including one its error boundary catches, counts against the automatic-activation guard. |
 
 Not supported on a call: timer or conditional boundaries, HTTP status matching, `multiInstance`, authored async flags, and node job policies. Direct self-calls are rejected. Named child-fault matching, caller identity propagation, nested JSON extraction in mappings, and compensation are also out of scope.
 

@@ -132,6 +132,44 @@ public sealed class CallActivityCancellationTests(PostgresApiFixture fixture) : 
     }
 
     [Fact]
+    public async Task A_deep_descendant_reports_a_cancellation_above_it_until_the_cascade_stops_it()
+    {
+        var leafKey = Key("leaf");
+        await harness.PublishAsync(WaitingChild(leafKey));
+        var middleKey = Key("middle");
+        await harness.PublishAsync(Parent(middleKey, leafKey));
+        var parent = await harness.PublishAsync(Parent(Key("top"), middleKey));
+        var rootId = await harness.StartAsync(parent.Id);
+        await harness.DrainAsync(rootId);
+        var top = await harness.InvocationAsync(rootId);
+        var middleId = top.ChildInstanceId!.Value;
+        var middle = await harness.InvocationAsync(middleId);
+        var leafId = middle.ChildInstanceId!.Value;
+        Assert.False((await harness.DetailAsync(middleId)).ParentCall!.CancellationInProgress);
+        Assert.False((await harness.DetailAsync(leafId)).ParentCall!.CancellationInProgress);
+
+        using (var cancelled = await harness.SendAsync(HttpMethod.Post, $"/api/instances/{rootId}/cancel"))
+        {
+            Assert.True(cancelled.IsSuccessStatusCode, await cancelled.Content.ReadAsStringAsync());
+        }
+
+        // The leaf's own call still runs, so only its ancestry says that it is being stopped.
+        var leaf = (await harness.DetailAsync(leafId)).ParentCall!;
+        Assert.Equal(CallInvocationStates.Running, leaf.State);
+        Assert.True(leaf.CancellationInProgress);
+        Assert.True((await harness.DetailAsync(middleId)).ParentCall!.CancellationInProgress);
+
+        await harness.ProcessCallJobAsync(top.Id, WorkflowJobKinds.CallCancel);
+        Assert.False((await harness.DetailAsync(middleId)).ParentCall!.CancellationInProgress);
+        leaf = (await harness.DetailAsync(leafId)).ParentCall!;
+        Assert.Equal(CallInvocationStates.Cancelled, leaf.State);
+        Assert.True(leaf.CancellationInProgress);
+
+        await harness.ProcessCallJobAsync(middle.Id, WorkflowJobKinds.CallCancel);
+        Assert.False((await harness.DetailAsync(leafId)).ParentCall!.CancellationInProgress);
+    }
+
+    [Fact]
     public async Task The_fence_follows_stored_depth_so_a_lower_limit_cannot_shorten_it()
     {
         var keys = Enumerable.Range(0, 4).Select(_ => Key("level")).ToArray();
@@ -542,6 +580,9 @@ public sealed class CallActivityCancellationTests(PostgresApiFixture fixture) : 
             await using var transaction = await unitOfWork.BeginTransactionAsync(CancellationToken.None);
             await Assert.ThrowsAsync<WorkflowCallChainException>(() =>
                 runtime.GetInstanceForUpdateAsync(childId, false, CancellationToken.None));
+
+            // A read still answers: transitions fail closed on the damage and name it.
+            Assert.False((await harness.DetailAsync(childId)).ParentCall!.CancellationInProgress);
         }
         finally
         {

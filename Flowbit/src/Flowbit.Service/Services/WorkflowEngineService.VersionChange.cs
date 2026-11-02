@@ -337,7 +337,7 @@ public sealed partial class WorkflowEngineService
             && await callActivities.HasUnsettledOutgoingAsync(instance.Id, cancellationToken);
         var hasUnsettledIncomingCall = callActivities is not null
             && instance.CallRootInstanceId is not null
-            && await callActivities.GetByChildAsync(instance.Id, cancellationToken) is { } incoming
+            && await callActivities.GetSummaryByChildAsync(instance.Id, cancellationToken) is { } incoming
             && !CallInvocationStates.IsSettled(incoming.State);
 
         return new WorkflowVersionCompatibilityContext

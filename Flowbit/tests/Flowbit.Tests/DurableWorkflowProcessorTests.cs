@@ -269,6 +269,54 @@ public sealed class DurableWorkflowProcessorTests(PostgresApiFixture fixture)
         }
     }
 
+    // A split surrogate pair is refused by the database driver, so an attempt cut by UTF-16
+    // length could not even record its failure. The limit lands inside a pair at one padding.
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    public async Task AJobFailureWithALongMessageIsRecordedBetweenCharacters(int padding)
+    {
+        var harness = new CallActivityHarness(fixture);
+        var workflowKey = CallActivityHarness.Key("long-failure");
+        var workflow = await harness.PublishAsync(new WorkflowModel
+        {
+            Id = workflowKey,
+            Name = workflowKey,
+            InitialEventId = 1,
+            FlowNodes =
+            [
+                new FlowNodeModel { Id = 1, Name = "Start", Type = BpmnFlowNodeTypes.StartEvent },
+                new FlowNodeModel
+                {
+                    Id = 2,
+                    Name = "Fail",
+                    Type = BpmnFlowNodeTypes.ScriptTask,
+                    AsyncBefore = true,
+                    Job = new JobPolicyModel { FailureHandling = JobFailureHandling.RetryFirst, RetryDelays = [] },
+                    ScriptFormat = ScriptFormats.JavaScript,
+                    Script = $"throw new Error('{new string('x', padding)}' + '\\uD83D\\uDE00'.repeat(1200));"
+                },
+                new FlowNodeModel { Id = 3, Name = "End", Type = BpmnFlowNodeTypes.EndEvent }
+            ],
+            SequenceFlows =
+            [
+                new SequenceFlowModel { Id = 101, SourceRef = 1, TargetRef = 2 },
+                new SequenceFlowModel { Id = 201, SourceRef = 2, TargetRef = 3 }
+            ]
+        });
+
+        var instanceId = await harness.StartAsync(workflow.Id);
+        await harness.DrainAsync(instanceId);
+
+        await using var inspect = fixture.CreateDbContext();
+        var job = await inspect.WorkflowJobs.AsNoTracking().SingleAsync(item => item.InstanceId == instanceId);
+        Assert.Equal(WorkflowJobStatuses.Incident, job.Status);
+        var description = job.LastFailureDescription!;
+        new System.Text.UTF8Encoding(false, throwOnInvalidBytes: true).GetByteCount(description);
+        Assert.InRange(description.EnumerateRunes().Count(), 1, 1000);
+        Assert.Contains("\U0001F600", description);
+    }
+
     [Fact]
     public async Task MissingStagedSnapshotCreatesIncidentAndManualRetryCanRecover()
     {

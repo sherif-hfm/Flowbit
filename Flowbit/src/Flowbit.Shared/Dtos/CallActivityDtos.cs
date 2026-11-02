@@ -7,6 +7,10 @@ namespace Flowbit.Shared.Dtos;
 /// or administrative permission.
 /// </summary>
 /// <param name="State">queued, running, resultReady, completed, failed, or cancelled.</param>
+/// <param name="CancellationInProgress">
+/// True while this instance runs under a cancelled call, at any level above it: it accepts no
+/// new work, and a Worker will finish stopping it.
+/// </param>
 public sealed record ParentCallSummaryDto(
     long InvocationId,
     string State,
@@ -14,7 +18,8 @@ public sealed record ParentCallSummaryDto(
     int ParentNodeId,
     string? ParentNodeName,
     long RootInstanceId,
-    int Depth);
+    int Depth,
+    bool CancellationInProgress = false);
 
 public sealed record CallCountsDto(long Total, long Unsettled);
 

@@ -165,6 +165,17 @@ public interface IWorkflowRuntimeRepository : IWorkflowInstanceQueryRepository
         bool bypassCallFence = false);
 
     /// <summary>
+    /// The nearest cancelled call in a descendant's complete ancestry, read without locks,
+    /// or null when none is cancelled. An inconsistent ancestry throws
+    /// <see cref="Services.WorkflowCallChainException"/>, because nothing can be said about it.
+    /// </summary>
+    Task<long?> FindCancelledCallAboveAsync(
+        long instanceId,
+        long rootInstanceId,
+        int depth,
+        CancellationToken cancellationToken);
+
+    /// <summary>
     /// An instance's call identity, from the tracked row when there is one, so an instance
     /// outside a call tree pays no query in its terminal transaction.
     /// </summary>

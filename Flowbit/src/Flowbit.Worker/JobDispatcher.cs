@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using Flowbit.Service.Abstractions;
 using Flowbit.Service.Models;
+using Flowbit.Shared.Models;
 
 namespace Flowbit.Worker;
 
@@ -356,9 +357,7 @@ public sealed class JobDispatcher(
         await using var scope = scopeFactory.CreateAsyncScope();
         var repository = scope.ServiceProvider.GetRequiredService<IWorkflowJobRepository>();
         var fence = Fence(lease);
-        var description = exception.Message.Length <= 1000
-            ? exception.Message
-            : exception.Message[..1000];
+        var description = UnicodeText.Limit(exception.Message, 1000);
         var failure = new WorkflowJobResultRecord(
             null,
             null,

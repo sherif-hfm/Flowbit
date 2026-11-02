@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace Flowbit.Shared.Dtos;
 
 /// <summary>
@@ -62,6 +64,10 @@ public sealed record JobAttemptDto(
 /// 90 days respectively). Detailed
 /// diagnostics are available only from the detail endpoint.
 /// </summary>
+/// <param name="CallTargetInstanceId">
+/// On a call message's incident, the instance the message acts on: the parent for callResume
+/// and the child for callCancel. InstanceId is the sender, which may already have ended.
+/// </param>
 public sealed record IncidentSummaryDto(
     long Id,
     long JobId,
@@ -75,7 +81,9 @@ public sealed record IncidentSummaryDto(
     string Summary,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
-    DateTimeOffset? ResolvedAt);
+    DateTimeOffset? ResolvedAt,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    long? CallTargetInstanceId = null);
 
 public sealed record IncidentDetailDto(
     IncidentSummaryDto Summary,

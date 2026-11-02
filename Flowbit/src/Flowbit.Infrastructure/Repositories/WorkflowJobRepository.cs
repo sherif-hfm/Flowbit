@@ -7,6 +7,7 @@ using Flowbit.Service.Abstractions;
 using Flowbit.Service.Models;
 using Flowbit.Service.Services;
 using Flowbit.Shared.Dtos;
+using Flowbit.Shared.Models;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 
@@ -1352,6 +1353,29 @@ public sealed class WorkflowJobRepository(
             cancellationToken);
     }
 
+    public async Task<int> CancelCallMessageIncidentAsync(
+        long invocationId,
+        string kind,
+        string reason,
+        CancellationToken cancellationToken)
+    {
+        // CancelAsync reads its source again after changing the status, so the selection
+        // cannot depend on that status.
+        var jobIds = await dbContext.WorkflowJobs.AsNoTracking()
+            .Where(job =>
+                job.CallInvocationId == invocationId
+                && job.Kind == kind
+                && job.Status == WorkflowJobStatuses.Incident)
+            .Select(job => job.Id)
+            .ToListAsync(cancellationToken);
+        return jobIds.Count == 0
+            ? 0
+            : await CancelAsync(
+                dbContext.WorkflowJobs.Where(job => jobIds.Contains(job.Id)),
+                reason,
+                cancellationToken);
+    }
+
     public Task<int> CancelTimerJobsByTokenIdsAsync(
         long instanceId,
         IReadOnlyCollection<long> tokenIds,
@@ -1840,7 +1864,12 @@ public sealed class WorkflowJobRepository(
                 incident.ResolvedBy,
                 incident.CreatedAt,
                 incident.UpdatedAt,
-                incident.ResolvedAt
+                incident.ResolvedAt,
+                CallTargetInstanceId = incident.Job!.Kind == WorkflowJobKinds.CallResume
+                    ? (long?)incident.Job.CallInvocation!.ParentInstanceId
+                    : incident.Job.Kind == WorkflowJobKinds.CallCancel
+                        ? incident.Job.CallInvocation!.ChildInstanceId
+                        : null
             })
             .ToListAsync(cancellationToken);
         var hasMore = rows.Count > pageSize;
@@ -1867,7 +1896,8 @@ public sealed class WorkflowJobRepository(
                 incident.ResolvedBy,
                 incident.CreatedAt,
                 incident.UpdatedAt,
-                incident.ResolvedAt)).ToArray(),
+                incident.ResolvedAt,
+                incident.CallTargetInstanceId)).ToArray(),
             page,
             pageSize,
             total)
@@ -1880,10 +1910,22 @@ public sealed class WorkflowJobRepository(
         long incidentId,
         CancellationToken cancellationToken)
     {
-        var entity = await dbContext.WorkflowIncidents
+        var row = await dbContext.WorkflowIncidents
             .AsNoTracking()
-            .SingleOrDefaultAsync(incident => incident.Id == incidentId, cancellationToken);
-        return entity is null ? null : MapIncident(entity);
+            .Where(incident => incident.Id == incidentId)
+            .Select(incident => new
+            {
+                Incident = incident,
+                CallTargetInstanceId = incident.Job!.Kind == WorkflowJobKinds.CallResume
+                    ? (long?)incident.Job.CallInvocation!.ParentInstanceId
+                    : incident.Job.Kind == WorkflowJobKinds.CallCancel
+                        ? incident.Job.CallInvocation!.ChildInstanceId
+                        : null
+            })
+            .SingleOrDefaultAsync(cancellationToken);
+        return row is null
+            ? null
+            : MapIncident(row.Incident) with { CallTargetInstanceId = row.CallTargetInstanceId };
     }
 
     public async Task<WorkflowJobRecord?> RetryIncidentAsync(
@@ -2882,9 +2924,7 @@ public sealed class WorkflowJobRepository(
     private static string? Truncate(string? value, int maxLength) =>
         string.IsNullOrEmpty(value)
             ? value
-            : value.Length <= maxLength
-                ? value
-                : value[..maxLength];
+            : UnicodeText.Limit(value, maxLength);
 
     private sealed record Candidate(
         long JobId,

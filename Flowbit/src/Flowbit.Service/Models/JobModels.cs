@@ -271,7 +271,8 @@ public sealed record WorkflowIncidentRecord(
     string? ResolvedBy,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
-    DateTimeOffset? ResolvedAt);
+    DateTimeOffset? ResolvedAt,
+    long? CallTargetInstanceId = null);
 
 public sealed record WorkflowJobQueueStatisticsRecord(
     long RunnableDepth,

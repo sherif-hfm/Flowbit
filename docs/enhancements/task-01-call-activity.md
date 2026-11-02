@@ -488,7 +488,7 @@ All are fixed, and the product fixes have permanent tests.
 - The AI panel selects at most 20 call targets for a turn.
 - `/activity` takes node types and completion reasons as free text, so only the server's allow-lists changed.
 - The editor has no call entry of its own in the palette. As with every other type, **Add Node** and then **Type** creates one.
-- The `Flowbit.Runtime.CallActivities` meter is not on the Worker's Prometheus endpoint; [Signals and actions](../deployment.md#signals-and-actions) says so.
+- The `Flowbit.Runtime.CallActivities` meter was left off the Worker's Prometheus endpoint at first. The [review below](#review-after-the-commit) added it, and [Signals and actions](../deployment.md#signals-and-actions) names its metrics.
 
 **Not verified:**
 
@@ -499,3 +499,59 @@ All are fixed, and the product fixes have permanent tests.
 **Noticed, not changed.** Neither comes from this work. The browser tab's title goes stale after any in-app navigation, on every page, because `<HeadOutlet />` in `App.razor` has no render mode. The connect-mode hint's first letters sit under the diagram tools button when connect mode opens with that button collapsed.
 
 **Later releases** stay listed on this page. No separate backlog items were filed for them; [TASK-05](task-05-multi-instance-automatic-activities.md) already covers multi-instance calls and [EVENT-07](event-07-compensation.md) compensation.
+
+### Review after the commit
+
+A review of commit `99ee2c6` against this page found the problems below. All are fixed, and the product fixes have permanent tests. Recorded on 2026-11-02 on the working tree before commit.
+
+- **Deleting a default draft.** A family's first version is its default even as a draft, and the Workflows page previews every default's deletion. The callers route accepted only the published default, so the page could not delete that draft. It now checks the version's own flag, and a draft with a published successor previews that successor.
+- **Failure text.** Job and call failure text was cut by UTF-16 length. A cut inside a surrogate pair made the database driver refuse the write, which wedged the call. A boundary's diagnostic could also pass its limit with the code in front. `UnicodeText.Limit` now counts characters wherever this text is stored.
+- **Nested incidents.** A call's `openIncidentCount` skipped incidents on the jobs of the child's own calls, so a parent showed no sign of them.
+- **Cancellation notice at depth.** Only an instance whose own call was cancelled showed the notice, so a deeper descendant looked healthy while refusing commands. `parentCall.cancellationInProgress` now reads the ancestry, and the page keeps refreshing until the instance stops.
+- **Incidents on call messages.** **Cancel instance** on a `callResume` incident targeted the child that sent the result, which had usually finished. `callTargetInstanceId` now names the instance the message acts on, and the row's link and button use it. Such an incident also stayed open forever once its work was gone, so abandoning a call now closes its `callResume` incident and a child's terminal commit closes its `callCancel` incident.
+- **Imported settings.** Drawing removed most settings a call does not support, on the node and on its outgoing flow, and a second outgoing flow, so an import lost them without a word. They now stay and fail save, and **Remove these options** or a type change clears them.
+- **Telemetry.** `callCompleted` was never counted, delivery wrote no log, and the call meter was not on the Worker's `/metrics`.
+- **Heavy reads.** The calls route, instance detail, and the abandon path loaded every captured snapshot, each up to a mebibyte, and discarded it.
+- **Stale documents.** The AI guide and the example catalog still said 21 node types and 55 definitions, and the catalog credited call coverage to the wrong suite.
+- **Cases with no test.** A scoped interrupt raised by a call's own outputs during delivery, `FlowInfo` read after a call, and an inclusive join waiting for a branch resting on a call had no test. They are now in `CallActivityScenarioTests`, and all three behaved correctly without a product change.
+
+| Check | Result |
+| --- | --- |
+| `dotnet test Flowbit/Flowbit.slnx --nologo --verbosity quiet` | 3,877 of 3,877 passed. Two Worker dispatcher cases added after that run passed with their class, 12 of 12; only test code changed. |
+| `dotnet test Flowbit/tests/Flowbit.BrowserTests/Flowbit.BrowserTests.csproj -c Release --no-build --no-restore` | 102 of 102 passed in Chromium. E20 now also imports roles, a due date, and a flow condition, and clears them through the node's and the flow's inspector. |
+| `dotnet test Flowbit/tests/Flowbit.BrowserAcceptanceTests/Flowbit.BrowserAcceptanceTests.csproj -c Release --no-build --no-restore` | 98 of 98 passed with a real Worker. New: the notice on a deepest instance and an incident cancelling the parent it acts on, each at 1440×900 and 390×844, and a default draft deleted through its dialog at 1440×900. |
+| `git diff --check` | No problems. |
+
+**Hands-on checks.** The built-in browser of the Claude desktop app, at its natural 1024×768 and an emulated 375×812, against a private stack on loopback with real API, UI, and Worker hosts and a PostgreSQL 17 container.
+
+- **`/operations`.** The refused result's row showed **Acts on instance #3** and **Cancel instance #3**. Clicking it cancelled the parent, closed the incident, and left the child **Completed**.
+- **`/instances/7`, at depth 2, with the Worker stopped.** The notice appeared while **Call state** read **Running**, an action returned `409`, and the page had no horizontal overflow at either width. After a Worker restart the page changed to **Cancelled** and dropped the notice with no reload. The root's cancel went over HTTP because this browser suppresses the page's native confirmation.
+- **`/workflows`.** A default draft's dialog warned that no published default would remain, and **Delete version** removed it.
+- **`/editor/flowbit-editor.html`.** An imported call with roles, a due date, `requiresClaim`, and a service, whose flow had a condition and roles, showed both warnings and failed save with each reason. **Remove these options** cleared each one, undo and redo moved the node's removal as one step, and save then raised no dialog. The file went in through the page's file input by script, because this browser cannot drive the native picker.
+- **Worker `/metrics`.** It reported `flowbit_call_events_total{event="callCompleted",failure_code="none"} 1` after one delivered call, and `flowbit_call_cancel_age_seconds_count 2` once the restarted Worker had stopped both descendants.
+- **Console.** No errors on any page, only Blazor's connection messages and this browser's note about the suppressed confirmation.
+
+### Second review
+
+A second review of the same working tree raised four more problems. Each was reproduced before any change, against a control that behaved correctly. All are fixed with permanent tests. Recorded on 2026-11-02 on the working tree before commit.
+
+- **Shared aliases in a target's rule.** Output validation read only the instance's own values, so a rule such as `total <= approvalLimit` could never pass when `approvalLimit` was a shared alias, which publishing accepts. With no boundary the call stayed at **Result ready** with `call_output_invalid`. With a boundary, a valid result took the error path and wrote nothing. Validation now reads the effective values, and the access plan lists the read. It is not locked, like every other shared read, so the lock-order proof is unchanged.
+- **Caught entries and the guard.** An entry that failed before admission and was caught by its boundary returned before the count, so two such entries at a limit of 1 both ran and left the count at 0. This did not allow a runaway: a tight loop stops at the per-transaction hop limit, and any durable step in a loop counts. It did break the documented rule, so these entries now count. At the limit the entry opens the guard's incident instead of taking its boundary, and retrying it reaches the boundary from `callStart`.
+- **The page after an action.** Claim, unclaim, and taking a flow reloaded only the actions and the diagram, and a single-token instance is not polled. A call entered by the action showed **Loading calls…** or a stale list until **Refresh**, whether the instance ended or kept running. **Administrative actions** also kept offering the finished task, which predates calls. `RefreshFrom` now reloads through `RefreshInstanceStateAsync`. Reactivation and version change still skip that panel; they cannot change the call list, so they were left as they are.
+- **Malformed imports.** The earlier fix kept only values of the right type, so the loader still repaired the rest: `callOnly: null` vanished, a flow's `completionPriority: 1.5` became null, and `isSelectable: "false"` became true. Others, such as `asyncBefore: 0`, stayed but passed save and reached the server. Comparing 52 settings with 14 JSON values each found 192 disagreements in 728 cases. A call and its outgoing flow now keep every value as authored, save names one of the wrong type, and a non-list `variables`, which too much of the editor walks, stops the import with a message. `callOnly` stays on any node, with a way to remove it. Other node types keep their tolerant loading, as the [load rule](../../AGENTS.md#key-conventions--invariants) says.
+
+| Check | Result |
+| --- | --- |
+| `dotnet test Flowbit/Flowbit.slnx --nologo --verbosity quiet` | 3,921 of 3,921 passed. New: all four points, including `Import_AgreesWithTheServerOnEveryValueOfACallsOtherSettings`, which compares the editor and the server over all 728 cases. |
+| `dotnet test Flowbit/tests/Flowbit.BrowserTests/Flowbit.BrowserTests.csproj -c Release --no-build --no-restore` | 102 of 102 passed in Chromium. E20 now also imports `requiresClaim: 0`, `completionPriority: 1.5`, `isSelectable: "false"`, and `callOnly: null` on a start and an end event, and clears them through each inspector. |
+| `dotnet test Flowbit/tests/Flowbit.BrowserAcceptanceTests/Flowbit.BrowserAcceptanceTests.csproj -c Release --no-build --no-restore` | 101 of 101 passed with a real Worker. New: a task action that ends in a failed call, at 1440×900 and 390×844, and a later call appearing beside an earlier one on a running instance, at 1440×900. |
+| `git diff --check` | No problems. |
+
+**Hands-on checks.** The built-in browser of the Claude desktop app, at its natural 1024×768 and an emulated 375×812, against the canonical editor files on loopback and then a private stack with real API and UI hosts and a PostgreSQL 17 container. Files went in through the page's file input by script, because this browser cannot drive the native picker.
+
+- **Standalone editor.** A call with `requiresClaim: 0`, `roles: 5`, `assignee: 5`, `asyncBefore: null`, `multiInstance: false`, and `claimMode: 5`, a flow with `completionPriority: 1.5`, `isSelectable: "false"`, `isDefault: 0`, `condition: 5`, and `roles: 5`, and `callOnly: null` on the start and end, redrew without error and failed save with 16 reasons that named them. **Remove this value** and **Remove these options** cleared each one by real clicks, and save then raised no dialog. Undo and redo moved the flow's removal as one step. `variables: 0` on the call and `variables: "note"` on its flow were refused with a message, and the current document stayed. At 375×812 the warning fit the inspector with no horizontal overflow.
+- **`/workflows/new`, hosted.** **Save new version** on a malformed document listed its reasons and stayed on the page. This check found the warning touching **+ Add attribute**, because Bootstrap's reset removes a paragraph's top margin. The node's and the flow's warnings now set their own, and the gap measured 12 pixels afterwards.
+- **`/instances/1`, hosted.** One click on **Take action** entered a call that failed on entry. Within a second the page showed **Completed**, a **Failed** row with `call_input_invalid`, no **Loading calls…**, **Administrative actions** with no positions left, and **Reactivate instance**, with no refresh.
+- **Console.** No errors on any page, only Blazor's connection messages.
+
+The Status above and the items under **Not verified** are unchanged by this review.

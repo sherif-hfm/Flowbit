@@ -113,7 +113,7 @@ public sealed class InstanceDetailDisplayComponentTests
     [Fact]
     public async Task CallActivitiesLinkTheParentAndRootAndWarnWhileACancelCascadeIsInProgress()
     {
-        var parent = new ParentCallSummaryDto(7, "cancelled", 10, 2, "Manager approval", 3, 2);
+        var parent = new ParentCallSummaryDto(7, "cancelled", 10, 2, "Manager approval", 3, 2, CancellationInProgress: true);
 
         var html = await RenderAsync<CallActivities>(new()
         {
@@ -131,6 +131,25 @@ public sealed class InstanceDetailDisplayComponentTests
             [nameof(CallActivities.ParentCall)] = parent
         });
         Assert.DoesNotContain("is being cancelled", finished);
+    }
+
+    [Fact]
+    public async Task CallActivitiesWarnOnADescendantWhoseOwnCallStillRunsBelowACancellation()
+    {
+        // A deep descendant's own call has not been cancelled yet; only its ancestry says so.
+        var deep = await RenderAsync<CallActivities>(new()
+        {
+            [nameof(CallActivities.InstanceStatus)] = "running",
+            [nameof(CallActivities.ParentCall)] = new ParentCallSummaryDto(7, "running", 10, 2, "Manager approval", 3, 3, CancellationInProgress: true)
+        });
+        Assert.Contains("is being cancelled", deep);
+
+        var undisturbed = await RenderAsync<CallActivities>(new()
+        {
+            [nameof(CallActivities.InstanceStatus)] = "running",
+            [nameof(CallActivities.ParentCall)] = new ParentCallSummaryDto(7, "running", 10, 2, "Manager approval", 3, 3)
+        });
+        Assert.DoesNotContain("is being cancelled", undisturbed);
     }
 
     [Fact]
@@ -204,6 +223,12 @@ public sealed class InstanceDetailDisplayComponentTests
         var noDefault = await RenderAsync<CallersDialog>(DialogParameters(Preview(CallersPreviewModes.Deletion, null, null, true, true)));
         Assert.Contains("No published default would remain", noDefault);
         Assert.DoesNotContain("disabled", noDefault);
+
+        // A blocked deletion changes nothing, so it describes the family as it is.
+        var blockedWithoutDefault = await RenderAsync<CallersDialog>(DialogParameters(Preview(
+            CallersPreviewModes.Deletion, null, null, true, false, ["Runtime history references this version."])));
+        Assert.Contains("This family has no published default", blockedWithoutDefault);
+        Assert.DoesNotContain("No published default would remain", blockedWithoutDefault);
 
         var blocked = await RenderAsync<CallersDialog>(DialogParameters(Preview(
             CallersPreviewModes.Deletion, 90, 4, false, false, ["Runtime history references this version."])));

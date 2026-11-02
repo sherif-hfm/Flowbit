@@ -222,7 +222,7 @@ Set a node's **Type** to **Call Activity** to call another workflow family; it d
 - **Inputs** and **Results**: typed mapping rows with **Delete mapping** and **+ Add mapping**. Source names suggest what this workflow declares or produces, and results suggest its process variables; the called workflow's names are typed. **Required** fails the call when a value is missing or null. Rows have no order, because a batch is written together.
 - **Error boundary**: one catch-all. Without it, a child that faults or is cancelled faults this workflow, and any other failure opens an incident while this workflow keeps waiting.
 
-A call needs a running Worker, and its inputs and results are copies. Changing **Type** away from a call clears its settings and removes its error boundary; undo restores them. Selecting a node never changes it, so an imported call with async, job, or multi-instance options shows a warning with **Remove these options** and blocks saving until you act.
+A call needs a running Worker, and its inputs and results are copies. Changing **Type** to a call clears the settings a call does not support, on the node and its outgoing flow, and keeps one outgoing flow. Changing **Type** away from a call clears its settings, on the node and its outgoing flow, and removes its error boundary; undo restores them. Selecting a node never changes it, so an imported call keeps any option a call does not support, such as async, job, multi-instance, or task settings, and shows a warning with **Remove these options**. Its outgoing flow does the same for a condition, roles, or variables. A value of the wrong type stays too, such as `requiresClaim: 0` or `completionPriority: 1.5`, and the save message names it. All of these block saving until you act, as does a second outgoing flow until you delete it. If `variables` on a call or its outgoing flow is not a list, the import stops with a message and your current document stays. An imported `callOnly` that is not true or false, or one on any node except a start event, also blocks saving and offers **Remove this value**.
 
 A plain start event has a **Call only** checkbox for fragments that rely on checks made in the parent. It hides the start from people and API callers, and is valid only on the default start with no roles and no idempotency. Changing the workflow's default start keeps the old start's flag and blocks saving until you clear it.
 
@@ -245,7 +245,7 @@ Below **Import editor JSON**, **Use with another AI agent** offers **Download Fl
 | **Start** | Opens the manual start form for the selected published version. |
 | **Edit** | Opens that exact version in the visual editor. **Save new version** creates an unpublished successor with the same workflow key. |
 | **Download JSON** | Downloads the stored definition. Open it in the standalone editor, or use **File → Load JSON** in the UI editor. |
-| **Delete** | Requests deletion of that version. Runtime or retained audit references can block it; deletion is not a way to detach existing instances. Deleting the default first shows the same caller list, with the version that would replace it, a warning when none would remain, or what blocks the deletion. |
+| **Delete** | Requests deletion of that version. Runtime or retained audit references can block it; deletion is not a way to detach existing instances. Deleting the default, which a family's first version is even as a draft, first shows the same caller list, with the version that would replace it, a warning when none would remain, or what blocks the deletion. |
 
 The caller confirmation reflects the current state, and the command checks its own rules again when you confirm, so compatibility warnings do not stop you. A start page for a workflow whose only start is call-only explains that a call activity has to start it.
 
@@ -292,6 +292,8 @@ Section links scroll within the instance detail and update the URL fragment
 while preserving `/instances/{id}` and any query string. Reloading after using
 a section link therefore stays on the same instance.
 
+An action you take on this page, such as claiming or taking a flow, reloads the instance and everything else on the page, including its calls and **Administrative actions**. For changes made elsewhere, use **Refresh**. The page refreshes itself only while a multi-instance task, a message, a call, or several active positions are pending.
+
 - **Execution positions** shows the active or terminal tokens and links to their human work. Do not infer the whole process from one node name.
 - **Diagram** draws the instance's workflow version and marks where the instance is now. See [Read the instance diagram](#read-the-instance-diagram).
 - **Administrative actions** lists active human-task positions and their authored direct actions when the API grants workflow-administrator permission. See [the override procedure](#use-instance-administrative-actions).
@@ -323,7 +325,7 @@ A child instance shows **Called by** in its summary. Its **Call activities** sec
 | **Failed** | The failure was delivered through the error boundary, or this workflow faulted at the call. The stable code and description are shown. |
 | **Cancelled** | This workflow abandoned the call. A child still shown as running is being stopped by a background job. |
 
-Each row shows the target family and, once chosen, the exact version. A child whose parent's call was cancelled shows a warning that its cancellation is in progress: its tasks stay visible, actions on them are refused, and it finishes when a Worker runs the cancellation. The page refreshes itself while a call is unsettled.
+Each row shows the target family and, once chosen, the exact version. An instance below a cancelled call, at any depth, shows a warning that its cancellation is in progress: its tasks stay visible, actions on them are refused, and it finishes when Workers have run the cancellation, one level per job. The page refreshes itself while a call is unsettled, and an action taken on the page shows any call it entered at once, including one that failed on entry and took its error path.
 
 ### Read the instance diagram
 
@@ -389,6 +391,8 @@ A delegate acts under their own identity and roles. Delegation allows eligible a
 Open **Jobs & incidents** with `WorkflowJobs.RequiredRole` (default `admin`). Inspect **Runnable jobs**, **Queue lag**, **Active leases**, and **Open incidents**, then filter the job/incident lists. Use **Refresh** to retrieve current state; the page does not continuously poll.
 
 For an open incident, inspect the error and related instance, correct the underlying configuration or business issue, then use **Retry** if appropriate. Retry queues durable work; keep a compatible Worker running and refresh until you see its outcome. **Retry** and **Cancel instance** execute directly from this page, without an additional confirmation dialog. Cancellation still needs the workflow's independent cancellation permission.
+
+An incident on a call's result or cancellation also shows **Acts on instance #N**, because the instance that sent that message may already have ended. Its button reads **Cancel instance #N** and cancels the instance named there: the parent for a result that cannot be delivered, or the child for a cancellation that cannot finish. The incident then closes on its own, because nothing is left to deliver or stop. It also closes if something else cancels that parent or ends that child.
 
 Do not retry by taking the original completed user action again. External service calls can have occurred before an incident or connection failure, so use the documented [recovery and at-least-once execution guidance](deployment.md#monitoring-and-recovery).
 
