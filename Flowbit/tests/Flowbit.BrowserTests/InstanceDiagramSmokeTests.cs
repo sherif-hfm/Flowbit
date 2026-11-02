@@ -61,7 +61,7 @@ public sealed class InstanceDiagramSmokeTests(BrowserStackFixture stack)
             await Assertions.Expect(viewer.Locator(".node.instance-active[data-id='4']")).ToHaveCountAsync(1);
             await Assertions.Expect(viewer.Locator(".edge.trace-active, .edge.selected")).ToHaveCountAsync(0);
             // The viewer adds no authoring markup, such as the editor's own heading, to the page.
-            await Assertions.Expect(viewer.Locator(".app-toolbar, .authoring-palette, .diagram-tools, .inspector-dock"))
+            await Assertions.Expect(viewer.Locator(".app-toolbar, .authoring-palette, .diagram-tools, .inspector-dock, .hint"))
                 .ToHaveCountAsync(0);
             await Assertions.Expect(page.Locator("h1")).ToHaveCountAsync(1);
             await Assertions.Expect(viewer.Locator(".canvas-controls")).ToBeVisibleAsync();

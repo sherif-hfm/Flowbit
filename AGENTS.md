@@ -251,7 +251,7 @@ A repeatable Chromium smoke suite exists at
 real copied editor and the real published API/UI over localhost with a
 disposable PostgreSQL container; see its
 [README](Flowbit/tests/Flowbit.BrowserTests/README.md) for setup and the
-E1–E18/R1–R11 coverage matrix. It is the baseline for editor/runtime UI changes,
+E1–E18, E21, and R1–R11 coverage matrix. It is the baseline for editor/runtime UI changes,
 but it does not replace scenario-specific manual verification: the native
 file-picker success/cancel path, visual comparisons, and behaviors outside the
 matrix still need the manual steps above.
@@ -2809,6 +2809,11 @@ when extending the model so new features stay close to BPMN terminology.
   `aria-label`, and code that redraws fields without `renderInspector()` calls
   `linkInspectorLabels(container)` on what it drew. Browser scenario E18 checks every
   node type.
+- **Connect hint placement**: `.hint` sits above `.canvas-controls`, because the expanded
+  palette and pinned diagram tools can leave only 48 px across the top of the canvas.
+  It is the one overlay above both docks and ignores the pointer, so on a short canvas it
+  stays readable over the palette without blocking it. `.canvas-controls` must stay
+  under its 64 px `bottom` offset. Browser scenarios E21 and H15 check each dock state.
 - **Timer schedule input**: the timer **Schedule** selector picks the property.
   On a catch or boundary, **Value** offers **Fixed value** (the date/time and
   duration controls) or **Expression** (a text field). The choice is inspector

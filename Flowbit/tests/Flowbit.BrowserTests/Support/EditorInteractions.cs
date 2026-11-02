@@ -169,6 +169,143 @@ public static class EditorInteractions
         await Assertions.Expect(pin).ToHaveAttributeAsync("aria-pressed", "true");
     }
 
+    /// <summary>
+    /// Opens connect mode and walks the hint through every state of the canvas
+    /// docks: collapsed, expanded, and pinned, with the inspector hidden,
+    /// revealed, and pinned. Standalone and hosted scenarios both run it, because
+    /// the hosted page also loads Bootstrap. Ends in connect mode with the longest
+    /// message, the docks collapsed, the inspector hidden, and the pointer parked.
+    /// </summary>
+    public static async Task AssertConnectHintStaysClearAsync(IPage page, string artifactDirectory)
+    {
+        var hint = page.Locator("#hint");
+        var paletteHandle = page.Locator("#authoringPaletteHandle");
+        var diagramToolsHandle = page.Locator("#diagramToolsHandle");
+        var palettePin = page.Locator("#authoringPalettePin");
+        var diagramToolsPin = page.Locator("#diagramToolsPin");
+
+        // The palette stays open under the pointer right after Connect Flow.
+        await paletteHandle.HoverAsync();
+        await page.Locator("#connectBtn").ClickAsync();
+        await Assertions.Expect(hint).ToHaveTextAsync(
+            "Connect mode: click the source node, or drag one of its connection handles.");
+        await AssertConnectHintClearAsync(page, "palette open under the pointer");
+
+        // Moving away collapses it to its handle, which turns blue in connect mode.
+        await ParkPointerOnCanvasAsync(page);
+        await AssertConnectHintClearAsync(page, "docks collapsed");
+        await ClickCenterAsync(page, await GetNodeBoxAsync(page, 2));
+        await Assertions.Expect(hint).ToHaveTextAsync("Connect mode: now click the target node.");
+        await AssertConnectHintClearAsync(page, "docks collapsed, source chosen");
+        await page.ScreenshotAsync(new PageScreenshotOptions
+        {
+            Path = Path.Combine(artifactDirectory, "connect-hint-collapsed.png"),
+        });
+
+        await paletteHandle.HoverAsync();
+        await AssertConnectHintClearAsync(page, "palette expanded");
+        await palettePin.ClickAsync();
+        await ParkPointerOnCanvasAsync(page);
+        await AssertConnectHintClearAsync(page, "palette pinned");
+
+        await diagramToolsHandle.HoverAsync();
+        await AssertConnectHintClearAsync(page, "diagram tools expanded");
+        await diagramToolsPin.ClickAsync();
+        await ParkPointerOnCanvasAsync(page);
+        await AssertConnectHintClearAsync(page, "both docks pinned");
+
+        // A pinned inspector leaves the narrowest canvas, and a boundary event the longest message.
+        await PinInspectorOpenAsync(page);
+        await AssertConnectHintClearAsync(page, "both docks and the inspector pinned");
+        await page.Locator("#connectBtn").ClickAsync();
+        await Assertions.Expect(hint).ToBeHiddenAsync();
+
+        // Search selects the task wherever the pinned palette sits over the diagram.
+        var search = page.Locator("#diagramSearchInput");
+        await search.FillAsync("#2");
+        await search.PressAsync("Enter");
+        var inspector = page.Locator("#inspector");
+        await Assertions.Expect(inspector).ToContainTextAsync("Node #2");
+        await inspector.GetByRole(AriaRole.Button, new LocatorGetByRoleOptions
+        {
+            Name = "+ Add timer boundary event",
+        }).ClickAsync();
+        await Assertions.Expect(hint).ToHaveTextAsync(
+            "Connect mode: now click the target node. This node type can have exactly one outgoing flow.");
+        await AssertConnectHintClearAsync(page, "longest message, everything pinned");
+        await page.ScreenshotAsync(new PageScreenshotOptions
+        {
+            Path = Path.Combine(artifactDirectory, "connect-hint-pinned.png"),
+        });
+        await palettePin.ClickAsync();
+        await diagramToolsPin.ClickAsync();
+        await ParkPointerOnCanvasAsync(page);
+        await AssertConnectHintClearAsync(page, "longest message, docks collapsed, inspector pinned");
+
+        // Unpinning under the pointer leaves the inspector revealed over the canvas.
+        await page.Locator("#inspectorPin").ClickAsync();
+        await AssertConnectHintClearAsync(page, "inspector revealed");
+        await ParkPointerOnCanvasAsync(page);
+        await AssertConnectHintClearAsync(page, "inspector hidden");
+    }
+
+    /// <summary>
+    /// Fails when anything floating on the canvas shares space with the hint, or the
+    /// hint leaves the canvas or clips its text. Docks finish moving first, because a
+    /// sliding panel would be measured somewhere it does not stay.
+    /// </summary>
+    public static async Task AssertConnectHintClearAsync(IPage page, string state)
+    {
+        await page.WaitForFunctionAsync(
+            "document.querySelector('.flowbit-editor').getAnimations({ subtree: true }).length === 0");
+        var layout = await page.EvaluateAsync<JsonElement>("""
+            () => {
+              const element = document.getElementById('hint');
+              const hint = element.getBoundingClientRect();
+              const canvas = document.querySelector('.canvas-wrap').getBoundingClientRect();
+              const overlapping = ['#authoringPaletteHandle', '#authoringPaletteContent', '#diagramToolsHandle',
+                '.diagram-search', '.diagram-nav', '.canvas-controls', '#inspectorDock'].filter(selector => {
+                  const other = document.querySelector(selector);
+                  const box = other.getBoundingClientRect();
+                  return getComputedStyle(other).visibility !== 'hidden' &&
+                    box.left < hint.right && hint.left < box.right && box.top < hint.bottom && hint.top < box.bottom;
+                });
+              return {
+                overlapping,
+                visible: !element.hidden && hint.width > 1 && hint.height > 1,
+                insideCanvas: hint.left >= canvas.left && hint.right <= canvas.right &&
+                  hint.top >= canvas.top && hint.bottom <= canvas.bottom,
+                textClipped: element.scrollWidth > element.clientWidth || element.scrollHeight > element.clientHeight,
+                hint: [hint.left, hint.top, hint.right, hint.bottom],
+                canvas: [canvas.left, canvas.top, canvas.right, canvas.bottom],
+              };
+            }
+            """);
+        var details = $"{state}: {layout.GetRawText()}";
+        Xunit.Assert.True(layout.GetProperty("visible").GetBoolean(), details);
+        Xunit.Assert.True(layout.GetProperty("overlapping").GetArrayLength() == 0, details);
+        Xunit.Assert.True(layout.GetProperty("insideCanvas").GetBoolean(), details);
+        Xunit.Assert.False(layout.GetProperty("textClipped").GetBoolean(), details);
+    }
+
+    /// <summary>Moves the pointer off every dock, to the middle of the canvas.</summary>
+    public static async Task ParkPointerOnCanvasAsync(IPage page)
+    {
+        var canvas = await page.Locator(".canvas-wrap").BoundingBoxAsync()
+            ?? throw new TimeoutException("The editor canvas is not rendered.");
+        await page.Mouse.MoveAsync(canvas.X + canvas.Width / 2, canvas.Y + canvas.Height / 2);
+    }
+
+    /// <summary>Reveals the auto-hidden inspector by hovering the middle of its peek strip.</summary>
+    public static async Task RevealInspectorAsync(IPage page)
+    {
+        var dock = await page.Locator("#inspectorDock").BoundingBoxAsync()
+            ?? throw new TimeoutException("The inspector dock is not rendered.");
+        await page.Mouse.MoveAsync(dock.X + 19, dock.Y + dock.Height / 2);
+        await page.WaitForFunctionAsync(
+            "document.querySelector('.editor-workspace').classList.contains('inspector-revealed')");
+    }
+
     /// <summary>Screen bounding box of an editor node's SVG group (throws when absent).</summary>
     public static async Task<LocatorBoundingBoxResult> GetNodeBoxAsync(IPage page, int nodeId)
     {

@@ -10,7 +10,7 @@ editor load flow; runtime fixtures are created and published through
 
 | Fixture | Used by | Notes |
 | --- | --- | --- |
-| `editor-basic.json` | E1, E2, E3, E5, E10 | Valid workflow with two lanes, one start event, a claim-required user task, one automatic task, one end event, and three sequence flows. deliberately simple geometry (lanes 1/2, nodes 1-4, flows 101-103) so drags and saves have known shapes. |
+| `editor-basic.json` | E1, E2, E3, E5, E10, E21, H15 | Valid workflow with two lanes, one start event, a claim-required user task, one automatic task, one end event, and three sequence flows. deliberately simple geometry (lanes 1/2, nodes 1-4, flows 101-103) so drags and saves have known shapes. |
 | `editor-error-boundaries.json` | E14 | Valid workflow with a REST service task and end events for the boundaries the scenario adds. |
 | `editor-error-match-misplaced.json` | E15 | Deliberately invalid: `errorMatch` on an end event and on a boundary attached to a script task. |
 | `editor-maximum-boundaries.json` | E16 | A REST task with eight error and eight timer boundaries. |

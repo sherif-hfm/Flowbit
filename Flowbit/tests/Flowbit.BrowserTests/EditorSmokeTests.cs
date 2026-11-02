@@ -1541,6 +1541,68 @@ public sealed class EditorSmokeTests(BrowserStackFixture stack)
         });
     }
 
+    // The docks can fill the top of the canvas, so the hint has to stay clear of them in every state.
+    [Theory]
+    [MemberData(nameof(EditorViewports))]
+    public async Task E21_ConnectHintStaysClearOfTheCanvasDocks(int viewportWidth, int viewportHeight)
+    {
+        await using var scenario = await CreateEditorScenarioAsync(
+            $"e21-connect-hint-{viewportWidth}x{viewportHeight}", viewportWidth, viewportHeight);
+        await scenario.RunAsync("connect-hint", async () =>
+        {
+            await scenario.OpenEditorAsync(stack.EditorBaseAddress);
+            var page = scenario.Page;
+            await EditorInteractions.LoadWorkflowAsync(
+                page, EditorInteractions.FixturePath("editor-basic.json"));
+            await EditorInteractions.AssertConnectHintStaysClearAsync(page, scenario.ArtifactDirectory);
+
+            // A narrower editor leaves less room beside the inspector, revealed or pinned.
+            var hint = page.Locator("#hint");
+            var inspectorPin = page.Locator("#inspectorPin");
+            await page.SetViewportSizeAsync(600, viewportHeight);
+            await EditorInteractions.RevealInspectorAsync(page);
+            await EditorInteractions.AssertConnectHintClearAsync(page, "600 wide, inspector revealed");
+            await inspectorPin.ClickAsync();
+            await EditorInteractions.AssertConnectHintClearAsync(page, "600 wide, inspector pinned");
+            await inspectorPin.ClickAsync();
+            await EditorInteractions.ParkPointerOnCanvasAsync(page);
+            await EditorInteractions.AssertConnectHintClearAsync(page, "600 wide, inspector hidden");
+
+            // The narrowest editor still shows it, and one pixel less only announces it,
+            // whichever inspector state set its width.
+            await page.SetViewportSizeAsync(481, viewportHeight);
+            await EditorInteractions.ParkPointerOnCanvasAsync(page);
+            await EditorInteractions.AssertConnectHintClearAsync(page, "481 wide");
+            await page.SetViewportSizeAsync(480, viewportHeight);
+            await EditorInteractions.RevealInspectorAsync(page);
+            await Assertions.Expect(hint).ToHaveCSSAsync("width", "1px");
+            await Assertions.Expect(hint).ToHaveCSSAsync("height", "1px");
+            await Assertions.Expect(hint).ToHaveCSSAsync("max-width", "1px");
+            await Assertions.Expect(hint).ToHaveCSSAsync("clip-path", "inset(50%)");
+            await Assertions.Expect(hint).ToHaveAttributeAsync("role", "status");
+            await Assertions.Expect(hint).ToHaveTextAsync(new Regex("^Connect mode: now click the target node"));
+
+            // On a short canvas the pinned palette reaches the hint, which stays readable
+            // on top of it and lets the palette's lowest button keep taking clicks.
+            await page.SetViewportSizeAsync(1024, 480);
+            await page.Locator("#authoringPaletteHandle").HoverAsync();
+            await page.Locator("#authoringPalettePin").ClickAsync();
+            await EditorInteractions.ParkPointerOnCanvasAsync(page);
+            var layers = await page.EvaluateAsync<JsonElement>("""
+                () => {
+                  const layer = selector => parseInt(getComputedStyle(document.querySelector(selector)).zIndex) || 0;
+                  return { hint: layer('#hint'), palette: layer('#authoringPalette'), tools: layer('#diagramTools') };
+                }
+                """);
+            Assert.True(
+                layers.GetProperty("hint").GetInt32() > Math.Max(layers.GetProperty("palette").GetInt32(), layers.GetProperty("tools").GetInt32()),
+                layers.GetRawText());
+            await page.Locator("#panToolBtn").ClickAsync();
+            await Assertions.Expect(page.Locator("#svg")).ToHaveAttributeAsync("data-active-tool", "pan");
+            await Assertions.Expect(hint).ToBeHiddenAsync();
+        });
+    }
+
     private static async Task<string> SaveExpectingValidationAsync(IPage page)
     {
         await page.Locator("#fileMenuSummary").ClickAsync();

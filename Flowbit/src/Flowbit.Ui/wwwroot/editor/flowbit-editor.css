@@ -563,19 +563,25 @@
     pointer-events: none;
   }
 
+  /* Above the zoom controls, because the palette and diagram tools can fill the top of the canvas. */
   .flowbit-editor .hint {
     position: absolute;
-    top: 10px; left: 10px;
+    bottom: 64px; left: 12px;
+    z-index: 17;
     background: var(--glass-soft);
     border: 1px solid var(--border);
     padding: 8px 12px;
     border-radius: 8px;
     font-size: 12px;
     color: var(--muted);
-    max-width: min(420px, calc(100% - 150px));
+    max-width: min(420px, calc(100% - 24px));
     pointer-events: none;
     box-shadow: var(--floating-shadow);
     backdrop-filter: blur(8px);
+  }
+  /* :where keeps this from outranking the narrow rule that hides the hint. */
+  .flowbit-editor :where(.editor-workspace.inspector-revealed) .hint {
+    max-width: min(420px, calc(100% - var(--sidebar-width) - 31px));
   }
   .flowbit-editor .hint b { color: var(--text); }
   .flowbit-editor .canvas-controls {

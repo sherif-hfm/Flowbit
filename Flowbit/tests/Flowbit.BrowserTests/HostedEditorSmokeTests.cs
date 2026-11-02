@@ -614,6 +614,50 @@ public sealed class HostedEditorSmokeTests(BrowserStackFixture stack)
         });
     }
 
+    [Theory]
+    [InlineData(1440, 900)]
+    [InlineData(1024, 768)]
+    public async Task H15_ConnectHintStaysClearOfTheCanvasDocks(int width, int height)
+    {
+        await using var scenario = await stack.CreateScenario($"h15-hosted-connect-hint-{width}", width, height);
+        await scenario.RunAsync("hosted-connect-hint", async () =>
+        {
+            var workflow = await RuntimeSupport.PublishAsync(stack, "editor-basic.json");
+            await RuntimeSupport.ApplyIdentityAsync(scenario, "editor-admin", ["admin"]);
+            var page = await scenario.OpenUiAsync($"workflows/{workflow.Id}/edit");
+            await ReadyAsync(page);
+            var editor = page.Locator("#workflow-editor-root");
+            await Assertions.Expect(editor.Locator("#wfName")).ToHaveValueAsync(workflow.Name);
+            await EditorInteractions.AssertConnectHintStaysClearAsync(page, scenario.ArtifactDirectory);
+
+            // The assistant takes width from the editor: at 1440 that leaves the narrowest
+            // canvas in this mode, and at 1024 too little for anything but the announcement.
+            await page.Locator("#open-ai-assistant").ClickAsync();
+            await Assertions.Expect(page.Locator(".editor-ai-sidebar")).ToBeVisibleAsync();
+            if ((await editor.BoundingBoxAsync())!.Width <= 480)
+            {
+                await Assertions.Expect(editor.Locator("#hint")).ToHaveCSSAsync("clip-path", "inset(50%)");
+            }
+            else
+            {
+                await EditorInteractions.AssertConnectHintClearAsync(page, "assistant open, inspector hidden");
+                await EditorInteractions.RevealInspectorAsync(page);
+                await EditorInteractions.AssertConnectHintClearAsync(page, "assistant open, inspector revealed");
+                await editor.Locator("#inspectorPin").ClickAsync();
+                await EditorInteractions.AssertConnectHintClearAsync(page, "assistant open, inspector pinned");
+                await page.ScreenshotAsync(new PageScreenshotOptions
+                {
+                    Path = Path.Combine(scenario.ArtifactDirectory, "connect-hint-assistant.png"),
+                });
+            }
+
+            // Undoing the added boundary lets the scenario's cleanup leave the editor.
+            await editor.Locator("#editMenuSummary").ClickAsync();
+            await editor.Locator("#undoBtn").ClickAsync();
+            await Assertions.Expect(page.Locator("#editor-status")).ToHaveTextAsync("Saved");
+        });
+    }
+
     private static ILocator InspectorSelect(ILocator editor, string label) =>
         editor.Locator("#inspector .field").Filter(new LocatorFilterOptions
         {
