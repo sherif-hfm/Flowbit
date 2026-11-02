@@ -25,7 +25,7 @@ editor load flow; runtime fixtures are created and published through
 | Fixture | Workflow key | Used by | Shape |
 | --- | --- | --- | --- |
 | `runtime-lifecycle.json` | `browser-lifecycle-r1` | R1, R3 | start → claim-required `userTask` (`roles: ["Agent"]`, external id `TASK_REVIEW_REQUEST`) → end; single action flow `Approve` (flow 102) captures required string `decisionNote`. |
-| `runtime-navigation.json` | `browser-navigation-r2` | R2, R6, R8 | start → `approval1` → `approval2` → end; open role-less tasks, two steps so one instance can be driven to `Completed` over HTTP while another rests. |
+| `runtime-navigation.json` | `browser-navigation-r2` | R2, R6, R8, R12 | start → `approval1` → `approval2` → end; open role-less tasks, two steps so one instance can be driven to `Completed` over HTTP while another rests. |
 | `runtime-gateway.json` | `browser-gateway-r4` | R4, R6, R8 | start → parallel split (`Fork reviews`) → `Reviewer A` / `Reviewer B` → complex merge (`TotalIncomingCount() >= 2`, joinCancellation referencing the split) → `Finalize` → end. |
 | `runtime-mi.json` | `browser-mi-r5` | R4, R5, R6, R8 | start → parallel collection multi-instance `userTask` over `reviewers` (default `alpha`, `beta`, `gamma`) → end; action flow `Complete review` requires `reviewComment`; hidden engine fallback flow 202. |
 | `runtime-rich-forms.json` | `browser-rich-forms-r9` | R9 | start (open roles) declaring `requestTitle` (required string with label and two-line help), `amount` (required number), `urgent` (boolean), `neededBy` (date), `kickoffAt` (datetime), `category` (string options with a `software` default), and `tags` (`string[]`) → `userTask` `Review request` (`roles: ["Reviewer"]`) → end; action flow `Decide` (flow 201) declares `decision` (required string options with help and the `decision in ('approved', 'rejected')` rule), `score` (number options `1`, `2.5`, `5`), and `followUpOn` (datetime). |
@@ -83,6 +83,9 @@ editor load flow; runtime fixtures are created and published through
 - R10: the setup client starts the due-dates instance with `amount = 500`;
   `reviewer` (role `Reviewer`) reads My work and task detail. The four reviews
   stay open, and the API's real clock decides the badges.
+- R12: the setup client starts two navigation instances, which rest on
+  `approval1`. `title-reader` (roles `User` + `admin`; `admin` reads the instance
+  list and the settings pages) only navigates.
 
 ## Prerequisites and boundaries
 

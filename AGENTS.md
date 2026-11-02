@@ -251,7 +251,7 @@ A repeatable Chromium smoke suite exists at
 real copied editor and the real published API/UI over localhost with a
 disposable PostgreSQL container; see its
 [README](Flowbit/tests/Flowbit.BrowserTests/README.md) for setup and the
-E1–E18/R1–R11 coverage matrix. It is the baseline for editor/runtime UI changes,
+E1–E18/R1–R12 coverage matrix. It is the baseline for editor/runtime UI changes,
 but it does not replace scenario-specific manual verification: the native
 file-picker success/cancel path, visual comparisons, and behaviors outside the
 matrix still need the manual steps above.
@@ -1722,6 +1722,14 @@ what the cross-version `workflowKey` instance search matches.
   executions of every status for the selected node through the role-scoped
   node-execution search, so links appear only for executions the caller may
   read, and an async-after wait links the completed visit it follows.
+
+`App.razor` renders the head through `DeferredHeadOutlet`, in the same
+`InteractiveServer` mode as `Routes`, so each page's `PageTitle` reaches the
+browser tab on in-app navigation; a static `HeadOutlet` would keep the prerendered
+title. The outlet's first interactive render removes that title, so
+`DeferredHeadOutlet` yields until `Routes` has rendered and the page's title
+arrives in the same batch. Every page and `SessionRouteView` state sets a
+`PageTitle`, because a state without one leaves the tab untitled.
 
 Display sections live in shared child components so pages keep their own
 coordination. The instance detail sections are under

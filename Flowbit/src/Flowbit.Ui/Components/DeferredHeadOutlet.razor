@@ -1,0 +1,13 @@
+<HeadOutlet />
+
+@code {
+    // Blazor adds App's interactive roots in one turn, head first, and the outlet's
+    // first interactive render removes the prerendered title. Yielding lets Routes
+    // render first, so that render already carries the page's title and the browser
+    // tab has no empty title between two batches.
+    public override async Task SetParametersAsync(ParameterView parameters)
+    {
+        if (RendererInfo.IsInteractive) await Task.Yield();
+        await base.SetParametersAsync(ParameterView.Empty);
+    }
+}

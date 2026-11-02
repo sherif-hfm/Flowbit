@@ -1437,13 +1437,14 @@ dotnet test ./tests/Flowbit.BrowserTests/Flowbit.BrowserTests.csproj -c Release 
 ```
 
 Set `FLOWBIT_BROWSER_HEADED=1` to launch Chromium headed for local diagnosis.
-The suite covers editor E1–E18 and runtime R1–R11 scenarios (see the project
+The suite covers editor E1–E18 and runtime R1–R12 scenarios (see the project
 README); manual native-picker and full acceptance checks remain the caller's
 responsibility.
 
 The browser project also checks its own auxiliary-page diagnostics, retained
 warnings/network failures, one-shot native browser dialogs, and timeout cleanup
-(44 cases including 40 editor and runtime product scenarios). Each scenario retains
+(99 cases: 87 editor and runtime product scenarios, 8 OIDC and Local sign-in cases,
+and 4 harness checks). Each scenario retains
 `diagnostics.json`, including successful runs.
 The UI shell and instance summary expose nonvisual `data-interactive` markers
 from Blazor's renderer state so tests do not act on prerendered controls.

@@ -14,16 +14,19 @@ else
         <section class="panel" aria-labelledby="session-heading">
             @if (IsUnavailableDevelopmentPage)
             {
+                <PageTitle>Page unavailable · Flowbit</PageTitle>
                 <h1 id="session-heading">Page unavailable</h1>
                 <p>Development identity tools are unavailable with OpenID Connect sign-in.</p>
             }
             else if (!Token.AuthReady)
             {
+                <PageTitle>Checking your session · Flowbit</PageTitle>
                 <h1 id="session-heading">Checking your session</h1>
                 <p role="status">Please wait while Flowbit checks your sign-in.</p>
             }
             else
             {
+                <PageTitle>Sign in · Flowbit</PageTitle>
                 <h1 id="session-heading">Sign in to Flowbit</h1>
                 <p>Your session is unavailable or has expired. Sign in to continue.</p>
                 <IdentityAction />

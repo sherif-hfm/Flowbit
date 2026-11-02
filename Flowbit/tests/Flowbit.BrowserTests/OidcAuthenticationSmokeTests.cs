@@ -254,12 +254,17 @@ public sealed class OidcAuthenticationSmokeTests
 
         await signedInPage.GotoAsync(stack.UiOrigin + "/inbox");
         await WaitInteractiveAsync(signedInPage);
+        await signedInPage.Locator(".nav-groups a.nav-link[href='activity']").ClickAsync();
+        await Assertions.Expect(signedInPage).ToHaveTitleAsync("Activity · Flowbit");
+        await signedInPage.Locator(".nav-groups a.nav-link[href='inbox']").ClickAsync();
+        await Assertions.Expect(signedInPage).ToHaveTitleAsync("My Work · Flowbit");
         stack.Provider.RevokeRefreshTokens("alice");
         var refreshDue = stack.Provider.AccessTokenExpiresAt("alice").AddSeconds(-59);
         if (refreshDue > DateTimeOffset.UtcNow) await Task.Delay(refreshDue - DateTimeOffset.UtcNow);
         await signedInPage.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Refresh inbox" }).ClickAsync();
         await Assertions.Expect(signedInPage.GetByRole(AriaRole.Heading,
             new PageGetByRoleOptions { Name = "Sign in to Flowbit", Exact = true })).ToBeVisibleAsync();
+        await Assertions.Expect(signedInPage).ToHaveTitleAsync("Sign in · Flowbit");
         await Assertions.Expect(signedInPage.Locator(".topbar-actions").GetByRole(AriaRole.Link,
             new LocatorGetByRoleOptions { Name = "Sign in", Exact = true })).ToBeVisibleAsync();
         await signedInPage.ScreenshotAsync(new PageScreenshotOptions
