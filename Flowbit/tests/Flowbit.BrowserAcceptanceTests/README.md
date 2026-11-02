@@ -31,8 +31,9 @@ FullyQualifiedName~InstanceDetailAcceptanceTests` or
 For all canonical-example runtime, editor, and UI scenarios, append
 `--filter FullyQualifiedName~ExampleWorkflow`. Use
 `--filter FullyQualifiedName~ExampleWorkflowAcceptanceTests` for runtime-only
-coverage, and `--filter FullyQualifiedName~ExpressionTimerAcceptanceTests` for
-the expression-timer scenarios.
+coverage, `--filter FullyQualifiedName~ExpressionTimerAcceptanceTests` for
+the expression-timer scenarios, and
+`--filter FullyQualifiedName~CallActivityAcceptanceTests` for call activities.
 
 Run final regressions separately:
 
@@ -102,6 +103,11 @@ and timestamps. Native save dialogs and visual review remain manual gates.
 | Instance audit, three viewports | Real catalog binding with no leaked value; compatible upgrade/downgrade; two variable-update batches; actor/role/reason/value ordering; section and exact batch links with Back navigation. |
 | Claim/delegation, three viewports | Owner claim, real grant, delegated UI completion; selected claim snapshots, escaping and omission of unselected claims; real delegation attribution. |
 | Representative states, three viewports | Normal and terminal detail, empty sections, gateway/complex state, active MI and early-quorum completed/cancelled children, submitted JSON and section navigation. |
+| Call parent and child, three viewports | The paired examples with a real Worker. A parent shows its running call and marks the call node on its diagram; its link opens the child with fresh page state, and the child's links return. A person finishes the child, the result reaches the parent as `callActivity`, and the panel shows the pinned version and delivered result. |
+| Call rejection | A child's error end faults the parent at the call with `call_child_faulted`, and the boundary variant writes the diagnostic and continues. |
+| Call cancellation, two viewports | With the Worker stopped, cancelling the parent returns at once, the child refuses actions with `409` and warns that its cancellation is in progress, and the restarted Worker finishes it. |
+| Call incident | A call whose target has no published default shows **Queued** with its code and no child, and the incident's retry starts the child once a default exists. |
+| Caller confirmation, two viewports | **Set default** names an incompatible caller, Escape keeps the default and returns focus, confirming still changes it, and deleting the default names its successor. |
 | A1 | UI prepare/confirm; 51 positions; Preparing/Ready/Queued/Completed rendering and captures; frozen audit; item pagination and captured empty-filter restore; exact instance link and Back. |
 | A2 | More than 25 real batches; independent history pagination; keyboard Open; ready cancellation with reason and captured empty-history-filter recovery. |
 | A3, two modes | Force parent and complete unfinished children; distinct position/task counts and frozen mode labels. |

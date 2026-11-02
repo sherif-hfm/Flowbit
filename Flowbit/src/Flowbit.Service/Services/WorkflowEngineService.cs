@@ -34,11 +34,16 @@ public sealed partial class WorkflowEngineService(
     IWorkflowVariableStore? workflowVariables = null,
     ISharedVariableAccessPlanCache? sharedVariableAccessPlans = null,
     IConditionalBoundarySubscriptionRepository? conditionalBoundarySubscriptions = null,
-    IBusinessCalendarResolver? businessCalendars = null)
+    IBusinessCalendarResolver? businessCalendars = null,
+    ICallActivityRepository? callActivities = null,
+    CallActivityOptions? callActivityOptions = null)
     : IWorkflowEngineService, IWorkflowJobProcessor,
       IInstanceVersionChangeBatchExecutor, IConditionalEventRuntimeCoordinator,
       IAdministrativeActionExecutor
 {
+    // The call target checks read only the definitions they are given.
+    private static readonly WorkflowDefinitionReadinessChecker CallTargetReadiness = new();
+
     private readonly ISharedVariableAccessPlanCache sharedAccessPlanCache =
         sharedVariableAccessPlans
         ?? new SharedVariableAccessPlanCache(new ConditionalEventDefinitionAnalyzer());
@@ -937,7 +942,8 @@ public sealed partial class WorkflowEngineService(
         bool allowTimerStart = false,
         bool joinAmbientTransaction = false,
         bool forceDurableActivities = false,
-        long? requiredDefaultWorkflowId = null)
+        long? requiredDefaultWorkflowId = null,
+        CallChildLinkRecord? callLink = null)
     {
         await LoadSettingsAsync(cancellationToken);
         var startedBy = actor.User;
@@ -1008,6 +1014,13 @@ public sealed partial class WorkflowEngineService(
 
             EnsureEntryRuntimeContract(workflow.Definition, startEvent);
 
+            if (startEvent.CallOnly && callLink is null)
+            {
+                logger.LogWarning("Start instance rejected: start event #{NodeId} can be started only by a call activity.", resolvedStartEventId);
+                throw new WorkflowDomainException(
+                    $"Start event #{resolvedStartEventId} can be started only by a call activity.");
+            }
+
             EnsureRoleAllowed(startEvent, actor);
             EnsureConditionalDefinitionSupported(workflow);
 
@@ -1062,7 +1075,22 @@ public sealed partial class WorkflowEngineService(
                 startedBy,
                 SnapshotRoles(actor.Roles),
                 cancellationToken,
-                actorClaims: actor.AuditClaims);
+                actorClaims: actor.AuditClaims,
+                callLink: callLink);
+
+            // Linked before routing, so a child that finishes in this pass already has its call.
+            if (callLink is not null
+                && !await CallActivities.LinkChildAsync(
+                    callLink.InvocationId,
+                    instance.Id,
+                    workflow.Id,
+                    startEvent.Id,
+                    cancellationToken))
+            {
+                throw new WorkflowConflictException(
+                    "The call invocation changed while its child was being created.");
+            }
+
             if (idempotency is not null)
             {
                 await runtime.BindIdempotencyKeyAsync(
@@ -3320,7 +3348,7 @@ public sealed partial class WorkflowEngineService(
                 instance.Id, ExecutionTokenRecordStatuses.Active, cancellationToken);
             if (remaining.Count == 0)
             {
-                await runtime.SetInstanceStatusAsync(
+                await SetInstanceTerminalStatusAsync(
                     instance.Id, WorkflowInstanceStatuses.Completed, cancellationToken);
             }
             await CloseInactiveGatewayScopesAsync(instance.Id, "allEnded", cancellationToken);
@@ -3831,7 +3859,7 @@ public sealed partial class WorkflowEngineService(
                     instance.Id, ExecutionTokenRecordStatuses.Active, cancellationToken);
                 if (remaining.Count == 0)
                 {
-                    await runtime.SetInstanceStatusAsync(
+                    await SetInstanceTerminalStatusAsync(
                         instance.Id, WorkflowInstanceStatuses.Completed, cancellationToken);
                 }
                 await CloseInactiveGatewayScopesAsync(instance.Id, "allEnded", cancellationToken);
@@ -4165,7 +4193,7 @@ public sealed partial class WorkflowEngineService(
                     instance.Id, ExecutionTokenRecordStatuses.Active, cancellationToken);
                 if (remaining.Count == 0)
                 {
-                    await runtime.SetInstanceStatusAsync(
+                    await SetInstanceTerminalStatusAsync(
                         instance.Id, WorkflowInstanceStatuses.Completed, cancellationToken);
                 }
                 await CloseInactiveGatewayScopesAsync(instance.Id, "allEnded", cancellationToken);
@@ -5113,11 +5141,26 @@ public sealed partial class WorkflowEngineService(
             }
         }
 
-        var instance = await runtime.GetInstanceForUpdateAsync(id, false, cancellationToken)
+        // Cancelling is what finishes a fenced descendant's work, so it bypasses the fence.
+        var instance = await runtime.GetInstanceForUpdateAsync(id, false, cancellationToken, bypassCallFence: true)
             ?? throw new WorkflowConflictException("The workflow instance disappeared while it was being cancelled.");
         if (instance.Status != WorkflowInstanceStatuses.Running)
             throw new WorkflowConflictException("Only a running workflow instance can be cancelled.");
 
+        await CancelLockedInstanceAsync(instance.Id, actor, cancellationToken);
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+
+        logger.LogInformation("Instance {InstanceId} cancelled by user '{User}'.", id, actor.User ?? "anonymous");
+
+        return true;
+    }
+
+    private async Task CancelLockedInstanceAsync(
+        long id,
+        ActorContext actor,
+        CancellationToken cancellationToken)
+    {
         var gatewayExecutions = await runtime.ListGatewayExecutionsAsync(
             id,
             GatewayExecutionRecordStatuses.Active,
@@ -5143,7 +5186,7 @@ public sealed partial class WorkflowEngineService(
         var activeTokenIds = activeTokens.Select(token => token.Id).ToList();
         var cancellationActor = ToNodeExecutionActor(actor);
         await CancelDurableWorkForTokensAsync(
-            instance.Id,
+            id,
             activeTokenIds,
             "instanceCancelled",
             cancellationToken);
@@ -5164,14 +5207,8 @@ public sealed partial class WorkflowEngineService(
             NodeExecutionCompletionReasons.InstanceCancelled,
             cancellationActor,
             cancellationToken);
-        await runtime.SetInstanceStatusAsync(
-            instance.Id, WorkflowInstanceStatuses.Cancelled, cancellationToken);
-        await unitOfWork.SaveChangesAsync(cancellationToken);
-        await transaction.CommitAsync(cancellationToken);
-
-        logger.LogInformation("Instance {InstanceId} cancelled by user '{User}'.", id, actor.User ?? "anonymous");
-
-        return true;
+        await SetInstanceTerminalStatusAsync(
+            id, WorkflowInstanceStatuses.Cancelled, cancellationToken);
     }
 
     private Task<WorkflowInstanceRecord> ResolvePassThroughAsync(
@@ -5485,7 +5522,27 @@ public sealed partial class WorkflowEngineService(
                     continue;
                 }
 
-                if (!BpmnFlowNodeTypes.IsPassThrough(currentNode.Type))
+                // A call rests while its child runs. A resumed visit continues below through
+                // normal routing, and a call that fails on entry reaches its boundary there.
+                TaskExecutionOutcome? callEntryFailure = null;
+                if (BpmnFlowNodeTypes.IsCallActivity(currentNode.Type) && !resumesCurrentActivation)
+                {
+                    callEntryFailure = await EnterCallActivityAsync(
+                        tokenInstance,
+                        token,
+                        currentNode,
+                        definition,
+                        actor,
+                        storedOverlay,
+                        cancellationToken);
+                    if (callEntryFailure is null)
+                    {
+                        continue;
+                    }
+                }
+
+                if (!BpmnFlowNodeTypes.IsPassThrough(currentNode.Type)
+                    && !BpmnFlowNodeTypes.IsCallActivity(currentNode.Type))
                 {
                     // This is activation time for a resting activity. The
                     // repository's activation/node uniqueness makes the call
@@ -5504,10 +5561,10 @@ public sealed partial class WorkflowEngineService(
                 }
 
                 var variables = WithContext(storedOverlay, actor, tokenInstance, definition, currentNode);
-                TaskExecutionOutcome? outcome = resumesCurrentActivation
+                TaskExecutionOutcome? outcome = callEntryFailure ?? (resumesCurrentActivation
                     && resume!.ActivityAlreadyExecuted
                     ? resume.Outcome
-                    : null;
+                    : null);
                 if (!(resumesCurrentActivation && resume!.ActivityAlreadyExecuted)
                     && BpmnFlowNodeTypes.IsServiceTask(currentNode.Type))
                 {
@@ -5778,6 +5835,7 @@ public sealed partial class WorkflowEngineService(
                 var t when BpmnFlowNodeTypes.IsServiceTask(t) => "service",
                 var t when BpmnFlowNodeTypes.IsScriptTask(t) => "script",
                 var t when BpmnFlowNodeTypes.IsErrorBoundary(t) => "boundary",
+                var t when BpmnFlowNodeTypes.IsCallActivity(t) => InstanceHistoryNotes.CallCompleted,
                 _ => "automatic"
             };
 
@@ -5824,7 +5882,8 @@ public sealed partial class WorkflowEngineService(
                 traversalMultiInstanceExecutionId:
                     administrativeTraversal?.MultiInstanceExecutionId,
                 administrativeValues: administrativeTraversal?.Values,
-                administrativeBatch: administrativeTraversal?.AdministrativeBatch);
+                administrativeBatch: administrativeTraversal?.AdministrativeBatch,
+                historyPayload: resumesCurrentActivation ? resume!.HistoryPayload : null);
             }
 
             routingSteps += await DrainConditionalVariableChangesAsync(
@@ -6412,7 +6471,7 @@ public sealed partial class WorkflowEngineService(
                     cancellationToken);
                 if (remainingActive.Count == 0)
                 {
-                    await runtime.SetInstanceStatusAsync(
+                    await SetInstanceTerminalStatusAsync(
                         instance.Id,
                         WorkflowInstanceStatuses.Completed,
                         cancellationToken);
@@ -6945,7 +7004,7 @@ public sealed partial class WorkflowEngineService(
                 instance.Id, ExecutionTokenRecordStatuses.Active, cancellationToken);
             if (remainingActive.Count == 0)
             {
-                await runtime.SetInstanceStatusAsync(
+                await SetInstanceTerminalStatusAsync(
                     instance.Id, WorkflowInstanceStatuses.Completed, cancellationToken);
             }
         }
@@ -7831,6 +7890,8 @@ public sealed partial class WorkflowEngineService(
             "timer" => NodeExecutionCompletionReasons.TimerFired,
             InstanceHistoryNotes.ConditionalTriggered =>
                 NodeExecutionCompletionReasons.ConditionalTriggered,
+            InstanceHistoryNotes.CallCompleted =>
+                NodeExecutionCompletionReasons.CallCompleted,
             NodeExecutionCompletionReasons.AdministrativeAction =>
                 NodeExecutionCompletionReasons.AdministrativeAction,
             _ => NodeExecutionCompletionReasons.Normal
@@ -7926,7 +7987,7 @@ public sealed partial class WorkflowEngineService(
                 instance.Id, ExecutionTokenRecordStatuses.Active, cancellationToken);
             if (remaining.Count == 0)
             {
-                await runtime.SetInstanceStatusAsync(
+                await SetInstanceTerminalStatusAsync(
                     instance.Id, WorkflowInstanceStatuses.Completed, cancellationToken);
                 instance = instance with { Status = WorkflowInstanceStatuses.Completed };
             }
@@ -8006,7 +8067,7 @@ public sealed partial class WorkflowEngineService(
             null,
             triggeringTokenId,
             cancellationToken);
-        await runtime.SetInstanceStatusAsync(instanceId, WorkflowInstanceStatuses.Completed, cancellationToken);
+        await SetInstanceTerminalStatusAsync(instanceId, WorkflowInstanceStatuses.Completed, cancellationToken);
     }
 
     private async Task FaultInstanceAsync(
@@ -8078,7 +8139,7 @@ public sealed partial class WorkflowEngineService(
             null,
             triggeringTokenId,
             cancellationToken);
-        await runtime.SetInstanceStatusAsync(instanceId, WorkflowInstanceStatuses.Faulted, cancellationToken);
+        await SetInstanceTerminalStatusAsync(instanceId, WorkflowInstanceStatuses.Faulted, cancellationToken);
     }
 
     private async Task CloseInactiveGatewayScopesAsync(
@@ -8551,7 +8612,12 @@ public sealed partial class WorkflowEngineService(
             "boundary" or
             "error" or
             "message" or
-            "administrativeAction");
+            "administrativeAction" or
+            InstanceHistoryNotes.CallQueued or
+            InstanceHistoryNotes.CallChildStarted or
+            InstanceHistoryNotes.CallCompleted or
+            InstanceHistoryNotes.CallFailed or
+            InstanceHistoryNotes.CallCancelled);
 
     private SequenceFlowModel SelectPassThroughFlow(
         long definitionId,

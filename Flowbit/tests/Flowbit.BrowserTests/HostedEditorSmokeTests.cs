@@ -620,6 +620,62 @@ public sealed class HostedEditorSmokeTests(BrowserStackFixture stack)
             Has = editor.Page.Locator($"xpath=./label[normalize-space(.)='{label}']"),
         }).First.Locator("select");
 
+    [Theory]
+    [InlineData(1440, 900)]
+    [InlineData(1024, 768)]
+    public async Task H13_CallActivityDraftSavesAndTheClosedGateRefusesPublishing(int width, int height)
+    {
+        await using var scenario = await stack.CreateScenario($"h13-hosted-call-activity-{width}", width, height);
+        scenario.ExpectDialogStartingWith("Unpublish");
+        await scenario.RunAsync("hosted-call-activity", async () =>
+        {
+            var key = $"browser-call-{Guid.NewGuid():N}";
+            var definition = System.Text.Json.JsonSerializer.Deserialize<Flowbit.Shared.Models.WorkflowModel>(
+                await File.ReadAllTextAsync(EditorInteractions.FixturePath("editor-call-activity.json")),
+                new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web))!;
+            definition.Id = key;
+            var workflow = await stack.SetupClient.CreateUnpublishedAsync(definition);
+            await RuntimeSupport.ApplyIdentityAsync(scenario, "editor-admin", ["admin"]);
+            var page = await scenario.OpenUiAsync($"workflows/{workflow.Id}/edit");
+            await ReadyAsync(page);
+            var editor = page.Locator("#workflow-editor-root");
+            await EditorInteractions.PinInspectorOpenAsync(page);
+            await EditorInteractions.SelectMoveToolAsync(page);
+            await editor.Locator("g.node[data-id='2']").ClickAsync(new LocatorClickOptions { Force = true });
+            await EditorInteractions.SelectTypeAsync(page, "callActivity");
+            var inspector = editor.Locator("#inspector");
+
+            // Bootstrap reaches hosted inspector markup, so this is checked here too.
+            var key2 = inspector.GetByRole(AriaRole.Textbox, new LocatorGetByRoleOptions { Name = "Workflow key" });
+            await key2.FillAsync("not-published-yet");
+            await inspector.GetByRole(AriaRole.Button, new LocatorGetByRoleOptions { Name = "+ Add mapping" }).First.ClickAsync();
+            await inspector.GetByLabel("Variable in this workflow", new LocatorGetByLabelOptions { Exact = true }).FillAsync("amount");
+            await inspector.GetByLabel("Input of the called workflow", new LocatorGetByLabelOptions { Exact = true }).FillAsync("amount");
+            await page.Keyboard.PressAsync("Tab");
+            await inspector.GetByRole(AriaRole.Combobox, new LocatorGetByRoleOptions { Name = "Data type" }).First.SelectOptionAsync("number");
+            await Assertions.Expect(editor.Locator("#nodes [data-id='2'] > rect")).ToHaveCSSAsync("stroke-width", "4px");
+            Assert.True(await page.EvaluateAsync<bool>(
+                "() => { const box = document.querySelector('#inspector').getBoundingClientRect(); return [...document.querySelectorAll('#inspector input, #inspector select')].every(control => { const rect = control.getBoundingClientRect(); return !rect.width || rect.right <= box.right + 1; }); }"));
+            await page.ScreenshotAsync(new PageScreenshotOptions { Path = Path.Combine(scenario.ArtifactDirectory, "hosted-call-activity.png") });
+
+            await page.Locator("#save-workflow-version").ClickAsync();
+            await Assertions.Expect(page.Locator("#editor-notice")).ToContainTextAsync("Saved unpublished version 2");
+            var savedId = long.Parse(Regex.Match(page.Url, @"/workflows/(\d+)/edit").Groups[1].Value);
+            var saved = await stack.SetupClient.GetWorkflowAsync(savedId);
+            var call = saved.Definition.FlowNodes.Single(node => node.Id == 2);
+            Assert.Equal("not-published-yet", call.CallActivity!.WorkflowKey);
+            Assert.False(saved.IsPublished);
+
+            // The smoke stack runs without a Worker, so its closed gate refuses the call.
+            var workflows = await scenario.OpenUiAsync("workflows");
+            await workflows.Locator(".accordion-button", new PageLocatorOptions { HasText = key }).ClickAsync();
+            await workflows.Locator("tr", new PageLocatorOptions { HasText = "v2" })
+                .GetByRole(AriaRole.Button, new LocatorGetByRoleOptions { Name = "Publish", Exact = true }).ClickAsync();
+            await Assertions.Expect(workflows.Locator(".alert-danger")).ToContainTextAsync("PublicationEnabled is false");
+            Assert.False((await stack.SetupClient.GetWorkflowAsync(savedId)).IsPublished);
+        });
+    }
+
     private static Task ReadyAsync(IPage page) => page.WaitForSelectorAsync("[data-editor-ready='true']");
 
     private static async Task ImportAsync(IPage page, string path)

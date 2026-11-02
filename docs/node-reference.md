@@ -2,7 +2,7 @@
 
 [Documentation home](index.md) · [BPMN behavior](bpmn-support.md) · [Developer guide](developer-guide.md) · [Example catalog](../examples/README.md)
 
-Use this reference when choosing a task, event, or gateway and authoring its Flowbit JSON properties. It covers all **21 supported node types**, their shared and nested configuration, and the sequence flows that supply actions and routing. For execution semantics across a whole process, read [BPMN support](bpmn-support.md); for HTTP requests, read the [API reference](api-guide.md).
+Use this reference when choosing a task, event, or gateway and authoring its Flowbit JSON properties. It covers all **22 supported node types**, their shared and nested configuration, and the sequence flows that supply actions and routing. For execution semantics across a whole process, read [BPMN support](bpmn-support.md); for HTTP requests, read the [API reference](api-guide.md).
 
 The tables describe current authoring contracts and effective defaults. **Required** means needed for that configuration to work and pass validation; **conditional** means required only in the stated situation. Omit optional properties that do not apply to the selected type. The model uses one shared node class: a property existing on that class does not make it meaningful on every node. Some irrelevant legacy fields are cleared during normalization, while explicitly invalid combinations are rejected. Do not rely on normalization to repair newly authored definitions.
 
@@ -36,6 +36,7 @@ JSON blocks below are **fragments**, not standalone workflows, unless stated oth
 | Task | [userTask](#usertask) | Human work, including parallel or sequential multi-instance work. |
 | Task | [serviceTask](#servicetask) | Outbound REST request and typed response mappings. |
 | Task | [scriptTask](#scripttask) | NCalc assignments or sandboxed JavaScript. |
+| Task | [callActivity](#callactivity) | Start a child instance of another workflow family and wait for it. |
 | Start | [startEvent](#startevent) | Authenticated user starts with roles and inputs. |
 | Start | [messageStartEvent](#messagestartevent) | Machine-authenticated inbound message starts. |
 | Start | [timerStartEvent](#timerstartevent) | Scheduled instance creation. |
@@ -54,7 +55,7 @@ JSON blocks below are **fragments**, not standalone workflows, unless stated oth
 | Gateway | [inclusiveGateway](#inclusivegateway) | Start matching branches or merge using reachability. |
 | Gateway | [complexGateway](#complexgateway) | Stateful activation and reset conditions. |
 
-Timers and conditional `durableAsync` delivery require a running Worker. Task async flags also require a Worker. The [BPMN catalog](bpmn-support.md#supported-node-types) gives the prerequisites for each type; [deployment](deployment.md#worker-operation) explains setup.
+Timers, conditional `durableAsync` delivery, call activities, and call-only starts require a running Worker. Task async flags also require a Worker. The [BPMN catalog](bpmn-support.md#supported-node-types) gives the prerequisites for each type; [deployment](deployment.md#worker-operation) explains setup.
 
 ## Common node properties
 
@@ -385,6 +386,68 @@ Scripts have no CLR, filesystem, or network access. `eval`/string compilation is
 
 Declare `normalizedOwner` as a process string and provide `requestOwner` in the current context. See [script examples](../examples/scripts/README.md) for NCalc helpers, JavaScript type conversions, flow evidence, and caught errors.
 
+### callActivity
+
+Starts a child instance of another workflow family and rests until that child finishes. The child is an ordinary instance with its own variables, history, tasks, version, and operations. Inputs are copies taken when the token reaches the call, and results are copies taken when the child ends; nothing else is shared, and later changes on either side do not affect those copies.
+
+**Topology:** at least one incoming flow; exactly one unconditional outgoing flow without submitted variables, action roles, or gateway flags. **Worker:** always required, even when both workflows are otherwise synchronous, because a Worker creates the child and delivers its result. Durability is built in, so `asyncBefore`, `asyncAfter`, `job`, and `multiInstance` are invalid on a call.
+
+| Property | Type | Required / default | Meaning and constraints |
+| --- | --- | --- | --- |
+| `type` | string | Set to `"callActivity"` | Resting call of another workflow family. |
+| `callActivity.workflowKey` | string | Required | Stable key of the family to call, written exactly. At most 300 Unicode scalar values and no surrounding whitespace. It cannot be this definition's own `id`, and `${...}` is not replaced. |
+| `callActivity.versionBinding` | string | Optional; omitted | Only `publishedDefault` is accepted, and the editor omits it. A resolved version belongs to a visit, so it is never saved in the workflow. |
+| `callActivity.inputMappings` | mapping array | Optional; `[]` | At most 100. Copies this workflow's variables into declared inputs of the target's default plain start. `null` is invalid; omit the property instead. |
+| `callActivity.outputMappings` | mapping array | Optional; `[]` | At most 100. Copies child variables into this workflow's declared process variables after the child completes. `null` is invalid; omit the property instead. |
+
+Each mapping copies one whole variable, so it has no path, expression, default, or validation of its own:
+
+| Property | Type | Required / default | Meaning and constraints |
+| --- | --- | --- | --- |
+| `sourceVariable` | string | Required | Variable stored on the source instance: a process variable, entry variable, user-task flow variable, or REST or message output target. It must be declared or produced by the source workflow, and cannot be a shared alias or use a reserved prefix (`sys.`, `config.`, `setting.`, `mi.`, `gateway.`). Saved in its declared spelling. |
+| `variable` | string | Required | Destination: a declared input of the target's start, or an instance-scoped process variable of this workflow. Unique within its list ignoring case. Shared aliases, reserved prefixes, and the target start's idempotency variable are rejected. |
+| `dataType` | string | Required | `string`, `number`, `boolean`, `date`, `datetime`, or `json`. It must agree with the destination and with a declaration of the source; nothing is converted. |
+| `isArray` | Boolean | Optional; `false` | Whether the value is an array. |
+| `required` | Boolean | Optional; `false` | When `true`, a missing source or JSON null fails the call. When `false`, a missing source omits that input or leaves that output target unchanged, and a present null is passed on. It never weakens a child's required input. |
+
+```json
+{
+  "id": 12,
+  "name": "Manager approval",
+  "type": "callActivity",
+  "callActivity": {
+    "workflowKey": "manager-approval",
+    "inputMappings": [
+      { "sourceVariable": "requestedAmount", "variable": "amount", "dataType": "number", "required": true }
+    ],
+    "outputMappings": [
+      { "sourceVariable": "approved", "variable": "managerApproved", "dataType": "boolean", "required": true }
+    ]
+  }
+}
+```
+
+**Target contract.** A call always starts the target family's default plain start, the `startEvent` selected by `initialEventId`. That start must have no `roles` and no `idempotency`, every required input needs a mapping with `required: true`, and an unmapped optional input uses its default. A draft can be saved before its target exists; publishing or making a version the default checks the target's current published default, and creating each child checks again. See [what happens when a target changes](developer-guide.md#call-another-workflow).
+
+**Version.** The Worker selects the family's published default when it creates the child, and the visit keeps that version. A child that already exists keeps its version when the default changes. A default that no longer fits fails that visit; it never selects another version or drops a mapping.
+
+**Values.** Input and output snapshots are each limited to 1 MiB. The child's start validation runs over the complete input overlay, and this workflow's process-variable validation runs over the complete output overlay. Outputs are all written or none are, and they cannot include the attached boundary's `errorVariable`.
+
+**Identity.** The child starts as the fixed system actor `callActivity`, with no roles, claims, or delegation, and this workflow continues as the same actor after delivery. In the child, `sys.user` is therefore `callActivity`, so an `assignee` expression or `${sys.user}` default that relies on the starter produces a value no real user owns. Pass a requester or approver as an ordinary mapped input instead. The child's own tasks keep their roles, assignment, and action checks.
+
+**Boundaries and failures.** A call may have one catch-all [errorBoundaryEvent](#errorboundaryevent). Timer and conditional boundaries and `errorMatch` are invalid on a call. The boundary's `errorVariable` receives `code: description`.
+
+| What happened | With a boundary | Without a boundary |
+| --- | --- | --- |
+| The child faulted (`call_child_faulted`) or was cancelled on its own (`call_child_cancelled`) | Takes the boundary. | This workflow faults at the call node. |
+| The call could not start: `call_target_unavailable`, `call_target_incompatible`, `call_start_failed`, `call_input_invalid`, `call_business_key_conflict`, `call_depth_exceeded`, `call_capacity_exceeded` | Takes the boundary. | Opens a retryable incident; this workflow keeps waiting. No child exists. |
+| The result is invalid (`call_output_invalid`) | Takes the boundary. | Opens a retryable incident; this workflow keeps waiting. The child stays completed. |
+| A job inside the child has an incident | The call keeps waiting: this is not a fault. | The call keeps waiting: this is not a fault. |
+
+A `terminateEndEvent` in the child is a successful completion of that child only. Calls may appear in loops, in parallel branches, and inside other calls. Each visit gets its own child, each call entry counts against `Workflow.Async.MaxConsecutiveAutomaticActivations`, and nesting is limited by [`WorkflowCallActivities`](deployment.md#configuration). External effects a child has already performed are not undone when a call is cancelled.
+
+See the [call activity examples](../examples/call-activities/README.md).
+
 ## Events
 
 Every event also has the [common node properties](#common-node-properties). Set `type` to the exact name in its heading. Event properties listed here add to those common properties; task ownership, assignment, multi-instance configuration, `asyncBefore`, `asyncAfter`, and node `job` policies do not apply to events. Timers and durable conditionals use Worker jobs through their own event contracts.
@@ -403,6 +466,9 @@ A manual entry point. An authorized user starts it through `POST /api/instances`
 | `variables` | [input variable array](#variables-and-inputs) | Optional; `[]` | Inputs accepted from the start request. Required inputs must be supplied; optional defaults are applied. These are node-local input declarations, not shared-variable bindings. |
 | `businessKey` | [business-key object](#business-key-configuration) | Optional; absent | Domain identity and uniqueness across the workflow family. If any manual/message entry defines it, all manual/message entries must define it. |
 | `idempotency` | [start-idempotency object](#start-idempotency-configuration) | Optional; absent | Reserves a header-sourced transport retry key and writes its implicit string variable. |
+| `callOnly` | Boolean | Optional; `false` | Only a [call activity](#callactivity) can start from this event: public start routes refuse it and the start page hides it. Valid only on the start selected by `initialEventId`, with no `roles` and no `idempotency`. It is omitted on export when false. It does not limit which workflows can call this one. |
+
+Changing `initialEventId` while the previous start keeps `callOnly: true` is invalid; correct the old start's flag explicitly. Use the flag for a fragment that relies on checks made by its parent, such as a payment or KYC step, because an unrestricted start is otherwise open to every authenticated user. A definition with `callOnly` follows the same publication gate as other durable work.
 
 ```json
 {
@@ -561,13 +627,13 @@ Declare persisted instance variable `approved`. Timer/conditional boundaries can
 
 ### errorBoundaryEvent
 
-Catches a failure of its attached service or script task and routes through an error path. The failed host visit is recorded as faulted and the boundary path continues instead of the normal host continuation. It handles host failures rather than filtering authored `errorEndEvent` codes.
+Catches a failure of its attached service task, script task, or [call activity](#callactivity) and routes through an error path. The failed host visit is recorded as faulted and the boundary path continues instead of the normal host continuation. It handles host failures rather than filtering authored `errorEndEvent` codes.
 
 **Topology:** no incoming flows; exactly one unconditional outgoing flow. **Worker:** follows the host's execution mode.
 
 | Property | Type | Required / default | Meaning and constraints |
 | --- | --- | --- | --- |
-| `attachedToRef` | integer | Required | ID of an existing `serviceTask` or `scriptTask`. A REST service task may have up to eight error boundaries, including at most one catch-all. A script task has at most one, which is always a catch-all. |
+| `attachedToRef` | integer | Required | ID of an existing `serviceTask`, `scriptTask`, or `callActivity`. A call has one catch-all. A REST service task may have up to eight error boundaries, including at most one catch-all. A script task has at most one, which is always a catch-all. |
 | `errorVariable` | string | Optional; absent | Captures the failure reason. Must be a nonblank name of at most 300 Unicode scalar values when configured, without `sys.`, `config.`, `setting.`, or `mi.` prefix. It can be an implicit runtime output; if a same-name process variable exists, it must be scalar `string`. It must not collide case-insensitively with the host service's status/output targets. Several boundaries on one host may share a variable; only the selected boundary writes it. |
 | `errorMatch` | object | Optional; absent | REST service host only. The HTTP statuses this boundary catches. Absent or `null` means catch-all. An empty matcher is invalid; it never becomes a catch-all. |
 | `errorMatch.httpStatusCodes` | integer array | Optional | Exact statuses from `100` through `599`. `null` means omitted. |
@@ -915,7 +981,7 @@ Conditions support NCalc built-ins plus the pure string helpers `Length`, `Len`,
 
 ## Boundary host rules
 
-Timer/conditional boundaries attach to a normal or multi-instance `userTask`, an `intermediateMessageCatchEvent`, an `intermediateTimerCatchEvent`, or a `task`/`serviceTask`/`scriptTask` with `asyncBefore: true`. A conditional catch, gateway, start, end, or another boundary is not an eligible host. A host may have at most **eight timer and conditional boundaries combined**, plus its separate one-error-boundary allowance when it is a service/script task.
+A `callActivity` hosts only one catch-all `errorBoundaryEvent`; timer and conditional boundaries cannot attach to it. Timer/conditional boundaries attach to a normal or multi-instance `userTask`, an `intermediateMessageCatchEvent`, an `intermediateTimerCatchEvent`, or a `task`/`serviceTask`/`scriptTask` with `asyncBefore: true`. A conditional catch, gateway, start, end, or another boundary is not an eligible host. A host may have at most **eight timer and conditional boundaries combined**, plus its separate one-error-boundary allowance when it is a service/script task.
 
 An interrupting boundary cancels the host's open work, waits, attached subscriptions, and durable jobs before continuing on the boundary route. A non-interrupting boundary creates sibling work and retains the host. The engine fences cancellation against late jobs/results. It cannot undo an external REST side effect that already occurred. See [boundary semantics](bpmn-support.md#conditional-boundaries) and [Worker operations](deployment.md).
 

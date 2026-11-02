@@ -116,6 +116,13 @@ public static class WorkflowDefinitionEndpoints
             .Produces(StatusCodes.Status403Forbidden)
             .Produces(StatusCodes.Status404NotFound);
 
+        group.MapGet("/{workflowKey}/callers", GetWorkflowCallers)
+            .Produces<CallersPreviewDto>(StatusCodes.Status200OK)
+            .Produces(StatusCodes.Status400BadRequest)
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status403Forbidden)
+            .Produces(StatusCodes.Status404NotFound);
+
         group.MapPost("/{id:long}/set-default", SetDefaultWorkflow)
             .Produces(StatusCodes.Status204NoContent)
             .Produces(StatusCodes.Status400BadRequest)
@@ -226,6 +233,31 @@ public static class WorkflowDefinitionEndpoints
             request.Publish,
             cancellationToken);
         return created is null ? Results.NotFound() : Results.Ok(created);
+    }
+
+    /// <summary>
+    /// Lists the published versions that call a family and whether each passes the contract
+    /// check. Omit both selectors for the current default; candidateId evaluates a published
+    /// version in the family, and deletingId evaluates deleting the current default. The
+    /// preview is advisory: the set-default or delete command rechecks its own rules.
+    /// </summary>
+    public static async Task<IResult> GetWorkflowCallers(
+        string workflowKey,
+        IWorkflowDefinitionService service,
+        CancellationToken cancellationToken,
+        long? candidateId = null,
+        long? deletingId = null,
+        int page = 1,
+        int pageSize = 50)
+    {
+        var preview = await service.GetCallersAsync(
+            workflowKey,
+            candidateId,
+            deletingId,
+            page,
+            pageSize,
+            cancellationToken);
+        return preview is null ? Results.NotFound() : Results.Ok(preview);
     }
 
     /// <summary>

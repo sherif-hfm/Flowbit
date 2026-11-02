@@ -16,10 +16,155 @@ internal sealed class WorkflowInstanceProjectionService(
     IWorkflowRuntimeRepository runtime,
     IWorkflowDefinitionRepository definitions,
     IInstanceVariableUpdateRepository? variableUpdates = null,
-    IWorkflowVariableStore? workflowVariables = null) : IWorkflowInstanceProjectionService
+    IWorkflowVariableStore? workflowVariables = null,
+    ICallActivityRepository? callActivities = null) : IWorkflowInstanceProjectionService
 {
     private static readonly JsonSerializerOptions InstanceVariableUpdateJsonOptions =
         new(JsonSerializerDefaults.Web);
+
+    public async Task<PagedResult<CallActivityExecutionDto>?> ListCallsAsync(
+        long instanceId,
+        int page,
+        int pageSize,
+        CancellationToken cancellationToken)
+    {
+        if (await runtime.GetInstanceStatusAsync(instanceId, cancellationToken) is null)
+        {
+            return null;
+        }
+
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 200);
+        if (callActivities is null)
+        {
+            return new PagedResult<CallActivityExecutionDto>([], page, pageSize, 0);
+        }
+
+        var rows = await callActivities.ListOutgoingAsync(instanceId, page, pageSize, cancellationToken);
+        var parentDefinitions = await definitions.GetManyAsync(
+            rows.Items.Select(row => row.Invocation.ParentDefinitionId).Distinct().ToArray(),
+            cancellationToken);
+        return new PagedResult<CallActivityExecutionDto>(
+            rows.Items.Select(row => new CallActivityExecutionDto(
+                    row.Invocation.Id,
+                    row.Invocation.ParentNodeId,
+                    parentDefinitions.GetValueOrDefault(row.Invocation.ParentDefinitionId)?.Definition.FlowNodes
+                        .FirstOrDefault(node => node.Id == row.Invocation.ParentNodeId)?.Name,
+                    row.Invocation.ParentTokenId,
+                    row.Invocation.ActivationId,
+                    ProjectCallState(row.Invocation.State, row.HasResult),
+                    row.ResultOutcome,
+                    row.Invocation.CapacityReserved,
+                    row.Invocation.ChildInstanceId,
+                    row.ChildStatus,
+                    row.OpenIncidentCount,
+                    row.Invocation.TargetWorkflowKey,
+                    row.Invocation.ChildDefinitionId,
+                    row.ChildDefinitionVersion,
+                    row.Invocation.ChildStartEventId,
+                    row.Invocation.CreatedAt,
+                    row.Invocation.AdmittedAt,
+                    row.Invocation.StartedAt,
+                    row.Invocation.SettledAt,
+                    row.Invocation.FailureCode,
+                    row.Invocation.FailureDescription,
+                    row.Invocation.ChildFaultCode))
+                .ToList(),
+            rows.Page,
+            rows.PageSize,
+            rows.TotalCount);
+    }
+
+    // A child's transaction never writes its invocation, so a result row is what says
+    // the child has finished while the invocation still waits for delivery.
+    private static string ProjectCallState(string state, bool hasResult) =>
+        state == CallInvocationStates.Running && hasResult
+            ? CallInvocationStates.ResultReady
+            : state;
+
+    private async Task<ParentCallSummaryDto?> BuildParentCallAsync(
+        WorkflowInstanceRecord instance,
+        CancellationToken cancellationToken)
+    {
+        if (callActivities is null || instance.CallRootInstanceId is not long rootInstanceId)
+        {
+            return null;
+        }
+
+        var invocation = await callActivities.GetByChildAsync(instance.Id, cancellationToken);
+        if (invocation is null)
+        {
+            return null;
+        }
+
+        var hasResult = (await callActivities.ListChildrenWithResultAsync([instance.Id], cancellationToken)).Count > 0;
+        var parentDefinition = await definitions.GetAsync(invocation.ParentDefinitionId, cancellationToken);
+        return new ParentCallSummaryDto(
+            invocation.Id,
+            ProjectCallState(invocation.State, hasResult),
+            invocation.ParentInstanceId,
+            invocation.ParentNodeId,
+            parentDefinition?.Definition.FlowNodes
+                .FirstOrDefault(node => node.Id == invocation.ParentNodeId)?.Name,
+            rootInstanceId,
+            instance.CallDepth);
+    }
+
+    // The definition and the history already in hand say whether this instance has made
+    // calls, so an instance outside a call tree pays no query. History covers a version
+    // switch away from the call node; retention can remove it, and the calls route remains.
+    private async Task<CallCountsDto?> BuildCallCountsAsync(
+        long instanceId,
+        WorkflowModel definition,
+        IReadOnlyList<InstanceHistoryRecord> history,
+        CancellationToken cancellationToken)
+    {
+        if (callActivities is null
+            || (!definition.FlowNodes.Any(node => BpmnFlowNodeTypes.IsCallActivity(node.Type))
+                && !history.Any(item => item.Note == InstanceHistoryNotes.CallQueued)))
+        {
+            return null;
+        }
+
+        var counts = await callActivities.GetOutgoingCountsAsync(instanceId, cancellationToken);
+        return counts.Total == 0 ? null : new CallCountsDto(counts.Total, counts.Unsettled);
+    }
+
+    private async Task<IReadOnlyDictionary<long, ExecutionPositionCallDto>> LoadWaitingCallsAsync(
+        long instanceId,
+        IReadOnlyList<ExecutionTokenRecord> tokens,
+        CancellationToken cancellationToken)
+    {
+        var waitingTokenIds = tokens
+            .Where(token => token.Status == ExecutionTokenRecordStatuses.Active
+                && BpmnFlowNodeTypes.IsCallActivity(token.NodeType))
+            .Select(token => token.Id)
+            .ToArray();
+        if (callActivities is null || waitingTokenIds.Length == 0)
+        {
+            return new Dictionary<long, ExecutionPositionCallDto>();
+        }
+
+        var invocations = await callActivities.GetUnsettledByTokensAsync(
+            instanceId,
+            waitingTokenIds,
+            cancellationToken);
+        var withResult = await callActivities.ListChildrenWithResultAsync(
+            invocations.Values
+                .Where(invocation => invocation.ChildInstanceId is not null)
+                .Select(invocation => invocation.ChildInstanceId!.Value)
+                .ToArray(),
+            cancellationToken);
+        return invocations.ToDictionary(
+            pair => pair.Key,
+            pair => new ExecutionPositionCallDto(
+                pair.Value.Id,
+                ProjectCallState(
+                    pair.Value.State,
+                    pair.Value.ChildInstanceId is long childId && withResult.Contains(childId)),
+                pair.Value.CapacityReserved,
+                pair.Value.ChildInstanceId));
+    }
 
     public async Task<InstanceDetailDto?> GetDetailAsync(long instanceId, CancellationToken cancellationToken)
     {
@@ -115,6 +260,8 @@ internal sealed class WorkflowInstanceProjectionService(
             VersionChanges = versionChanges,
             VariableUpdates = variableUpdateAudits,
             SharedVariables = sharedVariableMetadata,
+            ParentCall = await BuildParentCallAsync(instance, cancellationToken),
+            Calls = await BuildCallCountsAsync(instanceId, workflow.Definition, history, cancellationToken),
             FinishedAt = instance.FinishedAt,
             HistoryPrunedAt = instance.HistoryPrunedAt,
             LastReactivationTokenId = instance.LastReactivationTokenId
@@ -159,6 +306,7 @@ internal sealed class WorkflowInstanceProjectionService(
                     .ThenByDescending(execution => execution.Id)
                     .First());
 
+        var callsByToken = await LoadWaitingCallsAsync(instance.Id, tokens, cancellationToken);
         var positions = tokens
             .Where(token => token.Status != ExecutionTokenRecordStatuses.Merged)
             .OrderBy(token => token.Id)
@@ -180,7 +328,12 @@ internal sealed class WorkflowInstanceProjectionService(
                     token.ActivationId == Guid.Empty ? null : token.ActivationId,
                     token.WaitState,
                     token.WaitingJobId,
-                    token.WaitingTimerSubscriptionId);
+                    token.WaitingTimerSubscriptionId)
+                {
+                    Call = token.Status == ExecutionTokenRecordStatuses.Active
+                        ? callsByToken.GetValueOrDefault(token.Id)
+                        : null
+                };
             })
             .ToList();
 

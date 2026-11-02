@@ -36,6 +36,7 @@ internal sealed record WorkflowAiStatePayload
     public string? TurnStartWorkflowHash { get; init; }
     public IReadOnlyList<string> SentSources { get; init; } = [];
     public string? SharedVariablesHash { get; init; }
+    public string? CallTargetsHash { get; init; }
 }
 
 /// <summary>Encodes conversation state for the panel and checks it when it comes back. The returned state is untrusted input.</summary>

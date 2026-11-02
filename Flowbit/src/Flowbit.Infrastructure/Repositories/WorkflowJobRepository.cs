@@ -115,6 +115,7 @@ public sealed class WorkflowJobRepository(
             TimerSubscriptionId = create.TimerSubscriptionId,
             ConditionalBoundarySubscriptionId = create.ConditionalBoundarySubscriptionId,
             ConditionalBoundaryOccurrence = create.ConditionalBoundaryOccurrence,
+            CallInvocationId = create.CallInvocationId,
             ActivationId = create.ActivationId,
             AutomaticActivationCount = create.AutomaticActivationCount,
             NodeId = create.NodeId,
@@ -1337,11 +1338,15 @@ public sealed class WorkflowJobRepository(
             return Task.FromResult(0);
         }
 
+        // A call message outlives its sender's token: it is the only thing that can
+        // still deliver the result or stop the descendants.
         return CancelAsync(
             dbContext.WorkflowJobs.Where(job =>
                 job.InstanceId == instanceId
                 && job.TokenId != null
                 && tokenIds.Contains(job.TokenId.Value)
+                && job.Kind != WorkflowJobKinds.CallResume
+                && job.Kind != WorkflowJobKinds.CallCancel
                 && (exceptJobId == null || job.Id != exceptJobId.Value)),
             reason,
             cancellationToken);
@@ -1957,12 +1962,15 @@ public sealed class WorkflowJobRepository(
             .SingleOrDefaultAsync(cancellationToken)
             ?? throw new WorkflowConflictException(
                 "The incident's durable job no longer exists.");
+        // A call message's owner may already be terminal: a child's callResume and an
+        // abandoned parent's callCancel still have work to finish.
+        var ownerMayBeTerminal = job.Kind is WorkflowJobKinds.CallResume or WorkflowJobKinds.CallCancel;
         if (lockedInstance is not null
-            && (lockedInstance.Status != WorkflowInstanceStatuses.Running
+            && ((lockedInstance.Status != WorkflowInstanceStatuses.Running && !ownerMayBeTerminal)
                 || job.InstanceId != lockedInstance.Id)
             || lockedToken is not null
             && (lockedToken.InstanceId != job.InstanceId
-                || lockedToken.Status != ExecutionTokenStatuses.Active
+                || (lockedToken.Status != ExecutionTokenStatuses.Active && !ownerMayBeTerminal)
                 || lockedToken.ActivationId != job.ActivationId
                 || incidentLookup.ActivationId != job.ActivationId))
         {
@@ -2725,6 +2733,7 @@ public sealed class WorkflowJobRepository(
             TimerSubscriptionId = create.TimerSubscriptionId,
             ConditionalBoundarySubscriptionId = create.ConditionalBoundarySubscriptionId,
             ConditionalBoundaryOccurrence = create.ConditionalBoundaryOccurrence,
+            CallInvocationId = create.CallInvocationId,
             ActivationId = create.ActivationId,
             AutomaticActivationCount = create.AutomaticActivationCount,
             NodeId = create.NodeId,
@@ -2791,7 +2800,8 @@ public sealed class WorkflowJobRepository(
             entity.CompletedAt,
             entity.AutomaticActivationCount,
             entity.ConditionalBoundarySubscriptionId,
-            entity.ConditionalBoundaryOccurrence);
+            entity.ConditionalBoundaryOccurrence,
+            entity.CallInvocationId);
 
     private static WorkflowJobSnapshotRecord MapSnapshot(WorkflowJobSnapshotEntity entity) =>
         new(

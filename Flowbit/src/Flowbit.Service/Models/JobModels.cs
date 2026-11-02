@@ -36,6 +36,21 @@ public static class WorkflowJobKinds
     public const string TimerStart = "timerStart";
     public const string TimerBoundary = "timerBoundary";
     public const string ConditionalWake = "conditionalWake";
+
+    /// <summary>Creates a call activity's child. It is owned by the parent's waiting token.</summary>
+    public const string CallStart = "callStart";
+
+    /// <summary>
+    /// Delivers a child's result to its parent. It is a message sent from the child, so
+    /// it belongs to the child's rows, and only processing it locks the parent.
+    /// </summary>
+    public const string CallResume = "callResume";
+
+    /// <summary>
+    /// Cancels the child of an abandoned call. It is a message sent from the parent, so
+    /// it belongs to the parent's rows, and only processing it locks the child.
+    /// </summary>
+    public const string CallCancel = "callCancel";
     public const string AdministrativeBatchPrepare = "administrativeBatchPrepare";
     public const string AdministrativeBatchExecute = "administrativeBatchExecute";
     public const string InstanceVersionChangeBatchPrepare = "instanceVersionChangeBatchPrepare";
@@ -116,6 +131,7 @@ public sealed record WorkflowJobCreateRecord
     public long? TimerSubscriptionId { get; init; }
     public long? ConditionalBoundarySubscriptionId { get; init; }
     public long? ConditionalBoundaryOccurrence { get; init; }
+    public long? CallInvocationId { get; init; }
     public required Guid ActivationId { get; init; }
     public int AutomaticActivationCount { get; init; }
     public required int NodeId { get; init; }
@@ -178,7 +194,8 @@ public sealed record WorkflowJobRecord(
     DateTimeOffset? CompletedAt,
     int AutomaticActivationCount = 0,
     long? ConditionalBoundarySubscriptionId = null,
-    long? ConditionalBoundaryOccurrence = null);
+    long? ConditionalBoundaryOccurrence = null,
+    long? CallInvocationId = null);
 
 public sealed record WorkflowJobLeaseRequest(
     string WorkerId,

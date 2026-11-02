@@ -7,6 +7,8 @@ using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Web;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using CallActivities = FlowbitUi::Flowbit.Ui.Components.Shared.InstanceDetails.InstanceCallActivities;
+using CallersDialog = FlowbitUi::Flowbit.Ui.Components.Shared.WorkflowCallersDialog;
 using GatewayState = FlowbitUi::Flowbit.Ui.Components.Shared.InstanceDetails.InstanceGatewayState;
 using HistorySection = FlowbitUi::Flowbit.Ui.Components.Shared.InstanceDetails.InstanceHistory;
 using MultiInstanceResults = FlowbitUi::Flowbit.Ui.Components.Shared.InstanceDetails.InstanceMultiInstanceResults;
@@ -20,6 +22,199 @@ namespace Flowbit.Tests;
 
 public sealed class InstanceDetailDisplayComponentTests
 {
+    private static CallActivityExecutionDto Call(
+        string state,
+        bool reserved = true,
+        long? childId = null,
+        string? childStatus = null,
+        long incidents = 0,
+        int? version = null,
+        string? failureCode = null,
+        string? failureDescription = null,
+        string? childFaultCode = null,
+        long invocationId = 7)
+    {
+        var now = DateTimeOffset.Parse("2026-11-01T12:00:00Z");
+        return new CallActivityExecutionDto(
+            invocationId, 2, "Manager approval", 40, Guid.NewGuid(), state, null, reserved, childId, childStatus, incidents,
+            "manager-approval", version is null ? null : 90, version, version is null ? null : 1,
+            now, reserved ? now : null, childId is null ? null : now, null, failureCode, failureDescription, childFaultCode);
+    }
+
+    public static TheoryData<string, bool, long?, string?, long, string?, string?, string, string> CallStates => new()
+    {
+        { "queued", false, null, null, 1, "call_capacity_exceeded", null, "Blocked", "Blocked before admission" },
+        { "queued", true, null, null, 0, null, null, "Queued", "waiting for a Worker to start the child" },
+        { "queued", true, null, null, 1, "call_target_unavailable", null, "Queued", "the child could not be started" },
+        { "running", true, 55L, "running", 0, null, null, "Running", "The child is running." },
+        { "running", true, 55L, "running", 2, null, null, "Running", "blocked by 2 open incidents. This is not a fault" },
+        { "resultReady", true, 55L, "completed", 0, null, null, "Result ready", "a Worker is delivering its result" },
+        { "resultReady", true, 55L, "completed", 1, null, null, "Result ready", "could not be delivered" },
+        { "completed", false, 55L, "completed", 0, null, null, "Completed", "its results were delivered" },
+        { "failed", false, 55L, "faulted", 0, "call_child_faulted", "child.rejected", "Failed", "faulted with code child.rejected" },
+        { "failed", false, 55L, "cancelled", 0, "call_child_cancelled", null, "Failed", "cancelled on its own" },
+        { "cancelled", false, null, null, 0, null, null, "Cancelled", "Cancelled before a child was created." },
+        { "cancelled", false, 55L, "running", 0, null, null, "Cancelled", "still stopping the child" },
+        { "cancelled", false, 55L, "completed", 0, null, null, "Cancelled", "The child ended as completed." }
+    };
+
+    [Theory]
+    [MemberData(nameof(CallStates))]
+    public async Task CallActivitiesExplainEachStateWithoutExposingValues(
+        string state,
+        bool reserved,
+        long? childId,
+        string? childStatus,
+        long incidents,
+        string? failureCode,
+        string? childFaultCode,
+        string label,
+        string explanation)
+    {
+        var call = Call(
+            state,
+            reserved,
+            childId,
+            childStatus,
+            incidents,
+            childId is null ? null : 3,
+            failureCode,
+            failureCode is null ? null : "A safe description.",
+            childFaultCode);
+
+        var html = await RenderAsync<CallActivities>(new()
+        {
+            [nameof(CallActivities.Counts)] = new CallCountsDto(1, 1),
+            [nameof(CallActivities.Calls)] = new PagedResult<CallActivityExecutionDto>([call], 1, 25, 1)
+        });
+
+        Assert.Contains("id=\"call-activities\"", html);
+        Assert.Contains(label, html);
+        Assert.Contains(explanation, html);
+        Assert.Contains("manager-approval", html);
+        Assert.Contains("Manager approval", html);
+        if (failureCode is not null)
+        {
+            Assert.Contains(failureCode, html);
+            Assert.Contains("A safe description.", html);
+        }
+
+        if (childId is long id)
+        {
+            Assert.Contains($"href=\"instances/{id}\"", html);
+            Assert.Contains("Version 3", html);
+        }
+        else
+        {
+            Assert.Contains("No child", html);
+        }
+    }
+
+    [Fact]
+    public async Task CallActivitiesLinkTheParentAndRootAndWarnWhileACancelCascadeIsInProgress()
+    {
+        var parent = new ParentCallSummaryDto(7, "cancelled", 10, 2, "Manager approval", 3, 2);
+
+        var html = await RenderAsync<CallActivities>(new()
+        {
+            [nameof(CallActivities.InstanceStatus)] = "running",
+            [nameof(CallActivities.ParentCall)] = parent
+        });
+
+        Assert.Contains("href=\"instances/10\"", html);
+        Assert.Contains("href=\"instances/3\"", html);
+        Assert.Contains("is being cancelled", html);
+
+        var finished = await RenderAsync<CallActivities>(new()
+        {
+            [nameof(CallActivities.InstanceStatus)] = "cancelled",
+            [nameof(CallActivities.ParentCall)] = parent
+        });
+        Assert.DoesNotContain("is being cancelled", finished);
+    }
+
+    [Fact]
+    public async Task CallActivitiesRenderNothingOutsideACallTreeAndPageOnlyWhenNeeded()
+    {
+        Assert.Equal(string.Empty, (await RenderAsync<CallActivities>(new())).Trim());
+
+        var repeated = Enumerable.Range(1, 2)
+            .Select(index => Call("completed", false, 50 + index, "completed", version: 3, invocationId: index))
+            .ToList();
+        var paged = await RenderAsync<CallActivities>(new()
+        {
+            [nameof(CallActivities.Counts)] = new CallCountsDto(30, 0),
+            [nameof(CallActivities.Calls)] = new PagedResult<CallActivityExecutionDto>(repeated, 2, 25, 30)
+        });
+        Assert.Contains("Page 2 of 2", paged);
+        Assert.Contains("href=\"instances/51\"", paged);
+        Assert.Contains("href=\"instances/52\"", paged);
+
+        var single = await RenderAsync<CallActivities>(new()
+        {
+            [nameof(CallActivities.Counts)] = new CallCountsDto(2, 0),
+            [nameof(CallActivities.Calls)] = new PagedResult<CallActivityExecutionDto>(repeated, 1, 25, 2)
+        });
+        Assert.DoesNotContain("pagination-bar", single);
+    }
+
+    private static CallersPreviewDto Preview(
+        string mode,
+        long? targetId,
+        int? targetVersion,
+        bool noDefault,
+        bool? deletionAllowed = null,
+        IReadOnlyList<string>? blockers = null,
+        params WorkflowCallerDto[] callers) =>
+        new(mode, targetId, targetVersion, noDefault, deletionAllowed, blockers ?? [],
+            new PagedResult<WorkflowCallerDto>(callers, 1, 25, callers.Length));
+
+    private static Dictionary<string, object?> DialogParameters(CallersPreviewDto? preview) => new()
+    {
+        [nameof(CallersDialog.WorkflowKey)] = "manager-approval",
+        [nameof(CallersDialog.Title)] = "Make version 4 the default?",
+        [nameof(CallersDialog.ConfirmLabel)] = "Set default",
+        [nameof(CallersDialog.Preview)] = preview,
+        [nameof(CallersDialog.Loading)] = preview is null
+    };
+
+    [Fact]
+    public async Task CallersDialogNamesIncompatibleCallersAndTheSnapshotCaveat()
+    {
+        var html = await RenderAsync<CallersDialog>(DialogParameters(Preview(
+            CallersPreviewModes.Candidate, 90, 4, false, null, null,
+            new WorkflowCallerDto(5, "purchase", "Purchase", 2, true, 12, "Approval", false, ["call_target_incompatible"], ["The input amount is missing."]),
+            new WorkflowCallerDto(6, "travel", "Travel", 1, true, 3, "Approval", true, [], []))));
+
+        Assert.Contains("role=\"dialog\"", html);
+        Assert.Contains("Version 4 would be the default", html);
+        Assert.Contains("Incompatible", html);
+        Assert.Contains("The input amount is missing.", html);
+        Assert.Contains("Compatible", html);
+        Assert.Contains("checks its own rules again", html);
+    }
+
+    [Fact]
+    public async Task CallersDialogShowsEmptyNoDefaultAndBlockedStates()
+    {
+        var empty = await RenderAsync<CallersDialog>(DialogParameters(Preview(CallersPreviewModes.Candidate, 90, 4, false)));
+        Assert.Contains("No published workflow calls this family.", empty);
+        Assert.Contains("checks its own rules again", empty);
+
+        var noDefault = await RenderAsync<CallersDialog>(DialogParameters(Preview(CallersPreviewModes.Deletion, null, null, true, true)));
+        Assert.Contains("No published default would remain", noDefault);
+        Assert.DoesNotContain("disabled", noDefault);
+
+        var blocked = await RenderAsync<CallersDialog>(DialogParameters(Preview(
+            CallersPreviewModes.Deletion, 90, 4, false, false, ["Runtime history references this version."])));
+        Assert.Contains("cannot be deleted", blocked);
+        Assert.Contains("Runtime history references this version.", blocked);
+        Assert.Contains("disabled", blocked);
+
+        var loading = await RenderAsync<CallersDialog>(DialogParameters(null));
+        Assert.Contains("Checking callers", loading);
+    }
+
     [Fact]
     public async Task GatewayStateRendersBothSectionsWithLabelsOrderAndReasons()
     {
@@ -415,6 +610,7 @@ public sealed class InstanceDetailDisplayComponentTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
+        services.AddSingleton<Microsoft.JSInterop.IJSRuntime, UnusedJsRuntime>();
         await using var provider = services.BuildServiceProvider();
         await using var renderer = new HtmlRenderer(provider, provider.GetRequiredService<ILoggerFactory>());
         return await renderer.Dispatcher.InvokeAsync(async () =>
@@ -423,5 +619,15 @@ public sealed class InstanceDetailDisplayComponentTests
                 ParameterView.FromDictionary(parameters));
             return component.ToHtmlString();
         });
+    }
+
+    // HtmlRenderer never runs after-render work, so a display component's script is never reached.
+    private sealed class UnusedJsRuntime : Microsoft.JSInterop.IJSRuntime
+    {
+        public ValueTask<TValue> InvokeAsync<TValue>(string identifier, object?[]? args) =>
+            throw new InvalidOperationException("Static rendering does not call JavaScript.");
+
+        public ValueTask<TValue> InvokeAsync<TValue>(string identifier, CancellationToken cancellationToken, object?[]? args) =>
+            throw new InvalidOperationException("Static rendering does not call JavaScript.");
     }
 }

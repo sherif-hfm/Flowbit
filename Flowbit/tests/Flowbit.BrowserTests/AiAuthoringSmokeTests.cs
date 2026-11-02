@@ -60,19 +60,30 @@ public sealed class AiAuthoringSmokeTests(BrowserStackFixture stack)
             const string key = BrowserStackFixture.FlashKey;
             const string catalogValue = "never-send-this-catalog-value";
             string? catalogKey = null;
+            string? callTargetKey = null;
             if (width == 1440)
             {
                 catalogKey = "ai-test-" + Guid.NewGuid().ToString("N");
                 await stack.SetupClient.CreateSharedVariableAsync(new(catalogKey, "string", false, false, true,
                     JsonSerializer.SerializeToElement(catalogValue)));
-                await page.Locator(".ai-catalog > summary").ClickAsync();
+                var catalogSummary = page.Locator(".ai-catalog > summary", new PageLocatorOptions { HasText = "shared-variable" });
+                await catalogSummary.ClickAsync();
                 await page.Locator("#ai-catalog-search").FillAsync(catalogKey);
                 await page.Locator("#ai-catalog-load").ClickAsync();
                 var selection = page.Locator(".ai-catalog-option input");
                 await Assertions.Expect(selection).ToHaveCountAsync(1);
                 await Assertions.Expect(selection).Not.ToBeCheckedAsync();
                 await selection.CheckAsync();
-                await page.Locator(".ai-catalog > summary").ClickAsync();
+                await catalogSummary.ClickAsync();
+
+                // A family this workflow may call: its declarations reach the model, never its values.
+                callTargetKey = (await RuntimeSupport.PublishAsync(stack, "runtime-lifecycle.json")).WorkflowKey;
+                var callTargetSummary = page.Locator(".ai-catalog > summary", new PageLocatorOptions { HasText = "call targets" });
+                await callTargetSummary.ClickAsync();
+                await page.Locator("#ai-call-targets-load").ClickAsync();
+                await page.Locator(".ai-catalog-option", new PageLocatorOptions { HasText = callTargetKey })
+                    .Locator("input").CheckAsync();
+                await callTargetSummary.ClickAsync();
                 var pdfPath = Path.Combine(scenario.ArtifactDirectory, "requirements.pdf");
                 await File.WriteAllBytesAsync(pdfPath, TextPdf());
                 await page.Locator(".ai-document > summary").ClickAsync();
@@ -104,6 +115,8 @@ public sealed class AiAuthoringSmokeTests(BrowserStackFixture stack)
                 Assert.StartsWith(request + "\n\n--- requirements.pdf, page 1 ---\nCorrected requirement: one Agent reviews each purchase request.", created[0].LastUserMessage);
                 Assert.Contains("\n\n--- Selected shared variables ---\n", created[0].LastUserMessage);
                 Assert.Contains(catalogKey!, created[0].LastUserMessage);
+                Assert.Contains("\n\n--- Selected call targets ---\n", created[0].LastUserMessage);
+                Assert.Contains(callTargetKey!, created[0].LastUserMessage);
             }
             else Assert.Equal(request, created[0].LastUserMessage);
             Assert.All(created, item => Assert.DoesNotContain(catalogValue, item.Body));

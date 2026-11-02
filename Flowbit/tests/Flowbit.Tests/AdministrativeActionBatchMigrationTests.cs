@@ -874,7 +874,9 @@ public sealed class AdministrativeActionBatchMigrationTests(PostgresApiFixture f
             ALTER TABLE flowbit.workflow_instances
                 ADD COLUMN "FinishedAt" timestamp with time zone NULL,
                 ADD COLUMN "HistoryPrunedAt" timestamp with time zone NULL,
-                ADD COLUMN "LastReactivationTokenId" bigint NULL;
+                ADD COLUMN "LastReactivationTokenId" bigint NULL,
+                ADD COLUMN "CallRootInstanceId" bigint NULL,
+                ADD COLUMN "CallDepth" integer NOT NULL DEFAULT 0;
             ALTER TABLE flowbit.node_executions
                 ADD COLUMN "TriggeredByClaimsJson" jsonb NULL,
                 ADD COLUMN "CompletedByClaimsJson" jsonb NULL;

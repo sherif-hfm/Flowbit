@@ -1,4 +1,3 @@
-@page "/instances/{InstanceId:long}"
 @implements IAsyncDisposable
 @using System.Text
 @using System.Text.Json
@@ -53,6 +52,10 @@ else
         </div>
         <div class="summary-grid">
             <div class="summary-item"><span>Execution positions</span><strong>@EffectivePositionCount</strong></div>
+            @if (instance.ParentCall is { } parentCall)
+            {
+                <div class="summary-item"><span>Called by</span><strong><a href="@($"instances/{parentCall.ParentInstanceId}")">Instance #@parentCall.ParentInstanceId</a></strong></div>
+            }
             @if (!string.IsNullOrWhiteSpace(instance.BusinessKey))
             {
                 <div class="summary-item"><span>Business key</span><strong>@instance.BusinessKey · @instance.BusinessKeyUniqueness</strong></div>
@@ -369,6 +372,7 @@ else
 
     <nav class="status-tabs" aria-label="Instance sections">
         <a class="status-tab active text-decoration-none" href="#actions" @onclick='() => ScrollToSectionAsync("actions")' @onclick:preventDefault>Actions</a>
+        @if (HasCallRelations) { <a class="status-tab text-decoration-none" href="#call-activities" @onclick='() => ScrollToSectionAsync("call-activities")' @onclick:preventDefault>Call activities</a> }
         @if (instance.GatewayExecutions.Count > 0) { <a class="status-tab text-decoration-none" href="#gateway-scopes" @onclick='() => ScrollToSectionAsync("gateway-scopes")' @onclick:preventDefault>Gateway scopes</a> }
         @if (instance.ComplexGatewayStates.Count > 0) { <a class="status-tab text-decoration-none" href="#complex-gateway-states" @onclick='() => ScrollToSectionAsync("complex-gateway-states")' @onclick:preventDefault>Complex states</a> }
         @if (HasMultiInstances || completedMultiInstanceItems.Count > 0) { <a class="status-tab text-decoration-none" href="#multi-instance-results" @onclick='() => ScrollToSectionAsync("multi-instance-results")' @onclick:preventDefault>Multi-instance results</a> }
@@ -378,6 +382,14 @@ else
         <a class="status-tab text-decoration-none" href="#variables" @onclick='() => ScrollToSectionAsync("variables")' @onclick:preventDefault>Variables</a>
         <a class="status-tab text-decoration-none" href="#history" @onclick='() => ScrollToSectionAsync("history")' @onclick:preventDefault>History</a>
     </nav>
+
+    <InstanceCallActivities InstanceStatus="@instance.Status"
+                            ParentCall="@instance.ParentCall"
+                            Counts="@instance.Calls"
+                            Calls="@calls"
+                            Loading="@callsLoading"
+                            Error="@callsError"
+                            OnPageChanged="OnCallsPageChangedAsync" />
 
     <InstanceGatewayState GatewayExecutions="@instance.GatewayExecutions"
                           ComplexGatewayStates="@instance.ComplexGatewayStates"
@@ -725,6 +737,13 @@ else
         }
     }
 
+    private bool HasCallRelations => instance is { ParentCall: not null } || instance?.Calls is { Total: > 0 };
+
+    // A child's result, or a cancelled parent's cascade, arrives through the Worker.
+    private bool IsWaitingForCall =>
+        instance?.Status == "running"
+        && (instance.Calls is { Unsettled: > 0 } || instance.ParentCall is { State: "cancelled" });
+
     private bool IsWaitingForMessage =>
         instance?.Status == "running"
         && (ExecutionPositions.Count > 0
@@ -885,6 +904,11 @@ else
     }
 
     private int administrativeRefreshVersion;
+    private const int CallsPageSize = 25;
+    private PagedResult<CallActivityExecutionDto>? calls;
+    private int callsPage = 1;
+    private bool callsLoading;
+    private string? callsError;
 
     private async Task LoadAsync()
     {
@@ -997,6 +1021,7 @@ else
             {
                 if (SoleActiveMultiInstance is null
                     && !IsWaitingForMessage
+                    && !IsWaitingForCall
                     && ActivePositions.Count <= 1)
                 {
                     continue;
@@ -1045,6 +1070,7 @@ else
         }
         await LoadAvailableActionsAsync(cancellationToken);
         await LoadDiagramNodeExecutionsAsync(cancellationToken);
+        await LoadCallsAsync(cancellationToken);
         await LoadVersionTargetsAsync(cancellationToken, forceVersionTargets);
         await LoadReactivationPreviewAsync(cancellationToken, forceReactivationPreview);
         administrativeRefreshVersion++;
@@ -1562,6 +1588,52 @@ else
     // Node-execution reads are role-scoped: the search returns only executions
     // the caller may open, so the diagram links only to those. Every status is
     // requested because an async-after wait follows a visit that already completed.
+    private async Task LoadCallsAsync(CancellationToken cancellationToken = default)
+    {
+        if (instance?.Calls is not { Total: > 0 })
+        {
+            calls = null;
+            callsError = null;
+            callsPage = 1;
+            return;
+        }
+
+        try
+        {
+            var page = await Api.GetInstanceCallsAsync(InstanceId, callsPage, CallsPageSize, cancellationToken);
+            // Retention can shorten the list while a reader is on a later page.
+            if (page.Items.Count == 0 && page.TotalCount > 0 && callsPage > 1)
+            {
+                callsPage = (int)Math.Ceiling(page.TotalCount / (double)CallsPageSize);
+                page = await Api.GetInstanceCallsAsync(InstanceId, callsPage, CallsPageSize, cancellationToken);
+            }
+
+            calls = page;
+            callsError = null;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Keep the last page beside the message; the next refresh tries again.
+            callsError = ex.Message;
+        }
+    }
+
+    private async Task OnCallsPageChangedAsync(int page)
+    {
+        await refreshGate.WaitAsync();
+        try
+        {
+            callsPage = Math.Max(1, page);
+            callsLoading = true;
+            await LoadCallsAsync();
+        }
+        finally
+        {
+            callsLoading = false;
+            refreshGate.Release();
+        }
+    }
+
     private async Task LoadDiagramNodeExecutionsAsync(CancellationToken cancellationToken = default)
     {
         if (instance is null || selectedDiagramNodeId is not int nodeId) return;

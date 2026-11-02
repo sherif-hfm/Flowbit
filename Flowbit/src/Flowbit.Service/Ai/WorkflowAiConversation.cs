@@ -43,7 +43,7 @@ public sealed class WorkflowAiConversation(
     public TimeSpan WaitInterval { get; init; } = TimeSpan.FromSeconds(60);
 
     public async Task<AiTurnResultDto> RunAsync(AiTurnRequestDto request, AiModelConnection connection, string? sharedVariables,
-        Func<AiRunEventDto, CancellationToken, Task>? emit, CancellationToken cancellationToken)
+        string? callTargets, Func<AiRunEventDto, CancellationToken, Task>? emit, CancellationToken cancellationToken)
     {
         // The configured key reaches only the provider; the host also uses it to keep it out of state, workflows and replies.
         var apiKey = connection.ApiKey;
@@ -90,6 +90,7 @@ public sealed class WorkflowAiConversation(
         });
         var sentSources = new List<string>(saved?.SentSources ?? []);
         var sharedVariablesHash = saved?.SharedVariablesHash;
+        var callTargetsHash = saved?.CallTargetsHash;
 
         IList<ChatMessage> input;
         string? turnStartHash;
@@ -128,6 +129,11 @@ public sealed class WorkflowAiConversation(
             {
                 sharedVariablesHash = AuthoringPackageBuilder.Hash(sharedVariables);
                 text.Append("\n\n--- Selected shared variables ---\n").Append(sharedVariables);
+            }
+            if (callTargets is not null && AuthoringPackageBuilder.Hash(callTargets) != callTargetsHash)
+            {
+                callTargetsHash = AuthoringPackageBuilder.Hash(callTargets);
+                text.Append("\n\n--- Selected call targets ---\n").Append(callTargets);
             }
             input = [.. saved?.Pending ?? [], new ChatMessage(ChatRole.User, text.ToString())];
             turnStartHash = workspace.Outputs.TryGetValue(WorkflowAiAgent.WorkflowFile, out var start) ? AuthoringPackageBuilder.Hash(start) : null;
@@ -293,7 +299,8 @@ public sealed class WorkflowAiConversation(
                 ConversationId = request.ConversationId, RedactionNonce = redaction.Nonce, Session = sessionJson, Pending = pending,
                 HistoryMessages = session is null ? 0 : History(session).Count,
                 Files = new(workspace.Outputs, StringComparer.Ordinal), ReturnedReads = workspace.ReturnedReads,
-                ExpectedEditorHash = expected, TurnStartWorkflowHash = turnStart, SentSources = sentSources, SharedVariablesHash = sharedVariablesHash
+                ExpectedEditorHash = expected, TurnStartWorkflowHash = turnStart, SentSources = sentSources, SharedVariablesHash = sharedVariablesHash,
+                CallTargetsHash = callTargetsHash
             }, nodes, flows);
         }
 

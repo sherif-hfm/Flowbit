@@ -1,0 +1,168 @@
+@implements IAsyncDisposable
+@inject IJSRuntime JS
+
+@* The page owns fetching and the command. This component only shows what a default change
+   would do to the family's callers, and keeps keyboard focus inside the dialog. *@
+<div class="callers-backdrop" aria-hidden="true"></div>
+<div class="callers-dialog-shell" role="dialog" aria-modal="true" aria-labelledby="callers-dialog-title"
+     tabindex="-1" @ref="dialog" @onkeydown="HandleKeyDownAsync">
+    <section class="callers-dialog panel">
+        <div class="section-heading">
+            <div>
+                <span class="page-eyebrow">@WorkflowKey</span>
+                <h2 id="callers-dialog-title">@Title</h2>
+            </div>
+            <button type="button" class="btn-close" aria-label="Close" @onclick="OnCancel"></button>
+        </div>
+
+        @if (!string.IsNullOrWhiteSpace(Error))
+        {
+            <div class="alert alert-danger" role="alert">@Error</div>
+        }
+
+        @if (Preview is { } preview)
+        {
+            @if (preview.Mode == CallersPreviewModes.Deletion && preview.DeletionAllowed == false)
+            {
+                <div class="alert alert-danger" role="alert">
+                    This version cannot be deleted.
+                    <ul class="mb-0 mt-1">
+                        @foreach (var blocker in preview.DeletionBlockers)
+                        {
+                            <li>@blocker</li>
+                        }
+                    </ul>
+                </div>
+            }
+
+            @if (preview.NoDefault)
+            {
+                <div class="alert alert-warning" role="status">
+                    @(preview.Mode == CallersPreviewModes.Deletion
+                        ? "No published default would remain after this deletion, so every call to this family would fail to start until a version is published and made the default."
+                        : "This family has no published default, so every call to it fails to start until a version is published and made the default.")
+                </div>
+            }
+            else if (preview.EffectiveTargetVersion is int version)
+            {
+                <p>
+                    @(preview.Mode == CallersPreviewModes.Deletion
+                        ? $"Version {version} would become the default."
+                        : $"Version {version} would be the default.")
+                    Callers below are checked against that version.
+                </p>
+            }
+
+            <h3 class="h6">Workflows that call this family</h3>
+            @if (preview.Callers.TotalCount == 0)
+            {
+                <p class="text-muted">No published workflow calls this family.</p>
+            }
+            else
+            {
+                <div class="table-responsive">
+                    <table class="table table-sm align-middle">
+                        <caption class="visually-hidden">Published workflows that call @WorkflowKey</caption>
+                        <thead>
+                            <tr>
+                                <th scope="col">Workflow</th>
+                                <th scope="col">Call</th>
+                                <th scope="col">Result</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var caller in preview.Callers.Items)
+                            {
+                                <tr @key="(caller.WorkflowId, caller.NodeId)">
+                                    <td>
+                                        @caller.Name
+                                        <span class="data-subtitle">@caller.WorkflowKey · Version @caller.Version@(caller.IsDefault ? " · Default" : null)</span>
+                                    </td>
+                                    <td>@(caller.NodeName ?? "Unnamed call")<span class="data-subtitle">Node #@caller.NodeId</span></td>
+                                    <td>
+                                        @if (caller.Compatible)
+                                        {
+                                            <StatusBadge Status="ready" Text="Compatible" />
+                                        }
+                                        else
+                                        {
+                                            <StatusBadge Status="danger" Text="Incompatible" />
+                                            @foreach (var reason in caller.Reasons)
+                                            {
+                                                <span class="data-subtitle">@reason</span>
+                                            }
+                                        }
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+                @if (TotalPages > 1)
+                {
+                    <div class="pagination-bar">
+                        <span class="pagination-copy">Page @preview.Callers.Page of @TotalPages · @preview.Callers.TotalCount.ToString("N0") total</span>
+                        <div class="d-flex gap-2">
+                            <button type="button" class="btn btn-outline-secondary btn-sm" disabled="@(Loading || preview.Callers.Page <= 1)" @onclick="() => OnPageChanged.InvokeAsync(preview.Callers.Page - 1)">Previous</button>
+                            <button type="button" class="btn btn-outline-secondary btn-sm" disabled="@(Loading || preview.Callers.Page >= TotalPages)" @onclick="() => OnPageChanged.InvokeAsync(preview.Callers.Page + 1)">Next</button>
+                        </div>
+                    </div>
+                }
+            }
+            <p class="form-text">This preview reflects the current state. Flowbit checks its own rules again when you confirm.</p>
+        }
+        else if (Loading)
+        {
+            <p class="text-muted" role="status">Checking callers…</p>
+        }
+
+        <div class="d-flex justify-content-end gap-2">
+            <button type="button" class="btn btn-outline-secondary" @onclick="OnCancel">Cancel</button>
+            <button type="button" class="btn @ConfirmClass" disabled="@(Preview is null || Preview.DeletionAllowed == false)" @onclick="OnConfirm">@ConfirmLabel</button>
+        </div>
+    </section>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public string WorkflowKey { get; set; } = "";
+    [Parameter, EditorRequired] public string Title { get; set; } = "";
+    [Parameter, EditorRequired] public string ConfirmLabel { get; set; } = "";
+    [Parameter] public string ConfirmClass { get; set; } = "btn-primary";
+    [Parameter] public string OpenerId { get; set; } = "";
+    [Parameter] public CallersPreviewDto? Preview { get; set; }
+    [Parameter] public bool Loading { get; set; }
+    [Parameter] public string? Error { get; set; }
+    [Parameter] public EventCallback OnConfirm { get; set; }
+    [Parameter] public EventCallback OnCancel { get; set; }
+    [Parameter] public EventCallback<int> OnPageChanged { get; set; }
+
+    private ElementReference dialog;
+    private IJSObjectReference? dialogModule;
+
+    private int TotalPages => Preview is { Callers.PageSize: > 0 } preview
+        ? (int)Math.Ceiling(preview.Callers.TotalCount / (double)preview.Callers.PageSize)
+        : 0;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        dialogModule = await JS.InvokeAsync<IJSObjectReference>("import", "./task-management.js");
+        await dialogModule.InvokeVoidAsync("activateDialog", dialog, OpenerId);
+    }
+
+    private async Task HandleKeyDownAsync(KeyboardEventArgs args)
+    {
+        if (args.Key == "Escape") await OnCancel.InvokeAsync();
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (dialogModule is null) return;
+        try
+        {
+            await dialogModule.InvokeVoidAsync("deactivateDialog");
+            await dialogModule.DisposeAsync();
+        }
+        catch (JSDisconnectedException) { }
+    }
+}

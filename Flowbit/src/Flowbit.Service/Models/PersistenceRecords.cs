@@ -35,7 +35,9 @@ public sealed record WorkflowInstanceRecord(
     long? CurrentNodeExecutionId = null,
     DateTimeOffset? FinishedAt = null,
     DateTimeOffset? HistoryPrunedAt = null,
-    long? LastReactivationTokenId = null);
+    long? LastReactivationTokenId = null,
+    long? CallRootInstanceId = null,
+    int CallDepth = 0);
 
 public sealed record WorkflowInstanceVersionChangeRecord(
     long Id,
@@ -745,6 +747,12 @@ public static class ExecutionTokenWaitStates
     public const string TimerCatch = "timerCatch";
     public const string TimerBoundary = "timerBoundary";
     public const string ConditionalWake = "conditionalWake";
+
+    /// <summary>
+    /// A call activity waiting for its callStart job. Once the child exists the token has
+    /// no wait state, because no job owns the wait; it rests as a user task does.
+    /// </summary>
+    public const string CallStart = "callStart";
 }
 
 public static class NodeExecutionRecordKinds
@@ -789,6 +797,8 @@ public static class NodeExecutionCompletionReasons
     public const string ScopedInterruptSkipped = "scopedInterruptSkipped";
     public const string TimerFired = "timerFired";
     public const string ConditionalTriggered = "conditionalTriggered";
+    public const string CallCompleted = "callCompleted";
+    public const string CallFailed = "callFailed";
 }
 
 public static class InstanceHistoryNotes
@@ -796,6 +806,11 @@ public static class InstanceHistoryNotes
     public const string ConditionalLatched = "conditionalLatched";
     public const string ConditionalTriggered = "conditionalTriggered";
     public const string InstanceReactivated = "instanceReactivated";
+    public const string CallQueued = "callQueued";
+    public const string CallChildStarted = "callChildStarted";
+    public const string CallCompleted = "callCompleted";
+    public const string CallFailed = "callFailed";
+    public const string CallCancelled = "callCancelled";
 }
 
 public static class ExecutionTokenTerminationReasons
@@ -806,6 +821,7 @@ public static class ExecutionTokenTerminationReasons
     public const string InstanceCancelled = "instanceCancelled";
     public const string GatewayScopeCancelled = "gatewayScopeCancelled";
     public const string GatewayJoinMerged = "gatewayJoinMerged";
+    public const string CallFailed = "callFailed";
 }
 
 public static class GatewayExecutionRecordStatuses

@@ -145,7 +145,12 @@ public sealed record ExecutionPositionDto(
     Guid? ActivationId = null,
     string? WaitState = null,
     long? WaitingJobId = null,
-    long? WaitingTimerSubscriptionId = null);
+    long? WaitingTimerSubscriptionId = null)
+{
+    /// <summary>What a token resting on a call activity is waiting for; absent otherwise.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public ExecutionPositionCallDto? Call { get; init; }
+}
 
 public static class WorkflowCompletionKinds
 {
@@ -583,6 +588,17 @@ public sealed record InstanceDetailDto(
     public IReadOnlyList<InstanceVariableUpdateAuditDto> VariableUpdates { get; init; } = [];
 
     public IReadOnlyList<SharedVariableBindingMetadataDto> SharedVariables { get; init; } = [];
+
+    /// <summary>The call that started this instance; absent for a root instance.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public ParentCallSummaryDto? ParentCall { get; init; }
+
+    /// <summary>
+    /// How many calls this instance has made; absent when it has none. The calls route
+    /// pages their history.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public CallCountsDto? Calls { get; init; }
 }
 
 /// <summary>The updated instance and audit entry returned after a workflow version change.</summary>

@@ -22,7 +22,10 @@ public sealed class DatabaseSchemaTests(PostgresApiFixture fixture)
             .Distinct()
             .ToArray();
 
-        Assert.Equal(55, mappedTables.Length);
+        Assert.Equal(58, mappedTables.Length);
+        Assert.Contains(mappedTables, table => table.Name == "call_activity_executions");
+        Assert.Contains(mappedTables, table => table.Name == "call_activity_results");
+        Assert.Contains(mappedTables, table => table.Name == "workflow_definition_call_targets");
         Assert.Contains(mappedTables, table => table.Name == "business_calendars");
         Assert.Contains(mappedTables, table => table.Name == "workflow_definition_business_calendars");
         Assert.Contains(mappedTables, table => table.Name == "local_users");

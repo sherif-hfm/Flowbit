@@ -60,6 +60,21 @@
             }
         </details>
 
+        <details class="ai-catalog">
+            <summary>Include call targets (optional)</summary>
+            <p class="ai-help">Select workflow families this workflow may call. Only each family's published-default start inputs and declared results are sent, never values or instance data.</p>
+            <button type="button" id="ai-call-targets-load" class="btn btn-sm btn-outline-secondary" disabled="@busy" @onclick="LoadCallTargetsAsync">Load workflows</button>
+            @foreach (var item in callTargets)
+            {
+                <label class="ai-catalog-option"><input type="checkbox" checked="@selectedCallTargets.Contains(item.WorkflowKey)" disabled="@(busy || selectedCallTargets.Count >= 20 && !selectedCallTargets.Contains(item.WorkflowKey))" @onchange="args => SelectCallTarget(item.WorkflowKey, args.Value is true)" /> @item.Name <span class="ai-help">@item.WorkflowKey</span></label>
+            }
+            @if (selectedCallTargets.Count > 0)
+            {
+                <p class="ai-help">Selected (@selectedCallTargets.Count/20): @string.Join(", ", selectedCallTargets.Order(StringComparer.Ordinal))</p>
+                <button type="button" class="btn btn-sm btn-link" disabled="@busy" @onclick="() => selectedCallTargets.Clear()">Clear selection</button>
+            }
+        </details>
+
         <details class="ai-document">
             <summary>Attach a BRD or SRS PDF</summary>
             <label for="ai-pdf">PDF document (up to 20 MiB)</label>
@@ -186,6 +201,8 @@
     private readonly List<SourcePage> sourcePages = [];
     private IReadOnlyList<SharedVariableMetadataDto> catalog = [];
     private readonly HashSet<string> selectedKeys = new(StringComparer.Ordinal);
+    private IReadOnlyList<WorkflowSummaryDto> callTargets = [];
+    private readonly HashSet<string> selectedCallTargets = new(StringComparer.Ordinal);
     private string catalogSearch = "";
     private int catalogPage;
     private long catalogCount;
@@ -279,6 +296,7 @@
         ResetConversation();
         messageText = "";
         catalog = []; selectedKeys.Clear(); catalogSearch = ""; catalogPage = 0; catalogCount = 0;
+        callTargets = []; selectedCallTargets.Clear();
         ClearDocument(); error = notice = null;
     }
 
@@ -286,6 +304,29 @@
     {
         if (selected && selectedKeys.Count < 50) selectedKeys.Add(key);
         if (!selected) selectedKeys.Remove(key);
+    }
+
+    private void SelectCallTarget(string key, bool selected)
+    {
+        if (selected && selectedCallTargets.Count < 20) selectedCallTargets.Add(key);
+        if (!selected) selectedCallTargets.Remove(key);
+    }
+
+    private async Task LoadCallTargetsAsync()
+    {
+        if (busy) return;
+        var cancellationToken = BeginOperation();
+        var revision = identityRevision;
+        try
+        {
+            var found = await Api.GetWorkflowsAsync(cancellationToken);
+            if (disposed || cancellationToken.IsCancellationRequested || revision != identityRevision) return;
+            callTargets = found;
+            if (callTargets.Count == 0) notice = "No workflow families are available to call.";
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception exception) { if (!disposed && revision == identityRevision) error = SafeError(exception); }
+        finally { if (!disposed && revision == identityRevision) busy = false; }
     }
 
     private async Task LoadCatalogAsync(int page)
@@ -364,6 +405,7 @@
                 ModelId = modelId, ConversationId = conversationId,
                 Message = submitted, CurrentWorkflow = context, SnapshotId = snapshot.SnapshotId,
                 SharedVariableKeys = selectedKeys.Order(StringComparer.Ordinal).ToArray(),
+                CallTargetKeys = selectedCallTargets.Order(StringComparer.Ordinal).ToArray(),
                 Sources = sourcePages.Select(page => new AiSourcePageDto(documentFile?.Name ?? "Document", page.Number, page.Text)).ToArray(),
                 State = conversationState
             };
@@ -549,7 +591,7 @@
         await InvalidateOperation.InvokeAsync(operationId);
         operation?.Dispose();
         lifetime.Dispose();
-        messages.Clear(); sourcePages.Clear(); catalog = []; selectedKeys.Clear();
+        messages.Clear(); sourcePages.Clear(); catalog = []; selectedKeys.Clear(); callTargets = []; selectedCallTargets.Clear();
         try
         {
             if (keyboard is not null) { await keyboard.InvokeVoidAsync("dispose"); await keyboard.DisposeAsync(); }

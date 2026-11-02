@@ -18,6 +18,7 @@ internal static class ExecutionPositionText
         BpmnFlowNodeTypes.Task => "Automatic task",
         BpmnFlowNodeTypes.ServiceTask => "Service task",
         BpmnFlowNodeTypes.ScriptTask => "Script task",
+        BpmnFlowNodeTypes.CallActivity => "Call activity",
         BpmnFlowNodeTypes.IntermediateMessageCatchEvent => "Message wait",
         BpmnFlowNodeTypes.IntermediateTimerCatchEvent => "Timer wait",
         BpmnFlowNodeTypes.IntermediateConditionalCatchEvent => "Condition wait",
@@ -42,16 +43,19 @@ internal static class ExecutionPositionText
         "terminateEnd" => "Cancelled by a terminate end event",
         "errorEnd" => "Cancelled when the instance faulted",
         "instanceCancelled" => "Cancelled with the instance",
+        "callFailed" => "Ended when its call failed",
         _ => reason
     };
 
     /// <summary>True while the token waits for a durable background job rather than for people or an event.</summary>
     internal static bool IsBackgroundWait(ExecutionPositionDto position) =>
-        position.WaitState is "asyncBefore" or "asyncAfter" or "conditionalWake";
+        position.WaitState is "asyncBefore" or "asyncAfter" or "conditionalWake" or "callStart";
 
     /// <summary>What an active position is waiting for.</summary>
     internal static string DescribeWait(ExecutionPositionDto position)
     {
+        if (position.Call is { } call) return DescribeCall(call);
+        if (BpmnFlowNodeTypes.IsCallActivity(position.NodeType)) return "Waiting for a call activity";
         if (IsBackgroundWait(position)) return "Queued for background processing";
         if (position.MultiInstanceExecutionId is not null) return "Waiting for multi-instance work";
         var type = position.NodeType;
@@ -62,6 +66,15 @@ internal static class ExecutionPositionText
         if (BpmnFlowNodeTypes.IsGateway(type)) return "Waiting at the gateway";
         return "Active";
     }
+
+    private static string DescribeCall(ExecutionPositionCallDto call) => call.State switch
+    {
+        "queued" when !call.CapacityReserved => "Call blocked before admission",
+        "queued" => "Call queued to start its child",
+        "resultReady" => "Child finished; its result is waiting for delivery",
+        "running" => "Waiting for its child instance",
+        _ => "Waiting for a call activity"
+    };
 
     /// <summary>An active position's wait, or how a finished position ended.</summary>
     internal static string DescribePosition(ExecutionPositionDto position)

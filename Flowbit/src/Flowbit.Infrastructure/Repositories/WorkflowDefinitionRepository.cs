@@ -16,7 +16,8 @@ public sealed class WorkflowDefinitionRepository(
     IMemoryCache cache,
     ISharedVariableRepository? sharedVariables = null,
     IConditionalEventDefinitionAnalyzer? conditionalEventAnalyzer = null,
-    IBusinessCalendarRepository? businessCalendars = null) : IWorkflowDefinitionRepository
+    IBusinessCalendarRepository? businessCalendars = null,
+    DurableProcessingOptions? durableProcessingOptions = null) : IWorkflowDefinitionRepository
 {
     private static readonly JsonSerializerOptions CloneOptions = new(JsonSerializerDefaults.Web);
 
@@ -234,6 +235,7 @@ public sealed class WorkflowDefinitionRepository(
         await dbContext.SaveChangesAsync(cancellationToken);
         await PersistSharedVariableBindingsAsync(entity.Id, definition, cancellationToken);
         await PersistBusinessCalendarReferencesAsync(entity.Id, definition, cancellationToken);
+        await PersistCallTargetsAsync(entity.Id, definition, cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         var record = ToRecord(entity);
 
@@ -291,6 +293,30 @@ public sealed class WorkflowDefinitionRepository(
                 workflowDefinitionId,
                 names,
                 cancellationToken);
+    }
+
+    private async Task PersistCallTargetsAsync(
+        long workflowDefinitionId,
+        WorkflowModel definition,
+        CancellationToken cancellationToken)
+    {
+        var targets = definition.FlowNodes
+            .Where(node => BpmnFlowNodeTypes.IsCallActivity(node.Type)
+                && !string.IsNullOrWhiteSpace(node.CallActivity?.WorkflowKey))
+            .Select(node => new WorkflowDefinitionCallTargetEntity
+            {
+                WorkflowDefinitionId = workflowDefinitionId,
+                NodeId = node.Id,
+                TargetWorkflowKey = node.CallActivity!.WorkflowKey
+            })
+            .ToArray();
+        if (targets.Length == 0)
+        {
+            return;
+        }
+
+        dbContext.WorkflowDefinitionCallTargets.AddRange(targets);
+        await dbContext.SaveChangesAsync(cancellationToken);
     }
 
     public async Task<bool> SetPublishedAsync(long id, bool isPublished, CancellationToken cancellationToken)
@@ -606,8 +632,127 @@ public sealed class WorkflowDefinitionRepository(
             return false;
         }
         var workflowKey = entity.WorkflowKey;
+        var assessment = await AssessDeletionCoreAsync(id, workflowKey, entity.IsDefault, cancellationToken);
+        if (assessment.InUse)
+        {
+            throw new WorkflowConflictException(assessment.Blockers[0]);
+        }
+
+        if (assessment.Blockers.Count > 0)
+        {
+            throw new WorkflowDomainException(assessment.Blockers[0]);
+        }
+
+        long? successorId = null;
+
+        // A published timer start creates definition-scoped durable rows even
+        // before the first instance exists. Explicit definition deletion owns
+        // those rows, so fence any outstanding occurrence, remove its audit
+        // children, then remove jobs and subscriptions before deleting the
+        // immutable definition. Instance-scoped runtime data remains protected
+        // by the existing restrictive definition foreign keys.
+        var timerStarts = dbContext.TimerSubscriptions.Where(subscription =>
+            subscription.InstanceId == null
+            && subscription.WorkflowDefinitionId == id);
+        await RetireTimerStartsAsync(
+            timerStarts,
+            "Timer-start workflow definition was deleted.",
+            cancellationToken);
+        await dbContext.WorkflowIncidents
+            .Where(incident =>
+                incident.WorkflowDefinitionId == id
+                && incident.InstanceId == null)
+            .ExecuteDeleteAsync(cancellationToken);
+        await dbContext.WorkflowJobs
+            .Where(job =>
+                job.WorkflowDefinitionId == id
+                && job.InstanceId == null)
+            .ExecuteDeleteAsync(cancellationToken);
+        await timerStarts.ExecuteDeleteAsync(cancellationToken);
+
+        var affected = await dbContext.WorkflowDefinitions
+            .Where(w => w.Id == id)
+            .ExecuteDeleteAsync(cancellationToken);
+
+        if (affected > 0)
+        {
+            // If the deleted row was the default, auto-assign the default to the
+            // highest-version remaining published row for the same key. If none
+            // are published the family intentionally has no effective default.
+            if (entity.IsDefault && assessment.SuccessorId is long successor)
+            {
+                successorId = successor;
+                await dbContext.WorkflowDefinitions
+                    .Where(w => w.Id == successor)
+                    .ExecuteUpdateAsync(
+                        setters => setters
+                            .SetProperty(w => w.IsDefault, true)
+                            .SetProperty(w => w.DefaultActivationId, Guid.NewGuid())
+                            .SetProperty(w => w.DefaultActivatedAt, DateTimeOffset.UtcNow),
+                        cancellationToken);
+            }
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+
+        if (affected > 0)
+        {
+            InvalidateDefinition(id, workflowKey);
+            if (successorId is not null)
+            {
+                cache.Remove(KeyPrefix + successorId.Value);
+            }
+        }
+
+        return affected > 0;
+    }
+
+    public async Task<WorkflowDefinitionDeletionAssessment?> AssessDeletionAsync(
+        long id,
+        CancellationToken cancellationToken)
+    {
+        var entity = await dbContext.WorkflowDefinitions.AsNoTracking()
+            .Where(w => w.Id == id)
+            .Select(w => new { w.WorkflowKey, w.IsDefault })
+            .SingleOrDefaultAsync(cancellationToken);
+        if (entity is null)
+        {
+            return null;
+        }
+
+        var assessment = await AssessDeletionCoreAsync(id, entity.WorkflowKey, entity.IsDefault, cancellationToken);
+        return new WorkflowDefinitionDeletionAssessment(
+            true,
+            entity.WorkflowKey,
+            entity.IsDefault,
+            assessment.Blockers.Count == 0,
+            assessment.Blockers,
+            assessment.SuccessorId,
+            assessment.SuccessorVersion,
+            assessment.Blockers.Count == 0 && entity.IsDefault && assessment.SuccessorId is null);
+    }
+
+    private sealed record DeletionCoreAssessment(
+        bool InUse,
+        IReadOnlyList<string> Blockers,
+        long? SuccessorId,
+        int? SuccessorVersion);
+
+    // The deletion command and its caller preview share these rules, so a preview never
+    // approximates the successor. The command runs them under the family lock.
+    private async Task<DeletionCoreAssessment> AssessDeletionCoreAsync(
+        long id,
+        string workflowKey,
+        bool isDefault,
+        CancellationToken cancellationToken)
+    {
         var isInUse = await dbContext.WorkflowInstances.AsNoTracking()
                 .AnyAsync(instance => instance.WorkflowDefinitionId == id, cancellationToken)
+            || await dbContext.CallActivityExecutions.AsNoTracking()
+                .AnyAsync(call =>
+                    call.ParentDefinitionId == id
+                    || call.ChildDefinitionId == id,
+                    cancellationToken)
             || await dbContext.NodeExecutions.AsNoTracking()
                 .AnyAsync(execution => execution.WorkflowDefinitionId == id, cancellationToken)
             || await dbContext.UserTaskRolePolicies.AsNoTracking()
@@ -652,111 +797,65 @@ public sealed class WorkflowDefinitionRepository(
                     cancellationToken);
         if (isInUse)
         {
-            throw new WorkflowConflictException(
-                "The workflow definition cannot be deleted because runtime or version-change history, including administrative variable-update history, references it.");
+            return new DeletionCoreAssessment(
+                true,
+                ["The workflow definition cannot be deleted because runtime or version-change history, including administrative variable-update history, references it."],
+                null,
+                null);
+        }
+
+        if (!isDefault)
+        {
+            return new DeletionCoreAssessment(false, [], null, null);
         }
 
         var scopeActive = await dbContext.WorkflowBusinessKeyScopes.AsNoTracking()
             .AnyAsync(scope => scope.WorkflowKey == workflowKey, cancellationToken);
-        var requiresDistributor = entity.IsDefault
-            && await HasRunningDistributorDependentRequiredAssignmentInstancesAsync(
-                workflowKey,
-                cancellationToken);
-        long? successorId = null;
-
-        List<WorkflowDefinitionEntity>? successorCandidates = null;
-        if (entity.IsDefault)
-        {
-            successorCandidates = await dbContext.WorkflowDefinitions.AsNoTracking()
-                .Where(w => w.WorkflowKey == entity.WorkflowKey && w.Id != id)
-                .OrderByDescending(w => w.Version)
-                .ToListAsync(cancellationToken);
-            if (scopeActive)
-            {
-                successorCandidates = successorCandidates
-                    .Where(candidate => HasBusinessKeys(candidate.Definition))
-                    .ToList();
-            }
-            if (requiresDistributor)
-            {
-                successorCandidates = successorCandidates
-                    .Where(candidate => candidate.Definition.TaskDistribution is not null)
-                    .ToList();
-            }
-
-            if (requiresDistributor && successorCandidates.All(candidate => !candidate.IsPublished))
-            {
-                throw new WorkflowDomainException(
-                    "Cannot delete the default version while running instances contain required-assignment tasks without taskAssignmentRoles unless another published version configures taskDistribution credentials.");
-            }
-        }
-
-        // A published timer start creates definition-scoped durable rows even
-        // before the first instance exists. Explicit definition deletion owns
-        // those rows, so fence any outstanding occurrence, remove its audit
-        // children, then remove jobs and subscriptions before deleting the
-        // immutable definition. Instance-scoped runtime data remains protected
-        // by the existing restrictive definition foreign keys.
-        var timerStarts = dbContext.TimerSubscriptions.Where(subscription =>
-            subscription.InstanceId == null
-            && subscription.WorkflowDefinitionId == id);
-        await RetireTimerStartsAsync(
-            timerStarts,
-            "Timer-start workflow definition was deleted.",
+        var requiresDistributor = await HasRunningDistributorDependentRequiredAssignmentInstancesAsync(
+            workflowKey,
             cancellationToken);
-        await dbContext.WorkflowIncidents
-            .Where(incident =>
-                incident.WorkflowDefinitionId == id
-                && incident.InstanceId == null)
-            .ExecuteDeleteAsync(cancellationToken);
-        await dbContext.WorkflowJobs
-            .Where(job =>
-                job.WorkflowDefinitionId == id
-                && job.InstanceId == null)
-            .ExecuteDeleteAsync(cancellationToken);
-        await timerStarts.ExecuteDeleteAsync(cancellationToken);
-
-        var affected = await dbContext.WorkflowDefinitions
-            .Where(w => w.Id == id)
-            .ExecuteDeleteAsync(cancellationToken);
-
-        if (affected > 0)
+        var successorCandidates = await dbContext.WorkflowDefinitions.AsNoTracking()
+            .Where(w => w.WorkflowKey == workflowKey && w.Id != id)
+            .OrderByDescending(w => w.Version)
+            .ToListAsync(cancellationToken);
+        if (scopeActive)
         {
-            // If the deleted row was the default, auto-assign the default to the
-            // highest-version remaining published row for the same key. If none
-            // are published the family intentionally has no effective default.
-            if (entity.IsDefault)
-            {
-                var successor = successorCandidates!.FirstOrDefault(candidate => candidate.IsPublished);
-
-                if (successor is not null)
-                {
-                    successorId = successor.Id;
-                    await dbContext.WorkflowDefinitions
-                        .Where(w => w.Id == successor.Id)
-                        .ExecuteUpdateAsync(
-                            setters => setters
-                                .SetProperty(w => w.IsDefault, true)
-                                .SetProperty(w => w.DefaultActivationId, Guid.NewGuid())
-                                .SetProperty(w => w.DefaultActivatedAt, DateTimeOffset.UtcNow),
-                            cancellationToken);
-
-                }
-            }
+            successorCandidates = successorCandidates
+                .Where(candidate => HasBusinessKeys(candidate.Definition))
+                .ToList();
+        }
+        if (requiresDistributor)
+        {
+            successorCandidates = successorCandidates
+                .Where(candidate => candidate.Definition.TaskDistribution is not null)
+                .ToList();
         }
 
-        await transaction.CommitAsync(cancellationToken);
-
-        if (affected > 0)
+        if (requiresDistributor && successorCandidates.All(candidate => !candidate.IsPublished))
         {
-            InvalidateDefinition(id, workflowKey);
-            if (successorId is not null)
-            {
-                cache.Remove(KeyPrefix + successorId.Value);
-            }
+            return new DeletionCoreAssessment(
+                false,
+                ["Cannot delete the default version while running instances contain required-assignment tasks without taskAssignmentRoles unless another published version configures taskDistribution credentials."],
+                null,
+                null);
         }
 
-        return affected > 0;
+        var successor = successorCandidates.FirstOrDefault(candidate => candidate.IsPublished);
+
+        // Promotion is a publication path too. Choosing a different version here would
+        // silently change which workflow the family's default runs.
+        if (successor is not null
+            && durableProcessingOptions is { PublicationEnabled: false }
+            && WorkflowDefinitionReadinessChecker.RequiresDurableProcessing(successor.Definition))
+        {
+            return new DeletionCoreAssessment(
+                false,
+                [$"Cannot delete the default version: version {successor.Version} would become the default, but {DurableProcessingOptions.SectionName}:PublicationEnabled is false and it needs the durable worker."],
+                null,
+                null);
+        }
+
+        return new DeletionCoreAssessment(false, [], successor?.Id, successor?.Version);
     }
 
     private async Task RetireTimerStartsAsync(

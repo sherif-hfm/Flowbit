@@ -437,6 +437,10 @@ public sealed class RetentionRepository(RetentionDataSource source, TimeProvider
                     """);
                 Add(mark, "now", now); Add(mark, "id", instanceId.Value);
                 await mark.ExecuteNonQueryAsync(ct);
+                if (spec.Name == "instance_history")
+                {
+                    await ClearSettledCallSnapshotsAsync(connection, transaction, instanceId.Value, now, ct);
+                }
             }
             if (deleted > 0 && sharedIds.Length > 0)
             {
@@ -451,6 +455,30 @@ public sealed class RetentionRepository(RetentionDataSource source, TimeProvider
         }
         category.RowCursor = rows[^1].Id;
         return new(deleted, rows.LongCount(row => row.Protected), false, counts);
+    }
+
+    // The invocation row stays for the instance's lifetime as the parent/child relationship;
+    // only its bulky captured values go, and only after settlement. A terminal parent has no
+    // unsettled calls, so this never touches a result that still awaits delivery.
+    private static async Task ClearSettledCallSnapshotsAsync(NpgsqlConnection connection, NpgsqlTransaction transaction,
+        long parentInstanceId, DateTimeOffset now, CancellationToken ct)
+    {
+        await using var results = Command(connection, transaction, """
+            UPDATE flowbit.call_activity_results r SET "OutputValuesJson"=NULL
+            FROM flowbit.call_activity_executions c
+            WHERE r."InvocationId"=c."Id" AND c."ParentInstanceId"=@id
+              AND c."State" IN ('completed','failed','cancelled') AND r."OutputValuesJson" IS NOT NULL
+            """);
+        Add(results, "id", parentInstanceId);
+        await results.ExecuteNonQueryAsync(ct);
+        await using var invocations = Command(connection, transaction, """
+            UPDATE flowbit.call_activity_executions SET "ContractJson"=NULL, "InputValuesJson"=NULL,
+                "SnapshotsPrunedAt"=@now
+            WHERE "ParentInstanceId"=@id AND "State" IN ('completed','failed','cancelled')
+              AND "SnapshotsPrunedAt" IS NULL
+            """);
+        Add(invocations, "id", parentInstanceId); Add(invocations, "now", now);
+        await invocations.ExecuteNonQueryAsync(ct);
     }
 
     private static async Task<bool> IsRuntimeBusyAsync(NpgsqlConnection connection, NpgsqlTransaction transaction,

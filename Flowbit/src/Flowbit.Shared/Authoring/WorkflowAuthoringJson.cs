@@ -111,7 +111,9 @@ public static class WorkflowAuthoringJson
             [(typeof(VariableModel), "scope")] = typeof(VariableScopes),
             [(typeof(VariableModel), "access")] = typeof(SharedVariableAccessModes),
             [(typeof(ServiceOutputMappingModel), "dataType")] = typeof(WorkflowVariableTypes),
-            [(typeof(MessageOutputMappingModel), "dataType")] = typeof(WorkflowVariableTypes)
+            [(typeof(MessageOutputMappingModel), "dataType")] = typeof(WorkflowVariableTypes),
+            [(typeof(CallActivityModel), "versionBinding")] = typeof(CallActivityVersionBindings),
+            [(typeof(CallVariableMappingModel), "dataType")] = typeof(WorkflowVariableTypes)
         }.ToDictionary(item => item.Key, item => StringConstants(item.Value));
 
     private static string[]? AllowedValues(Type type, string property) => Enums.GetValueOrDefault((type, property));
@@ -132,7 +134,9 @@ public static class WorkflowAuthoringJson
         : type == typeof(LaneModel) ? ["id", "name"]
         : type == typeof(VariableModel) ? ["id", "name", "dataType"]
         : type == typeof(VariableOptionModel) ? ["value"]
-        : type == typeof(HttpStatusRangeModel) ? ["from", "to"] : [];
+        : type == typeof(HttpStatusRangeModel) ? ["from", "to"]
+        : type == typeof(CallActivityModel) ? ["workflowKey"]
+        : type == typeof(CallVariableMappingModel) ? ["sourceVariable", "variable", "dataType"] : [];
 
     private static bool AllowsNull(PropertyInfo property) => NullableProperties.GetOrAdd(property, item =>
         Nullable.GetUnderlyingType(item.PropertyType) is not null

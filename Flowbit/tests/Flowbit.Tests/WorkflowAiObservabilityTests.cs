@@ -32,7 +32,7 @@ public sealed class WorkflowAiObservabilityTests
         var broken = example.Replace("\"name\": \"approval1\"", "\"name\": \"SECRET-CANARY\", \"colour\": 1", StringComparison.Ordinal);
         var handler = new ScriptedHandler(Completions.Tools(("get_file", new { path = "node-reference.md" })), Completions.Save("workflow.json", broken),
             Completions.Final("Saved."), Completions.Save("workflow.json", example), Completions.Final("Fixed."));
-        var result = await AgentHarness.Conversation(handler).RunAsync(AgentHarness.Request("Confidential requirement text."), AgentHarness.Connection, null, null, CancellationToken.None);
+        var result = await AgentHarness.Conversation(handler).RunAsync(AgentHarness.Request("Confidential requirement text."), AgentHarness.Connection, null, null, null, CancellationToken.None);
 
         Assert.Equal("proposal", result.Kind);
         var spans = stopped.ToArray();

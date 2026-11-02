@@ -26,6 +26,15 @@
                 {
                     <span class="execution-position-meta">Arrived via flow #@flowId</span>
                 }
+                @if (position.Call is { } call && IsActive(position.TokenStatus))
+                {
+                    <span class="execution-position-meta">
+                        @ExecutionPositionText.DescribeWait(position)@if (call.ChildInstanceId is long childId)
+                        {
+                            <text> · </text><a href="@($"instances/{childId}")">Child instance #@childId</a>
+                        }
+                    </span>
+                }
                 @if (!string.IsNullOrWhiteSpace(position.TerminationReason))
                 {
                     <span class="execution-position-reason">@ExecutionPositionText.TerminationReasonLabel(position.TerminationReason)</span>

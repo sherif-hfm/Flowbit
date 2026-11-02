@@ -89,6 +89,7 @@ Start and action forms choose controls from each value's type: number boxes, dat
 | Complex gateways | Evaluate activation conditions with incoming-count helpers and persisted start/reset cycles. |
 | Starts and waits | Manual, message, and timer starts; intermediate message, timer, and conditional catches. |
 | Boundary events | Error handling plus interrupting or non-interrupting timer and conditional paths. |
+| Call activities | Start a child instance of another workflow's published default, with typed inputs and results, durable delivery, and cascading cancellation. |
 | Scope and completion | Scoped interrupts, cancelling joins, normal ends, terminate ends, and explicit error ends. |
 
 Conditional events observe declared, persisted instance variables. They evaluate on entry and relevant variable-write batches, with either atomic continuation or a durable, latched wake processed by the Worker. Non-interrupting conditional boundaries can create new work on each false-to-true transition.

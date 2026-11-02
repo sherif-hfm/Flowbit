@@ -290,7 +290,11 @@ public sealed class InstanceVariableUpdateMigrationTests(PostgresApiFixture fixt
                     ALTER TABLE flowbit.workflow_instances
                         ADD COLUMN IF NOT EXISTS "FinishedAt" timestamp with time zone,
                         ADD COLUMN IF NOT EXISTS "HistoryPrunedAt" timestamp with time zone,
-                        ADD COLUMN IF NOT EXISTS "LastReactivationTokenId" bigint
+                        ADD COLUMN IF NOT EXISTS "LastReactivationTokenId" bigint,
+                        ADD COLUMN IF NOT EXISTS "CallRootInstanceId" bigint,
+                        ADD COLUMN IF NOT EXISTS "CallDepth" integer NOT NULL DEFAULT 0;
+                    ALTER TABLE flowbit.workflow_jobs
+                        ADD COLUMN IF NOT EXISTS "CallInvocationId" bigint
                     """,
                     compatibility);
                 await columns.ExecuteNonQueryAsync();

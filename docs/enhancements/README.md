@@ -49,7 +49,8 @@ Deadline and timer follow-ups, in this order:
 Conditional items:
 
 - [EVENT-02 Message correlation by business key](event-02-message-correlation-by-business-key.md): bring it forward if most adopters embed Flowbit over HTTP rather than using Flowbit.Ui.
-- [TASK-01 Call activity](task-01-call-activity.md) and [TASK-02 External task](task-02-external-task.md): schedule them when a concrete reuse or integration case justifies their lifecycle complexity.
+- [TASK-01 Call activity](task-01-call-activity.md). Done.
+- [TASK-02 External task](task-02-external-task.md): schedule it when a concrete integration case justifies its lifecycle complexity.
 
 Other items are not ranked yet.
 
@@ -57,7 +58,7 @@ Other items are not ranked yet.
 
 | ID | Item | Effort | Depends on | Status |
 | --- | --- | --- | --- | --- |
-| [TASK-01](task-01-call-activity.md) | Call activity (reusable subprocess) | L | None | Not started |
+| [TASK-01](task-01-call-activity.md) | Call activity (reusable subprocess) | L | None | Done |
 | [TASK-02](task-02-external-task.md) | External task for pull-based workers | L | None | Not started |
 | [TASK-03](task-03-business-rule-task-decision-table.md) | Business rule task with decision tables | M | None | Not started |
 | [TASK-04](task-04-email-and-chat-send.md) | Email and chat send connectors | M | None | Not started |

@@ -21,6 +21,10 @@ public sealed class WorkflowJobEntity
     public long? ConditionalBoundarySubscriptionId { get; set; }
     public ConditionalBoundarySubscriptionEntity? ConditionalBoundarySubscription { get; set; }
     public long? ConditionalBoundaryOccurrence { get; set; }
+
+    /// <summary>The call invocation a callStart, callResume, or callCancel job serves.</summary>
+    public long? CallInvocationId { get; set; }
+    public CallActivityExecutionEntity? CallInvocation { get; set; }
     public Guid ActivationId { get; set; }
     public int AutomaticActivationCount { get; set; }
     public int NodeId { get; set; }

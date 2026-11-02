@@ -23,6 +23,7 @@ Start with the [runnable getting-started guide](getting-started.md). This guide 
 - [Integrate inbound messages](#integrate-inbound-messages)
 - [Separate retries from business identity](#separate-retries-from-business-identity)
 - [Integrate automatic work and durable jobs](#integrate-automatic-work-and-durable-jobs)
+- [Call another workflow](#call-another-workflow)
 - [Read progress, search, and audit](#read-progress-search-and-audit)
 - [Handle errors and concurrent changes](#handle-errors-and-concurrent-changes)
 
@@ -495,6 +496,53 @@ A timer catch or boundary can take its date or duration from instance data, such
 - **Version changes compare text.** An open expression timer allows an in-place version change only when the target authors the same text, `${...}` wrapper included.
 - **Reactivation.** The [reactivation preview](api-guide.md#get-apiinstancesidreactivation) refuses a target whose expression timer boundary cannot be scheduled (`timer_boundary_unresolvable`) and warns when a timer boundary would already be due (`timer_boundary_already_due`); a commit for a refused target returns `409`.
 
+## Call another workflow
+
+A [`callActivity`](node-reference.md#callactivity) starts a child instance of another workflow family and waits for it. There is no HTTP operation to start, complete, or retry a call: the engine owns those steps through durable jobs, so a Worker must be running.
+
+**Publish the child first.** Publishing or making a version the default checks each call against its target's current published default, while drafts can be saved in either order. Two families that call each other have to be published in stages: publish one without the call, publish the other, then publish a new version with the call.
+
+```http
+POST /api/workflows HTTP/1.1
+Host: localhost:5017
+Authorization: Bearer TOKEN
+Content-Type: application/json
+
+{"definition":{"id":"example-call-manager-approval", ...},"publish":true}
+```
+
+Publish the parent the same way; the bodies here are excerpts, and the [paired examples](../examples/call-activities/README.md) contain complete definitions. Then start the parent as usual. The response can show it waiting at the call before a child exists:
+
+```http
+POST /api/instances HTTP/1.1
+Host: localhost:5017
+Authorization: Bearer TOKEN
+Content-Type: application/json
+
+{"workflowId":12,"startEventId":1,"variables":{"requestedAmount":250,"requestId":"REQ-1"}}
+```
+
+**When the version is chosen.** The Worker reads the family's published default when it creates the child, so a queued call has not chosen yet. Each visit then keeps its version, and changing the default does not touch an existing child. If the new default no longer fits, that visit fails with a stable code rather than selecting another version. Before changing a default, read [`GET /api/workflows/{workflowKey}/callers`](api-guide.md#get-apiworkflowsworkflowkeycallers). It reports each published caller's compatibility with the current default, a `candidateId`, or what would remain after deleting the default with `deletingId`. It is an advisory snapshot that reserves nothing, and the command checks its own rules again.
+
+**Identity and retries.** Each visit has one durable invocation, which makes Worker retries safe. It is not a business identity: a child's `businessKey` still applies, and a conflict fails the call (`call_business_key_conflict`) rather than attaching the existing instance. A target start that requires a transport idempotency header cannot be called, because a call has no header to send. Child and parent continuation run as the system actor `callActivity`, so pass a requester or approver as a mapped input.
+
+**Outcomes.** Results reach the parent only when the Worker delivers them, in one all-or-nothing batch.
+
+| What you see | Meaning | What to do |
+| --- | --- | --- |
+| Call `queued` with `capacityReserved: false` | Blocked before admission, by its inputs, depth, or the tree's capacity. It holds no slot and has an open incident. | Fix the cause, then retry the incident. |
+| Call `queued` with `capacityReserved: true` | Admitted and waiting for a Worker, or holding an incident from a failed start. | Check Workers and incidents. Retrying reuses its slot and cannot start a second child. |
+| Call `running` with `openIncidentCount` above zero | A durable job in the child needs attention. This is not a fault, and the parent keeps waiting. | Recover the child's job. |
+| Call `resultReady` | The child finished and a Worker is delivering the result. With an open incident, delivery failed and the frozen result is kept. | Fix the parent's state, then retry. The child does not run again. |
+| Call `failed` | The failure was delivered: a boundary caught it, or the parent faulted at the call node. | Read `failureCode` and `childFaultCode`. |
+| Call `cancelled` | The parent activation abandoned the call. It is different from a child cancelled on its own, which fails the call with `call_child_cancelled`. | No action. A completed child stays completed. |
+
+**A cancelled parent is not yet a cancelled tree.** `POST /api/instances/{id}/cancel` returns when the parent is cancelled. Its descendants stop accepting new work at that commit, so a command on one returns `409`, but they stay `running` until their `callCancel` jobs run, which takes longer with a backlog and does not happen while Workers are stopped. Their tasks remain visible in the inbox until then. Treat an instance as finished only when its own `status` says so.
+
+**Reading relationships.** Instance detail adds `parentCall` for a child and bounded `calls` counts, and a position waiting at a call has `call`. [`GET /api/instances/{id}/calls`](api-guide.md#get-apiinstancesidcalls) pages through direct outgoing calls, newest first, including visits with no child yet. General instance search treats parents and children as independent instances. These reads follow the instance-detail boundary: any authenticated actor can read them, and they grant no task, claim, or cancellation permission. Captured values are never returned.
+
+**Other operations.** A parent with an unsettled outgoing call, or a child with an unsettled incoming call, cannot change version; this includes queued calls and results awaiting delivery. A linked child cannot be reactivated, and a root can be reactivated only after all its calls settle and every descendant has stopped, with fresh visits for future calls.
+
 ## Read progress, search, and audit
 
 Use the resource that matches the question:
@@ -502,7 +550,8 @@ Use the resource that matches the question:
 | Question | Read model |
 | --- | --- |
 | What can this actor do now? | Actor inbox, task detail, and task flow discovery. |
-| Where is this process currently waiting? | Instance `executionPositions`, grouped `userTasks`, multi-instance and gateway progress, job summaries. |
+| Where is this process currently waiting? | Instance `executionPositions`, grouped `userTasks`, multi-instance and gateway progress, call state, job summaries. |
+| Which child workflows did this instance call? | `GET /api/instances/{id}/calls`, and `parentCall` on a child's detail. |
 | Which cases currently match business data? | Instance list/search, with workflow key, business key, node selectors, and latest-variable predicates. |
 | What happened on a specific node visit? | `/api/node-executions` and its detail endpoint; visit status, timestamps, reasons, and attributed variable changes. |
 | What values and transitions were recorded for an instance? | Instance detail `variables`/`history` and task history; these are audit collections, not one flat current-value object. |

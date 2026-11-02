@@ -1,0 +1,23 @@
+.callers-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 1040;
+    background: var(--fb-modal-backdrop);
+}
+
+.callers-dialog-shell {
+    position: fixed;
+    inset: 0;
+    z-index: 1050;
+    display: grid;
+    place-items: center;
+    padding: 1rem;
+    overflow-y: auto;
+}
+
+.callers-dialog {
+    width: min(720px, 100%);
+    max-height: calc(100vh - 2rem);
+    overflow-y: auto;
+    box-shadow: var(--fb-shadow-lg);
+}

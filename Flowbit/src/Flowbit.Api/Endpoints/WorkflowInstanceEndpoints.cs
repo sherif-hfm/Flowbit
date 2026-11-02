@@ -78,6 +78,11 @@ public static class WorkflowInstanceEndpoints
             .Produces(StatusCodes.Status401Unauthorized)
             .Produces(StatusCodes.Status404NotFound);
 
+        group.MapGet("/{id:long}/calls", GetInstanceCalls)
+            .Produces<PagedResult<CallActivityExecutionDto>>(StatusCodes.Status200OK)
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status404NotFound);
+
         group.MapGet("/{id:long}/reactivation", PreviewInstanceReactivation)
             .Produces<InstanceReactivationPreviewDto>(StatusCodes.Status200OK)
             .Produces(StatusCodes.Status400BadRequest)
@@ -417,6 +422,25 @@ public static class WorkflowInstanceEndpoints
         _ = actorResolver.Resolve(principal);
         var instance = await service.GetDetailAsync(id, cancellationToken);
         return instance is null ? Results.NotFound() : Results.Ok(instance);
+    }
+
+    /// <summary>
+    /// Pages an instance's direct outgoing calls, newest first. It follows the instance
+    /// detail read boundary, and a relation grants no task, claim, cancellation, or
+    /// administrative permission: any child operation performs its own check.
+    /// </summary>
+    public static async Task<IResult> GetInstanceCalls(
+        long id,
+        ClaimsPrincipal principal,
+        IActorContextResolver actorResolver,
+        IWorkflowInstanceProjectionService service,
+        CancellationToken cancellationToken,
+        int page = 1,
+        int pageSize = 50)
+    {
+        _ = actorResolver.Resolve(principal);
+        var calls = await service.ListCallsAsync(id, page, pageSize, cancellationToken);
+        return calls is null ? Results.NotFound() : Results.Ok(calls);
     }
 
     /// <summary>

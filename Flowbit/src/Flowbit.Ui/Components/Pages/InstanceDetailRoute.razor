@@ -1,0 +1,10 @@
+@page "/instances/{InstanceId:long}"
+
+@* A link between a parent and a child instance reuses this route's component.
+   The key gives each instance its own state, polling, and diagram. *@
+<InstanceDetail @key="InstanceId" InstanceId="@InstanceId" />
+
+@code {
+    [Parameter]
+    public long InstanceId { get; set; }
+}

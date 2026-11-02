@@ -120,6 +120,19 @@ public interface IWorkflowDefinitionService
     Task<bool> SetDefaultAsync(long id, CancellationToken cancellationToken);
 
     Task<bool> DeleteAsync(long id, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Lists the published versions that call a family and whether each passes the contract
+    /// check against the current default, a candidate version, or the result of deleting
+    /// the current default. It returns null when a named version does not exist in the family.
+    /// </summary>
+    Task<CallersPreviewDto?> GetCallersAsync(
+        string workflowKey,
+        long? candidateId,
+        long? deletingId,
+        int page,
+        int pageSize,
+        CancellationToken cancellationToken);
 }
 
 /// <summary>

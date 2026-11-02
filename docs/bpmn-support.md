@@ -15,6 +15,7 @@ For each node's properties, required fields, defaults, nested configuration, and
 - [Human work and multi-instance tasks](#human-work-and-multi-instance-tasks)
 - [Messages, timers, and conditions](#messages-timers-and-conditions)
 - [Synchronous and durable execution](#synchronous-and-durable-execution)
+- [Call activities](#call-activities)
 - [Variables, expressions, and evidence](#variables-expressions-and-evidence)
 - [Flowbit extensions](#flowbit-extensions)
 - [Unsupported capabilities](#unsupported-capabilities)
@@ -22,7 +23,7 @@ For each node's properties, required fields, defaults, nested configuration, and
 
 ## Supported node types
 
-The current model supports **21 node types**. “Worker” means the standalone `Flowbit.Worker` process. Every runtime workflow requires the API and PostgreSQL. A “No” below applies to the element itself; a downstream async task, timer, or durable conditional still requires a Worker.
+The current model supports **22 node types**. “Worker” means the standalone `Flowbit.Worker` process. Every runtime workflow requires the API and PostgreSQL. A “No” below applies to the element itself; a downstream async task, timer, or durable conditional still requires a Worker.
 
 | JSON `type` | Runtime behavior | Worker | Example or detail |
 | --- | --- | --- | --- |
@@ -33,6 +34,7 @@ The current model supports **21 node types**. “Worker” means the standalone 
 | `task` | Automatic pass-through step; no human work item or arbitrary application handler is invoked. | Only with async flags | [Async before and after](../examples/durable-jobs/01-async-before-after.json) |
 | `serviceTask` | Invokes the `rest` connector with templated request values, bounded HTTP execution, and typed output mappings. | With async flags; required for shared bindings | [REST examples](../examples/service-tasks/README.md) |
 | `scriptTask` | Runs ordered NCalc assignments or sandboxed JavaScript and persists validated outputs atomically. | Only with async flags | [Script examples](../examples/scripts/README.md) |
+| `callActivity` | Starts a child instance of another family's published default, rests until the child finishes, and copies typed inputs and results. Drawn as a task with a thick border. | Yes | [Call activity examples](../examples/call-activities/README.md) |
 | `exclusiveGateway` | Split chooses the first true route by ascending priority, otherwise its required default. Merge forwards each arrival independently unless cancelling-join behavior is enabled. | No | [Exclusive routing](../examples/gateways/01-exclusive-priority-and-default.json) |
 | `parallelGateway` | Split creates every branch. Merge waits for one token from every static incoming flow. | No | [Parallel fork and join](../examples/gateways/02-parallel-fork-and-join.json) |
 | `inclusiveGateway` | Split creates every true route, otherwise its required default. Merge applies the unpaired enabling rule using graph reachability and active token positions. | No | [Inclusive split and merge](../examples/gateways/03-inclusive-conditional-split-and-merge.json) |
@@ -153,6 +155,22 @@ demonstrate each failure policy. The [nested scope](../examples/gateways/README.
 and [receipt/deadline](../examples/messages/README.md#example-03-receipt-versus-timeout)
 walkthroughs show cancellation of durable waits while other work continues.
 
+## Call activities
+
+A `callActivity` invokes a reusable workflow; it does not embed a subprocess. The child is a normal instance with its own variables, tokens, tasks, history, and version, and one visit owns at most one child. See the [node reference](node-reference.md#callactivity) for its JSON.
+
+| Aspect | First-release behavior |
+| --- | --- |
+| Target | The family's published default and its default plain start, chosen when a Worker creates the child and kept for that visit. Latest-published and exact-version bindings are not supported. |
+| Data | Whole variables copied through typed mappings: inputs at entry, results when the child ends. There is no shared scope, expression, or path. Shared aliases cannot be mapped. |
+| Identity | Child and parent continuation run as the fixed system actor `callActivity`. No roles, claims, or delegation carry over. |
+| Success | A child's normal or terminate end, followed by valid output delivery. |
+| Failure | Child fault or independent cancellation takes the one catch-all error boundary, or faults the parent. Failures before the child exists and invalid outputs take the boundary, or open a retryable incident while the parent keeps waiting. |
+| Cancellation | Cancelling a parent, or the branch holding a call, settles the call in that transaction and stops new work on its descendants at once. Durable jobs then cancel them, so a descendant may stay `running` until a Worker has run. External effects are not undone. |
+| Limits | `WorkflowCallActivities:MaxDepth` bounds nesting exactly; `MaxOpenInvocationsPerRoot` is a soft threshold on open calls in a tree. Each call entry counts against the automatic-activation guard. |
+
+Not supported on a call: timer or conditional boundaries, HTTP status matching, `multiInstance`, authored async flags, and node job policies. Direct self-calls are rejected. Named child-fault matching, caller identity propagation, nested JSON extraction in mappings, and compensation are also out of scope.
+
 ## Variables, expressions, and evidence
 
 Process declarations support scalar `string`, `number`, `boolean`, `date`, `datetime`, and `json`, with the model's supported array forms, defaults, required inputs, and validation. Start inputs and user-action inputs are explicit contracts. Shared bindings reference a deployment catalog and are accessed through its dedicated API; they are not exposed as instance-variable history. See the [developer guide](developer-guide.md) for exact value shapes.
@@ -169,6 +187,7 @@ Flowbit uses NCalc rather than FEEL for routing and assignment expressions, plus
 | Merge `joinCancellation` | `{ "gatewayRef": splitId }` cancels unfinished descendants of that particular split activation after the merge enables. It never changes Parallel/Inclusive/Complex enabling rules. Exclusive becomes explicit first-arrival-wins. The survivor is promoted to the parent scope; unrelated work remains active. No common active referenced activation means 409 and rollback. |
 | Worklist policy | Node/action roles, captured dynamic role policies, claim bypass, assignment/claim inheritance, inbox predicates, and runtime delegation extend BPMN's general resource concepts with concrete authorization behavior. |
 | MI voting and parent interrupts | Selectable votes, engine-only outcomes, priorities, `afterEach`/`afterAll`, one-per-actor participation, and result collections define Flowbit's aggregation contract. |
+| Call-only start | `startEvent.callOnly` limits the default plain start to call activities. It is a start restriction, not caller authorization: any published workflow can still call that family. |
 | Execution and integration metadata | Async flags, retries, transport idempotency, business-key policy, typed REST mappings, shared bindings, and FlowInfo have Flowbit JSON semantics. Node/flow `attributes` are client metadata and do not alter execution. |
 | Form presentation | Start and action input declarations may carry `label`, `helpText`, and fixed `options` for the forms that collect them. They do not alter execution or version compatibility, and options do not restrict accepted values; `validation` does. BPMN leaves forms to the implementation. See [form presentation](node-reference.md#form-presentation). |
 | Task due date and priority | A `userTask` may carry `dueDate` (a fixed ISO-8601 duration, a fixed date-time, or an NCalc expression) and `priority` (an NCalc whole number), saved on each work item when it is created. The inbox returns, sorts, and filters by them, and reports `overdue` or `dueSoon` status. A missed due date has no execution effect; model enforced deadlines with a timer boundary. BPMN defines no task deadline attribute. See [due date and priority](node-reference.md#due-date-and-priority). |
@@ -180,7 +199,7 @@ Changes to active gateway, role, wait, job, or output contracts can block an in-
 
 - BPMN XML import/export, BPMN DI interchange, or automatic execution of definitions exported by other BPMN products.
 - Pools, collaborations, BPMN message flows, and choreography; lanes are visual organization only.
-- Embedded/event/transaction subprocesses, call activities, reusable subprocess invocation, and compensation scopes.
+- Embedded/event/transaction subprocesses and compensation scopes. [Call activities](#call-activities) invoke a reusable workflow, within the listed limits.
 - Event-based gateways; signal, escalation, compensation, cancel, link, and general throw-event families beyond the supported table.
 - General BPMN send/receive task implementations, non-REST service connectors, arbitrary external task executors, or multi-instance behavior on other activity types.
 - DMN decision tables, FEEL, cron schedules, and month or year timer durations. Business calendars count only durations, not `timeDate` or `timeCycle` timers.
@@ -195,6 +214,7 @@ Do not assume a similarly named element has every option found in a full BPMN en
 | Fan out independent reviews | [Parallel example](../examples/gateways/02-parallel-fork-and-join.json); use its `Finance`, `Legal`, and `Security` review roles. |
 | Count votes or implement quorum | [Multi-instance examples](../examples/multi-instance/README.md); compare with [Complex gateway quorum](../examples/gateways/04-complex-two-of-three-merge.json). |
 | Integrate a remote service or callback | [REST examples](../examples/service-tasks/README.md) and [message examples](../examples/messages/README.md). |
+| Reuse a fragment across workflows | [Call activity examples](../examples/call-activities/README.md). |
 | Pause, remind, or escalate | [Timer and conditional examples](../examples/README.md), with [Worker configuration](deployment.md#worker-operation). |
 | Interrupt one branch activation | [Gateway guide](../examples/gateways/README.md), including scoped interrupts and cancelling joins. |
 

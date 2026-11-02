@@ -128,6 +128,36 @@ public sealed class OpenApiContractTests
     }
 
     [Fact]
+    public async Task CallRoutesRetainTheirProductionOpenApiContracts()
+    {
+        await using var factory = new WorkflowInstanceDetailEndpointTests.DetailApiFactory();
+        await using var scope = factory.Services.CreateAsyncScope();
+        var provider = scope.ServiceProvider.GetRequiredKeyedService<IOpenApiDocumentProvider>("v1");
+        var document = await provider.GetOpenApiDocumentAsync();
+
+        var calls = document.Paths["/api/instances/{id}/calls"].Operations![HttpMethod.Get];
+        Assert.Equal("getInstancesByIdCalls", calls.OperationId);
+        Assert.Equal(["200", "401", "403", "404"], calls.Responses!.Keys.Order().ToArray());
+        Assert.Equal(["id", "page", "pageSize"], calls.Parameters!.Select(parameter => parameter.Name!).Order().ToArray());
+        Assert.Null(calls.RequestBody);
+
+        var callers = document.Paths["/api/workflows/{workflowKey}/callers"].Operations![HttpMethod.Get];
+        Assert.Equal("getWorkflowsByWorkflowKeyCallers", callers.OperationId);
+        Assert.Equal(["200", "400", "401", "403", "404"], callers.Responses!.Keys.Order().ToArray());
+        Assert.Equal(
+            ["candidateId", "deletingId", "page", "pageSize", "workflowKey"],
+            callers.Parameters!.Select(parameter => parameter.Name!).Order().ToArray());
+        var schema = callers.Responses["200"].Content!["application/json"].Schema;
+        Assert.Equal("CallersPreviewDto", Assert.IsType<Microsoft.OpenApi.OpenApiSchemaReference>(schema).Reference.Id);
+
+        var call = document.Components!.Schemas!["CallActivityExecutionDto"];
+        Assert.DoesNotContain(call.Properties!.Keys, name =>
+            name.Contains("input", StringComparison.OrdinalIgnoreCase)
+            || name.Contains("value", StringComparison.OrdinalIgnoreCase)
+            || name.Contains("contract", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
     public async Task EveryEndpointHasGeneratorReadyDocumentation()
     {
         await using var app = await CreateDocumentationHostAsync();

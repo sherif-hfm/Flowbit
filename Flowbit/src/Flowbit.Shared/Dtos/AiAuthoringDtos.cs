@@ -21,6 +21,8 @@ public sealed record AiTurnRequestDto
     public IReadOnlyList<AiSourcePageDto> Sources { get; init; } = [];
     /// <summary>Explicitly selected catalog keys. The API additionally requires shared-catalog read permission.</summary>
     public IReadOnlyList<string> SharedVariableKeys { get; init; } = [];
+    /// <summary>Workflow families the workflow may call. Their value-free start inputs and declared results reach the model.</summary>
+    public IReadOnlyList<string> CallTargetKeys { get; init; } = [];
     /// <summary>The conversation state from the previous result or checkpoint; null starts a new conversation.</summary>
     public AiConversationStateDto? State { get; init; }
 }

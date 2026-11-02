@@ -1,0 +1,140 @@
+{
+  "id": "example-call-purchase-request",
+  "name": "Call Example 02 - Purchase Request Calling Manager Approval",
+  "initialEventId": 1,
+  "variables": [
+    {
+      "id": 1,
+      "name": "managerApproved",
+      "dataType": "boolean",
+      "isArray": false,
+      "nullable": true,
+      "required": false,
+      "defaultValue": null,
+      "validation": null
+    }
+  ],
+  "lanes": [],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Purchase Requested",
+      "externalId": "START_PURCHASE_REQUESTED",
+      "type": "startEvent",
+      "laneId": null,
+      "x": 60,
+      "y": 140,
+      "roles": [],
+      "variables": [
+        {
+          "id": 1,
+          "name": "requestedAmount",
+          "dataType": "number",
+          "isArray": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": "requestedAmount > 0"
+        },
+        {
+          "id": 2,
+          "name": "requestId",
+          "dataType": "string",
+          "isArray": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": null
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "Manager Approval",
+      "externalId": "CALL_MANAGER_APPROVAL",
+      "type": "callActivity",
+      "laneId": null,
+      "x": 220,
+      "y": 128,
+      "callActivity": {
+        "workflowKey": "example-call-manager-approval",
+        "inputMappings": [
+          {
+            "sourceVariable": "requestedAmount",
+            "variable": "amount",
+            "dataType": "number",
+            "required": true
+          },
+          {
+            "sourceVariable": "requestId",
+            "variable": "requestId",
+            "dataType": "string",
+            "required": true
+          }
+        ],
+        "outputMappings": [
+          {
+            "sourceVariable": "approved",
+            "variable": "managerApproved",
+            "dataType": "boolean",
+            "required": true
+          }
+        ]
+      }
+    },
+    {
+      "id": 3,
+      "name": "Place Order",
+      "externalId": "TASK_PLACE_ORDER",
+      "type": "userTask",
+      "laneId": null,
+      "x": 520,
+      "y": 128,
+      "roles": [
+        "Purchasing"
+      ],
+      "variables": []
+    },
+    {
+      "id": 4,
+      "name": "Ordered",
+      "externalId": "END_ORDERED",
+      "type": "endEvent",
+      "laneId": null,
+      "x": 800,
+      "y": 140,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "",
+      "externalId": null,
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": [],
+      "condition": null
+    },
+    {
+      "id": 201,
+      "name": "",
+      "externalId": null,
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [],
+      "variables": [],
+      "condition": null
+    },
+    {
+      "id": 301,
+      "name": "Order Placed",
+      "externalId": "FLOW_ORDER_PLACED",
+      "sourceRef": 3,
+      "targetRef": 4,
+      "roles": [],
+      "variables": [],
+      "condition": null
+    }
+  ]
+}

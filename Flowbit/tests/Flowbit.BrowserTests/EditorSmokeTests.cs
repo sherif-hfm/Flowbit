@@ -1493,7 +1493,7 @@ public sealed class EditorSmokeTests(BrowserStackFixture stack)
             await CollectUnnamedAsync("the workflow");
             await SelectAsync("Everything", "Lane #1");
             await CollectUnnamedAsync("the lane");
-            foreach (var node in Enumerable.Range(1, 28))
+            foreach (var node in Enumerable.Range(1, 29))
             {
                 await SelectAsync($"#{node}", $"Node #{node}");
                 await CollectUnnamedAsync($"node #{node}");
@@ -1556,4 +1556,177 @@ public sealed class EditorSmokeTests(BrowserStackFixture stack)
 
     private static ILocator FormInput(ILocator scope, string label) =>
         FormField(scope, label).Locator("input, textarea").First;
+
+    [Theory]
+    [MemberData(nameof(EditorViewports))]
+    public async Task E19_CallActivityAuthorValidateUndoSaveAndReload(int viewportWidth, int viewportHeight)
+    {
+        await using var scenario = await CreateEditorScenarioAsync(
+            $"e19-call-activity-{viewportWidth}x{viewportHeight}", viewportWidth, viewportHeight);
+        await scenario.RunAsync("call-activity", async () =>
+        {
+            await OpenEditorAsync(scenario);
+            var page = scenario.Page;
+            await EditorInteractions.LoadWorkflowAsync(
+                page, EditorInteractions.FixturePath("editor-call-activity.json"));
+            await EditorInteractions.SelectMoveToolAsync(page);
+            var inspector = page.Locator("#inspector");
+            // A field with suggestions is a combobox, so these go by the label beside the control.
+            ILocator Textbox(string name, int index = 0) => inspector
+                .GetByLabel(name, new LocatorGetByLabelOptions { Exact = true }).Nth(index);
+            ILocator Button(string name, int index = 0) => inspector
+                .GetByRole(AriaRole.Button, new LocatorGetByRoleOptions { Name = name, Exact = true }).Nth(index);
+
+            // The type draws as a task with a thick border, at the task's size.
+            await EditorInteractions.SelectNodeAsync(page, 2);
+            await EditorInteractions.SelectTypeAsync(page, "callActivity");
+            var shape = page.Locator("#nodes [data-id='2'] > rect");
+            await Assertions.Expect(shape).ToHaveCSSAsync("stroke-width", "4px");
+            Assert.Contains("Call Activity", await page.Locator("#nodes [data-id='2'] > title").First.TextContentAsync());
+            await Assertions.Expect(Textbox("Version")).ToHaveValueAsync("Published default");
+            await Assertions.Expect(Textbox("Version")).ToBeDisabledAsync();
+
+            // Save names what is missing, and leaves the draft as it was.
+            await page.Locator("#fileMenuSummary").ClickAsync();
+            await page.Locator("#saveBtn").ClickAsync();
+            var errors = await EditorInteractions.WaitForValidationDialogAsync(page);
+            Assert.Contains("Call activity #2 must name a workflow key", errors);
+            await EditorInteractions.CloseValidationDialogWithEscapeAsync(page);
+
+            await Textbox("Workflow key").FillAsync("manager-approval");
+            await Button("+ Add mapping", 0).ClickAsync();
+            await Textbox("Variable in this workflow").FillAsync("amount");
+            await page.Keyboard.PressAsync("Tab");
+            await Assertions.Expect(inspector.GetByRole(AriaRole.Combobox, new LocatorGetByRoleOptions { Name = "Data type" }).First)
+                .ToHaveValueAsync("number");
+            await Textbox("Input of the called workflow").FillAsync("amount");
+            await inspector.GetByRole(AriaRole.Checkbox, new LocatorGetByRoleOptions { Name = "Required" }).First.CheckAsync();
+            await Button("+ Add mapping", 1).ClickAsync();
+            await Textbox("Variable in the called workflow").FillAsync("result");
+            await Textbox("Process variable in this workflow").FillAsync("decision");
+            await page.Keyboard.PressAsync("Tab");
+            await page.WaitForTimeoutAsync(700);
+
+            // Each mapping edit is on the history, and undo restores the row.
+            await page.Keyboard.PressAsync("Control+z");
+            await EditorInteractions.SelectNodeAsync(page, 2);
+            await page.Keyboard.PressAsync("Control+y");
+            await EditorInteractions.SelectNodeAsync(page, 2);
+            await Assertions.Expect(Textbox("Process variable in this workflow")).ToHaveValueAsync("decision");
+
+            // One catch-all boundary, and then no second one.
+            await Button("+ Add error boundary event").ClickAsync();
+            await EditorInteractions.ClickCenterAsync(page, await EditorInteractions.GetNodeBoxAsync(page, 3));
+            await page.Keyboard.PressAsync("Escape");
+            await EditorInteractions.SelectNodeAsync(page, 2);
+            await Assertions.Expect(inspector.GetByRole(AriaRole.Heading, new LocatorGetByRoleOptions { Name = "Error boundary" }))
+                .ToBeVisibleAsync();
+            await Assertions.Expect(Button("+ Add error boundary event")).ToHaveCountAsync(0);
+            await page.ScreenshotAsync(new PageScreenshotOptions
+            {
+                Path = Path.Combine(scenario.ArtifactDirectory, "call-activity-inspector.png")
+            });
+            Assert.True(await page.EvaluateAsync<bool>("document.documentElement.scrollWidth <= window.innerWidth + 2"));
+
+            // Move the node, then save and reload through the shared export.
+            var box = await EditorInteractions.GetNodeBoxAsync(page, 2);
+            await EditorInteractions.DragAsync(page, box.X + 80, box.Y + 40, box.X + 110, box.Y + 70);
+            using (var saved = await EditorInteractions.SaveAndCaptureDownloadAsync(page, scenario, scenario.ArtifactDirectory))
+            {
+                var node = saved.RootElement.GetProperty("flowNodes").EnumerateArray()
+                    .Single(item => item.GetProperty("id").GetInt32() == 2);
+                var call = node.GetProperty("callActivity");
+                Assert.Equal("manager-approval", call.GetProperty("workflowKey").GetString());
+                Assert.False(call.TryGetProperty("versionBinding", out _));
+                var input = call.GetProperty("inputMappings")[0];
+                Assert.Equal("number", input.GetProperty("dataType").GetString());
+                Assert.True(input.GetProperty("required").GetBoolean());
+                Assert.False(input.TryGetProperty("isArray", out _));
+                Assert.Equal("decision", call.GetProperty("outputMappings")[0].GetProperty("variable").GetString());
+                Assert.Contains(saved.RootElement.GetProperty("flowNodes").EnumerateArray(), item =>
+                    item.GetProperty("type").GetString() == "errorBoundaryEvent" && item.GetProperty("attachedToRef").GetInt32() == 2);
+            }
+
+            await EditorInteractions.LoadSavedFileAsync(page, scenario.LastSavedFile!);
+            await EditorInteractions.SelectMoveToolAsync(page);
+            await EditorInteractions.SelectNodeAsync(page, 2);
+            await Assertions.Expect(Textbox("Workflow key")).ToHaveValueAsync("manager-approval");
+            await Assertions.Expect(Textbox("Input of the called workflow")).ToHaveValueAsync("amount");
+
+            // A type change away clears the call and its boundary, and undo brings both back.
+            await EditorInteractions.SelectTypeAsync(page, "task");
+            await Assertions.Expect(Textbox("Workflow key")).ToHaveCountAsync(0);
+            await Assertions.Expect(page.Locator("#nodes .node.errorBoundaryEvent")).ToHaveCountAsync(0);
+            await page.Locator("#inspector h2").First.FocusAsync();
+            await page.WaitForTimeoutAsync(700);
+            await page.Keyboard.PressAsync("Control+z");
+            await EditorInteractions.SelectNodeAsync(page, 2);
+            await Assertions.Expect(Textbox("Workflow key")).ToHaveValueAsync("manager-approval");
+            await Assertions.Expect(page.Locator("#nodes .node.errorBoundaryEvent")).ToHaveCountAsync(1);
+
+            // Changing the default start keeps the flag and asks for an explicit fix.
+            await EditorInteractions.SelectNodeAsync(page, 1);
+            var callOnly = inspector.GetByRole(AriaRole.Checkbox, new LocatorGetByRoleOptions { Name = "Call only" });
+            await callOnly.CheckAsync();
+            await Assertions.Expect(callOnly).ToBeFocusedAsync();
+            await page.EvaluateAsync("document.activeElement?.blur()");
+            await page.Keyboard.PressAsync("Escape");
+            await inspector.GetByRole(AriaRole.Combobox, new LocatorGetByRoleOptions { Name = "Default start event" })
+                .SelectOptionAsync("4");
+            await EditorInteractions.SelectNodeAsync(page, 1);
+            await Assertions.Expect(callOnly).ToBeCheckedAsync();
+            await Assertions.Expect(inspector).ToContainTextAsync("is not the default start");
+            await page.Locator("#fileMenuSummary").ClickAsync();
+            await page.Locator("#saveBtn").ClickAsync();
+            Assert.Contains("sets callOnly but is not the default start event", await EditorInteractions.WaitForValidationDialogAsync(page));
+            await EditorInteractions.CloseValidationDialogWithEscapeAsync(page);
+            await callOnly.UncheckAsync();
+            using (var fixedFile = await EditorInteractions.SaveAndCaptureDownloadAsync(page, scenario, scenario.ArtifactDirectory))
+            {
+                Assert.DoesNotContain(fixedFile.RootElement.GetProperty("flowNodes").EnumerateArray(),
+                    item => item.TryGetProperty("callOnly", out _));
+            }
+        });
+    }
+
+    [Fact]
+    public async Task E20_ImportedCallSettingsStayVisibleUntilTheyAreRemoved()
+    {
+        await using var scenario = await CreateEditorScenarioAsync("e20-call-activity-import", 1440, 900);
+        await scenario.RunAsync("call-activity-import", async () =>
+        {
+            await OpenEditorAsync(scenario);
+            var page = scenario.Page;
+            var document = System.Text.Json.Nodes.JsonNode.Parse(
+                await File.ReadAllTextAsync(EditorInteractions.FixturePath("editor-call-activity.json")))!;
+            var node = document["flowNodes"]![1]!;
+            node["type"] = "callActivity";
+            node["asyncBefore"] = true;
+            node["callActivity"] = System.Text.Json.Nodes.JsonNode.Parse(
+                """{ "workflowKey": "manager-approval", "versionBinding": "exact", "inputMappings": "amount" }""");
+            var path = Path.Combine(scenario.ArtifactDirectory, "imported-call.json");
+            await File.WriteAllTextAsync(path, document.ToJsonString());
+            await EditorInteractions.LoadSavedFileAsync(page, path);
+            await EditorInteractions.SelectMoveToolAsync(page);
+            await EditorInteractions.SelectNodeAsync(page, 2);
+
+            var inspector = page.Locator("#inspector");
+            await page.Locator("#fileMenuSummary").ClickAsync();
+            await page.Locator("#saveBtn").ClickAsync();
+            var errors = await EditorInteractions.WaitForValidationDialogAsync(page);
+            Assert.Contains("cannot set asyncBefore", errors);
+            Assert.Contains("unsupported callActivity.versionBinding", errors);
+            Assert.Contains("mappings must be an array", errors);
+            await EditorInteractions.CloseValidationDialogWithEscapeAsync(page);
+
+            await inspector.GetByRole(AriaRole.Button, new LocatorGetByRoleOptions { Name = "Remove these options" }).ClickAsync();
+            await inspector.GetByRole(AriaRole.Button, new LocatorGetByRoleOptions { Name = "Use the published default" }).ClickAsync();
+            await inspector.GetByRole(AriaRole.Button, new LocatorGetByRoleOptions { Name = "Replace it with an empty list" }).ClickAsync();
+            using var saved = await EditorInteractions.SaveAndCaptureDownloadAsync(page, scenario, scenario.ArtifactDirectory);
+            var call = saved.RootElement.GetProperty("flowNodes").EnumerateArray()
+                .Single(item => item.GetProperty("id").GetInt32() == 2);
+            Assert.False(call.TryGetProperty("asyncBefore", out _));
+            Assert.Equal(0, call.GetProperty("callActivity").GetProperty("inputMappings").GetArrayLength());
+        });
+    }
 }

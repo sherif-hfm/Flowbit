@@ -108,6 +108,13 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     public DbSet<WorkflowDelegationPolicyEntity> WorkflowDelegationPolicies =>
         Set<WorkflowDelegationPolicyEntity>();
 
+    public DbSet<CallActivityExecutionEntity> CallActivityExecutions => Set<CallActivityExecutionEntity>();
+
+    public DbSet<CallActivityResultEntity> CallActivityResults => Set<CallActivityResultEntity>();
+
+    public DbSet<WorkflowDefinitionCallTargetEntity> WorkflowDefinitionCallTargets =>
+        Set<WorkflowDefinitionCallTargetEntity>();
+
     public DbSet<WorkflowJobEntity> WorkflowJobs => Set<WorkflowJobEntity>();
 
     public DbSet<WorkflowJobAttemptEntity> WorkflowJobAttempts => Set<WorkflowJobAttemptEntity>();
@@ -501,9 +508,22 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
         modelBuilder.Entity<WorkflowInstanceEntity>(entity =>
         {
-            entity.ToTable("workflow_instances", table => table.HasCheckConstraint(
-                "CK_workflow_instances_retention_terminal", "\"HistoryPrunedAt\" IS NULL OR \"Status\" IN ('completed','cancelled','faulted')"));
+            entity.ToTable("workflow_instances", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_workflow_instances_retention_terminal", "\"HistoryPrunedAt\" IS NULL OR \"Status\" IN ('completed','cancelled','faulted')");
+                table.HasCheckConstraint(
+                    "CK_workflow_instances_call_depth",
+                    $"\"CallDepth\" BETWEEN 0 AND {CallActivityConstraints.MaxSupportedDepth}");
+                table.HasCheckConstraint(
+                    "CK_workflow_instances_call_shape",
+                    "(\"CallRootInstanceId\" IS NULL AND \"CallDepth\" = 0) OR "
+                    + "(\"CallRootInstanceId\" IS NOT NULL AND \"CallDepth\" > 0)");
+            });
             entity.HasKey(e => e.Id);
+            entity.Property(e => e.CallDepth).HasDefaultValue(0);
+            entity.HasIndex(e => new { e.CallRootInstanceId, e.Status })
+                .HasFilter("\"CallRootInstanceId\" IS NOT NULL");
             entity.Property(e => e.Status).HasMaxLength(32).IsRequired();
             entity.Property(e => e.WorkflowKey).HasMaxLength(300).IsRequired();
             entity.Property(e => e.IdempotencyKey).HasMaxLength(300).UseCollation("C");
@@ -643,7 +663,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                     + "'gatewayScopeCancelled', 'gatewayJoinMerged', 'parallelFork', "
                     + "'parallelJoin', 'inclusiveSplit', 'inclusiveMerge', "
                     + "'complexActivation', 'complexReset', 'scopedInterrupt', "
-                    + "'scopedInterruptSkipped', 'timerFired', 'conditionalTriggered')))");
+                    + "'scopedInterruptSkipped', 'timerFired', 'conditionalTriggered', "
+                    + "'callCompleted', 'callFailed')))");
                 table.HasCheckConstraint(
                     "CK_node_executions_multi_instance_shape",
                     "(\"ExecutionKind\" = 'node' AND \"MultiInstanceExecutionId\" IS NULL AND \"ItemIndex\" IS NULL) OR "
@@ -1846,6 +1867,129 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.HasIndex(e => e.Name).IsUnique();
         });
 
+        modelBuilder.Entity<CallActivityExecutionEntity>(entity =>
+        {
+            entity.ToTable("call_activity_executions", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_call_activity_executions_state",
+                    "\"State\" IN ('queued', 'running', 'completed', 'failed', 'cancelled')");
+                // One past the deepest instance: a call blocked there records the depth it
+                // asked for, and no child can ever be created at it.
+                table.HasCheckConstraint(
+                    "CK_call_activity_executions_depth",
+                    $"\"ChildDepth\" BETWEEN 1 AND {CallActivityConstraints.MaxSupportedDepth + 1}");
+                // Running holds a reservation, a settled call holds none, and only a
+                // queued call with no child may be unreserved.
+                table.HasCheckConstraint(
+                    "CK_call_activity_executions_reservation",
+                    "(\"State\" = 'queued' AND \"ChildInstanceId\" IS NULL) OR "
+                    + "(\"State\" = 'running' AND \"CapacityReserved\") OR "
+                    + "(\"State\" IN ('completed', 'failed', 'cancelled') AND NOT \"CapacityReserved\")");
+                table.HasCheckConstraint(
+                    "CK_call_activity_executions_child_shape",
+                    "(\"State\" = 'running' AND \"ChildInstanceId\" IS NOT NULL) OR \"State\" <> 'running'");
+                table.HasCheckConstraint(
+                    "CK_call_activity_executions_child_resolution",
+                    "(\"ChildInstanceId\" IS NULL AND \"ChildDefinitionId\" IS NULL AND \"ChildStartEventId\" IS NULL) OR "
+                    + "(\"ChildInstanceId\" IS NOT NULL AND \"ChildDefinitionId\" IS NOT NULL AND \"ChildStartEventId\" IS NOT NULL)");
+                table.HasCheckConstraint(
+                    "CK_call_activity_executions_settlement",
+                    "(\"State\" IN ('queued', 'running') AND \"SettledAt\" IS NULL) OR "
+                    + "(\"State\" IN ('completed', 'failed', 'cancelled') AND \"SettledAt\" IS NOT NULL)");
+                table.HasCheckConstraint(
+                    "CK_call_activity_executions_admission",
+                    "NOT \"CapacityReserved\" OR \"AdmittedAt\" IS NOT NULL");
+            });
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.TargetWorkflowKey).HasMaxLength(CallActivityConstraints.MaxWorkflowKeyLength).IsRequired();
+            entity.Property(e => e.State).HasMaxLength(32).IsRequired();
+            entity.Property(e => e.CapacityReserved).HasDefaultValue(false);
+            entity.Property(e => e.ContractJson).HasColumnType("jsonb");
+            entity.Property(e => e.InputValuesJson).HasColumnType("jsonb");
+            entity.Property(e => e.FailureCode).HasMaxLength(100);
+            entity.Property(e => e.FailureDescription).HasMaxLength(CallActivityConstraints.MaxFailureDescriptionLength);
+            entity.Property(e => e.ChildFaultCode).HasMaxLength(ErrorEndConstraints.MaxCodeLength);
+            entity.Property(e => e.CausedBy).HasMaxLength(UserTaskConstraints.MaxActorNameLength);
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+            entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
+            entity.HasIndex(e => new { e.ParentInstanceId, e.ParentTokenId, e.ActivationId }).IsUnique();
+            entity.HasIndex(e => e.ChildInstanceId)
+                .IsUnique()
+                .HasFilter("\"ChildInstanceId\" IS NOT NULL");
+            entity.HasIndex(e => new { e.ParentInstanceId, e.Id }).IsDescending(false, true);
+            entity.HasIndex(e => new { e.ParentTokenId, e.State })
+                .HasFilter("\"State\" IN ('queued', 'running')");
+            entity.HasIndex(e => e.RootInstanceId)
+                .HasDatabaseName("IX_call_activity_executions_root_reserved")
+                .HasFilter("\"CapacityReserved\" AND \"State\" IN ('queued', 'running')");
+            entity.HasIndex(e => e.ParentDefinitionId);
+            entity.HasIndex(e => e.ChildDefinitionId);
+            entity.HasIndex(e => e.ParentNodeExecutionId);
+            entity.HasOne(e => e.ParentInstance)
+                .WithMany()
+                .HasForeignKey(e => e.ParentInstanceId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.ParentToken)
+                .WithMany()
+                .HasForeignKey(e => e.ParentTokenId)
+                .OnDelete(DeleteBehavior.Restrict);
+            // The visit's audit row can be pruned; the activation id remains the ownership fence.
+            entity.HasOne(e => e.ParentNodeExecution)
+                .WithMany()
+                .HasForeignKey(e => e.ParentNodeExecutionId)
+                .OnDelete(DeleteBehavior.SetNull);
+            entity.HasOne(e => e.ParentDefinition)
+                .WithMany()
+                .HasForeignKey(e => e.ParentDefinitionId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.ChildDefinition)
+                .WithMany()
+                .HasForeignKey(e => e.ChildDefinitionId)
+                .OnDelete(DeleteBehavior.Restrict);
+            // Set only by the transaction that creates the child, so its check waits on nothing.
+            entity.HasOne(e => e.ChildInstance)
+                .WithMany()
+                .HasForeignKey(e => e.ChildInstanceId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<CallActivityResultEntity>(entity =>
+        {
+            entity.ToTable("call_activity_results", table =>
+                table.HasCheckConstraint(
+                    "CK_call_activity_results_outcome",
+                    "\"Outcome\" IN ('completed', 'faulted', 'cancelled')"));
+            entity.HasKey(e => e.ChildInstanceId);
+            entity.Property(e => e.ChildInstanceId).ValueGeneratedNever();
+            entity.Property(e => e.Outcome).HasMaxLength(32).IsRequired();
+            entity.Property(e => e.OutputValuesJson).HasColumnType("jsonb");
+            entity.Property(e => e.FailureCode).HasMaxLength(100);
+            entity.Property(e => e.FailureDescription).HasMaxLength(CallActivityConstraints.MaxFailureDescriptionLength);
+            entity.Property(e => e.ChildFaultCode).HasMaxLength(ErrorEndConstraints.MaxCodeLength);
+            entity.HasIndex(e => e.InvocationId).IsUnique();
+            entity.HasOne(e => e.ChildInstance)
+                .WithMany()
+                .HasForeignKey(e => e.ChildInstanceId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.Invocation)
+                .WithMany()
+                .HasForeignKey(e => e.InvocationId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<WorkflowDefinitionCallTargetEntity>(entity =>
+        {
+            entity.ToTable("workflow_definition_call_targets");
+            entity.HasKey(e => new { e.WorkflowDefinitionId, e.NodeId });
+            entity.Property(e => e.TargetWorkflowKey).HasMaxLength(CallActivityConstraints.MaxWorkflowKeyLength).IsRequired();
+            entity.HasIndex(e => e.TargetWorkflowKey);
+            entity.HasOne(e => e.WorkflowDefinition)
+                .WithMany(e => e.CallTargets)
+                .HasForeignKey(e => e.WorkflowDefinitionId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
         modelBuilder.Entity<WorkflowDefinitionBusinessCalendarEntity>(entity =>
         {
             entity.ToTable("workflow_definition_business_calendars");
@@ -2186,6 +2330,13 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 .HasFilter(
                     "\"ConditionalBoundarySubscriptionId\" IS NOT NULL "
                     + "AND \"ConditionalBoundaryOccurrence\" IS NOT NULL");
+            entity.HasIndex(e => new { e.CallInvocationId, e.Kind })
+                .IsUnique()
+                .HasFilter("\"CallInvocationId\" IS NOT NULL");
+            entity.HasOne(e => e.CallInvocation)
+                .WithMany()
+                .HasForeignKey(e => e.CallInvocationId)
+                .OnDelete(DeleteBehavior.Restrict);
             entity.HasOne(e => e.Instance)
                 .WithMany(e => e.Jobs)
                 .HasForeignKey(e => e.InstanceId)

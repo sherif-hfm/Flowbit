@@ -54,8 +54,10 @@ public sealed partial class WorkflowAiAuthoringService(
             // Value-free contracts of the selected catalog entries, given to the model with the message.
             var shared = catalog.Count == 0 ? null : JsonSerializer.Serialize(catalog.Select(item => new
                 { item.Key, item.DataType, item.IsArray, item.Nullable, item.Validation, item.Description }), CatalogOptions);
+            var targets = await readiness.GetCallTargetContractsAsync(request.CallTargetKeys, cancellationToken);
+            var callTargets = targets.Count == 0 ? null : JsonSerializer.Serialize(targets, CatalogOptions);
             var conversation = new WorkflowAiConversation(clients, docs, validator, options, knowledge.ContractHash, ValidateModelAsync);
-            return await conversation.RunAsync(request, model, shared, emit, cancellationToken);
+            return await conversation.RunAsync(request, model, shared, callTargets, emit, cancellationToken);
         }
         finally
         {
@@ -105,6 +107,10 @@ public sealed partial class WorkflowAiAuthoringService(
         catch (WorkflowDomainException error) { saveBlockers.Add(SafeDiagnostic(error)); }
         try { readiness.EnsureDurablePublicationAllowed(model, publish: true); }
         catch (WorkflowDomainException error) { publicationBlockers.Add(SafeDiagnostic(error)); }
+        foreach (var problem in await readiness.FindCallTargetProblemsAsync(model, cancellationToken))
+        {
+            publicationBlockers.Add(problem.Message);
+        }
         cancellationToken.ThrowIfCancellationRequested();
         var warnings = new List<string>();
         if (model.FlowNodes.Any(node => BpmnFlowNodeTypes.IsServiceTask(node.Type)))
@@ -124,7 +130,7 @@ public sealed partial class WorkflowAiAuthoringService(
     private void ValidateRequest(AiTurnRequestDto request)
     {
         if (!Guid.TryParse(request.ConversationId, out _) || string.IsNullOrWhiteSpace(request.SnapshotId) || request.SnapshotId.Length > 256
-            || request.Message is null || request.Sources is null || request.SharedVariableKeys is null)
+            || request.Message is null || request.Sources is null || request.SharedVariableKeys is null || request.CallTargetKeys is null)
             throw new WorkflowAiException("invalid_request", "A conversation id, message, and editor snapshot are required.");
         if (request.Continue ? request.Message.Length > 0 : string.IsNullOrWhiteSpace(request.Message))
             throw new WorkflowAiException("invalid_request", request.Continue
@@ -140,6 +146,9 @@ public sealed partial class WorkflowAiAuthoringService(
         if (request.SharedVariableKeys.Count > 50 || request.SharedVariableKeys.Any(key => string.IsNullOrWhiteSpace(key) || key.Length > 300)
             || request.SharedVariableKeys.Distinct(StringComparer.OrdinalIgnoreCase).Count() != request.SharedVariableKeys.Count)
             throw new WorkflowAiException("invalid_catalog_selection", "Select up to 50 distinct shared-variable keys.");
+        if (request.CallTargetKeys.Count > 20 || request.CallTargetKeys.Any(key => string.IsNullOrWhiteSpace(key) || key.Length > CallActivityConstraints.MaxWorkflowKeyLength)
+            || request.CallTargetKeys.Distinct(StringComparer.Ordinal).Count() != request.CallTargetKeys.Count)
+            throw new WorkflowAiException("invalid_call_target_selection", "Select up to 20 distinct call targets.");
         if (request.CurrentWorkflow is { } current && Encoding.UTF8.GetByteCount(current.GetRawText()) > options.MaxWorkflowCharacters)
             throw new WorkflowAiException("workflow_too_large", "The editor workflow exceeds the authoring size limit.", 413);
     }

@@ -30,6 +30,7 @@ public static class WorkflowVersionCompatibilityEvaluator
         var targetNodes = IndexNodes(target);
 
         ValidateEnvelope(context, blockers);
+        ValidateCallActivities(context, source, target, sourceNodes, targetNodes, blockers);
         ValidateTargetConditionalDependencies(target, blockers);
         ValidateSharedVariableBindings(source, target, blockers);
         var activeNodeIds = ValidateActiveNodes(
@@ -85,6 +86,53 @@ public static class WorkflowVersionCompatibilityEvaluator
         return new WorkflowVersionCompatibilityResult(
             SortIssues(blockers),
             SortIssues(warnings));
+    }
+
+    // Live calls are blocked conservatively. A settled call keeps the contract and child
+    // version it ran with, so later compatible switches stay allowed.
+    private static void ValidateCallActivities(
+        WorkflowVersionCompatibilityContext context,
+        WorkflowModel source,
+        WorkflowModel target,
+        IReadOnlyDictionary<int, FlowNodeModel> sourceNodes,
+        IReadOnlyDictionary<int, FlowNodeModel> targetNodes,
+        ICollection<WorkflowVersionCompatibilityIssue> blockers)
+    {
+        if (context.HasUnsettledOutgoingCall)
+        {
+            blockers.Add(Issue(
+                WorkflowVersionCompatibilityCodes.UnsettledOutgoingCall,
+                $"Instance #{context.Instance.Id} has a call activity that has not settled.",
+                runtimeId: context.Instance.Id));
+        }
+
+        if (context.HasUnsettledIncomingCall)
+        {
+            blockers.Add(Issue(
+                WorkflowVersionCompatibilityCodes.UnsettledIncomingCall,
+                $"Instance #{context.Instance.Id} is the child of a call activity that has not settled.",
+                runtimeId: context.Instance.Id));
+        }
+
+        foreach (var nodeId in context.ActiveTokens
+                     .Where(token => BpmnFlowNodeTypes.IsCallActivity(token.NodeType))
+                     .Select(token => token.NodeId)
+                     .Distinct()
+                     .OrderBy(id => id))
+        {
+            if (sourceNodes.TryGetValue(nodeId, out var sourceNode)
+                && targetNodes.TryGetValue(nodeId, out var targetNode)
+                && !string.Equals(
+                    DurableNodeContract(source, sourceNode),
+                    DurableNodeContract(target, targetNode),
+                    StringComparison.Ordinal))
+            {
+                blockers.Add(Issue(
+                    WorkflowVersionCompatibilityCodes.ActiveCallContractChanged,
+                    $"Call activity #{nodeId} changes its target, mappings, flow, or boundary.",
+                    nodeId));
+            }
+        }
     }
 
     private static void ValidateTargetConditionalDependencies(

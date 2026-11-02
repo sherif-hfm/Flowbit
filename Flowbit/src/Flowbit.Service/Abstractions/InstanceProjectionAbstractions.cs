@@ -19,6 +19,16 @@ public interface IWorkflowInstanceProjectionService
         bool includeHistory,
         CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Pages an instance's direct outgoing calls, newest first. Null when the instance does
+    /// not exist.
+    /// </summary>
+    Task<PagedResult<CallActivityExecutionDto>?> ListCallsAsync(
+        long instanceId,
+        int page,
+        int pageSize,
+        CancellationToken cancellationToken);
+
     Task<MultiInstanceProgressDto?> GetMultiInstanceProgressAsync(
         long executionId,
         CancellationToken cancellationToken);

@@ -15,11 +15,12 @@ public sealed class WorkflowDefinitionService(
     IConditionalEventDependencyPlanCache? conditionalEventPlanCache = null,
     ISharedVariableRepository? sharedVariables = null,
     ISharedVariableAccessPlanCache? sharedVariableAccessPlanCache = null,
-    IBusinessCalendarRepository? businessCalendars = null)
+    IBusinessCalendarRepository? businessCalendars = null,
+    ICallActivityRepository? callActivities = null)
     : IWorkflowDefinitionService
 {
     private readonly WorkflowDefinitionReadinessChecker readiness =
-        new(sharedVariables, conditionalEventAnalyzer, durableProcessingOptions, businessCalendars);
+        new(sharedVariables, conditionalEventAnalyzer, durableProcessingOptions, businessCalendars, definitions);
     private readonly IConditionalEventDefinitionAnalyzer conditionalAnalyzer =
         conditionalEventAnalyzer ?? new ConditionalEventDefinitionAnalyzer();
 
@@ -54,6 +55,10 @@ public sealed class WorkflowDefinitionService(
         readiness.ValidateSharedServiceTaskDurability(definition);
         readiness.ValidateSharedTransactionLockOrder(definition);
         readiness.EnsureDurablePublicationAllowed(definition, publish);
+        if (publish)
+        {
+            await readiness.ValidateCallTargetsAsync(definition, cancellationToken);
+        }
         var name = definition.Name.Trim();
         var created = await definitions.AddAsync(name, definition, publish, cancellationToken);
         _ = conditionalEventPlanCache?.GetOrAdd(created.Id, created.Definition);
@@ -84,6 +89,10 @@ public sealed class WorkflowDefinitionService(
         readiness.ValidateSharedServiceTaskDurability(definition);
         readiness.ValidateSharedTransactionLockOrder(definition);
         readiness.EnsureDurablePublicationAllowed(definition, publish);
+        if (publish)
+        {
+            await readiness.ValidateCallTargetsAsync(definition, cancellationToken);
+        }
         var name = string.IsNullOrWhiteSpace(definition.Name) ? source.Name : definition.Name.Trim();
         var created = await definitions.AddAsync(name, definition, publish, cancellationToken);
         _ = conditionalEventPlanCache?.GetOrAdd(created.Id, created.Definition);
@@ -110,6 +119,7 @@ public sealed class WorkflowDefinitionService(
         readiness.ValidateSharedServiceTaskDurability(definition.Definition);
         readiness.ValidateSharedTransactionLockOrder(definition.Definition);
         readiness.EnsureDurablePublicationAllowed(definition.Definition, publish: true);
+        await readiness.ValidateCallTargetsAsync(definition.Definition, cancellationToken);
         var published = await definitions.SetPublishedAsync(id, true, cancellationToken);
         if (published)
         {
@@ -154,6 +164,7 @@ public sealed class WorkflowDefinitionService(
         readiness.ValidateSharedServiceTaskDurability(definition.Definition);
         readiness.ValidateSharedTransactionLockOrder(definition.Definition);
         readiness.EnsureDurablePublicationAllowed(definition.Definition, publish: true);
+        await readiness.ValidateCallTargetsAsync(definition.Definition, cancellationToken);
         var set = await definitions.SetDefaultAsync(id, true, cancellationToken);
         if (set)
         {
@@ -180,6 +191,122 @@ public sealed class WorkflowDefinitionService(
             logger.LogInformation("Delete workflow {WorkflowId}: definition not found.", id);
         }
         return deleted;
+    }
+
+    public async Task<CallersPreviewDto?> GetCallersAsync(
+        string workflowKey,
+        long? candidateId,
+        long? deletingId,
+        int page,
+        int pageSize,
+        CancellationToken cancellationToken)
+    {
+        if (candidateId is not null && deletingId is not null)
+        {
+            throw new WorkflowDomainException("candidateId and deletingId cannot be used together.");
+        }
+
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 200);
+        var current = await definitions.GetDefaultByWorkflowKeyAsync(workflowKey, cancellationToken);
+        var mode = CallersPreviewModes.Current;
+        var target = current;
+        bool? deletionAllowed = null;
+        IReadOnlyList<string> deletionBlockers = [];
+        if (candidateId is long candidate)
+        {
+            var version = await definitions.GetAsync(candidate, cancellationToken);
+            if (version is null || !string.Equals(version.WorkflowKey, workflowKey, StringComparison.Ordinal))
+            {
+                return null;
+            }
+
+            if (!version.IsPublished)
+            {
+                throw new WorkflowDomainException($"Workflow version #{candidate} is not published.");
+            }
+
+            mode = CallersPreviewModes.Candidate;
+            target = version;
+        }
+        else if (deletingId is long deleting)
+        {
+            var version = await definitions.GetAsync(deleting, cancellationToken);
+            if (version is null || !string.Equals(version.WorkflowKey, workflowKey, StringComparison.Ordinal))
+            {
+                return null;
+            }
+
+            if (current?.Id != deleting)
+            {
+                throw new WorkflowDomainException($"Workflow version #{deleting} is not the current default of '{workflowKey}'.");
+            }
+
+            var assessment = await definitions.AssessDeletionAsync(deleting, cancellationToken);
+            if (assessment is null)
+            {
+                return null;
+            }
+
+            mode = CallersPreviewModes.Deletion;
+            deletionAllowed = assessment.Allowed;
+            deletionBlockers = assessment.Blockers;
+
+            // A blocked deletion leaves the default as it is, so the callers keep their
+            // current target; an allowed one moves them to the actual successor.
+            if (assessment.Allowed)
+            {
+                target = assessment.SuccessorId is long successor
+                    ? await definitions.GetAsync(successor, cancellationToken)
+                    : null;
+            }
+        }
+
+        var callers = callActivities is null
+            ? new PagedResult<WorkflowCallerRecord>([], page, pageSize, 0)
+            : await callActivities.ListPublishedCallersAsync(workflowKey, page, pageSize, cancellationToken);
+        var callerDefinitions = await definitions.GetManyAsync(
+            callers.Items.Select(caller => caller.WorkflowDefinitionId).Distinct().ToArray(),
+            cancellationToken);
+        return new CallersPreviewDto(
+            mode,
+            target?.Id,
+            target?.Version,
+            target is null,
+            deletionAllowed,
+            deletionBlockers,
+            new PagedResult<WorkflowCallerDto>(
+                callers.Items
+                    .Select(caller => ToCaller(
+                        caller,
+                        callerDefinitions.GetValueOrDefault(caller.WorkflowDefinitionId),
+                        target?.Definition))
+                    .ToList(),
+                callers.Page,
+                callers.PageSize,
+                callers.TotalCount));
+    }
+
+    private WorkflowCallerDto ToCaller(
+        WorkflowCallerRecord caller,
+        WorkflowDefinitionRecord? definition,
+        WorkflowModel? target)
+    {
+        var node = definition?.Definition.FlowNodes.FirstOrDefault(candidate => candidate.Id == caller.NodeId);
+        var problems = node is null
+            ? []
+            : readiness.FindCallTargetProblems(definition!.Definition, node, target);
+        return new WorkflowCallerDto(
+            caller.WorkflowDefinitionId,
+            caller.WorkflowKey,
+            caller.Name,
+            caller.Version,
+            caller.IsDefault,
+            caller.NodeId,
+            node?.Name,
+            problems.Count == 0,
+            problems.Select(problem => problem.Code).Distinct().ToArray(),
+            problems.Select(problem => problem.Message).ToArray());
     }
 
     internal static WorkflowSummaryDto ToSummary(WorkflowDefinitionRecord record) =>

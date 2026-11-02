@@ -294,6 +294,9 @@ diagrams, see the [database schema reference](../docs/database-schema.md).
   `flowbit.instance_variable_current_values`,
   `flowbit.instance_history`,
   `flowbit.sequence_flow_occurrences`, and `flowbit.sequence_flow_summaries`.
+- Call activities are stored in `flowbit.call_activity_executions`,
+  `flowbit.call_activity_results`, and
+  `flowbit.workflow_definition_call_targets`.
 - Durable work is stored in `flowbit.workflow_jobs`,
   `flowbit.workflow_job_attempts`, `flowbit.workflow_job_snapshots`,
   `flowbit.workflow_incidents`, and `flowbit.timer_subscriptions`.
@@ -745,6 +748,31 @@ immediately (an `asyncAfter` parent, or a host a conditional boundary
 interrupted in the same batch). That action now commits and records no
 aggregate occurrence.
 
+## Call activities
+
+A `callActivity` starts a child instance of another workflow family and rests until a durable result is delivered. Authoring is in the [node reference](../docs/node-reference.md#callactivity), integration in the [developer guide](../docs/developer-guide.md#call-another-workflow), and rollout in [deployment](../docs/deployment.md#call-activity-rollout).
+
+**One existing instance per transaction.** A transaction locks the runtime rows of at most one existing instance. The only second instance it may touch is a child it is creating, which no other transaction can see yet. Cross-instance jobs are messages: `callResume` belongs to the child's rows and `callCancel` to the parent's, each names its invocation in `CallInvocationId`, and processing one locks only the receiver. No row written by one side holds a foreign key to the other side's instance or token, because a foreign-key check would wait on a `FOR UPDATE` lock held by the other side.
+
+**Row ownership.** `call_activity_executions` rows are written only under the parent's instance lock, and `call_activity_results` rows are written once under the child's lock and never change. Each side reads the other without locking. Stored states are `queued`, `running`, `completed`, `failed`, and `cancelled`; `resultReady` is a read projection of `running` plus a result row. `failed` means a failure was delivered, and `cancelled` means the parent activation abandoned the call, which differs from a child cancelled on its own.
+
+**Admission.** Depth is exact because it is immutable. Reserved unsettled calls are counted under the entering instance's lock, including this transaction's own, so the open-call limit is a soft threshold rather than an exact quota. A call blocked before admission has `CapacityReserved = false`, no child, and an incident; its retry repeats admission. An admitted retry reuses its slot. Every settlement clears the flag atomically, and every call entry counts against the automatic-activation guard, even when delivery follows a person's action.
+
+**Phases.**
+
+1. *Entry*, in `ResolvePassThroughAsync`: capture inputs, check admission, persist the queued invocation, set the token's `callStart` wait, and enqueue `callStart`, all in one commit. A failure takes the boundary in this transaction, or opens an incident without reserving.
+2. *Creation*, in `ProcessCallStartJobAsync`: take the target family's shared lock, then the parent's locks, and recheck that the invocation is still queued. Resolve the published default, repeat the contract and readiness checks, and call `StartInstanceCoreAsync` with the fixed actor, the ambient transaction, and forced durability, so the pass runs no external call while holding the parent's locks. The invocation is linked right after the child's insert and before routing, so a child that ends in this pass already has its link. A start failure rolls back the whole transaction, then applies the failure in a new one.
+3. *Terminal capture*, in `SetInstanceTerminalStatusAsync`: every path that ends an instance goes through this coordinator. If the invocation is unsettled, it writes the result row and enqueues one `callResume` on the child's rows through `jobs.EnqueueAsync`, so a busy parent cannot roll back a child's completion. Invalid outputs are captured as a `call_output_invalid` outcome and never roll back the child.
+4. *Delivery*, in `ProcessCallResumeJobAsync`: take the parent's locks, validate the whole frozen overlay, write one batch attributed to the call visit, settle, and route on with forced durability. A failing boundary write or downstream route rolls delivery back and keeps the result for normal job recovery. A settled invocation or a terminal parent completes the job as stale.
+5. *Abandonment*, in `AbandonCallsForTokensAsync`: `CancelDurableWorkForTokensAsync` is the shared hook for instance cancel, terminate, fault, scoped interrupt, join cancellation, and administrative actions. It settles the tokens' unsettled calls as `cancelled` and enqueues `callCancel` for each child through `jobs.EnqueueAsync`, so a parent at its job cap can still be cancelled. The other direct callers of `CancelOtherJobsByTokenIdsAsync` host only timer and conditional nodes, and a test pins that.
+6. *Cascade*, in `ProcessCallCancelJobAsync`: take the child's locks, bypassing the fence, and cancel it without its `cancelRoles` check, because the decision was authorized on the parent. That passes through the same hook, so the cascade continues one job per level.
+
+**The call fence.** After locking an instance with a non-null `CallRootInstanceId`, `GetInstanceForUpdateAsync` reads its complete chain of incoming invocations in one recursive query without locks, following persisted `CallDepth` bounded by the supported maximum of 32, never the configured `MaxDepth`. A valid chain containing a `cancelled` invocation throws `WorkflowCallFenceException`: commands return `409` and jobs complete as stale. A missing link, cycle, truncation, or inconsistent root or depth throws `WorkflowCallChainException`, which fails closed and opens a `job_invariant_violation` incident on a job. `callCancel` and instance cancellation bypass the fence. Roots skip the query, so instances outside a call tree pay nothing. Because the read takes no lock, a transition already in progress may commit just after the parent's cancel, and its result is discarded at delivery.
+
+**Identity and limits.** Child start, `callResume`, and `callCancel` use `CallActivityActor()`, the fixed system actor `callActivity`, with no job-payload actor. Unsettled calls block version changes on both sides, a linked child cannot be reactivated, and a root can be reactivated only once its calls have settled and its descendants have stopped. Definition rules live in `CallActivityRules` and `WorkflowDefinitionValidator`, and cross-definition checks in `WorkflowDefinitionReadinessChecker`. The shared-variable lock-order proof treats a call as a durable resting boundary, and delivery as the start of a new segment.
+
+**Retained identity.** The invocation row is the relationship and outlives history retention. Only its captured values can be cleared, after settlement. A fresh activation ID, not a node-execution reference, is the ownership fence, so pruning history cannot affect it.
+
 ## Durable async work and timers
 
 `task`, `serviceTask`, `scriptTask`, and `userTask` support `asyncBefore` and
@@ -997,6 +1025,7 @@ and in-flight gateway executions are not migrated.
 - `POST /api/workflows`
 - `PUT /api/workflows/{id}`
 - `POST /api/workflows/{id}/publish`
+- `GET /api/workflows/{workflowKey}/callers` (published callers and their compatibility)
 - `POST /api/instances`
 - `GET /api/instances?status=running` (SQL-authorized, opaque cursor paging)
 - `GET /api/instances?includeVariables=true`
@@ -1004,6 +1033,7 @@ and in-flight gateway executions are not migrated.
 - `GET /api/instances/inbox` (actor-scoped)
 - `GET /api/instances/inbox?includeVariables=true` (actor-scoped)
 - `POST /api/instances/inbox/search` (advanced, actor-scoped)
+- `GET /api/instances/{id}/calls` (paged outgoing call activities)
 - `POST /api/user-tasks/manage/search` (advanced, assignment-manager scoped)
 - `POST /api/task-distribution/workflows/{workflowKey}/tasks/search`
 - `GET /api/node-executions` (authorized cross-workflow activity)
@@ -1209,8 +1239,8 @@ reason values are `normal`, `userAction`, `messageDelivery`,
 `boundaryCaught`, `normalEnd`, `terminateEnd`, `errorEnd`,
 `instanceCancelled`, `gatewayScopeCancelled`, `gatewayJoinMerged`,
 `parallelFork`, `parallelJoin`, `inclusiveSplit`, `inclusiveMerge`,
-`complexActivation`, `complexReset`, `scopedInterrupt`, and
-`scopedInterruptSkipped`.
+`complexActivation`, `complexReset`, `scopedInterrupt`,
+`scopedInterruptSkipped`, `callCompleted`, and `callFailed`.
 
 The list returns `PagedResult<NodeExecutionSummaryDto>` and the detail route
 returns `NodeExecutionDetailDto`. Summary rows include immutable workflow,
@@ -1437,7 +1467,7 @@ dotnet test ./tests/Flowbit.BrowserTests/Flowbit.BrowserTests.csproj -c Release 
 ```
 
 Set `FLOWBIT_BROWSER_HEADED=1` to launch Chromium headed for local diagnosis.
-The suite covers editor E1–E18 and runtime R1–R11 scenarios (see the project
+The suite covers editor E1–E20 and runtime R1–R11 scenarios (see the project
 README); manual native-picker and full acceptance checks remain the caller's
 responsibility.
 

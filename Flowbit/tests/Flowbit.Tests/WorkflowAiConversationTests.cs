@@ -23,7 +23,7 @@ public sealed class WorkflowAiConversationTests
 
     private static Task<AiTurnResultDto> Run(ScriptedHandler handler, AiTurnRequestDto request, List<AiRunEventDto>? events = null,
         WorkflowAiOptions? options = null, AiModelConnection? connection = null) =>
-        AgentHarness.Conversation(handler, options).RunAsync(request, connection ?? AgentHarness.Connection, null,
+        AgentHarness.Conversation(handler, options).RunAsync(request, connection ?? AgentHarness.Connection, null, null,
             events is null ? null : (frame, _) => { events.Add(frame); return Task.CompletedTask; }, CancellationToken.None);
 
     [Fact]

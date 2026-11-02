@@ -85,7 +85,8 @@ public sealed class InstanceDtoContractTests
                 "ActivationId",
                 "WaitState",
                 "WaitingJobId",
-                "WaitingTimerSubscriptionId"
+                "WaitingTimerSubscriptionId",
+                "Call"
             },
             typeof(ExecutionPositionDto).GetProperties().Select(property => property.Name));
         Assert.Equal(

@@ -80,6 +80,7 @@ const NODE_TYPE = {
   TASK: "task",
   SERVICE_TASK: "serviceTask",
   SCRIPT_TASK: "scriptTask",
+  CALL_ACTIVITY: "callActivity",
   EXCLUSIVE_GATEWAY: "exclusiveGateway",
   PARALLEL_GATEWAY: "parallelGateway",
   INCLUSIVE_GATEWAY: "inclusiveGateway",
@@ -103,6 +104,7 @@ const NODE_TYPE_OPTIONS = [
   { value: NODE_TYPE.TASK, label: "Task (automatic)" },
   { value: NODE_TYPE.SERVICE_TASK, label: "Service Task" },
   { value: NODE_TYPE.SCRIPT_TASK, label: "Script Task (set variables)" },
+  { value: NODE_TYPE.CALL_ACTIVITY, label: "Call Activity" },
   { value: NODE_TYPE.EXCLUSIVE_GATEWAY, label: "Exclusive Gateway" },
   { value: NODE_TYPE.PARALLEL_GATEWAY, label: "Parallel Gateway" },
   { value: NODE_TYPE.INCLUSIVE_GATEWAY, label: "Inclusive Gateway" },
@@ -259,6 +261,7 @@ function searchDiagram(candidate, query, limit = 20) {
     task: "Task",
     serviceTask: "Service Task",
     scriptTask: "Script Task",
+    callActivity: "Call Activity",
     exclusiveGateway: "Exclusive Gateway",
     parallelGateway: "Parallel Gateway",
     inclusiveGateway: "Inclusive Gateway",
@@ -1334,6 +1337,9 @@ function isServiceTaskType(type) {
 function isScriptTaskType(type) {
   return type === NODE_TYPE.SCRIPT_TASK;
 }
+function isCallActivityType(type) {
+  return type === NODE_TYPE.CALL_ACTIVITY;
+}
 function isUserTaskType(type) {
   return type === NODE_TYPE.USER_TASK;
 }
@@ -1588,6 +1594,7 @@ function isSingleOutgoingType(type) {
     || type === NODE_TYPE.TASK
     || type === NODE_TYPE.SERVICE_TASK
     || type === NODE_TYPE.SCRIPT_TASK
+    || type === NODE_TYPE.CALL_ACTIVITY
     || type === NODE_TYPE.SCOPED_INTERRUPT_EVENT
     || type === NODE_TYPE.ERROR_BOUNDARY_EVENT
     || type === NODE_TYPE.TIMER_BOUNDARY_EVENT
@@ -1671,7 +1678,8 @@ function applyTypeInvariants(node) {
     if (node.asyncBefore === undefined) node.asyncBefore = false;
     if (node.asyncAfter === undefined) node.asyncAfter = false;
     if (node.job != null) node.job = normalizeJobPolicy(node.job);
-  } else {
+  } else if (!isCallActivityType(node.type)) {
+    // A call keeps imported async settings so save validation can report them.
     delete node.asyncBefore;
     delete node.asyncAfter;
     delete node.job;
@@ -1720,7 +1728,9 @@ function applyTypeInvariants(node) {
     node.businessKey.uniqueness = canonicalizeKnownValue(
       node.businessKey.uniqueness, ["active", "all"], undefined);
   }
-  if (!isUserTaskType(node.type)) delete node.multiInstance;
+  if (!isUserTaskType(node.type) && !(isCallActivityType(node.type) && node.multiInstance != null)) {
+    delete node.multiInstance;
+  }
   if (isEndEventType(node.type)) {
     node.requiresClaim = false;
     node.claimMode = CLAIM_MODE.FRESH;
@@ -1763,6 +1773,22 @@ function applyTypeInvariants(node) {
     node.variables = [];
     node.assignee = null;
     node.service = normalizeService(node.service, model.variables);
+    node.assignments = [];
+    delete node.scriptFormat;
+    delete node.script;
+    delete node.attachedToRef;
+    delete node.errorVariable;
+    delete node.message;
+  } else if (isCallActivityType(node.type)) {
+    // A call rests while its child runs; everything it authors lives on
+    // node.callActivity, which stays as imported so save validation can report it.
+    node.requiresClaim = false;
+    node.claimMode = CLAIM_MODE.FRESH;
+    node.inheritClaimFromNodeId = null;
+    node.roles = [];
+    node.variables = [];
+    node.assignee = null;
+    delete node.service;
     node.assignments = [];
     delete node.scriptFormat;
     delete node.script;
@@ -2154,6 +2180,7 @@ const NODE_ICON_SYMBOL = {
   [NODE_TYPE.TASK]: "icon-task",
   [NODE_TYPE.SERVICE_TASK]: "icon-service",
   [NODE_TYPE.SCRIPT_TASK]: "icon-script",
+  [NODE_TYPE.CALL_ACTIVITY]: "icon-call",
   [NODE_TYPE.EXCLUSIVE_GATEWAY]: "icon-gateway",
   [NODE_TYPE.PARALLEL_GATEWAY]: "icon-parallel-gateway",
   [NODE_TYPE.INCLUSIVE_GATEWAY]: "icon-inclusive-gateway",
@@ -3559,12 +3586,13 @@ function changeNodeTypeFromInspector(node, nextType) {
     return false;
   }
   const previousType = node.type;
-  if (isServiceTaskType(previousType) && isScriptTaskType(nextType)) {
-    // A script failure has no HTTP status, and a filter must never quietly
+  if (isServiceTaskType(previousType) &&
+      (isScriptTaskType(nextType) || isCallActivityType(nextType))) {
+    // Neither failure has an HTTP status, and a filter must never quietly
     // become a catch-all, so these boundaries have to go first.
     const filtered = errorBoundariesOf(node.id).filter(boundary => boundary.errorMatch != null);
     if (filtered.length > 0) {
-      alert(`A script task cannot use HTTP status matchers. Remove them from these error boundaries first: ${filtered.map(boundary => `#${boundary.id}`).join(", ")}.`);
+      alert(`A ${isScriptTaskType(nextType) ? "script task" : "call activity"} cannot use HTTP status matchers. Remove them from these error boundaries first: ${filtered.map(boundary => `#${boundary.id}`).join(", ")}.`);
       return false;
     }
   }
@@ -3606,6 +3634,25 @@ function changeNodeTypeFromInspector(node, nextType) {
   if (isConditionalCatchEventType(nextType) && !isConditionalCatchEventType(previousType)) {
     node.conditional = { condition: "" };
   }
+  // Only an explicit type change clears call settings; selecting a node keeps
+  // invalid imported ones visible for save validation.
+  if (isCallActivityType(previousType) && !isCallActivityType(nextType)) {
+    delete node.callActivity;
+    delete node.asyncBefore;
+    delete node.asyncAfter;
+    delete node.job;
+    if (!isUserTaskType(nextType)) delete node.multiInstance;
+  }
+  if (isCallActivityType(nextType) && !isCallActivityType(previousType)) {
+    node.callActivity = { workflowKey: "", inputMappings: [], outputMappings: [] };
+    delete node.asyncBefore;
+    delete node.asyncAfter;
+    delete node.job;
+    delete node.multiInstance;
+  }
+  if (isStartEventType(previousType) && !isStartEventType(nextType)) {
+    delete node.callOnly;
+  }
   if (changesGatewaySemantics) {
     outgoingFlows(node.id).forEach(flow => {
       flow.isDefault = false;
@@ -3620,11 +3667,11 @@ function changeNodeTypeFromInspector(node, nextType) {
   }
   applyTypeInvariants(node);
   outgoingFlows(node.id).forEach(applyFlowInvariants);
-  // If a node stops being a service/script task, any attached error
+  // If a node stops being a service/script task or call, any attached error
   // boundary event is orphaned (its attachedToRef no longer points at a
   // valid host). Cascade-delete it (and its error flow) to keep the model
   // valid, mirroring the host-deletion cleanup in deleteNode.
-  if (!isServiceTaskType(nextType) && !isScriptTaskType(nextType)) {
+  if (!isServiceTaskType(nextType) && !isScriptTaskType(nextType) && !isCallActivityType(nextType)) {
     const attached = model.flowNodes.filter(n => n.type === NODE_TYPE.ERROR_BOUNDARY_EVENT && n.attachedToRef === node.id);
     const boundaryIds = new Set(attached.map(n => n.id));
     if (boundaryIds.size > 0) {
@@ -4028,6 +4075,10 @@ function renderNodeInspector() {
     renderScriptSection(node);
   }
 
+  if (isCallActivityType(node.type)) {
+    renderCallActivitySection(node);
+  }
+
   if (isMessageCatchEventType(node.type)) {
     renderMessageSection(node);
   }
@@ -4040,6 +4091,7 @@ function renderNodeInspector() {
 
   if (isStartEventType(node.type)) {
     rolesField(node, () => { renderNodes(); renderEdges(); });
+    renderCallOnlyField(node);
     renderStartVariablesSection(node);
     renderIdempotencySection(node);
     renderBusinessKeySection(node);
@@ -4641,6 +4693,306 @@ function renderMessageSection(node) {
 
 }
 
+// The default plain start of a workflow that should run only as a call. The flag stays
+// as authored when the default moves, so save validation can ask for an explicit fix.
+function renderCallOnlyField(node) {
+  const toggle = inspector.appendChild(variableCheckbox("Call only", node.callOnly === true, checked => {
+    if (checked) node.callOnly = true;
+    else delete node.callOnly;
+    renderInspector();
+    inspector.querySelector("[data-call-only]")?.focus();
+  }));
+  toggle.querySelector("input")?.setAttribute("data-call-only", "true");
+  attachInspectorHelp(toggle, "call-only",
+    "Hides this start from people and API callers, so only a call activity can start the workflow. Use it for fragments that rely on checks made in the parent. It is valid only on the default plain start, with no roles and no idempotency, and it does not restrict which workflows can call this one.");
+  if (node.callOnly == null || node.callOnly === false) return;
+  const invalidValue = typeof node.callOnly !== "boolean";
+  if (!invalidValue && model.initialEventId === node.id) return;
+  const warning = document.createElement("p");
+  warning.className = "empty-note";
+  warning.style.color = "var(--warning-text)";
+  warning.textContent = invalidValue
+    ? "This imported callOnly value is not true or false, so the workflow cannot be saved."
+    : "This start is call-only but is not the default start, so nothing can start from it. Make it the default again or clear Call only.";
+  inspector.appendChild(warning);
+  if (invalidValue) {
+    const clear = document.createElement("button");
+    clear.textContent = "Remove this value";
+    clear.style.marginTop = "8px";
+    clear.onclick = () => { delete node.callOnly; renderInspector(); };
+    inspector.appendChild(clear);
+  }
+}
+
+function callMappingTextField(box, label, value, onInput) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "field";
+  wrapper.innerHTML = `<label>${label}</label>`;
+  const input = document.createElement("input");
+  input.type = "text";
+  input.value = typeof value === "string" ? value : "";
+  input.oninput = () => onInput(input.value);
+  wrapper.appendChild(input);
+  box.appendChild(wrapper);
+  return input;
+}
+
+// Offers what this workflow declares or produces on its instance, and adopts the type of
+// a name declared only one way.
+function attachCallSourceSuggestions(input, adoptType) {
+  const declarations = callSourceDeclarations(model);
+  const usable = [...declarations.values()].filter(entries => entries.every(entry => !entry.isShared));
+  if (usable.length === 0) return;
+  const list = document.createElement("datalist");
+  list.id = `call-source-variable-${++writableTargetSuggestionId}`;
+  usable.forEach(entries => {
+    const option = document.createElement("option");
+    option.value = entries[0].name;
+    option.label = [...new Set(entries.map(entry => entry.dataType + (entry.isArray ? "[]" : "")))].join(", ");
+    list.appendChild(option);
+  });
+  input.setAttribute("list", list.id);
+  input.parentElement?.appendChild(list);
+  input.addEventListener("change", () => {
+    const entries = declarations.get(input.value.trim().toLowerCase());
+    if (!entries || new Set(entries.map(entry => entry.dataType + entry.isArray)).size !== 1) return;
+    adoptType(entries[0].dataType, entries[0].isArray);
+  });
+}
+
+function renderCallMappingList(call, property, options) {
+  const heading = document.createElement("h2");
+  heading.textContent = options.title;
+  heading.style.marginTop = "16px";
+  inspector.appendChild(heading);
+  attachInspectorHelp(heading, options.helpKey, options.help);
+
+  // Drawing never writes: a null stays visible as a problem, and a missing list stays missing.
+  const invalidList = call[property] !== undefined && !Array.isArray(call[property]);
+  if (invalidList) {
+    const warning = document.createElement("p");
+    warning.className = "empty-note";
+    warning.style.color = "var(--warning-text)";
+    warning.textContent = `This imported ${property} value is not a list, so it cannot be edited here.`;
+    inspector.appendChild(warning);
+    const reset = document.createElement("button");
+    reset.textContent = "Replace it with an empty list";
+    reset.style.marginTop = "8px";
+    reset.onclick = () => {
+      call[property] = [];
+      renderInspector();
+      inspector.querySelector(`[data-call-add="${property}"]`)?.focus();
+    };
+    inspector.appendChild(reset);
+    return;
+  }
+
+  const mappings = call[property] ?? [];
+  if (mappings.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "empty-note";
+    empty.textContent = options.empty;
+    inspector.appendChild(empty);
+  }
+  mappings.forEach((mapping, index) => {
+    const box = document.createElement("div");
+    box.className = "field inspector-card";
+    const remove = document.createElement("button");
+    remove.textContent = "Delete mapping";
+    remove.className = "danger";
+    remove.style.width = "100%";
+    remove.onclick = () => {
+      mappings.splice(index, 1);
+      renderInspector();
+      inspector.querySelector(`[data-call-add="${property}"]`)?.focus();
+    };
+    if (mapping === null || typeof mapping !== "object" || Array.isArray(mapping)) {
+      const warning = document.createElement("p");
+      warning.className = "empty-note";
+      warning.style.color = "var(--warning-text)";
+      warning.textContent = "This imported mapping is not an object. Delete it and add a new one.";
+      box.appendChild(warning);
+      box.appendChild(remove);
+      inspector.appendChild(box);
+      return;
+    }
+
+    const source = callMappingTextField(box, options.sourceLabel, mapping.sourceVariable, value => {
+      mapping.sourceVariable = value;
+    });
+    source.dataset.callSource = property;
+    // A suggestion fills in the type without redrawing, so Tab still reaches the next field.
+    const adoptType = (dataType, isArray) => {
+      mapping.dataType = dataType;
+      typeSelect.value = dataType;
+      const arrayInput = arrayField.querySelector("input");
+      if (arrayInput) arrayInput.checked = isArray;
+      if (isArray) mapping.isArray = true;
+      else delete mapping.isArray;
+    };
+    if (options.sourceIsLocal) attachCallSourceSuggestions(source, adoptType);
+    const target = callMappingTextField(box, options.targetLabel, mapping.variable, value => {
+      mapping.variable = value;
+    });
+    if (options.targetIsLocal) {
+      attachWritableTargetSuggestions(target, match => {
+        mapping.variable = match.name;
+        target.value = match.name;
+        adoptType(match.dataType, match.isArray);
+      }, false, variable => !isSharedProcessVariable(variable));
+    }
+
+    const typeField = document.createElement("div");
+    typeField.className = "field";
+    typeField.innerHTML = "<label>Data type</label>";
+    const typeSelect = document.createElement("select");
+    typeSelect.innerHTML = VARIABLE_DATA_TYPES.map(type => `<option value="${type}">${type}</option>`).join("");
+    if (!VARIABLE_DATA_TYPES.includes(mapping.dataType)) {
+      const unknown = document.createElement("option");
+      unknown.value = String(mapping.dataType ?? "");
+      unknown.textContent = `${String(mapping.dataType ?? "(none)")} (not supported)`;
+      typeSelect.prepend(unknown);
+    }
+    typeSelect.value = String(mapping.dataType ?? "");
+    typeSelect.onchange = () => { mapping.dataType = typeSelect.value; };
+    typeField.appendChild(typeSelect);
+    box.appendChild(typeField);
+
+    const arrayField = box.appendChild(variableCheckbox("Array", mapping.isArray === true, checked => {
+      if (checked) mapping.isArray = true;
+      else delete mapping.isArray;
+    }));
+    box.appendChild(variableCheckbox(options.requiredLabel, mapping.required === true, checked => {
+      if (checked) mapping.required = true;
+      else delete mapping.required;
+    }));
+    box.appendChild(remove);
+    inspector.appendChild(box);
+  });
+
+  if (mappings.length >= CALL_MAPPINGS_PER_DIRECTION) {
+    const limit = document.createElement("p");
+    limit.className = "empty-note";
+    limit.textContent = `A call can have at most ${CALL_MAPPINGS_PER_DIRECTION} mappings in each direction.`;
+    inspector.appendChild(limit);
+    return;
+  }
+  const add = document.createElement("button");
+  add.textContent = "+ Add mapping";
+  add.style.marginTop = "8px";
+  add.dataset.callAdd = property;
+  add.onclick = () => {
+    call[property] = [...mappings, { sourceVariable: "", variable: "", dataType: "string" }];
+    renderInspector();
+    [...inspector.querySelectorAll(`[data-call-source="${property}"]`)].pop()?.focus();
+  };
+  inspector.appendChild(add);
+}
+
+function renderCallActivitySection(node) {
+  const title = document.createElement("h2");
+  title.textContent = "Call activity";
+  title.style.marginTop = "16px";
+  title.tabIndex = -1;
+  title.setAttribute("data-call-section", "true");
+  inspector.appendChild(title);
+  const redrawCallSection = () => {
+    renderInspector();
+    inspector.querySelector("[data-call-section]")?.focus();
+  };
+  attachInspectorHelp(title, "call-activity", [
+    "Starts a child instance of another workflow family and waits until it finishes. A Worker creates the child and delivers its result, so this needs a running Worker even when both workflows are otherwise synchronous.",
+    "Inputs are copied when the token reaches this node, and results when the child finishes. Later changes on either side do not affect those copies.",
+    "The server checks the target when you publish this workflow and again when it starts the child. The child runs as the system actor callActivity, so its start must not restrict roles."
+  ]);
+
+  if (node.callActivity === null || typeof node.callActivity !== "object" || Array.isArray(node.callActivity)) {
+    const warning = document.createElement("p");
+    warning.className = "empty-note";
+    warning.style.color = "var(--warning-text)";
+    warning.textContent = "This call has no usable configuration, so it cannot be saved.";
+    inspector.appendChild(warning);
+    const create = document.createElement("button");
+    create.textContent = "Create an empty configuration";
+    create.style.marginTop = "8px";
+    create.onclick = () => {
+      node.callActivity = { workflowKey: "", inputMappings: [], outputMappings: [] };
+      redrawCallSection();
+    };
+    inspector.appendChild(create);
+    return;
+  }
+
+  const call = node.callActivity;
+  const keyInput = field("Workflow key", "text", typeof call.workflowKey === "string" ? call.workflowKey : "", value => {
+    call.workflowKey = value;
+  });
+  keyInput.placeholder = "manager-approval";
+  attachInspectorHelp(keyInput, "call-workflow-key",
+    "The stable id of the workflow family to call, written exactly as it is. It cannot be this workflow's own id, and it is not replaced with variables.",
+    ["manager-approval"]);
+
+  const versionInput = field("Version", "text", "Published default", null, true);
+  attachInspectorHelp(versionInput, "call-version",
+    "A call uses the family's published default when its job creates the child, and each visit remembers the version it used. A resolved version belongs to the visit, so it is never saved in this workflow.");
+  if (call.versionBinding != null && call.versionBinding !== "publishedDefault") {
+    const warning = document.createElement("p");
+    warning.className = "empty-note";
+    warning.style.color = "var(--warning-text)";
+    warning.textContent = `This imported version binding '${String(call.versionBinding)}' is not supported.`;
+    inspector.appendChild(warning);
+    const clear = document.createElement("button");
+    clear.textContent = "Use the published default";
+    clear.style.marginTop = "8px";
+    clear.onclick = () => { delete call.versionBinding; redrawCallSection(); };
+    inspector.appendChild(clear);
+  }
+
+  if (node.asyncBefore != null || node.asyncAfter != null || node.job != null || node.multiInstance != null) {
+    const warning = document.createElement("p");
+    warning.className = "empty-note";
+    warning.style.color = "var(--warning-text)";
+    warning.textContent = "This imported call sets async, job, or multi-instance options, which a call does not support.";
+    inspector.appendChild(warning);
+    const clear = document.createElement("button");
+    clear.textContent = "Remove these options";
+    clear.style.marginTop = "8px";
+    clear.onclick = () => {
+      delete node.asyncBefore;
+      delete node.asyncAfter;
+      delete node.job;
+      node.multiInstance = null;
+      redrawCallSection();
+    };
+    inspector.appendChild(clear);
+  }
+
+  renderCallMappingList(call, "inputMappings", {
+    title: "Inputs",
+    helpKey: "call-inputs",
+    help: "Each mapping copies one whole variable into a declared input of the target's default start event. Every required input of the target needs a mapping marked Required. An optional mapping skips a missing variable, but a present null is passed on.",
+    empty: "No inputs are copied to the child.",
+    sourceLabel: "Variable in this workflow",
+    targetLabel: "Input of the called workflow",
+    requiredLabel: "Required",
+    sourceIsLocal: true,
+    targetIsLocal: false
+  });
+  renderCallMappingList(call, "outputMappings", {
+    title: "Results",
+    helpKey: "call-results",
+    help: "Each mapping copies one whole variable into a declared process variable of this workflow when the child completes. They are all written together or not at all. An optional mapping leaves the target unchanged when the child never set the variable.",
+    empty: "No results are copied back.",
+    sourceLabel: "Variable in the called workflow",
+    targetLabel: "Process variable in this workflow",
+    requiredLabel: "Required",
+    sourceIsLocal: false,
+    targetIsLocal: true
+  });
+
+  renderErrorBoundarySection(node);
+}
+
 function renderScriptSection(node) {
   if (node.scriptFormat !== SCRIPT_FORMAT.JAVASCRIPT) node.scriptFormat = SCRIPT_FORMAT.NCALC;
 
@@ -4690,7 +5042,12 @@ function renderErrorBoundarySection(hostNode) {
         "When this task fails (HTTP error, timeout, or a failed output mapping), route the token out an error path instead of rolling back. Attach an error boundary event, then draw its single outgoing flow.",
         "Several boundaries can match different HTTP statuses. An exact status wins over a range, and a range wins over the catch-all. A failure with no response status, such as a timeout, reaches only the catch-all."
       ]
-    : "When this task fails, route the token out an error path instead of rolling back. Attach an error boundary event, then draw its single outgoing flow.");
+    : isCallActivityType(hostNode.type)
+      ? [
+          "When the child faults, is cancelled on its own, or the call cannot start or deliver its result, route the token out an error path. Attach an error boundary event, then draw its single outgoing flow.",
+          "Without one, a child that faults or is cancelled faults this workflow, and any other failure opens an incident an operator can retry while this workflow keeps waiting."
+        ]
+      : "When this task fails, route the token out an error path instead of rolling back. Attach an error boundary event, then draw its single outgoing flow.");
 
   const boundaries = errorBoundariesOf(hostNode.id);
   boundaries.forEach((boundary, index) => {
@@ -9755,6 +10112,7 @@ function validateModelForSave(candidate) {
   validateSaveServiceTasks(ctx);
   validateSaveErrorBoundaries(ctx);
   validateSaveWaitBoundaries(ctx);
+  validateSaveCallActivities(ctx);
   validateSaveMessageCatches(ctx);
   validateSaveTimerCatches(ctx);
   validateSaveConditionalEvents(ctx);
@@ -11060,7 +11418,12 @@ function validateSaveAsyncJobsAndTimers(ctx) {
   const nodes = ctx.nodes;
   for (const node of nodes.filter(Boolean)) {
     const asyncMetadata = !!node.asyncBefore || !!node.asyncAfter || node.job != null;
-    if (!asyncTaskTypes.has(node.type) && asyncMetadata) {
+    if (node.type === "callActivity") {
+      if (asyncMetadata) {
+        errors.push("Call activity #" + node.id +
+          " cannot set asyncBefore, asyncAfter, or job; a call is always durable.");
+      }
+    } else if (!asyncTaskTypes.has(node.type) && asyncMetadata) {
       errors.push("Flow node #" + node.id +
         " defines async job metadata but is not a task activity.");
     }
@@ -11071,7 +11434,7 @@ function validateSaveAsyncJobsAndTimers(ctx) {
         }
       }
     }
-    if (node.job != null) {
+    if (node.job != null && node.type !== "callActivity") {
       const label = "Flow node #" + node.id + " job";
       if (node.asyncBefore !== true && node.asyncAfter !== true) {
         errors.push(label + " requires asyncBefore or asyncAfter.");
@@ -11369,8 +11732,8 @@ function validateSaveErrorBoundaries(ctx) {
   for (const node of nodes.filter(candidate => candidate && candidate.type === "errorBoundaryEvent")) {
     const label = "Error boundary event #" + String(node.id);
     const host = nodes.find(candidate => candidate && candidate.id === node.attachedToRef);
-    if (!host || (host.type !== "serviceTask" && host.type !== "scriptTask")) {
-      errors.push(label + " attachedToRef must reference a service or script task.");
+    if (!host || (host.type !== "serviceTask" && host.type !== "scriptTask" && host.type !== "callActivity")) {
+      errors.push(label + " attachedToRef must reference a service task, script task, or call activity.");
     }
     const incoming = flows.filter(flow => flow && flow.targetRef === node.id);
     const outgoing = flows.filter(flow => flow && flow.sourceRef === node.id);
@@ -11452,6 +11815,253 @@ function validateSaveWaitBoundaries(ctx) {
     if (siblingCount > 8) {
       errors.push("Host node #" + String(hostId) +
         " has more than eight combined timer and conditional boundary events.");
+    }
+  }
+}
+
+const CALL_MAPPINGS_PER_DIRECTION = 100;
+
+// Everything a workflow declares or produces on its instance, by lower-cased name. It
+// mirrors CallActivityRules.SourceDeclarations; the inspector's suggestions use it too.
+function callSourceDeclarations(candidate) {
+  const declarations = new Map();
+  const add = (name, dataType, isArray, isShared = false) => {
+    if (typeof name !== "string" || !name.trim()) return;
+    const key = name.trim().toLowerCase();
+    if (!declarations.has(key)) declarations.set(key, []);
+    declarations.get(key).push({ name: name.trim(), dataType, isArray: !!isArray, isShared });
+  };
+  const nodes = Array.isArray(candidate && candidate.flowNodes) ? candidate.flowNodes : [];
+  const flows = Array.isArray(candidate && candidate.sequenceFlows) ? candidate.sequenceFlows : [];
+  for (const variable of Array.isArray(candidate && candidate.variables) ? candidate.variables : []) {
+    add(variable && variable.name, variable && variable.dataType, variable && variable.isArray,
+      !!variable && variable.scope === "shared");
+  }
+  for (const node of nodes.filter(Boolean)) {
+    for (const variable of Array.isArray(node.variables) ? node.variables : []) {
+      add(variable && variable.name, variable && variable.dataType, variable && variable.isArray);
+    }
+    if (node.idempotency && typeof node.idempotency === "object") add(node.idempotency.variable, "string", false);
+    const message = node.message && typeof node.message === "object" ? node.message : null;
+    for (const mapping of Array.isArray(message && message.outputMappings) ? message.outputMappings : []) {
+      add(mapping && mapping.variable, (mapping && mapping.dataType) || "json", mapping && mapping.isArray);
+    }
+    const service = node.service && typeof node.service === "object" ? node.service : null;
+    for (const mapping of Array.isArray(service && service.outputMappings) ? service.outputMappings : []) {
+      add(mapping && mapping.variable, (mapping && mapping.dataType) || "json", mapping && mapping.isArray);
+    }
+    if (service) add(service.statusVariable, "number", false);
+    add(node.errorVariable, "string", false);
+  }
+  for (const flow of flows.filter(Boolean)) {
+    for (const variable of Array.isArray(flow.variables) ? flow.variables : []) {
+      add(variable && variable.name, variable && variable.dataType, variable && variable.isArray);
+    }
+  }
+  return declarations;
+}
+
+const CALL_RESERVED_NAME = /^(sys|config|setting|mi|gateway)\./i;
+
+function callMappingNameProblem(name) {
+  if (!hasText(name)) return "must name a variable.";
+  if (name !== name.trim()) return "cannot have surrounding whitespace.";
+  if (Array.from(name).length > 300) return "must contain at most 300 characters.";
+  return CALL_RESERVED_NAME.test(name) ? "'" + name + "' uses a reserved context prefix." : null;
+}
+
+// Mirrors the settings ValidateAuthoredCallActivityMetadata refuses. Async and
+// multi-instance settings have their own messages.
+function hasOtherCallRuntimeSettings(node) {
+  const isCustomized = (value, standard) => hasText(value) && value.trim().toLowerCase() !== standard;
+  return node.timer != null || node.conditional != null || node.cancelActivity != null ||
+    node.errorMatch != null || node.gatewayRef != null || node.joinCancellation != null ||
+    node.service != null || node.message != null || node.businessKey != null ||
+    node.idempotency != null || node.usesFlowInfo != null || node.attachedToRef != null ||
+    node.inheritClaimFromNodeId != null || node.inheritAssignmentFromNodeId != null ||
+    node.requiresClaim === true || node.requiresAssignment === true ||
+    isCustomized(node.claimMode, "fresh") || isCustomized(node.assignmentMode, "fresh") ||
+    isCustomized(node.scriptFormat, "ncalc") ||
+    (Array.isArray(node.roles) && node.roles.length > 0) ||
+    (Array.isArray(node.variables) && node.variables.length > 0) ||
+    (Array.isArray(node.assignments) && node.assignments.length > 0) ||
+    [node.activationCondition, node.inboxVisibilityCondition, node.dueDate, node.dueDateCalendar,
+      node.priority, node.rolesVariable, node.script, node.assignee, node.errorVariable,
+      node.errorCode, node.errorDescription].some(hasText);
+}
+
+function callValueType(mapping) {
+  return String(mapping.dataType) + (mapping.isArray === true ? "[]" : "");
+}
+
+function validateSaveCallMappingList(ctx, label, property, mappings) {
+  const errors = ctx.errors;
+  if (mappings === undefined) return [];
+  if (!Array.isArray(mappings)) {
+    errors.push(label + " mappings must be an array; omit them when there are none.");
+    return [];
+  }
+  if (mappings.length > CALL_MAPPINGS_PER_DIRECTION) {
+    errors.push(label + " callActivity." + property + " has " + mappings.length +
+      " entries; at most " + CALL_MAPPINGS_PER_DIRECTION + " are allowed.");
+  }
+  const destinations = new Set();
+  const usable = [];
+  mappings.forEach((mapping, index) => {
+    const path = label + " callActivity." + property + "[" + index + "]";
+    if (mapping === null || typeof mapping !== "object" || Array.isArray(mapping)) {
+      errors.push(path + " must be an object.");
+      return;
+    }
+    const allowed = new Set(["sourceVariable", "variable", "dataType", "isArray", "required"]);
+    for (const key of Object.keys(mapping)) {
+      if (!allowed.has(key)) errors.push(path + " has unknown property '" + key + "'.");
+    }
+    const sourceProblem = callMappingNameProblem(mapping.sourceVariable);
+    const targetProblem = callMappingNameProblem(mapping.variable);
+    if (sourceProblem) errors.push(path + ".sourceVariable " + sourceProblem);
+    if (targetProblem) errors.push(path + ".variable " + targetProblem);
+    if (!supportedVariableTypes.has(mapping.dataType)) {
+      errors.push(path + ".dataType must be one of string, number, boolean, date, datetime, json.");
+    }
+    if (mapping.isArray !== undefined && typeof mapping.isArray !== "boolean") {
+      errors.push(path + ".isArray must be true or false.");
+    }
+    if (mapping.required !== undefined && typeof mapping.required !== "boolean") {
+      errors.push(path + ".required must be true or false.");
+    }
+    if (!targetProblem) {
+      const key = mapping.variable.toLowerCase();
+      if (destinations.has(key)) {
+        errors.push(label + " callActivity." + property + " writes '" + mapping.variable + "' more than once.");
+      }
+      destinations.add(key);
+    }
+    if (!sourceProblem && !targetProblem && supportedVariableTypes.has(mapping.dataType)) usable.push(mapping);
+  });
+  return usable;
+}
+
+function validateSaveCallOnlyStarts(ctx) {
+  const errors = ctx.errors;
+  for (const node of ctx.nodes.filter(Boolean)) {
+    if (node.callOnly == null || node.callOnly === false) continue;
+    if (node.type !== "startEvent") {
+      errors.push("Flow node #" + String(node.id) + " sets callOnly but is not a start event.");
+      continue;
+    }
+    if (typeof node.callOnly !== "boolean") {
+      errors.push("Start event #" + String(node.id) + " callOnly must be true or false.");
+      continue;
+    }
+    if (node.id !== ctx.candidate.initialEventId) {
+      errors.push("Start event #" + String(node.id) +
+        " sets callOnly but is not the default start event; calls can start only from the default.");
+    }
+    if (Array.isArray(node.roles) && node.roles.length > 0) {
+      errors.push("Call-only start event #" + String(node.id) +
+        " cannot restrict roles; a call starts as the system actor with no roles.");
+    }
+    if (node.idempotency != null) {
+      errors.push("Call-only start event #" + String(node.id) +
+        " cannot define idempotency; a call cannot send a transport header.");
+    }
+  }
+}
+
+// Mirrors CallActivityRules.FindLocalProblem and the validator's topology check. The server
+// reports the target problems this phase cannot know about, when the workflow is published.
+function validateSaveCallActivities(ctx) {
+  const errors = ctx.errors;
+  validateSaveCallOnlyStarts(ctx);
+  const sources = callSourceDeclarations(ctx.candidate);
+  for (const node of ctx.nodes.filter(Boolean)) {
+    if (node.type !== "callActivity") {
+      if (node.callActivity != null) {
+        errors.push("Flow node #" + String(node.id) + " defines callActivity but is not a call activity.");
+      }
+      continue;
+    }
+
+    const label = "Call activity #" + String(node.id);
+    if (ctx.incomingFor(node.id).length === 0) {
+      errors.push(label + " must have at least one incoming sequence flow.");
+    }
+    const outgoing = ctx.outgoingFor(node.id);
+    if (outgoing.length !== 1) {
+      errors.push(label + " must have exactly one outgoing sequence flow.");
+    } else if (hasUnsupportedPassThroughMetadata(outgoing[0])) {
+      errors.push(label + " must have one unconditional outgoing sequence flow without " +
+        "user-action or multi-instance metadata.");
+    }
+    if (node.multiInstance != null) errors.push(label + " cannot define multiInstance.");
+    if (hasOtherCallRuntimeSettings(node)) {
+      errors.push(label + " can define only callActivity; remove its other runtime settings.");
+    }
+
+    const call = node.callActivity;
+    if (call === null || typeof call !== "object" || Array.isArray(call)) {
+      errors.push(label + " must define callActivity.");
+      continue;
+    }
+    for (const key of Object.keys(call)) {
+      if (!["workflowKey", "versionBinding", "inputMappings", "outputMappings"].includes(key)) {
+        errors.push(label + " callActivity has unknown property '" + key + "'.");
+      }
+    }
+
+    const key = call.workflowKey;
+    if (!hasText(key)) {
+      errors.push(label + " must name a workflow key in callActivity.workflowKey.");
+    } else if (key !== key.trim()) {
+      errors.push(label + " callActivity.workflowKey cannot have surrounding whitespace.");
+    } else if (Array.from(key).length > 300) {
+      errors.push(label + " callActivity.workflowKey must contain at most 300 characters.");
+    } else if (key.includes("${")) {
+      errors.push(label + " callActivity.workflowKey is a literal key; ${...} is not replaced.");
+    } else if (key === ctx.workflowKey) {
+      errors.push(label + " cannot call its own workflow family '" + key + "'.");
+    }
+    if (call.versionBinding != null && call.versionBinding !== "publishedDefault") {
+      errors.push(label + " has unsupported callActivity.versionBinding '" + String(call.versionBinding) +
+        "'; omit it to call the published default.");
+    }
+
+    const inputs = validateSaveCallMappingList(ctx, label, "inputMappings", call.inputMappings);
+    const outputs = validateSaveCallMappingList(ctx, label, "outputMappings", call.outputMappings);
+    for (const mapping of inputs) {
+      const declared = sources.get(mapping.sourceVariable.toLowerCase());
+      if (!declared) {
+        errors.push(label + " input source '" + mapping.sourceVariable +
+          "' is never declared or produced by this workflow.");
+      } else if (declared.some(entry => entry.isShared)) {
+        errors.push(label + " input source '" + mapping.sourceVariable +
+          "' is a shared-variable alias, which a call mapping cannot read.");
+      } else if (!declared.some(entry =>
+          entry.dataType === mapping.dataType && entry.isArray === (mapping.isArray === true))) {
+        errors.push(label + " input source '" + mapping.sourceVariable +
+          "' is not declared as " + callValueType(mapping) + ".");
+      }
+    }
+    for (const mapping of outputs) {
+      const target = ctx.processByName.get(mapping.variable.toLowerCase());
+      if (!target) {
+        errors.push(label + " output target '" + mapping.variable + "' must be a declared process variable.");
+      } else if (target.scope === "shared") {
+        errors.push(label + " output target '" + target.name +
+          "' is a shared-variable alias; a call writes only instance process variables.");
+      } else if (target.dataType !== mapping.dataType || !!target.isArray !== (mapping.isArray === true)) {
+        errors.push(label + " output target '" + target.name + "' is " + callValueType(target) +
+          ", but the mapping declares " + callValueType(mapping) + ".");
+      }
+      const overlap = ctx.nodes.find(candidate => candidate &&
+        candidate.type === "errorBoundaryEvent" && candidate.attachedToRef === node.id &&
+        hasText(candidate.errorVariable) &&
+        candidate.errorVariable.trim().toLowerCase() === mapping.variable.toLowerCase());
+      if (overlap) {
+        errors.push(label + " output target '" + mapping.variable +
+          "' is also the errorVariable of error boundary event #" + overlap.id + ".");
+      }
     }
   }
 }
@@ -11802,7 +12412,7 @@ function validateSaveEndEvents(ctx) {
 
 const supportedNodeTypes = new Set([
   "startEvent", "messageStartEvent", "timerStartEvent", "userTask", "task", "serviceTask",
-  "scriptTask", "exclusiveGateway", "parallelGateway", "inclusiveGateway",
+  "scriptTask", "callActivity", "exclusiveGateway", "parallelGateway", "inclusiveGateway",
   "complexGateway", "scopedInterruptEvent", "endEvent", "terminateEndEvent",
   "errorEndEvent", "errorBoundaryEvent", "timerBoundaryEvent", "conditionalBoundaryEvent",
   "intermediateMessageCatchEvent", "intermediateTimerCatchEvent",
@@ -12406,6 +13016,14 @@ function prepareWorkflowExport(candidate = model) {
     if (isMessageStartEventType(node.type) || isTimerStartEventType(node.type)) {
       delete node.variables;
     }
+    if (node.callOnly !== true) delete node.callOnly;
+    if (isCallActivityType(node.type)) {
+      delete node.callActivity.versionBinding;
+      for (const mapping of [...(node.callActivity.inputMappings || []), ...(node.callActivity.outputMappings || [])]) {
+        if (mapping.isArray !== true) delete mapping.isArray;
+        if (mapping.required !== true) delete mapping.required;
+      }
+    }
     if (!isUserTaskType(node.type) ||
         (typeof node.inboxVisibilityCondition === "string" &&
           !node.inboxVisibilityCondition.trim())) {
@@ -12681,14 +13299,17 @@ function normalizeLoadedModel(obj) {
         externalId: s.externalId ?? null,
         attributes: normalizeAttributesForLoad(s.attributes),
         type: s.type ?? NODE_TYPE.USER_TASK,
+        // A call keeps imported async settings so save validation can report them.
         asyncBefore: ["userTask", "task", "serviceTask", "scriptTask"].includes(s.type)
-          ? (s.asyncBefore === undefined ? false : s.asyncBefore) : undefined,
+          ? (s.asyncBefore === undefined ? false : s.asyncBefore)
+          : isCallActivityType(s.type) ? s.asyncBefore : undefined,
         asyncAfter: ["userTask", "task", "serviceTask", "scriptTask"].includes(s.type)
-          ? (s.asyncAfter === undefined ? false : s.asyncAfter) : undefined,
+          ? (s.asyncAfter === undefined ? false : s.asyncAfter)
+          : isCallActivityType(s.type) ? s.asyncAfter : undefined,
         job: ["userTask", "task", "serviceTask", "scriptTask"].includes(s.type) &&
           s.job !== undefined && s.job !== null
           ? normalizeJobPolicy(s.job)
-          : undefined,
+          : isCallActivityType(s.type) ? s.job : undefined,
         timer: ["timerStartEvent", "intermediateTimerCatchEvent", "timerBoundaryEvent"].includes(s.type)
           ? normalizeTimerDefinition(s.timer)
           : undefined,
@@ -12765,6 +13386,12 @@ function normalizeLoadedModel(obj) {
           ? normalizeMessage(s.message, isMessageStartEventType(s.type), loadedProcessVariables) : undefined,
         conditional: ["intermediateConditionalCatchEvent", "conditionalBoundaryEvent"].includes(s.type)
           ? normalizeConditionalDefinition(s.conditional) : undefined,
+        // Keep every non-null value on any node type, as authored: an invalid one stays
+        // visible and fails save, and a default is never invented for it.
+        callActivity: s.callActivity == null
+          ? undefined
+          : JSON.parse(JSON.stringify(s.callActivity)),
+        callOnly: s.callOnly == null || s.callOnly === false ? undefined : s.callOnly,
         businessKey: (isStartEventType(s.type) || isMessageStartEventType(s.type)) && s.businessKey !== undefined
           ? normalizeBusinessKeyForLoad(s.businessKey) : undefined,
         idempotency: (isStartEventType(s.type) || isMessageStartEventType(s.type)) && s.idempotency !== undefined

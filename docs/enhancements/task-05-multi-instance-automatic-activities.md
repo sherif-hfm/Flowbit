@@ -13,7 +13,7 @@
 
 ## Summary
 
-Allow `multiInstance` on `serviceTask`, `scriptTask`, and the proposed `callActivity` ([TASK-01](task-01-call-activity.md)) so one node processes every item of a collection, in parallel or in sequence, and produces a result collection. Examples: notify each supplier, or check each order line.
+Allow `multiInstance` on `serviceTask`, `scriptTask`, and `callActivity` ([TASK-01](task-01-call-activity.md)) so one node processes every item of a collection, in parallel or in sequence, and produces a result collection. Examples: notify each supplier, or check each order line.
 
 ## Why it adds value
 

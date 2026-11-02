@@ -36,6 +36,12 @@ public interface IWorkflowDefinitionRepository
     Task<bool> SetDefaultAsync(long id, bool isDefault, CancellationToken cancellationToken);
 
     Task<bool> DeleteAsync(long id, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// What deleting a definition would do under the same rules as the command, without
+    /// taking the family lock or reserving anything. Null when it does not exist.
+    /// </summary>
+    Task<WorkflowDefinitionDeletionAssessment?> AssessDeletionAsync(long id, CancellationToken cancellationToken);
 }
 
 public interface IWorkflowRuntimeRepository : IWorkflowInstanceQueryRepository
@@ -63,7 +69,8 @@ public interface IWorkflowRuntimeRepository : IWorkflowInstanceQueryRepository
         string? startedBy,
         IReadOnlyList<string> startedByRoles,
         CancellationToken cancellationToken,
-        IReadOnlyDictionary<string, string[]>? actorClaims = null);
+        IReadOnlyDictionary<string, string[]>? actorClaims = null,
+        CallChildLinkRecord? callLink = null);
 
     Task<PagedResult<InboxListItem>> ListInboxAsync(
         InboxVisibilityEvaluationContext visibilityContext,
@@ -145,9 +152,38 @@ public interface IWorkflowRuntimeRepository : IWorkflowInstanceQueryRepository
         long instanceId,
         CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Locks an instance's runtime rows. For a call descendant it also checks the complete
+    /// chain of incoming calls and throws <see cref="Services.WorkflowCallFenceException"/>
+    /// when one was cancelled. Only cancellation bypasses that fence, because it is what
+    /// finishes the descendant's work.
+    /// </summary>
     Task<WorkflowInstanceRecord?> GetInstanceForUpdateAsync(
         long id,
         bool lockActiveUserTask,
+        CancellationToken cancellationToken,
+        bool bypassCallFence = false);
+
+    /// <summary>
+    /// An instance's call identity, from the tracked row when there is one, so an instance
+    /// outside a call tree pays no query in its terminal transaction.
+    /// </summary>
+    Task<InstanceCallIdentityRecord?> GetCallIdentityAsync(
+        long instanceId,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Ends a token where it stands, with fault metadata, closing its current visit. It
+    /// returns false when the token no longer holds the activation.
+    /// </summary>
+    Task<bool> FaultExecutionTokenAtNodeAsync(
+        long tokenId,
+        Guid activationId,
+        string faultCode,
+        string? faultDescription,
+        string terminationReason,
+        string completionReason,
+        NodeExecutionActorRecord actor,
         CancellationToken cancellationToken);
 
     Task<ExecutionTokenRecord?> GetExecutionTokenAsync(

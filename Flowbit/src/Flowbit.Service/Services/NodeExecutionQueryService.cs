@@ -63,7 +63,9 @@ public sealed class NodeExecutionQueryService(
             NodeExecutionCompletionReasons.ComplexReset,
             NodeExecutionCompletionReasons.ScopedInterrupt,
             NodeExecutionCompletionReasons.ScopedInterruptSkipped,
-            NodeExecutionCompletionReasons.ConditionalTriggered);
+            NodeExecutionCompletionReasons.ConditionalTriggered,
+            NodeExecutionCompletionReasons.CallCompleted,
+            NodeExecutionCompletionReasons.CallFailed);
 
     private static readonly IReadOnlyDictionary<string, string> NodeTypes =
         CanonicalMap(
@@ -73,6 +75,7 @@ public sealed class NodeExecutionQueryService(
             BpmnFlowNodeTypes.Task,
             BpmnFlowNodeTypes.ServiceTask,
             BpmnFlowNodeTypes.ScriptTask,
+            BpmnFlowNodeTypes.CallActivity,
             BpmnFlowNodeTypes.ExclusiveGateway,
             BpmnFlowNodeTypes.ParallelGateway,
             BpmnFlowNodeTypes.InclusiveGateway,

@@ -3,6 +3,7 @@ using System.Text.Json;
 using Flowbit.Service.Abstractions;
 using Flowbit.Service.Models;
 using Flowbit.Shared.Dtos;
+using Flowbit.Shared.Models;
 using Microsoft.Extensions.Logging;
 
 namespace Flowbit.Service.Services;
@@ -329,11 +330,23 @@ public sealed partial class WorkflowEngineService
             target.Definition,
             contextNode);
 
+        // Only an instance in a call tree pays for these reads. A definition without call
+        // nodes cannot own an unsettled call, because switching to it requires settlement.
+        var hasUnsettledOutgoingCall = callActivities is not null
+            && source.Definition.FlowNodes.Any(node => BpmnFlowNodeTypes.IsCallActivity(node.Type))
+            && await callActivities.HasUnsettledOutgoingAsync(instance.Id, cancellationToken);
+        var hasUnsettledIncomingCall = callActivities is not null
+            && instance.CallRootInstanceId is not null
+            && await callActivities.GetByChildAsync(instance.Id, cancellationToken) is { } incoming
+            && !CallInvocationStates.IsSettled(incoming.State);
+
         return new WorkflowVersionCompatibilityContext
         {
             Instance = instance,
             SourceDefinition = source,
             TargetDefinition = target,
+            HasUnsettledOutgoingCall = hasUnsettledOutgoingCall,
+            HasUnsettledIncomingCall = hasUnsettledIncomingCall,
             ActiveTokens = activeTokens,
             OpenUserTasks = openUserTasks,
             ActiveMultiInstanceExecutions = activeMultiInstances,

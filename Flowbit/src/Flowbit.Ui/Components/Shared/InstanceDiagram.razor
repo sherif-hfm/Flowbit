@@ -61,9 +61,13 @@
                                 {
                                     <p>@ProgressText(progress)</p>
                                 }
-                                @if (taskId is not null || execution is not null)
+                                @if (taskId is not null || execution is not null || position.Call?.ChildInstanceId is not null)
                                 {
                                     <div class="instance-diagram-links">
+                                        @if (position.Call?.ChildInstanceId is long childInstanceId)
+                                        {
+                                            <a href="@($"instances/{childInstanceId}")">Child instance #@childInstanceId</a>
+                                        }
                                         @if (taskId is long openTaskId)
                                         {
                                             <a href="@($"user-tasks/{openTaskId}")">@(position.MultiInstanceExecutionId is null ? $"Open task #{openTaskId}" : $"Open a work item (task #{openTaskId})")</a>

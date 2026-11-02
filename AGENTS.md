@@ -6,7 +6,7 @@ workflows in the browser. Users lay out **flow nodes** inside **lanes**
 edges), attach typed **variables**, and save/load the whole model as JSON.
 
 The model is a simplified, BPMN 2.0-aligned subset. Flow nodes are typed as
-`startEvent`, `userTask`, `task`, `serviceTask`, `exclusiveGateway`,
+`startEvent`, `userTask`, `task`, `serviceTask`, `callActivity`, `exclusiveGateway`,
 `inclusiveGateway`, `complexGateway`, or `endEvent`, plus `parallelGateway`,
 `intermediateConditionalCatchEvent`, `conditionalBoundaryEvent`, `scopedInterruptEvent`, and
 `terminateEndEvent`, drawn with BPMN-style shapes (event circles, task rounded
@@ -212,8 +212,10 @@ The key pieces:
   distribution, inbox visibility, assignment, user-task due date and priority,
   variable names, FlowInfo and gateway expression usage, shared bindings,
   script tasks, variable contracts, variable presentation, declared producers,
-  async/job/timer settings, per-node-type settings,
-  end events, node types, gateway topology, graph scopes, entry identity,
+  async/job/timer settings, per-node-type settings (error boundaries, wait
+  boundaries, then `validateSaveCallActivities`, which mirrors
+  `CallActivityRules.FindLocalProblem`), end events, node types, gateway
+  topology, graph scopes, entry identity,
   and multi-instance outcomes. Rule helpers such as `validateTypedOutputMappings`
   and `validateRuntimeOutputTarget` stay shared across phases. The whole
   validator lives between the `// BEGIN/END WORKFLOW SAVE VALIDATOR` markers and
@@ -251,7 +253,7 @@ A repeatable Chromium smoke suite exists at
 real copied editor and the real published API/UI over localhost with a
 disposable PostgreSQL container; see its
 [README](Flowbit/tests/Flowbit.BrowserTests/README.md) for setup and the
-E1–E18/R1–R11 coverage matrix. It is the baseline for editor/runtime UI changes,
+E1–E20/R1–R11 coverage matrix. It is the baseline for editor/runtime UI changes,
 but it does not replace scenario-specific manual verification: the native
 file-picker success/cancel path, visual comparisons, and behaviors outside the
 matrix still need the manual steps above.
@@ -449,8 +451,8 @@ Storage follows the hybrid design:
   `boundaryCaught`, `normalEnd`, `terminateEnd`, `errorEnd`,
   `instanceCancelled`, `gatewayScopeCancelled`, `gatewayJoinMerged`,
   `parallelFork`, `parallelJoin`, `inclusiveSplit`, `inclusiveMerge`,
-  `complexActivation`, `complexReset`, `scopedInterrupt`, and
-  `scopedInterruptSkipped`. Token `CurrentNodeExecutionId` points to the
+  `complexActivation`, `complexReset`, `scopedInterrupt`,
+  `scopedInterruptSkipped`, `callCompleted`, and `callFailed`. Token `CurrentNodeExecutionId` points to the
   current non-MI visit and remains null at a multi-instance parent. New
   instance-variable writes may carry `NodeExecutionId`, so execution detail
   returns only attributed changes rather than a misleading current or
@@ -578,6 +580,41 @@ Storage follows the hybrid design:
   Instance cancellation locks the instance before discovering/cancelling active
   executions and open tasks, and child activity touches the parent `UpdatedAt` in
   the same transaction.
+- **Call activities.** A `callActivity` starts a child instance of another
+  workflow family and rests until a durable result is delivered; see the
+  [runtime reference](Flowbit/README.md#call-activities). Preserve these
+  invariants:
+  - A transaction locks the runtime rows of at most one existing instance; the
+    only second instance it may touch is a child it is creating. `callResume`
+    belongs to the child's rows and `callCancel` to the parent's, and processing
+    one locks only the receiver. No row written by one side holds a foreign key
+    to the other side's instance or token, so `CallRootInstanceId` is a plain
+    column.
+  - `call_activity_executions` rows are written only under the parent's lock and
+    `call_activity_results` once under the child's. States are `queued`,
+    `running`, `completed`, `failed`, and `cancelled`; `resultReady` is only a
+    projection of `running` plus a result row. Never store JWTs, keys, exception
+    dumps, or all child variables there, and never log mapped values.
+  - One visit owns at most one child, and a fresh activation ID is the ownership
+    fence. Retries, duplicate leases, and replays must not create a second child
+    or deliver twice. The invocation row survives history retention; only its
+    captured values can be cleared, after settlement.
+  - Admission counts reserved unsettled calls under the entering instance's lock,
+    including its own transaction's. A blocked call has `CapacityReserved = false`
+    and an incident; an admitted retry reuses its slot. Each entry counts against
+    the automatic-activation guard.
+  - `GetInstanceForUpdateAsync` reads the complete incoming chain without locks,
+    following persisted `CallDepth`, never the configured limit. A cancelled link
+    throws `WorkflowCallFenceException` (409, or a stale job); an invalid chain
+    throws `WorkflowCallChainException` and fails closed. `callCancel` and instance
+    cancellation bypass it, and roots skip the query.
+  - Every terminal status goes through `SetInstanceTerminalStatusAsync`, and every
+    token cancellation through `CancelDurableWorkForTokensAsync`, which reaches
+    `AbandonCallsForTokensAsync`. A new path must use them rather than
+    `SetInstanceStatusAsync` or `CancelOtherJobsByTokenIdsAsync` directly.
+  - The child and the parent's continuation run as the fixed actor `callActivity`.
+    Never rebuild authority from a job payload. Unsettled calls block version
+    changes on both sides, and a linked child cannot be reactivated.
 - **Generic gateways and scoped interrupts.** `execution_tokens` are the
   authoritative execution positions and an instance may have several active
   tokens. Gateway direction is inferred strictly from topology: a split has one
@@ -631,7 +668,7 @@ Storage follows the hybrid design:
   `exclusiveGateway`, `parallelGateway`, `inclusiveGateway`, `complexGateway`,
   `scopedInterruptEvent`, and
   `errorBoundaryEvent` nodes are resolved in the same
-  transaction until the instance rests on a `userTask`,
+  transaction until the instance rests on a `userTask`, `callActivity`,
   `intermediateMessageCatchEvent`, `intermediateTimerCatchEvent`, or
   `intermediateConditionalCatchEvent`, or reaches an end event. A per-token hop
   limit (`flowNodes.Count + 1`) guards against cycles. History rows are
@@ -991,16 +1028,17 @@ Storage follows the hybrid design:
   `lastReactivationTokenId`): tokens from it onward form the current run, and it
   survives history retention. Its additive migration backfills it from existing
   reactivation history. Faulted instances remain terminal and unsupported.
-- **Error events.** An `errorBoundaryEvent` is attached to a `serviceTask` or
-  `scriptTask` (`attachedToRef`) and catches that task's runtime failures
-  (HTTP non-2xx/timeout/network, or a script/assignment/validation error): the
+- **Error events.** An `errorBoundaryEvent` is attached to a `serviceTask`,
+  `scriptTask`, or `callActivity` (`attachedToRef`) and catches that task's runtime
+  failures (HTTP non-2xx/timeout/network, a script/assignment/validation error, or a
+  call failure with its stable `call_*` code): the
   token routes out the boundary's single outgoing **error** flow instead of
   failing the transition, with an optional `errorVariable` capturing the failure
   reason. With no boundary attached, a failure throws a
   `WorkflowDomainException` (rollback + 400) - the historical no-boundary
   default. A boundary is pass-through (it auto-advances its one unconditional
   error flow, history note `error` then `boundary`) and may have no incoming
-  flows. A script host has at most one boundary. A REST service host has at
+  flows. A script or call host has at most one boundary. A REST service host has at
   most eight, each with an optional `errorMatch` of HTTP statuses and inclusive
   ranges (`ErrorBoundaryMatchRules`), and at most one catch-all. Selection uses
   the failed invocation's status (`TaskExecutionOutcome.HttpStatusCode`): exact,
@@ -1460,6 +1498,9 @@ what the cross-version `workflowKey` instance search matches.
 - `WorkflowDefinitionEndpoints` (`/api/workflows`): `GET /` (latest per
   definition), `GET /{id}`, `POST /` (create), `PUT /{id}` (new version),
   `POST /{id}/publish`, `DELETE /{id}`,
+  `GET /{workflowKey}/callers?candidateId=&deletingId=&page=&pageSize=` (published
+  callers and their compatibility with the current default, a candidate, or what would
+  remain after a deletion; an advisory `CallersPreviewDto`),
   `POST /{workflowKey}/message-start` (start a new instance via a messageStartEvent;
   `AllowAnonymous` — auth is the node's client id/secret + required header, not
   the user JWT; returns a slim `MessageStartAckDto`; a configured idempotency or
@@ -1472,7 +1513,8 @@ what the cross-version `workflowKey` instance search matches.
   `variableFilter` and structured sort),
   `GET /inbox?instanceId=&workflowId=&workflowKey=&businessKey=&nodeId=&nodeExternalId=&dueStatus=&dueFrom=&dueTo=&minPriority=&maxPriority=&var=&includeVariables=&sort=&page=&pageSize=` (paged, actor-scoped),
   `POST /inbox/search` (advanced actor-scoped search), `GET /{id}`,
-  `GET /{id}/flows` (available sequence flows), `POST /{id}/claim`,
+  `GET /{id}/calls?page=&pageSize=` (paged direct outgoing calls, newest first; never
+  captured values), `GET /{id}/flows` (available sequence flows), `POST /{id}/claim`,
   `POST /{id}/unclaim`, `POST /{id}/flows/{flowId}` (take a flow),
   `POST /{id}/message` (deliver a message to an `intermediateMessageCatchEvent`;
   `AllowAnonymous` - auth is the node's client id/secret + required header, not
@@ -1655,7 +1697,7 @@ what the cross-version `workflowKey` instance search matches.
   through the existing typed client; saved-version keys are read-only. JSON uses
   bounded streaming interop (2 MiB for hosted saves), while the server owns
   authentication. Unsaved-state guards include pending JavaScript modal drafts.
-- `/workflows/{id}/start` (`StartInstance.razor`) - pick a start event, fill its
+- `/workflows/{id}/start` (`StartInstance.razor`) - pick a start event (a `callOnly` start is hidden), fill its
   variables with typed controls, and launch an instance.
 - `/instances` (`Instances.razor`) - list instances, filterable by status, by
   instance id, workflow id, workflow key, node id, node external id, and an
@@ -1711,7 +1753,8 @@ what the cross-version `workflowKey` instance search matches.
   `Components/Shared/DateTimeLocalText` and `BusinessCalendarText`. `@bind` to a
   nullable date would clear the whole field when a typed leading zero briefly
   empties the value.
-- `/instances/{id}` (`InstanceDetail.razor`) - claim/unclaim, take available
+- `/instances/{id}` (`InstanceDetailRoute.razor`, which keys `InstanceDetail.razor`
+  by instance id, so a link between a parent and a child gets fresh state) - claim/unclaim, take available
   sequence flows, take authorized parent-level multi-instance interrupt actions,
   view variables and history (including task-assignment/reactivation audit
   details), and, for authorized administrators, preview and confirm safe
@@ -1727,7 +1770,10 @@ Display sections live in shared child components so pages keep their own
 coordination. The instance detail sections are under
 `Components/Shared/InstanceDetails/` (namespace
 `Flowbit.Ui.Components.Shared.InstanceDetails`) with the pure
-`InstanceDetailFormatting` helper. The `/administrative-actions` page renders
+`InstanceDetailFormatting` helper; `InstanceCallActivities` and its pure
+`CallActivityFormatting` show parent and root links and paged calls. The Workflows
+page confirms set-default and deleting a default through the display-only
+`Components/Shared/WorkflowCallersDialog.razor`. The `/administrative-actions` page renders
 its batch audit, item results, and recent-batch history through
 `Components/Shared/AdministrativeBatches/` (`AdministrativeBatchAudit`,
 `AdministrativeBatchItems`, and `AdministrativeBatchHistory`; the history child
@@ -1847,7 +1893,7 @@ falls inside a lane are assigned to it (`flowNode.laneId`).
 
 ### FlowNode
 A node in the workflow. `type` is one of `startEvent`, `userTask`, `task`,
-`serviceTask`, `scriptTask`, `exclusiveGateway`, `endEvent`, `errorEndEvent`,
+`serviceTask`, `scriptTask`, `callActivity`, `exclusiveGateway`, `endEvent`, `errorEndEvent`,
 `errorBoundaryEvent`, `conditionalBoundaryEvent`, `intermediateMessageCatchEvent`,
 `intermediateConditionalCatchEvent`, or `messageStartEvent`.
 
@@ -1882,6 +1928,8 @@ A node in the workflow. `type` is one of `startEvent`, `userTask`, `task`,
   "cancelActivity": true,      // timer/conditional boundary only; omitted means true
   "errorVariable": null,       // errorBoundaryEvent only, optional: captures the failure reason
   "errorMatch": null,          // errorBoundaryEvent on a REST host only: { httpStatusCodes, httpStatusRanges }; null = catch-all
+  "callActivity": { /* CallActivityConfig */ }, // callActivity only (see CallActivityConfig)
+  "callOnly": false,           // startEvent selected by initialEventId only; omitted when false
   "message": { /* MessageCatchConfig */ }, // intermediateMessageCatchEvent only (see MessageCatchConfig)
   "conditional": { /* ConditionalDefinition */ } // conditional catch/boundary only
 }
@@ -1997,8 +2045,15 @@ Node kinds and their outgoing-flow rules:
   ends the instance with `Faulted` (vs `Completed` for a plain `endEvent`) and
   snapshots the resolved fault metadata for API projections. Typically reached
   via an `errorBoundaryEvent`'s error path, directly or through a handler task.
-- **`errorBoundaryEvent`**: an error catch attached to a `serviceTask` or
-  `scriptTask` (`attachedToRef`); a small double-ring circle with an outlined
+- **`callActivity`**: a resting call of another workflow family; a rounded
+  rectangle with a thick border and call marker. Carries `callActivity`
+  (`workflowKey`, omitted default `versionBinding`, typed `inputMappings` and
+  `outputMappings`), and exactly one unconditional outgoing flow. A running Worker
+  creates the child and delivers its result. It takes one catch-all
+  `errorBoundaryEvent`, and no async, job, multi-instance, timer, or conditional
+  settings. A start's optional `callOnly` limits the default plain start to calls.
+- **`errorBoundaryEvent`**: an error catch attached to a `serviceTask`,
+  `scriptTask`, or `callActivity` (`attachedToRef`); a small double-ring circle with an outlined
   catching error glyph drawn on the host's border. When the host fails at runtime (HTTP non-2xx/timeout/network,
   or a script/assignment/validation error) the token routes out the boundary's
   single outgoing **error** flow instead of failing the transition, with an
@@ -2474,6 +2529,31 @@ string inside a string and `null` in a bare position. Output `path` is dotted
 (`a.b.c`), with numeric segments indexing into arrays (`items.0.id`). Response
 bodies are read only up to `WorkflowServiceTasks.MaxResponseBodyBytes`.
 
+### CallActivityConfig
+The configuration of a `callActivity` flow node (`flowNode.callActivity`). It is
+strict: unknown members and wrong JSON types are refused, and null mapping lists are
+invalid. Each mapping copies one whole variable, so it has no path, expression,
+default, or validation.
+
+```jsonc
+{
+  "workflowKey": "manager-approval", // literal family key; not this definition's own id
+  // "versionBinding": "publishedDefault", // the only accepted value; omitted on export
+  "inputMappings": [            // at most 100; into the target's default plain start
+    { "sourceVariable": "requestedAmount", "variable": "amount", "dataType": "number", "required": true }
+  ],
+  "outputMappings": [           // at most 100; into declared instance process variables
+    { "sourceVariable": "approved", "variable": "managerApproved", "dataType": "boolean", "isArray": false, "required": true }
+  ]
+}
+```
+
+A target's default plain start must have no `roles` and no `idempotency`, and each of
+its required inputs needs a mapping with `required: true`. Drafts save without the
+target; publication, set-default, and each child's creation check it. An optional
+mapping omits a missing source and passes a present null on. Each snapshot is limited
+to 1 MiB. See the [node reference](docs/node-reference.md#callactivity).
+
 ### MessageCatchConfig
 The delivery configuration on an `intermediateMessageCatchEvent` or
 `messageStartEvent` flow node (`flowNode.message`). All scalar fields are
@@ -2634,6 +2714,7 @@ when extending the model so new features stay close to BPMN terminology.
 | `type: "task"` | Abstract/automatic Task | Pass-through activity completed with no user action; closest to a BPMN Task without an implementation. |
 | `type: "serviceTask"` | Service Task | Automatic REST call (SVC marker); templated request from variables, response mapped back into variables. REST only; supports synchronous execution or durable asynchronous execution with Worker retries/incidents. |
 | `type: "scriptTask"` | Script Task | Automatic variable mutation (SCRIPT marker); either NCalc assignments or a Jint-run JavaScript body (`scriptFormat`) writes process variables during the pass-through hop. Simplified: both run in-process (Jint, sandboxed, no CLR) rather than spawning an external script engine/process. |
+| `type: "callActivity"` | Call Activity | Invokes a reusable workflow family's published default through durable jobs, with typed whole-variable mappings. Simplified: no version selection, no boundary besides one catch-all error, and a fixed system actor. |
 | `type: "exclusiveGateway"` | Exclusive Gateway (XOR) | X-marked diamond. Split form routes by ascending condition priority, else the required default; merge form passes every arriving token without synchronization. |
 | `type: "parallelGateway"` | Parallel Gateway (AND) | Plus-marked diamond. Two or more outgoing flows fork durable tokens; two or more incoming and exactly one outgoing form an all-static-incoming join. Fork and join pairing is inferred from runtime scope ancestry rather than authored references. |
 | `type: "inclusiveGateway"` | Inclusive Gateway (OR) | Circle-marked diamond. Split form selects every matching condition or its required default; merge form synchronizes only inputs that can still receive a token according to cached topology and active positions. |
@@ -2643,7 +2724,7 @@ when extending the model so new features stay close to BPMN terminology.
 | `type: "endEvent"` | None End Event | Terminal marker; thick-ring circle. Requires an incoming flow and has no outgoing flow. |
 | `type: "terminateEndEvent"` | Terminate End Event | Thick-ring terminate marker. Completes the triggering token, cancels all other instance work and active gateway scopes, and completes the instance with completion kind `terminate`. |
 | `type: "errorEndEvent"` | Error End Event | Terminal throwing marker; thick-ring circle with a filled error glyph. Requires an incoming flow, has no outgoing flow, and ends the instance with `Faulted`. Its required static `errorCode` and optional description are operational fault metadata; there is no subprocess propagation, so it is normally reached through an explicitly modeled error path. |
-| `type: "errorBoundaryEvent"` | Error Boundary Event (interrupting) | Attached to a `serviceTask`/`scriptTask`; catches the host's runtime failures and routes out the boundary's single error flow. Simplified: interrupting only; a REST host selects among up to eight by HTTP status, exact before range before catch-all, and a script host has one catch-all; no named error codes. |
+| `type: "errorBoundaryEvent"` | Error Boundary Event (interrupting) | Attached to a `serviceTask`, `scriptTask`, or `callActivity`; catches the host's runtime failures and routes out the boundary's single error flow. Simplified: interrupting only; a REST host selects among up to eight by HTTP status, exact before range before catch-all, and a script or call host has one catch-all; no named error codes. |
 | `type: "intermediateMessageCatchEvent"` | Intermediate Message Catch Event | A resting node that waits for a message delivered via `POST /api/instances/{id}/message`; thin double-ring circle with an envelope glyph. Auth is the node-config client id/secret + a required custom header (with optional NCalc validation), not the user JWT. Parallel waits are selected by exact `catchEvent` external ID when instance-only addressing is ambiguous. No cross-instance message-name/signal matching; timer boundaries support timeout or reminder paths. |
 | `type: "intermediateConditionalCatchEvent"` | Intermediate Conditional Catch Event | A resting double-ring event with a conditional/document glyph. It observes declared persisted instance variables only; shared aliases are rejected. It evaluates on entry and dependency-changing write batches and follows one fixed unconditional flow. Flowbit adds `atomic` and PostgreSQL-backed `durableAsync` delivery policies for transactionally safe wakeup. |
 | `type: "conditionalBoundaryEvent"` | Conditional Boundary Event | Attached to a durable activity and observes declared persisted instance variables. Missing `cancelActivity` is interrupting (solid ring); `false` is non-interrupting (dashed ring) and retriggers on each false-to-true edge. Flowbit applies its `atomic`/`durableAsync` delivery policies and persistent activation/occurrence fencing. |
@@ -2707,7 +2788,7 @@ when extending the model so new features stay close to BPMN terminology.
 - Keep the JSON tolerant: extend `loadFromObject()` (editor) and
   `WorkflowModelMigrator` (.NET) so older documents still load.
 - Update `BpmnFlowNodeTypes` predicates (`IsStart`, `IsEnd`, `IsErrorEnd`,
-  `IsErrorBoundary`, `IsAutomatic`, `IsServiceTask`, `IsScriptTask`,
+  `IsErrorBoundary`, `IsAutomatic`, `IsServiceTask`, `IsScriptTask`, `IsCallActivity`,
   `IsUserTask`, `IsGateway`, `IsMessageCatch`, `IsPassThrough`) and
   `ValidateDefinition` together so the engine and editor agree.
 
@@ -2715,7 +2796,7 @@ when extending the model so new features stay close to BPMN terminology.
 
 ## Key conventions & invariants
 
-- **Node/lane sizing**: user/automatic/service/script tasks use `NODE_W` x
+- **Node/lane sizing**: user/automatic/service/script tasks and call activities use `NODE_W` x
   `NODE_H` (190 x 88) rounded rectangles; gateways use a `GATEWAY_D` (76)
   diamond; boundary events use `BOUNDARY_D` (28) circles drawn on their host's
   border, and all other events use `EVENT_D` (64) circles. Lanes have minimums
@@ -2731,6 +2812,11 @@ when extending the model so new features stay close to BPMN terminology.
 - **Referential cleanup**: deleting a flow node also removes every sequence flow
   whose `sourceRef` or `targetRef` referenced it; deleting a lane nulls out
   `laneId` on its nodes.
+- **Call activity editing**: `node.callActivity` keeps invalid imported values and
+  selecting a node never rewrites them; only `changeNodeTypeFromInspector` clears
+  them. `callSourceDeclarations` mirrors `CallActivityRules.SourceDeclarations`
+  and lives inside the validator markers, because the Jint suites run only that
+  span.
 - **Lane assignment is geometric**: on drag end, a node's `laneId` is set based on
   which lane its center lands in (`assignNodeLane`).
 - **Load is tolerant**: `loadFromObject()` detects the schema. A document with

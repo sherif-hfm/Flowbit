@@ -27,6 +27,12 @@ public sealed record WorkflowVersionCompatibilityContext
 
     public IReadOnlyList<ComplexGatewayStateRecord> ActiveComplexGatewayStates { get; init; } = [];
 
+    /// <summary>The instance owns a call that has not settled, including one that is queued or has a result.</summary>
+    public bool HasUnsettledOutgoingCall { get; init; }
+
+    /// <summary>The instance is the child of a call that has not settled.</summary>
+    public bool HasUnsettledIncomingCall { get; init; }
+
     /// <summary>
     /// Latest persisted value for every instance variable, keyed
     /// case-insensitively by the runtime repository.
@@ -106,6 +112,9 @@ public sealed record WorkflowVersionCompatibilityResult(
 public static class WorkflowVersionCompatibilityCodes
 {
     public const string InstanceNotRunning = "instance_not_running";
+    public const string UnsettledOutgoingCall = "unsettled_outgoing_call";
+    public const string UnsettledIncomingCall = "unsettled_incoming_call";
+    public const string ActiveCallContractChanged = "active_call_contract_changed";
     public const string SourceDefinitionMismatch = "source_definition_mismatch";
     public const string SameDefinition = "same_definition";
     public const string WorkflowKeyMismatch = "workflow_key_mismatch";

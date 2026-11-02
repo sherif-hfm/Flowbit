@@ -51,6 +51,7 @@ public sealed class WorkflowDefinitionValidator(
     /// </summary>
     public void ValidateAuthored(WorkflowModel definition)
     {
+        ValidateAuthoredCallActivityMetadata(definition);
         ValidateAuthoredGatewayControlFlowMetadata(definition);
         ValidateAuthoredClaimBypassMetadata(definition);
         ValidateAuthoredScriptTaskMetadata(definition);
@@ -114,6 +115,8 @@ public sealed class WorkflowDefinitionValidator(
                 throw new WorkflowDomainException("Workflow initialEventId must reference a start event.");
             }
         }
+
+        ValidateCallOnlyStarts(definition);
 
         // A workflow must have at least one entry event (a user startEvent started
         // via POST /api/instances, or a messageStartEvent started via the webhook).
@@ -276,13 +279,16 @@ public sealed class WorkflowDefinitionValidator(
                     || BpmnFlowNodeTypes.IsTimerCatch(node.Type)
                     || BpmnFlowNodeTypes.IsConditionalCatch(node.Type)
                     || BpmnFlowNodeTypes.IsTimerStart(node.Type)
-                    || BpmnFlowNodeTypes.IsMessageStart(node.Type))
+                    || BpmnFlowNodeTypes.IsMessageStart(node.Type)
+                    || BpmnFlowNodeTypes.IsCallActivity(node.Type))
                 && outgoing.Count != 1)
             {
                 var kind = BpmnFlowNodeTypes.IsStart(node.Type)
                     ? "Start event"
                     : BpmnFlowNodeTypes.IsServiceTask(node.Type)
                         ? "Service task"
+                        : BpmnFlowNodeTypes.IsCallActivity(node.Type)
+                            ? "Call activity"
                         : BpmnFlowNodeTypes.IsScriptTask(node.Type)
                             ? "Script task"
                             : BpmnFlowNodeTypes.IsErrorBoundary(node.Type)
@@ -334,6 +340,11 @@ public sealed class WorkflowDefinitionValidator(
             if (BpmnFlowNodeTypes.IsMessageCatch(node.Type))
             {
                 ValidateMessageCatch(node, outgoing, definition.Variables);
+            }
+
+            if (BpmnFlowNodeTypes.IsCallActivity(node.Type))
+            {
+                ValidateCallActivity(node, definition, incoming, outgoing);
             }
 
             if (BpmnFlowNodeTypes.IsTimerCatch(node.Type))
@@ -615,6 +626,70 @@ public sealed class WorkflowDefinitionValidator(
             {
                 throw new WorkflowDomainException(
                     $"Flow node #{node.Id} defines errorMatch but is not an error boundary event.");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Rejects call configuration on the wrong node and call-node properties the
+    /// tolerant migrator would otherwise discard. Durability is intrinsic to a call, so
+    /// it takes no async or job settings, and it cannot be multi-instance in this release.
+    /// </summary>
+    private static void ValidateAuthoredCallActivityMetadata(WorkflowModel definition)
+    {
+        foreach (var node in definition.FlowNodes ?? [])
+        {
+            if (node.CallActivity is not null && !BpmnFlowNodeTypes.IsCallActivity(node.Type))
+            {
+                throw new WorkflowDomainException(
+                    $"Flow node #{node.Id} defines callActivity but is not a call activity.");
+            }
+
+            if (node.CallOnly && !BpmnFlowNodeTypes.IsStart(node.Type))
+            {
+                throw new WorkflowDomainException(
+                    $"Flow node #{node.Id} sets callOnly but is not a start event.");
+            }
+
+            if (!BpmnFlowNodeTypes.IsCallActivity(node.Type))
+            {
+                continue;
+            }
+
+            if (node.CallActivity is { InputMappings: null } or { OutputMappings: null })
+            {
+                throw new WorkflowDomainException(
+                    $"Call activity #{node.Id} mappings must be an array; omit them when there are none.");
+            }
+
+            if (node.AsyncBefore || node.AsyncAfter || node.Job is not null)
+            {
+                throw new WorkflowDomainException(
+                    $"Call activity #{node.Id} cannot set asyncBefore, asyncAfter, or job; a call is always durable.");
+            }
+
+            if (node.MultiInstance is not null)
+            {
+                throw new WorkflowDomainException(
+                    $"Call activity #{node.Id} cannot define multiInstance.");
+            }
+
+            if (node.Timer is not null
+                || node.Conditional is not null
+                || node.CancelActivity is not null
+                || node.ErrorMatch is not null
+                || node.GatewayRef is not null
+                || node.JoinCancellation is not null
+                || !string.IsNullOrWhiteSpace(node.ActivationCondition)
+                || !string.IsNullOrWhiteSpace(node.InboxVisibilityCondition)
+                || !string.IsNullOrWhiteSpace(node.DueDateExpression)
+                || !string.IsNullOrWhiteSpace(node.DueDateCalendar)
+                || !string.IsNullOrWhiteSpace(node.PriorityExpression)
+                || !string.IsNullOrWhiteSpace(node.RolesVariable)
+                || HasUnsupportedScopedInterruptNodeMetadata(node))
+            {
+                throw new WorkflowDomainException(
+                    $"Call activity #{node.Id} can define only callActivity; remove its other runtime settings.");
             }
         }
     }
@@ -2047,10 +2122,12 @@ public sealed class WorkflowDefinitionValidator(
                 $"Error boundary event #{node.Id} attachedToRef #{node.AttachedToRef} does not reference an existing flow node.");
         }
 
-        if (!BpmnFlowNodeTypes.IsServiceTask(host.Type) && !BpmnFlowNodeTypes.IsScriptTask(host.Type))
+        if (!BpmnFlowNodeTypes.IsServiceTask(host.Type)
+            && !BpmnFlowNodeTypes.IsScriptTask(host.Type)
+            && !BpmnFlowNodeTypes.IsCallActivity(host.Type))
         {
             throw new WorkflowDomainException(
-                $"Error boundary event #{node.Id} attachedToRef #{node.AttachedToRef} must reference a service task or script task.");
+                $"Error boundary event #{node.Id} attachedToRef #{node.AttachedToRef} must reference a service task, script task, or call activity.");
         }
 
         if (incoming.Count != 0)
@@ -2089,6 +2166,63 @@ public sealed class WorkflowDefinitionValidator(
             {
                 throw new WorkflowDomainException(
                     $"Error boundary event #{node.Id} errorVariable '{node.ErrorVariable}' collides with a host service output target.");
+            }
+        }
+    }
+
+    /// <summary>
+    /// A call rests until its child finishes, so it needs an incoming path and one plain
+    /// continuation. Its target is checked when the definition is published.
+    /// </summary>
+    private static void ValidateCallActivity(
+        FlowNodeModel node,
+        WorkflowModel definition,
+        IReadOnlyCollection<SequenceFlowModel> incoming,
+        IReadOnlyList<SequenceFlowModel> outgoing)
+    {
+        if (incoming.Count == 0)
+        {
+            throw new WorkflowDomainException(
+                $"Call activity #{node.Id} must have at least one incoming sequence flow.");
+        }
+
+        if (outgoing.Count == 1 && HasUnsupportedPassThroughMetadata(outgoing[0]))
+        {
+            throw new WorkflowDomainException(
+                $"Call activity #{node.Id} must have one unconditional outgoing sequence flow without user-action or multi-instance metadata.");
+        }
+
+        if (CallActivityRules.FindLocalProblem(definition, node) is { } problem)
+        {
+            throw new WorkflowDomainException(problem);
+        }
+    }
+
+    /// <summary>
+    /// A call always selects the family's default plain start, so a call-only start
+    /// anywhere else could never be entered. Changing initialEventId therefore needs an
+    /// explicit edit of the old start's flag.
+    /// </summary>
+    private static void ValidateCallOnlyStarts(WorkflowModel definition)
+    {
+        foreach (var node in definition.FlowNodes.Where(node => node.CallOnly))
+        {
+            if (node.Id != definition.InitialEventId)
+            {
+                throw new WorkflowDomainException(
+                    $"Start event #{node.Id} sets callOnly but is not the default start event; calls can start only from the default.");
+            }
+
+            if (node.Roles is { Count: > 0 })
+            {
+                throw new WorkflowDomainException(
+                    $"Call-only start event #{node.Id} cannot restrict roles; a call starts as the system actor with no roles.");
+            }
+
+            if (node.Idempotency is not null)
+            {
+                throw new WorkflowDomainException(
+                    $"Call-only start event #{node.Id} cannot define idempotency; a call cannot send a transport header.");
             }
         }
     }

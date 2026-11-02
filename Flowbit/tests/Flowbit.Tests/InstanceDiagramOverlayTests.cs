@@ -12,6 +12,26 @@ public sealed class InstanceDiagramOverlayTests
 {
     private static readonly DateTimeOffset Now = DateTimeOffset.Parse("2026-10-26T09:00:00Z");
 
+    [Theory]
+    [InlineData("queued", false, null, "Call blocked before admission")]
+    [InlineData("queued", true, null, "Call queued to start its child")]
+    [InlineData("running", true, 55L, "Waiting for its child instance")]
+    [InlineData("resultReady", true, 55L, "Child finished; its result is waiting for delivery")]
+    public void AWaitingCallSaysWhatItWaitsFor(string state, bool reserved, long? childId, string label)
+    {
+        var overlay = Overlay.Build(Instance("running",
+        [
+            Position(1, 3, BpmnFlowNodeTypes.CallActivity, "active") with
+            {
+                Call = new ExecutionPositionCallDto(7, state, reserved, childId)
+            }
+        ]));
+
+        var marker = Assert.Single(overlay.Markers);
+        Assert.Equal("active", marker.State);
+        Assert.Equal(label, marker.Label);
+    }
+
     [Fact]
     public void RunningInstanceMarksEachActivePositionWithWhatItWaitsFor()
     {

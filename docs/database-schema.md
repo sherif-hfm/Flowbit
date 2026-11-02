@@ -13,6 +13,7 @@ Table names below omit the `flowbit.` qualifier. The page reflects the current m
 - [Table map](#table-map)
 - [How the areas connect](#how-the-areas-connect)
 - [Workflow definitions](#workflow-definitions)
+- [Call activities](#call-activities)
 - [Instances and start identity](#instances-and-start-identity)
 - [Execution positions and gateways](#execution-positions-and-gateways)
 - [User tasks and multi-instance work](#user-tasks-and-multi-instance-work)
@@ -31,7 +32,7 @@ Table names below omit the `flowbit.` qualifier. The page reflects the current m
 
 ## Conventions
 
-- **Schema.** All 55 tables, the EF `__EFMigrationsHistory` table, sequences, triggers, and functions live in `flowbit`. The `citext` extension, used for case-insensitive keys and user names, is installed in `public`.
+- **Schema.** All 58 tables, the EF `__EFMigrationsHistory` table, sequences, triggers, and functions live in `flowbit`. The `citext` extension, used for case-insensitive keys and user names, is installed in `public`.
 - **Identifiers.** Most tables use a `bigint` identity `Id`. Natural or composite primary keys are called out per table.
 - **Authored IDs are not foreign keys.** `NodeId`, `FlowId`, `SequenceFlowId`, `SourceNodeId`, `GatewayNodeId`, and similar integer columns refer to elements inside `workflow_definitions.Definition` JSON. Read them together with the row's `WorkflowDefinitionId`.
 - **Snapshots.** Runtime rows copy what they need from the definition (node names, types, external IDs, roles, conditions) when they are created, so open work keeps the rules it started with. Only an audited version change updates them.
@@ -46,6 +47,9 @@ Table names below omit the `flowbit.` qualifier. The page reflects the current m
 | [`workflow_definitions`](#workflow_definitions) | [Workflow definitions](#workflow-definitions) | One immutable version of a workflow definition (the editor JSON). |
 | [`workflow_definition_user_task_conditions`](#workflow_definition_user_task_conditions) | [Workflow definitions](#workflow-definitions) | Compiled, database-executable inbox visibility condition per definition version and user task. |
 | [`workflow_definition_shared_variable_bindings`](#workflow_definition_shared_variable_bindings) | [Workflow definitions](#workflow-definitions) | Which shared-variable catalog entries a definition version binds, under which alias and access. |
+| [`workflow_definition_call_targets`](#workflow_definition_call_targets) | [Call activities](#call-activities) | Which workflow family each call activity of a definition version names. |
+| [`call_activity_executions`](#call_activity_executions) | [Call activities](#call-activities) | One durable visit to a call activity and its link to the child instance. |
+| [`call_activity_results`](#call_activity_results) | [Call activities](#call-activities) | A child's captured outcome, waiting for its parent. |
 | [`workflow_definition_business_calendars`](#workflow_definition_business_calendars) | [Workflow definitions](#workflow-definitions) | Which business calendars a definition version names in timers and user-task due dates. |
 | [`workflow_instances`](#workflow_instances) | [Instances and start identity](#instances-and-start-identity) | One workflow instance and its lifecycle status. |
 | [`workflow_business_key_scopes`](#workflow_business_key_scopes) | [Instances and start identity](#instances-and-start-identity) | Marks a workflow family that has enabled business keys. |
@@ -123,6 +127,7 @@ Some ID columns intentionally have **no foreign key**, either because the refere
 | `execution_tokens.WaitingJobId`, `WaitingTimerSubscriptionId` | The job or timer a token waits for |
 | `instance_variable_current_values.SourceVariableId` | `instance_variables.Id` |
 | `workflow_incidents.OriginalJobId`, `instance_variable_update_batch_jobs.OriginalJobId`, `administrative_action_batch_items.TimerJobId` | `workflow_jobs.Id`, kept after the job is pruned |
+| `workflow_instances.CallRootInstanceId`, `call_activity_executions.RootInstanceId` | The root instance of a call tree, so creating a nested child never waits on the root's row lock |
 | `shared_variable_revisions.RequestId` | `shared_variable_requests.RequestId` |
 | `WorkflowKey` in `workflow_business_key_scopes`, `user_delegations`, `workflow_delegation_policies`, and batch headers | `workflow_definitions.WorkflowKey` (not unique, so it cannot be a foreign-key target) |
 | `local_users.AttributesJson` keys | `user_attribute_definitions.Key` |
@@ -172,7 +177,7 @@ Each row is one immutable version of a workflow. `POST /api/workflows` creates v
 
 - **Primary key:** `Id`
 - **References:** none
-- **Referenced by:** [`administrative_action_batches`](#administrative_action_batches).`WorkflowDefinitionId`, [`administrative_action_batch_items`](#administrative_action_batch_items).`WorkflowDefinitionId`, [`conditional_boundary_subscriptions`](#conditional_boundary_subscriptions) (`WorkflowDefinitionId`, `WorkflowKey`), [`instance_history`](#instance_history).`WorkflowDefinitionId`, [`instance_variable_update_batch_items`](#instance_variable_update_batch_items).`CapturedWorkflowDefinitionId`, [`instance_variable_update_batch_jobs`](#instance_variable_update_batch_jobs).`WorkflowDefinitionId`, [`instance_variable_updates`](#instance_variable_updates).`WorkflowDefinitionId`, [`node_executions`](#node_executions).`WorkflowDefinitionId`, [`sequence_flow_occurrences`](#sequence_flow_occurrences).`WorkflowDefinitionId`, [`shared_variable_revisions`](#shared_variable_revisions).`WorkflowDefinitionId`, [`timer_subscriptions`](#timer_subscriptions) (`WorkflowDefinitionId`, `WorkflowKey`), [`user_task_role_policies`](#user_task_role_policies).`WorkflowDefinitionId`, [`workflow_definition_shared_variable_bindings`](#workflow_definition_shared_variable_bindings).`WorkflowDefinitionId`, [`workflow_definition_user_task_conditions`](#workflow_definition_user_task_conditions).`WorkflowDefinitionId`, [`workflow_incidents`](#workflow_incidents) (`WorkflowDefinitionId`, `WorkflowKey`), [`workflow_instances`](#workflow_instances) (`WorkflowDefinitionId`, `WorkflowKey`), [`workflow_instance_version_change_batches`](#workflow_instance_version_change_batches).`SourceWorkflowDefinitionId`, [`workflow_instance_version_change_batches`](#workflow_instance_version_change_batches).`TargetWorkflowDefinitionId`, [`workflow_instance_version_change_batch_items`](#workflow_instance_version_change_batch_items).`CapturedSourceWorkflowDefinitionId`, [`workflow_instance_version_changes`](#workflow_instance_version_changes).`SourceWorkflowDefinitionId`, [`workflow_instance_version_changes`](#workflow_instance_version_changes).`TargetWorkflowDefinitionId`, [`workflow_jobs`](#workflow_jobs) (`WorkflowDefinitionId`, `WorkflowKey`)
+- **Referenced by:** [`administrative_action_batches`](#administrative_action_batches).`WorkflowDefinitionId`, [`administrative_action_batch_items`](#administrative_action_batch_items).`WorkflowDefinitionId`, [`conditional_boundary_subscriptions`](#conditional_boundary_subscriptions) (`WorkflowDefinitionId`, `WorkflowKey`), [`instance_history`](#instance_history).`WorkflowDefinitionId`, [`instance_variable_update_batch_items`](#instance_variable_update_batch_items).`CapturedWorkflowDefinitionId`, [`instance_variable_update_batch_jobs`](#instance_variable_update_batch_jobs).`WorkflowDefinitionId`, [`instance_variable_updates`](#instance_variable_updates).`WorkflowDefinitionId`, [`node_executions`](#node_executions).`WorkflowDefinitionId`, [`sequence_flow_occurrences`](#sequence_flow_occurrences).`WorkflowDefinitionId`, [`shared_variable_revisions`](#shared_variable_revisions).`WorkflowDefinitionId`, [`timer_subscriptions`](#timer_subscriptions) (`WorkflowDefinitionId`, `WorkflowKey`), [`user_task_role_policies`](#user_task_role_policies).`WorkflowDefinitionId`, [`workflow_definition_shared_variable_bindings`](#workflow_definition_shared_variable_bindings).`WorkflowDefinitionId`, [`workflow_definition_user_task_conditions`](#workflow_definition_user_task_conditions).`WorkflowDefinitionId`, [`workflow_incidents`](#workflow_incidents) (`WorkflowDefinitionId`, `WorkflowKey`), [`workflow_instances`](#workflow_instances) (`WorkflowDefinitionId`, `WorkflowKey`), [`workflow_instance_version_change_batches`](#workflow_instance_version_change_batches).`SourceWorkflowDefinitionId`, [`workflow_instance_version_change_batches`](#workflow_instance_version_change_batches).`TargetWorkflowDefinitionId`, [`workflow_instance_version_change_batch_items`](#workflow_instance_version_change_batch_items).`CapturedSourceWorkflowDefinitionId`, [`workflow_instance_version_changes`](#workflow_instance_version_changes).`SourceWorkflowDefinitionId`, [`workflow_instance_version_changes`](#workflow_instance_version_changes).`TargetWorkflowDefinitionId`, [`workflow_jobs`](#workflow_jobs) (`WorkflowDefinitionId`, `WorkflowKey`), [`workflow_definition_call_targets`](#workflow_definition_call_targets).`WorkflowDefinitionId`, [`call_activity_executions`](#call_activity_executions).`ParentDefinitionId`, [`call_activity_executions`](#call_activity_executions).`ChildDefinitionId`
 - **Unique:** (`Id`, `WorkflowKey`) (alternate key); (`WorkflowKey`, `Version`)
 
 The alternate key `(Id, WorkflowKey)` is the target of the composite foreign keys from `workflow_instances`, `workflow_jobs`, `workflow_incidents`, `timer_subscriptions`, and `conditional_boundary_subscriptions`. It guarantees that a row's denormalized `WorkflowKey` always matches its exact version.
@@ -233,6 +238,104 @@ Records each business calendar a definition version names in a timer's `calendar
 
 The API refuses to delete a calendar that a published version, a running instance, or an open job uses, counting through these rows. Deleting a calendar that only unpublished versions without open work use removes their rows; publishing such a version then fails until the calendar exists again.
 
+## Call activities
+
+A call is written from one side at a time. Invocation rows are written only while holding the parent instance's lock, and result rows are written once while holding the child's lock and never change. Neither side's rows hold a foreign key to the other side's instance or token where that could wait on a lock held by the other side's transaction, and processing a job locks only the receiver.
+
+The relationship survives retention: `call_activity_executions` keeps one compact row per visit for the instance's lifetime, and only its bulky captured values become eligible under the `workflowHistory` policy after settlement, aged from the parent's terminal time. An open call job, an unsettled result, or a referenced definition is never removed. Deleting a definition is refused while an invocation references it, including a queued one with no child.
+
+```mermaid
+erDiagram
+    workflow_definition_call_targets {
+        bigint WorkflowDefinitionId PK, FK
+        int NodeId PK
+        varchar TargetWorkflowKey
+    }
+    call_activity_executions {
+        bigint Id PK
+        bigint ParentInstanceId FK
+        bigint ParentTokenId FK
+        uuid ActivationId
+        bigint ParentNodeExecutionId FK
+        bigint RootInstanceId
+        bigint ParentDefinitionId FK
+        bigint ChildDefinitionId FK
+        bigint ChildInstanceId FK
+    }
+    call_activity_results {
+        bigint ChildInstanceId PK, FK
+        bigint InvocationId FK
+    }
+    workflow_definitions ||--o{ workflow_definition_call_targets : "WorkflowDefinitionId"
+    workflow_instances ||--o{ call_activity_executions : "ParentInstanceId"
+    workflow_instances |o--o| call_activity_executions : "ChildInstanceId"
+    execution_tokens ||--o{ call_activity_executions : "ParentTokenId"
+    node_executions |o--o{ call_activity_executions : "ParentNodeExecutionId"
+    workflow_definitions ||--o{ call_activity_executions : "ParentDefinitionId, ChildDefinitionId"
+    call_activity_executions ||--o| call_activity_results : "InvocationId"
+    workflow_instances ||--o| call_activity_results : "ChildInstanceId"
+    call_activity_executions |o--o{ workflow_jobs : "CallInvocationId"
+```
+
+### `workflow_definition_call_targets`
+
+Records the family each call node of a definition version names, so `GET /api/workflows/{workflowKey}/callers` can find callers without reading every definition. Rows are written when the version is saved.
+
+| Column | Meaning |
+| --- | --- |
+| `WorkflowDefinitionId`, `NodeId` | Owning version and call node. Deleting the version deletes its rows. |
+| `TargetWorkflowKey` | The family the call names. It is a plain string, because a target need not exist yet. |
+
+- **Primary key:** (`WorkflowDefinitionId`, `NodeId`)
+- **References:** `WorkflowDefinitionId` → [`workflow_definitions`](#workflow_definitions) (required, `CASCADE`)
+- **Referenced by:** none
+- **Unique:** the primary key; index on `TargetWorkflowKey`
+
+### `call_activity_executions`
+
+One durable visit to a call activity. One invocation owns at most one child, and one child belongs to exactly one invocation. Stored states are `queued` (no child yet), `running` (child created), and settled `completed`, `failed`, or `cancelled`. The API's `resultReady` is `running` with a result row.
+
+| Column | Meaning |
+| --- | --- |
+| `ParentInstanceId`, `ParentTokenId`, `ActivationId`, `ParentNodeId` | The parent activation that owns the visit. A re-entered node always has a new activation. |
+| `ParentNodeExecutionId` | Optional audit reference, set to null when retention removes the row. It is not the ownership fence. |
+| `RootInstanceId`, `ChildDepth` | The call tree and the depth of the child this visit creates. The depth check allows one above the supported maximum of 32, so a call blocked under the deepest parent can record its failure. |
+| `ParentDefinitionId` | Exact parent version, independent of later parent version changes. |
+| `TargetWorkflowKey` | The family named at entry. |
+| `ChildDefinitionId`, `ChildStartEventId`, `ChildInstanceId` | The version, start, and child chosen when the child was created. All three are null or all three are set. |
+| `State` | See above. |
+| `CapacityReserved`, `AdmittedAt` | Whether the visit holds an admission slot. Unreserved unsettled rows are allowed only while queued with no child: they were blocked before admission and are left out of admission counts. Settling clears the flag. |
+| `ContractJson`, `InputValuesJson` | The captured call contract and input snapshot. Missing values are recorded separately from explicit null. Cleared by retention after settlement. |
+| `FailureCode`, `FailureDescription`, `ChildFaultCode` | A stable call failure code, up to 1,000 characters of safe text, and the child's error end code. |
+| `CausedBy` | The actor whose transition reached the call, for audit only. It grants nothing. |
+| `CreatedAt`, `UpdatedAt`, `StartedAt`, `SettledAt` | Lifecycle times. |
+| `SnapshotsPrunedAt` | When retention cleared the captured values. |
+
+- **Primary key:** `Id`
+- **References:** `ParentInstanceId`, `ChildInstanceId` → [`workflow_instances`](#workflow_instances) (`RESTRICT`); `ParentTokenId` → [`execution_tokens`](#execution_tokens) (`RESTRICT`); `ParentNodeExecutionId` → [`node_executions`](#node_executions) (optional, `SET NULL`); `ParentDefinitionId`, `ChildDefinitionId` → [`workflow_definitions`](#workflow_definitions) (`RESTRICT`)
+- **Referenced by:** [`call_activity_results`](#call_activity_results).`InvocationId`, [`workflow_jobs`](#workflow_jobs).`CallInvocationId`
+- **Unique:** (`ParentInstanceId`, `ParentTokenId`, `ActivationId`); `ChildInstanceId` where it is not null
+- **Indexes:** (`ParentInstanceId`, `Id`) for paged history; (`ParentTokenId`, `State`) for unsettled calls; `RootInstanceId` for reserved unsettled calls, used by admission counting
+- **Checks:** `CK_call_activity_executions_state`, `_reservation`, `_admission`, `_settlement`, `_child_shape`, `_child_resolution`, and `_depth`
+
+### `call_activity_results`
+
+One row for a child that finished while its invocation was unsettled. It holds only the mapped output values and safe terminal metadata, never all child variables. The call outcome is distinct from the child's status: an invalid output is `faulted` with `call_output_invalid` while the child stays completed.
+
+| Column | Meaning |
+| --- | --- |
+| `ChildInstanceId` | The child that finished. |
+| `InvocationId` | The invocation waiting for it. |
+| `Outcome` | `completed`, `faulted`, or `cancelled`. |
+| `OutputValuesJson` | Captured output values. Cleared by retention after the invocation settles. |
+| `FailureCode`, `FailureDescription`, `ChildFaultCode` | As on the invocation. |
+| `CapturedAt` | The child's terminal commit. |
+
+- **Primary key:** `ChildInstanceId`
+- **References:** `InvocationId` → [`call_activity_executions`](#call_activity_executions) (`RESTRICT`); `ChildInstanceId` → [`workflow_instances`](#workflow_instances) (`RESTRICT`)
+- **Referenced by:** none
+- **Unique:** `InvocationId`
+
 ## Instances and start identity
 
 The instance row and the claim tables that make starts and message deliveries idempotent or unique.
@@ -290,11 +393,12 @@ One row per started instance. It owns lifecycle status and timestamps. It no lon
 | `CreatedAt`, `UpdatedAt` | Child activity also touches `UpdatedAt` in the same transaction. |
 | `FinishedAt` | Latest terminal transition; the retention age reference. |
 | `HistoryPrunedAt` | Set when retention first deletes instance-owned history. It is allowed only on terminal instances and permanently blocks reactivation. |
+| `CallRootInstanceId`, `CallDepth` | The root of this instance's call tree and its depth, immutable after insertion. A root has null and 0; a child has its root and a positive depth, at most 32. The root is a plain column rather than a foreign key, so creating a nested child never waits on the root's row lock. |
 | `LastReactivationTokenId` | Root token created by the most recent reactivation; null if the instance was never reactivated. Tokens from this ID onward belong to the current run, so it marks the run boundary after retention removes the `instanceReactivated` history row. The migration that added it filled it from the reactivation history still present. It is not a foreign key. |
 
 - **Primary key:** `Id`
 - **References:** (`WorkflowDefinitionId`, `WorkflowKey`) → [`workflow_definitions`](#workflow_definitions) (`Id`, `WorkflowKey`) (required, `RESTRICT`); (`WorkflowKey`, `BusinessKey`) → [`workflow_business_key_claims`](#workflow_business_key_claims) (optional, `RESTRICT`); (`WorkflowKey`, `IdempotencyKey`) → [`workflow_idempotency_claims`](#workflow_idempotency_claims) (optional, `RESTRICT`)
-- **Referenced by:** [`administrative_action_batch_items`](#administrative_action_batch_items).`InstanceId`, [`complex_gateway_states`](#complex_gateway_states).`InstanceId`, [`conditional_boundary_subscriptions`](#conditional_boundary_subscriptions).`InstanceId`, [`execution_tokens`](#execution_tokens).`InstanceId`, [`gateway_executions`](#gateway_executions).`InstanceId`, [`instance_history`](#instance_history).`InstanceId`, [`instance_variable_current_values`](#instance_variable_current_values).`InstanceId`, [`instance_variables`](#instance_variables).`InstanceId`, [`instance_variable_update_batch_items`](#instance_variable_update_batch_items).`InstanceId`, [`instance_variable_updates`](#instance_variable_updates).`InstanceId`, [`message_delivery_receipts`](#message_delivery_receipts).`InstanceId`, [`multi_instance_executions`](#multi_instance_executions).`InstanceId`, [`node_executions`](#node_executions).`InstanceId`, [`sequence_flow_occurrences`](#sequence_flow_occurrences).`InstanceId`, [`sequence_flow_summaries`](#sequence_flow_summaries).`InstanceId`, [`shared_variable_revisions`](#shared_variable_revisions).`InstanceId`, [`timer_subscriptions`](#timer_subscriptions).`InstanceId`, [`user_task_role_policies`](#user_task_role_policies).`InstanceId`, [`user_tasks`](#user_tasks).`InstanceId`, [`workflow_business_key_claims`](#workflow_business_key_claims).`ActiveInstanceId`, [`workflow_business_key_claims`](#workflow_business_key_claims).`LastInstanceId`, [`workflow_idempotency_claims`](#workflow_idempotency_claims).`InstanceId`, [`workflow_incidents`](#workflow_incidents).`InstanceId`, [`workflow_instance_version_change_batch_items`](#workflow_instance_version_change_batch_items).`InstanceId`, [`workflow_instance_version_changes`](#workflow_instance_version_changes).`InstanceId`, [`workflow_jobs`](#workflow_jobs).`InstanceId`
+- **Referenced by:** [`administrative_action_batch_items`](#administrative_action_batch_items).`InstanceId`, [`complex_gateway_states`](#complex_gateway_states).`InstanceId`, [`conditional_boundary_subscriptions`](#conditional_boundary_subscriptions).`InstanceId`, [`execution_tokens`](#execution_tokens).`InstanceId`, [`gateway_executions`](#gateway_executions).`InstanceId`, [`instance_history`](#instance_history).`InstanceId`, [`instance_variable_current_values`](#instance_variable_current_values).`InstanceId`, [`instance_variables`](#instance_variables).`InstanceId`, [`instance_variable_update_batch_items`](#instance_variable_update_batch_items).`InstanceId`, [`instance_variable_updates`](#instance_variable_updates).`InstanceId`, [`message_delivery_receipts`](#message_delivery_receipts).`InstanceId`, [`multi_instance_executions`](#multi_instance_executions).`InstanceId`, [`node_executions`](#node_executions).`InstanceId`, [`sequence_flow_occurrences`](#sequence_flow_occurrences).`InstanceId`, [`sequence_flow_summaries`](#sequence_flow_summaries).`InstanceId`, [`shared_variable_revisions`](#shared_variable_revisions).`InstanceId`, [`timer_subscriptions`](#timer_subscriptions).`InstanceId`, [`user_task_role_policies`](#user_task_role_policies).`InstanceId`, [`user_tasks`](#user_tasks).`InstanceId`, [`workflow_business_key_claims`](#workflow_business_key_claims).`ActiveInstanceId`, [`workflow_business_key_claims`](#workflow_business_key_claims).`LastInstanceId`, [`workflow_idempotency_claims`](#workflow_idempotency_claims).`InstanceId`, [`workflow_incidents`](#workflow_incidents).`InstanceId`, [`workflow_instance_version_change_batch_items`](#workflow_instance_version_change_batch_items).`InstanceId`, [`workflow_instance_version_changes`](#workflow_instance_version_changes).`InstanceId`, [`workflow_jobs`](#workflow_jobs).`InstanceId`, [`call_activity_executions`](#call_activity_executions).`ParentInstanceId`, [`call_activity_executions`](#call_activity_executions).`ChildInstanceId`, [`call_activity_results`](#call_activity_results).`ChildInstanceId`
 
 ### `workflow_business_key_scopes`
 
@@ -411,7 +515,7 @@ An instance may have several active tokens, for example one per parallel branch.
 | `NodeId`, `NodeName`, `NodeType`, `NodeExternalId` | Snapshot of the node the token is on. Instance-list node filters and current-node display read the latest token. |
 | `Status` | `active`, `completed`, `faulted`, `cancelled`, or `merged`. |
 | `ActivationId` | Fence regenerated on each node activation. Jobs, timers, conditional subscriptions, and administrative items must present the matching value. |
-| `WaitState`, `WaitingJobId`, `WaitingTimerSubscriptionId` | Durable wait kind (`asyncBefore`, `asyncAfter`, `timerCatch`, `timerBoundary`, `conditionalWake`) and the job or timer the token waits for. These columns have no foreign keys. |
+| `WaitState`, `WaitingJobId`, `WaitingTimerSubscriptionId` | Durable wait kind (`asyncBefore`, `asyncAfter`, `timerCatch`, `timerBoundary`, `conditionalWake`, `callStart`) and the job or timer the token waits for. While a call's child runs, the token has no wait state: it rests as a user task does, and the invocation records what it waits for. These columns have no foreign keys. |
 | `ArrivedViaFlowId` | The sequence flow that brought the token here. |
 | `CurrentNodeExecutionId` | The current visit in `node_executions` (unique). It is null at a multi-instance parent. |
 | `GatewayBranchId` | The gateway branch the token belongs to, which places it in the gateway scope tree. |
@@ -421,7 +525,7 @@ An instance may have several active tokens, for example one per parallel branch.
 
 - **Primary key:** `Id`
 - **References:** `ComplexGatewayStateId` → [`complex_gateway_states`](#complex_gateway_states) (optional, `NO ACTION`); `CurrentNodeExecutionId` → [`node_executions`](#node_executions) (optional, `NO ACTION`); `GatewayBranchId` → [`gateway_branches`](#gateway_branches) (optional, `NO ACTION`); `InstanceId` → [`workflow_instances`](#workflow_instances) (required, `CASCADE`)
-- **Referenced by:** [`administrative_action_batch_items`](#administrative_action_batch_items).`TokenId`, [`conditional_boundary_subscriptions`](#conditional_boundary_subscriptions).`HostTokenId`, [`gateway_executions`](#gateway_executions).`InterruptingTokenId`, [`multi_instance_executions`](#multi_instance_executions).`TokenId`, [`node_executions`](#node_executions).`ExecutionTokenId`, [`timer_subscriptions`](#timer_subscriptions).`TokenId`, [`user_tasks`](#user_tasks).`TokenId`, [`workflow_jobs`](#workflow_jobs).`TokenId`
+- **Referenced by:** [`administrative_action_batch_items`](#administrative_action_batch_items).`TokenId`, [`conditional_boundary_subscriptions`](#conditional_boundary_subscriptions).`HostTokenId`, [`gateway_executions`](#gateway_executions).`InterruptingTokenId`, [`multi_instance_executions`](#multi_instance_executions).`TokenId`, [`node_executions`](#node_executions).`ExecutionTokenId`, [`timer_subscriptions`](#timer_subscriptions).`TokenId`, [`user_tasks`](#user_tasks).`TokenId`, [`workflow_jobs`](#workflow_jobs).`TokenId`, [`call_activity_executions`](#call_activity_executions).`ParentTokenId`
 - **Unique:** `CurrentNodeExecutionId`
 
 ### `gateway_executions`
@@ -729,7 +833,7 @@ The authoritative, read-only ledger of committed node visits. A normal visit is 
 
 - **Primary key:** `Id`
 - **References:** `EntryGatewayBranchId` → [`gateway_branches`](#gateway_branches) (optional, `NO ACTION`); `ExecutionTokenId` → [`execution_tokens`](#execution_tokens) (required, `RESTRICT`); `ExitGatewayBranchId` → [`gateway_branches`](#gateway_branches) (optional, `NO ACTION`); `InstanceId` → [`workflow_instances`](#workflow_instances) (required, `CASCADE`); `MultiInstanceExecutionId` → [`multi_instance_executions`](#multi_instance_executions) (optional, `RESTRICT`); `UserTaskId` → [`user_tasks`](#user_tasks) (optional, `RESTRICT`); `WorkflowDefinitionId` → [`workflow_definitions`](#workflow_definitions) (required, `RESTRICT`)
-- **Referenced by:** [`execution_tokens`](#execution_tokens).`CurrentNodeExecutionId`, [`instance_variables`](#instance_variables).`NodeExecutionId`, [`shared_variable_revisions`](#shared_variable_revisions).`NodeExecutionId`
+- **Referenced by:** [`execution_tokens`](#execution_tokens).`CurrentNodeExecutionId`, [`instance_variables`](#instance_variables).`NodeExecutionId`, [`shared_variable_revisions`](#shared_variable_revisions).`NodeExecutionId`, [`call_activity_executions`](#call_activity_executions).`ParentNodeExecutionId`
 - **Unique:** (`MultiInstanceExecutionId`, `ItemIndex`) where `MultiInstanceExecutionId IS NOT NULL AND ItemIndex IS NOT NULL`; `UserTaskId` where `UserTaskId IS NOT NULL`
 
 ### `sequence_flow_occurrences`
@@ -838,7 +942,7 @@ Each row is one unit of durable work, leased by `Flowbit.Worker` with `FOR UPDAT
 
 | Column | Meaning |
 | --- | --- |
-| `Kind` | `asyncBefore`, `asyncAfter`, `timer`, `timerStart`, `timerBoundary`, `conditionalWake`, `administrativeBatchPrepare`, `administrativeBatchExecute`, `instanceVersionChangeBatchPrepare`, `instanceVersionChangeBatchExecute`, `instanceVariableUpdateBatchPrepare`, or `instanceVariableUpdateBatchExecute`. |
+| `Kind` | `asyncBefore`, `asyncAfter`, `timer`, `timerStart`, `timerBoundary`, `conditionalWake`, `callStart`, `callResume`, `callCancel`, `administrativeBatchPrepare`, `administrativeBatchExecute`, `instanceVersionChangeBatchPrepare`, `instanceVersionChangeBatchExecute`, `instanceVariableUpdateBatchPrepare`, or `instanceVariableUpdateBatchExecute`. |
 | `QueueClass`, `Priority`, `DueAt` | `control` or `activity` queue, priority, and earliest run time. |
 | `Status` | `queued`, `running`, `resultReady`, `retry`, `completed`, `incident`, `cancelled`, or `skipped`. |
 | `Phase`, `PayloadJson`, `ResultJson`, `ErrorJson` | Job-specific progress, input, staged result, and last error. |
@@ -847,14 +951,15 @@ Each row is one unit of durable work, leased by `Flowbit.Worker` with `FOR UPDAT
 | `InstanceId`, `TokenId`, `ActivationId`, `UserTaskId`, `MultiInstanceExecutionId` | Runtime fences. `InstanceId` is null for instance-less work. |
 | `TimerSubscriptionId`, `ScheduledOccurrenceAt` | Timer occurrence; unique together, so each occurrence gets one job. A `timer_schedule_failed` incident's `timerStart` job has a subscription but no occurrence. |
 | `ConditionalBoundarySubscriptionId`, `ConditionalBoundaryOccurrence` | Durable conditional-boundary occurrence; unique together. |
+| `CallInvocationId` | The call invocation a `callStart`, `callResume`, or `callCancel` job belongs to; unique with `Kind`. The job row belongs to its sender's instance and token: `callResume` to the child, `callCancel` to the parent. |
 | `SnapshotId` | Frozen input snapshot in `workflow_job_snapshots`. |
 | `WorkflowDefinitionId`, `WorkflowKey`, `NodeId`, `NodeName`, `NodeType` | Version and node context. |
 | `AutomaticActivationCount` | Carries the automatic-loop allowance. |
 
 - **Primary key:** `Id`
-- **References:** `ConditionalBoundarySubscriptionId` → [`conditional_boundary_subscriptions`](#conditional_boundary_subscriptions) (optional, `RESTRICT`); `InstanceId` → [`workflow_instances`](#workflow_instances) (optional, `CASCADE`); `MultiInstanceExecutionId` → [`multi_instance_executions`](#multi_instance_executions) (optional, `RESTRICT`); `SnapshotId` → [`workflow_job_snapshots`](#workflow_job_snapshots) (optional, `RESTRICT`); `TimerSubscriptionId` → [`timer_subscriptions`](#timer_subscriptions) (optional, `RESTRICT`); `TokenId` → [`execution_tokens`](#execution_tokens) (optional, `RESTRICT`); `UserTaskId` → [`user_tasks`](#user_tasks) (optional, `RESTRICT`); (`WorkflowDefinitionId`, `WorkflowKey`) → [`workflow_definitions`](#workflow_definitions) (`Id`, `WorkflowKey`) (required, `RESTRICT`)
+- **References:** `ConditionalBoundarySubscriptionId` → [`conditional_boundary_subscriptions`](#conditional_boundary_subscriptions) (optional, `RESTRICT`); `InstanceId` → [`workflow_instances`](#workflow_instances) (optional, `CASCADE`); `MultiInstanceExecutionId` → [`multi_instance_executions`](#multi_instance_executions) (optional, `RESTRICT`); `SnapshotId` → [`workflow_job_snapshots`](#workflow_job_snapshots) (optional, `RESTRICT`); `TimerSubscriptionId` → [`timer_subscriptions`](#timer_subscriptions) (optional, `RESTRICT`); `TokenId` → [`execution_tokens`](#execution_tokens) (optional, `RESTRICT`); `UserTaskId` → [`user_tasks`](#user_tasks) (optional, `RESTRICT`); (`WorkflowDefinitionId`, `WorkflowKey`) → [`workflow_definitions`](#workflow_definitions) (`Id`, `WorkflowKey`) (required, `RESTRICT`); `CallInvocationId` → [`call_activity_executions`](#call_activity_executions) (optional, `RESTRICT`)
 - **Referenced by:** [`administrative_action_batches`](#administrative_action_batches).`ExecutionJobId`, [`administrative_action_batches`](#administrative_action_batches).`PreparationJobId`, [`instance_variable_update_batch_jobs`](#instance_variable_update_batch_jobs).`JobId`, [`workflow_incidents`](#workflow_incidents).`JobId`, [`workflow_instance_version_change_batches`](#workflow_instance_version_change_batches).`ExecutionJobId`, [`workflow_instance_version_change_batches`](#workflow_instance_version_change_batches).`PreparationJobId`, [`workflow_job_attempts`](#workflow_job_attempts).`JobId`
-- **Unique:** (`ConditionalBoundarySubscriptionId`, `ConditionalBoundaryOccurrence`) where `ConditionalBoundarySubscriptionId IS NOT NULL AND ConditionalBoundaryOccurrence IS NOT NULL`; (`TimerSubscriptionId`, `ScheduledOccurrenceAt`) where `TimerSubscriptionId IS NOT NULL AND ScheduledOccurrenceAt IS NOT NULL`
+- **Unique:** (`ConditionalBoundarySubscriptionId`, `ConditionalBoundaryOccurrence`) where `ConditionalBoundarySubscriptionId IS NOT NULL AND ConditionalBoundaryOccurrence IS NOT NULL`; (`TimerSubscriptionId`, `ScheduledOccurrenceAt`) where `TimerSubscriptionId IS NOT NULL AND ScheduledOccurrenceAt IS NOT NULL`; (`CallInvocationId`, `Kind`) where `CallInvocationId IS NOT NULL`
 
 ### `workflow_job_attempts`
 

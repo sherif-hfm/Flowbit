@@ -384,6 +384,22 @@ public sealed class FlowNodeModel
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public IdempotencyModel? Idempotency { get; set; }
 
+    /// <summary>
+    /// callActivity only: the workflow family a visit starts as a child instance
+    /// and the variables copied in and out of it.
+    /// </summary>
+    [JsonPropertyName("callActivity")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public CallActivityModel? CallActivity { get; set; }
+
+    /// <summary>
+    /// The default plain start event only: true means only a call activity can
+    /// start from it, so public start routes and the start page refuse it.
+    /// </summary>
+    [JsonPropertyName("callOnly")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool CallOnly { get; set; }
+
     // scriptTask only: which authoring mode is active. "ncalc" (default) uses
     // Assignments (NCalc expressions); "javascript" uses Script (a Jint-evaluated
     // JS body with a bound `execution` host object). Exactly one mode's data is
@@ -618,6 +634,99 @@ public sealed class HttpStatusRangeModel
     /// </summary>
     [JsonPropertyName("to")]
     public int To { get; set; }
+}
+
+// The strict attributes stop the web JSON defaults from dropping a misspelled
+// mapping field or binding, either of which would change what the call copies.
+/// <summary>
+/// Starts a child instance of another workflow family and waits for it to finish.
+/// </summary>
+[JsonNumberHandling(JsonNumberHandling.Strict)]
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed class CallActivityModel
+{
+    /// <summary>
+    /// The stable key of the workflow family to call. It is a literal, never interpolated.
+    /// </summary>
+    [JsonPropertyName("workflowKey")]
+    public string WorkflowKey { get; set; } = string.Empty;
+
+    /// <summary>
+    /// How the child version is chosen. Omitted means publishedDefault, the only
+    /// accepted value in this release.
+    /// </summary>
+    [JsonPropertyName("versionBinding")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? VersionBinding { get; set; }
+
+    /// <summary>
+    /// Copies parent variables into declared inputs of the target's default plain start.
+    /// </summary>
+    [JsonPropertyName("inputMappings")]
+    public List<CallVariableMappingModel> InputMappings { get; set; } = [];
+
+    /// <summary>
+    /// Copies child variables into declared parent process variables after the child completes.
+    /// </summary>
+    [JsonPropertyName("outputMappings")]
+    public List<CallVariableMappingModel> OutputMappings { get; set; } = [];
+}
+
+/// <summary>
+/// One whole-variable copy between a call's parent and child. It has no path,
+/// expression, default, or validation of its own.
+/// </summary>
+[JsonNumberHandling(JsonNumberHandling.Strict)]
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed class CallVariableMappingModel
+{
+    /// <summary>The whole variable to read from the source instance.</summary>
+    [JsonPropertyName("sourceVariable")]
+    public string SourceVariable { get; set; } = string.Empty;
+
+    /// <summary>The destination variable name.</summary>
+    [JsonPropertyName("variable")]
+    public string Variable { get; set; } = string.Empty;
+
+    /// <summary>The declared data type both sides must agree on.</summary>
+    [JsonPropertyName("dataType")]
+    public string DataType { get; set; } = string.Empty;
+
+    /// <summary>Whether the value is an array. Omitted means false.</summary>
+    [JsonPropertyName("isArray")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool IsArray { get; set; }
+
+    /// <summary>
+    /// When true, a missing source or JSON null fails the call. When false, a missing
+    /// source omits the value; a present null is passed on.
+    /// </summary>
+    [JsonPropertyName("required")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool Required { get; set; }
+}
+
+public static class CallActivityVersionBindings
+{
+    public const string PublishedDefault = "publishedDefault";
+}
+
+/// <summary>
+/// Limits of the call-activity contract, shared by definition validation and the editor.
+/// </summary>
+public static class CallActivityConstraints
+{
+    public const int MaxMappingsPerDirection = 100;
+    public const int MaxWorkflowKeyLength = 300;
+    public const int MaxVariableNameLength = 300;
+
+    /// <summary>The largest persisted child depth, independent of the configured admission limit.</summary>
+    public const int MaxSupportedDepth = 32;
+
+    /// <summary>The largest serialized input or output snapshot.</summary>
+    public const int MaxSnapshotBytes = 1_048_576;
+
+    public const int MaxFailureDescriptionLength = 1000;
 }
 
 /// <summary>
@@ -2488,6 +2597,10 @@ public static class BpmnFlowNodeTypes
     public const string Task = "task";
     public const string ServiceTask = "serviceTask";
     public const string ScriptTask = "scriptTask";
+    // Rests while a child instance of another workflow family runs. It is not a
+    // user task or a pass-through node; durable jobs start the child and deliver
+    // its result. Only a catch-all errorBoundaryEvent may be attached.
+    public const string CallActivity = "callActivity";
     public const string ExclusiveGateway = "exclusiveGateway";
     public const string ParallelGateway = "parallelGateway";
     public const string InclusiveGateway = "inclusiveGateway";
@@ -2574,6 +2687,9 @@ public static class BpmnFlowNodeTypes
     public static bool IsScriptTask(string type) =>
         string.Equals(type, ScriptTask, StringComparison.Ordinal);
 
+    public static bool IsCallActivity(string type) =>
+        string.Equals(type, CallActivity, StringComparison.Ordinal);
+
     public static bool IsExclusiveGateway(string type) =>
         string.Equals(type, ExclusiveGateway, StringComparison.Ordinal);
 
@@ -2639,6 +2755,7 @@ public static class BpmnFlowNodeTypes
 
     public static bool IsSupported(string type) =>
         type is StartEvent or TimerStartEvent or EndEvent or UserTask or Task or ServiceTask or ScriptTask
+            or CallActivity
             or ExclusiveGateway or ParallelGateway or InclusiveGateway or ComplexGateway
             or ScopedInterruptEvent
             or ErrorEndEvent or TerminateEndEvent or ErrorBoundaryEvent or TimerBoundaryEvent

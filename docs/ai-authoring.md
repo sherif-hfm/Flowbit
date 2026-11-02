@@ -10,11 +10,12 @@ The assistant returns a proposal for review. Applying a proposal changes the edi
 
 1. Open a new or existing workflow in Flowbit.Ui and select **AI assistant**.
 2. Select one of the AI models a settings administrator [configured](#configure-ai-models). The first model is selected by default. You do not enter a key: the assistant receives only each model's id and name, and the API calls the model's endpoint with the key stored for it. If no model is configured, the panel says so and links to the **AI models** page.
-3. Describe the process or requested modification. You can supply BRD/SRS text or upload a PDF. Inspect extracted text, especially scanned pages where OCR can misread identifiers, numeric thresholds, or negation.
-4. Follow progress while the assistant reads Flowbit's guides and examples, writes the workflow, checks it and corrects it. The panel shows what the assistant read, saved or checked since its previous model call, the wait for the current call, the elapsed time, and the calls used. A run lasts up to 30 minutes and 40 model calls by default. **Cancel** stops it; **Continue** resumes a stopped run from its last completed model call while this panel stays open.
-5. Review the proposal: the assistant's message, its open questions and assumptions, validation results, save and publication readiness, and the workflow JSON. Answer the open questions or ask for changes by sending another message. The assistant keeps the conversation, including what it read and the workflow it wrote.
-6. Apply the proposal to the current draft and review the diagram. Existing-workflow edits retain the family key and unchanged IDs/coordinates and apply as one undoable change. If the diagram changed while the model was working, send another message so the assistant works from the current diagram.
-7. Save the unpublished version when ready, then use the existing explicit publication flow.
+3. To call other workflows, optionally select them under **Include call targets**. The assistant then receives their contracts instead of guessing mappings.
+4. Describe the process or requested modification. You can supply BRD/SRS text or upload a PDF. Inspect extracted text, especially scanned pages where OCR can misread identifiers, numeric thresholds, or negation.
+5. Follow progress while the assistant reads Flowbit's guides and examples, writes the workflow, checks it and corrects it. The panel shows what the assistant read, saved or checked since its previous model call, the wait for the current call, the elapsed time, and the calls used. A run lasts up to 30 minutes and 40 model calls by default. **Cancel** stops it; **Continue** resumes a stopped run from its last completed model call while this panel stays open.
+6. Review the proposal: the assistant's message, its open questions and assumptions, validation results, save and publication readiness, and the workflow JSON. Answer the open questions or ask for changes by sending another message. The assistant keeps the conversation, including what it read and the workflow it wrote.
+7. Apply the proposal to the current draft and review the diagram. Existing-workflow edits retain the family key and unchanged IDs/coordinates and apply as one undoable change. If the diagram changed while the model was working, send another message so the assistant works from the current diagram.
+8. Save the unpublished version when ready, then use the existing explicit publication flow.
 
 ## Configure AI models
 
@@ -31,7 +32,7 @@ Settings administrators (any role in `Settings.RequiredRole`) manage the models 
 
 One model agent controls authoring itself, the approach measured in the Flowbit AI Lab v3 experiments. Flowbit keeps only what must not depend on the model: limits, credentials, validation, layout, and the editor's apply rules.
 
-- **Message.** The model receives three lines of instructions and your message exactly as typed. Attached PDF pages are appended once each as `--- <file>, page <n> ---` blocks, and selected shared-variable contracts as a `--- Selected shared variables ---` block. Literal credential values of the current workflow are replaced by `[credential removed]` wherever they appear.
+- **Message.** The model receives three lines of instructions and your message exactly as typed. Attached PDF pages are appended once each as `--- <file>, page <n> ---` blocks, selected call targets as a `--- Selected call targets ---` block when they change, and selected shared-variable contracts as a `--- Selected shared variables ---` block. Literal credential values of the current workflow are replaced by `[credential removed]` wherever they appear.
 - **Tools.** The model has six tools: `get_files_list` and `get_file` read the documentation, the canonical examples, or its own files; `save_append_file` writes a file in parts; `edit_file` replaces exact text in a saved file; `validate_workflow` and `validate_item` check the saved workflow or single nodes, flows, variables and lanes. The tools cannot reach anything else.
 - **Documentation it reads.** [Getting started](getting-started.md), the [documentation home](index.md), [BPMN support](bpmn-support.md), the [node and property reference](node-reference.md), the [developer guide](developer-guide.md), [deployment](deployment.md), and the [example catalog](../examples/README.md) with every canonical example. They come from the verified authoring package; other packaged files, such as the API guide and the skill's own instructions, are not visible to the model.
 - **Files.** The model writes `workflow.json` and `open-questions.md` in a private, in-memory workspace. For an existing diagram, Flowbit first saves the current diagram there as `workflow.json`, with credentials replaced by placeholders, and the model changes it.
@@ -57,7 +58,7 @@ Nothing is retried automatically. A provider error, a response truncated at the 
 
 ### Credentials and privacy
 
-The provider of the selected model receives your messages, document text, selected catalog contracts, the conversation, and the documentation and workflow files the model reads. Recognized workflow credential fields are replaced by location-bound placeholders before anything is sent, and stay placeholders in the conversation state. Their values come back only in the final proposal. Avoid putting unrelated confidential material in requirements; redaction cannot identify every sensitive business value inside arbitrary text or JSON.
+The provider of the selected model receives your messages, document text, selected catalog contracts, the declared start inputs and results of selected call targets, the conversation, and the documentation and workflow files the model reads. Recognized workflow credential fields are replaced by location-bound placeholders before anything is sent, and stay placeholders in the conversation state. Their values come back only in the final proposal. Avoid putting unrelated confidential material in requirements; redaction cannot identify every sensitive business value inside arbitrary text or JSON.
 
 The model's API key stays on the server: it is never sent to the browser or stored in the conversation state or workflow JSON, and the API removes it from replies and refuses a returned state that contains it. Because settings administrators choose where requests are sent and which account pays, restrict `Settings.RequiredRole` accordingly.
 
@@ -66,6 +67,8 @@ Text extraction occurs on the Flowbit server. Scanned PDF pages use the configur
 The `Flowbit.Ai.Authoring` activity source and meter record metadata only: run outcome, request and follow-up counts, provider-call outcomes and durations, tool names with success, and validation error counts. They never contain prompts, responses, source text, workflow contents, file paths, credentials, or raw exception messages. No external telemetry exporter is installed automatically.
 
 ## Validation and readiness
+
+For each selected call target the assistant receives the workflow key, whether a published default exists, its version, whether its start is call-only, its start inputs (name, type, array, required, whether null is possible), and the variables it declares or produces, leaving out shared aliases. It never receives values, instances, or other parts of the target's definition. This adds no tool and no instruction. A call whose target has no published default or does not fit is a **publication** blocker, not a save blocker, so a parent can be drafted first.
 
 The generated JSON Schema checks the structural canonical contract. It includes all current serialized model properties, rejects unknown configuration fields, and preserves arbitrary business JSON inside JSON-valued defaults. It excludes legacy document shims; ordinary editor legacy import behavior is unchanged.
 

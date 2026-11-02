@@ -27,7 +27,11 @@ else
         <Actions><a class="btn btn-outline-secondary" href="workflows">Back to workflows</a></Actions>
     </PageHeader>
 
-    @if (startEvents.Count == 0)
+    @if (IsCallOnly)
+    {
+        <section class="panel"><EmptyState Icon="alert" Title="Started only by call activities" Description="This workflow's start is call-only, so a call activity in another workflow has to start it." /></section>
+    }
+    else if (startEvents.Count == 0)
     {
         <section class="panel"><EmptyState Icon="alert" Title="Start is not authorized" Description="Your current identity does not have a role accepted by any user-startable event in this workflow."><IdentityAction Class="btn btn-primary" DevelopmentLabel="Change test identity" /></EmptyState></section>
     }
@@ -132,6 +136,11 @@ else
         }
     }
 
+    private bool IsCallOnly =>
+        workflow is not null
+        && workflow.Definition.FlowNodes.Where(n => BpmnFlowNodeTypes.IsStart(n.Type)).All(n => n.CallOnly)
+        && workflow.Definition.FlowNodes.Any(n => n.CallOnly);
+
     private List<FlowNodeModel> AllowedStartEvents()
     {
         if (workflow is null)
@@ -141,7 +150,7 @@ else
 
         var userRoles = Token.CurrentRoles ?? [];
         return workflow.Definition.FlowNodes
-            .Where(n => BpmnFlowNodeTypes.IsStart(n.Type))
+            .Where(n => BpmnFlowNodeTypes.IsStart(n.Type) && !n.CallOnly)
             .Where(n => n.Roles.Count == 0 || n.Roles.Any(r => userRoles.Contains(r, StringComparer.OrdinalIgnoreCase)))
             .ToList();
     }

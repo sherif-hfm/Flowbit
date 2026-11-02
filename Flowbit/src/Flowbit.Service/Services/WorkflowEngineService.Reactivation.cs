@@ -319,6 +319,8 @@ public sealed partial class WorkflowEngineService
                     : "Only completed or cancelled instances can be reactivated."));
         }
 
+        await AddCallTreeReactivationBlockersAsync(instance, globalBlockers, cancellationToken);
+
         var runtimeState = await runtime.GetReactivationRuntimeStateAsync(
             instance.Id,
             cancellationToken);
@@ -454,6 +456,42 @@ public sealed partial class WorkflowEngineService
             blockers,
             warnings,
             globalBlockers.Count == 0 && targets.Count > 0);
+    }
+
+    // A child's outputs may already have been delivered, so reopening it could replay them
+    // into a parent that has moved on. A root waits until every descendant has stopped, and
+    // any future call it reaches is a fresh visit; the old invocation and child stay closed.
+    private async Task AddCallTreeReactivationBlockersAsync(
+        WorkflowInstanceRecord instance,
+        ICollection<InstanceReactivationIssueDto> blockers,
+        CancellationToken cancellationToken)
+    {
+        if (callActivities is null)
+        {
+            return;
+        }
+
+        if (instance.CallRootInstanceId is not null)
+        {
+            blockers.Add(new InstanceReactivationIssueDto(
+                "linked_call_child",
+                "This instance was started by a call activity and cannot be reactivated directly."));
+            return;
+        }
+
+        if (await callActivities.HasUnsettledUnderRootAsync(instance.Id, cancellationToken))
+        {
+            blockers.Add(new InstanceReactivationIssueDto(
+                "unsettled_calls",
+                "A call activity under this instance has not settled."));
+        }
+
+        if (await callActivities.HasRunningDescendantsAsync(instance.Id, cancellationToken))
+        {
+            blockers.Add(new InstanceReactivationIssueDto(
+                "running_call_descendants",
+                "An instance started by a call under this instance is still running."));
+        }
     }
 
     private static void AddRuntimeStateBlockers(

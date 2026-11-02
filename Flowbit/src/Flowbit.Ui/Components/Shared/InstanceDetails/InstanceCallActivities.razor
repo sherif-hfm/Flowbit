@@ -1,0 +1,136 @@
+@if (ParentCall is not null || Calls is not null || (Counts?.Total ?? 0) > 0)
+{
+    <section id="call-activities" class="panel mb-3" aria-labelledby="call-activities-heading">
+        <div class="section-heading">
+            <div>
+                <h2 id="call-activities-heading">Call activities</h2>
+                <p>The workflow that called this instance and the child workflows it started. These links grant no task permissions.</p>
+            </div>
+            @if (Counts is { Total: > 0 } counts)
+            {
+                <span class="mono-id">@counts.Total call@(counts.Total == 1 ? null : "s") · @counts.Unsettled unsettled</span>
+            }
+        </div>
+
+        @if (ParentCall is { } parent)
+        {
+            <div class="summary-grid mb-3">
+                <div class="summary-item"><span>Parent instance</span><strong><a href="@($"instances/{parent.ParentInstanceId}")">Instance #@parent.ParentInstanceId</a></strong></div>
+                <div class="summary-item"><span>Parent call</span><strong>@(parent.ParentNodeName ?? "Unnamed call") · Node #@parent.ParentNodeId</strong></div>
+                <div class="summary-item"><span>Root instance</span><strong><a href="@($"instances/{parent.RootInstanceId}")">Instance #@parent.RootInstanceId</a></strong></div>
+                <div class="summary-item"><span>Depth</span><strong>@parent.Depth</strong></div>
+                <div class="summary-item"><span>Call state</span><strong><StatusBadge Status="@parent.State" Text="@CallActivityFormatting.StateLabel(parent.State, true)" /></strong></div>
+            </div>
+            @if (CallActivityFormatting.ParentCancellationNotice(parent, InstanceStatus) is { } notice)
+            {
+                <div class="alert alert-warning" role="status">@notice</div>
+            }
+        }
+
+        @if (!string.IsNullOrWhiteSpace(Error))
+        {
+            <div class="alert alert-danger" role="alert">@Error</div>
+        }
+
+        @if (Calls is { } results)
+        {
+            @if (results.Items.Count > 0)
+            {
+                <div class="table-responsive">
+                    <table class="table table-sm align-middle">
+                        <caption class="visually-hidden">Calls started by this instance</caption>
+                        <thead>
+                            <tr>
+                                <th scope="col">Visit</th>
+                                <th scope="col">State</th>
+                                <th scope="col">Child</th>
+                                <th scope="col">Target</th>
+                                <th scope="col">Times</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var call in results.Items)
+                            {
+                                <tr @key="call.InvocationId">
+                                    <td>
+                                        <span class="mono-id">#@call.InvocationId</span>
+                                        <span class="data-subtitle">@(call.NodeName ?? "Unnamed call") · Node #@call.NodeId</span>
+                                        <span class="data-subtitle">Token #@call.TokenId</span>
+                                    </td>
+                                    <td>
+                                        <StatusBadge Status="@CallActivityFormatting.BadgeStatus(call.State, call.CapacityReserved)"
+                                                     Text="@CallActivityFormatting.StateLabel(call.State, call.CapacityReserved)" />
+                                        <span class="data-subtitle">@CallActivityFormatting.Explain(call)</span>
+                                        @if (!string.IsNullOrWhiteSpace(call.FailureCode))
+                                        {
+                                            <span class="data-subtitle">
+                                                <span class="mono-id">@call.FailureCode</span>@if (!string.IsNullOrWhiteSpace(call.FailureDescription)) { <text>: @call.FailureDescription</text> }
+                                            </span>
+                                        }
+                                    </td>
+                                    <td>
+                                        @if (call.ChildInstanceId is long childId)
+                                        {
+                                            <a href="@($"instances/{childId}")">Instance #@childId</a>
+                                            @if (!string.IsNullOrWhiteSpace(call.ChildStatus))
+                                            {
+                                                <span class="data-subtitle"><StatusBadge Status="@call.ChildStatus" /></span>
+                                            }
+                                        }
+                                        else
+                                        {
+                                            <span class="text-muted">No child</span>
+                                        }
+                                    </td>
+                                    <td>
+                                        @call.TargetWorkflowKey
+                                        <span class="data-subtitle">@CallActivityFormatting.VersionText(call)</span>
+                                    </td>
+                                    <td>
+                                        <span class="data-subtitle">Entered @call.CreatedAt.ToLocalTime().ToString("g")</span>
+                                        @if (call.StartedAt is { } startedAt)
+                                        {
+                                            <span class="data-subtitle">Child started @startedAt.ToLocalTime().ToString("g")</span>
+                                        }
+                                        @if (call.SettledAt is { } settledAt)
+                                        {
+                                            <span class="data-subtitle">Settled @settledAt.ToLocalTime().ToString("g")</span>
+                                        }
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+                @if (TotalPages > 1)
+                {
+                    <div class="pagination-bar">
+                        <span class="pagination-copy">Page @results.Page of @TotalPages · @results.TotalCount.ToString("N0") total</span>
+                        <div class="d-flex gap-2">
+                            <button class="btn btn-outline-secondary btn-sm" disabled="@(Loading || results.Page <= 1)" @onclick="() => OnPageChanged.InvokeAsync(results.Page - 1)">Previous</button>
+                            <button class="btn btn-outline-secondary btn-sm" disabled="@(Loading || results.Page >= TotalPages)" @onclick="() => OnPageChanged.InvokeAsync(results.Page + 1)">Next</button>
+                        </div>
+                    </div>
+                }
+            }
+        }
+        else if ((Counts?.Total ?? 0) > 0 && string.IsNullOrWhiteSpace(Error))
+        {
+            <p class="text-muted" role="status">Loading calls…</p>
+        }
+    </section>
+}
+
+@code {
+    [Parameter] public string? InstanceStatus { get; set; }
+    [Parameter] public ParentCallSummaryDto? ParentCall { get; set; }
+    [Parameter] public CallCountsDto? Counts { get; set; }
+    [Parameter] public PagedResult<CallActivityExecutionDto>? Calls { get; set; }
+    [Parameter] public bool Loading { get; set; }
+    [Parameter] public string? Error { get; set; }
+    [Parameter] public EventCallback<int> OnPageChanged { get; set; }
+
+    private int TotalPages => Calls is { PageSize: > 0 } page
+        ? (int)Math.Ceiling(page.TotalCount / (double)page.PageSize)
+        : 0;
+}

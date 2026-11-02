@@ -397,6 +397,38 @@ public sealed partial class WorkflowApiClient(HttpClient httpClient, IHttpClient
         return await response.Content.ReadFromJsonAsync<WorkflowDetailDto>(cancellationToken);
     }
 
+    public async Task<PagedResult<CallActivityExecutionDto>> GetInstanceCallsAsync(
+        long instanceId, int page = 1, int pageSize = 25, CancellationToken cancellationToken = default)
+    {
+        using var response = await httpClient.GetAsync(
+            $"/api/instances/{instanceId}/calls?page={page}&pageSize={pageSize}", cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<PagedResult<CallActivityExecutionDto>>(cancellationToken)
+            ?? new PagedResult<CallActivityExecutionDto>([], page, pageSize, 0);
+    }
+
+    /// <summary>
+    /// How a family's published callers fare against its current default, a candidate
+    /// version, or what would remain after a deletion. Pass at most one version selector.
+    /// </summary>
+    public async Task<CallersPreviewDto?> GetWorkflowCallersAsync(
+        string workflowKey,
+        long? candidateId = null,
+        long? deletingId = null,
+        int page = 1,
+        int pageSize = 25,
+        CancellationToken cancellationToken = default)
+    {
+        var selector = candidateId is long candidate ? $"candidateId={candidate}&"
+            : deletingId is long deleting ? $"deletingId={deleting}&"
+            : string.Empty;
+        using var response = await httpClient.GetAsync(
+            $"/api/workflows/{Uri.EscapeDataString(workflowKey)}/callers?{selector}page={page}&pageSize={pageSize}",
+            cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<CallersPreviewDto>(cancellationToken);
+    }
+
     public async Task<IReadOnlyList<WorkflowSummaryDto>> GetWorkflowVersionsAsync(
         string workflowKey,
         CancellationToken cancellationToken = default)

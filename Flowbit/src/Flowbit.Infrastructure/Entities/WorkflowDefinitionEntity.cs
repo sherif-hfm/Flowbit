@@ -50,4 +50,6 @@ public sealed class WorkflowDefinitionEntity
 
     public List<WorkflowDefinitionBusinessCalendarEntity> BusinessCalendarReferences { get; set; } = [];
 
+    public List<WorkflowDefinitionCallTargetEntity> CallTargets { get; set; } = [];
+
 }

@@ -33,7 +33,8 @@ public sealed partial class WorkflowRuntimeRepository(
         string? startedBy,
         IReadOnlyList<string> startedByRoles,
         CancellationToken cancellationToken,
-        IReadOnlyDictionary<string, string[]>? actorClaims = null)
+        IReadOnlyDictionary<string, string[]>? actorClaims = null,
+        CallChildLinkRecord? callLink = null)
     {
         var now = DateTimeOffset.UtcNow;
         var entity = new WorkflowInstanceEntity
@@ -46,7 +47,9 @@ public sealed partial class WorkflowRuntimeRepository(
             Status = WorkflowInstanceStatuses.Running,
             StartedBy = startedBy,
             CreatedAt = now,
-            UpdatedAt = now
+            UpdatedAt = now,
+            CallRootInstanceId = callLink?.RootInstanceId,
+            CallDepth = callLink?.Depth ?? 0
         };
 
         dbContext.WorkflowInstances.Add(entity);
@@ -1631,7 +1634,8 @@ public sealed partial class WorkflowRuntimeRepository(
     public async Task<WorkflowInstanceRecord?> GetInstanceForUpdateAsync(
         long id,
         bool lockActiveUserTask,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool bypassCallFence = false)
     {
         var entity = await dbContext.WorkflowInstances
             .FromSqlInterpolated($"SELECT * FROM flowbit.workflow_instances WHERE \"Id\" = {id} FOR UPDATE")
@@ -1639,6 +1643,12 @@ public sealed partial class WorkflowRuntimeRepository(
         if (entity is null)
         {
             return null;
+        }
+
+        // A root skips this query, so an instance outside a call tree pays nothing.
+        if (entity.CallRootInstanceId is not null && !bypassCallFence)
+        {
+            await EnsureCallFenceAsync(entity, cancellationToken);
         }
 
         // Preserve the mutation lock hierarchy for every instance transaction:
@@ -6626,7 +6636,9 @@ public sealed partial class WorkflowRuntimeRepository(
             token.CurrentNodeExecutionId,
             entity.FinishedAt,
             entity.HistoryPrunedAt,
-            entity.LastReactivationTokenId);
+            entity.LastReactivationTokenId,
+            entity.CallRootInstanceId,
+            entity.CallDepth);
 
     private static WorkflowInstanceVersionChangeRecord ToRecord(
         WorkflowInstanceVersionChangeEntity entity) =>

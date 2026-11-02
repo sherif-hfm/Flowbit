@@ -4971,6 +4971,9 @@ public sealed class DefinitionValidationTests
 
     private sealed class CapturingDefinitionRepository : IWorkflowDefinitionRepository
     {
+        public Task<WorkflowDefinitionDeletionAssessment?> AssessDeletionAsync(long id, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
         public Task<bool> IsBusinessKeyScopeActiveAsync(string workflowKey, CancellationToken cancellationToken) =>
             Task.FromResult(false);
 

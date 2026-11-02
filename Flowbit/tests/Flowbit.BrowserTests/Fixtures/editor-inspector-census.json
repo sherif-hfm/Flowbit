@@ -71,6 +71,14 @@
     { "id": 25, "name": "Condition", "type": "intermediateConditionalCatchEvent", "laneId": 1, "x": 420, "y": 560, "conditional": { "condition": "amount > 1", "deliveryMode": "durableAsync" } },
     { "id": 26, "name": "Failed call", "type": "errorBoundaryEvent", "laneId": 1, "x": 0, "y": 0, "attachedToRef": 6, "errorVariable": "failure", "errorMatch": { "httpStatusCodes": [409], "httpStatusRanges": [{ "from": 500, "to": 599 }] } },
     { "id": 27, "name": "Reminder", "type": "timerBoundaryEvent", "laneId": 1, "x": 0, "y": 0, "attachedToRef": 2, "cancelActivity": false, "timer": { "timeDuration": "PT1H" } },
+    {
+      "id": 29, "name": "Call child", "type": "callActivity", "laneId": 1, "x": 1420, "y": 620,
+      "callActivity": {
+        "workflowKey": "census-child",
+        "inputMappings": [{ "sourceVariable": "amount", "variable": "amount", "dataType": "number", "required": true }],
+        "outputMappings": [{ "sourceVariable": "names", "variable": "approvers", "dataType": "string", "isArray": true }]
+      }
+    },
     { "id": 28, "name": "Watcher", "type": "conditionalBoundaryEvent", "laneId": 1, "x": 0, "y": 0, "attachedToRef": 3, "cancelActivity": true, "conditional": { "condition": "amount > 1" } }
   ],
   "sequenceFlows": [

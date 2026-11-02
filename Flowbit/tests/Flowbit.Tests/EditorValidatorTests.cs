@@ -865,6 +865,7 @@ public sealed class EditorValidatorTests
             function isScopedInterruptEventType(type) { return type === NODE_TYPE.SCOPED_INTERRUPT_EVENT; }
             function isServiceTaskType(type) { return type === NODE_TYPE.SERVICE_TASK; }
             function isScriptTaskType(type) { return type === NODE_TYPE.SCRIPT_TASK; }
+            function isCallActivityType(type) { return type === 'callActivity'; }
             function isAsyncCapableTaskType(type) {
               return isUserTaskType(type) || isAutomaticType(type) ||
                 isServiceTaskType(type) || isScriptTaskType(type);
@@ -1450,6 +1451,7 @@ public sealed class EditorValidatorTests
             function normalizeAttributesForLoad(value) { return value == null ? [] : value; }
             function isServiceTaskType(type) { return type === 'serviceTask'; }
             function isScriptTaskType(type) { return type === 'scriptTask'; }
+            function isCallActivityType(type) { return type === 'callActivity'; }
             function isErrorEndEventType(type) { return type === 'errorEndEvent'; }
             function isComplexGatewayType(type) { return type === NODE_TYPE.COMPLEX_GATEWAY; }
             function isScopedInterruptEventType(type) { return type === NODE_TYPE.SCOPED_INTERRUPT_EVENT; }
@@ -1655,6 +1657,7 @@ public sealed class EditorValidatorTests
             const CLAIM_MODE = { FRESH: 'fresh' };
             const ASSIGNMENT_MODE = { FRESH: 'fresh' };
             function isScriptTaskType(type) { return type === NODE_TYPE.SCRIPT_TASK; }
+            function isCallActivityType(type) { return type === 'callActivity'; }
             function isComplexGatewayType(type) { return type === NODE_TYPE.COMPLEX_GATEWAY; }
             function isScopedInterruptEventType(type) { return type === NODE_TYPE.SCOPED_INTERRUPT_EVENT; }
             function isUserTaskType(type) { return type === NODE_TYPE.USER_TASK; }

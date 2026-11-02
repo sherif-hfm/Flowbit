@@ -16,6 +16,7 @@ For a disposable development database and your first working instance, follow [G
 - [Build and publish](#build-and-publish)
 - [Database migrations](#database-migrations)
 - [Upgrade and compatibility rules](#upgrade-and-compatibility-rules)
+- [Call activity rollout](#call-activity-rollout)
 - [Worker operation](#worker-operation)
 - [Monitoring and recovery](#monitoring-and-recovery)
 - [Retention and backup](#retention-and-backup)
@@ -118,6 +119,7 @@ ASP.NET Core configuration accepts JSON and environment variables. Use `__` to s
 | `WorkflowContext:AllowedClaims` / `WorkflowContext__AllowedClaims__0` etc. | API and Worker | Allowlist for `sys.claim.*`. API sample configuration allows `depId`; Worker does not automatically inherit it. Durable jobs store only the caller claims these names resolve to on the enqueuing host, so a claim must be allowed on both hosts to reach Worker-side expressions. |
 | `WorkflowAudit:AllowedClaims` / `WorkflowAudit__AllowedClaims__0` etc. | API and Worker | Selected JWT claims captured in history and node detail. Default `[]` disables capture; independent of expression access. See [selected-claim audit](#selected-claim-audit). |
 | `WorkflowDurableProcessing:PublicationEnabled` | API | Blocks publication/default selection of definitions requiring durable processing when false. The checked-in API value is true; set false explicitly during a gated rollout. It is not a Worker pause switch. |
+| `WorkflowCallActivities:MaxDepth`, `WorkflowCallActivities:MaxOpenInvocationsPerRoot` | API and Worker | Limits checked when a call is admitted: nesting depth (default 8, range 1–32), exact because depth is immutable, and a soft threshold on a tree's open calls (default 256, range 1–4096). Startup fails on a value outside its range. Use identical values on every replica. See [call activity rollout](#call-activity-rollout). |
 | `WorkflowMessageDelivery:MaxPayloadBytes` | API | Message request limit, default 1,048,576 bytes. |
 | `WorkflowServiceTasks:MaxTimeoutSeconds`, `MaxResponseBodyBytes` | API and Worker | REST upper bounds, defaults 300 seconds and 1,048,576 bytes. Authored node limits still apply. |
 | `WorkflowScript:*` | API and Worker | Jint limits: defaults include 5-second timeout, 100,000 statements, 8,000,000 memory bytes, recursion 128, stack 256, regex timeout 1,000 ms, array size 10,000, and output depth/items/bytes 32 / 10,000 / 1,048,576. |
@@ -536,6 +538,7 @@ Classify the **actual source database and release path** before deployment. The 
 | NCalc function casing | No migration. NCalc resolves each built-in function only in its own spelling, such as `if` or `Max`. Saving a definition now rejects a conditional event condition, a timer expression, or a shared process-variable validation that writes one in another casing, such as `If` or `max`, and creating a shared variable rejects such a validation; the message names the spelling to use. These expressions never worked: such a condition never became true, and such a shared-variable validation rejected every non-null value. Definitions and shared variables saved earlier are not rewritten and run as before, and writes to such a shared variable are checked as before. A new definition version cannot bind a shared variable whose validation misspells a function, because the binding repeats that validation; create a corrected shared variable under a new key. An API replica that is not yet upgraded still accepts these spellings. |
 | Error-boundary HTTP status matching | No migration. Upgrade every API, UI, and Worker replica before saving or publishing a definition with `errorMatch` or several boundaries on one host. An older runtime can ignore the matcher or use the first boundary, and a stale Flowbit.Ui replica drops `errorMatch` when it saves, which turns a filtered boundary into a catch-all. Before rolling back, inventory definitions and live work that use matchers or several boundaries, and replace, drain, or cancel them through supported operations; never edit stored JSON or job rows. This release also changes existing definitions in one way: a connection lost while reading a REST response is now a task failure that keeps the received status. A synchronous task with a boundary routes through it, one without rolls back with `400` instead of failing with `500`, and a durable job records the received status instead of `0` and the raw exception message. A durable service job fences the error variable of every boundary on its host, so a concurrent write to any of them opens `output_version_conflict` even if another boundary would have been selected. A durable script job fences its boundary's error variable the same way when the script fails, or when a write is refused at finalization; retrying the incident works from a new snapshot. A corrupt, ambiguous matcher opens `job_invariant_violation` without a retry. |
 | Variable form presentation | No migration. Upgrade every API, UI, and Worker replica before authoring variable `label`, `helpText`, or `options`: an older API drops these properties when it saves a definition, and its strict validation and AI authoring reject them as unknown properties. Definitions saved without them are unchanged. The instance-detail action and interrupt forms now parse entries like the start and task forms, so their `json` and array inputs are submitted as typed JSON instead of text. |
+| Call activities | `AddCallActivityExecution` adds the `call_activity_executions`, `call_activity_results`, and `workflow_definition_call_targets` tables, `workflow_instances."CallRootInstanceId"` and `"CallDepth"`, and `workflow_jobs."CallInvocationId"`. Existing instances get root defaults and no history. Follow [call activity rollout](#call-activity-rollout). Its down migration refuses while call instances, invocations, or call jobs remain. |
 | Secure administrative actions | This release adds a breaking `Workflow.RequiredRole` gate to previously bearer-only administrative-action catalogs, candidates, audits, and batch mutations, plus direct instance actions. Pause administrative submissions and Workers; upgrade every API/Worker replica before resuming. Older replicas would retain the broader access. Existing audit tables/settings are reused; no new migration is needed for this change. |
 
 Before resuming administrative work, confirm the intended `Workflow.RequiredRole` value and update affected clients to send an authorized actor token. Non-admin batch clients now receive `403`; previously queued items whose stored roles no longer meet the setting become terminal `ineligible`/`skipped` outcomes. Review batch results after resuming the Worker; successful items remain committed. Deploy the updated UI to expose immediate instance actions and role-denial handling. Direct instance actions execute without administrative Worker jobs, while authored asynchronous steps keep their usual Worker requirement.
@@ -555,7 +558,27 @@ Repeated calls are harmless, but calling early intentionally prevents legacy wri
 3. Check `/health/ready`, verify queue/incident metrics, and run a controlled durable workflow.
 4. Set the API publication gate to true and restart/redeploy APIs with that configuration; publish or select durable definitions as default only after this check.
 
-The gate rejects publication/default selection for async tasks, timers, and durable conditionals. Draft saves remain possible. It does not stop already-published instances or queued work, so it is not a maintenance lock or substitute for stopping writers during an incompatible migration.
+The gate rejects publication/default selection for async tasks, timers, durable conditionals, call activities, and call-only starts, including an otherwise synchronous call-only target. Deleting a default is refused when its successor would need the closed gate, rather than promoting a different version. Draft saves remain possible. It does not stop already-published instances or queued work, so it is not a maintenance lock or substitute for stopping writers during an incompatible migration.
+
+## Call activity rollout
+
+A call crosses instances through durable jobs, so it needs Workers and matching binaries everywhere. A legacy API ignores the `callOnly` start restriction, the call fence, and the abandon hook, and a legacy Worker treats an unknown job kind as an async continuation. Mixed call-aware and legacy replicas are therefore unsupported once a call node or `callOnly: true` has been published. Definitions without these features remain valid.
+
+1. Back up the database.
+2. Freeze API and UI authoring, import, publication, and default selection of definitions that use `callActivity` or `callOnly: true`. Enforce this operationally until every replica is upgraded: an old API can drop `callOnly` before validating, so the new gate alone cannot protect requests routed to it.
+3. Set `WorkflowDurableProcessing:PublicationEnabled` to false on the API, because the checked-in value is true. This also holds back other durable definitions during the rollout, while already-published work keeps running.
+4. Apply the additive migration.
+5. Upgrade every API and Worker replica and the matching editor assets, with identical `WorkflowCallActivities` values. Refresh open authoring tabs so an old editor cannot strip the new fields.
+6. Verify Worker health, then confirm the gate refuses both a call node and a call-only start while allowing drafts.
+7. Lift the freeze, set the gate to true, restart the APIs, publish and default the child, then publish and start the parent.
+
+**Admission and capacity.** A call that passes its input, depth, and capacity checks reserves one slot until it settles. A call blocked before admission holds no slot and has an open incident; retrying repeats admission, so it can succeed once capacity frees up. An admitted retry reuses its slot. `MaxOpenInvocationsPerRoot` is a soft threshold, not an exact quota: at most `C × M` reservations can exist with `C` simultaneous admission transactions for a root and a limit of `M`, and when all `C` observe the same count `N` the bound is `N + C × (M − N)`. For example, `M = 4`, `N = 3`, and `C = 3` can reach six. Lowering a limit blocks new admissions above it without revoking reservations or cancelling work. It never shortens the ancestry check on existing descendants, which follows persisted depth up to the supported maximum of 32.
+
+**Cancellation lag.** Cancelling a parent settles its calls immediately and fences every descendant, so commands on them return `409`. The descendants become terminal only when their `callCancel` jobs run: normally moments later, longer with a backlog, and not at all while Workers are stopped. Until then their tasks stay visible. A job that exhausts its retries opens an incident, and the child stays fenced until an operator retries it. Cancellation does not undo external effects, and an in-flight REST request cannot be recalled, though its late result is fenced out.
+
+**Rollback.** Before any call data exists, the down migration can run. Afterwards it refuses, and rollback means a forward repair or a database restore, because dropping these tables would cut live parents from their children.
+
+**Retention.** The invocation row stays for the instance's lifetime as the relationship. Captured values become eligible under the existing `workflowHistory` policy after settlement, aged from the parent's terminal time, so there is no new category. Open call jobs, undelivered results, and referenced definitions are not removed.
 
 ## Worker operation
 
@@ -615,6 +638,23 @@ The API has no dedicated production health endpoint in this checkout. `/` redire
 
 ### Signals and actions
 
+The `Flowbit.Runtime.CallActivities` meter exposes `flowbit.call.events`, tagged with the history note and failure code; `flowbit.call.fence_stops`; and the `flowbit.call.start_queue_age` and `flowbit.call.cancel_age` histograms. Collect them with a .NET diagnostics or OpenTelemetry listener; the Worker's Prometheus endpoint does not include this meter. Tags and logs carry invocation, root, and child identifiers, states, and stable codes, never mapped values. To see cancellations still in progress, run these read-only queries:
+
+```sql
+-- The age of open call-cancel jobs.
+SELECT "Id", "InstanceId", "CallInvocationId", "Status", now() - "CreatedAt" AS age
+FROM flowbit.workflow_jobs
+WHERE "Kind" = 'callCancel' AND "Status" NOT IN ('completed', 'cancelled', 'skipped')
+ORDER BY "CreatedAt";
+
+-- Fenced children still running: their own incoming call was already cancelled.
+SELECT c."ChildInstanceId", c."Id" AS invocation_id, now() - c."SettledAt" AS since_cancelled
+FROM flowbit.call_activity_executions c
+JOIN flowbit.workflow_instances i ON i."Id" = c."ChildInstanceId"
+WHERE c."State" = 'cancelled' AND i."Status" = 'running'
+ORDER BY c."SettledAt";
+```
+
 Observe queue depth and oldest age, timer lateness, acquisition/instance-lock latency, lease loss, retries, finalization retries, output conflicts, open incidents, and retention work. .NET meters are named `Flowbit.Worker` and `Flowbit.Runtime.Jobs`. A successful startup readiness response alone cannot detect a stuck queue; compare these signals over time and inspect Worker logs.
 
 Use the UI Operations page or the role-protected jobs/incidents APIs. `WorkflowJobs.RequiredRole` defaults to `admin`. Collection endpoints use opaque keyset cursors; use detail/attempt endpoints to inspect evidence rather than expecting large execution snapshots in every list row.
@@ -632,6 +672,10 @@ complete.
 | REST failure or exhausted retries | Inspect the incident/attempt, correct the integration, then use the fenced retry endpoint. Account for any remote effect already performed. |
 | Output-version conflict | Inspect intervening variable/shared-value changes and the failed attempt. Resolve the business state before requesting a new attempt. |
 | `job_conflict` incident | A durable job hit a conflict while its token still waited on it, or while its timer boundary still had that occurrence to fire, so it stopped rather than strand that work. **Operations** shows `Workflow job conflict at node #N.`, and `details` from `GET /api/incidents/{id}` gives the cause. One cause is a write to an archived shared key, which can happen when an older instance is reactivated after its key was retired. Correct the cause, for example by reactivating the key, then retry. The retry runs the job again, including its REST call. If the cause cannot be corrected, cancel the instance. |
+| Call stays **Blocked** or **Queued** | Read the incident's `call_*` code. `call_target_unavailable` or `call_target_incompatible`: publish a fitting default. `call_depth_exceeded` or `call_capacity_exceeded`: let open calls settle or review the limits. Then retry. A retry cannot create a second child. |
+| Parent waits with **Result ready** and an incident | Delivery failed and the frozen result is kept. Correct the parent's state, then retry; if the result itself is invalid, a retry cannot succeed, so cancel the parent. |
+| Descendant stays `running` after a parent's cancel | Check Workers and the `callCancel` query above. Retry an incident on that job; its owner may already be terminal, which is allowed. |
+| `job_invariant_violation` naming a call chain | An instance's persisted call ancestry is inconsistent, so nothing transitions on it. Investigate the rows; do not edit them to force progress. |
 | `automatic_loop_limit` incident | Fix or review the automatic loop. A manual retry grants a fresh bounded allowance to the same stable job; it is not an unlimited retry exemption. |
 | `timer_schedule_failed` incident | A timer start's first due time could not be computed: its business calendar is missing, the Worker host does not know the calendar's time zone, or the calendar cannot count the duration within 36,525 days. The timer start stays paused. Fix the calendar or the host's time-zone data, then retry the incident; the next timer-start reconciliation schedules it again or opens a new incident. |
 | `... timer.timeDuration cannot be scheduled: ...` (or `timer.timeDate`) | A timer expression could not be scheduled from the instance's data: a variable it reads has no value, its result is not a valid date or duration (often a `datetime` without an offset), or its calendar cannot count the result. A request that reached the timer was rejected with `400` and left no incident; the API logs one warning without values, naming the instance, token, node, and property. In a Worker job, the job retries and then opens an incident. **Operations** shows that incident only as `Workflow job failed at node #N.` with type `job_execution_failed`; the message is the job's `lastFailureDescription` from `GET /api/jobs/{id}`. Correct the variable, for example with an administrative variable update, then repeat the request or retry the incident. A due time that was saved cannot be changed in place; see [correcting a schedule](developer-guide.md#expression-timers). |

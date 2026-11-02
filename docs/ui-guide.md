@@ -179,6 +179,8 @@ Open **AI assistant** in the editor to describe a new workflow or request change
 
 Optionally expand **Include shared-variable metadata**, load or search active catalog keys, and select the contracts the workflow may use. This requires your existing shared-variable read permission. Only selected contracts and descriptions are included with your message; catalog values are excluded. A changed selection is sent with your next message.
 
+Optionally expand **Include call targets** and select **Load workflows** to choose up to 20 workflow families this workflow may call. Only each family's published-default start inputs and declared results are sent to the model, never values or instance data, so it can write correct mappings rather than guess them.
+
 **Attach a BRD or SRS PDF** accepts text, scanned, and mixed PDFs. Extraction runs locally on the API host, with English, Arabic, or both OCR languages. Expand each extracted page to review or correct its text before sending. **Retry with OCR** forces OCR on the selected document; **Remove** removes its source text. Limits are 20 MiB, 100 pages, and 200,000 extracted characters by default. Scans, tables, diagrams, and handwriting can produce incomplete text; correct the extraction before relying on it. Each page is sent to the model once per conversation.
 
 While the assistant works, the progress area shows what it read, saved or checked since its previous model call, **Waiting for the model** with the seconds spent on the current call, the elapsed time, the model calls used of the run's limit, any validation follow-ups, and the size of the workflow it has saved. The assistant reads Flowbit's guides and examples itself, writes the workflow, and checks it; Flowbit checks the result and returns errors to the model at most twice. A run lasts up to 30 minutes and 40 model calls by default and keeps the selected model.
@@ -213,6 +215,17 @@ A REST service task lists its error boundaries under **Error boundaries**, each 
 
 The host warns when no boundary catches all failures, because timeouts, network failures, and unmatched statuses are then not caught. This does not block saving. Imported matcher data that cannot be used also blocks saving and stays visible: a node that is not a boundary offers **Remove errorMatch**, and a boundary on a script task offers **Catch all failures**. A service task with HTTP matchers cannot become a script task until the matchers are removed. See [HTTP status matching](node-reference.md#http-status-matching). An unmatched failure on an async task reaches [Jobs and incidents](#monitor-jobs-and-incidents) in the usual way.
 
+Set a node's **Type** to **Call Activity** to call another workflow family; it draws as a task with a thick border. Its inspector has:
+
+- **Workflow key**: the exact key of the family to call. The server checks the target when you publish and again when each child starts, so the editor accepts a key it cannot see, and it works without a network connection.
+- **Version**: always **Published default**. The version each visit uses is shown on instance detail, not saved in the workflow.
+- **Inputs** and **Results**: typed mapping rows with **Delete mapping** and **+ Add mapping**. Source names suggest what this workflow declares or produces, and results suggest its process variables; the called workflow's names are typed. **Required** fails the call when a value is missing or null. Rows have no order, because a batch is written together.
+- **Error boundary**: one catch-all. Without it, a child that faults or is cancelled faults this workflow, and any other failure opens an incident while this workflow keeps waiting.
+
+A call needs a running Worker, and its inputs and results are copies. Changing **Type** away from a call clears its settings and removes its error boundary; undo restores them. Selecting a node never changes it, so an imported call with async, job, or multi-instance options shows a warning with **Remove these options** and blocks saving until you act.
+
+A plain start event has a **Call only** checkbox for fragments that rely on checks made in the parent. It hides the start from people and API callers, and is valid only on the default start with no roles and no idempotency. Changing the workflow's default start keeps the old start's flag and blocks saving until you clear it.
+
 Hosted saves are limited to **2 MiB of UTF-8 JSON**. Larger local imports remain editable and can be exported to a file. API load/save requires the configured definition-administration permission (`Workflow.RequiredRole`, default `admin`); validation and authorization errors leave the diagram open. If a connection fails after submission, check Workflows before retrying because the API may already have created a version.
 
 **Unsaved changes** includes diagram and property edits and uncommitted JavaScript-dialog text. Use **Save & Close** in that dialog before saving the workflow. Leaving, reloading, New, or local import warns before discarding changes. New/local import clears the stored-version association and starts a new unsaved document; the existing key in imported JSON is editable. Downloading JSON does not mark the hosted document saved to the API. Edits made while an API save is running remain unsaved after that save completes. Undoing back to the last API-saved state clears the unsaved indicator.
@@ -228,11 +241,13 @@ Below **Import editor JSON**, **Use with another AI agent** offers **Download Fl
 | Action | Effect |
 | --- | --- |
 | **Publish** / **Unpublish** | Controls whether a version can start new instances. It does not cancel existing runs. The default version cannot be unpublished; select another published default first. |
-| **Set default** | Makes that published version the family default for starts by workflow key and relevant system entry mechanisms. The row's **Start** link still selects that exact version. |
+| **Set default** | Makes that published version the family default for starts by workflow key, relevant system entry mechanisms, and calls from other workflows. A confirmation first lists the workflows that call this family and whether each stays compatible. The row's **Start** link still selects that exact version. |
 | **Start** | Opens the manual start form for the selected published version. |
 | **Edit** | Opens that exact version in the visual editor. **Save new version** creates an unpublished successor with the same workflow key. |
 | **Download JSON** | Downloads the stored definition. Open it in the standalone editor, or use **File → Load JSON** in the UI editor. |
-| **Delete** | Requests deletion of that version. Runtime or retained audit references can block it; deletion is not a way to detach existing instances. |
+| **Delete** | Requests deletion of that version. Runtime or retained audit references can block it; deletion is not a way to detach existing instances. Deleting the default first shows the same caller list, with the version that would replace it, a warning when none would remain, or what blocks the deletion. |
+
+The caller confirmation reflects the current state, and the command checks its own rules again when you confirm, so compatibility warnings do not stop you. A start page for a workflow whose only start is call-only explains that a call activity has to start it.
 
 Timer-start schedules follow the published default version. Before changing defaults for those workflows, read [timer semantics](bpmn-support.md#timers) and [upgrade guidance](deployment.md#upgrade-and-compatibility-rules).
 
@@ -282,6 +297,7 @@ a section link therefore stays on the same instance.
 - **Administrative actions** lists active human-task positions and their authored direct actions when the API grants workflow-administrator permission. See [the override procedure](#use-instance-administrative-actions).
 - **Variables** shows the latest displayed values and their attribution; **History** shows transition times, node/flow references, actors, and available event details.
 - **History** describes claim, release, recovery, delegation, and inherited-claim events. Expand **Actor claims** under an actor to inspect the captured claim names and values, including repeated values. Delegated events also identify the represented owner.
+- **Call activities** appears on a parent or child. See [Follow call activities](#follow-call-activities).
 - **Gateway scopes**, **Complex states**, **Multi-instance results**, **Version changes**, **Variable updates**, and **Shared variables** appear when applicable.
 - **Change version** is available for authorized running-instance administration. Choose a compatible published target, enter a reason, preview, and inspect blockers/warnings before confirming.
 - **Reactivate instance** is a guarded recovery operation for eligible completed/cancelled instances. Preview the target and blockers first. Pruned instance history permanently blocks reactivation. A target whose expression timer boundary cannot be scheduled from the current variables is not offered, and a warning names a timer boundary that is already due, because it interrupts or fires for the reactivated task as soon as the Worker runs.
@@ -293,13 +309,29 @@ For a committed visit to a node, use **Activity** (**Node activity**). Combine l
 
 Under **Actors, roles, and claims**, expand **Starting actor claims** or **Completing actor claims** to inspect the separate snapshots. Claim and unclaim events leave these visit snapshots unchanged. **Not recorded** means a snapshot is unavailable, including older data or disabled capture; **No selected claims present** means capture was enabled but none of the selected names were in that actor's token. These messages also appear in instance history. Claim values are displayed as text. Capture is configured by an operator through [selected-claim audit](deployment.md#selected-claim-audit), and retained snapshots may disappear with their owning history or activity records.
 
+### Follow call activities
+
+A child instance shows **Called by** in its summary. Its **Call activities** section links its parent and root instances and shows the parent call and depth. A parent lists its calls with paging, newest first; repeated visits to a node are separate rows. These links grant no task permissions, and opening a child applies its normal checks.
+
+| State | Meaning |
+| --- | --- |
+| **Blocked** | Stopped before admission, by its inputs, depth, or the tree's open-call limit. It holds no capacity and has no child. Fix the cause, then retry its incident on **Jobs & incidents**. |
+| **Queued** | Admitted and waiting for a Worker to start the child. With an incident, the child could not be started; retrying reuses its slot. |
+| **Running** | The child is running. A note about open incidents means a job inside the child needs attention, which is not a fault: the call keeps waiting. |
+| **Result ready** | The child finished and a Worker is delivering its result. With an incident, delivery failed, and retrying never runs the child again. |
+| **Completed** | The child completed and its results were delivered. |
+| **Failed** | The failure was delivered through the error boundary, or this workflow faulted at the call. The stable code and description are shown. |
+| **Cancelled** | This workflow abandoned the call. A child still shown as running is being stopped by a background job. |
+
+Each row shows the target family and, once chosen, the exact version. A child whose parent's call was cancelled shows a warning that its cancellation is in progress: its tasks stay visible, actions on them are refused, and it finishes when a Worker runs the cancellation. The page refreshes itself while a call is unsettled.
+
 ### Read the instance diagram
 
 The **Diagram** section draws the exact workflow version the instance runs, read-only, with the editor's shapes. It shows where the instance is now, not the path it took:
 
 | Marker | Meaning |
 | --- | --- |
-| Green ring | An active position. Its tooltip and the details panel say what it waits for: user work, a message, a timer, a condition, background processing, or other branches at a gateway. |
+| Green ring | An active position. Its tooltip and the details panel say what it waits for: user work, a message, a timer, a condition, background processing, other branches at a gateway, or a call activity. |
 | Badge such as `2/5` | Multi-instance progress: completed work items out of the total. |
 | Badge such as `×2` | Several tokens wait at the same node. When they are several multi-instance executions, the tooltip adds up their progress. |
 | Blue ring | The finished instance ended here, at a normal or terminate end event. |
@@ -309,6 +341,7 @@ The ring surrounds the node; the node's own outline keeps the color of its type.
 
 To inspect a node, click it, or press Tab to reach a marked node and then Enter. The details panel lists each position at that node with its status and these links:
 
+- **Child instance** opens the instance a waiting call started.
 - **Open task** opens the user task. The task page still applies your task visibility.
 - **Node execution** opens the visit in Activity. It appears only for executions your roles can read: `NodeExecution.RequiredRole` (default `admin`) or the version's `taskAssignmentRoles`. Visits that ended before Flowbit recorded node executions, or that [retention](#manage-retention) removed, have no link. A position queued for background processing after its task finished links the visit it follows.
 - A multi-instance node lists up to five of its work items, finished ones included.
@@ -444,12 +477,14 @@ Saved policies apply to automatic Worker cleanup. **Run cleanup now** queues a r
 | Authentication error / `401` | In OpenIdConnect mode, sign in again; an operator should check the provider, audience, and actor claim. In DevelopmentToken mode, generate or apply a nonexpired token and confirm matching API/UI issuer, audience, and signing key. |
 | Workflow list or Start page denied | Check definition-administration permission as well as the selected event's start roles. |
 | Import fails | Select a valid exported Flowbit JSON document under 2 MiB, inspect the validation error, and check prerequisites in the example catalog. |
-| No start choices | The identity lacks an accepted manual-start role, or the workflow uses system-only message/timer starts. |
+| No start choices | The identity lacks an accepted manual-start role, or the workflow uses system-only message/timer starts or a call-only start. |
 | Empty My work | Confirm the current username/roles, filters, assignments, and stored-state visibility conditions. An administrator can still lack task roles. |
 | No available actions | Claim if needed; inspect assignment/ownership and conditions. Refresh after another actor/event changes work. |
 | `404` / `409` after opening work | The resource can be hidden or stale. Reopen from the current inbox rather than reusing old action state. |
 | Required or typed input rejected | Use the format shown above and the action's required values. Blank omits an input; administrative JSON fields require valid JSON. |
 | Timer, retry, or batch does not progress | Check the Worker, correct database/configuration, due times, queue, and incidents. The UI does not run durable jobs. |
+| A call stays **Blocked**, **Queued**, or **Result ready**, or a cancelled parent's child keeps running | A Worker creates children, delivers results, and finishes cancellations. Check the Worker and **Jobs & incidents**, then see [Follow call activities](#follow-call-activities). |
+| Actions on a task return `409` and the page says the instance is being cancelled | A call above this instance was cancelled. The task stays visible until a Worker finishes stopping the instance; no action can succeed. |
 | An action fails with `... timer.timeDuration cannot be scheduled: ...` | A timer expression the action reached could not be scheduled from the instance's data. Correct the named variable, for example on **Instance variables**, and repeat the action; a `datetime` value needs an explicit offset. |
 | Archive, deletion, version change, or reactivation blocked | Read the reported references/compatibility blockers; these operations have different eligibility rules. |
 | AI assistant shows no models, or a key/quota error | A settings administrator adds or fixes the model on **AI models**. If models are configured but still not offered, check that `WorkflowAi:Enabled` is not `false`. |

@@ -148,10 +148,10 @@
                                                     }
                                                     @if (!v.IsDefault)
                                                     {
-                                                        <button class="btn btn-sm btn-outline-secondary" @onclick="() => SetDefaultAsync(v.Id)" disabled="@(!v.IsPublished || busyIds.Contains(v.Id))">Set default</button>
+                                                        <button id="@($"set-default-{v.Id}")" class="btn btn-sm btn-outline-secondary" @onclick="() => ConfirmSetDefaultAsync(v)" disabled="@(!v.IsPublished || busyIds.Contains(v.Id))">Set default</button>
                                                     }
                                                     <button class="btn btn-sm btn-outline-secondary" disabled="@busyIds.Contains(v.Id)" @onclick="() => DownloadAsync(v.Id)">Download JSON</button>
-                                                    <button class="btn btn-sm btn-outline-danger" disabled="@busyIds.Contains(v.Id)" @onclick="() => DeleteAsync(v.Id)">Delete</button>
+                                                    <button id="@($"delete-version-{v.Id}")" class="btn btn-sm btn-outline-danger" disabled="@busyIds.Contains(v.Id)" @onclick="() => DeleteAsync(v)">Delete</button>
                                                 </div></td>
                                             </tr>
                                         }
@@ -165,6 +165,21 @@
         </div>
     }
 </section>
+
+@if (callerCheck is { } check)
+{
+    <WorkflowCallersDialog WorkflowKey="@check.Version.WorkflowKey"
+                           Title="@(check.Deleting ? $"Delete default version {check.Version.Version}?" : $"Make version {check.Version.Version} the default?")"
+                           ConfirmLabel="@(check.Deleting ? "Delete version" : "Set default")"
+                           ConfirmClass="@(check.Deleting ? "btn-danger" : "btn-primary")"
+                           OpenerId="@(check.Deleting ? $"delete-version-{check.Version.Id}" : $"set-default-{check.Version.Id}")"
+                           Preview="@check.Preview"
+                           Loading="@check.Loading"
+                           Error="@check.Error"
+                           OnConfirm="ConfirmCallerCheckAsync"
+                           OnCancel="CloseCallerCheck"
+                           OnPageChanged="LoadCallerCheckAsync" />
+}
 
 @code {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
@@ -186,6 +201,16 @@
     private object inputFileKey = new();
     private bool publishOnImport = true;
     private bool importing;
+    private CallerCheck? callerCheck;
+
+    private sealed class CallerCheck(WorkflowSummaryDto version, bool deleting)
+    {
+        public WorkflowSummaryDto Version { get; } = version;
+        public bool Deleting { get; } = deleting;
+        public CallersPreviewDto? Preview { get; set; }
+        public bool Loading { get; set; } = true;
+        public string? Error { get; set; }
+    }
 
     protected override async Task OnInitializedAsync() => await LoadAsync();
 
@@ -310,7 +335,47 @@
         }
     }
 
-    private Task SetDefaultAsync(long id) => RunVersionActionAsync(id, () => Api.SetDefaultWorkflowAsync(id));
+    private Task ConfirmSetDefaultAsync(WorkflowSummaryDto version)
+    {
+        callerCheck = new CallerCheck(version, deleting: false);
+        return LoadCallerCheckAsync(1);
+    }
+
+    private async Task LoadCallerCheckAsync(int page)
+    {
+        if (callerCheck is not { } check) return;
+        try
+        {
+            check.Loading = true;
+            check.Error = null;
+            var preview = await Api.GetWorkflowCallersAsync(
+                check.Version.WorkflowKey,
+                candidateId: check.Deleting ? null : check.Version.Id,
+                deletingId: check.Deleting ? check.Version.Id : null,
+                page: Math.Max(1, page));
+            check.Preview = preview ?? throw new InvalidOperationException("Workflow family was not found.");
+        }
+        catch (Exception ex)
+        {
+            check.Error = ex.Message;
+        }
+        finally
+        {
+            check.Loading = false;
+        }
+    }
+
+    private void CloseCallerCheck() => callerCheck = null;
+
+    private async Task ConfirmCallerCheckAsync()
+    {
+        if (callerCheck is not { Preview: not null } check) return;
+        var id = check.Version.Id;
+        callerCheck = null;
+        await RunVersionActionAsync(id, () => check.Deleting
+            ? Api.DeleteWorkflowAsync(id)
+            : Api.SetDefaultWorkflowAsync(id));
+    }
 
     private async Task DownloadAsync(long id)
     {
@@ -349,12 +414,20 @@
         return $"{(string.IsNullOrWhiteSpace(safeKey) ? "workflow" : safeKey)}-v{workflow.Version}.json";
     }
 
-    private async Task DeleteAsync(long id)
+    private async Task DeleteAsync(WorkflowSummaryDto version)
     {
+        // Only deleting the default changes what the family's callers would start.
+        if (version.IsDefault)
+        {
+            callerCheck = new CallerCheck(version, deleting: true);
+            await LoadCallerCheckAsync(1);
+            return;
+        }
+
         var confirmed = await JS.InvokeAsync<bool>("confirm", "Delete this workflow version? This cannot be undone.");
         if (confirmed)
         {
-            await RunVersionActionAsync(id, () => Api.DeleteWorkflowAsync(id));
+            await RunVersionActionAsync(version.Id, () => Api.DeleteWorkflowAsync(version.Id));
         }
     }
 

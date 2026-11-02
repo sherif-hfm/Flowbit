@@ -1,0 +1,149 @@
+{
+  "id": "example-call-manager-approval",
+  "name": "Call Example 01 - Manager Approval (Child)",
+  "initialEventId": 1,
+  "variables": [
+    {
+      "id": 1,
+      "name": "approved",
+      "dataType": "boolean",
+      "isArray": false,
+      "nullable": true,
+      "required": false,
+      "defaultValue": null,
+      "validation": null
+    }
+  ],
+  "lanes": [],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Approval Requested",
+      "externalId": "START_APPROVAL_REQUESTED",
+      "type": "startEvent",
+      "laneId": null,
+      "x": 60,
+      "y": 140,
+      "roles": [],
+      "variables": [
+        {
+          "id": 1,
+          "name": "amount",
+          "dataType": "number",
+          "isArray": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": "amount > 0"
+        },
+        {
+          "id": 2,
+          "name": "requestId",
+          "dataType": "string",
+          "isArray": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": null
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "Review Request",
+      "externalId": "TASK_REVIEW_REQUEST",
+      "type": "userTask",
+      "laneId": null,
+      "x": 220,
+      "y": 128,
+      "roles": [
+        "Manager"
+      ],
+      "variables": []
+    },
+    {
+      "id": 3,
+      "name": "Record Approval",
+      "externalId": "SCRIPT_RECORD_APPROVAL",
+      "type": "scriptTask",
+      "laneId": null,
+      "x": 520,
+      "y": 60,
+      "roles": [],
+      "variables": [],
+      "scriptFormat": "ncalc",
+      "assignments": [
+        {
+          "variable": "approved",
+          "expression": "true"
+        }
+      ],
+      "script": null,
+      "usesFlowInfo": false
+    },
+    {
+      "id": 4,
+      "name": "Approved",
+      "externalId": "END_APPROVED",
+      "type": "endEvent",
+      "laneId": null,
+      "x": 800,
+      "y": 72,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 5,
+      "name": "Rejected",
+      "externalId": "END_REJECTED",
+      "type": "errorEndEvent",
+      "laneId": null,
+      "x": 575,
+      "y": 240,
+      "roles": [],
+      "variables": [],
+      "errorCode": "approval.rejected",
+      "errorDescription": "The manager rejected the request."
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "",
+      "externalId": null,
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": [],
+      "condition": null
+    },
+    {
+      "id": 201,
+      "name": "Approve",
+      "externalId": "FLOW_APPROVE",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [],
+      "variables": [],
+      "condition": null
+    },
+    {
+      "id": 202,
+      "name": "Reject",
+      "externalId": "FLOW_REJECT",
+      "sourceRef": 2,
+      "targetRef": 5,
+      "roles": [],
+      "variables": [],
+      "condition": null
+    },
+    {
+      "id": 301,
+      "name": "",
+      "externalId": null,
+      "sourceRef": 3,
+      "targetRef": 4,
+      "roles": [],
+      "variables": [],
+      "condition": null
+    }
+  ]
+}

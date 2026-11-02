@@ -65,6 +65,8 @@
     --node-service-stroke: #2dd4bf;
     --node-script-fill: #28205d;
     --node-script-stroke: #a78bfa;
+    --node-call-fill: #3f2a0c;
+    --node-call-stroke: #f59e0b;
     --node-gateway-fill: #422006;
     --node-interrupt-fill: #3f0b16;
     --node-interrupt-stroke: #fb7185;
@@ -84,6 +86,7 @@
     --node-task-icon: #d6e0ed;
     --node-service-icon: #99f6e4;
     --node-script-icon: #ddd6fe;
+    --node-call-icon: #fde68a;
     --node-status: #bfdbfe;
     --node-hover-shadow: rgba(2,8,23,.38);
     --node-selection-shadow: rgba(255,255,255,.24);
@@ -198,6 +201,8 @@
     --node-service-stroke: #0f766e;
     --node-script-fill: #ede9fe;
     --node-script-stroke: #7c3aed;
+    --node-call-fill: #fef3c7;
+    --node-call-stroke: #b45309;
     --node-gateway-fill: #fef3c7;
     --node-interrupt-fill: #ffe4e6;
     --node-interrupt-stroke: #be123c;
@@ -217,6 +222,7 @@
     --node-task-icon: #334155;
     --node-service-icon: #0f766e;
     --node-script-icon: #6d28d9;
+    --node-call-icon: #92400e;
     --node-status: #1d4ed8;
     --node-hover-shadow: rgba(15,23,42,.24);
     --node-selection-shadow: rgba(15,23,42,.22);
@@ -1279,6 +1285,7 @@
   .flowbit-editor .node.task rect { fill: var(--node-task-fill); stroke: var(--node-task-stroke); }
   .flowbit-editor .node.serviceTask rect { fill: var(--node-service-fill); stroke: var(--node-service-stroke); }
   .flowbit-editor .node.scriptTask rect { fill: var(--node-script-fill); stroke: var(--node-script-stroke); }
+  .flowbit-editor .node.callActivity rect { fill: var(--node-call-fill); stroke: var(--node-call-stroke); stroke-width: 4; }
   .flowbit-editor .node.exclusiveGateway polygon.body { fill: var(--node-gateway-fill); stroke: var(--amber); }
   .flowbit-editor .node.parallelGateway polygon.body { fill: var(--node-gateway-fill); stroke: var(--amber); }
   .flowbit-editor .node.inclusiveGateway polygon.body { fill: var(--node-gateway-fill); stroke: var(--amber); }
@@ -1308,6 +1315,7 @@
   .flowbit-editor .node.selected rect,
   .flowbit-editor .node.selected circle.body,
   .flowbit-editor .node.selected polygon.body { stroke: var(--node-selection-stroke); stroke-width: 3; }
+  .flowbit-editor .node.selected.callActivity rect { stroke-width: 4; }
   .flowbit-editor .node.selected.endEvent circle.body,
   .flowbit-editor .node.selected.errorEndEvent circle.body,
   .flowbit-editor .node.selected.terminateEndEvent circle.body { stroke: var(--node-selection-stroke); stroke-width: 5; }
@@ -1342,6 +1350,7 @@
   .flowbit-editor .node.task .node-icon { color: var(--node-task-icon); }
   .flowbit-editor .node.serviceTask .node-icon { color: var(--node-service-icon); }
   .flowbit-editor .node.scriptTask .node-icon { color: var(--node-script-icon); }
+  .flowbit-editor .node.callActivity .node-icon { color: var(--node-call-icon); }
   .flowbit-editor .node .status-icon { color: var(--node-status); pointer-events: none; }
   .flowbit-editor .node .mi-marker line { stroke: var(--node-status); stroke-width: 1.6; }
   .flowbit-editor .node .connect-handle { opacity: 0; pointer-events: none; transition: opacity .12s, transform .12s; }

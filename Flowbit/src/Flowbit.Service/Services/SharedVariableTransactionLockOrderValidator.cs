@@ -155,6 +155,10 @@ public static class SharedVariableTransactionLockOrderValidator
             {
                 yield return node.MultiInstance?.ResultVariable;
             }
+            if (BpmnFlowNodeTypes.IsCallActivity(node.Type))
+            {
+                foreach (var mapping in node.CallActivity?.OutputMappings ?? []) yield return mapping?.Variable;
+            }
         }
 
         var nodePostWrites = flowNodes.ToDictionary(
@@ -231,6 +235,28 @@ public static class SharedVariableTransactionLockOrderValidator
                         $"node #{node.Id} / sequence flow #{flow.Id} asyncAfter continuation");
                     finalize.Queue.Add(new Cursor(flow.TargetRef));
                     scenarios.Add(finalize);
+                }
+            }
+        }
+
+        // Delivering a child's failure starts a new transaction, which writes the boundary's
+        // error variable and continues from there. The normal outcome is covered above.
+        foreach (var node in flowNodes.Where(node => BpmnFlowNodeTypes.IsCallActivity(node.Type)))
+        {
+            foreach (var boundary in boundariesByHost.GetValueOrDefault(node.Id, []))
+            {
+                var baseState = SimulationState.Empty(
+                    $"call failure from node #{node.Id} through error boundary #{boundary.Id}");
+                Acquire(
+                    baseState,
+                    nodeKeys[node.Id],
+                    $"node #{node.Id} call failure delivery");
+                foreach (var triggered in Subsets(boundaryPostWrites[boundary.Id].AtomicTargets, includeEmpty: true))
+                {
+                    var state = baseState.Clone();
+                    state.Queue.AddRange(triggered.Select(target => new Cursor(target)));
+                    state.Queue.Add(new Cursor(boundary.Id));
+                    scenarios.Add(state);
                 }
             }
         }
@@ -360,8 +386,10 @@ public static class SharedVariableTransactionLockOrderValidator
             // before it writes and drains the attached boundary error variable.
             // Keep those acquisitions as distinct phases: sorting their union
             // would incorrectly prove z-then-a safe as the synthetic order a,z.
+            // A call that fails before admission reaches its boundary in the entry transaction.
             if (BpmnFlowNodeTypes.IsServiceTask(node.Type)
-                || BpmnFlowNodeTypes.IsScriptTask(node.Type))
+                || BpmnFlowNodeTypes.IsScriptTask(node.Type)
+                || BpmnFlowNodeTypes.IsCallActivity(node.Type))
             {
                 foreach (var boundary in boundariesByHost.GetValueOrDefault(node.Id, []))
                 {
@@ -448,8 +476,11 @@ public static class SharedVariableTransactionLockOrderValidator
            && (BpmnFlowNodeTypes.IsServiceTask(node.Type)
                || BpmnFlowNodeTypes.IsScriptTask(node.Type));
 
+    // A call is a durable resting boundary: its entry ends a transaction segment, and
+    // delivering its result starts a new one.
     private static bool IsExternalResting(FlowNodeModel node) =>
         BpmnFlowNodeTypes.IsUserTask(node.Type)
+        || BpmnFlowNodeTypes.IsCallActivity(node.Type)
         || BpmnFlowNodeTypes.IsMessageCatch(node.Type)
         || BpmnFlowNodeTypes.IsTimerCatch(node.Type)
         || BpmnFlowNodeTypes.IsConditionalCatch(node.Type);

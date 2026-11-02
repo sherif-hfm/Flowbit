@@ -135,6 +135,22 @@
                 ? $"Terminate end completed the instance from token #{tokenId}"
                 : "Terminate end completed the instance";
         }
+        if (item.Note is "callQueued" or "callChildStarted" or "callCompleted" or "callFailed" or "callCancelled")
+        {
+            var invocation = HistoryPayloadString(item, "invocationId");
+            var target = HistoryPayloadString(item, "targetWorkflowKey") ?? "another workflow";
+            var child = HistoryPayloadString(item, "childInstanceId");
+            var callSummary = item.Note switch
+            {
+                "callQueued" => $"Call #{invocation} to {target} queued",
+                "callChildStarted" => $"Call #{invocation} to {target} started child instance #{child}",
+                "callCompleted" => $"Call #{invocation} to {target} completed and delivered its results",
+                "callFailed" => $"Call #{invocation} to {target} failed",
+                _ => $"Call #{invocation} to {target} was cancelled"
+            };
+            var callFailure = HistoryPayloadString(item, "failureDescription") ?? HistoryPayloadString(item, "failureCode");
+            return string.IsNullOrWhiteSpace(callFailure) ? callSummary : $"{callSummary}: {callFailure}";
+        }
         if (item.Note is "instanceReactivated")
         {
             var sourceStatus = HistoryPayloadString(item, "sourceStatus") ?? "terminal";

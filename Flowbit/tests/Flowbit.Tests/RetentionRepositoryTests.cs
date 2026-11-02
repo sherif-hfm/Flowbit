@@ -3,6 +3,7 @@ using Flowbit.Infrastructure.Data;
 using Flowbit.Infrastructure.Entities;
 using Flowbit.Infrastructure.Repositories;
 using Flowbit.Service.Abstractions;
+using Flowbit.Service.Models;
 using Flowbit.Service.Services;
 using Flowbit.Shared.Dtos;
 using Flowbit.Shared.Models;
@@ -39,6 +40,88 @@ public sealed class RetentionRepositoryTests(PostgresApiFixture fixture)
             previous.Category, new(1, previous.Revision), "test", default));
         await Assert.ThrowsAsync<WorkflowDomainException>(() => scope.Repository.UpdatePolicyAsync(
             "unknown", new(1, 1), "test", default));
+    }
+
+    [Fact]
+    public async Task HistoryClearsSettledCallSnapshotsAndKeepsTheRelationshipAndAnUndeliveredResult()
+    {
+        await using var scope = await Scope.CreateAsync(fixture);
+        var old = scope.Now.AddDays(-60);
+        var (definition, instances) = await scope.WorkflowAsync("completed", "completed", "running", "completed");
+        var settledParent = instances[0];
+        var settledChild = instances[1];
+        var waitingParent = instances[2];
+        var waitingChild = instances[3];
+        long settledId, waitingId;
+        await using (var db = fixture.CreateDbContext())
+        {
+            foreach (var childId in new[] { settledChild, waitingChild })
+            {
+                await db.WorkflowInstances.Where(instance => instance.Id == childId).ExecuteUpdateAsync(set => set
+                    .SetProperty(instance => instance.CallRootInstanceId, (long?)(childId == settledChild ? settledParent : waitingParent))
+                    .SetProperty(instance => instance.CallDepth, 1));
+            }
+
+            var tokens = new[] { settledParent, waitingParent }.Select(id => new ExecutionTokenEntity
+            {
+                InstanceId = id, NodeId = 2, NodeName = "Call", NodeType = BpmnFlowNodeTypes.CallActivity,
+                Status = id == settledParent ? "completed" : "active"
+            }).ToArray();
+            db.ExecutionTokens.AddRange(tokens);
+            await db.SaveChangesAsync();
+
+            var snapshot = JsonDocument.Parse("""{ "values": { "amount": 5 } }""");
+            CallActivityExecutionEntity Invocation(long parent, long child, long token, string state) => new()
+            {
+                ParentInstanceId = parent, ParentTokenId = token, ActivationId = Guid.NewGuid(), ParentNodeId = 2,
+                RootInstanceId = parent, ChildDepth = 1, ParentDefinitionId = definition.Id,
+                TargetWorkflowKey = scope.Prefix, ChildDefinitionId = definition.Id, ChildStartEventId = 1,
+                ChildInstanceId = child, State = state, CapacityReserved = state == CallInvocationStates.Running,
+                CreatedAt = old, AdmittedAt = old, StartedAt = old,
+                SettledAt = state == CallInvocationStates.Running ? null : old,
+                ContractJson = snapshot, InputValuesJson = snapshot
+            };
+            var settled = Invocation(settledParent, settledChild, tokens[0].Id, CallInvocationStates.Completed);
+            var waiting = Invocation(waitingParent, waitingChild, tokens[1].Id, CallInvocationStates.Running);
+            db.CallActivityExecutions.AddRange(settled, waiting);
+            await db.SaveChangesAsync();
+            settledId = settled.Id;
+            waitingId = waiting.Id;
+            db.CallActivityResults.AddRange(
+                new CallActivityResultEntity { ChildInstanceId = settledChild, InvocationId = settledId,
+                    Outcome = "completed", OutputValuesJson = snapshot, CapturedAt = old },
+                new CallActivityResultEntity { ChildInstanceId = waitingChild, InvocationId = waitingId,
+                    Outcome = "completed", OutputValuesJson = snapshot, CapturedAt = old });
+            db.InstanceHistory.AddRange(instances.Select(id => new InstanceHistoryEntity
+            {
+                InstanceId = id, WorkflowDefinitionId = definition.Id, FromStepId = 1, ToStepId = 2, PerformedAt = old
+            }));
+            await db.SaveChangesAsync();
+        }
+
+        await scope.PolicyAsync(RetentionCategories.WorkflowHistory, 30);
+        await scope.RunAsync();
+
+        await using (var db = fixture.CreateDbContext())
+        {
+            var settled = await db.CallActivityExecutions.AsNoTracking().SingleAsync(call => call.Id == settledId);
+            Assert.NotNull(settled.SnapshotsPrunedAt);
+            Assert.Null(settled.ContractJson);
+            Assert.Null(settled.InputValuesJson);
+            Assert.Equal(settledChild, settled.ChildInstanceId);
+            Assert.Equal(CallInvocationStates.Completed, settled.State);
+            var settledResult = await db.CallActivityResults.AsNoTracking().SingleAsync(result => result.InvocationId == settledId);
+            Assert.Null(settledResult.OutputValuesJson);
+            Assert.Equal("completed", settledResult.Outcome);
+
+            // The waiting parent is not terminal, and its finished child's result still awaits delivery.
+            var waiting = await db.CallActivityExecutions.AsNoTracking().SingleAsync(call => call.Id == waitingId);
+            Assert.Null(waiting.SnapshotsPrunedAt);
+            Assert.NotNull(waiting.ContractJson);
+            Assert.NotNull(waiting.InputValuesJson);
+            var waitingResult = await db.CallActivityResults.AsNoTracking().SingleAsync(result => result.InvocationId == waitingId);
+            Assert.NotNull(waitingResult.OutputValuesJson);
+        }
     }
 
     [Fact]
@@ -420,6 +503,8 @@ public sealed class RetentionRepositoryTests(PostgresApiFixture fixture)
             await db.SharedVariableRevisions.Where(x => SharedIds.Contains(x.SharedVariableId)).ExecuteDeleteAsync();
             await db.SharedVariables.Where(x => SharedIds.Contains(x.Id)).ExecuteDeleteAsync();
             var ids = await db.WorkflowInstances.Where(x => x.WorkflowKey == Prefix).Select(x => x.Id).ToArrayAsync();
+            await db.CallActivityResults.Where(x => ids.Contains(x.ChildInstanceId)).ExecuteDeleteAsync();
+            await db.CallActivityExecutions.Where(x => ids.Contains(x.ParentInstanceId)).ExecuteDeleteAsync();
             await db.WorkflowJobs.Where(x => x.WorkflowKey == Prefix).ExecuteDeleteAsync();
             await db.WorkflowJobSnapshots.Where(x => SnapshotIds.Contains(x.Id)).ExecuteDeleteAsync();
             await db.MessageDeliveryReceipts.Where(x => ids.Contains(x.InstanceId)).ExecuteDeleteAsync();

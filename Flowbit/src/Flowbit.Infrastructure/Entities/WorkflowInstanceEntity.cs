@@ -35,6 +35,16 @@ public sealed class WorkflowInstanceEntity
     /// </summary>
     public long? LastReactivationTokenId { get; set; }
 
+    /// <summary>
+    /// The root of this instance's call tree; null for a root or a legacy instance. A
+    /// plain column rather than a foreign key, so creating a nested child never waits on
+    /// the root's row lock. Immutable after insertion, like <see cref="CallDepth"/>.
+    /// </summary>
+    public long? CallRootInstanceId { get; set; }
+
+    /// <summary>The number of calls between this instance and its root; 0 for a root.</summary>
+    public int CallDepth { get; set; }
+
     public List<InstanceVariableEntity> Variables { get; set; } = [];
 
     public List<InstanceVariableCurrentValueEntity> CurrentVariableValues { get; set; } = [];

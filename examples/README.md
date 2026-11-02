@@ -7,7 +7,7 @@ legacy properties. Most ids use `example-*`; the administrative-action sample
 retains its authored `admin-action` id. The examples are intentionally focused: combine their
 patterns when building a production workflow.
 
-The catalog contains 55 workflows. Automated tests recursively discover every
+The catalog contains 58 workflows. Automated tests recursively discover every
 JSON file, deserialize it, validate it with the runtime's strict JavaScript
 parser, load and render it in the editor, and verify that this page links it.
 Those definition/editor tests do not execute integrations. The separate
@@ -168,6 +168,16 @@ attempt inspection, incident recovery, and PowerShell/Bash walkthroughs.
 | [Urgency review deadline](timers/08-urgency-review-deadline.json) | Supply Boolean `urgent`. | Approve **Review Request** in time, or complete **Escalated Review** after the deadline. | The interrupting boundary's `timeDuration` expression `if(urgent, 'PT2M', 'PT10M')` gives two minutes for an urgent request and ten otherwise, chosen when the review starts. | API, database, and Worker; no configuration. |
 | [Working-day SLA from a number](timers/09-working-day-sla-from-number.json) | Supply a whole number `slaDays` from 1 to 20. | Resolve **Resolve Case** in time, or complete **Escalated Case** after the SLA. | A JavaScript script task turns the number into a duration such as `P2D`, because a timer expression cannot join text and a number; the boundary counts that duration in the `examples.weekdays` calendar. | API and database; Worker for the SLA timer; the `examples.weekdays` business calendar, which the migration seeds when missing. |
 
+## Call activities
+
+See the [call activity guide](call-activities/README.md) for publishing order, every path, and PowerShell/Bash walkthroughs. Publish the child before its parents.
+
+| Workflow | Start values | Actors and actions | Expected result | Requirements |
+| --- | --- | --- | --- | --- |
+| [Manager approval child](call-activities/01-manager-approval-child.json) | Supply `amount` above zero and `requestId`; a call supplies them. | A `Manager` takes **Approve** or **Reject**. | Approval sets `approved` and completes; rejection faults with `approval.rejected`. | API and database when started alone; a Worker when called. Its plain start is unrestricted. |
+| [Purchase request calling an approval](call-activities/02-purchase-request-call.json) | Supply `requestedAmount` above zero and `requestId`. | The child's `Manager` acts; `Purchasing` then takes **Order Placed**. | The parent rests at the call, receives `managerApproved`, and completes at **Ordered**. A rejection faults it with `call_child_faulted`. | API, database, and Worker, with the child published first. |
+| [Purchase request handling a failed approval](call-activities/03-purchase-request-call-failure.json) | The same values. | After a rejection, `Purchasing` takes **Close**. | The boundary writes the failure to `callFailure`, and the parent completes at **Closed Without Order**. | API, database, and Worker, with the child published first. |
+
 ## Trusted configuration placeholders
 
 Definitions use deployment-owned values, never embedded secrets or public
@@ -192,9 +202,9 @@ actions, and records the outcome of each test run separately.
 
 | Coverage layer | Included | Verification boundary |
 | --- | --- | --- |
-| Authored node and event types | All 21: four tasks, four gateways, three starts, three intermediate catches, three boundaries, three ends, and the scoped-interrupt extension. | Recursive runtime/editor validation and the explicit 21-type assertion; editor execution here uses Jint rather than a real browser. |
+| Authored node and event types | All 22: five tasks, four gateways, three starts, three intermediate catches, three boundaries, three ends, and the scoped-interrupt extension. | Recursive runtime/editor validation and the explicit 21-type assertion; editor execution here uses Jint rather than a real browser. |
 | Demonstrated catalog scenarios | Claims, assignment/distribution, captured roles, task due dates and priorities, working-time durations in a business calendar, scripts, typed REST/messages, idempotency, multi-instance aggregation, timers, conditional events, retries/recovery, and scope cancellation. | The 55 definitions and category walkthroughs explain actors, inputs, prerequisites, and expected outcomes. |
-| Focused runtime acceptance | Both REST recovery paths and boundary-order policies; HTTP status routing and its retry policy; both receipt/deadline paths; nested cancellation; MI role replacement/stale edits; normal versus terminate end; approval timer return; quorum cancellation before finalization. | `ExampleWorkflowAcceptanceTests` uses real HTTP and Worker processing with controlled local services. It is explicitly run outside the solution and CI; inspect its results before claiming a verified run. |
+| Focused runtime acceptance | Call activity completion, rejection, cancellation, and incident recovery; both REST recovery paths and boundary-order policies; HTTP status routing and its retry policy; both receipt/deadline paths; nested cancellation; MI role replacement/stale edits; normal versus terminate end; approval timer return; quorum cancellation before finalization. | `ExampleWorkflowAcceptanceTests` uses real HTTP and Worker processing with controlled local services. It is explicitly run outside the solution and CI; inspect its results before claiming a verified run. |
 | Browser and manual checks | New diagrams at desktop/tablet widths; incident recovery and role management at desktop, tablet, and mobile widths. | Real Chromium input, screenshots, and browser diagnostics supplement API assertions; native picker and visual-review limitations are reported separately. |
 
 Run commands and evidence locations are in the

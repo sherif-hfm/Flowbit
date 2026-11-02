@@ -59,7 +59,45 @@ public static class WorkflowModelMigrator
 
         NormalizeExclusiveSplitPriorities(model);
         NormalizeUserTaskDefaultFlows(model);
+        NormalizeCallActivityMappings(model);
+    }
 
+    /// <summary>
+    /// Persists the declared spelling of the names a call mapping reads and writes
+    /// in this definition. A name the definition does not declare is left as authored
+    /// so validation can report it.
+    /// </summary>
+    private static void NormalizeCallActivityMappings(WorkflowModel model)
+    {
+        if (!model.FlowNodes.Any(node => node.CallActivity is not null))
+        {
+            return;
+        }
+
+        var sources = CallActivityRules.SourceDeclarations(model);
+        foreach (var call in model.FlowNodes.Select(node => node.CallActivity).OfType<CallActivityModel>())
+        {
+            foreach (var mapping in (call.InputMappings ?? []).OfType<CallVariableMappingModel>())
+            {
+                if (mapping.SourceVariable is not null
+                    && sources.TryGetValue(mapping.SourceVariable, out var declared))
+                {
+                    mapping.SourceVariable = declared[0].Name;
+                }
+            }
+
+            foreach (var mapping in (call.OutputMappings ?? []).OfType<CallVariableMappingModel>())
+            {
+                var target = model.Variables.FirstOrDefault(variable => string.Equals(
+                    variable.Name,
+                    mapping.Variable,
+                    StringComparison.OrdinalIgnoreCase));
+                if (target is not null)
+                {
+                    mapping.Variable = target.Name;
+                }
+            }
+        }
     }
 
     /// <summary>
@@ -545,6 +583,19 @@ public static class WorkflowModelMigrator
             node.GatewayRef = null;
         }
 
+        // Create/version authoring rejects these before normalization. A call node
+        // with no config keeps none, so validation reports it rather than a
+        // synthetic config hiding it.
+        if (!BpmnFlowNodeTypes.IsCallActivity(node.Type))
+        {
+            node.CallActivity = null;
+        }
+
+        if (!BpmnFlowNodeTypes.IsStart(node.Type))
+        {
+            node.CallOnly = false;
+        }
+
         if (!BpmnFlowNodeTypes.IsEntry(node.Type) || BpmnFlowNodeTypes.IsTimerStart(node.Type))
         {
             node.BusinessKey = null;
@@ -767,6 +818,38 @@ public static class WorkflowModelMigrator
             node.Script = null;
             node.AssigneeExpression = null;
             node.ErrorVariable = null;
+        }
+        else if (BpmnFlowNodeTypes.IsCallActivity(node.Type))
+        {
+            // A call rests while its child runs; everything it authors lives on
+            // node.CallActivity. The default binding is omitted, and an unknown one
+            // stays as authored so validation can report it.
+            node.RequiresClaim = false;
+            node.ClaimMode = ClaimModes.Fresh;
+            node.InheritClaimFromNodeId = null;
+            node.Roles = [];
+            node.Variables = [];
+            node.Service = null;
+            node.Message = null;
+            node.ScriptFormat = ScriptFormats.NCalc;
+            node.Assignments = [];
+            node.Script = null;
+            node.AssigneeExpression = null;
+            node.AttachedToRef = null;
+            node.ErrorVariable = null;
+            if (node.CallActivity is { } call)
+            {
+                if (string.Equals(
+                        call.VersionBinding,
+                        CallActivityVersionBindings.PublishedDefault,
+                        StringComparison.Ordinal))
+                {
+                    call.VersionBinding = null;
+                }
+
+                call.InputMappings ??= [];
+                call.OutputMappings ??= [];
+            }
         }
         else if (BpmnFlowNodeTypes.IsMessageCatch(node.Type))
         {

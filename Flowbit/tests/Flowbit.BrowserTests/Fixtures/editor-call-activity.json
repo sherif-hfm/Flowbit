@@ -1,0 +1,28 @@
+{
+  "id": "browser-editor-call-activity",
+  "name": "Browser editor call activity",
+  "initialEventId": 1,
+  "variables": [
+    { "id": 1, "name": "decision", "dataType": "string", "isArray": false, "nullable": true, "required": false, "defaultValue": null, "validation": null },
+    { "id": 2, "name": "callFailure", "dataType": "string", "isArray": false, "nullable": true, "required": false, "defaultValue": null, "validation": null }
+  ],
+  "lanes": [],
+  "flowNodes": [
+    {
+      "id": 1, "name": "Request", "type": "startEvent", "laneId": null, "x": 120, "y": 150, "roles": [],
+      "variables": [
+        { "id": 1, "name": "amount", "dataType": "number", "isArray": false, "required": true, "defaultValue": null, "validation": null }
+      ]
+    },
+    { "id": 2, "name": "Approval", "type": "task", "laneId": null, "x": 320, "y": 138, "roles": [], "variables": [] },
+    { "id": 3, "name": "Done", "type": "endEvent", "laneId": null, "x": 620, "y": 150, "roles": [], "variables": [] },
+    { "id": 4, "name": "Other request", "type": "startEvent", "laneId": null, "x": 120, "y": 330, "roles": [], "variables": [
+        { "id": 1, "name": "amount", "dataType": "number", "isArray": false, "required": true, "defaultValue": null, "validation": null }
+    ] }
+  ],
+  "sequenceFlows": [
+    { "id": 101, "name": "", "sourceRef": 1, "targetRef": 2, "roles": [], "variables": [], "condition": null },
+    { "id": 201, "name": "", "sourceRef": 2, "targetRef": 3, "roles": [], "variables": [], "condition": null },
+    { "id": 401, "name": "", "sourceRef": 4, "targetRef": 2, "roles": [], "variables": [], "condition": null }
+  ]
+}

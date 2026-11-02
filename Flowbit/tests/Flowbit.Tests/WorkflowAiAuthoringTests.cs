@@ -138,6 +138,94 @@ public sealed class WorkflowAiAuthoringTests
     }
 
     [Fact]
+    public async Task CallTargets_GiveTheModelDeclarationsAndNeverValues()
+    {
+        var definitions = DispatchProxy.Create<IWorkflowDefinitionRepository, CallTargetProxy>();
+        var target = new WorkflowModel
+        {
+            Id = "manager-approval",
+            Name = "Manager approval",
+            InitialEventId = 1,
+            Variables =
+            [
+                new VariableModel { Id = 1, Name = "approved", DataType = "boolean", Nullable = true },
+                new VariableModel
+                {
+                    Id = 2,
+                    Name = "rate",
+                    Scope = VariableScopes.Shared,
+                    SharedKey = "finance.never-listed-alias",
+                    Access = "read",
+                    DataType = "number"
+                },
+                new VariableModel
+                {
+                    Id = 3,
+                    Name = "limit",
+                    DataType = "number",
+                    DefaultValue = JsonSerializer.SerializeToElement(424242)
+                }
+            ],
+            FlowNodes =
+            [
+                new FlowNodeModel
+                {
+                    Id = 1,
+                    Name = "Start",
+                    Type = BpmnFlowNodeTypes.StartEvent,
+                    CallOnly = true,
+                    Variables = [new VariableModel { Id = 1, Name = "amount", DataType = "number", Required = true }]
+                }
+            ]
+        };
+        ((CallTargetProxy)(object)definitions).Records["manager-approval"] =
+            new WorkflowDefinitionRecord(9, "Manager approval", "manager-approval", 3, target, true, true, DateTimeOffset.UtcNow);
+        var handler = new ScriptedHandler(Completions.Save("workflow.json", Json(Model())), Completions.Final("Done."));
+
+        var result = await Service(handler, readiness: new WorkflowDefinitionReadinessChecker(definitions: definitions))
+            .TurnAsync(Request() with { CallTargetKeys = ["manager-approval", "not-published"] }, CancellationToken.None);
+
+        Assert.Equal("proposal", result.Kind);
+        var message = LastUserText(handler.Bodies[0]);
+        var marker = "\n\n--- Selected call targets ---\n";
+        Assert.StartsWith("Build a review workflow" + marker, message);
+        using var contracts = JsonDocument.Parse(message[(message.IndexOf(marker, StringComparison.Ordinal) + marker.Length)..]);
+        var known = contracts.RootElement[0];
+        Assert.Equal("manager-approval", known.GetProperty("workflowKey").GetString());
+        Assert.True(known.GetProperty("hasPublishedDefault").GetBoolean());
+        Assert.Equal(3, known.GetProperty("version").GetInt32());
+        Assert.True(known.GetProperty("callOnly").GetBoolean());
+        var input = Assert.Single(known.GetProperty("inputs").EnumerateArray());
+        Assert.Equal(("amount", "number", true), (input.GetProperty("name").GetString(), input.GetProperty("dataType").GetString(), input.GetProperty("required").GetBoolean()));
+        var results = known.GetProperty("results").EnumerateArray().Select(item => item.GetProperty("name").GetString()).ToArray();
+        Assert.Contains("approved", results);
+        Assert.DoesNotContain("rate", results);
+        var missing = contracts.RootElement[1];
+        Assert.Equal("not-published", missing.GetProperty("workflowKey").GetString());
+        Assert.False(missing.GetProperty("hasPublishedDefault").GetBoolean());
+        Assert.All(handler.Bodies, body =>
+        {
+            Assert.DoesNotContain("424242", body);
+            Assert.DoesNotContain("finance.never-listed-alias", body);
+        });
+    }
+
+    [Theory]
+    [InlineData(21, false)]
+    [InlineData(2, true)]
+    public async Task CallTargets_RejectTooManyOrRepeatedKeysBeforeCallingTheProvider(int count, bool repeat)
+    {
+        var handler = new ScriptedHandler();
+        var keys = Enumerable.Range(0, count).Select(index => repeat ? "same" : $"family-{index}").ToArray();
+
+        var error = await Assert.ThrowsAsync<WorkflowAiException>(() => Service(handler)
+            .TurnAsync(Request() with { CallTargetKeys = keys }, CancellationToken.None));
+
+        Assert.Equal("invalid_call_target_selection", error.Code);
+        Assert.Empty(handler.Bodies);
+    }
+
+    [Fact]
     public async Task CatalogContext_RejectsUnavailableSelectionsBeforeCallingTheProvider()
     {
         var repository = DispatchProxy.Create<ISharedVariableRepository, SelectedCatalogProxy>();
@@ -368,12 +456,13 @@ public sealed class WorkflowAiAuthoringTests
     };
 
     private static WorkflowAiAuthoringService Service(HttpMessageHandler handler, WorkflowAiOptions? configured = null,
-        WorkflowAiConcurrencyGate? gate = null, ISharedVariableRepository? repository = null, IAiModelStore? models = null)
+        WorkflowAiConcurrencyGate? gate = null, ISharedVariableRepository? repository = null, IAiModelStore? models = null,
+        WorkflowDefinitionReadinessChecker? readiness = null)
     {
         var options = configured ?? AgentHarness.Options();
         return new(new OpenAiCompatibleChatClientFactory(() => handler), models ?? new FixedAiModelStore(AgentHarness.Connection),
             ResourceKnowledge.Small, new WorkflowAiDocs(ResourceKnowledge.Small),
-            AgentHarness.Validator(), new WorkflowDefinitionReadinessChecker(), options, gate ?? new WorkflowAiConcurrencyGate(options), repository);
+            AgentHarness.Validator(), readiness ?? new WorkflowDefinitionReadinessChecker(), options, gate ?? new WorkflowAiConcurrencyGate(options), repository);
     }
 
     private static string LastUserText(string body)
@@ -381,6 +470,17 @@ public sealed class WorkflowAiAuthoringTests
         using var document = JsonDocument.Parse(body);
         var content = document.RootElement.GetProperty("messages").EnumerateArray().Last(item => item.GetProperty("role").GetString() == "user").GetProperty("content");
         return content.ValueKind == JsonValueKind.String ? content.GetString()! : string.Concat(content.EnumerateArray().Select(part => part.GetProperty("text").GetString()));
+    }
+
+    public class CallTargetProxy : DispatchProxy
+    {
+        public Dictionary<string, WorkflowDefinitionRecord> Records { get; } = new(StringComparer.Ordinal);
+        protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
+        {
+            if (targetMethod?.Name != nameof(IWorkflowDefinitionRepository.GetDefaultByWorkflowKeyAsync))
+                throw new InvalidOperationException("Authoring attempted an unexpected definition operation: " + targetMethod?.Name);
+            return Task.FromResult(Records.GetValueOrDefault((string)args![0]!));
+        }
     }
 
     public class SelectedCatalogProxy : DispatchProxy

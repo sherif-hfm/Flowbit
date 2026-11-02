@@ -49,6 +49,12 @@ scriptOptions.Validate();
 builder.Services.AddSingleton(scriptOptions);
 builder.Services.AddSingleton(new MessageDeliveryOptions());
 
+var callActivityOptions = builder.Configuration
+    .GetSection(CallActivityOptions.SectionName)
+    .Get<CallActivityOptions>() ?? new CallActivityOptions();
+callActivityOptions.Validate();
+builder.Services.AddSingleton(callActivityOptions);
+
 builder.Services
     .AddServiceLayer()
     .AddInfrastructure(builder.Configuration);

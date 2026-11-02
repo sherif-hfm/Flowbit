@@ -497,6 +497,66 @@ Response:
 HTTP/1.1 204 No Content
 ```
 
+### GET /api/workflows/{workflowKey}/callers
+
+Lists the published versions that call a family and whether each passes the contract check. Use it before changing that family's default.
+
+**Access:** Workflow administrator. See [authentication](#http-conventions-and-authentication).
+
+| Parameter | Location | Type | Required | Meaning / default |
+| --- | --- | --- | --- | --- |
+| `workflowKey` | path | string | Yes | The family being called. |
+| `candidateId` | query | integer (int64) | No | Check against this published version of the family, as set-default would. |
+| `deletingId` | query | integer (int64) | No | Check against what would remain after deleting this version, which must be the current default. |
+| `page`, `pageSize` | query | integer (int32) | No | Defaults 1 and 50; `pageSize` is capped at 200. |
+
+**Body:** none.
+
+**Success:** `200` [CallersPreviewDto](#schema-callerspreviewdto).
+**Errors:** `400` both selectors together, an unpublished candidate, or a deletion selector that is not the current default; `401` Unauthorized; `403` Forbidden; `404` a missing or wrong-family version ID. See [error envelopes](#errors-and-concurrency) and the family rules above.
+
+Omitting both selectors checks the current default; a family with no published default, or none at all, returns `noDefault: true`. An allowed deletion checks the actual successor, using the same selection as `DELETE /api/workflows/{id}`; with no successor, `effectiveTargetId` is null, `noDefault` is true, and every caller is unavailable. A blocked deletion has `deletionAllowed: false`, lists its blockers, and checks callers against the unchanged default. Compatibility never blocks a command, and the preview does not promise that the result stays the same until you send one.
+
+```http
+GET /api/workflows/manager-approval/callers?candidateId=42&pageSize=25 HTTP/1.1
+Host: localhost:5017
+Authorization: Bearer TOKEN
+```
+
+Response example (object bodies may be excerpts; see the full linked schema):
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "mode": "candidate",
+  "effectiveTargetId": 42,
+  "effectiveTargetVersion": 4,
+  "noDefault": false,
+  "deletionBlockers": [],
+  "callers": {
+    "items": [
+      {
+        "workflowId": 11,
+        "workflowKey": "purchase-request",
+        "name": "Purchase request",
+        "version": 2,
+        "isDefault": true,
+        "nodeId": 12,
+        "nodeName": "Manager approval",
+        "compatible": false,
+        "reasonCodes": ["call_target_incompatible"],
+        "reasons": ["Call activity #12 target 'manager-approval' start event #1 does not declare input 'amount'."]
+      }
+    ],
+    "page": 1,
+    "pageSize": 25,
+    "totalCount": 1
+  }
+}
+```
+
 ### POST /api/workflows/{workflowKey}/message-start
 
 Starts a new workflow instance by delivering an initial message payload to a system-only message start event.
@@ -576,6 +636,7 @@ The turn JSON has:
 - `currentWorkflow`: omit it, or send an empty document, to create a definition; send the editor's diagram to edit it, including an incomplete draft. It must pass the strict canonical parser.
 - `snapshotId`: opaque client correlation. The hosted editor compares its current snapshot before accepting an apply; other clients must enforce an equivalent stale-edit check.
 - `sources`: `{sourceName,pageNumber,text}` pages. Each page is sent to the model once per conversation.
+- `callTargetKeys`: up to 20 distinct workflow keys this workflow may call. Each family's published-default start inputs and declared results reach the model, never values; a family with no published default is reported as such. A blank or repeated key returns `400 invalid_call_target_selection`.
 - `sharedVariableKeys`: up to 50 active catalog keys. This additionally requires the existing shared-variable read permission (`SharedVariables.RequiredRole` for JWT callers). Only the selected entries' contracts and descriptions are sent; current values are excluded. Unknown or inactive selections are rejected.
 - `state`: the conversation state from the previous result or from the latest checkpoint frame of the same conversation. Omit it to start a new conversation.
 
@@ -759,7 +820,7 @@ Starts a new workflow instance based on a workflow definition ID or key.
 **Success:** `201` [StartInstanceResultDto](#schema-startinstanceresultdto); `detail=full` returns [InstanceDetailDto](#schema-instancedetaildto).
 **Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden (missing OIDC API scope); `409` Conflict. See [error envelopes](#errors-and-concurrency) and the family rules above.
 
-Default response is StartInstanceResultDto; detail=full selects InstanceDetailDto. StartEvent roles are enforced. Configured idempotency headers cannot be supplied through variables.
+Default response is StartInstanceResultDto; detail=full selects InstanceDetailDto. StartEvent roles are enforced, and a start with `callOnly: true` is refused with `400`. A parent can respond waiting at a call before its child exists. Configured idempotency headers cannot be supplied through variables.
 
 ```http
 POST /api/instances HTTP/1.1
@@ -1061,6 +1122,58 @@ Content-Type: application/json
   "businessKey": null,
   "createdAt": "2026-09-09T10:00:00Z",
   "updatedAt": "2026-09-09T10:00:00Z"
+}
+```
+
+### GET /api/instances/{id}/calls
+
+Pages through an instance's direct outgoing calls, newest first. Repeated visits to a node are separate rows, and visits with no child yet are included.
+
+**Access:** Bearer. See [authentication](#http-conventions-and-authentication).
+
+| Parameter | Location | Type | Required | Meaning / default |
+| --- | --- | --- | --- | --- |
+| `id` | path | integer (int64) | Yes | The database ID of the parent instance. |
+| `page`, `pageSize` | query | integer (int32) | No | Defaults 1 and 50; `pageSize` is capped at 200. |
+
+**Body:** none.
+
+**Success:** `200` PagedResult of [CallActivityExecutionDto](#schema-callactivityexecutiondto).
+**Errors:** `401` Unauthorized; `403` Forbidden (missing OIDC API scope); `404` Not Found. See [error envelopes](#errors-and-concurrency) and the family rules above.
+
+This follows the instance-detail read boundary: it is an authenticated deployment-level read, and a relation grants no task, claim, cancellation, or administrative permission. Captured input and output values are never returned, and incident details remain behind the [jobs and incidents](#jobs-and-incidents) permission.
+
+```http
+GET /api/instances/101/calls?page=1&pageSize=25 HTTP/1.1
+Host: localhost:5017
+Authorization: Bearer TOKEN
+```
+
+Response example (object bodies may be excerpts; see the full linked schema):
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "items": [
+    {
+      "invocationId": 7,
+      "nodeId": 12,
+      "nodeName": "Manager approval",
+      "state": "running",
+      "capacityReserved": true,
+      "childInstanceId": 102,
+      "childStatus": "running",
+      "openIncidentCount": 0,
+      "targetWorkflowKey": "manager-approval",
+      "childDefinitionVersion": 3,
+      "failureCode": null
+    }
+  ],
+  "page": 1,
+  "pageSize": 25,
+  "totalCount": 1
 }
 ```
 
@@ -1527,6 +1640,8 @@ Cancels an active workflow instance.
 **Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden (missing OIDC API scope); `404` Not Found; `409` Conflict. See [error envelopes](#errors-and-concurrency) and the family rules above.
 
 No request body. Cancels all active tokens, open work and waits atomically; an empty cancelRoles list does not grant cancellation.
+
+A `204` means this instance is cancelled, not its whole call tree. Its calls settle in the same transaction and its descendants stop accepting new work, so a command on one returns `409`, but they stay `running` until their durable `callCancel` jobs run. See [call another workflow](developer-guide.md#call-another-workflow).
 
 ```http
 POST /api/instances/101/cancel HTTP/1.1
@@ -2787,7 +2902,7 @@ Content-Type: application/json
 
 Every route in this section requires the Job operator role, including endpoints whose OpenAPI metadata does not repeat `401`/`403`. Lists and attempts use opaque cursors. Operational DTOs expose bounded metadata and failure summaries, not job snapshots or persisted external-response bodies. A resolved incident may remain after its completed job has been pruned, so `IncidentDetailDto.job` may be null.
 
-Job statuses: `queued`, `running`, `resultReady`, `retry`, `completed`, `incident`, `cancelled`, `skipped`. Kinds: `asyncBefore`, `asyncAfter`, `timer`, `timerStart`, `timerBoundary`, `conditionalWake`, `administrativeBatchPrepare`, `administrativeBatchExecute`, `instanceVersionChangeBatchPrepare`, `instanceVersionChangeBatchExecute`, `instanceVariableUpdateBatchPrepare`, `instanceVariableUpdateBatchExecute`. Incident statuses: `open`, `resolved`; `type` is the recorded failure category, including `automatic_loop_limit`; `job_conflict`, a conflict in a job that still owns its work, whose `details` give the cause; and `timer_schedule_failed`, a timer start whose first due time cannot be computed, where retrying schedules the timer start again. Repeated filters are supplied as repeated query parameters. Retry fences the original activation and queues work; it does not immediately finish the workflow. A no-longer-retryable incident/job returns `409`.
+Job statuses: `queued`, `running`, `resultReady`, `retry`, `completed`, `incident`, `cancelled`, `skipped`. Kinds: `asyncBefore`, `asyncAfter`, `timer`, `timerStart`, `timerBoundary`, `conditionalWake`, `callStart`, `callResume`, `callCancel`, `administrativeBatchPrepare`, `administrativeBatchExecute`, `instanceVersionChangeBatchPrepare`, `instanceVersionChangeBatchExecute`, `instanceVariableUpdateBatchPrepare`, `instanceVariableUpdateBatchExecute`. Incident statuses: `open`, `resolved`; `type` is the recorded failure category, including `automatic_loop_limit`; `job_conflict`, a conflict in a job that still owns its work, whose `details` give the cause; and `timer_schedule_failed`, a timer start whose first due time cannot be computed, where retrying schedules the timer start again. Repeated filters are supplied as repeated query parameters. Retry fences the original activation and queues work; it does not immediately finish the workflow. A no-longer-retryable incident/job returns `409`.
 
 ### GET /api/jobs
 
@@ -6826,6 +6941,123 @@ Configures the start variable used as a workflow-family business key.
 
 </details>
 
+<a id="schema-callactivityexecutiondto"></a>
+
+<details>
+<summary>CallActivityExecutionDto</summary>
+
+One visit to a call activity, with the version it pinned. It never exposes captured values.
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `invocationId` | integer (int64) | Yes | The durable identity of this visit. |
+| `nodeId` | integer (int32) | Yes | The call node. |
+| `nodeName` | null or string | Yes | — |
+| `tokenId` | integer (int64) | Yes | The parent token resting at the call. |
+| `activationId` | string (uuid) | Yes | The token activation that owns this visit. |
+| `state` | string | Yes | `queued`, `running`, `resultReady`, `completed`, `failed`, or `cancelled`. `resultReady` is `running` with a captured result. |
+| `outcome` | null or string | Yes | The captured result's outcome once the child has finished: `completed`, `faulted`, or `cancelled`. It is distinct from `childStatus`: an invalid output is `faulted` while the child stays completed. |
+| `capacityReserved` | boolean | Yes | Whether the visit holds an admission slot. A queued visit without one was blocked before admission. |
+| `childInstanceId` | null or integer (int64) | Yes | Null until the child exists. |
+| `childStatus` | null or string | Yes | The child's current status. |
+| `openIncidentCount` | integer (int64) | Yes | Open incidents on this visit's own jobs and on the child's durable work. |
+| `targetWorkflowKey` | string | Yes | — |
+| `childDefinitionId` | null or integer (int64) | Yes | The exact version the visit pinned; null before the child exists. |
+| `childDefinitionVersion` | null or integer (int32) | Yes | — |
+| `childStartEventId` | null or integer (int32) | Yes | — |
+| `createdAt` | string (date-time) | Yes | When the token entered the call. |
+| `admittedAt` | null or string (date-time) | Yes | — |
+| `startedAt` | null or string (date-time) | Yes | When the child was created. |
+| `settledAt` | null or string (date-time) | Yes | — |
+| `failureCode` | null or string | Yes | A stable call failure code. |
+| `failureDescription` | null or string | Yes | Safe text of at most 1,000 characters. |
+| `childFaultCode` | null or string | Yes | The child's error end code, when it faulted there. |
+
+</details>
+
+<a id="schema-callactivitymodel"></a>
+
+<details>
+<summary>CallActivityModel</summary>
+
+The configuration of a `callActivity` node. Unknown members and wrong JSON types are refused.
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `workflowKey` | string | Yes | Stable key of the family to call. |
+| `versionBinding` | null or string | No | Only `publishedDefault`; omitted means the same. |
+| `inputMappings` | array of [CallVariableMappingModel](#schema-callvariablemappingmodel) | No | At most 100. `null` is invalid. |
+| `outputMappings` | array of [CallVariableMappingModel](#schema-callvariablemappingmodel) | No | At most 100. `null` is invalid. |
+
+</details>
+
+<a id="schema-callcountsdto"></a>
+
+<details>
+<summary>CallCountsDto</summary>
+
+Bounded counts of an instance's direct outgoing calls.
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `total` | integer (int64) | Yes | — |
+| `unsettled` | integer (int64) | Yes | Queued or running calls, including results awaiting delivery. |
+
+</details>
+
+<a id="schema-callerspreviewdto"></a>
+
+<details>
+<summary>CallersPreviewDto</summary>
+
+An advisory snapshot of how a family's callers fare against a target version. It reserves nothing and can go stale; the command checks its own rules again.
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `mode` | string | Yes | `current`, `candidate`, or `deletion`. |
+| `effectiveTargetId` | null or integer (int64) | Yes | The version callers were checked against. |
+| `effectiveTargetVersion` | null or integer (int32) | Yes | — |
+| `noDefault` | boolean | Yes | True when no published default exists, or would remain after the deletion. |
+| `deletionAllowed` | boolean | No | Present only in deletion mode. |
+| `deletionBlockers` | array of string | Yes | The existing deletion rules that would refuse the command. |
+| `callers` | PagedResult of [WorkflowCallerDto](#schema-workflowcallerdto) | Yes | Returned with the metadata above even when the page is empty. |
+
+</details>
+
+<a id="schema-calltargetvariabledto"></a>
+
+<details>
+<summary>CallTargetVariableDto</summary>
+
+One declared input or result of a call target, as the AI assistant receives it. It holds no values.
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `name` | string | Yes | — |
+| `dataType` | string | Yes | — |
+| `isArray` | boolean | Yes | — |
+| `required` | boolean | Yes | Whether an input requires a mapping with `required: true`. |
+| `mayBeNull` | boolean | Yes | Whether the value can be a whole JSON null. |
+
+</details>
+
+<a id="schema-callvariablemappingmodel"></a>
+
+<details>
+<summary>CallVariableMappingModel</summary>
+
+Copies one whole variable through a call. Unknown members and wrong JSON types are refused.
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `sourceVariable` | string | Yes | Variable on the source instance. |
+| `variable` | string | Yes | Destination; unique within its list ignoring case. |
+| `dataType` | string | Yes | `string`, `number`, `boolean`, `date`, `datetime`, or `json`. |
+| `isArray` | boolean | No | Defaults to false. |
+| `required` | boolean | No | Defaults to false. When true, a missing source or null fails the call. |
+
+</details>
+
 <a id="schema-canceladministrativeactionbatchrequest"></a>
 
 <details>
@@ -7303,6 +7535,23 @@ One durable execution-token position exposed by instance APIs.
 | `waitState` | null or string | No | — |
 | `waitingJobId` | null or integer (int64) | No | — |
 | `waitingTimerSubscriptionId` | null or integer (int64) | No | — |
+| `call` | null or [ExecutionPositionCallDto](#schema-executionpositioncalldto) | No | Present while the token waits at a call. |
+
+</details>
+
+<a id="schema-executionpositioncalldto"></a>
+
+<details>
+<summary>ExecutionPositionCallDto</summary>
+
+What a token resting on a call is waiting for. It remains an execution token, not a user task.
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `invocationId` | integer (int64) | Yes | — |
+| `state` | string | Yes | `queued`, `running`, or `resultReady`. |
+| `capacityReserved` | boolean | Yes | False while the call is blocked before admission. |
+| `childInstanceId` | null or integer (int64) | Yes | — |
 
 </details>
 
@@ -7376,6 +7625,8 @@ Type-specific requirements and defaults are in BPMN support. Missing cancelActiv
 | `activationCondition` | null or string | No | Complex gateway only: the NCalc expression that decides when the current start/reset phase is enabled. IncomingCount(flowId) and TotalIncomingCount() are available while evaluating this expression. |
 | `gatewayRef` | null or integer (int32) | No | Scoped interrupt event only: the split gateway whose nearest active runtime activation is interrupted when this event is entered. |
 | `joinCancellation` | null or [JoinCancellationModel](#schema-joincancellationmodel) | No | — |
+| `callActivity` | null or [CallActivityModel](#schema-callactivitymodel) | No | `callActivity` nodes only. See the [node reference](node-reference.md#callactivity). |
+| `callOnly` | boolean | No | `startEvent` selected by `initialEventId` only. Omitted when false; public start routes refuse such a start. |
 
 </details>
 
@@ -7564,6 +7815,8 @@ Represents full details of a workflow instance, including variable values and hi
 | `fault` | null or [FaultInfoDto](#schema-faultinfodto) | No | — |
 | `finishedAt` | null or string (date-time) | No | — |
 | `historyPrunedAt` | null or string (date-time) | No | — |
+| `parentCall` | null or [ParentCallSummaryDto](#schema-parentcallsummarydto) | No | The call that started this instance; null for a root. |
+| `calls` | null or [CallCountsDto](#schema-callcountsdto) | No | Counts of direct outgoing calls; page through them with `GET /api/instances/{id}/calls`. |
 | `lastReactivationTokenId` | null or integer (int64) | No | The root token created by the most recent reactivation, or null when the instance was never reactivated. Execution positions with this token ID or a later one belong to the current run. It remains after history retention. |
 | `executionPositions` | array of [ExecutionPositionDto](#schema-executionpositiondto) | No | All exposed token positions; the representative currentNode fields do not imply a single active token. |
 | `multiInstances` | array of [MultiInstanceProgressDto](#schema-multiinstanceprogressdto) | No | — |
@@ -8326,7 +8579,7 @@ Bounded operations projection for a durable workflow job. Snapshots, result payl
 | `nodeName` | string | Yes | — |
 | `nodeType` | string | Yes | — |
 | `kind` | string | Yes | — |
-| `phase` | string | Yes | Persisted job phase: asyncBefore, asyncAfter, timer, conditionalWake, or the batch prepare/execute phase as appropriate to kind. |
+| `phase` | string | Yes | Persisted job phase: asyncBefore, asyncAfter, timer, conditionalWake, a call job kind, or the batch prepare/execute phase as appropriate to kind. |
 | `queueClass` | string | Yes | control or activity. |
 | `status` | string | Yes | Lifecycle value; see this resource family’s vocabulary. |
 | `attemptCount` | integer (int32) | Yes | — |
@@ -8852,7 +9105,7 @@ One deployment-wide shared-variable revision attributed to this execution. The k
 
 One durable visit to a workflow node. Normal visits are correlated to an execution token; multi-instance user tasks instead expose one row per child work item and deliberately do not expose a duplicate parent visit.
 
-completionReason vocabulary: normal, userAction, messageDelivery, multiInstanceItem, multiInstanceCompleted, multiInstanceInterrupt, boundaryCaught, normalEnd, terminateEnd, errorEnd, instanceCancelled, gatewayScopeCancelled, gatewayJoinMerged, parallelFork, parallelJoin, inclusiveSplit, inclusiveMerge, complexActivation, complexReset, scopedInterrupt, scopedInterruptSkipped.
+completionReason vocabulary: normal, userAction, messageDelivery, multiInstanceItem, multiInstanceCompleted, multiInstanceInterrupt, boundaryCaught, normalEnd, terminateEnd, errorEnd, instanceCancelled, gatewayScopeCancelled, gatewayJoinMerged, parallelFork, parallelJoin, inclusiveSplit, inclusiveMerge, complexActivation, complexReset, scopedInterrupt, scopedInterruptSkipped, callCompleted, callFailed.
 
 | Field | JSON type / schema | Required | Meaning / default |
 | --- | --- | --- | --- |
@@ -9292,6 +9545,25 @@ items/page/pageSize/totalCount are the core fields. nextCursor is omitted when n
 | `pageSize` | integer (int32) | Yes | The maximum number of items in the page. |
 | `totalCount` | integer (int64) | Yes | The total number of matching items across all pages. |
 | `nextCursor` | null or string | No | Opaque keyset cursor for the next page when this endpoint supports cursor paging. Null means there is no later page. |
+
+</details>
+
+<a id="schema-parentcallsummarydto"></a>
+
+<details>
+<summary>ParentCallSummaryDto</summary>
+
+The call that started a child instance. Relations grant no task, claim, cancellation, or administrative permission.
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `invocationId` | integer (int64) | Yes | — |
+| `state` | string | Yes | `queued`, `running`, `resultReady`, `completed`, `failed`, or `cancelled`. `cancelled` on a running child means its cancellation is in progress. |
+| `parentInstanceId` | integer (int64) | Yes | — |
+| `parentNodeId` | integer (int32) | Yes | — |
+| `parentNodeName` | null or string | Yes | — |
+| `rootInstanceId` | integer (int64) | Yes | — |
+| `depth` | integer (int32) | Yes | This child's depth; a direct child of a root is 1. |
 
 </details>
 
@@ -10309,6 +10581,28 @@ Represents one ordered, user-authored metadata entry attached to a workflow node
 | --- | --- | --- | --- |
 | `key` | string | No | The case-insensitively unique attribute key within its owning element. |
 | `value` | string | No | The opaque string value associated with the key. |
+
+</details>
+
+<a id="schema-workflowcallerdto"></a>
+
+<details>
+<summary>WorkflowCallerDto</summary>
+
+A published version that calls a family, and whether it passes the contract check.
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `workflowId` | integer (int64) | Yes | — |
+| `workflowKey` | string | Yes | — |
+| `name` | string | Yes | — |
+| `version` | integer (int32) | Yes | — |
+| `isDefault` | boolean | Yes | — |
+| `nodeId` | integer (int32) | Yes | The call node. |
+| `nodeName` | null or string | Yes | — |
+| `compatible` | boolean | Yes | — |
+| `reasonCodes` | array of string | Yes | `call_target_unavailable` or `call_target_incompatible`. |
+| `reasons` | array of string | Yes | Safe descriptions of each problem. |
 
 </details>
 

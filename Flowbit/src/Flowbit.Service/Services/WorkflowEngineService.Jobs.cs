@@ -24,7 +24,11 @@ public sealed partial class WorkflowEngineService
         Guid ActivationId,
         string Phase,
         bool ActivityAlreadyExecuted,
-        TaskExecutionOutcome? Outcome);
+        TaskExecutionOutcome? Outcome)
+    {
+        /// <summary>What the history row of a resumed normal continuation records.</summary>
+        public Dictionary<string, JsonElement>? HistoryPayload { get; init; }
+    }
 
     private sealed record DurableJobPayload(
         string? User,
@@ -589,6 +593,7 @@ public sealed partial class WorkflowEngineService
             _processingJobId,
             reason,
             cancellationToken);
+        await AbandonCallsForTokensAsync(instanceId, tokenIds, cancellationToken);
     }
 
     private WorkflowJobCreateRecord BuildJobCreate(
@@ -657,7 +662,8 @@ public sealed partial class WorkflowEngineService
         WorkflowJobCreateRecord create,
         CancellationToken cancellationToken,
         ExecutionTokenRecord? activationToken = null,
-        bool countAutomaticActivation = false)
+        bool countAutomaticActivation = false,
+        CallFailure? blockedBy = null)
     {
         if (create.InstanceId is not long instanceId)
         {
@@ -761,6 +767,18 @@ public sealed partial class WorkflowEngineService
             }
         }
 
+        if (blockedBy is not null)
+        {
+            var incident = await jobs.EnqueueIncidentAsync(
+                create,
+                blockedBy.Code,
+                $"Call activity #{create.NodeId} could not start its child.",
+                LimitJobFailure(blockedBy.Description),
+                cancellationToken);
+            WorkflowJobRuntimeTelemetry.RecordIncident();
+            return incident;
+        }
+
         return await jobs.EnqueueAsync(create, cancellationToken);
     }
 
@@ -812,7 +830,8 @@ public sealed partial class WorkflowEngineService
     private static bool IsGuardedAutomaticActivity(string nodeType) =>
         BpmnFlowNodeTypes.IsAutomatic(nodeType)
         || BpmnFlowNodeTypes.IsServiceTask(nodeType)
-        || BpmnFlowNodeTypes.IsScriptTask(nodeType);
+        || BpmnFlowNodeTypes.IsScriptTask(nodeType)
+        || BpmnFlowNodeTypes.IsCallActivity(nodeType);
 
     private WorkflowJobCreateRecord BuildTimerJob(
         WorkflowInstanceRecord instance,
@@ -973,6 +992,20 @@ public sealed partial class WorkflowEngineService
                 return;
             }
 
+            // A call message can belong to a token that has already ended, so these come
+            // before the checks that assume a job owns a live token.
+            if (lease.Job.Kind == WorkflowJobKinds.CallResume)
+            {
+                await ProcessCallResumeJobAsync(lease, fence, cancellationToken);
+                return;
+            }
+
+            if (lease.Job.Kind == WorkflowJobKinds.CallCancel)
+            {
+                await ProcessCallCancelJobAsync(lease, fence, cancellationToken);
+                return;
+            }
+
             if (lease.Job.InstanceId is null || lease.Job.TokenId is null)
             {
                 if (await jobs.OpenIncidentAsync(
@@ -1000,6 +1033,12 @@ public sealed partial class WorkflowEngineService
                 {
                     await StageAndExecuteScriptJobAsync(lease, fence, cancellationToken);
                 }
+            }
+
+            if (lease.Job.Kind == WorkflowJobKinds.CallStart)
+            {
+                await ProcessCallStartJobAsync(lease, fence, cancellationToken);
+                return;
             }
 
             await FinalizeLeasedJobAsync(lease, fence, cancellationToken);
@@ -1044,6 +1083,37 @@ public sealed partial class WorkflowEngineService
                 "job_capacity_exceeded",
                 LimitJobFailure(ex.Message),
                 cancellationToken);
+        }
+        catch (WorkflowCallFenceException ex)
+        {
+            // A call above this instance was cancelled and its cascade is on the way, so the
+            // work this job would do is abandoned rather than conflicted.
+            unitOfWork.DiscardChanges();
+            CallActivityRuntimeTelemetry.RecordFenceStop();
+            logger.LogInformation(
+                "Workflow job {JobId} stopped at the call fence of instance {InstanceId} (cancelled invocation {InvocationId}).",
+                lease.Job.Id,
+                ex.InstanceId,
+                ex.CancelledInvocationId);
+            await jobs.CompleteAsync(fence, cancellationToken);
+        }
+        catch (WorkflowCallChainException ex)
+        {
+            unitOfWork.DiscardChanges();
+            logger.LogError(
+                ex,
+                "Workflow job {JobId} found an inconsistent call chain on instance {InstanceId}.",
+                lease.Job.Id,
+                ex.InstanceId);
+            if (await jobs.OpenIncidentAsync(
+                    fence,
+                    "job_invariant_violation",
+                    $"The call chain of instance #{ex.InstanceId} is inconsistent.",
+                    LimitJobFailure(ex.Message),
+                    cancellationToken) is not null)
+            {
+                WorkflowJobRuntimeTelemetry.RecordIncident();
+            }
         }
         catch (WorkflowJobInvariantException ex)
         {
@@ -1145,6 +1215,24 @@ public sealed partial class WorkflowEngineService
         WorkflowJobRecord job,
         CancellationToken cancellationToken)
     {
+        // A call message still owns its work while its receiver needs it, even though its
+        // owner may have finished: nothing else can deliver the result or stop the child.
+        if (job.Kind is WorkflowJobKinds.CallResume or WorkflowJobKinds.CallCancel)
+        {
+            if (callActivities is null
+                || job.CallInvocationId is not long invocationId
+                || await callActivities.GetInvocationAsync(invocationId, cancellationToken) is not { } invocation)
+            {
+                return false;
+            }
+
+            return job.Kind == WorkflowJobKinds.CallResume
+                ? !CallInvocationStates.IsSettled(invocation.State)
+                : invocation.ChildInstanceId is long childInstanceId
+                  && await runtime.GetInstanceStatusAsync(childInstanceId, cancellationToken)
+                      == WorkflowInstanceStatuses.Running;
+        }
+
         if (job.TokenId is not long tokenId)
         {
             return false;
@@ -1667,6 +1755,13 @@ public sealed partial class WorkflowEngineService
         WorkflowJobFence fence,
         CancellationToken cancellationToken)
     {
+        // A call job must never run as an async continuation, which would route its token.
+        if (lease.Job.Kind is WorkflowJobKinds.CallStart or WorkflowJobKinds.CallResume or WorkflowJobKinds.CallCancel)
+        {
+            throw new WorkflowJobInvariantException(
+                $"Call job #{lease.Job.Id} reached the async-continuation path.");
+        }
+
         await using var transaction = await unitOfWork.BeginTransactionAsync(cancellationToken);
         var instance = await GetInstanceForJobUpdateAsync(
             lease.Job.InstanceId!.Value,
@@ -2586,7 +2681,7 @@ public sealed partial class WorkflowEngineService
             || token.ActivationId != job.ActivationId
             || token.NodeId != job.NodeId && job.Kind != WorkflowJobKinds.TimerBoundary
             || IsGuardedAutomaticActivity(job.NodeType)
-               && job.Kind is WorkflowJobKinds.AsyncBefore or WorkflowJobKinds.AsyncAfter
+               && job.Kind is WorkflowJobKinds.AsyncBefore or WorkflowJobKinds.AsyncAfter or WorkflowJobKinds.CallStart
                && token.AutomaticActivationCount != job.AutomaticActivationCount)
         {
             throw new WorkflowConflictException(
@@ -2599,6 +2694,7 @@ public sealed partial class WorkflowEngineService
             WorkflowJobKinds.AsyncAfter => ExecutionTokenWaitStates.AsyncAfter,
             WorkflowJobKinds.Timer => ExecutionTokenWaitStates.TimerCatch,
             WorkflowJobKinds.ConditionalWake => ExecutionTokenWaitStates.ConditionalWake,
+            WorkflowJobKinds.CallStart => ExecutionTokenWaitStates.CallStart,
             _ => null
         };
         if (expectedWait is not null
@@ -2625,6 +2721,9 @@ public sealed partial class WorkflowEngineService
                 or WorkflowJobKinds.TimerBoundary
                 or WorkflowJobKinds.TimerStart => WorkflowJobKinds.Timer,
             WorkflowJobKinds.ConditionalWake => WorkflowJobKinds.ConditionalWake,
+            WorkflowJobKinds.CallStart => WorkflowJobKinds.CallStart,
+            WorkflowJobKinds.CallResume => WorkflowJobKinds.CallResume,
+            WorkflowJobKinds.CallCancel => WorkflowJobKinds.CallCancel,
             _ => null
         };
         if (job.Id != fence.JobId

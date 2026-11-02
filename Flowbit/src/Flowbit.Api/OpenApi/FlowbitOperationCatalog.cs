@@ -50,6 +50,8 @@ internal static partial class FlowbitOperationCatalog
             ["GET /api/instances/inbox"] = "List user-task work currently visible to the authenticated actor.",
             ["POST /api/instances/inbox/search"] = "Search the authenticated actor's inbox with bounded advanced variable predicates.",
             ["GET /api/instances/{id}"] = "Retrieve the full definition, variables, execution positions, work summary, and history for one instance.",
+            ["GET /api/instances/{id}/calls"] = "List an instance's direct outgoing call activity visits, newest first, with their state and pinned child version.",
+            ["GET /api/workflows/{workflowKey}/callers"] = "Preview which published workflows call a family and whether they pass the contract check against the current default, a candidate version, or the result of deleting the default.",
             ["GET /api/instances/{id}/reactivation"] = "Preview whether a completed or cancelled instance can be reactivated and list eligible prior user-task targets.",
             ["POST /api/instances/{id}/reactivation"] = "Reactivate an eligible completed or cancelled instance at a previously visited user task.",
             ["POST /api/instances/{id}/version-change/preview"] = "Preview compatibility between a running instance and a published version in the same workflow family without changing state.",
