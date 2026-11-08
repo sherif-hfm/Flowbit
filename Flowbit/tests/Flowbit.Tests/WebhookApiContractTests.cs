@@ -26,7 +26,7 @@ public sealed class WebhookApiContractTests
         var delivery = new WebhookDeliveryDto(Guid.CreateVersion7(), Guid.CreateVersion7(), subscription.Id,
             subscription.Name, 12, 1, destination.Origin, LifecycleEventTypes.TaskCreated, false, "purchase-review", 7,
             now, WebhookDeliveryStates.Failed, null, 1, 1, 1, WebhookOutcomeCodes.ReceiverRejected, 400,
-            WebhookOutcomeCodes.ReceiverRejected, now, null, 3, now, now);
+            WebhookOutcomeCodes.ReceiverRejected, now, null, 3, now, now, true, true);
         var secret = new WebhookSecretResultDto(subscription, Guid.CreateVersion7(), Secret);
         object[] confidential =
         [

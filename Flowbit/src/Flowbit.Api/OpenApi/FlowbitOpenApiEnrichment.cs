@@ -67,7 +67,9 @@ internal static partial class FlowbitOpenApiEnrichment
             ["isDefault"] = "Whether this exact published version is selected by workflow-key starts.",
             ["isActive"] = "Whether this resource is currently active.",
             ["hasValue"] = "Whether a current value exists; this distinguishes no value from an explicit JSON null.",
-            ["location"] = "The URI of the created, accepted, or conflicting resource when supplied by the server."
+            ["location"] = "The URI of the created, accepted, or conflicting resource when supplied by the server.",
+            ["canRetry"] = "Whether the single retry route would currently accept this webhook delivery, from its subscription's current state.",
+            ["canDiscard"] = "Whether the single discard route would currently accept this webhook delivery, from its subscription's current state."
         };
 
     public static void Configure(OpenApiOptions options)

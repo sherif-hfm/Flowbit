@@ -652,9 +652,11 @@ Storage follows the hybrid design:
   - Delivery uses its own queue (`webhook_deliveries`), Worker services
     (`LifecycleEventFanoutService`, `WebhookDispatcher`), send concurrency, and
     PostgreSQL pool (`WebhookDataSource`); never `workflow_jobs`. No connection is
-    held during DNS, signing, or HTTP. Finalization is fenced by lease token,
-    generation, and database-clock expiry. Receiver failure never changes workflow
-    state or opens workflow incidents.
+    held during DNS, signing, or HTTP. Prepare-send and finalization are fenced by
+    lease token, generation, and expiry, compared with `clock_timestamp()` read after
+    the delivery row is locked, never with `now()`, which stays at the transaction's
+    start while a lock wait can outlast the lease. Receiver failure never changes
+    workflow state or opens workflow incidents.
   - Webhook rows locked together follow subscription, dispatch state, signing key,
     delivery, attempt. Fanout locks its events, then share-locks their subscriptions
     before reading their state. Management, dispatch, and cleanup never lock runtime rows.

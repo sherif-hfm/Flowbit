@@ -828,32 +828,48 @@ public sealed class WebhookDispatchRepository(WebhookDataSource source) : IWebho
             reader.GetInt32(9));
     }
 
-    // The fence: the lease token and generation still match and the lease is unexpired by the database clock.
+    // The fence: the lease token and generation still match, and the lease is unexpired by the database clock read
+    // once the delivery row is locked. now() would be the time the transaction began, and PostgreSQL tests a
+    // condition before it waits for a row lock, so a wait that outlasts the lease would otherwise still pass.
     private static async Task<(string SubscriptionState, string FromState, int GenerationAttempts, DateTimeOffset? DeadlineAt, DateTimeOffset Now)?> LockLeaseAsync(
         NpgsqlConnection connection,
         NpgsqlTransaction transaction,
         WebhookDeliveryLease lease,
         CancellationToken cancellationToken)
     {
-        await using var command = Command(connection, transaction, """
-            SELECT s."State", d."LeasedFromState", d."GenerationAttempts", d."DeadlineAt", now()
+        (string SubscriptionState, string FromState, int GenerationAttempts, DateTimeOffset? DeadlineAt, DateTimeOffset ExpiresAt) locked;
+        await using (var command = Command(connection, transaction, """
+            SELECT s."State", d."LeasedFromState", d."GenerationAttempts", d."DeadlineAt", d."LeaseExpiresAt"
             FROM flowbit.webhook_deliveries d
             JOIN flowbit.webhook_subscriptions s ON s."Id" = d."SubscriptionId"
             WHERE d."Id" = @id AND d."State" = 'delivering' AND d."LeaseToken" = @token
-              AND d."LeaseGeneration" = @generation AND d."LeaseExpiresAt" > now()
+              AND d."LeaseGeneration" = @generation
             FOR UPDATE OF d
-            """);
-        Add(command, "id", lease.DeliveryId);
-        Add(command, "token", lease.LeaseToken);
-        Add(command, "generation", lease.LeaseGeneration);
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        if (!await reader.ReadAsync(cancellationToken))
+            """))
         {
-            return null;
+            Add(command, "id", lease.DeliveryId);
+            Add(command, "token", lease.LeaseToken);
+            Add(command, "generation", lease.LeaseGeneration);
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            if (!await reader.ReadAsync(cancellationToken))
+            {
+                return null;
+            }
+            locked = (reader.GetString(0), reader.GetString(1), reader.GetInt32(2),
+                reader.IsDBNull(3) ? null : reader.GetFieldValue<DateTimeOffset>(3),
+                reader.GetFieldValue<DateTimeOffset>(4));
         }
-        return (reader.GetString(0), reader.GetString(1), reader.GetInt32(2),
-            reader.IsDBNull(3) ? null : reader.GetFieldValue<DateTimeOffset>(3),
-            reader.GetFieldValue<DateTimeOffset>(4));
+        // The row lock is held, so no heartbeat can extend the lease between this read and the decision.
+        DateTimeOffset now;
+        await using (var clock = Command(connection, transaction, "SELECT clock_timestamp()"))
+        await using (var reader = await clock.ExecuteReaderAsync(cancellationToken))
+        {
+            await reader.ReadAsync(cancellationToken);
+            now = reader.GetFieldValue<DateTimeOffset>(0);
+        }
+        return locked.ExpiresAt > now
+            ? (locked.SubscriptionState, locked.FromState, locked.GenerationAttempts, locked.DeadlineAt, now)
+            : null;
     }
 
     /// <summary>Closes an open attempt and returns its send-intent time, which is null when nothing was sent.</summary>

@@ -508,9 +508,9 @@ The **Deliveries** filters select by subscription, state, event type, failure co
 
 A subscription's **Receiver health** counts timeouts, network errors, and retryable statuses in a row. After five, or at once when the receiver sends `Retry-After`, it shows **Backing off until …** and then **Probing one request at a time** until a request succeeds. **Latest request failed** means the last request failed without starting backoff, for example a `4xx` answer or a destination the network policy denied.
 
-- **Retry** queues a failed delivery in a new generation with the same event id, body, and destination. It needs an active subscription.
+- **Retry** queues a failed delivery in a new generation with the same event id, body, and destination. It appears only when the API would accept it: the subscription must be active, or paused for a test delivery, and must have a current signing key.
 - **Discard** settles a pending, scheduled, or failed delivery so it is never sent. A delivery being sent cannot be discarded.
-- With one subscription selected, **Retry failed…** and **Discard queued and failed…** act on every matching delivery, at most 1,000 per click, oldest first. They use every filter except **State**: retry takes failed deliveries, and discard takes pending, scheduled, and failed ones. The confirmation states how many match. Repeat the action while the result reports that more match.
+- With one subscription selected, **Retry failed…** and **Discard queued and failed…** act on every matching delivery, at most 1,000 per click, oldest first. They use every filter except **State**: retry takes failed deliveries, and discard takes pending, scheduled, and failed ones. They stay with the selected subscription while you page through the subscription list. The confirmation states how many match. Repeat the action while the result reports that more match.
 
 Each action reports its result, and the page then refreshes. If someone else changed the subscription or delivery first, the page reports the conflict, shows the current state, and does not resend your request. If the API cannot be reached, the page says so and keeps what it last showed. While a request runs, the page's buttons are disabled, and a second click sends nothing.
 

@@ -50,7 +50,7 @@ Revised by this plan on 2026-11-07. Check these only after implementation and ve
 
 ## Current state
 
-Verified against the repository on 2026-11-08: the first release is implemented, and the findings of an independent review that day are fixed. The item stays **In progress** until the gaps listed last are closed.
+Verified against the repository on 2026-11-08: the first release is implemented, and the findings of two independent reviews that day are fixed, except the time-zone finding listed last. The item stays **In progress** until the gaps listed last are closed.
 
 - **Capture.** Migration `20261107154545_AddOutboundLifecycleWebhooks` adds the event, subscription, revision, signing-key, delivery, attempt, audit, and key-ring tables, the capture switch `flowbit.set_lifecycle_event_capture`, a `flowbit.uuid_v7()` function for PostgreSQL 17, and deferred constraint triggers on `workflow_instances`, `user_tasks`, `workflow_incidents`, and `user_delegations`. No application code emits events, so every API, Worker, and raw SQL writer is captured once the switch is on.
 - **Delivery.** The Worker's [LifecycleEventFanoutService.cs](../../Flowbit/src/Flowbit.Worker/LifecycleEventFanoutService.cs) and [WebhookDispatcher.cs](../../Flowbit/src/Flowbit.Worker/WebhookDispatcher.cs) fan out, lease, sign, send, retry, back off, and pause, gated by `Webhooks:DeliveryEnabled`. `/health/ready` reports a webhook problem as `Degraded` without failing job processing, and `/metrics` adds webhook series.
@@ -62,6 +62,11 @@ The 2026-11-08 review fixes:
 - **Capture.** Both unique signing-key indexes exist. Incident bodies stay bounded: an over-long node external id is null. Version-change and variable-update batch-job incidents name no node.
 - **API.** Bulk date filters accept any UTC offset. DTO string forms omit secrets and URLs. Page overflow, unknown failure codes, unknown query keys, and unknown bulk members return 400. Archived subscriptions refuse discard and retry with 409.
 - **UI.** Action errors survive the refresh, and any failure is reported without ending the session; a refused clipboard copy keeps the secret. Non-administrators see only the permission message. Identity changes, double clicks, and a rotate conflict are handled. Bulk confirmations count fresh and say when State does not apply. Focus moves to forms, the secret, and confirmations. The detail page shows the exact signed body. Archived subscriptions offer no recovery actions.
+
+The second review's fixes:
+
+- **Lease fence.** Prepare-send and finalize compared the lease expiry with `now()`, the transaction's start, so a lock wait that outlasted the lease still passed: a reproduction on PostgreSQL returned **Send** 1.5 seconds after the lease expired. They now compare with `clock_timestamp()` read after the delivery row is locked. A lease that ends while prepare-send waits is lost, and recovery returns the delivery to the queue without spending an attempt.
+- **Delivery actions.** Delivery list items carry `canRetry` and `canDiscard`, computed with the detail's rules, so each row's **Retry** and **Discard** no longer depend on which subscriptions the loaded page lists. A paused subscription's failed event delivery no longer offers a Retry the API refuses. The bulk actions and the **Subscription** filter keep the filtered subscription, fetching it when the subscription list shows another page.
 
 Verified so far:
 
@@ -85,6 +90,12 @@ Verified so far:
   - a non-administrator saw only the permission message at 390×844, 1024×768, and 1440×900, with no horizontal overflow;
   - the console showed no errors or warnings.
 
+  After the second review's fixes, the webhook-affected classes passed together (266 of 266), including two dispatch tests that hold a row lock past a lease's expiry. In Chromium against published hosts with 27 subscriptions, two of them on the second subscription page:
+  - the paused receiver's failed rows offered only **Discard**, and the active receiver's offered **Retry** and **Discard**;
+  - after filtering by the active receiver and paging the subscription list, the bulk actions stayed and the filter still showed that receiver;
+  - bulk retry from the first page retried only its two deliveries, which the receiver rejected again;
+  - there was no horizontal overflow at 1024×768, 1440×900, or 390×844, and no console errors outside a deliberate UI restart.
+
 Still open before **Done**:
 
 - Delivery throughput targets and capture cost with 0, 1, and 100 subscriptions and a 1,000-child multi-instance commit are not measured.
@@ -95,6 +106,7 @@ Still open before **Done**:
   - expired leases and stale finalizers.
 - Message-start and administrative-action producers have no per-path event assertions; the producer sweep shows only that they commit with capture on. Call-activity admission, version-change batch, and Worker timer-start incident paths now have them.
 - Restoring the key ring on another host, and the certificate-loss recovery steps in the [deployment guide](../deployment.md#signing-keys-and-the-key-ring), are not rehearsed end to end. Tests cover two hosts sharing the ring, a certificate change through `PreviousCertificates`, and a host that cannot unwrap the ring.
+- The deliveries **From** and **To** filters read the entered time in the UI server's time zone, not the browser's. So does every time Flowbit.Ui shows, so the filters agree with the delivery times on the page, but not with a user's clock when the zones differ. A separate task covers the whole UI.
 
 ## Builds on
 

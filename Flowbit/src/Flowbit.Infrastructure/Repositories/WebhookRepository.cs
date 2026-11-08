@@ -45,7 +45,10 @@ public sealed class WebhookRepository(WebhookDataSource source, WebhookOptions o
         d."Id", d."EventId", d."SubscriptionId", s."Name", d."RevisionId", r."ConfigurationRevision", r."EndpointUrl",
         d."EventType", d."IsTest", d."WorkflowKey", d."InstanceId", d."OccurredAt", d."State", d."DueAt",
         d."RetryGeneration", d."GenerationAttempts", d."LifetimeAttempts", d."LastOutcome", d."LastHttpStatus",
-        d."FailureCode", d."LastAttemptAt", d."SettledAt", d."Revision", d."CreatedAt", d."UpdatedAt"
+        d."FailureCode", d."LastAttemptAt", d."SettledAt", d."Revision", d."CreatedAt", d."UpdatedAt", s."State",
+        EXISTS (SELECT 1 FROM flowbit.webhook_signing_keys k
+                 WHERE k."SubscriptionId" = d."SubscriptionId" AND k."Status" = 'current'
+                   AND k."ProtectedSecret" IS NOT NULL)
         """;
 
     private const string DeliveryJoins = """
@@ -730,10 +733,7 @@ public sealed class WebhookRepository(WebhookDataSource source, WebhookOptions o
     {
         await using var connection = await source.DataSource.OpenConnectionAsync(cancellationToken);
         await using var command = Command(connection, null, $"""
-            SELECT {DeliveryColumns}, e."Body", s."State", d."GenerationStartedAt", d."DeadlineAt",
-                   EXISTS (SELECT 1 FROM flowbit.webhook_signing_keys k
-                            WHERE k."SubscriptionId" = d."SubscriptionId" AND k."Status" = 'current'
-                              AND k."ProtectedSecret" IS NOT NULL)
+            SELECT {DeliveryColumns}, e."Body", d."GenerationStartedAt", d."DeadlineAt"
             {DeliveryJoins}
             JOIN flowbit.lifecycle_events e ON e."Id" = d."EventId"
             WHERE d."Id" = @id
@@ -745,28 +745,16 @@ public sealed class WebhookRepository(WebhookDataSource source, WebhookOptions o
             return null;
         }
         var delivery = ReadDelivery(reader);
-        var body = Encoding.UTF8.GetString(reader.GetFieldValue<byte[]>(25));
-        var subscriptionState = reader.GetString(26);
-        var hasKey = reader.GetBoolean(29);
-        // These mirror the single retry and discard rules; an archived subscription allows neither.
-        var canRetry = delivery.State == WebhookDeliveryStates.Failed
-            && hasKey
-            && (subscriptionState == WebhookSubscriptionStates.Active
-                || (delivery.IsTest && subscriptionState == WebhookSubscriptionStates.Paused));
-        var canDiscard = subscriptionState != WebhookSubscriptionStates.Archived
-            && (delivery.State is WebhookDeliveryStates.Pending
-                or WebhookDeliveryStates.RetryScheduled
-                or WebhookDeliveryStates.Failed);
         return new WebhookDeliveryDetailDto(
             delivery,
             reader.GetString(6),
-            body,
-            subscriptionState,
-            NullableTimestamp(reader, 27),
+            Encoding.UTF8.GetString(reader.GetFieldValue<byte[]>(27)),
+            reader.GetString(25),
             NullableTimestamp(reader, 28),
+            NullableTimestamp(reader, 29),
             WebhookConstraints.MaxAttemptsPerGeneration,
-            canRetry,
-            canDiscard);
+            delivery.CanRetry,
+            delivery.CanDiscard);
     }
 
     public async Task<(IReadOnlyList<WebhookDeliveryAttemptDto> Items, long TotalCount)?> ListAttemptsAsync(
@@ -1344,6 +1332,15 @@ public sealed class WebhookRepository(WebhookDataSource source, WebhookOptions o
     private static WebhookDeliveryDto ReadDelivery(NpgsqlDataReader reader)
     {
         var state = reader.GetString(12);
+        var isTest = reader.GetBoolean(8);
+        var subscriptionState = reader.GetString(25);
+        // These mirror the single retry and discard rules; an archived subscription allows neither.
+        var canRetry = state == WebhookDeliveryStates.Failed
+            && reader.GetBoolean(26)
+            && (subscriptionState == WebhookSubscriptionStates.Active
+                || (isTest && subscriptionState == WebhookSubscriptionStates.Paused));
+        var canDiscard = subscriptionState != WebhookSubscriptionStates.Archived
+            && (state is WebhookDeliveryStates.Pending or WebhookDeliveryStates.RetryScheduled or WebhookDeliveryStates.Failed);
         return new WebhookDeliveryDto(
             reader.GetGuid(0),
             reader.GetGuid(1),
@@ -1371,7 +1368,9 @@ public sealed class WebhookRepository(WebhookDataSource source, WebhookOptions o
             NullableTimestamp(reader, 21),
             reader.GetInt64(22),
             reader.GetFieldValue<DateTimeOffset>(23),
-            reader.GetFieldValue<DateTimeOffset>(24));
+            reader.GetFieldValue<DateTimeOffset>(24),
+            canRetry,
+            canDiscard);
     }
 
     private static DateTimeOffset? NullableTimestamp(NpgsqlDataReader reader, int ordinal) =>

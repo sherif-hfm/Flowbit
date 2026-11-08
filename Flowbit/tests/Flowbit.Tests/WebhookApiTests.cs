@@ -456,6 +456,49 @@ public sealed class WebhookApiTests(PostgresApiFixture fixture)
     }
 
     [Fact]
+    public async Task DeliveryListItemsOfferTheActionsTheirDetailOffers()
+    {
+        var model = await CreateWorkflowAsync();
+        var created = await CreateAsync(workflowKey: model);
+        var id = created.Subscription.Id;
+        try
+        {
+            var revisionId = created.Subscription.Destination.RevisionId;
+            var failed = Assert.Single(await InsertDeliveriesAsync(id, revisionId, model, WebhookDeliveryStates.Failed));
+            var pending = Assert.Single(await InsertDeliveriesAsync(id, revisionId, model, WebhookDeliveryStates.Pending));
+
+            // While paused, an event delivery can be discarded but not retried.
+            await AssertActionsAsync((failed, false, true), (pending, false, true));
+            var active = await PostAsync<WebhookSubscriptionDto>($"/api/webhook-subscriptions/{id}/resume",
+                new WebhookRevisionRequest(created.Subscription.Revision));
+            await AssertActionsAsync((failed, true, true), (pending, false, true));
+            using (var archive = await SendAsync(HttpMethod.Post, $"/api/webhook-subscriptions/{id}/archive",
+                       new WebhookRevisionRequest(active.Revision)))
+            {
+                Assert.Equal(HttpStatusCode.Accepted, archive.StatusCode);
+            }
+            await AssertActionsAsync((failed, false, false), (pending, false, false));
+        }
+        finally
+        {
+            await ArchiveQuietlyAsync(created.Subscription);
+        }
+
+        async Task AssertActionsAsync(params (Guid Delivery, bool CanRetry, bool CanDiscard)[] expected)
+        {
+            using var response = await SendAsync(HttpMethod.Get, $"/api/webhook-deliveries?subscriptionId={id}");
+            var items = (await ReadAsync<PagedResult<WebhookDeliveryDto>>(response)).Items;
+            foreach (var (delivery, canRetry, canDiscard) in expected)
+            {
+                var item = Assert.Single(items, candidate => candidate.Id == delivery);
+                Assert.Equal((canRetry, canDiscard), (item.CanRetry, item.CanDiscard));
+                var detail = await DeliveryAsync(delivery);
+                Assert.Equal((detail.CanRetry, detail.CanDiscard), (item.CanRetry, item.CanDiscard));
+            }
+        }
+    }
+
+    [Fact]
     public async Task FailedDeliveriesSupportRevisionProtectedSingleAndBulkRecovery()
     {
         var model = await CreateWorkflowAsync();

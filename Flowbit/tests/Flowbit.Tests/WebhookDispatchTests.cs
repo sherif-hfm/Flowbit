@@ -280,6 +280,64 @@ public sealed class WebhookDispatchTests(PostgresApiFixture fixture) : IAsyncLif
     }
 
     [Fact]
+    public async Task APrepareSendWhoseLeaseEndsWhileItWaitsForTheRowSendsNothing()
+    {
+        var subscription = await CreateSubscriptionAsync("http://127.0.0.1:9/row-wait", StandardWebhookSignature.GenerateKey(), active: true);
+        var delivery = await InsertEventDeliveryAsync(subscription);
+        try
+        {
+            var lease = Assert.Single(await AcquireOwnAsync(subscription.Id, 4));
+            await ShortenLeaseAsync(delivery);
+            var decision = await AfterARowLockAsync(
+                "SELECT 1 FROM flowbit.webhook_deliveries WHERE \"Id\" = @id FOR UPDATE", delivery,
+                () => repository.PrepareSendAsync(lease, [subscription.KeyId], null, CancellationToken.None));
+
+            // Sending now could overlap another Worker that recovers the expired lease.
+            Assert.Equal(WebhookSendDecisionKind.LeaseLost, decision.Kind);
+            Assert.Equal(0, (await DeliveryAsync(delivery)).GenerationAttempts);
+            Assert.Equal(0, await WebhookTestDatabase.CountEventsAsync(fixture.DataSource,
+                "SELECT count(*) FROM flowbit.webhook_delivery_attempts WHERE \"DeliveryId\" = @id AND \"SendIntentAt\" IS NOT NULL",
+                ("id", delivery)));
+            Assert.True(await repository.RecoverExpiredLeasesAsync(100, CancellationToken.None) >= 1);
+            Assert.Equal(WebhookDeliveryStates.Pending, (await DeliveryAsync(delivery)).State);
+            Assert.Equal(WebhookOutcomeCodes.AbortedBeforeSend, Assert.Single(await AttemptOutcomesAsync(delivery)));
+        }
+        finally
+        {
+            await WebhookTestDatabase.SetSubscriptionStateAsync(fixture.DataSource, subscription.Id, "archived");
+        }
+    }
+
+    [Fact]
+    public async Task AFinalizeWhoseLeaseEndsWhileItWaitsForTheDispatchStateRecordsNothing()
+    {
+        var subscription = await CreateSubscriptionAsync("http://127.0.0.1:9/state-wait", StandardWebhookSignature.GenerateKey(), active: true);
+        var delivery = await InsertEventDeliveryAsync(subscription);
+        try
+        {
+            var lease = Assert.Single(await AcquireOwnAsync(subscription.Id, 4));
+            Assert.Equal(WebhookSendDecisionKind.Send,
+                (await repository.PrepareSendAsync(lease, [subscription.KeyId], null, CancellationToken.None)).Kind);
+            await ShortenLeaseAsync(delivery);
+            // Another finalize of the same subscription holds its dispatch state.
+            var result = await AfterARowLockAsync(
+                "SELECT 1 FROM flowbit.webhook_subscription_dispatch_state WHERE \"SubscriptionId\" = @id FOR UPDATE", subscription.Id,
+                () => repository.FinalizeAsync(lease, new WebhookSendOutcome(WebhookOutcomeCodes.Succeeded, 200, null, 5), CancellationToken.None));
+
+            Assert.False(result.Applied);
+            Assert.Equal(WebhookDeliveryStates.Delivering, (await DeliveryAsync(delivery)).State);
+            // Recovery then treats the send as one whose outcome is unknown.
+            Assert.True(await repository.RecoverExpiredLeasesAsync(100, CancellationToken.None) >= 1);
+            Assert.Equal(WebhookDeliveryStates.RetryScheduled, (await DeliveryAsync(delivery)).State);
+            Assert.Equal(WebhookOutcomeCodes.OutcomeUnknown, Assert.Single(await AttemptOutcomesAsync(delivery)));
+        }
+        finally
+        {
+            await WebhookTestDatabase.SetSubscriptionStateAsync(fixture.DataSource, subscription.Id, "archived");
+        }
+    }
+
+    [Fact]
     public async Task PauseBeforeSendIntentReleasesTheLeaseWithoutSpendingBudget()
     {
         var subscription = await CreateSubscriptionAsync("http://127.0.0.1:9/never", StandardWebhookSignature.GenerateKey(), active: true);
@@ -1436,6 +1494,30 @@ public sealed class WebhookDispatchTests(PostgresApiFixture fixture) : IAsyncLif
         WebhookTestDatabase.ExecuteAsync(fixture.DataSource,
             "UPDATE flowbit.webhook_deliveries SET \"LeaseExpiresAt\" = now() - interval '1 second' WHERE \"Id\" = @id",
             ("id", deliveryId));
+
+    // Leaves the lease two seconds, which the lock wait in AfterARowLockAsync outlasts.
+    private Task ShortenLeaseAsync(Guid deliveryId) =>
+        WebhookTestDatabase.ExecuteAsync(fixture.DataSource,
+            "UPDATE flowbit.webhook_deliveries SET \"LeaseExpiresAt\" = clock_timestamp() + interval '2 seconds' WHERE \"Id\" = @id",
+            ("id", deliveryId));
+
+    // Starts the operation while another transaction holds a row and releases the row only after a shortened lease
+    // has ended, so the operation begins with a valid lease and gets the row after the lease expired.
+    private async Task<T> AfterARowLockAsync<T>(string lockSql, Guid id, Func<Task<T>> operation)
+    {
+        await using var busy = await fixture.DataSource.OpenConnectionAsync();
+        await using var transaction = await busy.BeginTransactionAsync();
+        await using (var hold = new NpgsqlCommand(lockSql, busy, transaction))
+        {
+            hold.Parameters.AddWithValue("id", id);
+            await hold.ExecuteScalarAsync();
+        }
+        var pending = operation();
+        await Task.Delay(TimeSpan.FromSeconds(3.5));
+        Assert.False(pending.IsCompleted);
+        await transaction.CommitAsync();
+        return await pending;
+    }
 
     private async Task SetRetentionAsync(string category, int? days)
     {

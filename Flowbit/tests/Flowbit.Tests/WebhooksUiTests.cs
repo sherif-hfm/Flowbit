@@ -698,7 +698,7 @@ public sealed class WebhooksUiTests
         var failed = new WebhookDeliveryDto(
             DeliveryId, Guid.CreateVersion7(), SubscriptionId, "CRM feed", 7, 1, "https://receiver.example.com:443",
             LifecycleEventTypes.TaskAssigned, false, null, 42, Now, WebhookDeliveryStates.Failed, null, 1, 3, 3,
-            WebhookOutcomeCodes.ReceiverRejected, 400, WebhookOutcomeCodes.ReceiverRejected, Now, null, 6, Now, Now);
+            WebhookOutcomeCodes.ReceiverRejected, 400, WebhookOutcomeCodes.ReceiverRejected, Now, null, 6, Now, Now, false, false);
         using var handler = new RecordingHandler();
         handler.Reply(Response(Catalog(captureEnabled: true)))
             .Reply(Response(new PagedResult<WebhookSubscriptionDto>([archived], 1, 25, 1)))
@@ -717,6 +717,62 @@ public sealed class WebhooksUiTests
         Assert.Contains("This subscription is archived: the Worker discards its outstanding deliveries automatically.", html, StringComparison.Ordinal);
         Assert.DoesNotContain("Retry failed", html, StringComparison.Ordinal);
         Assert.DoesNotContain("Discard queued and failed", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task EachDeliveryOffersTheActionsTheApiWouldAcceptWhereverItsSubscriptionIsListed()
+    {
+        // None of these subscriptions is on the loaded subscription page.
+        using var handler = new RecordingHandler();
+        handler.Reply(Response(Catalog(captureEnabled: true)))
+            .Reply(Response(new PagedResult<WebhookSubscriptionDto>([Subscription(Guid.CreateVersion7()) with { Name = "Billing feed" }], 1, 25, 26)))
+            .Reply(Response(new PagedResult<WebhookDeliveryDto>(
+            [
+                FailedDelivery(DeliveryId, SubscriptionId, "CRM feed", canRetry: true, canDiscard: true),
+                FailedDelivery(OtherDeliveryId, Guid.CreateVersion7(), "Paused feed", canRetry: false, canDiscard: true),
+                FailedDelivery(Guid.CreateVersion7(), Guid.CreateVersion7(), "Archived feed", canRetry: false, canDiscard: false)
+            ], 1, 25, 3)));
+        await using var page = await Harness<WebhooksPage>.RenderAsync(handler, AdminToken());
+
+        var html = await page.WaitForAsync(markup => markup.Contains("Archived feed", StringComparison.Ordinal));
+        Assert.Equal(1, Occurrences(html, ">Retry</button>"));
+        Assert.Equal(2, Occurrences(html, ">Discard</button>"));
+        Assert.Equal(3, handler.Requests.Count);
+    }
+
+    [Fact]
+    public async Task AnAppliedSubscriptionFilterKeepsItsBulkActionsWhileTheSubscriptionListPages()
+    {
+        var filtered = Subscription(SubscriptionId);
+        var delivery = FailedDelivery(DeliveryId, SubscriptionId, filtered.Name, canRetry: true, canDiscard: true);
+        using var handler = new RecordingHandler();
+        handler.Reply(Response(Catalog(captureEnabled: true)))
+            .Reply(Response(new PagedResult<WebhookSubscriptionDto>([filtered], 1, 25, 26)))
+            .Reply(Response(new PagedResult<WebhookDeliveryDto>([delivery], 1, 25, 1)))
+            // The filter is applied while its subscription is on the loaded page.
+            .Reply(Response(new PagedResult<WebhookDeliveryDto>([delivery], 1, 25, 1)))
+            // The second subscription page does not list it, so the page asks for it.
+            .Reply(Response(Catalog(captureEnabled: true)))
+            .Reply(Response(new PagedResult<WebhookSubscriptionDto>([Subscription(Guid.CreateVersion7()) with { Name = "Billing feed" }], 2, 25, 26)))
+            .Reply(Response(new PagedResult<WebhookDeliveryDto>([delivery], 1, 25, 1)))
+            .Reply(Response(new WebhookSubscriptionDetailDto(filtered, [])));
+        await using var page = await Harness<WebhooksPage>.RenderAsync(handler, AdminToken());
+        await page.WaitForAsync(markup => markup.Contains("receiver_rejected", StringComparison.Ordinal));
+
+        page.Set("filterSubscription", SubscriptionId.ToString("D"));
+        await page.CallAsync("ApplyDeliveryFiltersAsync");
+        Assert.Contains("Retry failed…", await page.HtmlAsync(), StringComparison.Ordinal);
+        Assert.Equal(4, handler.Requests.Count);
+
+        await page.CallAsync("ChangeSubscriptionPageAsync", 1);
+        var html = await page.HtmlAsync();
+        Assert.Contains("Billing feed", html, StringComparison.Ordinal);
+        Assert.Contains("Retry failed…", html, StringComparison.Ordinal);
+        Assert.Contains("Discard queued and failed…", html, StringComparison.Ordinal);
+        // The subscription filter still offers the subscription it applies, though the list no longer shows it.
+        Assert.Matches($"<option value=\"{SubscriptionId:D}\"[^>]*>CRM feed</option>", html);
+        Assert.Equal($"/api/webhook-subscriptions/{SubscriptionId:D}", handler.Requests[^1].Path);
+        Assert.Equal(8, handler.Requests.Count);
     }
 
     private static async Task FillCreateFormAsync(Harness<WebhooksPage> page)
@@ -769,11 +825,18 @@ public sealed class WebhooksUiTests
 
     private static WebhookSecretResultDto Secret(string secret) => new(Subscription(SubscriptionId), Guid.CreateVersion7(), secret);
 
+    private static WebhookDeliveryDto FailedDelivery(Guid id, Guid subscriptionId, string subscriptionName, bool canRetry, bool canDiscard) => new(
+        id, Guid.CreateVersion7(), subscriptionId, subscriptionName, 7, 1, "https://receiver.example.com:443",
+        LifecycleEventTypes.TaskAssigned, false, null, 42, Now, WebhookDeliveryStates.Failed, null, 1, 3, 3,
+        WebhookOutcomeCodes.ReceiverRejected, 400, WebhookOutcomeCodes.ReceiverRejected, Now, null, 6, Now, Now, canRetry, canDiscard);
+
+    private static int Occurrences(string text, string value) => text.Split(value).Length - 1;
+
     private static WebhookDeliveryDetailDto DeliveryDetail(Guid id, string body = """{"type":"task.assigned"}""") => new(
         new WebhookDeliveryDto(
             id, Guid.CreateVersion7(), SubscriptionId, "CRM feed", 7, 1, "https://receiver.example.com:443", LifecycleEventTypes.TaskAssigned,
             false, "purchase-review", 42, Now, WebhookDeliveryStates.Failed, null, 1, 3, 3, WebhookOutcomeCodes.ReceiverRejected, 400,
-            WebhookOutcomeCodes.ReceiverRejected, Now, null, 6, Now, Now),
+            WebhookOutcomeCodes.ReceiverRejected, Now, null, 6, Now, Now, true, true),
         "https://receiver.example.com/hook?token=secret",
         body,
         WebhookSubscriptionStates.Active,

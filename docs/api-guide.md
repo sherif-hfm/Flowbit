@@ -6468,7 +6468,7 @@ All routes require Settings administrator permission, including reads and secret
 - **Authority.** A subscription's optional `workflowKey` filters which events match; it grants no authority, and workflow managers cannot manage webhooks.
 - **Validation.** `name` is 1–200 characters; `description` at most 1,000. `endpointUrl` is an absolute HTTPS URL of at most 2,048 characters without user information or a fragment, on port 443 unless the operator's allowlist names its host and port. A query string is allowed so tokenized catch URLs work. An IP-literal or `localhost` destination must be public or allowlisted. `eventTypes` is a nonempty list of the eleven [subscribable types](developer-guide.md#event-catalog); duplicates collapse and `webhook.test` is refused. `workflowKey` must name an existing workflow family exactly. `maxConcurrency` is 1–16, default 4.
 - **Confidential URLs.** The full URL can carry a receiver token. Only these settings-administrator reads return it; logs, metrics, audit entries, and error text use the scheme, host, and port (`origin`).
-- **States.** Subscriptions are created `paused` (reason `administrator`) so you can configure the receiver and send a test first. `active` subscriptions match new events. A paused subscription holds captured work and matches nothing new; resume never backfills the gap. The Worker pauses a subscription itself on `410 Gone` (reason `receiverGone`) or after 72 hours of continuous receiver backoff (`receiverUnavailable`). `archived` is irreversible: outstanding deliveries are discarded in bounded batches and its keys retire. Only reads remain: edit, pause, resume, test, rotate, and revoke return `409`. So do single and bulk retry and discard of its deliveries, which the Worker discards itself; their detail reports `canRetry` and `canDiscard` as `false`. At most 100 subscriptions may be non-archived.
+- **States.** Subscriptions are created `paused` (reason `administrator`) so you can configure the receiver and send a test first. `active` subscriptions match new events. A paused subscription holds captured work and matches nothing new; resume never backfills the gap. The Worker pauses a subscription itself on `410 Gone` (reason `receiverGone`) or after 72 hours of continuous receiver backoff (`receiverUnavailable`). `archived` is irreversible: outstanding deliveries are discarded in bounded batches and its keys retire. Only reads remain: edit, pause, resume, test, rotate, and revoke return `409`. So do single and bulk retry and discard of its deliveries, which the Worker discards itself; their list items and detail report `canRetry` and `canDiscard` as `false`. At most 100 subscriptions may be non-archived.
 - **Secrets.** Create and rotate return a `whsec_`-prefixed Base64 secret exactly once with `Cache-Control: no-store`; no route returns it again. The server generates 256-bit secrets and stores them only as certificate-protected Data Protection payloads.
 - **Revisions.** Management changes use the subscription's `revision` as `expectedRevision`; a stale value returns `409`. Pause takes no revision because pausing is always safe. A changed URL, event set, or family creates an immutable destination revision used only by events captured afterward. Deliveries use their own `revision` for retry and discard.
 - **Paging and filters.** Lists use numbered pages (default 50, maximum 200) with exact database counts. A page whose offset, `(page - 1) * pageSize`, exceeds 2,147,483,647 returns `400`. Subscriptions are ordered by creation time, newest first; deliveries by event time, newest first; attempts by number. `from` is inclusive and `to` exclusive; both accept any UTC offset and compare instants. `failureCode` must be one of the [failure codes](#get-apiwebhook-deliveries). Each GET route accepts only its documented query parameters, each at most once and matched without regard to case. Invalid filters, an unknown or repeated query parameter, and any `sort` parameter return `400` rather than being ignored.
@@ -6750,7 +6750,7 @@ Discard up to 1,000 matching pending, scheduled, and failed deliveries, oldest f
 
 ### GET /api/webhook-deliveries
 
-Search deliveries. Each event becomes one delivery per subscription that matched it when the event was captured.
+Search deliveries. Each event becomes one delivery per subscription that matched it when the event was captured. Each item also says whether retry or discard is currently allowed.
 
 **Access:** Settings administrator. See [authentication](#http-conventions-and-authentication).
 
@@ -11261,6 +11261,7 @@ Every field is optional and uses the [delivery-list](#get-apiwebhook-deliveries)
 | `lastAttemptAt`, `settledAt` | null or string (date-time) | Yes | Last send intent; settlement for succeeded or discarded deliveries. |
 | `revision` | integer (int64) | Yes | Send as `expectedRevision` to retry or discard. |
 | `createdAt`, `updatedAt` | string (date-time) | Yes | Row timestamps. |
+| `canRetry`, `canDiscard` | boolean | Yes | Whether the single retry or discard route would currently accept it, from the owning subscription's current state. Retry needs a failed delivery, a current signing key, and an active subscription, or a paused one for a test delivery. Discard needs a pending, scheduled, or failed delivery of a subscription that is not archived. A stale `expectedRevision` can still be refused. |
 
 </details>
 
@@ -11277,7 +11278,7 @@ Every field is optional and uses the [delivery-list](#get-apiwebhook-deliveries)
 | `subscriptionState` | string | Yes | The owning subscription's state. |
 | `generationStartedAt`, `deadlineAt` | null or string (date-time) | Yes | When this generation's first send intent happened and its 72-hour deadline. |
 | `maxAttemptsPerGeneration` | integer (int32) | Yes | `12`. |
-| `canRetry`, `canDiscard` | boolean | Yes | Whether the single retry or discard route would currently accept it; both are `false` for a delivery of an archived subscription. |
+| `canRetry`, `canDiscard` | boolean | Yes | The same values as the delivery's own `canRetry` and `canDiscard`; both are `false` for a delivery of an archived subscription. |
 
 </details>
 

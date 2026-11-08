@@ -241,9 +241,11 @@ else if (!permissionDenied)
         <div class="filter-grid mt-3">
             <div>
                 <label class="form-label" for="delivery-subscription">Subscription</label>
-                <select id="delivery-subscription" class="form-select" @bind="filterSubscription">
+                @* A select keeps its chosen index when its options change in place, so it could show a subscription
+                   the filter does not use. A new option list renders a new select, which shows filterSubscription. *@
+                <select @key="SubscriptionFilterKey" id="delivery-subscription" class="form-select" @bind="filterSubscription">
                     <option value="">All subscriptions</option>
-                    @foreach (var subscription in subscriptions?.Items ?? [])
+                    @foreach (var subscription in SubscriptionFilterOptions)
                     {
                         <option value="@subscription.Id.ToString("D")">@subscription.Name</option>
                     }
@@ -324,11 +326,9 @@ else if (!permissionDenied)
                             <td>@WebhookFormatting.OutcomeWithStatus(delivery.LastOutcome, delivery.LastHttpStatus)@if (delivery.FailureCode is { } failure) { <span class="data-subtitle mono-id">@failure</span> }</td>
                             <td class="text-end">
                                 <div class="d-flex justify-content-end gap-2">
-                                    @if (!IsArchived(delivery.SubscriptionId))
-                                    {
-                                        if (delivery.State == WebhookDeliveryStates.Failed) { <button class="btn btn-sm btn-outline-primary" @onclick="() => RetryDeliveryAsync(delivery)" disabled="@busy">Retry</button> }
-                                        if (delivery.State is WebhookDeliveryStates.Pending or WebhookDeliveryStates.RetryScheduled or WebhookDeliveryStates.Failed) { <button class="btn btn-sm btn-outline-danger" @onclick="() => DiscardDeliveryAsync(delivery)" disabled="@busy">Discard</button> }
-                                    }
+                                    @* The API decides which actions it would accept, from the subscription's current state. *@
+                                    @if (delivery.CanRetry) { <button class="btn btn-sm btn-outline-primary" @onclick="() => RetryDeliveryAsync(delivery)" disabled="@busy">Retry</button> }
+                                    @if (delivery.CanDiscard) { <button class="btn btn-sm btn-outline-danger" @onclick="() => DiscardDeliveryAsync(delivery)" disabled="@busy">Discard</button> }
                                 </div>
                             </td>
                         </tr>
@@ -397,6 +397,8 @@ else if (!permissionDenied)
     private int filterGeneration;
     // The last search the API accepted; the list, its paging, and bulk actions all use it.
     private WebhookDeliverySearch appliedSearch = new(PageSize: PageSize);
+    // The subscription that search names, kept while the subscription list shows other pages.
+    private WebhookSubscriptionDto? filteredSubscription;
     private string? bulkAction;
     private WebhookSubscriptionDto? bulkSubscription;
     private WebhookBulkDeliveryRequest? bulkRequest;
@@ -415,11 +417,18 @@ else if (!permissionDenied)
     private int DeliveryPages => deliveries is null ? 1 : Math.Max(1, (int)Math.Ceiling(deliveries.TotalCount / (double)deliveries.PageSize));
     private string SubscriptionSummary => subscriptions is null ? "Not loaded" : $"{subscriptions.TotalCount:N0} subscriptions, newest first";
     private string DeliverySummary => deliveries is null ? "Not loaded" : $"{deliveries.TotalCount:N0} matching deliveries, newest event first";
-    private WebhookSubscriptionDto? BulkSubscription => appliedSearch.SubscriptionId is { } id ? subscriptions?.Items.FirstOrDefault(item => item.Id == id) : null;
-
-    // The Worker settles an archived subscription's deliveries, so their actions are hidden when the page knows it.
-    private bool IsArchived(Guid subscriptionId) =>
-        subscriptions?.Items.FirstOrDefault(item => item.Id == subscriptionId) is { State: WebhookSubscriptionStates.Archived };
+    private WebhookSubscriptionDto? BulkSubscription =>
+        appliedSearch.SubscriptionId is { } id && filteredSubscription?.Id == id ? filteredSubscription : null;
+    // The loaded page, plus the applied filter's subscription when the page does not list it.
+    private IReadOnlyList<WebhookSubscriptionDto> SubscriptionFilterOptions
+    {
+        get
+        {
+            var shown = subscriptions?.Items ?? [];
+            return filteredSubscription is { } kept && shown.All(item => item.Id != kept.Id) ? [.. shown, kept] : shown;
+        }
+    }
+    private string SubscriptionFilterKey => string.Join(',', SubscriptionFilterOptions.Select(item => item.Id));
     // Bulk routes select by their own states, so a State filter on the list does not narrow them.
     private string BulkScopeText => bulkRevision is { } revision
         ? $" captured for destination revision {revision}"
@@ -490,6 +499,7 @@ else if (!permissionDenied)
             var loadedDeliveries = await Api.GetWebhookDeliveriesAsync(appliedSearch with { Page = deliveryPage });
             if (version != identityVersion) return null;
             deliveries = loadedDeliveries;
+            await KeepFilteredSubscriptionAsync(version);
             return null;
         }
         catch (Exception ex) { return version == identityVersion ? Fail(ex) : null; }
@@ -506,6 +516,7 @@ else if (!permissionDenied)
             permissionDenied = true; error = message; success = null;
             ClearSecret(); CancelBulk(); CloseForm(); CloseRotate();
             catalog = null; subscriptions = null; deliveries = null; detail = null; expandedId = null; filterError = null;
+            filteredSubscription = null;
         }
         return message;
     }
@@ -805,6 +816,7 @@ else if (!permissionDenied)
             var loaded = await Api.GetWebhookDeliveriesAsync(search with { Page = page });
             if (version != identityVersion) return;
             appliedSearch = search; deliveryPage = page; deliveries = loaded;
+            await KeepFilteredSubscriptionAsync(version);
         }
         catch (Exception ex)
         {
@@ -814,6 +826,17 @@ else if (!permissionDenied)
             if (ex is WorkflowApiException { StatusCode: HttpStatusCode.BadRequest }) filterError = message; else error = message;
         }
         finally { if (version == identityVersion) busy = loadingDeliveries = false; }
+    }
+
+    // The filtered subscription comes from the loaded page when it is there, and otherwise from its own request, so
+    // paging the subscription list never changes the bulk actions of an applied filter.
+    private async Task KeepFilteredSubscriptionAsync(int version)
+    {
+        if (appliedSearch.SubscriptionId is not { } id) { filteredSubscription = null; return; }
+        if (subscriptions?.Items.FirstOrDefault(item => item.Id == id) is { } shown) { filteredSubscription = shown; return; }
+        var loaded = await Api.GetWebhookSubscriptionAsync(id);
+        if (version != identityVersion) return;
+        filteredSubscription = loaded?.Subscription;
     }
 
     private async Task ChangeSubscriptionPageAsync(int delta)
@@ -977,7 +1000,7 @@ else if (!permissionDenied)
     private void ClearAll()
     {
         ClearSecret(); CancelBulk(); CloseForm(); CloseRotate();
-        catalog = null; subscriptions = null; deliveries = null; detail = null; expandedId = null;
+        catalog = null; subscriptions = null; deliveries = null; detail = null; expandedId = null; filteredSubscription = null;
         error = success = filterError = null; subscriptionPage = deliveryPage = 1;
         loading = loadingDeliveries = busy = permissionDenied = false;
         pendingFocus = FocusTarget.None;

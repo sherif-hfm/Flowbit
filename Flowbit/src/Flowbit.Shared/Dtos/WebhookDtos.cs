@@ -282,7 +282,10 @@ public sealed record WebhookDeliveryDto(
     DateTimeOffset? SettledAt,
     long Revision,
     DateTimeOffset CreatedAt,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    // Whether a single retry or discard would be accepted now, by the rules those routes apply.
+    bool CanRetry,
+    bool CanDiscard);
 
 /// <summary>
 /// One delivery with its exact external body and captured destination. Internal recipient identifiers are
