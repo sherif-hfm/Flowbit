@@ -20,7 +20,7 @@ public sealed class AiModelSettingsServiceTests
         var repository = new InMemoryEngineSettings();
         var service = Service(repository);
 
-        var created = await service.CreateAsync(Create(" Flash "), CancellationToken.None);
+        var created = await service.CreateAsync(Create(" Flash "), "ai-settings-test", CancellationToken.None);
 
         Assert.Equal(("Flash", "https://opencode.example/zen/v1/", "glm-5.3-flash", "high", 1L),
             (created.Name, created.Endpoint, created.Model, created.ReasoningEffort, created.Revision));
@@ -40,14 +40,14 @@ public sealed class AiModelSettingsServiceTests
     public async Task ABlankKeyKeepsTheStoredKeyAndANewKeyReplacesIt()
     {
         var service = Service(new InMemoryEngineSettings());
-        var created = await service.CreateAsync(Create("Flash"), CancellationToken.None);
+        var created = await service.CreateAsync(Create("Flash"), "ai-settings-test", CancellationToken.None);
 
-        var renamed = await service.UpdateAsync(created.Id, Update("Flash renamed", created.Revision, apiKey: "  "), CancellationToken.None);
+        var renamed = await service.UpdateAsync(created.Id, Update("Flash renamed", created.Revision, apiKey: "  "), "ai-settings-test", CancellationToken.None);
         Assert.Equal(("Flash renamed", 2L, (string?)null), (renamed!.Name, renamed.Revision, renamed.ReasoningEffort));
         Assert.Equal(Key, Assert.Single(await service.GetConnectionsAsync(CancellationToken.None)).ApiKey);
 
         const string rotated = "sk-rotated-service-key-9876543210";
-        var rekeyed = await service.UpdateAsync(created.Id, Update("Flash renamed", renamed.Revision, apiKey: rotated), CancellationToken.None);
+        var rekeyed = await service.UpdateAsync(created.Id, Update("Flash renamed", renamed.Revision, apiKey: rotated), "ai-settings-test", CancellationToken.None);
         Assert.Equal(3L, rekeyed!.Revision);
         Assert.Equal(rotated, Assert.Single(await service.GetConnectionsAsync(CancellationToken.None)).ApiKey);
     }
@@ -57,20 +57,20 @@ public sealed class AiModelSettingsServiceTests
     {
         var repository = new InMemoryEngineSettings();
         var service = Service(repository);
-        var created = await service.CreateAsync(Create("Flash"), CancellationToken.None);
-        var updated = await service.UpdateAsync(created.Id, Update("Flash", created.Revision), CancellationToken.None);
+        var created = await service.CreateAsync(Create("Flash"), "ai-settings-test", CancellationToken.None);
+        var updated = await service.UpdateAsync(created.Id, Update("Flash", created.Revision), "ai-settings-test", CancellationToken.None);
         var writes = repository.Writes;
 
-        await Assert.ThrowsAsync<WorkflowConflictException>(() => service.UpdateAsync(created.Id, Update("Stale", created.Revision), CancellationToken.None));
-        await Assert.ThrowsAsync<WorkflowConflictException>(() => service.DeleteAsync(created.Id, created.Revision, CancellationToken.None));
-        await Assert.ThrowsAsync<WorkflowConflictException>(() => service.CreateAsync(Create("FLASH"), CancellationToken.None));
-        await Assert.ThrowsAsync<WorkflowDomainException>(() => service.CreateAsync(Create("Other") with { ApiKey = "" }, CancellationToken.None));
-        await Assert.ThrowsAsync<WorkflowDomainException>(() => service.UpdateAsync(created.Id, Update("Flash", 0), CancellationToken.None));
-        Assert.Null(await service.UpdateAsync("unknown", Update("Other", 1), CancellationToken.None));
-        Assert.False(await service.DeleteAsync("unknown", 1, CancellationToken.None));
+        await Assert.ThrowsAsync<WorkflowConflictException>(() => service.UpdateAsync(created.Id, Update("Stale", created.Revision), "ai-settings-test", CancellationToken.None));
+        await Assert.ThrowsAsync<WorkflowConflictException>(() => service.DeleteAsync(created.Id, created.Revision, "ai-settings-test", CancellationToken.None));
+        await Assert.ThrowsAsync<WorkflowConflictException>(() => service.CreateAsync(Create("FLASH"), "ai-settings-test", CancellationToken.None));
+        await Assert.ThrowsAsync<WorkflowDomainException>(() => service.CreateAsync(Create("Other") with { ApiKey = "" }, "ai-settings-test", CancellationToken.None));
+        await Assert.ThrowsAsync<WorkflowDomainException>(() => service.UpdateAsync(created.Id, Update("Flash", 0), "ai-settings-test", CancellationToken.None));
+        Assert.Null(await service.UpdateAsync("unknown", Update("Other", 1), "ai-settings-test", CancellationToken.None));
+        Assert.False(await service.DeleteAsync("unknown", 1, "ai-settings-test", CancellationToken.None));
         Assert.Equal(writes, repository.Writes);
 
-        Assert.True(await service.DeleteAsync(created.Id, updated!.Revision, CancellationToken.None));
+        Assert.True(await service.DeleteAsync(created.Id, updated!.Revision, "ai-settings-test", CancellationToken.None));
         Assert.Empty(await service.ListAsync(CancellationToken.None));
         Assert.Equal("[]", repository.Row!.Value);
     }
@@ -80,17 +80,17 @@ public sealed class AiModelSettingsServiceTests
     {
         var repository = new InMemoryEngineSettings();
         var service = Service(repository);
-        var first = await service.CreateAsync(Create("First"), CancellationToken.None);
+        var first = await service.CreateAsync(Create("First"), "ai-settings-test", CancellationToken.None);
         var interfered = false;
         repository.BeforeWrite = () =>
         {
             if (interfered) return;
             interfered = true;
             // Another administrator adds a model after this write read the row.
-            Service(repository).CreateAsync(Create("Second"), CancellationToken.None).GetAwaiter().GetResult();
+            Service(repository).CreateAsync(Create("Second"), "ai-settings-test", CancellationToken.None).GetAwaiter().GetResult();
         };
 
-        var renamed = await service.UpdateAsync(first.Id, Update("First renamed", first.Revision), CancellationToken.None);
+        var renamed = await service.UpdateAsync(first.Id, Update("First renamed", first.Revision), "ai-settings-test", CancellationToken.None);
 
         Assert.Equal(2L, renamed!.Revision);
         Assert.Equal(["First renamed", "Second"], (await service.ListAsync(CancellationToken.None)).Select(model => model.Name));
@@ -101,11 +101,11 @@ public sealed class AiModelSettingsServiceTests
     {
         var repository = new InMemoryEngineSettings();
         var service = Service(repository);
-        var created = await service.CreateAsync(Create("Flash"), CancellationToken.None);
+        var created = await service.CreateAsync(Create("Flash"), "ai-settings-test", CancellationToken.None);
         repository.BeforeWrite = () => repository.Row = repository.Row! with { UpdatedAt = repository.Row.UpdatedAt.AddTicks(10) };
 
         var error = await Assert.ThrowsAsync<WorkflowConflictException>(() =>
-            service.UpdateAsync(created.Id, Update("Never saved", created.Revision), CancellationToken.None));
+            service.UpdateAsync(created.Id, Update("Never saved", created.Revision), "ai-settings-test", CancellationToken.None));
 
         Assert.Contains("reload", error.Message);
         Assert.Equal(3, repository.Attempts - 1);
@@ -121,7 +121,7 @@ public sealed class AiModelSettingsServiceTests
         var service = Service(repository);
 
         await Assert.ThrowsAsync<WorkflowConflictException>(() => service.ListAsync(CancellationToken.None));
-        await Assert.ThrowsAsync<WorkflowConflictException>(() => service.CreateAsync(Create("Flash"), CancellationToken.None));
+        await Assert.ThrowsAsync<WorkflowConflictException>(() => service.CreateAsync(Create("Flash"), "ai-settings-test", CancellationToken.None));
         var runtime = await Assert.ThrowsAsync<WorkflowAiException>(() => service.GetConnectionsAsync(CancellationToken.None));
         Assert.Equal(("provider_configuration", 503), (runtime.Code, runtime.StatusCode));
     }
@@ -130,19 +130,19 @@ public sealed class AiModelSettingsServiceTests
     public async Task TheEngineSettingsServiceHidesAndRefusesTheModelsRow()
     {
         var repository = new InMemoryEngineSettings();
-        await Service(repository).CreateAsync(Create("Flash"), CancellationToken.None);
+        await Service(repository).CreateAsync(Create("Flash"), "ai-settings-test", CancellationToken.None);
         var reserved = repository.Row!;
         repository.Others.Add(new(2, "Settings", "RequiredRole", "admin", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow));
         var settings = new EngineSettingsService(repository, NullLogger<EngineSettingsService>.Instance);
 
         Assert.Equal(["RequiredRole"], (await settings.ListAsync(CancellationToken.None)).Select(setting => setting.Key));
         Assert.Equal(["RequiredRole"], (await settings.SearchAsync("%", CancellationToken.None)).Select(setting => setting.Key));
-        await Assert.ThrowsAsync<WorkflowDomainException>(() => settings.CreateAsync(" aiauthoring ", " MODELS ", "[]", null, CancellationToken.None));
-        await Assert.ThrowsAsync<WorkflowDomainException>(() => settings.CreateAsync(null, "AiAuthoring.Models", "[]", null, CancellationToken.None));
-        await Assert.ThrowsAsync<WorkflowDomainException>(() => settings.UpdateAsync(reserved.Id, "[]", null, reserved.UpdatedAt, CancellationToken.None));
-        await Assert.ThrowsAsync<WorkflowDomainException>(() => settings.DeleteByIdAsync(reserved.Id, reserved.UpdatedAt, CancellationToken.None));
-        await Assert.ThrowsAsync<WorkflowDomainException>(() => settings.SetAsync("AiAuthoring.Models", "[]", CancellationToken.None));
-        await Assert.ThrowsAsync<WorkflowDomainException>(() => settings.DeleteAsync("AiAuthoring.Models", CancellationToken.None));
+        await Assert.ThrowsAsync<WorkflowDomainException>(() => settings.CreateAsync(" aiauthoring ", " MODELS ", "[]", null, "ai-settings-test", CancellationToken.None));
+        await Assert.ThrowsAsync<WorkflowDomainException>(() => settings.CreateAsync(null, "AiAuthoring.Models", "[]", null, "ai-settings-test", CancellationToken.None));
+        await Assert.ThrowsAsync<WorkflowDomainException>(() => settings.UpdateAsync(reserved.Id, "[]", null, reserved.UpdatedAt, "ai-settings-test", CancellationToken.None));
+        await Assert.ThrowsAsync<WorkflowDomainException>(() => settings.DeleteByIdAsync(reserved.Id, reserved.UpdatedAt, "ai-settings-test", CancellationToken.None));
+        await Assert.ThrowsAsync<WorkflowDomainException>(() => settings.SetAsync("AiAuthoring.Models", "[]", "ai-settings-test", CancellationToken.None));
+        await Assert.ThrowsAsync<WorkflowDomainException>(() => settings.DeleteAsync("AiAuthoring.Models", "ai-settings-test", CancellationToken.None));
         Assert.Equal(reserved, repository.Row);
     }
 
@@ -177,33 +177,33 @@ public sealed class AiModelSettingsServiceTests
         public Task<EngineSettingRecord?> GetByIdAsync(long id, CancellationToken cancellationToken) =>
             Task.FromResult(All.FirstOrDefault(setting => setting.Id == id));
 
-        public Task<EngineSettingRecord> SetAsync(string key, string value, CancellationToken cancellationToken) =>
+        public Task<EngineSettingRecord> SetAsync(string key, string value, string actor, CancellationToken cancellationToken) =>
             throw new InvalidOperationException("The engine-settings guard must refuse this write.");
 
-        public Task<bool> DeleteAsync(string key, CancellationToken cancellationToken) =>
+        public Task<bool> DeleteAsync(string key, string actor, CancellationToken cancellationToken) =>
             throw new InvalidOperationException("The engine-settings guard must refuse this write.");
 
         public Task<EngineSettingRecord> CreateAsync(string? settingNamespace, string key, string value, string? description,
-            CancellationToken cancellationToken)
+            string actor, CancellationToken cancellationToken)
         {
             Attempts++;
             BeforeWrite?.Invoke();
             if (Row is not null) throw new WorkflowConflictException("Engine setting 'AiAuthoring.Models' already exists.");
             Writes++;
             var now = DateTimeOffset.UtcNow;
-            Row = new(1, settingNamespace, key, value, now, now, description);
+            Row = new(1, settingNamespace, key, value, now, now, description, actor, actor);
             return Task.FromResult(Row);
         }
 
         public Task<EngineSettingRecord?> UpdateAsync(long id, string value, string? description, DateTimeOffset expectedUpdatedAt,
-            CancellationToken cancellationToken)
+            string actor, CancellationToken cancellationToken)
         {
             Attempts++;
             BeforeWrite?.Invoke();
             if (Row is null || Row.Id != id) return Task.FromResult<EngineSettingRecord?>(null);
             if (Row.UpdatedAt != expectedUpdatedAt) throw new WorkflowConflictException("Engine setting 1 was changed by another request.");
             Writes++;
-            Row = Row with { Value = value, Description = description, UpdatedAt = Row.UpdatedAt.AddTicks(10) };
+            Row = Row with { Value = value, Description = description, UpdatedAt = Row.UpdatedAt.AddTicks(10), UpdatedBy = actor };
             return Task.FromResult<EngineSettingRecord?>(Row);
         }
     }

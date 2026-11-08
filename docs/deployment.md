@@ -156,7 +156,7 @@ example is for a Linux UI deployment. DevelopmentToken load tools must target a
 Development API. A custom `LoadTest` environment is not an exemption: it requires
 OIDC configuration, and the existing HMAC-minting tools do not acquire OIDC tokens.
 
-Engine and workflow **settings stored in PostgreSQL** are distinct from host configuration. They are managed through [settings APIs](api-guide.md#settings), not arbitrary environment variable names. The [built-in engine settings reference](engine-settings.md) owns the complete inventory, accepted values, runtime defaults, seed migrations, and change timing, including permissions, execution and batch limits, identity, and the reserved AI catalog. Missing/default management roles are generally `admin`; definition-owned permissions remain separate. The `AiAuthoring.Models` row holds the [AI model catalog](#ai-model-catalog) and is managed only through the AI models page and API.
+Engine and workflow **settings stored in PostgreSQL** are distinct from host configuration. They are managed through [settings APIs](api-guide.md#settings), not arbitrary environment variable names. The [built-in engine settings reference](engine-settings.md) owns the complete inventory, accepted values, runtime defaults, seed migrations, and change timing, including permissions, execution and batch limits, identity, lifecycle capture, and the reserved AI catalog. Engine settings carry `CreatedBy`/`UpdatedBy` from authenticated writes (unknown historical actors are null), including writes through AI model management. Missing/default management roles are generally `admin`; definition-owned permissions remain separate. The `AiAuthoring.Models` row holds the [AI model catalog](#ai-model-catalog) and is managed only through the AI models page and API.
 
 `Authentication.UserIdentityClaim` is a persisted engine setting read at API startup. Configure the intended claim before starting replicas, then restart APIs together when changing it. A configured claim is authoritative and strict; a non-default OIDC `NameClaimType` is the next strict override. Otherwise all modes use `Username`, then the .NET `ClaimTypes.Name` URI, then `sub`/mapped `NameIdentifier`. Only absent claims fall through; an invalid present claim fails authentication. See the [authentication context API](api-guide.md).
 
@@ -593,9 +593,11 @@ Lifecycle webhooks send committed instance, task, delegation, and incident event
 
 | Control | Where | Effect |
 | --- | --- | --- |
-| Capture switch | Database row `flowbit.lifecycle_event_capture_state`, changed only with `flowbit.set_lifecycle_event_capture` | Whether the capture triggers record events. Every writer reads it, including binaries that were never upgraded, so capture needs no traffic drain. Off by default. |
+| Capture switch | Protected `Webhooks.CaptureEnabled` row in `flowbit.engine_settings`; edit through Engine settings/API or `flowbit.set_lifecycle_event_capture` | Whether database triggers record events. Off on fresh installs. Only canonical `true`/`false` values are stored; deletion is refused. Changes affect subsequent committed transitions without a process restart. |
 | `Webhooks:DeliveryEnabled` | Each Worker | Whether that Worker sends requests. Off by default. Fanout, lease recovery, and archive settlement keep running while it is off. |
 | Subscription state | Webhooks page or API | Whether a subscription matches new events. |
+
+The webhook catalog reports the capture row's latest edit time/actor as `changedAt`/`changedBy`. API same-value or description-only saves update that metadata; only Boolean toggles create management audit entries. The SQL helper keeps unchanged calls as no-ops and advances timestamps monotonically on a toggle. For direct database operations, use this helper with the actual operator identity.
 
 ### How capture works
 
@@ -657,10 +659,10 @@ rm dev/webhooks/webhook-keys.key dev/webhooks/webhook-keys.crt
 
 ### Rollout
 
-1. Apply the additive `AddOutboundLifecycleWebhooks` migration with capture and delivery off. It creates the tables, functions, and triggers; `CREATE TRIGGER` briefly blocks writes to the four source tables, so use the normal migration window. There is no historical backfill.
+1. For a fresh installation, apply the migration chain, including `AddOutboundLifecycleWebhooks` and `ConsolidateLifecycleCaptureSettings`, with capture and delivery off. It creates the tables, functions, and triggers; `CREATE TRIGGER` briefly blocks writes to the four source tables, so use the normal migration window. There is no historical backfill.
 2. Configure the certificate and network policy on every API and Worker; update Compose, environment, or mounts. Back up the database and the certificate.
-3. Upgrade every API and Worker, then the UI. Capture itself needs no new binaries, but management and delivery do. The Worker's schema gate waits for the migration.
-4. Create a paused subscription for a test receiver, send a test event with delivery enabled on one Worker, and activate the subscription. Then turn capture on, which applies to transitions committed after this statement commits:
+3. Deploy matching API, Worker, and UI versions. The Worker's schema gate waits for required migrations. Do not run older binaries after capture consolidation; they query the removed table.
+4. Create a paused subscription for a test receiver, send a test event with delivery enabled on one Worker, and activate the subscription. Then choose **Enabled** (`true`) for `Webhooks.CaptureEnabled` in Engine settings or use the SQL helper below. Capture applies to transitions committed after the setting transaction commits:
 
    ```sql
    SELECT flowbit.set_lifecycle_event_capture(true, 'operator@example.com');
@@ -668,7 +670,11 @@ rm dev/webhooks/webhook-keys.key dev/webhooks/webhook-keys.crt
 
 5. Verify a real lifecycle event, signatures, deduplication, retries, backoff, bulk recovery, backlog, and the retention preview before production subscriptions are activated.
 
-**Rollback** stops delivery (`Webhooks:DeliveryEnabled=false`) and keeps the tables and keys; older binaries keep running with the triggers in place, and queued work waits. Do not use the destructive down migration as a routine rollback for retained or pending data.
+**Existing-database capture consolidation.** `ConsolidateLifecycleCaptureSettings` adds nullable `CreatedBy`/`UpdatedBy` to `engine_settings`, imports the capture row, replaces its SQL functions, and drops `lifecycle_event_capture_state` without a compatibility view. Back up first, stop all API and Worker writers, apply the migration, deploy matching API/UI/Worker versions, then restart and verify `Webhooks.CaptureEnabled`, the webhook catalog, and Worker metrics before resuming traffic. Mixed old/new versions are unsupported; an older Worker accepting a newer schema does not make its removed-table queries compatible. The migration rejects an existing canonical or equivalent capture key with a diagnostic; resolve that collision deliberately before retrying rather than overwriting it.
+
+The import preserves the old Boolean and last operator/time. Both initial timestamps use the old `ChangedAt` because the original creation time is unknown; `CreatedBy` remains null. Other existing engine rows also retain null actors. New authenticated writes populate attribution.
+
+**Rollback.** Disabling delivery (`Webhooks:DeliveryEnabled=false`) keeps captured work and keys. An application rollback across consolidation requires stopping writers and coordinating the schema downgrade: its Down migration reconstructs the current capture switch and original functions, but removes all engine-setting actor columns and their data. Restore older binaries only after that downgrade. Do not use the original webhook feature's destructive Down migration as routine rollback for retained or pending data.
 
 **Emergency stop.** For a receiver outage, pause the subscription or disable delivery: captured work is preserved. Turn capture off only for a trigger defect, because transitions committed while it is off are never recorded:
 

@@ -71,6 +71,24 @@ public sealed class OpenApiContractTests
     }
 
     [Fact]
+    public async Task EngineSettingActorMetadataIsServerManagedInOpenApi()
+    {
+        await using var factory = new WorkflowInstanceDetailEndpointTests.DetailApiFactory();
+        await using var scope = factory.Services.CreateAsyncScope();
+        var provider = scope.ServiceProvider.GetRequiredKeyedService<IOpenApiDocumentProvider>("v1");
+        var document = await provider.GetOpenApiDocumentAsync();
+        var schemas = document.Components!.Schemas!;
+        var setting = schemas["EngineSettingDto"];
+        Assert.Contains("historical attribution is unknown", setting.Properties!["createdBy"].Description);
+        Assert.Contains("historical attribution is unknown", setting.Properties["updatedBy"].Description);
+        foreach (var request in new[] { "CreateEngineSettingRequest", "UpdateEngineSettingRequest" })
+        {
+            Assert.DoesNotContain("createdBy", schemas[request].Properties!.Keys);
+            Assert.DoesNotContain("updatedBy", schemas[request].Properties!.Keys);
+        }
+    }
+
+    [Fact]
     public async Task ErrorBoundaryMatcherSchemasDescribeThePublicContract()
     {
         await using var factory = new WorkflowInstanceDetailEndpointTests.DetailApiFactory();

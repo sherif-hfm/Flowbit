@@ -800,7 +800,8 @@ public sealed class WebhookDispatchRepository(WebhookDataSource source) : IWebho
     {
         await using var connection = await source.DataSource.OpenConnectionAsync(cancellationToken);
         await using var command = Command(connection, null, """
-            SELECT COALESCE((SELECT "Enabled" FROM flowbit.lifecycle_event_capture_state WHERE "Id" = 1), FALSE),
+            SELECT COALESCE((SELECT "Value" = 'true' FROM flowbit.engine_settings
+                            WHERE "Namespace" = 'Webhooks' AND "Key" = 'CaptureEnabled'), FALSE),
                    (SELECT count(*) FROM flowbit.lifecycle_events WHERE "FanoutCompletedAt" IS NULL),
                    (SELECT min("RecordedAt") FROM flowbit.lifecycle_events WHERE "FanoutCompletedAt" IS NULL),
                    count(*) FILTER (WHERE d."State" = 'pending'),

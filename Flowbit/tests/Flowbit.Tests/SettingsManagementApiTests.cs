@@ -2,8 +2,14 @@ using System.Globalization;
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using Flowbit.Api.Auth;
+using Flowbit.Service.Abstractions;
 using Flowbit.Shared.Dtos;
+using Flowbit.Shared.Models;
+using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Xunit;
 
 namespace Flowbit.Tests;
@@ -71,6 +77,8 @@ public sealed class SettingsManagementApiTests(PostgresApiFixture fixture)
             Assert.Equal("  initial  ", created.Value);
             Assert.Equal("Initial engine setting description.", created.Description);
             Assert.Equal(created.CreatedAt, created.UpdatedAt);
+            Assert.Equal("settings-admin", created.CreatedBy);
+            Assert.Equal("settings-admin", created.UpdatedBy);
 
             using (var response = await SendAsync(HttpMethod.Get, "/api/engine-settings"))
             {
@@ -90,8 +98,10 @@ public sealed class SettingsManagementApiTests(PostgresApiFixture fixture)
                            ["key"] = "AttemptedRename",
                            ["value"] = "  updated  ",
                            ["description"] = "  Updated engine setting description.  ",
+                           ["createdBy"] = "forged-creator",
+                           ["updatedBy"] = "forged-editor",
                            ["expectedUpdatedAt"] = created.UpdatedAt
-                       }))
+                       }, user: "settings-editor"))
             {
                 Assert.Equal(HttpStatusCode.OK, response.StatusCode);
                 updated = await ReadAsync<EngineSettingDto>(response);
@@ -103,6 +113,8 @@ public sealed class SettingsManagementApiTests(PostgresApiFixture fixture)
             Assert.Equal("  updated  ", updated.Value);
             Assert.Equal("Updated engine setting description.", updated.Description);
             Assert.True(updated.UpdatedAt > created.UpdatedAt);
+            Assert.Equal("settings-admin", updated.CreatedBy);
+            Assert.Equal("settings-editor", updated.UpdatedBy);
 
             using (var response = await SendAsync(
                        HttpMethod.Put,
@@ -113,6 +125,12 @@ public sealed class SettingsManagementApiTests(PostgresApiFixture fixture)
                            created.UpdatedAt)))
             {
                 Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+            }
+
+            using (var response = await SendAsync(HttpMethod.Get, "/api/engine-settings"))
+            {
+                var listed = await ReadAsync<List<EngineSettingDto>>(response);
+                Assert.Equal(updated, Assert.Single(listed, setting => setting.Id == updated.Id));
             }
 
             using (var response = await SendAsync(
@@ -341,6 +359,154 @@ public sealed class SettingsManagementApiTests(PostgresApiFixture fixture)
         {
             await RestoreRequiredRoleAsync(snapshot);
         }
+    }
+
+    [Fact]
+    public async Task LifecycleCaptureIsAnEditableBooleanSettingWithProtectedIdentityAndDeletion()
+    {
+        using var list = await SendAsync(HttpMethod.Get, "/api/engine-settings");
+        var original = Assert.Single(await ReadAsync<List<EngineSettingDto>>(list),
+            setting => setting.Namespace == "Webhooks" && setting.Key == "CaptureEnabled");
+        var current = original;
+        var actor = $"capture-{Guid.NewGuid():N}";
+        var metadataActors = new[] { $"description-{Guid.NewGuid():N}", $"same-value-{Guid.NewGuid():N}" };
+        var rejectedActor = $"rejected-{Guid.NewGuid():N}";
+        var enabled = original.Value != "true";
+        try
+        {
+            using (var update = await SendAsync(HttpMethod.Put, $"/api/engine-settings/{original.Id}",
+                       new UpdateEngineSettingRequest(enabled ? "\t TrUe \u00a0" : "\u00a0 FaLsE \n", original.Description, current.UpdatedAt),
+                       user: actor))
+            {
+                Assert.Equal(HttpStatusCode.OK, update.StatusCode);
+                current = await ReadAsync<EngineSettingDto>(update);
+                Assert.Equal(enabled ? "true" : "false", current.Value);
+                Assert.Equal(original.CreatedBy, current.CreatedBy);
+                Assert.Equal(actor, current.UpdatedBy);
+            }
+
+            using (var catalog = await SendAsync(HttpMethod.Get, "/api/webhook-event-types"))
+            {
+                Assert.Equal(HttpStatusCode.OK, catalog.StatusCode);
+                var body = await ReadAsync<JsonElement>(catalog);
+                Assert.Equal(enabled, body.GetProperty("capture").GetProperty("enabled").GetBoolean());
+                Assert.Equal(actor, body.GetProperty("capture").GetProperty("changedBy").GetString());
+            }
+
+            var description = $"Capture description changed: {Guid.NewGuid():N}";
+            foreach (var metadataActor in metadataActors)
+            {
+                var before = current;
+                using var unchanged = await SendAsync(HttpMethod.Put, $"/api/engine-settings/{original.Id}",
+                    new UpdateEngineSettingRequest(current.Value, description, current.UpdatedAt), user: metadataActor);
+                Assert.Equal(HttpStatusCode.OK, unchanged.StatusCode);
+                current = await ReadAsync<EngineSettingDto>(unchanged);
+                Assert.Equal(before.Value, current.Value);
+                Assert.Equal(original.CreatedAt, current.CreatedAt);
+                Assert.Equal(original.CreatedBy, current.CreatedBy);
+                Assert.Equal(metadataActor, current.UpdatedBy);
+                Assert.True(current.UpdatedAt > before.UpdatedAt);
+
+                using var catalog = await SendAsync(HttpMethod.Get, "/api/webhook-event-types");
+                Assert.Equal(HttpStatusCode.OK, catalog.StatusCode);
+                var capture = (await ReadAsync<WebhookEventCatalogDto>(catalog)).Capture;
+                Assert.Equal(enabled, capture.Enabled);
+                Assert.Equal(current.UpdatedAt, capture.ChangedAt);
+                Assert.Equal(metadataActor, capture.ChangedBy);
+            }
+            long captureAuditCount;
+            await using (var db = fixture.CreateDbContext())
+            {
+                var audits = await db.WebhookManagementAudit.AsNoTracking().Where(item => item.Actor == actor).ToListAsync();
+                Assert.Equal(enabled ? "captureEnabled" : "captureDisabled", Assert.Single(audits).Operation);
+                Assert.False(await db.WebhookManagementAudit.AnyAsync(item => metadataActors.Contains(item.Actor)));
+                captureAuditCount = await db.WebhookManagementAudit.LongCountAsync(item =>
+                    item.Operation == "captureEnabled" || item.Operation == "captureDisabled");
+            }
+
+            foreach (var invalid in new[]
+                     {
+                         "", "yes", "1", "null", "\0true", "true\0", "\0true\0",
+                         "\0false", "false\0", "\0false\0", " \0TrUe\0\t", "\n\0FaLsE\0 "
+                     })
+            {
+                using var response = await SendAsync(HttpMethod.Put, $"/api/engine-settings/{original.Id}",
+                    new UpdateEngineSettingRequest(invalid, original.Description, current.UpdatedAt), user: rejectedActor);
+                Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+                using var latestList = await SendAsync(HttpMethod.Get, "/api/engine-settings");
+                Assert.Equal(current, Assert.Single(await ReadAsync<List<EngineSettingDto>>(latestList), item => item.Id == current.Id));
+                await using var db = fixture.CreateDbContext();
+                Assert.Equal(captureAuditCount, await db.WebhookManagementAudit.LongCountAsync(item =>
+                    item.Operation == "captureEnabled" || item.Operation == "captureDisabled"));
+            }
+
+            foreach (var alias in new[]
+                     {
+                         new CreateEngineSettingRequest(null, "Webhooks.CaptureEnabled", "true"),
+                         new CreateEngineSettingRequest("webhooks", "CaptureEnabled", "true"),
+                         new CreateEngineSettingRequest("Webhooks", "captureenabled", "true")
+                     })
+            {
+                using var response = await SendAsync(HttpMethod.Post, "/api/engine-settings", alias);
+                Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+            }
+
+            using (var duplicate = await SendAsync(HttpMethod.Post, "/api/engine-settings",
+                       new CreateEngineSettingRequest("Webhooks", "CaptureEnabled", "false")))
+                Assert.Equal(HttpStatusCode.Conflict, duplicate.StatusCode);
+            using (var deletion = await SendAsync(HttpMethod.Delete,
+                       DeletePath("/api/engine-settings", current.Id, current.UpdatedAt)))
+                Assert.Equal(HttpStatusCode.BadRequest, deletion.StatusCode);
+            using (var stale = await SendAsync(HttpMethod.Put, $"/api/engine-settings/{original.Id}",
+                       new UpdateEngineSettingRequest("false", original.Description, original.UpdatedAt)))
+                Assert.Equal(HttpStatusCode.Conflict, stale.StatusCode);
+
+            using var finalList = await SendAsync(HttpMethod.Get, "/api/engine-settings");
+            Assert.Equal(current, Assert.Single(await ReadAsync<List<EngineSettingDto>>(finalList), item => item.Id == current.Id));
+            await using (var db = fixture.CreateDbContext())
+                await db.Database.ExecuteSqlInterpolatedAsync($"SELECT flowbit.set_lifecycle_event_capture({!enabled}, {"sql-capture-test"})");
+            using var staleAfterSql = await SendAsync(HttpMethod.Put, $"/api/engine-settings/{original.Id}",
+                new UpdateEngineSettingRequest(current.Value, current.Description, current.UpdatedAt), user: actor);
+            Assert.Equal(HttpStatusCode.Conflict, staleAfterSql.StatusCode);
+        }
+        finally
+        {
+            using var latestResponse = await SendAsync(HttpMethod.Get, "/api/engine-settings");
+            var latest = Assert.Single(await ReadAsync<List<EngineSettingDto>>(latestResponse), item => item.Id == original.Id);
+            using var restored = await SendAsync(HttpMethod.Put, $"/api/engine-settings/{original.Id}",
+                new UpdateEngineSettingRequest(original.Value == "true" ? "\t TrUe \u00a0" : "\u00a0 FaLsE \n",
+                    original.Description, latest.UpdatedAt), user: "test-cleanup");
+            restored.EnsureSuccessStatusCode();
+            Assert.Equal(original.Value, (await ReadAsync<EngineSettingDto>(restored)).Value);
+        }
+    }
+
+    [Theory]
+    [InlineData("POST", "/api/engine-settings")]
+    [InlineData("PUT", "/api/engine-settings/1")]
+    [InlineData("DELETE", "/api/engine-settings/1?expectedUpdatedAt=2026-01-01T00:00:00Z")]
+    [InlineData("POST", "/api/ai-models")]
+    [InlineData("PUT", "/api/ai-models/unknown")]
+    [InlineData("DELETE", "/api/ai-models/unknown?expectedRevision=1")]
+    public async Task SettingsWritesRequireAnActorEvenForAnAuthenticatedAdministrator(string method, string path)
+    {
+        await using var factory = fixture.Factory.WithWebHostBuilder(builder => builder.ConfigureTestServices(services =>
+            services.Replace(ServiceDescriptor.Singleton<IActorContextResolver>(new MissingActorResolver()))));
+        using var client = factory.CreateClient();
+        using var request = new HttpRequestMessage(new HttpMethod(method), path);
+        ApiTestAuth.Authorize(request);
+        if (method != "DELETE")
+            request.Content = JsonContent.Create(path.Contains("ai-models", StringComparison.Ordinal)
+                ? (object)new { name = "test", endpoint = "https://example.com/v1", model = "model", apiKey = "test-key-at-least-sixteen", expectedRevision = 1 }
+                : new { key = "test", value = "true", expectedUpdatedAt = DateTimeOffset.UtcNow });
+        using var response = await client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    private sealed class MissingActorResolver : IActorContextResolver
+    {
+        public ActorContext Resolve(System.Security.Claims.ClaimsPrincipal principal) => new(null, ["admin"], new Dictionary<string, string>());
     }
 
     private async Task<HttpResponseMessage> SendAsync(

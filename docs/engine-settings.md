@@ -2,9 +2,9 @@
 
 [Documentation home](index.md) · [Deployment and operations](deployment.md#configuration) · [Settings API](api-guide.md#settings) · [Settings UI](ui-guide.md#engine-and-workflow-settings)
 
-This is the complete reference for the **17 current built-in settings** read from PostgreSQL's `flowbit.engine_settings` table. These are deployment-wide string records, shared by API and Worker replicas using that database. They are distinct from [host configuration](deployment.md#configuration) in `appsettings.json` or environment variables, JSON [workflow-context settings](developer-guide.md#output-mappings-and-expression-context), and properties authored in workflow definitions.
+This is the complete reference for the **18 current built-in settings** read from PostgreSQL's `flowbit.engine_settings` table. These are deployment-wide string records, shared by API and Worker replicas using that database. They are distinct from [host configuration](deployment.md#configuration) in `appsettings.json` or environment variables, JSON [workflow-context settings](developer-guide.md#output-mappings-and-expression-context), and properties authored in workflow definitions.
 
-A **runtime default** is what a consumer uses without a usable setting. A **seed value** is a row inserted by a migration when the setting is missing. Deleting a seeded row does not rerun an already-applied migration; consumers still apply their documented fallback. The final entry, `AiAuthoring.Models`, is reserved and has its own management API.
+A **runtime default** is what a consumer uses without a usable setting. A **seed value** is a row inserted by a migration when the setting is missing. Deleting a seeded row does not rerun an already-applied migration; consumers still apply their documented fallback. The AI catalog, `AiAuthoring.Models`, is reserved and has its own management API. `Webhooks.CaptureEnabled` is a protected Boolean setting that can be edited but cannot be deleted.
 
 ## Overview
 
@@ -27,6 +27,7 @@ A **runtime default** is what a consumer uses without a usable setting. A **seed
 | [UserTasks.DueSoonThreshold](#usertasksduesoonthreshold) | How long before its due time an open user task counts as due soon. | `P1D` |
 | [Authentication.UserIdentityClaim](#authenticationuseridentityclaim) | Authoritative JWT claim identifying the actor. | Unset: identity selection chain |
 | [AiAuthoring.Models](#aiauthoringmodels) | Assistant model catalog, including provider keys. | Empty catalog |
+| [Webhooks.CaptureEnabled](#webhookscaptureenabled) | Database lifecycle event capture for active webhook subscriptions. | `false` |
 
 ## Storage, lookup, and management
 
@@ -34,7 +35,7 @@ A **runtime default** is what a consumer uses without a usable setting. A **seed
 
 The logical name is the trimmed namespace plus `.` plus the trimmed key. The canonical representation splits at the **last dot**: `Workflow.MultiInstance.MaxInstances` has namespace `Workflow.MultiInstance` and key `MaxInstances`.
 
-Ordinary runtime lookups are **case-sensitive**. Use the exact spelling in this reference; `workflow.RequiredRole` does not override `Workflow.RequiredRole`. Matching role *values* is case-insensitive, which is a separate rule. The reserved AI-model name is protected case-insensitively by generic management, but its ordinary repository lookup still uses the canonical spelling.
+Ordinary runtime lookups are **case-sensitive**. Use the exact spelling in this reference; `workflow.RequiredRole` does not override `Workflow.RequiredRole`. Matching role *values* is case-insensitive, which is a separate rule. The reserved AI-model name is protected case-insensitively by generic management, but its ordinary repository lookup still uses the canonical spelling. The capture name is also reserved case-insensitively, and only its canonical namespace `Webhooks` and key `CaptureEnabled` are accepted; alternate casing or legacy dotted-key representations are rejected.
 
 Legacy records with a null, empty, or whitespace-only namespace and the entire dotted name in the key remain readable. Other namespace/key splits that form the same dotted logical name are also readable. When historical duplicates exist, lookup prefers the exact canonical namespace/key, then its trimmed equivalent, then other namespaced representations, then a blank-namespace representation; equal-priority rows use the lowest ID. New management writes reject an existing identical logical name rather than create another representation. They do not merge or remove historical duplicates.
 
@@ -42,11 +43,11 @@ Legacy records with a null, empty, or whitespace-only namespace and the entire d
 
 Use [Engine settings](ui-guide.md#engine-and-workflow-settings) or the [settings API](api-guide.md#settings), with a role authorized by `Settings.RequiredRole`. Namespace and key are fixed after creation. Each is limited to 300 .NET string characters; a description is optional and limited to 1,000. Identifiers and descriptions are trimmed; a blank namespace/description becomes null.
 
-Engine values are **opaque strings**, including empty, whitespace, and multiline content. Generic CRUD requires a non-null value but does not validate its meaning for the selected built-in setting. A successful save can therefore store a value that a consumer falls back from, or an identity setting that prevents the next startup. There is no built-in-key whitelist: adding a custom record does not give it engine behavior. See the [schema reference](database-schema.md#engine_settings).
+Ordinary engine values are **opaque strings**, including empty, whitespace, and multiline content. Generic CRUD requires a non-null value but does not validate its meaning for ordinary built-in settings. `Webhooks.CaptureEnabled` is the exception: management accepts only trimmed, case-insensitive `true` or `false` and stores lowercase. A successful save can therefore store a value that a consumer falls back from, or an identity setting that prevents the next startup. There is no built-in-key whitelist: adding a custom record does not give it engine behavior. See the [schema reference](database-schema.md#engine_settings).
 
-`GET /api/engine-settings` lists records and their `updatedAt` timestamps; there is no per-ID GET. Updates and deletes require the exact `expectedUpdatedAt` from the latest response. Duplicate logical names and stale mutations return `409`; invalid request fields return `400`, and an unknown mutation ID returns `404`. Update replaces both value and description; retain the existing description explicitly if it should remain. Delete puts `expectedUpdatedAt` in the query string. Reload after a conflict and use the new timestamp after every successful update.
+`GET /api/engine-settings` lists records, timestamps, and read-only `createdBy`/`updatedBy` actor fields; there is no per-ID GET. Creates and updates require a valid authenticated actor resolved by the server, never an actor supplied in request JSON. Creation sets both actors; an update preserves `createdBy` and replaces `updatedBy`. Historical actors remain null when unknown. AI model create/update/delete operations also attribute the containing `AiAuthoring.Models` row; these are row metadata, not a complete change history. Updates and deletes require the exact `expectedUpdatedAt` from the latest response. Duplicate logical names and stale mutations return `409`; invalid request fields return `400`, and an unknown mutation ID returns `404`. Update replaces both value and description; retain the existing description explicitly if it should remain. Delete puts `expectedUpdatedAt` in the query string. Reload after a conflict and use the new timestamp after every successful update.
 
-Deleting a permission row restores `admin`; it does not remove the permission check. Deleting a numeric row restores its runtime default; it does not disable the bound. A legacy duplicate can become effective after the preferred row is deleted. Identity deletion takes effect after an API restart. The reserved AI-model row cannot be deleted through generic settings CRUD.
+Deleting a permission row restores `admin`; it does not remove the permission check. Deleting a numeric row restores its runtime default; it does not disable the bound. A legacy duplicate can become effective after the preferred row is deleted. Identity deletion takes effect after an API restart. The capture row cannot be deleted (`400`); disable it by saving `false`. The reserved AI-model row cannot be deleted through generic settings CRUD.
 
 Implementation: [lookup and persistence](../Flowbit/src/Flowbit.Infrastructure/Repositories/EngineSettingsRepository.cs), [management validation](../Flowbit/src/Flowbit.Service/Services/SettingManagementValidation.cs), [HTTP handlers and permission filter](../Flowbit/src/Flowbit.Api/Endpoints/SettingsEndpoints.cs), and [reserved-row protection](../Flowbit/src/Flowbit.Service/Services/EngineSettingsService.cs).
 
@@ -339,6 +340,19 @@ Changing a model's ID selection, provider model, endpoint, or reasoning effort i
 
 See [AI authoring](ai-authoring.md), [catalog operations](api-guide.md#ai-models), and [deployment catalog guidance](deployment.md#ai-model-catalog). Implementation: [catalog rules](../Flowbit/src/Flowbit.Service/Ai/AiModelSettingRules.cs), [storage and revision handling](../Flowbit/src/Flowbit.Service/Ai/AiModelSettingsService.cs), and [generic protection](../Flowbit/src/Flowbit.Service/Services/EngineSettingsService.cs).
 
+## Lifecycle capture setting
+
+### Webhooks.CaptureEnabled
+
+- **Namespace / key:** `Webhooks` / `CaptureEnabled`; only this canonical representation is accepted.
+- **Value / fallback:** the strings `true` and `false`. Management trims surrounding whitespace, accepts either letter case, and stores lowercase; other values, including NUL-padded strings, return `400`. The database capture gate treats a missing or unusable value as disabled without casting arbitrary strings.
+- **Seed:** `ConsolidateLifecycleCaptureSettings` imports the old capture switch; a fresh migration chain starts at `false`. The row cannot be deleted through settings management or ordinary SQL deletes.
+- **Takes effect:** lifecycle transitions committed after the setting change commits, without restarting replicas. Capture still requires an active matching subscription; no events are backfilled for an interval with capture off.
+
+Edit the row through **Engine settings** or the [settings API](api-guide.md#put-apiengine-settingsid), with `Settings.RequiredRole`. SQL operators use `flowbit.set_lifecycle_event_capture(enabled, operator)`; do not write the row directly. Each actual Boolean toggle records exactly one webhook management audit entry in the same transaction. The SQL helper trims surrounding Unicode whitespace from the operator, rejects whitespace-only names (including tabs, newlines, and nonbreaking spaces), and limits the trimmed name to 300 characters. It advances `UpdatedAt` monotonically and does nothing for an unchanged Boolean value. A normal API save still updates `UpdatedAt`/`UpdatedBy` for a same-value or description-only edit, without recording a toggle. The webhook catalog's `capture.changedAt`/`changedBy` report that latest setting edit.
+
+Capture and sending remain independent: `Webhooks:DeliveryEnabled` is a per-Worker host setting, not an engine-setting row. Disabling delivery retains captured work; disabling capture leaves a permanent gap. See [lifecycle webhook operations](deployment.md#lifecycle-webhooks) and [schema rules](database-schema.md#engine_settings).
+
 ## Seeding and upgrades
 
 Migration names below link to their actual seed implementation. Seeds are applied by database migrations, not on every request; Development API startup applies migrations, while other environments need the normal [deployment migration procedure](deployment.md#database-migrations). Existing recognized setting rows are preserved rather than reset to defaults. Seed checks have migration-specific legacy/casing rules; always use canonical spellings for operational writes.
@@ -353,6 +367,9 @@ Migration names below link to their actual seed implementation. Seeds are applie
 | [AddSharedVariables](../Flowbit/src/Flowbit.Infrastructure/Data/Migrations/20260824174251_AddSharedVariables.cs) | `SharedVariables.RequiredRole` = `admin`. |
 | [AddLocalIdentity](../Flowbit/src/Flowbit.Infrastructure/Data/Migrations/20261021153025_AddLocalIdentity.cs) | `Users.RequiredRole` = `admin`. |
 | [AddUserTaskDueDateAndPriority](../Flowbit/src/Flowbit.Infrastructure/Data/Migrations/20261027075021_AddUserTaskDueDateAndPriority.cs) | `UserTasks.DueSoonThreshold` = `P1D`. Down removes the row only if it is unchanged. |
+| [ConsolidateLifecycleCaptureSettings](../Flowbit/src/Flowbit.Infrastructure/Data/Migrations/20261108120000_ConsolidateLifecycleCaptureSettings.cs) | `Webhooks.CaptureEnabled` from the previous database capture switch; fresh installs retain `false`. Adds nullable actor columns for all engine settings. |
+
+Capture consolidation requires a coordinated upgrade of API/UI/Worker versions; stop API and Worker writers before migration. It removes the old capture table without a compatibility view and refuses any existing canonical or equivalent capture key rather than overwrite it. The imported setting uses the old `ChangedAt` for both initial timestamps (its original creation time is unknown), copies `ChangedBy` to `UpdatedBy`, and leaves `CreatedBy` null. Other existing rows retain null actors. Down restores the current capture state and original functions but removes the new actor columns. See [rollout](deployment.md#rollout).
 
 `Authentication.UserIdentityClaim` and `AiAuthoring.Models` are optional and unseeded. No provider keys or task-distribution credentials are seeded. Host configuration supplies deployment secrets where the relevant feature requires it; the AI catalog has its dedicated credential management.
 

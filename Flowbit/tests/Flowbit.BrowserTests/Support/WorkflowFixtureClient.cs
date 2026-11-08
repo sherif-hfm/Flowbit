@@ -50,6 +50,19 @@ public sealed class WorkflowFixtureClient : IAsyncDisposable
 
     public string[] Roles { get; }
 
+    public Task<IReadOnlyList<EngineSettingDto>> ListEngineSettingsAsync() =>
+        SendAsync<IReadOnlyList<EngineSettingDto>>(HttpMethod.Get, "/api/engine-settings");
+
+    public Task<EngineSettingDto> UpdateEngineSettingAsync(long id, UpdateEngineSettingRequest request) =>
+        SendAsync<EngineSettingDto>(HttpMethod.Put, $"/api/engine-settings/{id}", request);
+
+    public Task DeleteEngineSettingAsync(long id, DateTimeOffset expectedUpdatedAt) =>
+        SendAsync(HttpMethod.Delete,
+            $"/api/engine-settings/{id}?expectedUpdatedAt={Uri.EscapeDataString(expectedUpdatedAt.ToString("O", System.Globalization.CultureInfo.InvariantCulture))}");
+
+    public Task<WebhookEventCatalogDto> GetWebhookEventCatalogAsync() =>
+        SendAsync<WebhookEventCatalogDto>(HttpMethod.Get, "/api/webhook-event-types");
+
     public ValueTask DisposeAsync()
     {
         http.Dispose();

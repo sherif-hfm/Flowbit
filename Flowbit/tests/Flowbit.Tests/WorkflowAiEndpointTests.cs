@@ -288,8 +288,8 @@ public sealed class WorkflowAiEndpointTests
             key == "SharedVariables.RequiredRole" && catalogRole is not null
                 ? new(1, null, key, catalogRole, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow) : null);
         public Task<IReadOnlyList<EngineSettingRecord>> SearchAsync(string pattern, CancellationToken ct) => throw new NotSupportedException();
-        public Task<EngineSettingRecord> SetAsync(string key, string value, CancellationToken ct) => throw new NotSupportedException();
-        public Task<bool> DeleteAsync(string key, CancellationToken ct) => throw new NotSupportedException();
+        public Task<EngineSettingRecord> SetAsync(string key, string value, string actor, CancellationToken ct) => throw new NotSupportedException();
+        public Task<bool> DeleteAsync(string key, string actor, CancellationToken ct) => throw new NotSupportedException();
     }
 
     private sealed class FakeAuthoring : IWorkflowAiAuthoringService

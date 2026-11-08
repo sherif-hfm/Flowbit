@@ -32,7 +32,7 @@ public sealed class DurableAutomaticLoopGuardIntegrationTests(PostgresApiFixture
                 await settings.SetAsync(
                     WorkflowAutomaticActivationGuard.SettingKey,
                     "1",
-                    CancellationToken.None);
+                    "settings-test", CancellationToken.None);
             }
 
             var instanceId = await InsertAndStartAsync(
@@ -141,7 +141,7 @@ public sealed class DurableAutomaticLoopGuardIntegrationTests(PostgresApiFixture
                 await settings.SetAsync(
                     WorkflowAutomaticActivationGuard.SettingKey,
                     "1",
-                    timeout.Token);
+                    "settings-test", timeout.Token);
             }
 
             var instanceId = await InsertAndStartAsync(
@@ -279,7 +279,7 @@ public sealed class DurableAutomaticLoopGuardIntegrationTests(PostgresApiFixture
                 await settings.SetAsync(
                     WorkflowAutomaticActivationGuard.SettingKey,
                     "1",
-                    CancellationToken.None);
+                    "settings-test", CancellationToken.None);
             }
 
             var instanceId = await InsertAndStartAsync(
@@ -387,7 +387,7 @@ public sealed class DurableAutomaticLoopGuardIntegrationTests(PostgresApiFixture
                 await settings.SetAsync(
                     WorkflowAutomaticActivationGuard.SettingKey,
                     "1",
-                    CancellationToken.None);
+                    "settings-test", CancellationToken.None);
             }
 
             var instanceId = await InsertAndStartAsync(
@@ -487,7 +487,7 @@ public sealed class DurableAutomaticLoopGuardIntegrationTests(PostgresApiFixture
                 await settings.SetAsync(
                     WorkflowAutomaticActivationGuard.SettingKey,
                     "1",
-                    CancellationToken.None);
+                    "settings-test", CancellationToken.None);
             }
 
             var instanceId = await InsertAndStartAsync(
@@ -614,7 +614,7 @@ public sealed class DurableAutomaticLoopGuardIntegrationTests(PostgresApiFixture
                 await settings.SetAsync(
                     WorkflowAutomaticActivationGuard.SettingKey,
                     "1",
-                    CancellationToken.None);
+                    "settings-test", CancellationToken.None);
             }
 
             var instanceId = await InsertAndStartAsync(
@@ -802,14 +802,14 @@ public sealed class DurableAutomaticLoopGuardIntegrationTests(PostgresApiFixture
         {
             await settings.DeleteAsync(
                 WorkflowAutomaticActivationGuard.SettingKey,
-                CancellationToken.None);
+                "settings-test", CancellationToken.None);
             return;
         }
 
         await settings.SetAsync(
             WorkflowAutomaticActivationGuard.SettingKey,
             previousSetting.Value,
-            CancellationToken.None);
+            "settings-test", CancellationToken.None);
     }
 
     private async Task DeleteWorkflowAsync(string workflowKey)

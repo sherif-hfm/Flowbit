@@ -634,7 +634,8 @@ Storage follows the hybrid design:
   invariants:
   - Capture lives only in the deferred constraint triggers on `workflow_instances`,
     `user_tasks`, `workflow_incidents`, and `user_delegations`
-    (`capture_*_lifecycle()`), gated by the `lifecycle_event_capture_state` switch
+    (`capture_*_lifecycle()`), gated by the canonical `Webhooks.CaptureEnabled` row
+    in `engine_settings`
     and the transaction-local `flowbit.lifecycle_events = 'off'` setting. Never add
     application-level event emission. A new lifecycle status, source column, or
     source table must update the capture functions and `LifecycleEventCatalog`
@@ -1516,7 +1517,20 @@ Storage follows the hybrid design:
   create, update or delete it. It is managed only through `/ai-models` and
   `/api/ai-models` with the same `Settings.RequiredRole` authorization. Business
   calendars (`/business-calendars`, `/api/business-calendars`) use the same role
-  and `UpdatedAt` concurrency.
+  and `UpdatedAt` concurrency. Engine-setting create/update paths require an explicit
+  authenticated actor, including AI-model create/update/delete writes to their
+  containing row. `CreatedBy` and `UpdatedBy` are nullable 300-character strings;
+  null preserves unknown historical attribution, creation sets both, and updates
+  preserve the creator. Never accept these fields from request bodies.
+  `Webhooks.CaptureEnabled` is the protected canonical `Webhooks`/`CaptureEnabled`
+  row: generic management normalizes Boolean strings, rejects aliases and deletion,
+  and retains ordinary optimistic-save timestamps. Database guard/audit triggers
+  enforce the row and record one webhook audit entry per actual toggle. The SQL
+  helper `set_lifecycle_event_capture` retains unchanged-call no-ops and advances
+  timestamps monotonically on changes. Capture DTO metadata means the latest
+  setting edit, including description-only saves. The consolidation migration
+  removes the old singleton table with no compatibility view: coordinate API/UI/
+  Worker upgrades and stop old writers first.
 
 - **History and audit retention.** `/retention` manages nine deployment-wide
   categories through `/api/retention`, authorized by `Settings.RequiredRole`,

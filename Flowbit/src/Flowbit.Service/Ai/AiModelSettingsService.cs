@@ -36,8 +36,9 @@ public sealed class AiModelSettingsService(
         return models.Select(ToDto).ToArray();
     }
 
-    public async Task<AiModelSettingDto> CreateAsync(CreateAiModelRequest request, CancellationToken cancellationToken)
+    public async Task<AiModelSettingDto> CreateAsync(CreateAiModelRequest request, string actor, CancellationToken cancellationToken)
     {
+        actor = EngineSettingWriteRules.NormalizeActor(actor);
         ArgumentNullException.ThrowIfNull(request);
         var definition = AiModelSettingRules.NormalizeDefinition(request.Name, request.Endpoint, request.Model, request.ReasoningEffort);
         var apiKey = AiModelSettingRules.NormalizeApiKey(request.ApiKey, required: true)!;
@@ -55,13 +56,14 @@ public sealed class AiModelSettingsService(
             };
             models.Add(model);
             return model;
-        }, cancellationToken);
+        }, actor, cancellationToken);
         logger.LogInformation("AI model {AiModelId} created.", id);
         return ToDto(created!);
     }
 
-    public async Task<AiModelSettingDto?> UpdateAsync(string id, UpdateAiModelRequest request, CancellationToken cancellationToken)
+    public async Task<AiModelSettingDto?> UpdateAsync(string id, UpdateAiModelRequest request, string actor, CancellationToken cancellationToken)
     {
+        actor = EngineSettingWriteRules.NormalizeActor(actor);
         ArgumentNullException.ThrowIfNull(request);
         var definition = AiModelSettingRules.NormalizeDefinition(request.Name, request.Endpoint, request.Model, request.ReasoningEffort);
         var apiKey = AiModelSettingRules.NormalizeApiKey(request.ApiKey, required: false);
@@ -80,14 +82,15 @@ public sealed class AiModelSettingsService(
             model.Revision++;
             model.UpdatedAt = timeProvider.GetUtcNow();
             return model;
-        }, cancellationToken);
+        }, actor, cancellationToken);
         if (updated is null) return null;
         logger.LogInformation("AI model {AiModelId} updated to revision {Revision}.", id, updated.Revision);
         return ToDto(updated);
     }
 
-    public async Task<bool> DeleteAsync(string id, long expectedRevision, CancellationToken cancellationToken)
+    public async Task<bool> DeleteAsync(string id, long expectedRevision, string actor, CancellationToken cancellationToken)
     {
+        actor = EngineSettingWriteRules.NormalizeActor(actor);
         ValidateRevision(expectedRevision);
         var removed = await WriteAsync(models =>
         {
@@ -97,7 +100,7 @@ public sealed class AiModelSettingsService(
             if (model.Revision != expectedRevision) throw Stale();
             models.RemoveAt(index);
             return model;
-        }, cancellationToken);
+        }, actor, cancellationToken);
         if (removed is null) return false;
         logger.LogInformation("AI model {AiModelId} deleted.", id);
         return true;
@@ -107,7 +110,7 @@ public sealed class AiModelSettingsService(
     /// Applies <paramref name="change"/> to the latest list and saves it. A null result means there was nothing to change. Errors
     /// thrown by the change, such as a stale model revision, are final; a conflict on the row itself is retried.
     /// </summary>
-    private async Task<StoredAiModel?> WriteAsync(Func<List<StoredAiModel>, StoredAiModel?> change, CancellationToken cancellationToken)
+    private async Task<StoredAiModel?> WriteAsync(Func<List<StoredAiModel>, StoredAiModel?> change, string actor, CancellationToken cancellationToken)
     {
         for (var attempt = 1; ; attempt++)
         {
@@ -120,10 +123,10 @@ public sealed class AiModelSettingsService(
                 if (row is null)
                 {
                     await repository.CreateAsync(AiModelSettingRules.SettingNamespace, AiModelSettingRules.SettingKey, value,
-                        AiModelSettingRules.SettingDescription, cancellationToken);
+                        AiModelSettingRules.SettingDescription, actor, cancellationToken);
                     return result;
                 }
-                if (await repository.UpdateAsync(row.Id, value, AiModelSettingRules.SettingDescription, row.UpdatedAt, cancellationToken) is not null)
+                if (await repository.UpdateAsync(row.Id, value, AiModelSettingRules.SettingDescription, row.UpdatedAt, actor, cancellationToken) is not null)
                     return result;
                 // The row was deleted after it was read; apply the change to the list as it is now.
             }

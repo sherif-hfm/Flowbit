@@ -694,7 +694,9 @@ public sealed record EngineSettingRecord(
     string Value,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
-    string? Description = null);
+    string? Description = null,
+    string? CreatedBy = null,
+    string? UpdatedBy = null);
 
 public sealed record WorkflowSettingRecord(
     long Id,

@@ -297,7 +297,8 @@ diagrams, see the [database schema reference](../docs/database-schema.md).
 - Call activities are stored in `flowbit.call_activity_executions`,
   `flowbit.call_activity_results`, and
   `flowbit.workflow_definition_call_targets`.
-- Lifecycle webhooks are stored in `flowbit.lifecycle_event_capture_state`,
+- Lifecycle capture is the protected `Webhooks.CaptureEnabled` row in
+  `flowbit.engine_settings`. Webhook data is stored in
   `flowbit.lifecycle_events`, `flowbit.webhook_subscriptions`,
   `flowbit.webhook_subscription_revisions`,
   `flowbit.webhook_subscription_dispatch_state`,
@@ -788,6 +789,7 @@ Outbound lifecycle webhooks (INT-01) deliver committed transitions to external r
 
 **Capture is in the database, not the engine.** Deferred constraint triggers on `workflow_instances`, `user_tasks`, `workflow_incidents`, and `user_delegations` (`capture_*_lifecycle()` in the `AddOutboundLifecycleWebhooks` migration) derive events from `OLD`/`NEW`, match active subscription revisions, and insert `lifecycle_events` with the exact body bytes. Runtime C# code never describes events, so every API, Worker, raw-SQL, set-based, and `ON CONFLICT DO NOTHING` path is covered by construction. **A new lifecycle status, source column, or source table must update these capture functions**; tests in `LifecycleEventCaptureTests` pin the catalog rules. A new job kind must be classified in `LifecycleEventCaptureTests`, and listed in `capture_workflow_incident_lifecycle()` when its incidents have no authored node. Every string a body copies is bounded by its column, and an incident's node external id longer than the 300 characters a running node can hold is reported as null rather than truncated.
 
+- **Capture configuration.** The canonical `Webhooks.CaptureEnabled` engine setting stores lowercase `true`/`false`; database guards reject alternate keys, invalid values, and deletion. Settings administrators edit it through the existing page/API, while SQL operators retain `set_lifecycle_event_capture(boolean, text)`. A database audit trigger records one management audit event per actual toggle. API metadata-only saves still advance `UpdatedAt`/`UpdatedBy`; unchanged SQL helper calls do nothing. Capture catalog `changedAt`/`changedBy` mean the latest setting edit. `ConsolidateLifecycleCaptureSettings` removes the former singleton table and requires a coordinated upgrade; see [rollout](../docs/deployment.md#rollout).
 - **Commit semantics.** Column lists and `WHEN` clauses decide at row-change time whether a call is queued, so unrelated updates queue nothing. Queued calls run at commit in change order, after rows written later in the transaction (node executions) exist, and read the definition applying at commit. Rollback, savepoint rollback, an unchanged update, capture off, `SET LOCAL flowbit.lifecycle_events = 'off'`, or no matching target store nothing. A trigger failure fails the source commit.
 - **Locks.** Capture runs after every runtime lock its transaction takes and takes none itself; it reads subscription rows without locks and has no foreign keys to them. Management, dispatch, and cleanup never lock runtime rows. Webhook rows locked together follow subscription → dispatch state → signing key → delivery → attempt. Fanout locks its batch of events, then share-locks their subscriptions before reading their state, so it waits for an archive in progress and never leaves a pending delivery behind a settled archive. Call activities keep their one-existing-instance-per-transaction rule: parent and child events belong to their own transactions.
 - **Recipients.** `RecipientUserIds` holds internal canonical recipients for the planned notification center (UI-13), which will add its own internal target to `lifecycle_capture_wanted` and `lifecycle_event_targets` and must reauthorize access before showing anything. They never reach external bodies or delivery reads.
@@ -1022,6 +1024,12 @@ settings (`admin`) and three execution limits (`1000`), plus workflow-context
 feature migrations seed settings management, shared-variable and local-user
 permissions, and the three batch limits; `WorkflowVariableUpdates.MaxBatchInstances`
 is seeded by `AddInstanceVariableUpdates`, not `SeedDefaultSettings`.
+`ConsolidateLifecycleCaptureSettings` imports `Webhooks.CaptureEnabled` from the
+old capture table (fresh installs start disabled), adds nullable `CreatedBy` and
+`UpdatedBy` to engine settings, and removes the old table without a compatibility
+view. Authenticated creates set both actors; updates preserve the creator and
+stamp the updater, including writes through AI-model management. Unknown
+historical attribution stays null. These are row metadata, not a full audit log.
 
 Seeds preserve recognized existing overrides. `Authentication.UserIdentityClaim`
 and `AiAuthoring.Models` are unseeded; manage the latter only through the AI-model

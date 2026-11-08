@@ -238,11 +238,13 @@ public sealed class NodeExecutionQueryServiceTests
         public Task<EngineSettingRecord> SetAsync(
             string key,
             string settingValue,
+            string actor,
             CancellationToken cancellationToken) =>
             throw new NotSupportedException();
 
         public Task<bool> DeleteAsync(
             string key,
+            string actor,
             CancellationToken cancellationToken) =>
             throw new NotSupportedException();
     }

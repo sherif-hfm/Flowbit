@@ -68,7 +68,7 @@ else
             <div class="section-heading">
                 <div>
                     <h2 id="engine-setting-form-heading">@(IsEditing ? "Edit engine setting" : "Add engine setting")</h2>
-                    <p>@(IsEditing ? "The namespace and key cannot be changed. Delete and recreate the setting to rename it." : "A blank namespace creates a global or legacy dotted-key setting.")</p>
+                    <p>@(IsCaptureSetting ? "This built-in setting can be enabled or disabled. Its identifier is fixed and it cannot be deleted." : IsEditing ? "The namespace and key cannot be changed. Delete and recreate the setting to rename it." : "A blank namespace creates a global or legacy dotted-key setting.")</p>
                 </div>
                 <button type="button" class="btn-close" aria-label="Close setting form" @onclick="CloseForm" disabled="@submitting"></button>
             </div>
@@ -99,9 +99,24 @@ else
                 </div>
                 <div class="full">
                     <label class="form-label" for="engine-setting-value">Value</label>
-                    <textarea id="engine-setting-value" class="form-control font-monospace" rows="4"
-                              @bind="formValue" @bind:event="oninput"></textarea>
-                    <div class="form-text">Empty strings are valid engine-setting values.</div>
+                    @if (IsCaptureSetting)
+                    {
+                        <select id="engine-setting-value" class="form-select" @bind="formValue" aria-describedby="engine-setting-capture-help">
+                            @if (formValue is not ("true" or "false"))
+                            {
+                                <option value="">Select a value</option>
+                            }
+                            <option value="false">Disabled</option>
+                            <option value="true">Enabled</option>
+                        </select>
+                        <div id="engine-setting-capture-help" class="form-text">Records lifecycle events for matching active webhook subscriptions. Events skipped while capture is disabled are not backfilled. Worker delivery is configured separately.</div>
+                    }
+                    else
+                    {
+                        <textarea id="engine-setting-value" class="form-control font-monospace" rows="4"
+                                  @bind="formValue" @bind:event="oninput"></textarea>
+                        <div class="form-text">Empty strings are valid engine-setting values.</div>
+                    }
                 </div>
                 <div class="full">
                     <label class="form-label" for="engine-setting-description">Description (optional)</label>
@@ -183,7 +198,7 @@ else
                             <th>Setting</th>
                             <th>Value preview</th>
                             <th>Description</th>
-                            <th>Timestamps</th>
+                            <th>Last update / creation</th>
                             <th><span class="visually-hidden">Actions</span></th>
                         </tr>
                     </thead>
@@ -199,12 +214,17 @@ else
                                 <td>@(string.IsNullOrWhiteSpace(item.Description) ? "—" : item.Description)</td>
                                 <td>
                                     <LocalTime Value="@item.UpdatedAt" />
+                                    <span class="data-subtitle text-break">Updated by @(item.UpdatedBy ?? "—")</span>
                                     <span class="data-subtitle">Created <LocalTime Value="@item.CreatedAt" /></span>
+                                    <span class="data-subtitle text-break">Created by @(item.CreatedBy ?? "—")</span>
                                 </td>
                                 <td class="text-end">
                                     <div class="d-flex justify-content-end gap-2">
                                         <button type="button" class="btn btn-sm btn-outline-primary" @onclick="() => OpenEdit(item)" disabled="@submitting">Edit</button>
-                                        <button type="button" class="btn btn-sm btn-outline-danger" @onclick="() => DeleteAsync(item)" disabled="@submitting">Delete</button>
+                                        @if (!IsCaptureKey(item.Namespace, item.Key))
+                                        {
+                                            <button type="button" class="btn btn-sm btn-outline-danger" @onclick="() => DeleteAsync(item)" disabled="@submitting">Delete</button>
+                                        }
                                     </div>
                                 </td>
                             </tr>
@@ -237,6 +257,9 @@ else
     private long identityVersion;
 
     private bool IsEditing => editingId is not null;
+    private bool IsCaptureSetting => IsCaptureKey(formNamespace, formKey);
+    private static bool IsCaptureKey(string? settingNamespace, string? key) =>
+        LifecycleCaptureSetting.IsReserved(settingNamespace, key);
     private bool IsRequiredRoleSetting => string.Equals(
         EffectiveKey(formNamespace, formKey),
         "Settings.RequiredRole",
@@ -381,6 +404,12 @@ else
         if (string.IsNullOrWhiteSpace(formKey))
         {
             formError = "A key is required.";
+            return;
+        }
+
+        if (IsCaptureSetting && formValue is not ("true" or "false"))
+        {
+            formError = "Select Enabled or Disabled for lifecycle capture.";
             return;
         }
 

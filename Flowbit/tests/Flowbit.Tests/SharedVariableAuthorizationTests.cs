@@ -135,10 +135,12 @@ public sealed class SharedVariableAuthorizationTests
         public Task<EngineSettingRecord> SetAsync(
             string key,
             string value,
+            string actor,
             CancellationToken cancellationToken) => throw new NotSupportedException();
 
         public Task<bool> DeleteAsync(
             string key,
+            string actor,
             CancellationToken cancellationToken) => throw new NotSupportedException();
     }
 }

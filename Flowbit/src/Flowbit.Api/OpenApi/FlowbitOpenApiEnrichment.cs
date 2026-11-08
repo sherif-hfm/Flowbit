@@ -380,6 +380,11 @@ internal static partial class FlowbitOpenApiEnrichment
 
     private static string DescribeSchemaProperty(Type declaringType, string propertyName, Type propertyType)
     {
+        if (declaringType == typeof(EngineSettingDto) && propertyName is "createdBy" or "updatedBy")
+            return propertyName == "createdBy"
+                ? "The server-resolved actor who created this setting; null when historical attribution is unknown."
+                : "The server-resolved actor who last updated this setting; null when historical attribution is unknown.";
+
         if (propertyName == "id" && (declaringType == typeof(AiModelDto) || declaringType == typeof(AiModelSettingDto)))
         {
             return "The stable server-generated identifier of the configured AI model.";

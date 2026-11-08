@@ -779,6 +779,10 @@ namespace Flowbit.Infrastructure.Data.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasDefaultValueSql("now()");
 
+                    b.Property<string>("CreatedBy")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
                     b.Property<string>("Description")
                         .HasMaxLength(1000)
                         .HasColumnType("character varying(1000)");
@@ -796,6 +800,10 @@ namespace Flowbit.Infrastructure.Data.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("timestamp with time zone")
                         .HasDefaultValueSql("now()");
+
+                    b.Property<string>("UpdatedBy")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
 
                     b.Property<string>("Value")
                         .IsRequired()
@@ -1642,33 +1650,6 @@ namespace Flowbit.Infrastructure.Data.Migrations
                             t.HasCheckConstraint("CK_instance_variable_update_batch_jobs_identity", "\"BatchId\" > 0 AND \"WorkflowDefinitionId\" > 0 AND \"OriginalJobId\" > 0");
 
                             t.HasCheckConstraint("CK_instance_variable_update_batch_jobs_phase", "\"Phase\" IN ('prepare', 'execute')");
-                        });
-                });
-
-            modelBuilder.Entity("Flowbit.Infrastructure.Entities.LifecycleEventCaptureStateEntity", b =>
-                {
-                    b.Property<int>("Id")
-                        .HasColumnType("integer");
-
-                    b.Property<DateTimeOffset>("ChangedAt")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("timestamp with time zone")
-                        .HasDefaultValueSql("now()");
-
-                    b.Property<string>("ChangedBy")
-                        .HasMaxLength(300)
-                        .HasColumnType("character varying(300)");
-
-                    b.Property<bool>("Enabled")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("boolean")
-                        .HasDefaultValue(false);
-
-                    b.HasKey("Id");
-
-                    b.ToTable("lifecycle_event_capture_state", "flowbit", t =>
-                        {
-                            t.HasCheckConstraint("CK_lifecycle_event_capture_state_singleton", "\"Id\" = 1");
                         });
                 });
 

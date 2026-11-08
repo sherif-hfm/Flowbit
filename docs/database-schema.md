@@ -33,7 +33,7 @@ Table names below omit the `flowbit.` qualifier. The page reflects the current m
 
 ## Conventions
 
-- **Schema.** All 68 tables, the EF `__EFMigrationsHistory` table, sequences, triggers, and functions live in `flowbit`. The `citext` extension, used for case-insensitive keys and user names, is installed in `public`.
+- **Schema.** All 67 tables, the EF `__EFMigrationsHistory` table, sequences, triggers, and functions live in `flowbit`. The `citext` extension, used for case-insensitive keys and user names, is installed in `public`.
 - **Identifiers.** Most tables use a `bigint` identity `Id`. Natural or composite primary keys are called out per table.
 - **Authored IDs are not foreign keys.** `NodeId`, `FlowId`, `SequenceFlowId`, `SourceNodeId`, `GatewayNodeId`, and similar integer columns refer to elements inside `workflow_definitions.Definition` JSON. Read them together with the row's `WorkflowDefinitionId`.
 - **Snapshots.** Runtime rows copy what they need from the definition (node names, types, external IDs, roles, conditions) when they are created, so open work keeps the rules it started with. Only an audited version change updates them.
@@ -100,7 +100,6 @@ Table names below omit the `flowbit.` qualifier. The page reflects the current m
 | [`business_calendars`](#business_calendars) | [Business calendars](#business-calendars) | Named working weeks, holidays, and time zones that durations can count in. |
 | [`retention_policies`](#retention_policies) | [Retention](#retention) | Retention period per history/audit category. |
 | [`retention_coordinator`](#retention_coordinator) | [Retention](#retention) | Singleton lease and run state for retention cleanup. |
-| [`lifecycle_event_capture_state`](#lifecycle_event_capture_state) | [Lifecycle webhooks](#lifecycle-webhooks) | The singleton database switch every capture trigger reads. |
 | [`lifecycle_events`](#lifecycle_events) | [Lifecycle webhooks](#lifecycle-webhooks) | Committed lifecycle transitions that matched a target, with their exact signed body bytes. |
 | [`webhook_subscriptions`](#webhook_subscriptions) | [Lifecycle webhooks](#lifecycle-webhooks) | Webhook subscription metadata, state, and management revision. |
 | [`webhook_subscription_revisions`](#webhook_subscription_revisions) | [Lifecycle webhooks](#lifecycle-webhooks) | Immutable destination configurations that captures and deliveries keep. |
@@ -1527,12 +1526,17 @@ String settings managed at `/engine-settings`, unique per namespace and key. Exa
 | Column | Meaning |
 | --- | --- |
 | `Namespace`, `Key`, `Value` | Logical identifier (immutable after creation) and string value. |
-| `Description`, `CreatedAt`, `UpdatedAt` | Optional description and optimistic concurrency timestamp. |
+| `Description`, `CreatedAt`, `UpdatedAt` | Optional description, creation time, and optimistic concurrency timestamp. |
+| `CreatedBy`, `UpdatedBy` | Nullable actor strings, at most 300 characters. Authenticated creation sets both; updates preserve the creator and replace the updater. Unknown historical actors remain null. |
 
 - **Primary key:** `Id`
 - **References:** none
 - **Referenced by:** none
 - **Unique:** (`Namespace`, `Key`)
+
+The protected row `Webhooks.CaptureEnabled` stores the lifecycle capture switch as canonical lowercase `true` or `false`. Only namespace `Webhooks` and key `CaptureEnabled` are allowed; the database guard rejects aliases, invalid values, deletion, and key changes. Generic settings management can edit this row. The capture audit trigger records one `captureEnabled`/`captureDisabled` entry for an actual value toggle, and none for metadata-only edits. SQL operators use `set_lifecycle_event_capture(boolean, text)`, which retains its signature and does nothing when the value is unchanged. The helper and toggle guard reject an operator that is blank after Unicode whitespace trimming; helper writes and audit actors use the trimmed name. Capture reads the row directly without locks or a Boolean cast; missing or unusable values disable capture.
+
+`ConsolidateLifecycleCaptureSettings` moves the old singleton state here and drops `lifecycle_event_capture_state`, with no compatibility view. It copies the old `ChangedAt` to both initial timestamps and `ChangedBy` to `UpdatedBy`, leaving the original creator unknown. Down reconstructs the singleton from the current value and removes both actor columns.
 
 The reserved row `AiAuthoring.Models` stores the AI assistant's model list, including write-only keys. The generic settings API hides it and refuses to write it; it is managed only through `/api/ai-models`.
 
@@ -1641,13 +1645,7 @@ erDiagram
 - **Incident nodes.** An `incident.opened` body reports a node only when an authored node applies. Its capture function reads the source job's `Kind`: version-change and variable-update batch jobs name the initial start event only to anchor their row, so their incidents report null `nodeId` and `nodeExternalId`, as does a `NodeId` that is not positive. An administrative batch job reports the user task whose positions its batch acts on, and every other job kind reports its own node. `LifecycleEventCaptureTests` classifies every job kind, so a new kind must be classified there and, when no node applies, listed in `capture_workflow_incident_lifecycle()`.
 - **Cleanup.** [Retention](#retention) runs the `webhookDeliveries` category before `lifecycleEvents`; both keep rows forever by default. Delivery cleanup ages `succeeded` and `discarded` deliveries from `SettledAt` and deletes each delivery's `webhook_delivery_attempts` rows before the delivery. Pending, scheduled, leased, and failed deliveries are never deleted, so a failure must be retried or discarded first. Event cleanup ages events from `OccurredAt` and deletes one only when `FanoutCompletedAt` is set and no delivery references it. Both skip locked rows instead of waiting. Subscriptions, revisions, dispatch state, management audit, signing-key rows, and the key ring are kept; the Worker only clears the `ProtectedSecret` of a key that is no longer current or previous once its `RemoveSecretNotBefore` has passed. Webhook cleanup never touches runtime rows, `HistoryPrunedAt`, or reactivation eligibility.
 
-### `lifecycle_event_capture_state`
-
-One row (`Id = 1`) with `Enabled`, `ChangedAt`, and `ChangedBy`. Change it only with `flowbit.set_lifecycle_event_capture(enabled, operator)`, which also audits the change. The migration seeds it disabled.
-
-- **Primary key:** `Id`
-- **References:** none
-- **Referenced by:** none
+Capture configuration is the protected `Webhooks.CaptureEnabled` row in [`engine_settings`](#engine_settings); the former singleton capture table no longer exists.
 
 ### `lifecycle_events`
 
@@ -1847,7 +1845,9 @@ Migrations also create these objects with raw SQL. They are part of the schema c
 | `TR_user_delegations_lifecycle_insert` → `capture_user_delegation_lifecycle()` | Deferred constraint trigger on `user_delegations` (`AFTER INSERT`) | Records `delegation.granted`. |
 | `lifecycle_capture_wanted()`, `lifecycle_event_targets()`, `record_lifecycle_event()`, `lifecycle_event_timestamp()`, `lifecycle_json_text()` | Functions | The capture gate (switch, `flowbit.lifecycle_events` setting, any matching target), target matching, and canonical body construction. A new lifecycle status or source table must update these and the capture functions. |
 | `uuid_v7()` | Function | Time-ordered UUIDv7 event and delivery ids; PostgreSQL 18 adds a built-in. |
-| `set_lifecycle_event_capture(boolean, text)`, `record_webhook_test_event(uuid)` | Functions | The audited capture switch, and the signed test event queued for one subscription. |
+| `set_lifecycle_event_capture(boolean, text)`, `record_webhook_test_event(uuid)` | Functions | Update the canonical capture engine setting with monotonic timestamp/operator metadata (unchanged calls are no-ops), and queue a signed test event for one subscription. |
+| `TR_engine_settings_capture_guard` → `guard_lifecycle_capture_setting()` | `BEFORE INSERT OR UPDATE OR DELETE` row trigger on `engine_settings` | Protect the canonical capture key, Boolean value, and row against deletion or renaming. |
+| `TR_engine_settings_capture_audit` → `audit_lifecycle_capture_setting()` | `AFTER UPDATE` row trigger on `engine_settings` | Record one webhook management audit entry for an actual capture Boolean toggle in the same transaction. |
 
 The former shared-variable conditional tables (`shared_variable_wakes`, `shared_variable_wake_deliveries`, `shared_variable_wake_incidents`, and `workflow_definition_shared_variable_dependencies`) were dropped by the guarded `RemoveSharedVariableConditionalWakes` migration and no longer exist.
 
@@ -1871,7 +1871,7 @@ SELECT c.conrelid::regclass AS child_table,
  ORDER BY 1, 2;
 ```
 
-A database migrated to the current release has 68 `flowbit` tables (plus `__EFMigrationsHistory`) and 130 foreign keys.
+A database migrated to the current release has 67 `flowbit` tables (plus `__EFMigrationsHistory`) and 130 foreign keys.
 
 ## Keeping this page current
 

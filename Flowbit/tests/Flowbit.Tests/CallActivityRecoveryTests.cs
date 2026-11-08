@@ -582,7 +582,7 @@ public sealed class CallActivityRecoveryTests(PostgresApiFixture fixture) : IAsy
         await using var scope = fixture.Factory.Services.CreateAsyncScope();
         var settings = scope.ServiceProvider.GetRequiredService<IEngineSettingsRepository>();
         var original = await settings.GetByKeyAsync("Workflow.MultiInstance.MaxInstances", CancellationToken.None);
-        await settings.SetAsync("Workflow.MultiInstance.MaxInstances", "1", CancellationToken.None);
+        await settings.SetAsync("Workflow.MultiInstance.MaxInstances", "1", "settings-test", CancellationToken.None);
         try
         {
             var finishingChild = (await harness.InvocationAsync(finishing)).ChildInstanceId!.Value;
@@ -602,7 +602,7 @@ public sealed class CallActivityRecoveryTests(PostgresApiFixture fixture) : IAsy
         }
         finally
         {
-            await settings.SetAsync("Workflow.MultiInstance.MaxInstances", original?.Value ?? "1000", CancellationToken.None);
+            await settings.SetAsync("Workflow.MultiInstance.MaxInstances", original?.Value ?? "1000", "settings-test", CancellationToken.None);
         }
     }
 

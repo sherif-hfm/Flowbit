@@ -583,8 +583,8 @@ public interface IEngineSettingsService
 {
     Task<EngineSettingRecord?> GetByKeyAsync(string key, CancellationToken cancellationToken);
     Task<IReadOnlyList<EngineSettingRecord>> SearchAsync(string pattern, CancellationToken cancellationToken);
-    Task<EngineSettingRecord> SetAsync(string key, string value, CancellationToken cancellationToken);
-    Task<bool> DeleteAsync(string key, CancellationToken cancellationToken);
+    Task<EngineSettingRecord> SetAsync(string key, string value, string actor, CancellationToken cancellationToken);
+    Task<bool> DeleteAsync(string key, string actor, CancellationToken cancellationToken);
 
     Task<IReadOnlyList<EngineSettingRecord>> ListAsync(CancellationToken cancellationToken) =>
         Task.FromException<IReadOnlyList<EngineSettingRecord>>(
@@ -595,6 +595,7 @@ public interface IEngineSettingsService
         string key,
         string value,
         string? description,
+        string actor,
         CancellationToken cancellationToken) =>
         Task.FromException<EngineSettingRecord>(
             new NotSupportedException("This service does not support settings management."));
@@ -604,6 +605,7 @@ public interface IEngineSettingsService
         string value,
         string? description,
         DateTimeOffset expectedUpdatedAt,
+        string actor,
         CancellationToken cancellationToken) =>
         Task.FromException<EngineSettingRecord?>(
             new NotSupportedException("This service does not support settings management."));
@@ -611,6 +613,7 @@ public interface IEngineSettingsService
     Task<bool> DeleteByIdAsync(
         long id,
         DateTimeOffset expectedUpdatedAt,
+        string actor,
         CancellationToken cancellationToken) =>
         Task.FromException<bool>(
             new NotSupportedException("This service does not support settings management."));
@@ -624,13 +627,13 @@ public interface IAiModelSettingsService
 {
     Task<IReadOnlyList<AiModelSettingDto>> ListAsync(CancellationToken cancellationToken);
 
-    Task<AiModelSettingDto> CreateAsync(CreateAiModelRequest request, CancellationToken cancellationToken);
+    Task<AiModelSettingDto> CreateAsync(CreateAiModelRequest request, string actor, CancellationToken cancellationToken);
 
     /// <summary>Null when no model has <paramref name="id"/>.</summary>
-    Task<AiModelSettingDto?> UpdateAsync(string id, UpdateAiModelRequest request, CancellationToken cancellationToken);
+    Task<AiModelSettingDto?> UpdateAsync(string id, UpdateAiModelRequest request, string actor, CancellationToken cancellationToken);
 
     /// <summary>False when no model has <paramref name="id"/>.</summary>
-    Task<bool> DeleteAsync(string id, long expectedRevision, CancellationToken cancellationToken);
+    Task<bool> DeleteAsync(string id, long expectedRevision, string actor, CancellationToken cancellationToken);
 }
 
 public interface IWorkflowSettingsService

@@ -1,3 +1,4 @@
+using Flowbit.Api.Auth;
 using Flowbit.Service.Abstractions;
 using Flowbit.Shared.Dtos;
 
@@ -57,11 +58,12 @@ public static class AiModelEndpoints
     private static async Task<IResult> CreateAiModel(
         HttpContext http,
         CreateAiModelRequest request,
+        IActorContextResolver actorResolver,
         IAiModelSettingsService service,
         CancellationToken cancellationToken)
     {
         http.Response.Headers.CacheControl = "no-store";
-        var model = await service.CreateAsync(request, cancellationToken);
+        var model = await service.CreateAsync(request, SettingsEndpoints.RequireActor(http, actorResolver), cancellationToken);
         return Results.Created($"/api/ai-models/{Uri.EscapeDataString(model.Id)}", model);
     }
 
@@ -69,21 +71,24 @@ public static class AiModelEndpoints
         HttpContext http,
         string id,
         UpdateAiModelRequest request,
+        IActorContextResolver actorResolver,
         IAiModelSettingsService service,
         CancellationToken cancellationToken)
     {
         http.Response.Headers.CacheControl = "no-store";
-        var model = await service.UpdateAsync(id, request, cancellationToken);
+        var model = await service.UpdateAsync(id, request, SettingsEndpoints.RequireActor(http, actorResolver), cancellationToken);
         return model is null ? Results.NotFound() : Results.Ok(model);
     }
 
     private static async Task<IResult> DeleteAiModel(
+        HttpContext http,
         string id,
         long expectedRevision,
+        IActorContextResolver actorResolver,
         IAiModelSettingsService service,
         CancellationToken cancellationToken)
     {
-        var deleted = await service.DeleteAsync(id, expectedRevision, cancellationToken);
+        var deleted = await service.DeleteAsync(id, expectedRevision, SettingsEndpoints.RequireActor(http, actorResolver), cancellationToken);
         return deleted ? Results.NoContent() : Results.NotFound();
     }
 }

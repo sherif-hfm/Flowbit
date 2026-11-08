@@ -18,18 +18,21 @@ public sealed class EngineSettingsService(
     public async Task<IReadOnlyList<EngineSettingRecord>> SearchAsync(string pattern, CancellationToken cancellationToken) =>
         WithoutAiModels(await repository.SearchAsync(pattern, cancellationToken));
 
-    public async Task<EngineSettingRecord> SetAsync(string key, string value, CancellationToken cancellationToken)
+    public async Task<EngineSettingRecord> SetAsync(string key, string value, string actor, CancellationToken cancellationToken)
     {
+        actor = EngineSettingWriteRules.NormalizeActor(actor);
         RejectAiModels(AiModelSettingRules.IsReservedEngineSetting(key));
-        var record = await repository.SetAsync(key, value, cancellationToken);
+        var record = await repository.SetAsync(key, value, actor, cancellationToken);
         logger.LogInformation("Engine setting '{Key}' updated.", key);
         return record;
     }
 
-    public async Task<bool> DeleteAsync(string key, CancellationToken cancellationToken)
+    public async Task<bool> DeleteAsync(string key, string actor, CancellationToken cancellationToken)
     {
+        actor = EngineSettingWriteRules.NormalizeActor(actor);
         RejectAiModels(AiModelSettingRules.IsReservedEngineSetting(key));
-        var deleted = await repository.DeleteAsync(key, cancellationToken);
+        EngineSettingWriteRules.RejectCaptureDeletion(null, key);
+        var deleted = await repository.DeleteAsync(key, actor, cancellationToken);
         if (deleted)
         {
             logger.LogInformation("Engine setting '{Key}' deleted.", key);
@@ -49,8 +52,10 @@ public sealed class EngineSettingsService(
         string key,
         string value,
         string? description,
+        string actor,
         CancellationToken cancellationToken)
     {
+        actor = EngineSettingWriteRules.NormalizeActor(actor);
         var normalizedNamespace = SettingManagementValidation.NormalizeNamespace(settingNamespace);
         var normalizedKey = SettingManagementValidation.NormalizeIdentifier(key, "key");
         var normalizedValue = SettingManagementValidation.NormalizeEngineValue(value);
@@ -62,6 +67,7 @@ public sealed class EngineSettingsService(
             normalizedKey,
             normalizedValue,
             normalizedDescription,
+            actor,
             cancellationToken);
         logger.LogInformation(
             "Engine setting '{Namespace}.{Key}' created with id {SettingId}.",
@@ -76,8 +82,10 @@ public sealed class EngineSettingsService(
         string value,
         string? description,
         DateTimeOffset expectedUpdatedAt,
+        string actor,
         CancellationToken cancellationToken)
     {
+        actor = EngineSettingWriteRules.NormalizeActor(actor);
         SettingManagementValidation.ValidateMutation(id, expectedUpdatedAt);
         var normalizedValue = SettingManagementValidation.NormalizeEngineValue(value);
         var normalizedDescription = SettingManagementValidation.NormalizeDescription(description);
@@ -88,6 +96,7 @@ public sealed class EngineSettingsService(
             normalizedValue,
             normalizedDescription,
             expectedUpdatedAt,
+            actor,
             cancellationToken);
         if (record is not null)
         {
@@ -100,11 +109,15 @@ public sealed class EngineSettingsService(
     public async Task<bool> DeleteByIdAsync(
         long id,
         DateTimeOffset expectedUpdatedAt,
+        string actor,
         CancellationToken cancellationToken)
     {
+        actor = EngineSettingWriteRules.NormalizeActor(actor);
         SettingManagementValidation.ValidateMutation(id, expectedUpdatedAt);
         await RejectAiModelsAsync(id, cancellationToken);
-        var deleted = await repository.DeleteByIdAsync(id, expectedUpdatedAt, cancellationToken);
+        var existing = await repository.GetByIdAsync(id, cancellationToken);
+        if (existing is not null) EngineSettingWriteRules.RejectCaptureDeletion(existing.Namespace, existing.Key);
+        var deleted = await repository.DeleteByIdAsync(id, expectedUpdatedAt, actor, cancellationToken);
         if (deleted)
         {
             logger.LogInformation("Engine setting {SettingId} deleted.", id);

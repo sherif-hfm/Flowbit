@@ -26,6 +26,8 @@ Settings administrators (any role in `Settings.RequiredRole`) manage the models 
 - **Access.** Every author who can open the assistant can use every configured model, and runs are billed to the configured provider account.
 - **Compatibility.** The shipped evaluation covers GLM-5.3-Flash on OpenCode Zen with `high` reasoning. Another provider must accept OpenAI chat-completions requests with native tool calls and `max_completion_tokens`, plus `reasoning_effort` when one is configured.
 
+Model create, update, and delete operations require a valid authenticated actor and record that actor in the containing `AiAuthoring.Models` engine-setting row. Creation sets its creator and updater; later catalog changes preserve the creator and replace the updater. Unknown historical attribution remains null; these fields describe the settings row, not individual model history. See [engine-setting attribution](engine-settings.md#values-and-concurrency).
+
 [Deployment and operations](deployment.md#ai-model-catalog) covers storage, upgrades and recovery.
 
 ## How the assistant works

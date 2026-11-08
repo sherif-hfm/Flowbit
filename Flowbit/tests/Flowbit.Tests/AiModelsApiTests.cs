@@ -52,6 +52,8 @@ public sealed class AiModelsApiTests(PostgresApiFixture fixture)
             // The models are one JSON array in engine_settings, keys included.
             var row = await ReadModelsRowAsync();
             Assert.Equal(Key, StoredKey(row.Value));
+            Assert.Equal("settings-admin", row.CreatedBy);
+            Assert.Equal("settings-admin", row.UpdatedBy);
 
             // The generic engine-settings API neither shows nor changes the row.
             using (var list = await SendAsync(HttpMethod.Get, "/api/engine-settings"))
@@ -88,12 +90,15 @@ public sealed class AiModelsApiTests(PostgresApiFixture fixture)
 
             // A blank key keeps the stored key; a new key replaces it. Neither is returned.
             using (var renamed = await SendAsync(HttpMethod.Put, $"/api/ai-models/{model.Id}",
-                       new UpdateAiModelRequest("Flash renamed", model.Endpoint, model.Model, null, null, model.Revision)))
+                       new UpdateAiModelRequest("Flash renamed", model.Endpoint, model.Model, null, null, model.Revision), user: "model-editor"))
             {
                 Assert.Equal(HttpStatusCode.OK, renamed.StatusCode);
                 model = (await renamed.Content.ReadFromJsonAsync<AiModelSettingDto>(JsonOptions))!;
             }
             Assert.Equal(("Flash renamed", (string?)null, 2L), (model.Name, model.ReasoningEffort, model.Revision));
+            var editedRow = await ReadModelsRowAsync();
+            Assert.Equal("settings-admin", editedRow.CreatedBy);
+            Assert.Equal("model-editor", editedRow.UpdatedBy);
             Assert.Equal(Key, StoredKey((await ReadModelsRowAsync()).Value));
             using (var rekeyed = await SendAsync(HttpMethod.Put, $"/api/ai-models/{model.Id}",
                        new UpdateAiModelRequest(model.Name, model.Endpoint, model.Model, "low", RotatedKey, model.Revision)))
@@ -127,11 +132,14 @@ public sealed class AiModelsApiTests(PostgresApiFixture fixture)
             using (var stale = await SendAsync(HttpMethod.Delete, $"/api/ai-models/{model.Id}?expectedRevision=1"))
                 Assert.Equal(HttpStatusCode.Conflict, stale.StatusCode);
 
-            using (var deleted = await SendAsync(HttpMethod.Delete, $"/api/ai-models/{model.Id}?expectedRevision={model.Revision}"))
+            using (var deleted = await SendAsync(HttpMethod.Delete, $"/api/ai-models/{model.Id}?expectedRevision={model.Revision}", user: "model-remover"))
                 Assert.Equal(HttpStatusCode.NoContent, deleted.StatusCode);
             using (var list = await SendAsync(HttpMethod.Get, "/api/ai-models"))
                 Assert.Empty((await list.Content.ReadFromJsonAsync<List<AiModelSettingDto>>(JsonOptions))!);
-            Assert.Equal("[]", (await ReadModelsRowAsync()).Value);
+            var finalRow = await ReadModelsRowAsync();
+            Assert.Equal("[]", finalRow.Value);
+            Assert.Equal("settings-admin", finalRow.CreatedBy);
+            Assert.Equal("model-remover", finalRow.UpdatedBy);
         }
         finally
         {
@@ -139,11 +147,11 @@ public sealed class AiModelsApiTests(PostgresApiFixture fixture)
         }
     }
 
-    private async Task<(long Id, string Value, DateTimeOffset UpdatedAt)> ReadModelsRowAsync()
+    private async Task<(long Id, string Value, DateTimeOffset UpdatedAt, string? CreatedBy, string? UpdatedBy)> ReadModelsRowAsync()
     {
         await using var db = fixture.CreateDbContext();
         var row = await db.EngineSettings.AsNoTracking().SingleAsync(setting => setting.Namespace == "AiAuthoring" && setting.Key == "Models");
-        return (row.Id, row.Value, row.UpdatedAt);
+        return (row.Id, row.Value, row.UpdatedAt, row.CreatedBy, row.UpdatedBy);
     }
 
     private async Task RemoveModelsRowAsync()

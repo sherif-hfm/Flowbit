@@ -740,7 +740,7 @@ public sealed class AdministrativeActionApiTests(PostgresApiFixture fixture)
                 await settings.SetAsync(
                     AdministrativeActionConstraints.BatchMaxAffectedTasksSetting,
                     "2",
-                    CancellationToken.None);
+                    "settings-test", CancellationToken.None);
             }
 
             var workflowId = await CreateWorkflowAsync(CreateMultiInstanceTimerModel());
@@ -790,14 +790,14 @@ public sealed class AdministrativeActionApiTests(PostgresApiFixture fixture)
             {
                 await settings.DeleteAsync(
                     AdministrativeActionConstraints.BatchMaxAffectedTasksSetting,
-                    CancellationToken.None);
+                    "settings-test", CancellationToken.None);
             }
             else
             {
                 await settings.SetAsync(
                     AdministrativeActionConstraints.BatchMaxAffectedTasksSetting,
                     previousSetting.Value,
-                    CancellationToken.None);
+                    "settings-test", CancellationToken.None);
             }
         }
     }

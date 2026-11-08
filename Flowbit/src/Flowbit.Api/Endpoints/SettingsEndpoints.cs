@@ -1,6 +1,7 @@
 using Flowbit.Api.Auth;
 using Flowbit.Service.Abstractions;
 using Flowbit.Service.Models;
+using Flowbit.Service.Services;
 using Flowbit.Shared.Dtos;
 
 namespace Flowbit.Api.Endpoints;
@@ -82,6 +83,8 @@ public static class SettingsEndpoints
 
     private static async Task<IResult> CreateEngineSetting(
         CreateEngineSettingRequest request,
+        HttpContext http,
+        IActorContextResolver actorResolver,
         IEngineSettingsService service,
         CancellationToken cancellationToken)
     {
@@ -90,6 +93,7 @@ public static class SettingsEndpoints
             request.Key,
             request.Value,
             request.Description,
+            RequireActor(http, actorResolver),
             cancellationToken);
         var dto = ToDto(setting);
         return Results.Created($"/api/engine-settings/{setting.Id}", dto);
@@ -98,6 +102,8 @@ public static class SettingsEndpoints
     private static async Task<IResult> UpdateEngineSetting(
         long id,
         UpdateEngineSettingRequest request,
+        HttpContext http,
+        IActorContextResolver actorResolver,
         IEngineSettingsService service,
         CancellationToken cancellationToken)
     {
@@ -106,6 +112,7 @@ public static class SettingsEndpoints
             request.Value,
             request.Description,
             request.ExpectedUpdatedAt,
+            RequireActor(http, actorResolver),
             cancellationToken);
         return setting is null ? Results.NotFound() : Results.Ok(ToDto(setting));
     }
@@ -113,10 +120,12 @@ public static class SettingsEndpoints
     private static async Task<IResult> DeleteEngineSetting(
         long id,
         DateTimeOffset expectedUpdatedAt,
+        HttpContext http,
+        IActorContextResolver actorResolver,
         IEngineSettingsService service,
         CancellationToken cancellationToken)
     {
-        var deleted = await service.DeleteByIdAsync(id, expectedUpdatedAt, cancellationToken);
+        var deleted = await service.DeleteByIdAsync(id, expectedUpdatedAt, RequireActor(http, actorResolver), cancellationToken);
         return deleted ? Results.NoContent() : Results.NotFound();
     }
 
@@ -168,6 +177,14 @@ public static class SettingsEndpoints
         return deleted ? Results.NoContent() : Results.NotFound();
     }
 
+    internal static string RequireActor(HttpContext http, IActorContextResolver resolver)
+    {
+        var actor = resolver.Resolve(http.User).User;
+        if (string.IsNullOrWhiteSpace(actor))
+            throw new WorkflowUnauthorizedException("An authenticated actor is required.");
+        return actor;
+    }
+
     private static EngineSettingDto ToDto(EngineSettingRecord setting) => new(
         setting.Id,
         setting.Namespace,
@@ -175,7 +192,9 @@ public static class SettingsEndpoints
         setting.Value,
         setting.Description,
         setting.CreatedAt,
-        setting.UpdatedAt);
+        setting.UpdatedAt,
+        setting.CreatedBy,
+        setting.UpdatedBy);
 
     private static WorkflowSettingDto ToDto(WorkflowSettingRecord setting) => new(
         setting.Id,

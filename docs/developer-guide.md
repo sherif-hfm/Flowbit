@@ -753,7 +753,7 @@ curl -sS -X POST "$API/api/webhook-subscriptions/$id/resume" \
   -d "{\"expectedRevision\":$revision}"
 ```
 
-The test is delivered only when an operator has enabled delivery on a Worker, and real lifecycle events are recorded only after the database capture switch is on; see [deployment](deployment.md#lifecycle-webhooks). The destination must be HTTPS on port 443 unless the operator allowlists it. Endpoints that require their own authentication header need a relay, because custom request headers are not part of this release; a tokenized catch URL with the token in its query string works.
+The test is delivered only when an operator has enabled delivery on a Worker, and real lifecycle events are recorded only after the database engine setting [`Webhooks.CaptureEnabled`](engine-settings.md#webhookscaptureenabled) is true. Settings administrators edit it through the settings page/API; see [deployment](deployment.md#lifecycle-webhooks). The destination must be HTTPS on port 443 unless the operator allowlists it. Endpoints that require their own authentication header need a relay, because custom request headers are not part of this release; a tokenized catch URL with the token in its query string works.
 
 ## Handle errors and concurrent changes
 

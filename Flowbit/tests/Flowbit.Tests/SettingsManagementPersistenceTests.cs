@@ -38,19 +38,19 @@ public sealed class SettingsManagementPersistenceTests(PostgresApiFixture fixtur
                     $"  {marker}-root  ",
                     opaqueValue,
                     "  Initial description.  ",
-                    CancellationToken.None);
+                    "settings-test", CancellationToken.None);
                 await service.CreateAsync(
                     $"  {marker}  ",
                     "  omega  ",
                     "omega-value",
                     null,
-                    CancellationToken.None);
+                    "settings-test", CancellationToken.None);
                 await service.CreateAsync(
                     marker,
                     "alpha",
                     "alpha-value",
                     "   ",
-                    CancellationToken.None);
+                    "settings-test", CancellationToken.None);
 
                 Assert.Null(root.Namespace);
                 Assert.Equal($"{marker}-root", root.Key);
@@ -96,7 +96,7 @@ public sealed class SettingsManagementPersistenceTests(PostgresApiFixture fixtur
                     string.Empty,
                     "  Revised description.  ",
                     originalUpdatedAt,
-                    CancellationToken.None);
+                    "settings-test", CancellationToken.None);
 
                 Assert.NotNull(updated);
                 Assert.Equal(rootId, updated.Id);
@@ -112,12 +112,12 @@ public sealed class SettingsManagementPersistenceTests(PostgresApiFixture fixtur
                         "stale-value",
                         "stale description",
                         originalUpdatedAt,
-                        CancellationToken.None));
+                        "settings-test", CancellationToken.None));
                 await Assert.ThrowsAsync<WorkflowConflictException>(() =>
                     service.DeleteByIdAsync(
                         rootId,
                         originalUpdatedAt,
-                        CancellationToken.None));
+                        "settings-test", CancellationToken.None));
             }
 
             await using (var deleteScope = fixture.Factory.Services.CreateAsyncScope())
@@ -127,7 +127,7 @@ public sealed class SettingsManagementPersistenceTests(PostgresApiFixture fixtur
                 Assert.True(await service.DeleteByIdAsync(
                     rootId,
                     currentUpdatedAt,
-                    CancellationToken.None));
+                    "settings-test", CancellationToken.None));
             }
 
             await using (var verifyScope = fixture.Factory.Services.CreateAsyncScope())
@@ -163,28 +163,28 @@ public sealed class SettingsManagementPersistenceTests(PostgresApiFixture fixtur
                 "duplicate",
                 "canonical",
                 null,
-                CancellationToken.None);
+                "settings-test", CancellationToken.None);
             await Assert.ThrowsAsync<WorkflowConflictException>(() =>
                 service.CreateAsync(
                     null,
                     $"{firstNamespace}.duplicate",
                     "legacy",
                     null,
-                    CancellationToken.None));
+                    "settings-test", CancellationToken.None));
 
             await service.CreateAsync(
                 null,
                 $"{secondNamespace}.duplicate",
                 "legacy",
                 null,
-                CancellationToken.None);
+                "settings-test", CancellationToken.None);
             await Assert.ThrowsAsync<WorkflowConflictException>(() =>
                 service.CreateAsync(
                     secondNamespace,
                     "duplicate",
                     "canonical",
                     null,
-                    CancellationToken.None));
+                    "settings-test", CancellationToken.None));
         }
         finally
         {
@@ -210,7 +210,7 @@ public sealed class SettingsManagementPersistenceTests(PostgresApiFixture fixtur
                 dottedKey,
                 "created",
                 "Dotted namespaced key.",
-                CancellationToken.None);
+                "settings-test", CancellationToken.None);
 
             var loaded = await service.GetByKeyAsync(effectiveKey, CancellationToken.None);
             Assert.NotNull(loaded);
@@ -220,12 +220,14 @@ public sealed class SettingsManagementPersistenceTests(PostgresApiFixture fixtur
             var updated = await service.SetAsync(
                 effectiveKey,
                 "updated",
-                CancellationToken.None);
+                "settings-editor", CancellationToken.None);
             Assert.Equal(created.Id, updated.Id);
             Assert.Equal("updated", updated.Value);
             Assert.Equal("Dotted namespaced key.", updated.Description);
+            Assert.Equal("settings-test", updated.CreatedBy);
+            Assert.Equal("settings-editor", updated.UpdatedBy);
 
-            Assert.True(await service.DeleteAsync(effectiveKey, CancellationToken.None));
+            Assert.True(await service.DeleteAsync(effectiveKey, "settings-test", CancellationToken.None));
             Assert.Null(await service.GetByKeyAsync(effectiveKey, CancellationToken.None));
         }
         finally
@@ -282,7 +284,7 @@ public sealed class SettingsManagementPersistenceTests(PostgresApiFixture fixtur
             var updated = await service.SetAsync(
                 effectiveKey,
                 "canonical-updated",
-                CancellationToken.None);
+                "settings-test", CancellationToken.None);
             Assert.Equal(canonicalId, updated.Id);
 
             await using var verify = fixture.CreateDbContext();
@@ -342,12 +344,12 @@ public sealed class SettingsManagementPersistenceTests(PostgresApiFixture fixtur
             var updated = await service.SetAsync(
                 effectiveKey,
                 "updated",
-                CancellationToken.None);
+                "settings-test", CancellationToken.None);
             Assert.Equal(legacyId, updated.Id);
             Assert.Equal("updated", updated.Value);
             Assert.Equal("Legacy whitespace namespace.", updated.Description);
 
-            Assert.True(await service.DeleteAsync(effectiveKey, CancellationToken.None));
+            Assert.True(await service.DeleteAsync(effectiveKey, "settings-test", CancellationToken.None));
             Assert.Null(await service.GetByKeyAsync(effectiveKey, CancellationToken.None));
         }
         finally
@@ -374,7 +376,7 @@ public sealed class SettingsManagementPersistenceTests(PostgresApiFixture fixtur
                     "concurrent",
                     "before",
                     null,
-                    CancellationToken.None);
+                    "settings-test", CancellationToken.None);
                 id = created.Id;
                 expectedUpdatedAt = created.UpdatedAt;
             }
@@ -392,7 +394,7 @@ public sealed class SettingsManagementPersistenceTests(PostgresApiFixture fixtur
                 "first",
                 "first writer",
                 expectedUpdatedAt,
-                timeout.Token);
+                "settings-test", timeout.Token);
             await blocker.WaitUntilPausedAsync(timeout.Token);
 
             var secondTask = secondRepository.UpdateAsync(
@@ -400,7 +402,7 @@ public sealed class SettingsManagementPersistenceTests(PostgresApiFixture fixtur
                 "second",
                 "second writer",
                 expectedUpdatedAt,
-                timeout.Token);
+                "settings-test", timeout.Token);
             await secondStarted.WaitUntilStartedAsync(timeout.Token);
             blocker.Release();
 

@@ -207,7 +207,7 @@ public sealed class DurableAutomaticLoopGuardResetIntegrationTests(PostgresApiFi
                 await settings.SetAsync(
                     WorkflowAutomaticActivationGuard.SettingKey,
                     "1",
-                    CancellationToken.None);
+                    "settings-test", CancellationToken.None);
             }
 
             await test(workflowKey);
@@ -355,14 +355,14 @@ public sealed class DurableAutomaticLoopGuardResetIntegrationTests(PostgresApiFi
         {
             await settings.DeleteAsync(
                 WorkflowAutomaticActivationGuard.SettingKey,
-                CancellationToken.None);
+                "settings-test", CancellationToken.None);
             return;
         }
 
         await settings.SetAsync(
             WorkflowAutomaticActivationGuard.SettingKey,
             previousSetting.Value,
-            CancellationToken.None);
+            "settings-test", CancellationToken.None);
     }
 
     private async Task DeleteWorkflowAsync(string workflowKey)

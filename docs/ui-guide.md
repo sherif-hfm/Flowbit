@@ -433,9 +433,11 @@ Cancellation can wait for an already-running action to release its database tran
 
 ### Engine and workflow settings
 
-Both screens require `Settings.RequiredRole` (default `admin`). **Engine settings** uses plain-text values: **Add setting**, enter namespace/key/value and optional description, then **Create setting**. **Edit → Save changes** updates a value. See the [built-in engine settings reference](engine-settings.md) for each recognized key, its exact spelling, format, defaults, and change timing. **Workflow settings** uses **JSON value**: numbers, booleans, arrays, objects, and quoted strings are accepted. Workflow settings supply workflow expression context; engine settings control deployment-wide engine behavior. Neither is per-instance data.
+Both screens require `Settings.RequiredRole` (default `admin`). **Engine settings** uses plain-text values: **Add setting**, enter namespace/key/value and optional description, then **Create setting**. **Edit → Save changes** updates a value. Engine-setting writes require a valid authenticated actor. Each row shows the creator and last updater beside its timestamps; “—” means historical attribution is unknown. See the [built-in engine settings reference](engine-settings.md) for each recognized key, its exact spelling, format, defaults, and change timing. **Workflow settings** uses **JSON value**: numbers, booleans, arrays, objects, and quoted strings are accepted. Workflow settings supply workflow expression context; engine settings control deployment-wide engine behavior. Neither is per-instance data.
 
 Namespace/key or namespace/name identifies the record and is not editable after creation. On a stale update use **Reload latest** before retrying. `Authentication.UserIdentityClaim` changes require restarting API replicas; changing permission settings can change your access on the next request. Follow [configuration](deployment.md#configuration) for host-level values such as connection strings, signing keys, and claim allowlists; these are not all editable engine settings. The `AiAuthoring.Models` engine setting, which holds the AI models and their keys, is not listed here and cannot be created, edited or deleted here; manage it on **AI models**.
+
+`Webhooks.CaptureEnabled` appears in Engine settings with a Boolean selector. Choose **Enabled** or **Disabled** and save; the row has no Delete action. Disabling capture skips future lifecycle events permanently, while Worker delivery remains a separate host setting. The [capture reference](engine-settings.md#webhookscaptureenabled) explains activation and audit behavior.
 
 ### AI models
 
@@ -494,7 +496,7 @@ Saved policies apply to automatic Worker cleanup. **Run cleanup now** queues a r
 
 Without that role, or when the API asks you to sign in again, the page and each delivery's detail show only that message. **Refresh** tries again, for example after the role is granted.
 
-If the page shows **Lifecycle capture is off**, an operator has not yet turned on the database capture switch, so subscriptions match nothing; test events still work. Deliveries also need a Worker with delivery enabled; see [deployment](deployment.md#lifecycle-webhooks).
+If the page shows **Lifecycle capture is off**, follow its **Engine settings** link and edit `Webhooks.CaptureEnabled` to enable capture. While it is off, subscriptions match nothing; test events still work. Deliveries also need a Worker with delivery enabled; see [deployment](deployment.md#lifecycle-webhooks).
 
 ### Create, test, and activate
 

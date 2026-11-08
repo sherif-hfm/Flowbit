@@ -23,7 +23,8 @@ public sealed class DatabaseSchemaTests(PostgresApiFixture fixture)
             .Distinct()
             .ToArray();
 
-        Assert.Equal(68, mappedTables.Length);
+        Assert.Equal(67, mappedTables.Length);
+        Assert.DoesNotContain(mappedTables, table => table.Name == "lifecycle_event_capture_state");
         Assert.Contains(mappedTables, table => table.Name == "call_activity_executions");
         Assert.Contains(mappedTables, table => table.Name == "call_activity_results");
         Assert.Contains(mappedTables, table => table.Name == "workflow_definition_call_targets");
@@ -385,7 +386,6 @@ public sealed class DatabaseSchemaTests(PostgresApiFixture fixture)
 
         Assert.Equal(
             [
-                ("lifecycle_event_capture_state", "CK_lifecycle_event_capture_state_singleton"),
                 ("lifecycle_events", "CK_lifecycle_events_body"),
                 ("lifecycle_events", "CK_lifecycle_events_schema_version"),
                 ("webhook_deliveries", "CK_webhook_deliveries_counters"),
@@ -479,10 +479,12 @@ public sealed class DatabaseSchemaTests(PostgresApiFixture fixture)
             connection);
         string[] names =
         [
+            "audit_lifecycle_capture_setting",
             "capture_user_delegation_lifecycle",
             "capture_user_task_lifecycle",
             "capture_workflow_incident_lifecycle",
             "capture_workflow_instance_lifecycle",
+            "guard_lifecycle_capture_setting",
             "lifecycle_capture_wanted",
             "lifecycle_event_targets",
             "lifecycle_event_timestamp",

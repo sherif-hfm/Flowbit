@@ -948,8 +948,8 @@ public interface IEngineSettingsRepository
 {
     Task<EngineSettingRecord?> GetByKeyAsync(string key, CancellationToken cancellationToken);
     Task<IReadOnlyList<EngineSettingRecord>> SearchAsync(string pattern, CancellationToken cancellationToken);
-    Task<EngineSettingRecord> SetAsync(string key, string value, CancellationToken cancellationToken);
-    Task<bool> DeleteAsync(string key, CancellationToken cancellationToken);
+    Task<EngineSettingRecord> SetAsync(string key, string value, string actor, CancellationToken cancellationToken);
+    Task<bool> DeleteAsync(string key, string actor, CancellationToken cancellationToken);
 
     Task<IReadOnlyList<EngineSettingRecord>> ListAsync(CancellationToken cancellationToken) =>
         Task.FromException<IReadOnlyList<EngineSettingRecord>>(
@@ -964,6 +964,7 @@ public interface IEngineSettingsRepository
         string key,
         string value,
         string? description,
+        string actor,
         CancellationToken cancellationToken) =>
         Task.FromException<EngineSettingRecord>(
             new NotSupportedException("This repository does not support settings management."));
@@ -973,6 +974,7 @@ public interface IEngineSettingsRepository
         string value,
         string? description,
         DateTimeOffset expectedUpdatedAt,
+        string actor,
         CancellationToken cancellationToken) =>
         Task.FromException<EngineSettingRecord?>(
             new NotSupportedException("This repository does not support settings management."));
@@ -980,6 +982,7 @@ public interface IEngineSettingsRepository
     Task<bool> DeleteByIdAsync(
         long id,
         DateTimeOffset expectedUpdatedAt,
+        string actor,
         CancellationToken cancellationToken) =>
         Task.FromException<bool>(
             new NotSupportedException("This repository does not support settings management."));

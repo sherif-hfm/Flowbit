@@ -128,9 +128,6 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     public DbSet<ConditionalBoundarySubscriptionEntity> ConditionalBoundarySubscriptions =>
         Set<ConditionalBoundarySubscriptionEntity>();
 
-    public DbSet<LifecycleEventCaptureStateEntity> LifecycleEventCaptureStates =>
-        Set<LifecycleEventCaptureStateEntity>();
-
     public DbSet<LifecycleEventEntity> LifecycleEvents => Set<LifecycleEventEntity>();
 
     public DbSet<WebhookSubscriptionEntity> WebhookSubscriptions => Set<WebhookSubscriptionEntity>();
@@ -1873,7 +1870,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(e => e.Value).IsRequired();
             entity.Property(e => e.Description).HasMaxLength(1000);
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+            entity.Property(e => e.CreatedBy).HasMaxLength(300);
             entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
+            entity.Property(e => e.UpdatedBy).HasMaxLength(300);
             entity.HasIndex(e => new { e.Namespace, e.Key }).IsUnique();
         });
 
@@ -2480,17 +2479,6 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     // and capture never waits on runtime rows; webhook structures use restrictive keys.
     private static void ConfigureLifecycleWebhooks(ModelBuilder modelBuilder)
     {
-        modelBuilder.Entity<LifecycleEventCaptureStateEntity>(entity =>
-        {
-            entity.ToTable("lifecycle_event_capture_state", table =>
-                table.HasCheckConstraint("CK_lifecycle_event_capture_state_singleton", "\"Id\" = 1"));
-            entity.HasKey(e => e.Id);
-            entity.Property(e => e.Id).ValueGeneratedNever();
-            entity.Property(e => e.Enabled).HasDefaultValue(false);
-            entity.Property(e => e.ChangedAt).HasDefaultValueSql("now()");
-            entity.Property(e => e.ChangedBy).HasMaxLength(WebhookConstraints.MaxActorLength);
-        });
-
         modelBuilder.Entity<LifecycleEventEntity>(entity =>
         {
             entity.ToTable("lifecycle_events", table =>

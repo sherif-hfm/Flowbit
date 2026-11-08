@@ -1,18 +1,6 @@
 namespace Flowbit.Infrastructure.Entities;
 
 /// <summary>
-/// The singleton database switch that every capture trigger reads, so all writers agree whether lifecycle
-/// transitions are recorded, including binaries that were never upgraded.
-/// </summary>
-public sealed class LifecycleEventCaptureStateEntity
-{
-    public int Id { get; set; }
-    public bool Enabled { get; set; }
-    public DateTimeOffset ChangedAt { get; set; }
-    public string? ChangedBy { get; set; }
-}
-
-/// <summary>
 /// One committed lifecycle transition that matched at least one active target. Written only by the capture
 /// triggers (and the webhook test function); <see cref="Body"/> holds the exact signed bytes.
 /// </summary>

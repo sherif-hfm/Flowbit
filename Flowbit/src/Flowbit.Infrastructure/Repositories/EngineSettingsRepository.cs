@@ -45,9 +45,12 @@ public sealed class EngineSettingsRepository(AppDbContext dbContext) : IEngineSe
     public async Task<EngineSettingRecord> SetAsync(
         string key,
         string value,
+        string actor,
         CancellationToken cancellationToken)
     {
+        actor = EngineSettingWriteRules.NormalizeActor(actor);
         var (settingNamespace, name) = SplitCanonicalKey(key);
+        value = EngineSettingWriteRules.NormalizeValue(settingNamespace, name, value);
         var entity = await QueryByLogicalKey(key)
             .FirstOrDefaultAsync(cancellationToken);
 
@@ -60,7 +63,9 @@ public sealed class EngineSettingsRepository(AppDbContext dbContext) : IEngineSe
                 Key = name,
                 Value = value,
                 CreatedAt = now,
-                UpdatedAt = now
+                UpdatedAt = now,
+                CreatedBy = actor,
+                UpdatedBy = actor
             };
             dbContext.EngineSettings.Add(entity);
         }
@@ -68,14 +73,17 @@ public sealed class EngineSettingsRepository(AppDbContext dbContext) : IEngineSe
         {
             entity.Value = value;
             entity.UpdatedAt = NextTimestamp(entity.UpdatedAt);
+            entity.UpdatedBy = actor;
         }
 
         await dbContext.SaveChangesAsync(cancellationToken);
         return MapToRecord(entity);
     }
 
-    public async Task<bool> DeleteAsync(string key, CancellationToken cancellationToken)
+    public async Task<bool> DeleteAsync(string key, string actor, CancellationToken cancellationToken)
     {
+        actor = EngineSettingWriteRules.NormalizeActor(actor);
+        EngineSettingWriteRules.RejectCaptureDeletion(null, key);
         var entity = await QueryByLogicalKey(key)
             .FirstOrDefaultAsync(cancellationToken);
 
@@ -116,8 +124,11 @@ public sealed class EngineSettingsRepository(AppDbContext dbContext) : IEngineSe
         string key,
         string value,
         string? description,
+        string actor,
         CancellationToken cancellationToken)
     {
+        actor = EngineSettingWriteRules.NormalizeActor(actor);
+        value = EngineSettingWriteRules.NormalizeValue(settingNamespace, key, value);
         var ownsTransaction = IsNpgsql() && dbContext.Database.CurrentTransaction is null;
         await using var ownedTransaction = ownsTransaction
             ? await dbContext.Database.BeginTransactionAsync(cancellationToken)
@@ -153,7 +164,9 @@ public sealed class EngineSettingsRepository(AppDbContext dbContext) : IEngineSe
             Value = value,
             Description = description,
             CreatedAt = now,
-            UpdatedAt = now
+            UpdatedAt = now,
+            CreatedBy = actor,
+            UpdatedBy = actor
         };
         dbContext.EngineSettings.Add(entity);
 
@@ -179,8 +192,10 @@ public sealed class EngineSettingsRepository(AppDbContext dbContext) : IEngineSe
         string value,
         string? description,
         DateTimeOffset expectedUpdatedAt,
+        string actor,
         CancellationToken cancellationToken)
     {
+        actor = EngineSettingWriteRules.NormalizeActor(actor);
         var ownsTransaction = IsNpgsql() && dbContext.Database.CurrentTransaction is null;
         await using var ownedTransaction = ownsTransaction
             ? await dbContext.Database.BeginTransactionAsync(cancellationToken)
@@ -197,13 +212,15 @@ public sealed class EngineSettingsRepository(AppDbContext dbContext) : IEngineSe
             throw StaleConflict(id);
         }
 
+        value = EngineSettingWriteRules.NormalizeValue(entity.Namespace, entity.Key, value);
         var updatedAt = NextTimestamp(entity.UpdatedAt);
         var updated = await dbContext.EngineSettings
             .Where(setting => setting.Id == id && setting.UpdatedAt == entity.UpdatedAt)
             .ExecuteUpdateAsync(setters => setters
                     .SetProperty(setting => setting.Value, value)
                     .SetProperty(setting => setting.Description, description)
-                    .SetProperty(setting => setting.UpdatedAt, updatedAt),
+                    .SetProperty(setting => setting.UpdatedAt, updatedAt)
+                    .SetProperty(setting => setting.UpdatedBy, actor),
                 cancellationToken);
 
         if (updated == 0)
@@ -214,6 +231,7 @@ public sealed class EngineSettingsRepository(AppDbContext dbContext) : IEngineSe
         entity.Value = value;
         entity.Description = description;
         entity.UpdatedAt = updatedAt;
+        entity.UpdatedBy = actor;
         if (ownedTransaction is not null)
         {
             await ownedTransaction.CommitAsync(cancellationToken);
@@ -225,8 +243,10 @@ public sealed class EngineSettingsRepository(AppDbContext dbContext) : IEngineSe
     public async Task<bool> DeleteByIdAsync(
         long id,
         DateTimeOffset expectedUpdatedAt,
+        string actor,
         CancellationToken cancellationToken)
     {
+        actor = EngineSettingWriteRules.NormalizeActor(actor);
         var ownsTransaction = IsNpgsql() && dbContext.Database.CurrentTransaction is null;
         await using var ownedTransaction = ownsTransaction
             ? await dbContext.Database.BeginTransactionAsync(cancellationToken)
@@ -243,6 +263,7 @@ public sealed class EngineSettingsRepository(AppDbContext dbContext) : IEngineSe
             throw StaleConflict(id);
         }
 
+        EngineSettingWriteRules.RejectCaptureDeletion(entity.Namespace, entity.Key);
         var deleted = await dbContext.EngineSettings
             .Where(setting => setting.Id == id && setting.UpdatedAt == entity.UpdatedAt)
             .ExecuteDeleteAsync(cancellationToken);
@@ -364,5 +385,7 @@ public sealed class EngineSettingsRepository(AppDbContext dbContext) : IEngineSe
             entity.Value,
             entity.CreatedAt,
             entity.UpdatedAt,
-            entity.Description);
+            entity.Description,
+            entity.CreatedBy,
+            entity.UpdatedBy);
 }

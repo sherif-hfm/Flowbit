@@ -4822,7 +4822,9 @@ Content-Type: application/json
 
 The [built-in engine settings reference](engine-settings.md) describes every recognized engine key, value format, default, seed migration, and change timing. This section owns the management HTTP contracts.
 
-All routes require Settings administrator permission. Engine settings have a string `value`, while workflow settings have a raw JSON `value` for the workflow expression context. Creation selects namespace/key (engine) or namespace/name (workflow); updates replace value/description without renaming the setting. For update/delete round-trip the exact timestamp from the list response. Delete takes `expectedUpdatedAt` in the query, not the body. Invalid identifiers, missing values/timestamps are `400`; duplicate/stale operations are `409`. Engine values are opaque strings, preserving empty/whitespace/multiline content; each setting consumer interprets the value. Invalid actor-identity configuration can prevent the next API startup. Namespace/key/name are at most 300 characters and description at most 1,000. Changing the actor identity claim setting requires process restart because identity configuration is latched at startup. No per-ID GET route exists: retrieve settings with the list. The engine setting `AiAuthoring.Models` (matched ignoring case) holds the AI assistant's models and keys: these routes do not list it, and creating, updating or deleting it returns `400`. Manage it through [AI models](#ai-models).
+All routes require Settings administrator permission. Engine settings have a string `value`, while workflow settings have a raw JSON `value` for the workflow expression context. Creation selects namespace/key (engine) or namespace/name (workflow); updates replace value/description without renaming the setting. For update/delete round-trip the exact timestamp from the list response. Delete takes `expectedUpdatedAt` in the query, not the body. Invalid identifiers, missing values/timestamps are `400`; duplicate/stale operations are `409`. Ordinary engine values are opaque strings, preserving empty/whitespace/multiline content; each setting consumer interprets the value. The protected `Webhooks.CaptureEnabled` setting accepts only trimmed, case-insensitive `true`/`false`, stores lowercase, and cannot be deleted (`400`). Only the canonical namespace `Webhooks` and key `CaptureEnabled` are accepted; alternate casing and dotted-key representations return `400`. Invalid actor-identity configuration can prevent the next API startup. Namespace/key/name are at most 300 characters and description at most 1,000. Changing the actor identity claim setting requires process restart because identity configuration is latched at startup. No per-ID GET route exists: retrieve settings with the list. The engine setting `AiAuthoring.Models` (matched ignoring case) holds the AI assistant's models and keys: these routes do not list it, and creating, updating or deleting it returns `400`. Manage it through [AI models](#ai-models).
+
+Engine-setting writes require a valid authenticated actor resolved by the server (`401` when missing). Responses add nullable, read-only `createdBy` and `updatedBy`: creation sets both; update preserves the creator and records the current actor. Request bodies cannot choose these values. Legacy actors remain null when unknown. AI model create/update/delete also attribute the containing settings row. Failed or stale writes do not change attribution. Ordinary API saves advance update metadata even for same-value or description-only edits; only an actual capture Boolean toggle creates a webhook management audit entry. See [capture settings](engine-settings.md#webhookscaptureenabled).
 
 ### GET /api/engine-settings
 
@@ -4893,7 +4895,9 @@ Content-Type: application/json
   "value": "true",
   "description": "Example integration feature flag",
   "createdAt": "2026-09-09T10:00:00Z",
-  "updatedAt": "2026-09-09T10:00:00Z"
+  "updatedAt": "2026-09-09T10:00:00Z",
+  "createdBy": "settings-admin",
+  "updatedBy": "settings-admin"
 }
 ```
 
@@ -4938,7 +4942,9 @@ Content-Type: application/json
   "value": "false",
   "description": "Example integration feature flag",
   "createdAt": "2026-09-09T10:00:00Z",
-  "updatedAt": "2026-09-09T10:00:00Z"
+  "updatedAt": "2026-09-09T10:01:00Z",
+  "createdBy": "settings-admin",
+  "updatedBy": "second-admin"
 }
 ```
 
@@ -4959,7 +4965,7 @@ Delete a setting using its expected timestamp.
 **Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden; `404` Not Found; `409` Conflict. See [error envelopes](#errors-and-concurrency) and the family rules above.
 
 ```http
-DELETE /api/engine-settings/1001?expectedUpdatedAt=2026-09-09T10%3A00%3A00Z HTTP/1.1
+DELETE /api/engine-settings/1001?expectedUpdatedAt=2026-09-09T10%3A01%3A00Z HTTP/1.1
 Host: localhost:5017
 Authorization: Bearer TOKEN
 ```
@@ -6476,7 +6482,7 @@ All routes require Settings administrator permission, including reads and secret
 
 ### GET /api/webhook-event-types
 
-The lifecycle event catalog: schema version, envelope fields, each type's data fields in body order, and the read-only database capture switch.
+The lifecycle event catalog: schema version, envelope fields, each type's data fields in body order, and the database capture switch, read-only on this endpoint. Edit `Webhooks.CaptureEnabled` through the [settings API](#settings). `capture.changedAt` and `capture.changedBy` describe the latest setting edit, including a same-value or description-only edit.
 
 **Access:** Settings administrator. See [authentication](#http-conventions-and-authentication).
 
@@ -7874,7 +7880,9 @@ Advanced task-distribution search request.
 | `value` | string | Yes | — |
 | `description` | null or string | Yes | — |
 | `createdAt` | string (date-time) | Yes | Server creation timestamp. |
-| `updatedAt` | string (date-time) | Yes | Server last-change timestamp; preserve exact precision for optimistic commands. |
+| `updatedAt` | string (date-time) | Yes | Server last-edit timestamp, including same-value saves; preserve exact precision for optimistic commands. |
+| `createdBy` | null or string | Yes | Read-only authenticated actor recorded at creation; null for unknown historical attribution. Preserved on updates. |
+| `updatedBy` | null or string | Yes | Read-only authenticated actor of the latest successful edit; null when historically unknown. |
 
 </details>
 
@@ -11103,7 +11111,7 @@ The lifecycle event catalog and the database capture switch.
 | `schemaVersion` | integer (int32) | Yes | Event body schema version; `1`. |
 | `envelopeFields` | array of LifecycleEventFieldDto | Yes | Envelope fields in body order: `name`, `type`, `nullable`, `description`. |
 | `eventTypes` | array of LifecycleEventTypeDto | Yes | Each `type`, `description`, `subscribable` flag, and `dataFields` in body order. `webhook.test` is listed but not subscribable. |
-| `capture` | LifecycleEventCaptureDto | Yes | `enabled`, `changedAt`, and `changedBy` of the database capture switch. Read-only here; see [deployment](deployment.md#lifecycle-webhooks). |
+| `capture` | LifecycleEventCaptureDto | Yes | `enabled` from `Webhooks.CaptureEnabled`; `changedAt`/`changedBy` are its latest setting-edit timestamp/actor, including metadata-only edits. Read-only here; edit through [settings](#settings). See [deployment](deployment.md#lifecycle-webhooks). |
 
 </details>
 

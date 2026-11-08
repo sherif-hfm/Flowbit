@@ -236,11 +236,11 @@ public sealed class AdministrativeActionBatchLifecycleApiTests(PostgresApiFixtur
         var previous = await settings.GetByKeyAsync(WorkflowAdministratorPolicy.RequiredRoleSettingKey, CancellationToken.None);
         if (value is null)
         {
-            await settings.DeleteAsync(WorkflowAdministratorPolicy.RequiredRoleSettingKey, CancellationToken.None);
+            await settings.DeleteAsync(WorkflowAdministratorPolicy.RequiredRoleSettingKey, "settings-test", CancellationToken.None);
         }
         else
         {
-            await settings.SetAsync(WorkflowAdministratorPolicy.RequiredRoleSettingKey, value, CancellationToken.None);
+            await settings.SetAsync(WorkflowAdministratorPolicy.RequiredRoleSettingKey, value, "settings-test", CancellationToken.None);
         }
         return previous?.Value;
     }
@@ -788,7 +788,7 @@ public sealed class AdministrativeActionBatchLifecycleApiTests(PostgresApiFixtur
         await settings.SetAsync(
             AdministrativeActionConstraints.BatchMaxAffectedTasksSetting,
             value,
-            CancellationToken.None);
+            "settings-test", CancellationToken.None);
         return existing?.Value ?? AdministrativeActionConstraints.MaxAffectedTasks.ToString();
     }
 

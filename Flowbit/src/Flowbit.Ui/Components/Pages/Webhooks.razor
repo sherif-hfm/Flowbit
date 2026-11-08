@@ -30,8 +30,8 @@ else if (!permissionDenied)
     @if (catalog is { Capture.Enabled: false })
     {
         <div class="alert alert-warning" role="status">
-            <strong>Lifecycle capture is off.</strong> Subscriptions match nothing until an operator turns on the database capture switch
-            (<span class="mono-id">flowbit.set_lifecycle_event_capture(true, '…')</span>). Test events are still delivered.
+            <strong>Lifecycle capture is off.</strong> Enable <span class="mono-id">Webhooks.CaptureEnabled</span>
+            in <a href="engine-settings">Engine settings</a> to capture events for matching subscriptions. Test events are still delivered.
         </div>
     }
 

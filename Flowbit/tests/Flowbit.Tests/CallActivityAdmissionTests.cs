@@ -480,7 +480,7 @@ public sealed class CallActivityAdmissionTests(PostgresApiFixture fixture) : IAs
             await settings.SetAsync(
                 WorkflowAutomaticActivationGuard.SettingKey,
                 "5",
-                CancellationToken.None);
+                "settings-test", CancellationToken.None);
         }
 
         var parentId = await harness.StartAsync(parent.Id);
@@ -507,7 +507,7 @@ public sealed class CallActivityAdmissionTests(PostgresApiFixture fixture) : IAs
         await using (var scope = fixture.Factory.Services.CreateAsyncScope())
         {
             var settings = scope.ServiceProvider.GetRequiredService<Flowbit.Service.Abstractions.IEngineSettingsRepository>();
-            await settings.DeleteAsync(WorkflowAutomaticActivationGuard.SettingKey, CancellationToken.None);
+            await settings.DeleteAsync(WorkflowAutomaticActivationGuard.SettingKey, "settings-test", CancellationToken.None);
         }
 
         using var cleanup = await harness.SendAsync(HttpMethod.Post, $"/api/instances/{parentId}/cancel");
@@ -614,11 +614,11 @@ public sealed class CallActivityAdmissionTests(PostgresApiFixture fixture) : IAs
         var settings = scope.ServiceProvider.GetRequiredService<Flowbit.Service.Abstractions.IEngineSettingsRepository>();
         if (limit is null)
         {
-            await settings.DeleteAsync(WorkflowAutomaticActivationGuard.SettingKey, CancellationToken.None);
+            await settings.DeleteAsync(WorkflowAutomaticActivationGuard.SettingKey, "settings-test", CancellationToken.None);
         }
         else
         {
-            await settings.SetAsync(WorkflowAutomaticActivationGuard.SettingKey, limit, CancellationToken.None);
+            await settings.SetAsync(WorkflowAutomaticActivationGuard.SettingKey, limit, "settings-test", CancellationToken.None);
         }
     }
 

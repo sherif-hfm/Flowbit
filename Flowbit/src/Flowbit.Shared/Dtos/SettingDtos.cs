@@ -9,7 +9,9 @@ public sealed record EngineSettingDto(
     string Value,
     string? Description,
     DateTimeOffset CreatedAt,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    string? CreatedBy = null,
+    string? UpdatedBy = null);
 
 public sealed record CreateEngineSettingRequest(
     string? Namespace,

@@ -63,14 +63,14 @@ public sealed class WebhookRepository(WebhookDataSource source, WebhookOptions o
     {
         await using var connection = await source.DataSource.OpenConnectionAsync(cancellationToken);
         await using var command = Command(connection, null, """
-            SELECT "Enabled", "ChangedAt", "ChangedBy"
-            FROM flowbit.lifecycle_event_capture_state
-            WHERE "Id" = 1
+            SELECT "Value" = 'true', "UpdatedAt", "UpdatedBy"
+            FROM flowbit.engine_settings
+            WHERE "Namespace" = 'Webhooks' AND "Key" = 'CaptureEnabled'
             """);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         if (!await reader.ReadAsync(cancellationToken))
         {
-            throw new InvalidOperationException("The lifecycle event capture switch row is missing; apply the database migrations.");
+            throw new InvalidOperationException("Engine setting Webhooks.CaptureEnabled is missing; apply the database migrations.");
         }
         return new LifecycleEventCaptureDto(
             reader.GetBoolean(0),
