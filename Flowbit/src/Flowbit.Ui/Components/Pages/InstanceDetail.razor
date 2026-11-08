@@ -65,10 +65,10 @@ else
                 <div class="summary-item"><span>Task state</span><strong>@FormatTaskState(instance.UserTasks)</strong></div>
             }
             <div class="summary-item"><span>Started by</span><strong>@(instance.StartedBy ?? "—")</strong></div>
-            <div class="summary-item"><span>Created</span><strong>@instance.CreatedAt.ToLocalTime().ToString("g")</strong></div>
+            <div class="summary-item"><span>Created</span><strong><LocalTime Value="@instance.CreatedAt" /></strong></div>
             @if (instance.FinishedAt is { } finishedAt)
             {
-                <div class="summary-item"><span>Finished</span><strong>@finishedAt.ToLocalTime().ToString("g")</strong></div>
+                <div class="summary-item"><span>Finished</span><strong><LocalTime Value="@finishedAt" /></strong></div>
             }
             @if (HasMultiInstances)
             {
@@ -127,7 +127,7 @@ else
     @if (instance.HistoryPrunedAt is { } historyPrunedAt)
     {
         <div class="alert alert-warning" role="status" id="instance-history-retention-notice">
-            Some history was permanently deleted by retention beginning @historyPrunedAt.ToLocalTime().ToString("g").
+            Some history was permanently deleted by retention beginning <LocalTime Value="@historyPrunedAt" />.
             History and activity views may be incomplete. This instance cannot be reactivated.
         </div>
     }
@@ -186,7 +186,7 @@ else
                 }
 
                 <p id="reactivation-preview-fence" class="small text-muted">
-                    Previewed @reactivationPreview.Status state last updated @reactivationPreview.ExpectedUpdatedAt.ToLocalTime().ToString("g"). Refresh the preview if instance state changes.
+                    Previewed @reactivationPreview.Status state last updated <LocalTime Value="@reactivationPreview.ExpectedUpdatedAt" />. Refresh the preview if instance state changes.
                 </p>
 
                 @if (reactivationPreview.Targets.Count == 0)
@@ -213,7 +213,7 @@ else
                                         {
                                             <text> · @target.NodeExternalId</text>
                                         }
-                                        · last visited @target.LastVisitedAt.ToLocalTime().ToString("g")
+                                        · last visited @TimeZone.Format(target.LastVisitedAt)
                                     </option>
                                 }
                             </select>
@@ -364,7 +364,7 @@ else
     {
         <section class="alert alert-success mb-3" aria-labelledby="instance-completion-heading">
             <h2 id="instance-completion-heading" class="h5 mb-1">Instance terminated successfully</h2>
-            <div>Triggered by token #@completion.TokenId at @completion.NodeName (#@completion.NodeId) on @completion.CompletedAt.ToLocalTime().ToString("g").</div>
+            <div>Triggered by token #@completion.TokenId at @completion.NodeName (#@completion.NodeId) on <LocalTime Value="@completion.CompletedAt" />.</div>
         </section>
     }
 
@@ -517,6 +517,8 @@ else
 @code {
     [Parameter]
     public long InstanceId { get; set; }
+
+    [CascadingParameter] private BrowserTimeZone TimeZone { get; set; } = BrowserTimeZone.Pending;
 
     private InstanceDetailDto? instance;
     private IReadOnlyList<SequenceFlowModel> availableFlows = [];
@@ -893,14 +895,14 @@ else
                $"{MultiInstanceExecutions.Sum(progress => progress.Completed)} completed";
     }
 
-    private static string CompletionLabel(CompletionInfoDto completion)
+    private string CompletionLabel(CompletionInfoDto completion)
     {
         var kind = string.Equals(
             completion.Kind, WorkflowCompletionKinds.Terminate,
             StringComparison.OrdinalIgnoreCase)
             ? "Terminated successfully"
             : "Completed normally";
-        return $"{kind} at {completion.NodeName} · {completion.CompletedAt.ToLocalTime():g}";
+        return $"{kind} at {completion.NodeName} · {TimeZone.Format(completion.CompletedAt)}";
     }
 
     private int administrativeRefreshVersion;

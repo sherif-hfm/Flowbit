@@ -23,7 +23,7 @@
                     @foreach (var update in Updates.OrderByDescending(item => item.PerformedAt).ThenByDescending(item => item.Id))
                     {
                         <tr>
-                            <td>@update.PerformedAt.ToLocalTime().ToString("g")<span class="data-subtitle">Operation #@update.Id</span></td>
+                            <td><LocalTime Value="@update.PerformedAt" /><span class="data-subtitle">Operation #@update.Id</span></td>
                             <td>@update.PerformedBy<span class="data-subtitle">@(update.PerformedByRoles.Count == 0 ? "No roles recorded" : string.Join(", ", update.PerformedByRoles))</span></td>
                             <td class="text-break">@(update.Reason ?? "—")</td>
                             <td>

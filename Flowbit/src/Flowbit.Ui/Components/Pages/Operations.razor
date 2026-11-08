@@ -37,7 +37,7 @@
                     Value="@statistics.ActiveLeaseCount.ToString("N0")"
                     Icon="activity"
                     Tone="success"
-                    Hint="@($"Observed {statistics.ObservedAt.ToLocalTime():T}")" />
+                    Hint="@($"Observed {TimeZone.Format(statistics.ObservedAt, "T")}")" />
         <MetricCard Label="Open incidents"
                     Value="@statistics.OpenIncidentCount.ToString("N0")"
                     Icon="alert"
@@ -111,7 +111,7 @@
                                 <span>@incident.Summary</span>
                                 <span class="data-subtitle">@incident.Type</span>
                             </td>
-                            <td title="@incident.UpdatedAt.ToString("O")">@incident.UpdatedAt.ToLocalTime().ToString("g")</td>
+                            <td><LocalTime Value="@incident.UpdatedAt" /></td>
                             <td class="text-end">
                                 @if (string.Equals(incident.Status, "open", StringComparison.OrdinalIgnoreCase))
                                 {
@@ -225,8 +225,8 @@
                                 <span class="data-subtitle">@job.AttemptCount attempt(s)</span>
                             </td>
                             <td>
-                                <span title="@job.DueAt.ToString("O")">Due @job.DueAt.ToLocalTime().ToString("g")</span>
-                                <span class="data-subtitle">Updated @job.UpdatedAt.ToLocalTime().ToString("g")</span>
+                                <span>Due <LocalTime Value="@job.DueAt" /></span>
+                                <span class="data-subtitle">Updated <LocalTime Value="@job.UpdatedAt" /></span>
                             </td>
                         </tr>
                     }
@@ -246,6 +246,8 @@
 </section>
 
 @code {
+    [CascadingParameter] private BrowserTimeZone TimeZone { get; set; } = BrowserTimeZone.Pending;
+
     private const int PageSize = 25;
     private JobQueueStatisticsDto? statistics;
     private PagedResult<JobSummaryDto>? jobs;

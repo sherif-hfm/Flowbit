@@ -3,6 +3,7 @@ using Flowbit.Ui.Components;
 using Flowbit.Ui.Clients;
 using Flowbit.Ui.Auth;
 using Flowbit.Ui.Dashboard;
+using Flowbit.Ui.Components.Shared;
 
 Log.Logger = new LoggerConfiguration()
     .WriteTo.Console()
@@ -26,6 +27,9 @@ try
 
     var authentication = builder.AddFlowbitUiAuthentication();
     builder.Services.AddScoped<DashboardService>();
+    // Every component reads times in the browser's zone, which each circuit learns once.
+    builder.Services.AddScoped<BrowserTimeZoneProvider>();
+    builder.Services.AddCascadingValue(services => services.GetRequiredService<BrowserTimeZoneProvider>().Source);
 
     builder.Services.AddHttpClient(SessionHttpClientFactory.ApiClientName, client =>
     {

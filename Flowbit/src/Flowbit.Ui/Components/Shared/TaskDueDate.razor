@@ -6,7 +6,7 @@
 @if (DueAt is DateTimeOffset dueAt)
 {
     <span class="task-due-date">
-        <span title="@dueAt.ToString("O", CultureInfo.InvariantCulture)">@dueAt.ToLocalTime().ToString("g")</span>
+        <LocalTime Value="@dueAt" />
         @if (DueStatus == UserTaskDueStatuses.Overdue)
         {
             <StatusBadge Status="danger" Text="Overdue" />

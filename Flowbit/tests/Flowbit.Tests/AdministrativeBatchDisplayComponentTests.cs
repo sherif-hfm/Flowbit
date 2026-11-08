@@ -262,9 +262,9 @@ public sealed class AdministrativeBatchDisplayComponentTests
         Assert.Contains(">6 task(s)</td>", decoded, StringComparison.Ordinal);
         Assert.Contains("status-badge status-danger", html, StringComparison.Ordinal);
         Assert.Contains("Failed</span>", decoded, StringComparison.Ordinal);
-        // Local timestamps are derived with the same environment, so culture
-        // and timezone differences cannot make this assertion brittle.
-        Assert.Contains(updatedAt.ToLocalTime().ToString("g"), decoded, StringComparison.Ordinal);
+        // No browser zone is cascaded here, so the time is shown in UTC and says so;
+        // the culture is the test's own, as it is the UI server's.
+        Assert.Contains(updatedAt.UtcDateTime.ToString("g") + " UTC", decoded, StringComparison.Ordinal);
     }
 
     [Theory]
@@ -440,7 +440,7 @@ public sealed class AdministrativeBatchDisplayComponentTests
 
         Assert.Contains("status-badge status-primary", html, StringComparison.Ordinal);
         Assert.Contains("Completed</span>", decoded, StringComparison.Ordinal);
-        Assert.Contains(updatedAt.ToLocalTime().ToString("g"), decoded, StringComparison.Ordinal);
+        Assert.Contains(updatedAt.UtcDateTime.ToString("g") + " UTC", decoded, StringComparison.Ordinal);
     }
 
     [Fact]

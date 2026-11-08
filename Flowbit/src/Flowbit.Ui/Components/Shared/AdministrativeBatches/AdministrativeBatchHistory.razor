@@ -22,7 +22,7 @@ else
                         <td>@item.PreparedBy</td>
                         <td>@item.SucceededItemCount.ToString("N0") / @item.TotalItemCount.ToString("N0")<span class="data-subtitle">@item.TotalAffectedTaskCount.ToString("N0") affected · @item.FailedItemCount.ToString("N0") failed</span></td>
                         <td><StatusBadge Status="@item.Status" /></td>
-                        <td>@item.UpdatedAt.ToLocalTime().ToString("g")</td>
+                        <td><LocalTime Value="@item.UpdatedAt" /></td>
                         <td class="text-end"><button class="btn btn-sm btn-outline-primary" @onclick="@(() => OnOpenBatch.InvokeAsync(item.Id))">Open</button></td>
                     </tr>
                 }

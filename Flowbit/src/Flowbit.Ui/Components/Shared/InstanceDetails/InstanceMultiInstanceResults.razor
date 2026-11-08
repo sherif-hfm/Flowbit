@@ -31,7 +31,7 @@
                                 <td>@(item.PerformedBy ?? "-")</td>
                                 <td>@FlowLabel(item.SequenceFlowId)</td>
                                 <td><code class="text-break">@FormatPayload(item.Payload)</code></td>
-                                <td>@item.PerformedAt.LocalDateTime</td>
+                                <td><LocalTime Value="@item.PerformedAt" Format="G" /></td>
                             </tr>
                         }
                     </tbody>

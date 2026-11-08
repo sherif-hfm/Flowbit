@@ -188,8 +188,8 @@ else
                                 <td><span class="mono-id text-break">@item.Endpoint</span></td>
                                 <td>@ReasoningLabel(item.ReasoningEffort)</td>
                                 <td>
-                                    @item.UpdatedAt.ToLocalTime().ToString("g")
-                                    <span class="data-subtitle">Created @item.CreatedAt.ToLocalTime().ToString("g")</span>
+                                    <LocalTime Value="@item.UpdatedAt" />
+                                    <span class="data-subtitle">Created <LocalTime Value="@item.CreatedAt" /></span>
                                 </td>
                                 <td class="text-end">
                                     <div class="d-flex justify-content-end gap-2">

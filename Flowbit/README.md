@@ -1515,7 +1515,7 @@ dotnet test ./tests/Flowbit.BrowserTests/Flowbit.BrowserTests.csproj -c Release 
 ```
 
 Set `FLOWBIT_BROWSER_HEADED=1` to launch Chromium headed for local diagnosis.
-The suite covers editor E1–E20 and runtime R1–R11 scenarios (see the project
+The suite covers editor E1–E20 and runtime R1–R12 scenarios (see the project
 README); manual native-picker and full acceptance checks remain the caller's
 responsibility.
 

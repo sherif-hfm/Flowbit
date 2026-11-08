@@ -108,15 +108,16 @@
                                               Error="@variableFilterError" />
             </div>
 
-            <div><label class="form-label" for="activity-created-from">Created from (inclusive)</label><input id="activity-created-from" type="datetime-local" class="form-control" @bind="createdFrom" /></div>
-            <div><label class="form-label" for="activity-created-to">Created to (exclusive)</label><input id="activity-created-to" type="datetime-local" class="form-control" @bind="createdTo" /></div>
-            <div><label class="form-label" for="activity-started-from">Started from (inclusive)</label><input id="activity-started-from" type="datetime-local" class="form-control" @bind="startedFrom" /></div>
-            <div><label class="form-label" for="activity-started-to">Started to (exclusive)</label><input id="activity-started-to" type="datetime-local" class="form-control" @bind="startedTo" /></div>
+            <TimeZoneNote Id="activity-time-zone" Class="filter-span-all" />
+            <div><label class="form-label" for="activity-created-from">Created from (inclusive)</label><input @key="dateInputGeneration" id="activity-created-from" type="datetime-local" class="form-control" aria-describedby="activity-time-zone" @onchange="e => createdFrom = e.Value?.ToString()" /></div>
+            <div><label class="form-label" for="activity-created-to">Created to (exclusive)</label><input @key="dateInputGeneration" id="activity-created-to" type="datetime-local" class="form-control" aria-describedby="activity-time-zone" @onchange="e => createdTo = e.Value?.ToString()" /></div>
+            <div><label class="form-label" for="activity-started-from">Started from (inclusive)</label><input @key="dateInputGeneration" id="activity-started-from" type="datetime-local" class="form-control" aria-describedby="activity-time-zone" @onchange="e => startedFrom = e.Value?.ToString()" /></div>
+            <div><label class="form-label" for="activity-started-to">Started to (exclusive)</label><input @key="dateInputGeneration" id="activity-started-to" type="datetime-local" class="form-control" aria-describedby="activity-time-zone" @onchange="e => startedTo = e.Value?.ToString()" /></div>
 
-            <div><label class="form-label" for="activity-updated-from">Updated from (inclusive)</label><input id="activity-updated-from" type="datetime-local" class="form-control" @bind="updatedFrom" /></div>
-            <div><label class="form-label" for="activity-updated-to">Updated to (exclusive)</label><input id="activity-updated-to" type="datetime-local" class="form-control" @bind="updatedTo" /></div>
-            <div><label class="form-label" for="activity-completed-from">Completed from (inclusive)</label><input id="activity-completed-from" type="datetime-local" class="form-control" @bind="completedFrom" /></div>
-            <div><label class="form-label" for="activity-completed-to">Completed to (exclusive)</label><input id="activity-completed-to" type="datetime-local" class="form-control" @bind="completedTo" /></div>
+            <div><label class="form-label" for="activity-updated-from">Updated from (inclusive)</label><input @key="dateInputGeneration" id="activity-updated-from" type="datetime-local" class="form-control" aria-describedby="activity-time-zone" @onchange="e => updatedFrom = e.Value?.ToString()" /></div>
+            <div><label class="form-label" for="activity-updated-to">Updated to (exclusive)</label><input @key="dateInputGeneration" id="activity-updated-to" type="datetime-local" class="form-control" aria-describedby="activity-time-zone" @onchange="e => updatedTo = e.Value?.ToString()" /></div>
+            <div><label class="form-label" for="activity-completed-from">Completed from (inclusive)</label><input @key="dateInputGeneration" id="activity-completed-from" type="datetime-local" class="form-control" aria-describedby="activity-time-zone" @onchange="e => completedFrom = e.Value?.ToString()" /></div>
+            <div><label class="form-label" for="activity-completed-to">Completed to (exclusive)</label><input @key="dateInputGeneration" id="activity-completed-to" type="datetime-local" class="form-control" aria-describedby="activity-time-zone" @onchange="e => completedTo = e.Value?.ToString()" /></div>
 
             <div><label class="form-label" for="activity-duration-min">Minimum duration (ms)</label><input id="activity-duration-min" type="number" min="0" class="form-control" @bind="minimumDurationMilliseconds" placeholder="1000" /></div>
             <div><label class="form-label" for="activity-duration-max">Maximum duration (ms)</label><input id="activity-duration-max" type="number" min="0" class="form-control" @bind="maximumDurationMilliseconds" placeholder="60000" /></div>
@@ -245,7 +246,7 @@
                             </td>
                             <td><span class="mono-id">@FormatFlows(execution)</span></td>
                             <td>
-                                <span title="@execution.UpdatedAt.ToString("O")">@execution.UpdatedAt.ToLocalTime().ToString("g")</span>
+                                <LocalTime Value="@execution.UpdatedAt" />
                                 <span class="data-subtitle">@FormatDuration(execution.DurationMilliseconds)</span>
                             </td>
                             <td class="text-end"><a class="btn btn-sm btn-outline-primary" href="@($"node-executions/{execution.Id}")">Open</a></td>
@@ -266,6 +267,8 @@
 </section>
 
 @code {
+    [CascadingParameter] private BrowserTimeZone TimeZone { get; set; } = BrowserTimeZone.Pending;
+
     private PagedResult<NodeExecutionSummaryDto>? result;
     private string? status;
     private string? error;
@@ -307,14 +310,17 @@
     private int? aggregateFlowId;
     private string? variableFilterJson;
     private string? variableFilterError;
-    private DateTime? createdFrom;
-    private DateTime? createdTo;
-    private DateTime? startedFrom;
-    private DateTime? startedTo;
-    private DateTime? updatedFrom;
-    private DateTime? updatedTo;
-    private DateTime? completedFrom;
-    private DateTime? completedTo;
+    // The date-time inputs are uncontrolled (see DateTimeLocalText): these hold the text their change
+    // events report, read in the browser's zone when a search runs, and Clear renders new empty inputs.
+    private string? createdFrom;
+    private string? createdTo;
+    private string? startedFrom;
+    private string? startedTo;
+    private string? updatedFrom;
+    private string? updatedTo;
+    private string? completedFrom;
+    private string? completedTo;
+    private int dateInputGeneration;
     private long? minimumDurationMilliseconds;
     private long? maximumDurationMilliseconds;
 
@@ -417,6 +423,7 @@
         instanceStatuses = completionReasons = multiInstanceFilter = cutoverSeedFilter = null;
         owner = startedBy = completedBy = variableFilterJson = variableFilterError = null;
         createdFrom = createdTo = startedFrom = startedTo = updatedFrom = updatedTo = completedFrom = completedTo = null;
+        dateInputGeneration++;
         minimumDurationMilliseconds = maximumDurationMilliseconds = null;
         MarkFiltersDirty();
         await LoadAsync();
@@ -435,6 +442,18 @@
             result = null;
             if (!AdvancedVariableFilterInput.TryParse(
                     variableFilterJson, out JsonElement? variableFilter, out variableFilterError))
+            {
+                loadFailed = true;
+                return;
+            }
+            if (!TryReadTime(createdFrom, "Created from", out var createdFromAt)
+                || !TryReadTime(createdTo, "Created to", out var createdToAt)
+                || !TryReadTime(startedFrom, "Started from", out var startedFromAt)
+                || !TryReadTime(startedTo, "Started to", out var startedToAt)
+                || !TryReadTime(updatedFrom, "Updated from", out var updatedFromAt)
+                || !TryReadTime(updatedTo, "Updated to", out var updatedToAt)
+                || !TryReadTime(completedFrom, "Completed from", out var completedFromAt)
+                || !TryReadTime(completedTo, "Completed to", out var completedToAt))
             {
                 loadFailed = true;
                 return;
@@ -472,14 +491,14 @@
                 SelectedFlowId = selectedFlowId,
                 ExitedViaFlowId = exitedViaFlowId,
                 AggregateFlowId = aggregateFlowId,
-                CreatedFrom = ToOffset(createdFrom),
-                CreatedTo = ToOffset(createdTo),
-                StartedFrom = ToOffset(startedFrom),
-                StartedTo = ToOffset(startedTo),
-                UpdatedFrom = ToOffset(updatedFrom),
-                UpdatedTo = ToOffset(updatedTo),
-                CompletedFrom = ToOffset(completedFrom),
-                CompletedTo = ToOffset(completedTo),
+                CreatedFrom = createdFromAt,
+                CreatedTo = createdToAt,
+                StartedFrom = startedFromAt,
+                StartedTo = startedToAt,
+                UpdatedFrom = updatedFromAt,
+                UpdatedTo = updatedToAt,
+                CompletedFrom = completedFromAt,
+                CompletedTo = completedToAt,
                 MinDurationMilliseconds = minimumDurationMilliseconds,
                 MaxDurationMilliseconds = maximumDurationMilliseconds,
                 VariableFilter = variableFilter,
@@ -536,8 +555,13 @@
     private static bool? ParseNullableBoolean(string? value) =>
         bool.TryParse(value, out var parsed) ? parsed : null;
 
-    private static DateTimeOffset? ToOffset(DateTime? value) =>
-        value is null ? null : new DateTimeOffset(DateTime.SpecifyKind(value.Value, DateTimeKind.Local));
+    // A time filter as the UTC instant it names in the browser's zone; a refused time is reported above the filters.
+    private bool TryReadTime(string? text, string label, out DateTimeOffset? instant)
+    {
+        if (TimeZone.TryReadInput(text, out instant, out var problem)) return true;
+        error = $"{label}: {problem}";
+        return false;
+    }
 
     private static string FormatDuration(long? milliseconds)
     {

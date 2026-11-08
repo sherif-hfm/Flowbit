@@ -66,7 +66,7 @@ X-Client-Secret: @oneTimeSecret</code></pre>
                         <div class="form-check"><input id="shared-client-write" class="form-check-input" type="checkbox" @bind="formWrite" /><label class="form-check-label" for="shared-client-write">Create and update shared variables</label></div>
                     </div>
                 </div>
-                <div><label class="form-label" for="shared-client-expires">Expires (optional, local time)</label><input id="shared-client-expires" class="form-control" type="datetime-local" @bind="formExpires" /></div>
+                <div><label class="form-label" for="shared-client-expires">Expires (optional, @TimeZone.DisplayName)</label><input @key="formExpiresGeneration" id="shared-client-expires" class="form-control" type="datetime-local" value="@formExpiresShown" @onchange="e => formExpires = e.Value?.ToString()" /></div>
             </div>
             <div class="d-flex justify-content-end gap-2 mt-3"><button class="btn btn-outline-secondary" @onclick="CloseForm" disabled="@busy">Cancel</button><button class="btn btn-primary" @onclick="SaveClientAsync" disabled="@busy">@(busy ? "Saving…" : editingClient is null ? "Create and reveal secret" : "Save client")</button></div>
         </section>
@@ -102,8 +102,8 @@ X-Client-Secret: @oneTimeSecret</code></pre>
                             <td><span class="data-title">@client.DisplayName</span><span class="data-subtitle mono-id">@client.ClientId</span></td>
                             <td><div class="d-flex flex-wrap gap-1">@foreach (var scope in client.Scopes) { <StatusBadge Status="primary" Text="@ScopeLabel(scope)" /> }</div></td>
                             <td><StatusBadge Status="@(client.Status == "active" ? "success" : "neutral")" Text="@client.Status" /></td>
-                            <td>@(client.ExpiresAt?.ToLocalTime().ToString("g") ?? "Never")</td>
-                            <td>#@client.Revision<span class="data-subtitle">@client.UpdatedAt.ToLocalTime().ToString("g")</span></td>
+                            <td><LocalTime Value="@client.ExpiresAt" EmptyText="Never" /></td>
+                            <td>#@client.Revision<span class="data-subtitle"><LocalTime Value="@client.UpdatedAt" /></span></td>
                             <td class="text-end">
                                 @if (client.Status == "active")
                                 {
@@ -121,6 +121,8 @@ X-Client-Secret: @oneTimeSecret</code></pre>
 }
 
 @code {
+    [CascadingParameter] private BrowserTimeZone TimeZone { get; set; } = BrowserTimeZone.Pending;
+
     private PagedResult<SharedVariableClientDto>? result;
     private SharedVariableClientDto? editingClient;
     private SharedVariableClientDto? rotating;
@@ -131,7 +133,13 @@ X-Client-Secret: @oneTimeSecret</code></pre>
     private string? formError;
     private string formClientId = string.Empty;
     private string formDisplayName = string.Empty;
-    private DateTime? formExpires;
+    // The expiry input is uncontrolled (see DateTimeLocalText): formExpiresShown is rendered once per
+    // generation, in the browser's zone, and formExpires holds the text its change events report.
+    // Until that text changes, the form keeps the exact stored expiry, formExpiresAt.
+    private string? formExpires;
+    private string? formExpiresShown;
+    private DateTimeOffset? formExpiresAt;
+    private int formExpiresGeneration;
     private bool formRead = true;
     private bool formWrite;
     private bool formOpen;
@@ -154,10 +162,11 @@ X-Client-Secret: @oneTimeSecret</code></pre>
         finally { loading = false; busy = false; }
     }
 
-    private void OpenCreate() { rotating = null; editingClient = null; formOpen = true; formError = null; clientConflict = false; formClientId = formDisplayName = string.Empty; formExpires = null; formRead = true; formWrite = false; }
+    private void OpenCreate() { rotating = null; editingClient = null; formOpen = true; formError = null; clientConflict = false; formClientId = formDisplayName = string.Empty; ShowExpires(null); formRead = true; formWrite = false; }
     private void CloseForm() { formOpen = false; editingClient = null; formError = null; clientConflict = false; }
     private void OpenRotate(SharedVariableClientDto client) { formOpen = false; editingClient = null; rotating = client; graceHours = 24; formError = null; clientConflict = false; }
     private void CloseRotate() { rotating = null; formError = null; clientConflict = false; }
+    private void ShowExpires(DateTimeOffset? expiresAt) { formExpiresAt = expiresAt; formExpires = formExpiresShown = expiresAt is { } value ? TimeZone.FormatInput(value) : null; formExpiresGeneration++; }
 
     private void SetClientForm(SharedVariableClientDto client)
     {
@@ -165,7 +174,7 @@ X-Client-Secret: @oneTimeSecret</code></pre>
         clientConflict = false; formClientId = client.ClientId; formDisplayName = client.DisplayName;
         formRead = client.Scopes.Contains(SharedVariableClientScopes.Read, StringComparer.Ordinal);
         formWrite = client.Scopes.Contains(SharedVariableClientScopes.Write, StringComparer.Ordinal);
-        formExpires = client.ExpiresAt?.LocalDateTime;
+        ShowExpires(client.ExpiresAt);
     }
 
     private async Task OpenEditAsync(SharedVariableClientDto client)
@@ -256,7 +265,14 @@ X-Client-Secret: @oneTimeSecret</code></pre>
     private void ClearSecret() { secretClient = null; oneTimeSecret = null; }
     private async Task CopyCredentialsAsync() { if (secretClient is null || string.IsNullOrEmpty(oneTimeSecret)) return; await JS.InvokeVoidAsync("navigator.clipboard.writeText", $"X-Client-Id: {secretClient.ClientId}\nX-Client-Secret: {oneTimeSecret}"); success = "Copied the two authentication headers."; }
     private IReadOnlyList<string> Scopes() { var scopes = new List<string>(); if (formRead) scopes.Add(SharedVariableClientScopes.Read); if (formWrite) scopes.Add(SharedVariableClientScopes.Write); return scopes; }
-    private bool TryExpires(out DateTimeOffset? expires, out string? message) { expires = formExpires is DateTime local ? new DateTimeOffset(DateTime.SpecifyKind(local, DateTimeKind.Local)) : null; message = null; if (expires <= DateTimeOffset.Now) { message = "Expiration must be in the future."; return false; } return true; }
+    private bool TryExpires(out DateTimeOffset? expires, out string? message)
+    {
+        // An untouched field sends the stored instant itself, which its minute text cannot always express.
+        if (string.Equals(formExpires, formExpiresShown, StringComparison.Ordinal)) { expires = formExpiresAt; message = null; }
+        else if (!TimeZone.TryReadInput(formExpires, out expires, out message)) { message = $"Expiration: {message}"; return false; }
+        if (expires <= DateTimeOffset.UtcNow) { message = "Expiration must be in the future."; return false; }
+        return true;
+    }
     private async Task PreviousPageAsync() { if (page > 1) { page--; await LoadAsync(); } }
     private async Task NextPageAsync() { if (page < TotalPages) { page++; await LoadAsync(); } }
     private async Task ReloadClientsAsync() { CloseRotate(); await LoadAsync(); }

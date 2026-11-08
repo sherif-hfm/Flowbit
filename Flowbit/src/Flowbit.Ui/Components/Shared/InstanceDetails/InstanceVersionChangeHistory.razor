@@ -23,7 +23,7 @@
                     @foreach (var change in Changes.OrderByDescending(item => item.ChangedAt).ThenByDescending(item => item.Id))
                     {
                         <tr>
-                            <td>@change.ChangedAt.ToLocalTime().ToString("g")</td>
+                            <td><LocalTime Value="@change.ChangedAt" /></td>
                             <td><StatusBadge Status="@change.Direction" /></td>
                             <td>v@(change.SourceWorkflow.Version)<span class="data-subtitle">@change.SourceWorkflow.Name</span></td>
                             <td>v@(change.TargetWorkflow.Version)<span class="data-subtitle">@change.TargetWorkflow.Name</span></td>

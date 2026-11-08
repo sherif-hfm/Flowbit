@@ -183,6 +183,8 @@ else if (snapshot is not null)
 }
 
 @code {
+    [CascadingParameter] private BrowserTimeZone TimeZone { get; set; } = BrowserTimeZone.Pending;
+
     private DashboardSnapshot? snapshot;
     private bool loading;
     private CancellationTokenSource? loadCts;
@@ -228,14 +230,14 @@ else if (snapshot is not null)
         return total == 0 ? 0 : Math.Round(value * 100d / total, 2);
     }
 
-    private static string RelativeTime(DateTimeOffset value)
+    private string RelativeTime(DateTimeOffset value)
     {
         var elapsed = DateTimeOffset.UtcNow - value.ToUniversalTime();
         if (elapsed.TotalMinutes < 1) return "Just now";
         if (elapsed.TotalHours < 1) return $"{Math.Max(1, (int)elapsed.TotalMinutes)}m ago";
         if (elapsed.TotalDays < 1) return $"{(int)elapsed.TotalHours}h ago";
         if (elapsed.TotalDays < 7) return $"{(int)elapsed.TotalDays}d ago";
-        return value.ToLocalTime().ToString("MMM d");
+        return TimeZone.Format(value, "MMM d");
     }
 
     private static string Initials(string value)

@@ -253,7 +253,7 @@ A repeatable Chromium smoke suite exists at
 real copied editor and the real published API/UI over localhost with a
 disposable PostgreSQL container; see its
 [README](Flowbit/tests/Flowbit.BrowserTests/README.md) for setup and the
-E1–E20/R1–R11 coverage matrix. It is the baseline for editor/runtime UI changes,
+E1–E20/R1–R12 coverage matrix. It is the baseline for editor/runtime UI changes,
 but it does not replace scenario-specific manual verification: the native
 file-picker success/cancel path, visual comparisons, and behaviors outside the
 matrix still need the manual steps above.
@@ -1880,6 +1880,24 @@ also blurs a focused `data-typed-input` number box on wheel so the wheel cannot
 step its value. The `[EventHandler]` attributes must stay on a class named
 `EventHandlers`, the only name the Razor compiler scans. Pickers are uncontrolled
 (`@key` generation) and are rewritten only after an outside value change.
+
+Flowbit.Ui renders on the server, so `ToLocalTime()`, `LocalDateTime`,
+`DateTimeKind.Local`, and `DateTimeOffset.Now` mean the UI server's zone and
+must not be used for anything a user sees or types. Every time goes through
+`Components/Shared/BrowserTimeZone`. `Routes` asks the browser once per circuit,
+after its first interactive render, through `flowbit.timeZone` (defined by
+`typed-inputs.js`), and the scoped `BrowserTimeZoneProvider` cascades the result
+as a root-level `CascadingValueSource`, re-rendering every subscriber. Prerender,
+a missing answer, and a zone `TimeZoneInfo` cannot find all fall back to UTC,
+and `Format` then ends each time with `UTC`.
+Markup shows times with `LocalTime` (a `<time>` whose tooltip keeps the exact
+instant); text built in code declares
+`[CascadingParameter] private BrowserTimeZone TimeZone { get; set; } = BrowserTimeZone.Pending;`
+and calls `TimeZone.Format`. A page `datetime-local` stays uncontrolled
+(`DateTimeLocalText`), names its zone in its label or with `TimeZoneNote`, and is
+read with `TryReadInput`, which refuses a skipped local time and gives a
+repeated one its first occurrence, as `typed-inputs.js` does, and returns a UTC
+instant. Delegation windows are the deliberate exception: they stay in UTC and say so.
 
 The UI talks to the API through `WorkflowApiClient` (a typed `HttpClient`). Its
 legacy GET methods remain for dashboard/compatibility reads; all five interactive

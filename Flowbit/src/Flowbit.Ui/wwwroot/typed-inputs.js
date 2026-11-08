@@ -4,12 +4,15 @@
 // for that local moment. Reading them in the same event keeps the stored value
 // ahead of any later click. typedinput follows the input event; typedcommit
 // follows focus leaving the control, because a date or date-time left partly
-// filled from empty never raises an input event. Load this script right after
+// filled from empty never raises an input event. It also defines
+// flowbit.timeZone, which the circuit reads once to show and read every other
+// time in the browser's zone (BrowserTimeZone). Load this script right after
 // the Blazor script.
 (() => {
   "use strict";
   const blazor = window.Blazor;
   window.flowbit = window.flowbit || {};
+  window.flowbit.timeZone = timeZoneName;
   if (!blazor || typeof blazor.registerCustomEventType !== "function" ||
       window.flowbit.typedInputsRegistered) {
     return;

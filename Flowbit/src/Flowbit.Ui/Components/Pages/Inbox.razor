@@ -159,7 +159,7 @@ else
                                 {
                                     <td><VariableValues Values="@item.Variables" /></td>
                                 }
-                                <td>@item.TaskUpdatedAt.ToLocalTime().ToString("g")</td>
+                                <td><LocalTime Value="@item.TaskUpdatedAt" /></td>
                                 <td class="text-end"><a class="btn btn-sm btn-outline-primary" href="@($"user-tasks/{item.UserTaskId}")">Open task</a></td>
                             </tr>
                         }
