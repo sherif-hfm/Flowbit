@@ -1,0 +1,26 @@
+@using System.Globalization
+
+@* One instant in the browser's time zone (BrowserTimeZone), or in UTC with a UTC
+   label until that zone is known. The tooltip keeps the exact instant the API
+   returned. *@
+@if (Value is DateTimeOffset value)
+{
+    <time datetime="@value.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture)"
+          title="@value.ToString("O", CultureInfo.InvariantCulture)">@TimeZone.Format(value, Format)</time>
+}
+else if (!string.IsNullOrEmpty(EmptyText))
+{
+    @EmptyText
+}
+
+@code {
+    [CascadingParameter] private BrowserTimeZone TimeZone { get; set; } = BrowserTimeZone.Pending;
+
+    [Parameter, EditorRequired] public DateTimeOffset? Value { get; set; }
+
+    /// <summary>A date and time format string, read in the server's culture.</summary>
+    [Parameter] public string Format { get; set; } = "g";
+
+    /// <summary>Text shown when there is no instant; nothing is shown when null.</summary>
+    [Parameter] public string? EmptyText { get; set; }
+}

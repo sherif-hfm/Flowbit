@@ -85,12 +85,12 @@ else
                 <div>
                     <label class="form-label" for="delegation-from">Valid from (UTC)</label>
                     <input id="delegation-from" type="datetime-local" class="form-control"
-                           @bind="validFrom" @bind:format="yyyy-MM-ddTHH:mm" />
+                           value="@defaultValidFrom" @onchange="e => validFrom = e.Value?.ToString()" />
                 </div>
                 <div>
                     <label class="form-label" for="delegation-until">Valid until (UTC)</label>
                     <input id="delegation-until" type="datetime-local" class="form-control"
-                           @bind="validUntil" @bind:format="yyyy-MM-ddTHH:mm" />
+                           value="@defaultValidUntil" @onchange="e => validUntil = e.Value?.ToString()" />
                 </div>
                 <div class="full">
                     <label class="form-label" for="delegation-reason">Reason (optional)</label>
@@ -263,8 +263,12 @@ else
     private string? delegateUser;
     private string? workflowKeys;
     private string? creationReason;
-    private DateTime? validFrom = MinuteValue(DateTime.UtcNow);
-    private DateTime? validUntil = MinuteValue(DateTime.UtcNow.AddDays(7));
+    // The window inputs are uncontrolled (see DateTimeLocalText): Blazor renders
+    // these defaults once and the typed text arrives through change events.
+    private readonly string defaultValidFrom = DateTimeLocalText.Format(MinuteValue(DateTime.UtcNow));
+    private readonly string defaultValidUntil = DateTimeLocalText.Format(MinuteValue(DateTime.UtcNow.AddDays(7)));
+    private string? validFrom;
+    private string? validUntil;
     private string? filterWorkflowKey;
     private string? filterState;
     private string? lifecycleOperation;
@@ -374,14 +378,15 @@ else
             error = "At least one workflow key is required.";
             return;
         }
-        if (validFrom is null || validUntil is null)
+        if (DateTimeLocalText.Parse(validFrom ?? defaultValidFrom) is not { } fromValue
+            || DateTimeLocalText.Parse(validUntil ?? defaultValidUntil) is not { } untilValue)
         {
             error = "Both validity dates are required.";
             return;
         }
 
-        var from = ToUtc(validFrom.Value);
-        var until = ToUtc(validUntil.Value);
+        var from = ToUtc(fromValue);
+        var until = ToUtc(untilValue);
         if (until <= from)
         {
             error = "Valid until must be later than valid from.";
@@ -541,9 +546,10 @@ else
     private static DateTime MinuteValue(DateTime value) =>
         new(value.Year, value.Month, value.Day, value.Hour, value.Minute, 0, DateTimeKind.Unspecified);
 
+    // Grants use whole UTC minutes.
     private static DateTimeOffset ToUtc(DateTime value)
     {
-        var utc = DateTime.SpecifyKind(value, DateTimeKind.Utc);
+        var utc = DateTime.SpecifyKind(MinuteValue(value), DateTimeKind.Utc);
         return new DateTimeOffset(utc);
     }
 

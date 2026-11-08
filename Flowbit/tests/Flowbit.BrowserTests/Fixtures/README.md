@@ -25,13 +25,13 @@ editor load flow; runtime fixtures are created and published through
 
 | Fixture | Workflow key | Used by | Shape |
 | --- | --- | --- | --- |
-| `runtime-lifecycle.json` | `browser-lifecycle-r1` | R1, R3 | start → claim-required `userTask` (`roles: ["Agent"]`, external id `TASK_REVIEW_REQUEST`) → end; single action flow `Approve` (flow 102) captures required string `decisionNote`. |
+| `runtime-lifecycle.json` | `browser-lifecycle-r1` | R1, R3, R13, R14 | start → claim-required `userTask` (`roles: ["Agent"]`, external id `TASK_REVIEW_REQUEST`) → end; single action flow `Approve` (flow 102) captures required string `decisionNote`. |
 | `runtime-navigation.json` | `browser-navigation-r2` | R2, R6, R8 | start → `approval1` → `approval2` → end; open role-less tasks, two steps so one instance can be driven to `Completed` over HTTP while another rests. |
 | `runtime-gateway.json` | `browser-gateway-r4` | R4, R6, R8 | start → parallel split (`Fork reviews`) → `Reviewer A` / `Reviewer B` → complex merge (`TotalIncomingCount() >= 2`, joinCancellation referencing the split) → `Finalize` → end. |
 | `runtime-mi.json` | `browser-mi-r5` | R4, R5, R6, R8 | start → parallel collection multi-instance `userTask` over `reviewers` (default `alpha`, `beta`, `gamma`) → end; action flow `Complete review` requires `reviewComment`; hidden engine fallback flow 202. |
 | `runtime-rich-forms.json` | `browser-rich-forms-r9` | R9 | start (open roles) declaring `requestTitle` (required string with label and two-line help), `amount` (required number), `urgent` (boolean), `neededBy` (date), `kickoffAt` (datetime), `category` (string options with a `software` default), and `tags` (`string[]`) → `userTask` `Review request` (`roles: ["Reviewer"]`) → end; action flow `Decide` (flow 201) declares `decision` (required string options with help and the `decision in ('approved', 'rejected')` rule), `score` (number options `1`, `2.5`, `5`), and `followUpOn` (datetime). |
 | `runtime-rich-forms-mi.json` | `browser-rich-forms-mi-r9` | R9 | start → parallel collection multi-instance `userTask` `Parallel review` (`roles: ["Reviewer"]`) over `reviewers` (default `alpha`, `beta`) → end `Reviewed`; completion flow `Complete review` (201) and hidden engine fallback 202. Interrupt flow `Stop reviews` (203, `cancelRemainingInstances: true`, roles `Reviewer`) → end `Stopped` declares `stopReason` (required string options with help and the `stopReason in ('duplicate', 'withdrawn')` rule), `budgetCap` (number), and `resumeAt` (datetime). |
-| `runtime-due-dates.json` | `browser-due-dates-r10` | R10 | start (optional `amount`, default `500`) → parallel split → four `Reviewer` user tasks: `Overdue review` (`dueDate` `2020-01-01T09:00:00Z`, `priority` `90`), `Due soon review` (`PT2H`, `if(amount > 100, 60, 10)`), `Upcoming review` (`P3D`, `20`), and `Unscheduled review` (neither) → parallel join → end. |
+| `runtime-due-dates.json` | `browser-due-dates-r10` | R10, R12 | start (optional `amount`, default `500`) → parallel split → four `Reviewer` user tasks: `Overdue review` (`dueDate` `2020-01-01T09:00:00Z`, `priority` `90`), `Due soon review` (`PT2H`, `if(amount > 100, 60, 10)`), `Upcoming review` (`P3D`, `20`), and `Unscheduled review` (neither) → parallel join → end. |
 | `runtime-administrative-r7.json` | `browser-administrative-r7` | R7 | start → `userTask` `Manual review` (node 2, external id `TASK_MANUAL_REVIEW`) → end; single action flow `Approve` (flow 102) with one optional string `approvalNote`. One batch execution completes the instance synchronously and leaves a completed one-item audit batch, so R7 exercises real batch display without a Worker. |
 
 ## Actors and expected states
@@ -84,6 +84,19 @@ editor load flow; runtime fixtures are created and published through
 - R10: the setup client starts the due-dates instance with `amount = 500`;
   `reviewer` (role `Reviewer`) reads My work and task detail. The four reviews
   stay open, and the API's real clock decides the badges.
+- R12: the setup client starts the due-dates instance with `amount = 500`;
+  `zone-reviewer` (roles `Reviewer` and `admin`, the default node-execution reader
+  and settings administrator role) reads My work, instance detail, Activity, and
+  Webhooks in a browser fixed to `America/New_York`.
+- R13: `r13-delegation-admin` (role `admin`, the default delegation
+  administrator role) only needs the published lifecycle workflow's key. It
+  grants `r13-delegate` on My delegations, then grants `r13-delegator`'s work to
+  `r13-managed-delegate` on User delegations; no instance is started.
+- R14: the setup client starts one lifecycle instance, which rests on
+  `Review request`. `r14-admin` (role `admin`, the default node-execution reader
+  and shared-variable administrator role) searches its executions on Activity and
+  creates and edits the API client `r14-client-<width>` on Shared-variable
+  clients, in a browser fixed to `Asia/Kolkata`.
 
 ## Prerequisites and boundaries
 

@@ -127,7 +127,7 @@ else
             @if (selected.HistoryPrunedAt is { } historyPrunedAt)
             {
                 <div class="alert alert-warning" role="status">
-                    Older revisions were permanently deleted by retention beginning @historyPrunedAt.ToLocalTime().ToString("g").
+                    Older revisions were permanently deleted by retention beginning <LocalTime Value="@historyPrunedAt" />.
                     This history is incomplete. Current values and required request references remain protected.
                 </div>
             }
@@ -161,7 +161,7 @@ else
                                 <td><span class="mono-id text-break">@RevisionValue(revision)</span></td>
                                 <td>@revision.CallerId<span class="data-subtitle">@revision.CallerKind</span></td>
                                 <td>@revision.Source</td>
-                                <td>@revision.CreatedAt.ToLocalTime().ToString("g")</td>
+                                <td><LocalTime Value="@revision.CreatedAt" /></td>
                             </tr>
                         }
                         </tbody>
@@ -202,7 +202,7 @@ else
                             <td><span class="data-title">@item.Key</span><span class="data-subtitle">@item.Description</span></td>
                             <td><span class="mono-id">@Contract(item)</span><span class="data-subtitle">@(string.IsNullOrWhiteSpace(item.Validation) ? "No validation" : item.Validation)</span></td>
                             <td><span class="mono-id">@(item.HasValue ? "Set (fetch to update)" : "Unset")</span><span class="data-subtitle"><StatusBadge Status="@(item.Status == "active" ? "success" : "neutral")" Text="@item.Status" /></span></td>
-                            <td>#@item.Revision<span class="data-subtitle">@item.UpdatedAt.ToLocalTime().ToString("g")</span></td>
+                            <td>#@item.Revision<span class="data-subtitle"><LocalTime Value="@item.UpdatedAt" /></span></td>
                             <td class="text-end"><div class="d-flex flex-wrap justify-content-end gap-2">
                                 <button class="btn btn-sm btn-outline-secondary" @onclick="() => OpenDetailAsync(item)" disabled="@busy">History</button>
                                 @if (item.Status == "active")

@@ -235,7 +235,7 @@ else
                                 <td><span class="mono-id">@item.TimeZone</span></td>
                                 <td>@BusinessCalendarText.WeekSummary(item.WeeklyHours)</td>
                                 <td>@(item.Holidays.Count == 1 ? "1 holiday" : $"{item.Holidays.Count:N0} holidays")</td>
-                                <td>@item.UpdatedAt.ToLocalTime().ToString("g")</td>
+                                <td><LocalTime Value="@item.UpdatedAt" /></td>
                                 <td class="text-end">
                                     <div class="d-flex justify-content-end gap-2">
                                         <button type="button" class="btn btn-sm btn-outline-primary" @onclick="() => OpenEdit(item)" disabled="@submitting"

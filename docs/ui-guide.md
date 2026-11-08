@@ -19,6 +19,7 @@ Both applications use the connected F mark and blue [Flowbit identity](branding.
 - [Set your development identity](#set-your-development-identity)
 - [Complete your first approval](#complete-your-first-approval)
 - [Find your way around](#find-your-way-around)
+- [Times and time zones](#times-and-time-zones)
 - [Design workflows in the UI](#design-workflows-in-the-ui)
 - [Manage workflow versions](#manage-workflow-versions)
 - [Use My work and task forms](#use-my-work-and-task-forms)
@@ -173,6 +174,16 @@ Paths below are relative to the UI origin, not API endpoints. Most data screens 
 
 Overview totals and lists reflect the API's visibility rules; a restricted panel can report an authorization error while another panel works. Treat **My work** as the personal inbox rather than interpreting every displayed instance as actionable by you.
 
+## Times and time zones
+
+Flowbit.Ui shows every time in your browser's time zone and reads every date and time you enter in that zone, whatever zone the UI server runs in. The page learns the zone your browser reports, such as `Europe/Berlin`, once it has connected. Until then, or when the UI server does not recognize the reported zone, times are in UTC and each one ends with `UTC`. Hover over a time in a table or summary to see the exact instant, in UTC.
+
+- Date and time fields say which zone they use: **Activity** names it above its time filters, and the **Webhooks** delivery filters and the **Shared-variable clients** expiry name it in their labels, for example **From (Europe/Berlin)**. Flowbit sends the UTC instant that the entered time names in that zone.
+- A time that a daylight-saving change skips, such as 02:30 on the night clocks go forward, is refused with a message. A time that occurs twice when clocks go back means its first occurrence.
+- Delegation windows are the exception: **My delegations** and **User delegations** enter and show them in UTC, as their labels say.
+- A business calendar's **Preview** reads its start in the calendar's own time zone, and typed `datetime` workflow inputs are sent with your browser's offset; see [Business calendars](#business-calendars) and [Enter typed values](#enter-typed-values).
+- Dates and times use the UI server's regional format, such as month/day order, not your browser's.
+
 ## Design workflows in the UI
 
 ### AI workflow assistant
@@ -257,7 +268,7 @@ Timer-start schedules follow the published default version. Before changing defa
 
 Use **Show filters** to narrow the inbox by instance, workflow, node, due date, priority, or variable data; click **Apply filters**. **Sort results** supports up to three fields and **Apply sorting**. **Previous** and **Next** move through the server's pages. Optional variable enrichment shows latest values, not an audit snapshot.
 
-The **Due** column shows when a task is due, in the same local time format as other timestamps; hover over it for the exact value. An **Overdue** badge marks a task whose due time has passed, and a **Due soon** badge one that is due within the window an administrator sets in the `UserTasks.DueSoonThreshold` engine setting, one day by default. The task's priority appears under the date; higher numbers are more urgent. A dash means the task has no due date. Sort by **Due date** to see the soonest first and by **Priority** descending to see the most urgent first; tasks without a value come last either way. The **Due** filter selects overdue, due-soon, upcoming, or unscheduled work, and **Minimum priority** and **Maximum priority** limit the priority range. The due date and priority are set when the task is created and do not change afterward. The **My work** list on **Overview** shows the same badges, and task detail lists **Due** and **Priority** when the task has them.
+The **Due** column shows when a task is due, in your browser's time zone like other times; hover over it for the exact value. An **Overdue** badge marks a task whose due time has passed, and a **Due soon** badge one that is due within the window an administrator sets in the `UserTasks.DueSoonThreshold` engine setting, one day by default. The task's priority appears under the date; higher numbers are more urgent. A dash means the task has no due date. Sort by **Due date** to see the soonest first and by **Priority** descending to see the most urgent first; tasks without a value come last either way. The **Due** filter selects overdue, due-soon, upcoming, or unscheduled work, and **Minimum priority** and **Maximum priority** limit the priority range. The due date and priority are set when the task is created and do not change afterward. The **My work** list on **Overview** shows the same badges, and task detail lists **Due** and **Priority** when the task has them.
 
 Readiness labels help distinguish **Ready to act**, **Can claim**, and **View only**. **View only** can be a legitimate result when no action currently satisfies all conditions. On task detail, **Claim task** establishes claim ownership; **Unclaim** releases it when permitted. **View instance** opens the surrounding process.
 
@@ -309,7 +320,7 @@ An action you take on this page, such as claiming or taking a flow, reloads the 
 
 Personal task visibility and instance administration are different access scopes. In particular, the current instance-detail API is authenticated but does not apply the personal task-visibility predicate. See the [API authorization boundary](api-guide.md#http-conventions-and-authentication) when designing a production interface.
 
-For a committed visit to a node, use **Activity** (**Node activity**). Combine lifecycle status, **Advanced filters**, and sorting, then open a result. The detail separates timing, actors, task/token correlations, submitted results, committed failures, and **Execution-local variable changes**. Those changes are attributed writes, not a complete execution-time snapshot. Date filters use inclusive **From** and exclusive **To** bounds; variable filters search the owning instance's latest data. Read access comes from workflow `taskAssignmentRoles` or `NodeExecution.RequiredRole` (default `admin`) and grants no task mutation authority.
+For a committed visit to a node, use **Activity** (**Node activity**). Combine lifecycle status, **Advanced filters**, and sorting, then open a result. The detail separates timing, actors, task/token correlations, submitted results, committed failures, and **Execution-local variable changes**. Those changes are attributed writes, not a complete execution-time snapshot. Date filters use inclusive **From** and exclusive **To** bounds in your browser's time zone, which the page names above them; variable filters search the owning instance's latest data. Read access comes from workflow `taskAssignmentRoles` or `NodeExecution.RequiredRole` (default `admin`) and grants no task mutation authority.
 
 Under **Actors, roles, and claims**, expand **Starting actor claims** or **Completing actor claims** to inspect the separate snapshots. Claim and unclaim events leave these visit snapshots unchanged. **Not recorded** means a snapshot is unavailable, including older data or disabled capture; **No selected claims present** means capture was enabled but none of the selected names were in that actor's token. These messages also appear in instance history. Claim values are displayed as text. Capture is configured by an operator through [selected-claim audit](deployment.md#selected-claim-audit), and retained snapshots may disappear with their owning history or activity records.
 
@@ -382,7 +393,7 @@ Changing a variable that originally supplied task roles does not retroactively c
 
 ## Delegate work
 
-In **My delegations**, use **Given by me** to enter **Delegate user**, comma-separated **Workflow keys**, **Valid from (UTC)**, **Valid until (UTC)**, and an optional reason, then **Create delegation**. **Offered to me** lets a delegate **Accept** or **Reject** a pending offer when acceptance is required. Use **Revoke** for an eligible outgoing grant.
+In **My delegations**, use **Given by me** to enter **Delegate user**, comma-separated **Workflow keys**, **Valid from (UTC)**, **Valid until (UTC)**, and an optional reason, then **Create delegation**. Unlike other times in the UI, delegation windows are entered and listed in UTC. **Offered to me** lets a delegate **Accept** or **Reject** a pending offer when acceptance is required. Use **Revoke** for an eligible outgoing grant.
 
 A delegate acts under their own identity and roles. Delegation allows eligible access to represented work; it does not transfer assignment/claim ownership or erase the actual actor from audit records.
 
@@ -465,7 +476,7 @@ JSON value fields require quoted strings. To initialize explicit nullable null i
 
 ### Shared-variable clients and distribution search
 
-**Shared-variable clients** uses the same shared-variable administrator permission. **Add client**, choose its ID, display name, scopes, and optional expiry, then **Create and reveal secret**. Store the one-time secret using **Copy header template** and acknowledge **I saved it**. **Edit**, **Rotate**, and **Revoke** manage the lifecycle. Rotation offers a previous-secret grace period; choosing zero invalidates it immediately.
+**Shared-variable clients** uses the same shared-variable administrator permission. **Add client**, choose its ID, display name, scopes, and optional expiry (in your browser's time zone), then **Create and reveal secret**. Store the one-time secret using **Copy header template** and acknowledge **I saved it**. **Edit**, **Rotate**, and **Revoke** manage the lifecycle. Rotation offers a previous-secret grace period; choosing zero invalidates it immediately.
 
 These credentials authenticate shared-variable APIs, not the UI identity or message/distribution APIs. **Distribution search** is a Development-only diagnostic page using a workflow family's **Workflow key**, **Client ID**, and **Client secret**; **Search tasks** inspects eligible distribution work. Assign work through **Task management** or the distribution API. See [machine authentication](deployment.md#machine-integrations).
 
@@ -504,7 +515,7 @@ Pause, archive, and revocation cannot recall a request that is already on its wa
 
 ### Recover deliveries
 
-The **Deliveries** filters select by subscription, state, event type, failure code, instance id, workflow family, and event time (**From** inclusive, **To** exclusive). If the API rejects a filter, for example an unknown failure code, the page says so under the filters and the list keeps its previous results. Each row shows the attempts used in its current generation (at most 12 within 72 hours of its first send), the last result, and the next attempt time. Select an event to open its detail: the event body, indented for reading with every character as stored, and under **Exact signed body** the exact text receivers verify; the captured destination; the retry window; and every attempt with its HTTP status and the keys that signed it.
+The **Deliveries** filters select by subscription, state, event type, failure code, instance id, workflow family, and event time (**From** inclusive, **To** exclusive, in the browser time zone their labels name). If the API rejects a filter, for example an unknown failure code, the page says so under the filters and the list keeps its previous results. Each row shows the attempts used in its current generation (at most 12 within 72 hours of its first send), the last result, and the next attempt time. Select an event to open its detail: the event body, indented for reading with every character as stored, and under **Exact signed body** the exact text receivers verify; the captured destination; the retry window; and every attempt with its HTTP status and the keys that signed it.
 
 A subscription's **Receiver health** counts timeouts, network errors, and retryable statuses in a row. After five, or at once when the receiver sends `Retry-After`, it shows **Backing off until …** and then **Probing one request at a time** until a request succeeds. **Latest request failed** means the last request failed without starting backoff, for example a `4xx` answer or a destination the network policy denied.
 
@@ -531,6 +542,7 @@ Each action reports its result, and the page then refreshes. If someone else cha
 | A call stays **Blocked**, **Queued**, or **Result ready**, or a cancelled parent's child keeps running | A Worker creates children, delivers results, and finishes cancellations. Check the Worker and **Jobs & incidents**, then see [Follow call activities](#follow-call-activities). |
 | Actions on a task return `409` and the page says the instance is being cancelled | A call above this instance was cancelled. The task stays visible until a Worker finishes stopping the instance; no action can succeed. |
 | An action fails with `... timer.timeDuration cannot be scheduled: ...` | A timer expression the action reached could not be scheduled from the instance's data. Correct the named variable, for example on **Instance variables**, and repeat the action; a `datetime` value needs an explicit offset. |
+| Times end with `UTC`, or a field says times use UTC | The page has not learned your browser's time zone yet, or the UI server does not recognize it. Reload the page; if it persists, an operator checks the UI host's time-zone data as described in [deployment](deployment.md#deployment-layout). See [Times and time zones](#times-and-time-zones). |
 | Archive, deletion, version change, or reactivation blocked | Read the reported references/compatibility blockers; these operations have different eligibility rules. |
 | AI assistant shows no models, or a key/quota error | A settings administrator adds or fixes the model on **AI models**. If models are configured but still not offered, check that `WorkflowAi:Enabled` is not `false`. |
 | Creating, rotating, testing, or resuming a webhook fails with "key protection" | The webhook key-ring certificate is missing or unusable on the API. An operator fixes it as described in [deployment](deployment.md#lifecycle-webhooks); Flowbit never generates replacement secrets. |

@@ -18,7 +18,7 @@
                         <td><code>@binding.DataType@(binding.IsArray ? "[]" : null)</code>@(binding.Nullable ? " · nullable" : null)<span class="data-subtitle">@(string.IsNullOrWhiteSpace(binding.Validation) ? "No validation" : binding.Validation)</span></td>
                         <td>@(binding.Access == "readWrite" ? "Read / write" : "Read only")</td>
                         <td><StatusBadge Status="@(binding.Status == "active" ? "success" : "neutral")" Text="@binding.Status" /><span class="data-subtitle">Revision #@binding.Revision · @(binding.HasValue ? "Value set" : "Value unset")</span></td>
-                        <td>@binding.UpdatedAt.ToLocalTime().ToString("g")</td>
+                        <td><LocalTime Value="@binding.UpdatedAt" /></td>
                     </tr>
                 }
                 </tbody>

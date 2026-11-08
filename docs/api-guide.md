@@ -6004,7 +6004,7 @@ Content-Type: application/json
 
 ## Shared-variable clients
 
-JWT Shared-variable administrator permission is required for every route. Client IDs are administrator-chosen, case-sensitive and immutable. Allowed scopes are `shared-variables.read` and `shared-variables.write`; they are explicit separate permissions. Creation and secret rotation return a generated secret exactly once with `Cache-Control: no-store` and `Pragma: no-cache`. Metadata reads cannot recover it. Update replaces displayName/scopes/expiresAt with `expectedRevision`; revoked clients cannot be used. Rotation grace is 0–168 hours, default 24. Revocation immediately invalidates all active secrets. All request bodies are limited to 64 KiB.
+JWT Shared-variable administrator permission is required for every route. Client IDs are administrator-chosen, case-sensitive and immutable. Allowed scopes are `shared-variables.read` and `shared-variables.write`; they are explicit separate permissions. Creation and secret rotation return a generated secret exactly once with `Cache-Control: no-store` and `Pragma: no-cache`. Metadata reads cannot recover it. Update replaces displayName/scopes/expiresAt with `expectedRevision`; revoked clients cannot be used. An optional `expiresAt` must be in the future; it may carry any UTC offset and is stored and returned in UTC. Rotation grace is 0–168 hours, default 24. Revocation immediately invalidates all active secrets. All request bodies are limited to 64 KiB.
 
 ### GET /api/shared-variable-clients
 

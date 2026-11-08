@@ -39,7 +39,7 @@
                                     <span class="data-subtitle">Token #@tokenId@if (scope.InterruptingNodeId is int nodeId) { <text> · Node #@nodeId</text> }</span>
                                 }
                             </td>
-                            <td>@scope.UpdatedAt.ToLocalTime().ToString("g")</td>
+                            <td><LocalTime Value="@scope.UpdatedAt" /></td>
                         </tr>
                     }
                 </tbody>
@@ -78,7 +78,7 @@
                             <td>@FormatIds(state.ContributingFlowIds)</td>
                             <td>@FormatIds(state.RemainingFlowIds)</td>
                             <td>@FormatLongIds(state.DrainingTokenIds)</td>
-                            <td>@state.UpdatedAt.ToLocalTime().ToString("g")</td>
+                            <td><LocalTime Value="@state.UpdatedAt" /></td>
                         </tr>
                     }
                 </tbody>

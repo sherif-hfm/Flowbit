@@ -152,6 +152,9 @@ public sealed class WorkflowFixtureClient : IAsyncDisposable
     public Task<SharedVariableMetadataDto> CreateSharedVariableAsync(CreateSharedVariableRequest request) =>
         SendAsync<SharedVariableMetadataDto>(HttpMethod.Post, "/api/shared-variables", request);
 
+    public Task<PagedResult<SharedVariableClientDto>> ListSharedVariableClientsAsync() =>
+        SendAsync<PagedResult<SharedVariableClientDto>>(HttpMethod.Get, "/api/shared-variable-clients?page=1&pageSize=200");
+
     /// <summary>Configures an AI model for the editor assistant, as a settings administrator does on the AI models page.</summary>
     public Task<AiModelSettingDto> CreateAiModelAsync(CreateAiModelRequest request) =>
         SendAsync<AiModelSettingDto>(HttpMethod.Post, "/api/ai-models", request);
@@ -178,6 +181,16 @@ public sealed class WorkflowFixtureClient : IAsyncDisposable
 
     public Task<UserDelegationDto> AcceptDelegationAsync(long id, UserDelegationLifecycleRequest request) =>
         SendAsync<UserDelegationDto>(HttpMethod.Post, $"/api/user-delegations/{id}/accept", request);
+
+    public Task<PagedResult<UserDelegationDto>> ListOutgoingDelegationsAsync(string workflowKey) =>
+        SendAsync<PagedResult<UserDelegationDto>>(
+            HttpMethod.Get,
+            $"/api/user-delegations?direction=outgoing&workflowKey={Uri.EscapeDataString(workflowKey)}");
+
+    public Task<PagedResult<UserDelegationDto>> ListManagedDelegationsAsync(string delegator, string workflowKey) =>
+        SendAsync<PagedResult<UserDelegationDto>>(
+            HttpMethod.Get,
+            $"/api/user-delegations/manage?delegator={Uri.EscapeDataString(delegator)}&workflowKey={Uri.EscapeDataString(workflowKey)}");
 
     public Task<InstanceVersionChangeBatchDetailDto> CreateVersionChangeBatchAsync(CreateInstanceVersionChangeBatchRequest request) =>
         SendAsync<InstanceVersionChangeBatchDetailDto>(HttpMethod.Post, "/api/instance-version-change-batches", request);

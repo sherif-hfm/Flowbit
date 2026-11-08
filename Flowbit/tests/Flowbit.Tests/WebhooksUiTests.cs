@@ -13,6 +13,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.JSInterop;
 using Xunit;
+using BrowserTimeZone = FlowbitUi::Flowbit.Ui.Components.Shared.BrowserTimeZone;
 using DeliveryDetailPage = FlowbitUi::Flowbit.Ui.Components.Pages.WebhookDeliveryDetail;
 using TokenState = FlowbitUi::Flowbit.Ui.Auth.TokenState;
 using UiAuthenticationUnavailableException = FlowbitUi::Flowbit.Ui.Auth.UiAuthenticationUnavailableException;
@@ -28,6 +29,7 @@ namespace Flowbit.Tests;
 public sealed class WebhooksUiTests
 {
     private static readonly DateTimeOffset Now = DateTimeOffset.Parse("2026-11-07T09:00:00Z");
+    private static readonly BrowserTimeZone Tokyo = BrowserTimeZone.FromBrowser("Asia/Tokyo");
     private static readonly Guid SubscriptionId = Guid.Parse("019a5e2d-6d40-7000-8000-000000000001");
     private static readonly Guid DeliveryId = Guid.Parse("019a5e2d-6d40-7000-8000-0000000000aa");
     private static readonly Guid OtherDeliveryId = Guid.Parse("019a5e2d-6d40-7000-8000-0000000000bb");
@@ -106,17 +108,19 @@ public sealed class WebhooksUiTests
         Assert.Equal("Retry scheduled", WebhookFormatting.DeliveryStateLabel("retryScheduled"));
         Assert.Equal("Receiver rejected (4xx) · HTTP 400", WebhookFormatting.OutcomeWithStatus("receiver_rejected", 400));
         Assert.Equal("Task assigned", WebhookFormatting.EventTypeLabel("task.assigned"));
-        Assert.Equal("No deliveries yet", WebhookFormatting.HealthSummary(new WebhookReceiverHealthDto(0, null, null, null, null, null, null, null), Now));
-        Assert.StartsWith("Backing off until", WebhookFormatting.HealthSummary(
-            new WebhookReceiverHealthDto(6, Now, Now.AddMinutes(5), null, Now, "timeout", null, Now), Now));
+        Assert.Equal("No deliveries yet", WebhookFormatting.HealthSummary(new WebhookReceiverHealthDto(0, null, null, null, null, null, null, null), Now, Tokyo));
+        Assert.Equal($"Backing off until {new DateTime(2026, 11, 7, 18, 5, 0):g} after 6 failures in a row", WebhookFormatting.HealthSummary(
+            new WebhookReceiverHealthDto(6, Now, Now.AddMinutes(5), null, Now, "timeout", null, Now), Now, Tokyo));
+        Assert.Equal($"Backing off until {new DateTime(2026, 11, 7, 9, 5, 0):g} UTC after 6 failures in a row", WebhookFormatting.HealthSummary(
+            new WebhookReceiverHealthDto(6, Now, Now.AddMinutes(5), null, Now, "timeout", null, Now), Now, BrowserTimeZone.Pending));
         Assert.StartsWith("Probing one request", WebhookFormatting.HealthSummary(
-            new WebhookReceiverHealthDto(6, Now, Now.AddMinutes(-1), null, Now, "timeout", null, Now), Now));
+            new WebhookReceiverHealthDto(6, Now, Now.AddMinutes(-1), null, Now, "timeout", null, Now), Now, Tokyo));
         Assert.StartsWith("Healthy · last success", WebhookFormatting.HealthSummary(
-            new WebhookReceiverHealthDto(0, null, null, Now, Now.AddMinutes(-1), "succeeded", 204, Now), Now));
+            new WebhookReceiverHealthDto(0, null, null, Now, Now.AddMinutes(-1), "succeeded", 204, Now), Now, Tokyo));
         Assert.StartsWith("Latest request failed · last success", WebhookFormatting.HealthSummary(
-            new WebhookReceiverHealthDto(0, null, null, Now.AddMinutes(-1), Now, "receiver_gone", 410, Now), Now));
+            new WebhookReceiverHealthDto(0, null, null, Now.AddMinutes(-1), Now, "receiver_gone", 410, Now), Now, Tokyo));
         Assert.Equal("No successful delivery yet", WebhookFormatting.HealthSummary(
-            new WebhookReceiverHealthDto(0, null, null, null, Now, "receiver_rejected", 400, Now), Now));
+            new WebhookReceiverHealthDto(0, null, null, null, Now, "receiver_rejected", 400, Now), Now, Tokyo));
         Assert.Equal("{\n  \"a\": 1\n}".Replace("\n", Environment.NewLine), WebhookFormatting.PrettyBody("{\"a\":1}"));
         Assert.Equal("not json", WebhookFormatting.PrettyBody("not json"));
     }
@@ -177,7 +181,7 @@ public sealed class WebhooksUiTests
     public void ARevealedSecretSaysWhenTheReceiverMustHaveIt()
     {
         var created = Subscription(Guid.CreateVersion7());
-        Assert.Equal("before activating the subscription", WebhookFormatting.SecretInstallDeadline(created));
+        Assert.Equal("before activating the subscription", WebhookFormatting.SecretInstallDeadline(created, Tokyo));
 
         var rotated = created with
         {
@@ -189,10 +193,10 @@ public sealed class WebhooksUiTests
                 new WebhookSigningKeyDto(Guid.CreateVersion7(), WebhookSigningKeyStatuses.Previous, Now, "admin", Now.AddHours(1), null, null, null)
             ]
         };
-        Assert.StartsWith("before the previous key stops signing at", WebhookFormatting.SecretInstallDeadline(rotated));
+        Assert.StartsWith("before the previous key stops signing at", WebhookFormatting.SecretInstallDeadline(rotated, Tokyo));
 
         var replacedAtOnce = rotated with { SigningKeys = created.SigningKeys };
-        Assert.Equal("now: requests are already signed with this key alone", WebhookFormatting.SecretInstallDeadline(replacedAtOnce));
+        Assert.Equal("now: requests are already signed with this key alone", WebhookFormatting.SecretInstallDeadline(replacedAtOnce, Tokyo));
     }
 
     [Theory]
@@ -600,26 +604,29 @@ public sealed class WebhooksUiTests
     }
 
     [Fact]
-    public async Task TheDeliveryFiltersSendLocalTimesAsUtcAndAppliedFiltersChangeOnlyWhenAccepted()
+    public async Task TheDeliveryFiltersSendBrowserTimesAsUtcAndAppliedFiltersChangeOnlyWhenAccepted()
     {
         using var handler = new RecordingHandler();
         ReplyPageLoad(handler);
         handler.Reply(Problem(HttpStatusCode.BadRequest, "Unknown failure code 'bogus'."));
         handler.Reply(Response(new PagedResult<WebhookDeliveryDto>([], 1, 25, 0)));
-        await using var page = await Harness<WebhooksPage>.RenderAsync(handler, AdminToken());
+        await using var page = await Harness<WebhooksPage>.RenderAsync(
+            handler, AdminToken(), zone: BrowserTimeZone.FromBrowser("America/New_York"));
+        Assert.Contains("From (America/New_York)", await page.HtmlAsync(), StringComparison.Ordinal);
 
         page.Set("filterFailureCode", "bogus");
         await page.CallAsync("ApplyDeliveryFiltersAsync");
         Assert.Equal("Unknown failure code 'bogus'.", page.Get<string?>("filterError"));
         Assert.Null(page.Get<WebhookDeliverySearch>("appliedSearch").FailureCode);
 
+        // New York left daylight-saving time on 1 November 2026, so these are UTC-05:00.
         page.Set("filterFailureCode", null);
         page.Set("filterFrom", "2026-11-07T10:00");
         page.Set("filterTo", "2026-11-07T12:30");
         await page.CallAsync("ApplyDeliveryFiltersAsync");
 
-        var from = new DateTimeOffset(new DateTime(2026, 11, 7, 10, 0, 0, DateTimeKind.Local)).ToUniversalTime();
-        var to = new DateTimeOffset(new DateTime(2026, 11, 7, 12, 30, 0, DateTimeKind.Local)).ToUniversalTime();
+        var from = DateTimeOffset.Parse("2026-11-07T15:00:00Z", CultureInfo.InvariantCulture);
+        var to = DateTimeOffset.Parse("2026-11-07T17:30:00Z", CultureInfo.InvariantCulture);
         var applied = page.Get<WebhookDeliverySearch>("appliedSearch");
         Assert.Equal(TimeSpan.Zero, applied.From!.Value.Offset);
         Assert.Equal(from, applied.From);
@@ -628,6 +635,16 @@ public sealed class WebhooksUiTests
             $"&from={Uri.EscapeDataString(from.ToString("O", CultureInfo.InvariantCulture))}&to={Uri.EscapeDataString(to.ToString("O", CultureInfo.InvariantCulture))}",
             handler.Requests[^1].Path, StringComparison.Ordinal);
         Assert.Null(page.Get<string?>("filterError"));
+
+        // 02:30 on 8 March 2026 is skipped in New York: the filter is refused before any request.
+        var requests = handler.Requests.Count;
+        page.Set("filterFrom", "2026-03-08T02:30");
+        await page.CallAsync("ApplyDeliveryFiltersAsync");
+        Assert.Equal(
+            "From: 2026-03-08 02:30 does not exist in America/New_York because of a daylight-saving change.",
+            page.Get<string?>("filterError"));
+        Assert.Equal(requests, handler.Requests.Count);
+        Assert.Equal(from, page.Get<WebhookDeliverySearch>("appliedSearch").From);
     }
 
     [Fact]
@@ -903,13 +920,18 @@ public sealed class WebhooksUiTests
 
         private object Page => state.Page ?? throw new InvalidOperationException("The page has not rendered.");
 
-        public static async Task<Harness<TPage>> RenderAsync(HttpMessageHandler handler, TokenState token, IJSRuntime? js = null, Guid? id = null)
+        public static async Task<Harness<TPage>> RenderAsync(
+            HttpMessageHandler handler, TokenState token, IJSRuntime? js = null, Guid? id = null, BrowserTimeZone? zone = null)
         {
             var services = new ServiceCollection();
             services.AddLogging();
             services.AddSingleton(Client(handler));
             services.AddSingleton(token);
             services.AddSingleton(js ?? new TestJsRuntime());
+            if (zone is not null)
+            {
+                services.AddCascadingValue(_ => zone);
+            }
             var provider = services.BuildServiceProvider();
             var renderer = new HtmlRenderer(provider, provider.GetRequiredService<ILoggerFactory>());
             var harness = new Harness<TPage>(provider, renderer, new HostState { Id = id });

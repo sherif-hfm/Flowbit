@@ -46,12 +46,12 @@ else if (detail is not null)
         </div>
         <div class="summary-grid">
             <div class="summary-item"><span>Event ID (webhook-id)</span><strong class="mono-id">@delivery.EventId.ToString("D")</strong></div>
-            <div class="summary-item"><span>Occurred</span><strong>@WebhookFormatting.FormatTime(delivery.OccurredAt)</strong></div>
+            <div class="summary-item"><span>Occurred</span><strong><LocalTime Value="@delivery.OccurredAt" /></strong></div>
             <div class="summary-item"><span>Attempt budget</span><strong>@WebhookFormatting.Budget(delivery)</strong></div>
-            <div class="summary-item"><span>Retry window ends</span><strong>@(detail.DeadlineAt is null ? "Starts with the next send" : WebhookFormatting.FormatTime(detail.DeadlineAt))</strong></div>
+            <div class="summary-item"><span>Retry window ends</span><strong><LocalTime Value="@detail.DeadlineAt" EmptyText="Starts with the next send" /></strong></div>
             <div class="summary-item"><span>Last result</span><strong>@WebhookFormatting.OutcomeWithStatus(delivery.LastOutcome, delivery.LastHttpStatus)</strong></div>
             <div class="summary-item"><span>Failure</span><strong class="mono-id">@(delivery.FailureCode ?? "None")</strong></div>
-            <div class="summary-item"><span>Next attempt</span><strong>@(delivery.DueAt is null ? "—" : WebhookFormatting.FormatTime(delivery.DueAt))</strong></div>
+            <div class="summary-item"><span>Next attempt</span><strong><LocalTime Value="@delivery.DueAt" EmptyText="—" /></strong></div>
             <div class="summary-item"><span>Instance</span><strong>@if (delivery.InstanceId is { } instance) { <a href="@($"instances/{instance}")">#@instance</a> } else { <text>None</text> }</strong></div>
         </div>
         <div class="mt-3">
@@ -87,7 +87,7 @@ else if (detail is not null)
                         <tr>
                             <td>@attempt.AttemptNumber</td>
                             <td>@attempt.RetryGeneration</td>
-                            <td>@WebhookFormatting.FormatTime(attempt.SendIntentAt ?? attempt.AcquiredAt)@if (attempt.SendIntentAt is null) { <span class="data-subtitle">Not sent</span> }</td>
+                            <td><LocalTime Value="@(attempt.SendIntentAt ?? attempt.AcquiredAt)" />@if (attempt.SendIntentAt is null) { <span class="data-subtitle">Not sent</span> }</td>
                             <td>@(attempt.Outcome is null ? "In progress" : WebhookFormatting.OutcomeWithStatus(attempt.Outcome, attempt.HttpStatus))</td>
                             <td>@(attempt.DurationMilliseconds is { } duration ? $"{duration:N0} ms" : "—")</td>
                             <td class="mono-id">@(attempt.SigningKeyIds.Count == 0 ? "—" : string.Join(", ", attempt.SigningKeyIds.Select(key => key.ToString("D")[..8])))</td>

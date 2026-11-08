@@ -219,7 +219,7 @@ else if (execution is not null)
                                         <td><code class="execution-inline-json">@FormatJson(variable.Value)</code></td>
                                         <td>@(variable.SourceActionId?.ToString() ?? "—")</td>
                                         <td>@(variable.SetBy ?? "System")</td>
-                                        <td title="@variable.SetAt.ToString("O")">@variable.SetAt.ToLocalTime().ToString("g")</td>
+                                        <td><LocalTime Value="@variable.SetAt" /></td>
                                     </tr>
                                 }
                             </tbody>
@@ -249,7 +249,7 @@ else if (execution is not null)
                                     <td>@(change.ValueChanged ? "Value changed" : "Metadata / lifecycle only")<span class="data-subtitle">@(change.HasValue ? "Value set" : "Value unset")</span></td>
                                     <td>@(change.SourceActionId?.ToString() ?? "—")</td>
                                     <td>@change.CallerId</td>
-                                    <td title="@change.CreatedAt.ToString("O")">@change.CreatedAt.ToLocalTime().ToString("g")</td>
+                                    <td><LocalTime Value="@change.CreatedAt" /></td>
                                 </tr>
                             }
                             </tbody>
@@ -288,6 +288,8 @@ else if (execution is not null)
 @code {
     [Parameter] public long ExecutionId { get; set; }
 
+    [CascadingParameter] private BrowserTimeZone TimeZone { get; set; } = BrowserTimeZone.Pending;
+
     private NodeExecutionDetailDto? execution;
     private string? error;
     private bool notFound;
@@ -322,10 +324,10 @@ else if (execution is not null)
         }
     }
 
-    private static string FormatTimestamp(DateTimeOffset value) =>
-        $"{value.ToLocalTime():g} ({value:O})";
+    private string FormatTimestamp(DateTimeOffset value) =>
+        $"{TimeZone.Format(value)} ({value:O})";
 
-    private static string FormatTimestamp(DateTimeOffset? value) =>
+    private string FormatTimestamp(DateTimeOffset? value) =>
         value is null ? "—" : FormatTimestamp(value.Value);
 
     private static string FormatDuration(long? milliseconds)

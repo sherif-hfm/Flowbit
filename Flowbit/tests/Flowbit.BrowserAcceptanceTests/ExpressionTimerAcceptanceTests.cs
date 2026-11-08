@@ -121,10 +121,11 @@ public sealed class ExpressionTimerAcceptanceTests(ExampleAcceptanceFixture fixt
             await scenario.Page.Locator("#admin-source-node").SelectOptionAsync("2");
             await scenario.Page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Search positions", Exact = true }).ClickAsync();
             var candidate = scenario.Page.Locator("tbody tr").Filter(new LocatorFilterOptions { HasText = $"Instance #{instance.Id}" });
+            // The page shows times in the browser's zone, which acceptance scenarios fix to UTC.
             await Assertions.Expect(candidate).ToContainTextAsync("Boundary #3");
-            await Assertions.Expect(candidate).ToContainTextAsync($"due {reminder.DueAt.ToLocalTime():g}");
+            await Assertions.Expect(candidate).ToContainTextAsync($"due {reminder.DueAt.UtcDateTime:g}");
             await Assertions.Expect(candidate).ToContainTextAsync("Boundary #4");
-            await Assertions.Expect(candidate).ToContainTextAsync($"due {escalation.DueAt.ToLocalTime():g}");
+            await Assertions.Expect(candidate).ToContainTextAsync($"due {escalation.DueAt.UtcDateTime:g}");
             await CaptureAsync(scenario, "administrative-boundaries");
 
             // The non-interrupting reminder adds work and leaves the review open.

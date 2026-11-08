@@ -397,6 +397,72 @@ public sealed class SharedVariableApiTests(PostgresApiFixture fixture)
         }
     }
 
+    [Fact]
+    public async Task ClientExpiryWithAnyOffsetIsStoredAsTheSameInstant()
+    {
+        var clientId = $"shared-expiry-{Guid.NewGuid():N}";
+        // Flowbit.Ui sends UTC, but other API clients may send any offset.
+        var created = new DateTimeOffset(2099, 1, 2, 3, 4, 0, TimeSpan.FromHours(3));
+        var updated = new DateTimeOffset(2099, 2, 3, 4, 5, 0, TimeSpan.FromHours(-5.5));
+
+        try
+        {
+            CreateSharedVariableClientResult createdClient;
+            using (var request = JwtRequest(
+                       HttpMethod.Post,
+                       "/api/shared-variable-clients",
+                       new CreateSharedVariableClientRequest(
+                           clientId,
+                           "Expiry offsets",
+                           [SharedVariableClientScopes.Read],
+                           created)))
+            using (var response = await fixture.Client.SendAsync(request))
+            {
+                Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+                createdClient = await ReadAsync<CreateSharedVariableClientResult>(response);
+                Assert.Equal(created, createdClient.Client.ExpiresAt);
+                Assert.Equal(TimeSpan.Zero, createdClient.Client.ExpiresAt?.Offset);
+            }
+
+            using (var request = JwtRequest(
+                       HttpMethod.Put,
+                       $"/api/shared-variable-clients/{createdClient.Client.Id}",
+                       new UpdateSharedVariableClientRequest(
+                           "Expiry offsets",
+                           [SharedVariableClientScopes.Read],
+                           updated,
+                           createdClient.Client.Revision)))
+            using (var response = await fixture.Client.SendAsync(request))
+            {
+                Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+                var client = await ReadAsync<SharedVariableClientDto>(response);
+                Assert.Equal(updated, client.ExpiresAt);
+            }
+
+            using (var request = JwtRequest(HttpMethod.Get, $"/api/shared-variable-clients/{createdClient.Client.Id}"))
+            using (var response = await fixture.Client.SendAsync(request))
+            {
+                Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+                var client = await ReadAsync<SharedVariableClientDto>(response);
+                Assert.Equal(updated, client.ExpiresAt);
+            }
+        }
+        finally
+        {
+            await using var db = fixture.CreateDbContext();
+            var clientRecordIds = await db.SharedVariableClients
+                .Where(client => client.ClientId == clientId)
+                .Select(client => client.Id)
+                .ToArrayAsync();
+            await db.SharedVariableClientSecrets
+                .Where(secret => clientRecordIds.Contains(secret.ClientId))
+                .ExecuteDeleteAsync();
+            await db.SharedVariableClients
+                .Where(client => clientRecordIds.Contains(client.Id))
+                .ExecuteDeleteAsync();
+        }
+    }
+
     private static HttpRequestMessage JwtRequest(
         HttpMethod method,
         string path,

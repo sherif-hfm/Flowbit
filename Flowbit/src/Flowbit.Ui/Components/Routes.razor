@@ -1,6 +1,15 @@
-﻿<Router AppAssembly="typeof(Program).Assembly" NotFoundPage="typeof(Pages.NotFound)">
+﻿@inject BrowserTimeZoneProvider TimeZones
+@inject IJSRuntime JS
+
+<Router AppAssembly="typeof(Program).Assembly" NotFoundPage="typeof(Pages.NotFound)">
     <Found Context="routeData">
         <SessionRouteView RouteData="routeData" />
         <FocusOnNavigate RouteData="routeData" Selector="h1" />
     </Found>
 </Router>
+
+@code {
+    // Routes renders once per circuit, so the browser is asked for its time zone once.
+    protected override Task OnAfterRenderAsync(bool firstRender) =>
+        firstRender && RendererInfo.IsInteractive ? TimeZones.ReadBrowserZoneAsync(JS) : Task.CompletedTask;
+}

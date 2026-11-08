@@ -97,6 +97,23 @@ public sealed class TypedInputsScriptTests
         Assert.False(root.GetProperty("unfocused").GetBoolean());
     }
 
+    [Fact]
+    public void Defines_the_zone_function_the_circuit_reads_even_without_Blazor()
+    {
+        using var engine = new Engine(options => options.TimeoutInterval(TimeSpan.FromSeconds(10)));
+        engine.Execute("""
+            const window = {};
+            const document = { addEventListener() {} };
+            globalThis.Intl = { DateTimeFormat: () => ({ resolvedOptions: () => ({ timeZone: 'Asia/Tokyo' }) }) };
+            """);
+        engine.Execute(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "typed-inputs.js")));
+
+        // BrowserTimeZoneProvider calls this name.
+        Assert.Equal("Asia/Tokyo", engine.Evaluate("window.flowbit.timeZone()").AsString());
+        engine.Execute("globalThis.Intl = { DateTimeFormat: () => { throw new Error('no Intl'); } };");
+        Assert.True(engine.Evaluate("window.flowbit.timeZone()").IsNull());
+    }
+
     private const string Stubs = """
         const registrations = [];
         const wheelListeners = [];

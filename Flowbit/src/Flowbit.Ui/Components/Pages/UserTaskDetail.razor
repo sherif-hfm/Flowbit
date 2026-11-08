@@ -41,7 +41,7 @@ else
             <div class="summary-item"><span>Assignee</span><strong>@(task.Assignee ?? "Shared pool")</strong></div>
             <div class="summary-item"><span>Claimed by</span><strong>@(task.ClaimedBy ?? "Unclaimed")</strong></div>
             <div class="summary-item"><span>Claim required</span><strong>@(task.RequiresClaim ? "Yes" : "No")</strong></div>
-            <div class="summary-item"><span>Last updated</span><strong>@task.UpdatedAt.ToLocalTime().ToString("g")</strong></div>
+            <div class="summary-item"><span>Last updated</span><strong><LocalTime Value="@task.UpdatedAt" /></strong></div>
             @if (task.DueAt is not null)
             {
                 <div class="summary-item"><span>Due</span><strong><TaskDueDate DueAt="@task.DueAt" DueStatus="@task.DueStatus" /></strong></div>

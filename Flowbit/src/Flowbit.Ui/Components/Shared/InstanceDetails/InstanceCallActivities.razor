@@ -87,14 +87,14 @@
                                         <span class="data-subtitle">@CallActivityFormatting.VersionText(call)</span>
                                     </td>
                                     <td>
-                                        <span class="data-subtitle">Entered @call.CreatedAt.ToLocalTime().ToString("g")</span>
+                                        <span class="data-subtitle">Entered <LocalTime Value="@call.CreatedAt" /></span>
                                         @if (call.StartedAt is { } startedAt)
                                         {
-                                            <span class="data-subtitle">Child started @startedAt.ToLocalTime().ToString("g")</span>
+                                            <span class="data-subtitle">Child started <LocalTime Value="@startedAt" /></span>
                                         }
                                         @if (call.SettledAt is { } settledAt)
                                         {
-                                            <span class="data-subtitle">Settled @settledAt.ToLocalTime().ToString("g")</span>
+                                            <span class="data-subtitle">Settled <LocalTime Value="@settledAt" /></span>
                                         }
                                     </td>
                                 </tr>

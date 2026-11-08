@@ -105,8 +105,8 @@ public sealed class SharedVariableClientService(
         var clientId = NormalizeClientId(request.ClientId);
         var displayName = NormalizeDisplayName(request.DisplayName);
         var scopes = NormalizeScopes(request.Scopes);
-        if (request.ExpiresAt is DateTimeOffset expiresAt
-            && expiresAt <= timeProvider.GetUtcNow())
+        var expiresAt = NormalizeExpiresAt(request.ExpiresAt);
+        if (expiresAt <= timeProvider.GetUtcNow())
             throw new WorkflowDomainException("expiresAt must be in the future.");
 
         var secret = GenerateSecret();
@@ -119,7 +119,7 @@ public sealed class SharedVariableClientService(
                     clientId,
                     displayName,
                     scopes,
-                    request.ExpiresAt,
+                    expiresAt,
                     caller.Kind,
                     caller.Id,
                     Algorithm,
@@ -195,8 +195,8 @@ public sealed class SharedVariableClientService(
         ValidateRevision(request.ExpectedRevision);
         var displayName = NormalizeDisplayName(request.DisplayName);
         var scopes = NormalizeScopes(request.Scopes);
-        if (request.ExpiresAt is DateTimeOffset expiresAt
-            && expiresAt <= timeProvider.GetUtcNow())
+        var expiresAt = NormalizeExpiresAt(request.ExpiresAt);
+        if (expiresAt <= timeProvider.GetUtcNow())
         {
             throw new WorkflowDomainException("expiresAt must be in the future.");
         }
@@ -207,7 +207,7 @@ public sealed class SharedVariableClientService(
                 request.ExpectedRevision,
                 displayName,
                 scopes,
-                request.ExpiresAt,
+                expiresAt,
                 caller.Kind,
                 caller.Id),
             cancellationToken);
@@ -293,6 +293,10 @@ public sealed class SharedVariableClientService(
             throw new WorkflowDomainException("displayName is required and must be at most 300 characters.");
         return normalized;
     }
+
+    // PostgreSQL timestamptz parameters must be UTC; callers may send any offset.
+    private static DateTimeOffset? NormalizeExpiresAt(DateTimeOffset? value) =>
+        value?.ToUniversalTime();
 
     private static IReadOnlyCollection<string> NormalizeScopes(IReadOnlyCollection<string> scopes)
     {

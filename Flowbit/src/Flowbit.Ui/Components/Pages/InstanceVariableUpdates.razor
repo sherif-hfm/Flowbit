@@ -193,7 +193,7 @@ else
                                 {
                                     <td><VariableValues Values="@candidate.Variables" /></td>
                                 }
-                                <td>@candidate.UpdatedAt.ToLocalTime().ToString("g")</td>
+                                <td><LocalTime Value="@candidate.UpdatedAt" /></td>
                             </tr>
                         }
                     </tbody>
@@ -340,7 +340,7 @@ else
                                     <td><a class="data-title" href="@($"instances/{item.InstanceId}")">Instance #@item.InstanceId</a><span class="data-subtitle">@(item.BusinessKey ?? "No business key")</span></td>
                                     <td class="variable-result-cell">@BatchItemResult(item)</td>
                                     <td><StatusBadge Status="@item.Status" /></td>
-                                    <td>@item.UpdatedAt.ToLocalTime().ToString("g")</td>
+                                    <td><LocalTime Value="@item.UpdatedAt" /></td>
                                 </tr>
                             }
                         </tbody>
@@ -386,7 +386,7 @@ else
                                 <td>@item.PreparedBy</td>
                                 <td>@item.SucceededItemCount.ToString("N0") / @item.TotalItemCount.ToString("N0")<span class="data-subtitle">@item.EligibleItemCount.ToString("N0") eligible - @item.WarningItemCount.ToString("N0") warning - @item.FailedItemCount.ToString("N0") failed</span></td>
                                 <td><StatusBadge Status="@item.Status" /></td>
-                                <td>@item.UpdatedAt.ToLocalTime().ToString("g")</td>
+                                <td><LocalTime Value="@item.UpdatedAt" /></td>
                                 <td class="text-end"><button class="btn btn-sm btn-outline-primary" @onclick="() => OpenBatchAsync(item.Id)">Open</button></td>
                             </tr>
                         }

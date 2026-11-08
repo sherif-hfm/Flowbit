@@ -124,7 +124,7 @@
                             {
                                 <td><VariableValues Values="@instance.Variables" /></td>
                             }
-                            <td><span title="@instance.UpdatedAt.ToString("O")">@instance.UpdatedAt.ToLocalTime().ToString("g")</span></td>
+                            <td><LocalTime Value="@instance.UpdatedAt" /></td>
                             <td class="text-end"><a class="btn btn-sm btn-outline-primary" href="@($"instances/{instance.Id}")">Open</a></td>
                         </tr>
                     }

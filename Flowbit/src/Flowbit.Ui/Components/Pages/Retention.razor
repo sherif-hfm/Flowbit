@@ -201,6 +201,8 @@ else
 }
 
 @code {
+    [CascadingParameter] private BrowserTimeZone TimeZone { get; set; } = BrowserTimeZone.Pending;
+
     private RetentionStatusDto? status;
     private DateTimeOffset? statusObservedAt;
     private RetentionPreviewDto? preview;
@@ -410,7 +412,7 @@ else
     private static string ErrorMessage(Exception ex) => ex is WorkflowApiException { StatusCode: HttpStatusCode.Forbidden }
         ? "This identity does not have the configured settings administrator role."
         : ex.Message;
-    private static string FormatTime(DateTimeOffset? value) => value?.ToLocalTime().ToString("g") ?? "Not available yet";
+    private string FormatTime(DateTimeOffset? value) => value is { } instant ? TimeZone.Format(instant) : "Not available yet";
     private static string PolicyLabel(int? days) => days is null ? "Keep forever" : $"Delete after {days:N0} {(days == 1 ? "day" : "days")}";
     private static string StatusLabel(string? value) => value switch
     {

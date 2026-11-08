@@ -101,12 +101,12 @@ public static class WebhookFormatting
         $"{delivery.GenerationAttempts} of {MaxAttemptsPerGeneration} in generation {delivery.RetryGeneration}";
 
     /// <summary>Receiver health in a sentence: backoff state, failures in a row, and the last result.</summary>
-    public static string HealthSummary(WebhookReceiverHealthDto health, DateTimeOffset now)
+    public static string HealthSummary(WebhookReceiverHealthDto health, DateTimeOffset now, BrowserTimeZone zone)
     {
         if (health.BackoffUntil is { } until)
         {
             return until > now
-                ? $"Backing off until {FormatTime(until)} after {health.ConsecutiveFailures} failures in a row"
+                ? $"Backing off until {FormatTime(until, zone)} after {health.ConsecutiveFailures} failures in a row"
                 : $"Probing one request at a time after {health.ConsecutiveFailures} failures in a row";
         }
         if (health.ConsecutiveFailures > 0)
@@ -117,14 +117,15 @@ public static class WebhookFormatting
         if (health.LastFailureAt is { } failure && !(health.LastSuccessAt > failure))
         {
             return health.LastSuccessAt is { } earlier
-                ? $"Latest request failed · last success {FormatTime(earlier)}"
+                ? $"Latest request failed · last success {FormatTime(earlier, zone)}"
                 : "No successful delivery yet";
         }
-        return health.LastSuccessAt is { } success ? $"Healthy · last success {FormatTime(success)}" : "No deliveries yet";
+        return health.LastSuccessAt is { } success ? $"Healthy · last success {FormatTime(success, zone)}" : "No deliveries yet";
     }
 
-    public static string FormatTime(DateTimeOffset? value) =>
-        value is null ? "—" : value.Value.ToLocalTime().ToString("g", CultureInfo.CurrentCulture);
+    /// <summary>A time in the browser's zone for a sentence; markup shows times with <c>LocalTime</c>.</summary>
+    public static string FormatTime(DateTimeOffset? value, BrowserTimeZone zone) =>
+        value is { } instant ? zone.Format(instant) : "—";
 
     /// <summary>
     /// The body indented for reading. Each token is copied from the stored text, so strings keep exactly the
@@ -276,12 +277,12 @@ public static class WebhookFormatting
         subscription.SigningKeys.Any(key => key.Status == WebhookSigningKeyStatuses.Previous);
 
     /// <summary>When a newly revealed secret must be installed: before activation, or before the previous key stops signing.</summary>
-    public static string SecretInstallDeadline(WebhookSubscriptionDto subscription)
+    public static string SecretInstallDeadline(WebhookSubscriptionDto subscription, BrowserTimeZone zone)
     {
         var previous = subscription.SigningKeys.FirstOrDefault(key => key.Status == WebhookSigningKeyStatuses.Previous);
         if (previous?.OverlapExpiresAt is { } until)
         {
-            return $"before the previous key stops signing at {FormatTime(until)}";
+            return $"before the previous key stops signing at {FormatTime(until, zone)}";
         }
         return subscription.State == WebhookSubscriptionStates.Paused
             ? "before activating the subscription"

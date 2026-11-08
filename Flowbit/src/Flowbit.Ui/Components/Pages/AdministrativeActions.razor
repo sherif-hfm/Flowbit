@@ -248,7 +248,7 @@ else
                                         </div>
                                     }
                                 </td>
-                                <td>@candidate.PositionUpdatedAt.ToLocalTime().ToString("g")</td>
+                                <td><LocalTime Value="@candidate.PositionUpdatedAt" /></td>
                             </tr>
                         }
                     </tbody>
@@ -447,6 +447,8 @@ else
 }
 
 @code {
+    [CascadingParameter] private BrowserTimeZone TimeZone { get; set; } = BrowserTimeZone.Pending;
+
     [SupplyParameterFromQuery(Name = "batchId")]
     public long? RequestedBatchId { get; set; }
 
@@ -1245,9 +1247,9 @@ else
         : !string.IsNullOrWhiteSpace(timer.TimeDuration) ? $"duration {timer.TimeDuration}"
         : !string.IsNullOrWhiteSpace(timer.TimeCycle) ? $"cycle {timer.TimeCycle}"
         : "timer expression unavailable";
-    private static string TimerStateDetail(AdministrativeTimerBoundaryStateDto timer)
+    private string TimerStateDetail(AdministrativeTimerBoundaryStateDto timer)
     {
-        var due = timer.NextDueAt is null ? "no due time" : $"due {timer.NextDueAt.Value.ToLocalTime():g}";
+        var due = timer.NextDueAt is { } dueAt ? $"due {TimeZone.Format(dueAt)}" : "no due time";
         var occurrence = timer.Occurrence is null ? string.Empty : $" · occurrence {timer.Occurrence}";
         return $"{due}{occurrence}";
     }

@@ -197,6 +197,7 @@ code { color: var(--fb-primary-hover); }
 .filter-panel { margin-bottom: 1rem; padding: 1rem; background: var(--fb-surface); border: 1px solid var(--fb-border); border-radius: var(--fb-radius); box-shadow: var(--fb-shadow); }
 .filter-grid { display: grid; grid-template-columns: repeat(4, minmax(140px, 1fr)); gap: .8rem; align-items: end; }
 .filter-span-2 { grid-column: span 2; }
+.filter-span-all { grid-column: 1 / -1; }
 .filter-actions { display: flex; align-items: center; gap: .5rem; }
 .filter-toggle { display: none; }
 

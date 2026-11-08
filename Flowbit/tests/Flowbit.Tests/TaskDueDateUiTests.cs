@@ -10,6 +10,7 @@ using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Web;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using BrowserTimeZone = FlowbitUi::Flowbit.Ui.Components.Shared.BrowserTimeZone;
 using InboxPage = FlowbitUi::Flowbit.Ui.Components.Pages.Inbox;
 using TaskDueDateComponent = FlowbitUi::Flowbit.Ui.Components.Shared.TaskDueDate;
 using TokenState = FlowbitUi::Flowbit.Ui.Auth.TokenState;
@@ -33,16 +34,26 @@ public sealed class TaskDueDateUiTests
         var html = await RenderAsync(DueAt, dueStatus, null);
 
         Assert.Contains("title=\"2030-01-31T15:00:00.0000000+00:00\"", html, StringComparison.Ordinal);
-        Assert.Contains(DueAt.ToLocalTime().ToString("g"), html, StringComparison.Ordinal);
+        Assert.Contains(DueAt.UtcDateTime.ToString("g") + " UTC", html, StringComparison.Ordinal);
         Assert.Contains(tone, html, StringComparison.Ordinal);
         Assert.Contains(text, html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task TheDueTimeIsShownInTheBrowsersZone()
+    {
+        var html = await RenderAsync(DueAt, UserTaskDueStatuses.Upcoming, null, "Asia/Tokyo");
+
+        Assert.Contains(new DateTime(2030, 2, 1, 0, 0, 0).ToString("g"), html, StringComparison.Ordinal);
+        Assert.DoesNotContain(" UTC", html, StringComparison.Ordinal);
+        Assert.Contains("title=\"2030-01-31T15:00:00.0000000+00:00\"", html, StringComparison.Ordinal);
     }
 
     [Fact]
     public async Task UpcomingShowsOnlyTheTimeAndMissingTimesShowTheEmptyText()
     {
         var upcoming = await RenderAsync(DueAt, UserTaskDueStatuses.Upcoming, "—");
-        Assert.Contains(DueAt.ToLocalTime().ToString("g"), upcoming, StringComparison.Ordinal);
+        Assert.Contains(DueAt.UtcDateTime.ToString("g") + " UTC", upcoming, StringComparison.Ordinal);
         Assert.DoesNotContain("status-badge", upcoming, StringComparison.Ordinal);
         Assert.DoesNotContain("—", upcoming, StringComparison.Ordinal);
 
@@ -94,10 +105,17 @@ public sealed class TaskDueDateUiTests
         Assert.Contains("priority", values);
     }
 
-    // Returns decoded markup, because the renderer encodes characters such as +.
-    private static async Task<string> RenderAsync(DateTimeOffset? dueAt, string? dueStatus, string? emptyText)
+    // Returns decoded markup, because the renderer encodes characters such as +. Without a
+    // browser zone, times use the labelled UTC fallback.
+    private static async Task<string> RenderAsync(
+        DateTimeOffset? dueAt, string? dueStatus, string? emptyText, string? browserZone = null)
     {
-        await using var services = new ServiceCollection().AddLogging().BuildServiceProvider();
+        var collection = new ServiceCollection().AddLogging();
+        if (browserZone is not null)
+        {
+            collection.AddCascadingValue(_ => BrowserTimeZone.FromBrowser(browserZone));
+        }
+        await using var services = collection.BuildServiceProvider();
         await using var renderer = new HtmlRenderer(services, services.GetRequiredService<ILoggerFactory>());
         var html = await renderer.Dispatcher.InvokeAsync(async () =>
         {

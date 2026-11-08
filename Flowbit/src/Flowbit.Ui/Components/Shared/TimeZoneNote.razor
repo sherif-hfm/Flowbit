@@ -1,0 +1,11 @@
+@* Says which time zone a form's or filter's times use (BrowserTimeZone). Point
+   each date-time input at it with aria-describedby. *@
+<div id="@Id" class="form-text @Class">@TimeZone.Description</div>
+
+@code {
+    [CascadingParameter] private BrowserTimeZone TimeZone { get; set; } = BrowserTimeZone.Pending;
+
+    [Parameter, EditorRequired] public string Id { get; set; } = string.Empty;
+
+    [Parameter] public string? Class { get; set; }
+}
