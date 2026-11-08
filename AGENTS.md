@@ -253,7 +253,7 @@ A repeatable Chromium smoke suite exists at
 real copied editor and the real published API/UI over localhost with a
 disposable PostgreSQL container; see its
 [README](Flowbit/tests/Flowbit.BrowserTests/README.md) for setup and the
-E1–E20/R1–R12 coverage matrix. It is the baseline for editor/runtime UI changes,
+E1–E20/R1–R14 coverage matrix. It is the baseline for editor/runtime UI changes,
 but it does not replace scenario-specific manual verification: the native
 file-picker success/cancel path, visual comparisons, and behaviors outside the
 matrix still need the manual steps above.
@@ -1893,11 +1893,20 @@ and `Format` then ends each time with `UTC`.
 Markup shows times with `LocalTime` (a `<time>` whose tooltip keeps the exact
 instant); text built in code declares
 `[CascadingParameter] private BrowserTimeZone TimeZone { get; set; } = BrowserTimeZone.Pending;`
-and calls `TimeZone.Format`. A page `datetime-local` stays uncontrolled
-(`DateTimeLocalText`), names its zone in its label or with `TimeZoneNote`, and is
-read with `TryReadInput`, which refuses a skipped local time and gives a
-repeated one its first occurrence, as `typed-inputs.js` does, and returns a UTC
-instant. Delegation windows are the deliberate exception: they stay in UTC and say so.
+and calls `TimeZone.Format`. A page `datetime-local` names its zone in its label
+or with `TimeZoneNote` and is read with `TryReadInput`, which refuses a skipped
+local time and gives a repeated one its first occurrence, as `typed-inputs.js`
+does, and returns a UTC instant. Delegation windows are the deliberate
+exception: they stay in UTC, say so, and are read with `DateTimeLocalText.Parse`.
+
+Every page `datetime-local` (the delegation windows, Activity's time filters, the
+Webhooks delivery filters, and the Shared-variable clients expiry) is
+uncontrolled, like the typed pickers above. It renders a value only when that
+value changes from outside, under a new `@key`, and keeps the text its
+`@onchange` reports, parsed by `Components/Shared/DateTimeLocalText`. `@bind` to
+`DateTime?` would clear the whole field when a typed leading zero briefly empties
+the value, and a minute `@bind:format` rejects the seconds Blazor appends, so
+every entry would revert.
 
 The UI talks to the API through `WorkflowApiClient` (a typed `HttpClient`). Its
 legacy GET methods remain for dashboard/compatibility reads; all five interactive
