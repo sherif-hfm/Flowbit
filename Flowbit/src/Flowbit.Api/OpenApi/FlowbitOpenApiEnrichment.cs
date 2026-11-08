@@ -77,7 +77,7 @@ internal static partial class FlowbitOpenApiEnrichment
             if (string.IsNullOrWhiteSpace(schema.Description))
             {
                 schema.Description = context.JsonPropertyInfo is { } property
-                    ? DescribeSchemaProperty(property.DeclaringType, property.Name)
+                    ? DescribeSchemaProperty(property.DeclaringType, property.Name, property.PropertyType)
                     : $"JSON representation of {HumanizeTypeName(context.JsonTypeInfo.Type.Name)}.";
             }
 
@@ -345,6 +345,10 @@ internal static partial class FlowbitOpenApiEnrichment
                 "The numeric identifier of the managed shared-variable API client.",
             "id" when operationKey.Contains("/ai-models/", StringComparison.Ordinal) =>
                 "The server-generated identifier of the configured AI model.",
+            "id" when operationKey.Contains("/webhook-subscriptions/", StringComparison.Ordinal) =>
+                "The server-generated UUID of the webhook subscription.",
+            "id" when operationKey.Contains("/webhook-deliveries/", StringComparison.Ordinal) =>
+                "The server-generated UUID of the webhook delivery.",
             "id" => "The numeric identifier of the resource named by this route.",
             "workflowId" => "The database identifier of one exact immutable workflow-definition version.",
             "workflowKey" => "The stable, case-sensitive key shared by every version in a workflow family.",
@@ -372,11 +376,18 @@ internal static partial class FlowbitOpenApiEnrichment
         };
     }
 
-    private static string DescribeSchemaProperty(Type declaringType, string propertyName)
+    private static string DescribeSchemaProperty(Type declaringType, string propertyName, Type propertyType)
     {
         if (propertyName == "id" && (declaringType == typeof(AiModelDto) || declaringType == typeof(AiModelSettingDto)))
         {
             return "The stable server-generated identifier of the configured AI model.";
+        }
+
+        if (propertyName == "id"
+            && propertyType == typeof(Guid)
+            && declaringType.Name.StartsWith("Webhook", StringComparison.Ordinal))
+        {
+            return "The stable server-generated UUID of this webhook resource.";
         }
 
         if (PropertyDescriptions.TryGetValue(propertyName, out var description))

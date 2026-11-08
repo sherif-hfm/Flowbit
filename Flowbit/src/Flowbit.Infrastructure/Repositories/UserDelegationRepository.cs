@@ -157,6 +157,10 @@ public sealed class UserDelegationRepository(AppDbContext dbContext)
         CancellationToken cancellationToken)
     {
         IQueryable<UserDelegationEntity> query = dbContext.UserDelegations.AsNoTracking();
+        if (search.DelegationId is { } delegationId)
+        {
+            query = query.Where(grant => grant.Id == delegationId);
+        }
         if (search.Delegator is not null)
         {
             query = query.Where(grant => grant.Delegator == search.Delegator);

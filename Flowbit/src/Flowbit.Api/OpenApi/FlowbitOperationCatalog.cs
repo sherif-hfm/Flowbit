@@ -123,7 +123,7 @@ internal static partial class FlowbitOperationCatalog
             ["POST /api/user-delegations/{id}/accept"] = "Accept a pending delegation grant as its designated delegate.",
             ["POST /api/user-delegations/{id}/reject"] = "Reject a pending delegation grant as its designated delegate.",
             ["POST /api/user-delegations/{id}/revoke"] = "Withdraw or revoke a delegation grant as one of its participants.",
-            ["GET /api/user-delegations/manage"] = "Administratively search delegation grants by delegator, delegate, workflow, and state.",
+            ["GET /api/user-delegations/manage"] = "Administratively search delegation grants by grant id, delegator, delegate, workflow, and state.",
             ["POST /api/user-delegations/manage"] = "Create delegation grants on behalf of an explicitly named delegator.",
             ["POST /api/user-delegations/manage/{id}/revoke"] = "Administratively revoke one delegation grant.",
             ["GET /api/user-delegation-policies/{workflowKey}"] = "Read a workflow family's delegation-acceptance policy or its unpersisted default.",
@@ -165,7 +165,25 @@ internal static partial class FlowbitOperationCatalog
             ["GET /api/retention"] = "Retrieve retention policies, cleanup progress, and effective operational status.",
             ["PUT /api/retention/policies/{category}"] = "Update one retention period using an optimistic policy revision.",
             ["POST /api/retention/preview"] = "Preview rows eligible for retention cleanup and rows protected from deletion without mutating state.",
-            ["POST /api/retention/runs"] = "Queue a retention cleanup run or join the currently active run using saved policies."
+            ["POST /api/retention/runs"] = "Queue a retention cleanup run or join the currently active run using saved policies.",
+            ["GET /api/webhook-event-types"] = "List the lifecycle event types, schema version, envelope and data fields, and the read-only database capture switch. Requires Settings.RequiredRole.",
+            ["GET /api/webhook-subscriptions"] = "List webhook subscriptions with destination, key status, receiver health, and outstanding queue counts, newest first. Secrets are never returned.",
+            ["POST /api/webhook-subscriptions"] = "Create a paused webhook subscription and return its Standard Webhooks signing secret exactly once with Cache-Control no-store.",
+            ["GET /api/webhook-subscriptions/{id}"] = "Retrieve a webhook subscription with receiver health, signing-key metadata, and its current and historical destination revisions.",
+            ["PUT /api/webhook-subscriptions/{id}"] = "Replace a subscription's name, description, URL, event set, workflow family, and concurrency using expectedRevision. A changed destination applies only to future captures.",
+            ["POST /api/webhook-subscriptions/{id}/pause"] = "Pause a webhook subscription. Pausing needs no expected revision, repeating it changes nothing, and resume does not backfill the gap.",
+            ["POST /api/webhook-subscriptions/{id}/resume"] = "Activate a paused webhook subscription, including after an automatic pause, using expectedRevision and clearing receiver backoff.",
+            ["POST /api/webhook-subscriptions/{id}/test"] = "Queue one signed webhook.test event for this subscription only, delivered even while paused. Returns 409 while a test is outstanding.",
+            ["POST /api/webhook-subscriptions/{id}/rotate-secret"] = "Rotate a subscription's signing secret using expectedRevision, signing with both keys during an optional overlap, and return the new secret once.",
+            ["POST /api/webhook-subscriptions/{id}/revoke-previous-secret"] = "Retire a subscription's previous signing key before its overlap ends using expectedRevision.",
+            ["POST /api/webhook-subscriptions/{id}/archive"] = "Archive a webhook subscription irreversibly using expectedRevision; outstanding deliveries are discarded in bounded batches after this 202 response.",
+            ["POST /api/webhook-subscriptions/{id}/deliveries/retry"] = "Retry up to 1,000 matching failed deliveries of an active subscription, oldest first, in a new retry generation. Returns counts and whether more match.",
+            ["POST /api/webhook-subscriptions/{id}/deliveries/discard"] = "Discard up to 1,000 matching pending, scheduled, and failed deliveries, oldest first, skipping active leases. Returns counts and whether more match; an archived subscription returns 409.",
+            ["GET /api/webhook-deliveries"] = "Search webhook deliveries by subscription, event, type, family, instance, destination revision, state, failure code, and occurrence range, newest first.",
+            ["GET /api/webhook-deliveries/{id}"] = "Retrieve one delivery with its exact external event body, captured destination, retry budget, safe failure, and retry eligibility.",
+            ["GET /api/webhook-deliveries/{id}/attempts"] = "List a delivery's attempts by number with timing, HTTP status, signing key ids, and unknown outcomes. Response bodies are never stored.",
+            ["POST /api/webhook-deliveries/{id}/retry"] = "Queue a failed delivery for a new retry generation using expectedRevision, keeping its event id, body, and captured destination.",
+            ["POST /api/webhook-deliveries/{id}/discard"] = "Discard a pending, scheduled, or failed delivery using expectedRevision. An active lease or an archived subscription returns 409."
         };
 
     public static int Count => Descriptions.Count;

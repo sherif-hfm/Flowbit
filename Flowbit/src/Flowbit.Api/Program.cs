@@ -177,6 +177,11 @@ try
                 {
                     Name = "Shared Variable Clients",
                     Description = "JWT-administrator-only lifecycle management for shared-variable API clients."
+                },
+                new()
+                {
+                    Name = "Webhooks",
+                    Description = "Settings-administrator management of outbound lifecycle webhook subscriptions, Standard Webhooks signing secrets, test events, and delivery recovery."
                 }
             };
 
@@ -337,6 +342,13 @@ try
     callActivityOptions.Validate();
     builder.Services.AddSingleton(callActivityOptions);
 
+    // The API validates destinations and protects secrets; the Worker sends.
+    var webhookOptions = builder.Configuration
+        .GetSection(WebhookOptions.SectionName)
+        .Get<WebhookOptions>() ?? new WebhookOptions();
+    webhookOptions.Validate(builder.Environment.IsDevelopment());
+    builder.Services.AddSingleton(webhookOptions);
+
     builder.Services
         .AddServiceLayer()
         .AddInfrastructure(builder.Configuration);
@@ -363,11 +375,22 @@ try
     foreach (var setting in aiOptions.ConfiguredRelocatedSettings)
         app.Logger.LogWarning("WorkflowAi:{Setting} is no longer used and is ignored; configure AI models, endpoints and keys on the AI models page.", setting);
 
+    app.UseSerilogRequestLogging();
+
+    // Inside the request log, so each error mapped here is logged with the status the
+    // client receives. Outside it, the request log saw the exception and recorded a 500.
     app.Use(async (context, next) =>
     {
         try
         {
             await next(context);
+        }
+        catch (BadHttpRequestException ex) when (!context.Response.HasStarted)
+        {
+            var error = ex.InnerException is JsonException json ? JsonReadError.Describe(json) : ex.Message;
+            Log.Warning("Request could not be read: {Error}", error);
+            context.Response.StatusCode = ex.StatusCode;
+            await context.Response.WriteAsJsonAsync(new { error });
         }
         catch (WorkflowDomainException ex)
         {
@@ -419,23 +442,11 @@ try
             context.Response.StatusCode = StatusCodes.Status401Unauthorized;
             await context.Response.WriteAsJsonAsync(new { error = ex.Message });
         }
-    });
-
-    app.UseSerilogRequestLogging();
-
-    // Inside the request log, so a request that cannot be bound is logged as the 400 it is.
-    app.Use(async (context, next) =>
-    {
-        try
+        catch (WebhookKeyProtectionUnavailableException ex)
         {
-            await next(context);
-        }
-        catch (BadHttpRequestException ex) when (!context.Response.HasStarted)
-        {
-            var error = ex.InnerException is JsonException json ? JsonReadError.Describe(json) : ex.Message;
-            Log.Warning("Request could not be read: {Error}", error);
-            context.Response.StatusCode = ex.StatusCode;
-            await context.Response.WriteAsJsonAsync(new { error });
+            Log.Error("Webhook key protection is unavailable: {Message}", ex.Message);
+            context.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
+            await context.Response.WriteAsJsonAsync(new { error = ex.Message });
         }
     });
 

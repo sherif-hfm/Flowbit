@@ -9,8 +9,11 @@ public static class RetentionCategories
     public const string SharedVariableHistory = "sharedVariableHistory";
     public const string CompletedJobs = "completedJobs";
     public const string ResolvedIncidents = "resolvedIncidents";
+    public const string WebhookDeliveries = "webhookDeliveries";
+    public const string LifecycleEvents = "lifecycleEvents";
     public static readonly string[] All = [WorkflowHistory, VariableHistory, NodeActivity,
-        AdministrativeAudits, SharedVariableHistory, CompletedJobs, ResolvedIncidents];
+        AdministrativeAudits, SharedVariableHistory, CompletedJobs, ResolvedIncidents,
+        WebhookDeliveries, LifecycleEvents];
 }
 
 public sealed record RetentionPolicyDto(string Category, int? RetentionDays, long Revision,

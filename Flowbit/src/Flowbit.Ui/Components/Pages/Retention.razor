@@ -434,7 +434,9 @@ else
         RetentionCategories.AdministrativeAudits => "Administrative audits",
         RetentionCategories.SharedVariableHistory => "Shared variable history",
         RetentionCategories.CompletedJobs => "Completed jobs",
-        RetentionCategories.ResolvedIncidents => "Resolved incidents", _ => value
+        RetentionCategories.ResolvedIncidents => "Resolved incidents",
+        RetentionCategories.WebhookDeliveries => "Settled webhook deliveries",
+        RetentionCategories.LifecycleEvents => "Lifecycle events", _ => value
     };
     private static string CategoryDescription(string value) => value switch
     {
@@ -444,13 +446,17 @@ else
         RetentionCategories.AdministrativeAudits => "Standalone version changes and eligible variable-update audits. Batch audits and keyed update receipts remain protected.",
         RetentionCategories.SharedVariableHistory => "Past shared-variable revisions. Current revisions and request receipts remain protected.",
         RetentionCategories.CompletedJobs => "Completed, cancelled, and skipped jobs, their attempts, and unused snapshots. Active work and open incidents remain protected.",
-        RetentionCategories.ResolvedIncidents => "Resolved operational incidents. Open incidents remain protected.", _ => ""
+        RetentionCategories.ResolvedIncidents => "Resolved operational incidents. Open incidents remain protected.",
+        RetentionCategories.WebhookDeliveries => "Succeeded and discarded webhook deliveries and their attempts. Pending, retrying, leased, and failed deliveries remain protected until they settle or are discarded.",
+        RetentionCategories.LifecycleEvents => "Recorded lifecycle events whose fanout finished and whose deliveries are gone. Workflow history and reactivation are not affected.", _ => ""
     };
     private static string AgeDescription(string category) => category switch
     {
         RetentionCategories.SharedVariableHistory => "Workflow revisions age from instance finish; standalone revisions age from creation.",
         RetentionCategories.CompletedJobs => "The period starts when the job finishes.",
         RetentionCategories.ResolvedIncidents => "The period starts when the incident is resolved.",
+        RetentionCategories.WebhookDeliveries => "The period starts when the delivery succeeds or is discarded.",
+        RetentionCategories.LifecycleEvents => "The period starts when the lifecycle transition occurred.",
         _ => "The period starts when the workflow instance finishes."
     };
     private static string TableLabel(string value) => value switch
@@ -460,7 +466,8 @@ else
         "instance_variable_updates" => "Variable-update audits", "workflow_instance_version_changes" => "Version-change audits",
         "shared_variable_revisions" => "Shared-variable revisions", "workflow_jobs" => "Jobs",
         "workflow_job_attempts" => "Job attempts", "workflow_job_snapshots" => "Job snapshots",
-        "workflow_incidents" => "Incidents", _ => value
+        "workflow_incidents" => "Incidents", "webhook_deliveries" => "Webhook deliveries",
+        "webhook_delivery_attempts" => "Webhook delivery attempts", "lifecycle_events" => "Lifecycle events", _ => value
     };
     public void Dispose() { disposed = true; identityVersion++; requestVersion++; Token.Changed -= OnTokenChanged; }
 }

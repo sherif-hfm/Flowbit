@@ -128,6 +128,30 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     public DbSet<ConditionalBoundarySubscriptionEntity> ConditionalBoundarySubscriptions =>
         Set<ConditionalBoundarySubscriptionEntity>();
 
+    public DbSet<LifecycleEventCaptureStateEntity> LifecycleEventCaptureStates =>
+        Set<LifecycleEventCaptureStateEntity>();
+
+    public DbSet<LifecycleEventEntity> LifecycleEvents => Set<LifecycleEventEntity>();
+
+    public DbSet<WebhookSubscriptionEntity> WebhookSubscriptions => Set<WebhookSubscriptionEntity>();
+
+    public DbSet<WebhookSubscriptionRevisionEntity> WebhookSubscriptionRevisions =>
+        Set<WebhookSubscriptionRevisionEntity>();
+
+    public DbSet<WebhookSubscriptionDispatchStateEntity> WebhookSubscriptionDispatchStates =>
+        Set<WebhookSubscriptionDispatchStateEntity>();
+
+    public DbSet<WebhookSigningKeyEntity> WebhookSigningKeys => Set<WebhookSigningKeyEntity>();
+
+    public DbSet<WebhookDeliveryEntity> WebhookDeliveries => Set<WebhookDeliveryEntity>();
+
+    public DbSet<WebhookDeliveryAttemptEntity> WebhookDeliveryAttempts => Set<WebhookDeliveryAttemptEntity>();
+
+    public DbSet<WebhookManagementAuditEntity> WebhookManagementAudit => Set<WebhookManagementAuditEntity>();
+
+    public DbSet<WebhookDataProtectionKeyEntity> WebhookDataProtectionKeys =>
+        Set<WebhookDataProtectionKeyEntity>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.HasDefaultSchema(FlowbitDatabase.Schema);
@@ -2446,6 +2470,294 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 .HasForeignKey(e => new { e.WorkflowDefinitionId, e.WorkflowKey })
                 .HasPrincipalKey(e => new { e.Id, e.WorkflowKey })
                 .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        ConfigureLifecycleWebhooks(modelBuilder);
+    }
+
+    // Outbound lifecycle webhooks (INT-01). Runtime ids in events and deliveries are
+    // immutable references, not foreign keys, so delivery survives runtime retention
+    // and capture never waits on runtime rows; webhook structures use restrictive keys.
+    private static void ConfigureLifecycleWebhooks(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<LifecycleEventCaptureStateEntity>(entity =>
+        {
+            entity.ToTable("lifecycle_event_capture_state", table =>
+                table.HasCheckConstraint("CK_lifecycle_event_capture_state_singleton", "\"Id\" = 1"));
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Id).ValueGeneratedNever();
+            entity.Property(e => e.Enabled).HasDefaultValue(false);
+            entity.Property(e => e.ChangedAt).HasDefaultValueSql("now()");
+            entity.Property(e => e.ChangedBy).HasMaxLength(WebhookConstraints.MaxActorLength);
+        });
+
+        modelBuilder.Entity<LifecycleEventEntity>(entity =>
+        {
+            entity.ToTable("lifecycle_events", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_lifecycle_events_body",
+                    $"octet_length(\"Body\") BETWEEN 2 AND {WebhookConstraints.MaxBodyBytes}");
+                table.HasCheckConstraint("CK_lifecycle_events_schema_version", "\"SchemaVersion\" > 0");
+            });
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Id).ValueGeneratedNever();
+            entity.Property(e => e.Type).HasMaxLength(64).IsRequired();
+            entity.Property(e => e.SourceTable).HasMaxLength(64).IsRequired();
+            entity.Property(e => e.WorkflowKey).HasMaxLength(WebhookConstraints.MaxWorkflowKeyLength);
+            entity.Property(e => e.Body).HasColumnType("bytea").IsRequired();
+            entity.Property(e => e.RecipientUserIds).HasColumnType("text[]").IsRequired().HasDefaultValueSql("'{}'::text[]");
+            entity.Property(e => e.TargetRevisionIds).HasColumnType("bigint[]").IsRequired();
+            entity.Property(e => e.RecordedAt).HasDefaultValueSql("now()");
+            entity.HasIndex(e => new { e.RecordedAt, e.Id })
+                .HasDatabaseName("IX_lifecycle_events_pending_fanout")
+                .HasFilter("\"FanoutCompletedAt\" IS NULL");
+            entity.HasIndex(e => new { e.OccurredAt, e.Id });
+            entity.HasIndex(e => new { e.InstanceId, e.OccurredAt })
+                .HasFilter("\"InstanceId\" IS NOT NULL");
+            entity.HasIndex(e => new { e.SourceTable, e.SourceId });
+        });
+
+        modelBuilder.Entity<WebhookSubscriptionEntity>(entity =>
+        {
+            entity.ToTable("webhook_subscriptions", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_webhook_subscriptions_state",
+                    "\"State\" IN ('active', 'paused', 'archived')");
+                table.HasCheckConstraint(
+                    "CK_webhook_subscriptions_pause_reason",
+                    "(\"State\" = 'paused' AND \"PauseReason\" IN ('administrator', 'receiverGone', 'receiverUnavailable')) OR "
+                    + "(\"State\" <> 'paused' AND \"PauseReason\" IS NULL)");
+                table.HasCheckConstraint(
+                    "CK_webhook_subscriptions_archive",
+                    "(\"State\" = 'archived' AND \"ArchivedAt\" IS NOT NULL AND \"ArchivedBy\" IS NOT NULL) OR "
+                    + "(\"State\" <> 'archived' AND \"ArchivedAt\" IS NULL AND \"ArchivedBy\" IS NULL "
+                    + "AND \"ArchiveSettledAt\" IS NULL)");
+                table.HasCheckConstraint(
+                    "CK_webhook_subscriptions_max_concurrency",
+                    $"\"MaxConcurrency\" BETWEEN {WebhookConstraints.MinMaxConcurrency} AND {WebhookConstraints.MaxMaxConcurrency}");
+                table.HasCheckConstraint("CK_webhook_subscriptions_revision", "\"Revision\" > 0");
+            });
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Id).ValueGeneratedNever();
+            entity.Property(e => e.Name).HasMaxLength(WebhookConstraints.MaxNameLength).IsRequired();
+            entity.Property(e => e.Description).HasMaxLength(WebhookConstraints.MaxDescriptionLength);
+            entity.Property(e => e.State).HasMaxLength(32).IsRequired();
+            entity.Property(e => e.PauseReason).HasMaxLength(32);
+            entity.Property(e => e.CreatedBy).HasMaxLength(WebhookConstraints.MaxActorLength).IsRequired();
+            entity.Property(e => e.UpdatedBy).HasMaxLength(WebhookConstraints.MaxActorLength).IsRequired();
+            entity.Property(e => e.ArchivedBy).HasMaxLength(WebhookConstraints.MaxActorLength);
+            entity.HasIndex(e => new { e.CreatedAt, e.Id });
+            entity.HasIndex(e => e.State);
+            // The capture triggers match active subscriptions' current revisions.
+            entity.HasIndex(e => e.CurrentRevisionId)
+                .HasDatabaseName("IX_webhook_subscriptions_active_revision")
+                .HasFilter("\"State\" = 'active'");
+            entity.HasOne(e => e.CurrentRevision)
+                .WithMany()
+                .HasForeignKey(e => e.CurrentRevisionId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<WebhookSubscriptionRevisionEntity>(entity =>
+        {
+            entity.ToTable("webhook_subscription_revisions", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_webhook_subscription_revisions_event_types",
+                    "cardinality(\"EventTypes\") > 0");
+                table.HasCheckConstraint(
+                    "CK_webhook_subscription_revisions_configuration_revision",
+                    "\"ConfigurationRevision\" > 0");
+            });
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.EndpointUrl).HasMaxLength(WebhookConstraints.MaxEndpointUrlLength).IsRequired();
+            entity.Property(e => e.EventTypes).HasColumnType("text[]").IsRequired();
+            entity.Property(e => e.WorkflowKey).HasMaxLength(WebhookConstraints.MaxWorkflowKeyLength);
+            entity.Property(e => e.CreatedBy).HasMaxLength(WebhookConstraints.MaxActorLength).IsRequired();
+            entity.HasIndex(e => new { e.SubscriptionId, e.ConfigurationRevision }).IsUnique();
+            entity.HasIndex(e => e.EventTypes).HasMethod("gin");
+            entity.HasOne(e => e.Subscription)
+                .WithMany()
+                .HasForeignKey(e => e.SubscriptionId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<WebhookSubscriptionDispatchStateEntity>(entity =>
+        {
+            entity.ToTable("webhook_subscription_dispatch_state", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_webhook_subscription_dispatch_state_counters",
+                    "\"ConsecutiveFailures\" >= 0 AND \"BackoffSeconds\" >= 0");
+                table.HasCheckConstraint(
+                    "CK_webhook_subscription_dispatch_state_backoff",
+                    "(\"BackoffUntil\" IS NULL) = (\"BackoffStartedAt\" IS NULL)");
+            });
+            entity.HasKey(e => e.SubscriptionId);
+            entity.Property(e => e.SubscriptionId).ValueGeneratedNever();
+            entity.Property(e => e.LastOutcome).HasMaxLength(64);
+            entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
+            entity.HasIndex(e => e.LastAcquiredAt);
+            entity.HasOne(e => e.Subscription)
+                .WithOne()
+                .HasForeignKey<WebhookSubscriptionDispatchStateEntity>(e => e.SubscriptionId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<WebhookSigningKeyEntity>(entity =>
+        {
+            entity.ToTable("webhook_signing_keys", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_webhook_signing_keys_status",
+                    "\"Status\" IN ('current', 'previous', 'revoked', 'expired', 'retired')");
+                table.HasCheckConstraint(
+                    "CK_webhook_signing_keys_overlap",
+                    "\"Status\" <> 'previous' OR \"OverlapExpiresAt\" IS NOT NULL");
+                table.HasCheckConstraint(
+                    "CK_webhook_signing_keys_secret",
+                    "(\"SecretRemovedAt\" IS NULL) = (\"ProtectedSecret\" IS NOT NULL) "
+                    + "AND (\"ProtectedSecret\" IS NOT NULL OR \"Status\" NOT IN ('current', 'previous'))");
+            });
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Id).ValueGeneratedNever();
+            entity.Property(e => e.ProtectedSecret).HasColumnType("bytea");
+            entity.Property(e => e.Status).HasMaxLength(32).IsRequired();
+            entity.Property(e => e.CreatedBy).HasMaxLength(WebhookConstraints.MaxActorLength).IsRequired();
+            entity.Property(e => e.RevokedBy).HasMaxLength(WebhookConstraints.MaxActorLength);
+            // One current and one previous key per subscription. Both indexes cover the same
+            // column, so each needs its own name: an unnamed HasIndex on the same property
+            // would configure one index twice.
+            entity.HasIndex(e => e.SubscriptionId, "IX_webhook_signing_keys_current")
+                .IsUnique()
+                .HasFilter("\"Status\" = 'current'");
+            entity.HasIndex(e => e.SubscriptionId, "IX_webhook_signing_keys_previous")
+                .IsUnique()
+                .HasFilter("\"Status\" = 'previous'");
+            entity.HasIndex(e => new { e.SubscriptionId, e.CreatedAt });
+            entity.HasIndex(e => e.RemoveSecretNotBefore)
+                .HasDatabaseName("IX_webhook_signing_keys_pending_removal")
+                .HasFilter("\"ProtectedSecret\" IS NOT NULL AND \"Status\" NOT IN ('current', 'previous')");
+            entity.HasOne(e => e.Subscription)
+                .WithMany()
+                .HasForeignKey(e => e.SubscriptionId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<WebhookDeliveryEntity>(entity =>
+        {
+            entity.ToTable("webhook_deliveries", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_webhook_deliveries_state",
+                    "\"State\" IN ('pending', 'retryScheduled', 'delivering', 'succeeded', 'failed', 'discarded')");
+                table.HasCheckConstraint(
+                    "CK_webhook_deliveries_counters",
+                    "\"RetryGeneration\" >= 1 AND \"GenerationAttempts\" >= 0 "
+                    + "AND \"LifetimeAttempts\" >= \"GenerationAttempts\" AND \"LeaseGeneration\" >= 0 "
+                    + "AND \"Revision\" > 0");
+                table.HasCheckConstraint(
+                    "CK_webhook_deliveries_lease",
+                    "(\"State\" = 'delivering' AND \"LeaseToken\" IS NOT NULL AND \"LeaseOwner\" IS NOT NULL "
+                    + "AND \"LeaseExpiresAt\" IS NOT NULL AND \"LeasedFromState\" IN ('pending', 'retryScheduled')) OR "
+                    + "(\"State\" <> 'delivering' AND \"LeaseToken\" IS NULL AND \"LeaseOwner\" IS NULL "
+                    + "AND \"LeaseExpiresAt\" IS NULL AND \"LeasedFromState\" IS NULL)");
+                table.HasCheckConstraint(
+                    "CK_webhook_deliveries_settlement",
+                    "(\"State\" IN ('succeeded', 'discarded')) = (\"SettledAt\" IS NOT NULL)");
+                table.HasCheckConstraint(
+                    "CK_webhook_deliveries_failure",
+                    "\"State\" <> 'failed' OR \"FailureCode\" IS NOT NULL");
+                table.HasCheckConstraint(
+                    "CK_webhook_deliveries_generation",
+                    "(\"GenerationStartedAt\" IS NULL) = (\"DeadlineAt\" IS NULL)");
+            });
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Id).ValueGeneratedNever();
+            entity.Property(e => e.EventType).HasMaxLength(64).IsRequired();
+            entity.Property(e => e.WorkflowKey).HasMaxLength(WebhookConstraints.MaxWorkflowKeyLength);
+            entity.Property(e => e.State).HasMaxLength(32).IsRequired();
+            entity.Property(e => e.LeaseOwner).HasMaxLength(300);
+            entity.Property(e => e.LeasedFromState).HasMaxLength(32);
+            entity.Property(e => e.LastOutcome).HasMaxLength(64);
+            entity.Property(e => e.FailureCode).HasMaxLength(64);
+            entity.Property(e => e.RetryGeneration).HasDefaultValue(1);
+            entity.Property(e => e.Revision).HasDefaultValue(1L);
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+            entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
+            entity.HasIndex(e => new { e.EventId, e.SubscriptionId }).IsUnique();
+            entity.HasIndex(e => new { e.SubscriptionId, e.DueAt })
+                .HasDatabaseName("IX_webhook_deliveries_due")
+                .HasFilter("\"State\" IN ('pending', 'retryScheduled')");
+            entity.HasIndex(e => new { e.SubscriptionId, e.LeaseExpiresAt })
+                .HasDatabaseName("IX_webhook_deliveries_leases")
+                .HasFilter("\"State\" = 'delivering'");
+            entity.HasIndex(e => new { e.SubscriptionId, e.State });
+            entity.HasIndex(e => new { e.SubscriptionId, e.OccurredAt, e.Id });
+            entity.HasIndex(e => new { e.OccurredAt, e.Id });
+            entity.HasIndex(e => new { e.RevisionId, e.State });
+            entity.HasIndex(e => new { e.InstanceId, e.OccurredAt })
+                .HasFilter("\"InstanceId\" IS NOT NULL");
+            entity.HasIndex(e => new { e.SettledAt, e.Id })
+                .HasDatabaseName("IX_webhook_deliveries_settled")
+                .HasFilter("\"State\" IN ('succeeded', 'discarded')");
+            entity.HasIndex(e => e.SubscriptionId)
+                .HasDatabaseName("IX_webhook_deliveries_outstanding_test")
+                .HasFilter("\"IsTest\" AND \"State\" IN ('pending', 'retryScheduled', 'delivering')");
+            entity.HasOne(e => e.Event)
+                .WithMany()
+                .HasForeignKey(e => e.EventId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.Subscription)
+                .WithMany()
+                .HasForeignKey(e => e.SubscriptionId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.DestinationRevision)
+                .WithMany()
+                .HasForeignKey(e => e.RevisionId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<WebhookDeliveryAttemptEntity>(entity =>
+        {
+            entity.ToTable("webhook_delivery_attempts", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_webhook_delivery_attempts_numbers",
+                    "\"AttemptNumber\" > 0 AND \"RetryGeneration\" > 0 AND \"LeaseGeneration\" > 0");
+                table.HasCheckConstraint(
+                    "CK_webhook_delivery_attempts_completion",
+                    "(\"CompletedAt\" IS NULL) = (\"Outcome\" IS NULL)");
+            });
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.SigningKeyIds).HasColumnType("uuid[]").IsRequired().HasDefaultValueSql("'{}'::uuid[]");
+            entity.Property(e => e.Outcome).HasMaxLength(64);
+            entity.HasIndex(e => new { e.DeliveryId, e.AttemptNumber }).IsUnique();
+            entity.HasOne(e => e.Delivery)
+                .WithMany()
+                .HasForeignKey(e => e.DeliveryId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<WebhookManagementAuditEntity>(entity =>
+        {
+            entity.ToTable("webhook_management_audit");
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Operation).HasMaxLength(64).IsRequired();
+            entity.Property(e => e.Actor).HasMaxLength(WebhookConstraints.MaxActorLength).IsRequired();
+            entity.Property(e => e.ChangesJson).HasColumnType("jsonb");
+            entity.Property(e => e.OccurredAt).HasDefaultValueSql("now()");
+            entity.HasIndex(e => new { e.SubscriptionId, e.Id });
+            entity.HasIndex(e => new { e.OccurredAt, e.Id });
+        });
+
+        modelBuilder.Entity<WebhookDataProtectionKeyEntity>(entity =>
+        {
+            entity.ToTable("webhook_data_protection_keys");
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Xml).IsRequired();
         });
     }
 }

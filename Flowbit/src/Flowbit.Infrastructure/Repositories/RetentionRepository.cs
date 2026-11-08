@@ -24,7 +24,9 @@ public sealed class RetentionRepository(RetentionDataSource source, TimeProvider
     private static readonly string[] ExecutionOrder = [RetentionCategories.WorkflowHistory,
         RetentionCategories.VariableHistory, RetentionCategories.SharedVariableHistory,
         RetentionCategories.NodeActivity, RetentionCategories.AdministrativeAudits,
-        RetentionCategories.CompletedJobs, RetentionCategories.ResolvedIncidents];
+        RetentionCategories.CompletedJobs, RetentionCategories.ResolvedIncidents,
+        // Deliveries before events: an event goes only once no delivery references it.
+        RetentionCategories.WebhookDeliveries, RetentionCategories.LifecycleEvents];
 
     public async Task<RetentionStatusDto> GetAsync(CancellationToken cancellationToken)
     {
@@ -140,6 +142,28 @@ public sealed class RetentionRepository(RetentionDataSource source, TimeProvider
                 if (reader.GetBoolean(0)) pinned++; else eligible++;
             }
             counts.Insert(1, new("workflow_job_attempts", eligible, pinned));
+        }
+        if (request.Category == RetentionCategories.WebhookDeliveries)
+        {
+            var deliveries = Tables(request.Category)[0];
+            await using var attempts = Command(connection, transaction, $"""
+                WITH sampled AS (
+                    SELECT t."Id",({deliveries.Protection}) AS protected FROM flowbit.webhook_deliveries t
+                    WHERE {AgePredicate(deliveries)} ORDER BY t."Id" LIMIT {PreviewLimit}
+                )
+                SELECT s.protected FROM flowbit.webhook_delivery_attempts a
+                JOIN sampled s ON s."Id"=a."DeliveryId"
+                ORDER BY a."Id" LIMIT {PreviewLimit + 1}
+                """);
+            Add(attempts, "cutoff", cutoff);
+            long eligible = 0, pinned = 0;
+            await using var reader = await attempts.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                if (eligible + pinned == PreviewLimit) { limited = true; break; }
+                if (reader.GetBoolean(0)) pinned++; else eligible++;
+            }
+            counts.Insert(0, new("webhook_delivery_attempts", eligible, pinned));
         }
         await transaction.CommitAsync(cancellationToken);
         return new(request.Category, cutoff, counts, limited, now);
@@ -281,6 +305,13 @@ public sealed class RetentionRepository(RetentionDataSource source, TimeProvider
             // chase new snapshots forever across budget continuations.
             foreach (var spec in specs)
             {
+                if (IsWebhookTable(spec))
+                {
+                    // Webhook rows age from a fixed cutoff on settled or recorded time; the
+                    // eligible set is finite without an id frontier.
+                    category.TableUpperIds[spec.Name] = 0;
+                    continue;
+                }
                 await using var upper = Command(connection, transaction,
                     $"SELECT COALESCE((SELECT \"Id\" FROM flowbit.{spec.Name} ORDER BY \"Id\" DESC LIMIT 1),0)");
                 category.TableUpperIds[spec.Name] = Convert.ToInt64(await upper.ExecuteScalarAsync(ct));
@@ -311,6 +342,10 @@ public sealed class RetentionRepository(RetentionDataSource source, TimeProvider
     private async Task<BatchResult> ProcessTableAsync(NpgsqlConnection connection, NpgsqlTransaction transaction,
         TableSpec spec, CategoryDocument category, int batchSize, DateTimeOffset now, CancellationToken ct)
     {
+        if (IsWebhookTable(spec))
+        {
+            return await DeleteWebhookBatchAsync(connection, transaction, spec, category.Cutoff!.Value, batchSize, ct);
+        }
         if (spec.Kind is TableKind.Instance or TableKind.Shared)
         {
             var ownerId = await NextInstanceAsync(connection, transaction, spec, category, ct);
@@ -456,6 +491,66 @@ public sealed class RetentionRepository(RetentionDataSource source, TimeProvider
         category.RowCursor = rows[^1].Id;
         return new(deleted, rows.LongCount(row => row.Protected), false, counts);
     }
+
+    // Webhook retention never touches runtime rows, HistoryPrunedAt, receipts, or reactivation
+    // eligibility. Settled deliveries go with their attempts, attempts first; an event goes only
+    // after fanout completed and no delivery references it. Busy rows are skipped, not waited on.
+    private static async Task<BatchResult> DeleteWebhookBatchAsync(NpgsqlConnection connection,
+        NpgsqlTransaction transaction, TableSpec spec, DateTimeOffset cutoff, int batchSize, CancellationToken ct)
+    {
+        var selectSql = spec.Kind == TableKind.WebhookDeliveries
+            ? """
+              SELECT t."Id" FROM flowbit.webhook_deliveries t
+              WHERE t."State" IN ('succeeded','discarded') AND t."SettledAt"<@cutoff
+              ORDER BY t."SettledAt", t."Id" LIMIT @limit FOR UPDATE OF t SKIP LOCKED
+              """
+            : """
+              SELECT t."Id" FROM flowbit.lifecycle_events t
+              WHERE t."OccurredAt"<@cutoff AND t."FanoutCompletedAt" IS NOT NULL
+                AND NOT EXISTS (SELECT 1 FROM flowbit.webhook_deliveries d WHERE d."EventId"=t."Id")
+              ORDER BY t."OccurredAt", t."Id" LIMIT @limit FOR UPDATE OF t SKIP LOCKED
+              """;
+        var ids = new List<Guid>();
+        await using (var select = Command(connection, transaction, selectSql))
+        {
+            Add(select, "cutoff", cutoff); Add(select, "limit", batchSize);
+            await using var reader = await select.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct)) ids.Add(reader.GetGuid(0));
+        }
+        if (ids.Count == 0)
+        {
+            await using var pinned = Command(connection, transaction, spec.Kind == TableKind.WebhookDeliveries
+                ? $"""
+                  SELECT count(*) FROM (SELECT 1 FROM flowbit.webhook_deliveries t
+                  WHERE t."State" NOT IN ('succeeded','discarded') AND t."OccurredAt"<@cutoff LIMIT {PreviewLimit}) p
+                  """
+                : $"""
+                  SELECT count(*) FROM (SELECT 1 FROM flowbit.lifecycle_events t
+                  WHERE t."OccurredAt"<@cutoff AND ({spec.Protection}) LIMIT {PreviewLimit}) p
+                  """);
+            Add(pinned, "cutoff", cutoff);
+            return new(0, Convert.ToInt64(await pinned.ExecuteScalarAsync(ct)), true);
+        }
+        var counts = new Dictionary<string, long>();
+        if (spec.Kind == TableKind.WebhookDeliveries)
+        {
+            await using var attempts = Command(connection, transaction,
+                "DELETE FROM flowbit.webhook_delivery_attempts WHERE \"DeliveryId\"=ANY(@ids)");
+            Add(attempts, "ids", ids.ToArray());
+            counts["webhook_delivery_attempts"] = await attempts.ExecuteNonQueryAsync(ct);
+        }
+        await using (var delete = Command(connection, transaction, spec.Kind == TableKind.WebhookDeliveries
+            ? "DELETE FROM flowbit.webhook_deliveries t WHERE t.\"Id\"=ANY(@ids) AND t.\"State\" IN ('succeeded','discarded')"
+            : "DELETE FROM flowbit.lifecycle_events t WHERE t.\"Id\"=ANY(@ids) AND NOT (" + spec.Protection + ")"))
+        {
+            Add(delete, "ids", ids.ToArray());
+            counts[spec.Name] = await delete.ExecuteNonQueryAsync(ct);
+        }
+        return new(counts.Values.Sum(), 0, false, counts);
+    }
+
+    private static bool IsWebhookTable(TableSpec spec) =>
+        spec.Kind is TableKind.WebhookDeliveries or TableKind.LifecycleEvents;
 
     // The invocation row stays for the instance's lifetime as the parent/child relationship;
     // only its bulky captured values go, and only after settlement. A terminal parent has no
@@ -646,7 +741,7 @@ public sealed class RetentionRepository(RetentionDataSource source, TimeProvider
         return actor.Trim();
     }
 
-    private enum TableKind { Instance, Shared, Jobs, Incidents, Snapshots }
+    private enum TableKind { Instance, Shared, Jobs, Incidents, Snapshots, WebhookDeliveries, LifecycleEvents }
     private sealed record TableSpec(string Name, TableKind Kind, string Protection);
     private sealed record BatchResult(long Deleted, long Protected, bool Done,
         IReadOnlyDictionary<string, long>? DeletedByTable = null);
@@ -656,6 +751,9 @@ public sealed class RetentionRepository(RetentionDataSource source, TimeProvider
         TableKind.Shared => "((t.\"InstanceId\" IS NOT NULL AND i.\"Status\" IN ('completed','cancelled','faulted') AND i.\"FinishedAt\"<@cutoff) OR (t.\"InstanceId\" IS NULL AND t.\"CreatedAt\"<@cutoff))",
         TableKind.Jobs => "t.\"Status\" IN ('completed','cancelled','skipped') AND t.\"CompletedAt\"<@cutoff",
         TableKind.Incidents => "t.\"Status\"='resolved' AND t.\"ResolvedAt\"<@cutoff",
+        // Settled deliveries age from settlement; outstanding ones are previewed by event time and protected.
+        TableKind.WebhookDeliveries => "COALESCE(t.\"SettledAt\", t.\"OccurredAt\")<@cutoff",
+        TableKind.LifecycleEvents => "t.\"OccurredAt\"<@cutoff",
         _ => "TRUE"
     };
 
@@ -677,6 +775,11 @@ public sealed class RetentionRepository(RetentionDataSource source, TimeProvider
             "t.\"WorkerId\" IS NOT NULL OR t.\"LeaseToken\" IS NOT NULL OR t.\"LeaseExpiresAt\" IS NOT NULL OR EXISTS (SELECT 1 FROM flowbit.workflow_incidents i WHERE i.\"JobId\"=t.\"Id\" AND i.\"Status\"='open') OR EXISTS (SELECT 1 FROM flowbit.execution_tokens e WHERE e.\"WaitingJobId\"=t.\"Id\")"),
             new("workflow_job_snapshots", TableKind.Snapshots, "EXISTS (SELECT 1 FROM flowbit.workflow_jobs j WHERE j.\"SnapshotId\"=t.\"Id\")")],
         RetentionCategories.ResolvedIncidents => [new("workflow_incidents", TableKind.Incidents, "FALSE")],
+        // Pending, retrying, leased, failed, and paused work stays until it settles or is discarded.
+        RetentionCategories.WebhookDeliveries => [new("webhook_deliveries", TableKind.WebhookDeliveries,
+            "t.\"State\" NOT IN ('succeeded','discarded')")],
+        RetentionCategories.LifecycleEvents => [new("lifecycle_events", TableKind.LifecycleEvents,
+            "t.\"FanoutCompletedAt\" IS NULL OR EXISTS (SELECT 1 FROM flowbit.webhook_deliveries d WHERE d.\"EventId\"=t.\"Id\")")],
         _ => throw new WorkflowDomainException("Unknown retention category.")
     };
 

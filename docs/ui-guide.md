@@ -30,6 +30,7 @@ Both applications use the connected F mark and blue [Flowbit identity](branding.
 - [Use administrative batches](#use-administrative-batches)
 - [Manage settings and shared variables](#manage-settings-and-shared-variables)
 - [Manage retention](#manage-retention)
+- [Lifecycle webhooks](#lifecycle-webhooks)
 - [Troubleshooting](#troubleshooting)
 
 ## Before you begin
@@ -163,6 +164,7 @@ Paths below are relative to the UI origin, not API endpoints. Most data screens 
 | **AI models** | `/ai-models` | Models, endpoints, and write-only keys the editor's AI assistant can use. |
 | **Business calendars** | `/business-calendars` | Working days, hours, holidays, and time zones that timer durations and task due dates can count in. |
 | **Retention policies** | `/retention` | Preview and configure cleanup policies and inspect runs. |
+| **Webhooks** | `/webhooks` | Lifecycle webhook subscriptions, signing secrets, test events, and delivery recovery. |
 | **Workflow settings** | `/workflow-settings` | JSON settings consumed by workflow expressions/templates. |
 | **Shared variables** | `/shared-variables` | Shared catalog contracts, current values, revisions, and lifecycle. |
 | **Shared-variable clients** | `/shared-variable-clients` | Machine-client scopes, credentials, rotation, and revocation. |
@@ -473,6 +475,45 @@ These credentials authenticate shared-variable APIs, not the UI identity or mess
 
 Saved policies apply to automatic Worker cleanup. **Run cleanup now** queues a run using those saved policies; it still requires the Worker. Inspect current/last runs and **Worker last seen**, and refresh for progress. Deleted history cannot be recovered through the UI, and pruning an instance's history permanently blocks reactivation. Follow [retention and backup guidance](deployment.md#retention-and-backup) before enabling deletion.
 
+**Settled webhook deliveries** and **Lifecycle events** clean up [webhook](#lifecycle-webhooks) records only. Deliveries age from when they succeed or are discarded; pending, retrying, and failed ones stay until they settle or you discard them. Events go only after every delivery for them is gone. Neither affects workflow history or reactivation.
+
+## Lifecycle webhooks
+
+**Webhooks** (`/webhooks`) requires `Settings.RequiredRole`. A subscription sends committed lifecycle events, such as task assignments or completed instances, to an HTTPS receiver, signed according to Standard Webhooks. Receivers deduplicate by the `webhook-id` header: delivery is at least once and unordered. The [developer guide](developer-guide.md#lifecycle-webhooks) lists the events and how receivers verify them.
+
+Without that role, or when the API asks you to sign in again, the page and each delivery's detail show only that message. **Refresh** tries again, for example after the role is granted.
+
+If the page shows **Lifecycle capture is off**, an operator has not yet turned on the database capture switch, so subscriptions match nothing; test events still work. Deliveries also need a Worker with delivery enabled; see [deployment](deployment.md#lifecycle-webhooks).
+
+### Create, test, and activate
+
+1. Choose **Add subscription**. Enter a **Name**, the receiver's **Endpoint URL** (HTTPS on port 443 unless the operator allowlists it; a query string may carry a receiver token), the **Events**, an optional **Workflow family** (an exact workflow key; empty means every family), and **Maximum concurrent requests** (1–16).
+2. Choose **Create paused and reveal secret**. The **Save this signing secret now** panel shows the secret once. Use **Copy secret** (if the browser refuses, the panel says so: select the secret and copy it yourself), store it in the receiver's secret manager, then choose **I saved it**. The secret is kept only in the open page: leaving the page, reloading, signing out, or losing permission clears it, and no screen or API returns it again. Other errors leave it on screen, including a refresh that fails right after the secret appears.
+3. Choose **Send test event**. A test is delivered even while the subscription is paused; one test can be outstanding at a time. Check its result under **Deliveries**.
+4. Choose **Resume** to activate the subscription. It matches only events committed from now on.
+
+**Edit** changes the name, description, concurrency, URL, events, or family. A new URL, event set, or family applies only to events captured afterward; queued and failed deliveries keep the destination captured with their event. If someone else saved the subscription first, your changes stay in the form; **Load current revision** replaces them with the saved subscription. **Details** lists every destination revision and how many outstanding deliveries still target it; **Discard outstanding** settles the work of an old destination you have decommissioned. Its confirmation counts that destination's pending, scheduled, and failed deliveries when you choose it; deliveries being sent are skipped.
+
+### Pause, rotate, and archive
+
+- **Pause** stops matching new events and holds captured work. Resuming never backfills events committed while paused. Flowbit pauses a subscription itself when the receiver answers `410 Gone` (**Paused: receiver gone (410)**) or keeps failing for 72 hours (**Paused: receiver unavailable for 72 hours**); fix the receiver, then **Resume**.
+- **Rotate secret** creates a new key and shows its secret once. During the **Overlap** (default 3,600 seconds, at most 86,400; 0 for none) requests carry signatures from both keys, so receivers can switch without rejecting events. **Revoke previous key** ends the overlap early. A second rotation during an overlap is refused until you revoke the previous key. When a rotation is refused because the subscription changed, the form takes its current revision, so you can rotate again.
+- **Archive** is irreversible. Outstanding deliveries are discarded and the keys retire; the row shows **Discarding outstanding work…** until that finishes. Archived subscriptions stay visible but cannot be edited, tested, paused, or resumed, and their deliveries offer no Retry or Discard, because the Worker settles them.
+
+Pause, archive, and revocation cannot recall a request that is already on its way. A `2xx` from the receiver proves that it accepted the request, not that it finished its own work.
+
+### Recover deliveries
+
+The **Deliveries** filters select by subscription, state, event type, failure code, instance id, workflow family, and event time (**From** inclusive, **To** exclusive). If the API rejects a filter, for example an unknown failure code, the page says so under the filters and the list keeps its previous results. Each row shows the attempts used in its current generation (at most 12 within 72 hours of its first send), the last result, and the next attempt time. Select an event to open its detail: the event body, indented for reading with every character as stored, and under **Exact signed body** the exact text receivers verify; the captured destination; the retry window; and every attempt with its HTTP status and the keys that signed it.
+
+A subscription's **Receiver health** counts timeouts, network errors, and retryable statuses in a row. After five, or at once when the receiver sends `Retry-After`, it shows **Backing off until …** and then **Probing one request at a time** until a request succeeds. **Latest request failed** means the last request failed without starting backoff, for example a `4xx` answer or a destination the network policy denied.
+
+- **Retry** queues a failed delivery in a new generation with the same event id, body, and destination. It needs an active subscription.
+- **Discard** settles a pending, scheduled, or failed delivery so it is never sent. A delivery being sent cannot be discarded.
+- With one subscription selected, **Retry failed…** and **Discard queued and failed…** act on every matching delivery, at most 1,000 per click, oldest first. They use every filter except **State**: retry takes failed deliveries, and discard takes pending, scheduled, and failed ones. The confirmation states how many match. Repeat the action while the result reports that more match.
+
+Each action reports its result, and the page then refreshes. If someone else changed the subscription or delivery first, the page reports the conflict, shows the current state, and does not resend your request. If the API cannot be reached, the page says so and keeps what it last showed. While a request runs, the page's buttons are disabled, and a second click sends nothing.
+
 ## Troubleshooting
 
 | Symptom | Next step |
@@ -492,5 +533,7 @@ Saved policies apply to automatic Worker cleanup. **Run cleanup now** queues a r
 | An action fails with `... timer.timeDuration cannot be scheduled: ...` | A timer expression the action reached could not be scheduled from the instance's data. Correct the named variable, for example on **Instance variables**, and repeat the action; a `datetime` value needs an explicit offset. |
 | Archive, deletion, version change, or reactivation blocked | Read the reported references/compatibility blockers; these operations have different eligibility rules. |
 | AI assistant shows no models, or a key/quota error | A settings administrator adds or fixes the model on **AI models**. If models are configured but still not offered, check that `WorkflowAi:Enabled` is not `false`. |
+| Creating, rotating, testing, or resuming a webhook fails with "key protection" | The webhook key-ring certificate is missing or unusable on the API. An operator fixes it as described in [deployment](deployment.md#lifecycle-webhooks); Flowbit never generates replacement secrets. |
+| Webhook deliveries stay **Pending** | Check that lifecycle capture is on, that a Worker runs with `Webhooks:DeliveryEnabled=true`, and that the subscription is active and not backing off. |
 
 [Documentation home](index.md) · [Developer guide](developer-guide.md) · [API reference](api-guide.md) · [Deployment](deployment.md)

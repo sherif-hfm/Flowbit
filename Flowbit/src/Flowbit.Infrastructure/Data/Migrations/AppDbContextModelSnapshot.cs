@@ -1645,6 +1645,116 @@ namespace Flowbit.Infrastructure.Data.Migrations
                         });
                 });
 
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.LifecycleEventCaptureStateEntity", b =>
+                {
+                    b.Property<int>("Id")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTimeOffset>("ChangedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<string>("ChangedBy")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<bool>("Enabled")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false);
+
+                    b.HasKey("Id");
+
+                    b.ToTable("lifecycle_event_capture_state", "flowbit", t =>
+                        {
+                            t.HasCheckConstraint("CK_lifecycle_event_capture_state_singleton", "\"Id\" = 1");
+                        });
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.LifecycleEventEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid");
+
+                    b.Property<byte[]>("Body")
+                        .IsRequired()
+                        .HasColumnType("bytea");
+
+                    b.Property<DateTimeOffset?>("FanoutCompletedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long?>("InstanceId")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTimeOffset>("OccurredAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.PrimitiveCollection<List<string>>("RecipientUserIds")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("text[]")
+                        .HasDefaultValueSql("'{}'::text[]");
+
+                    b.Property<DateTimeOffset>("RecordedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<int>("SchemaVersion")
+                        .HasColumnType("integer");
+
+                    b.Property<long?>("SourceId")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("SourceTable")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.PrimitiveCollection<long[]>("TargetRevisionIds")
+                        .IsRequired()
+                        .HasColumnType("bigint[]");
+
+                    b.Property<string>("Type")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<long?>("UserTaskId")
+                        .HasColumnType("bigint");
+
+                    b.Property<long?>("WorkflowDefinitionId")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("WorkflowKey")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<int?>("WorkflowVersion")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("InstanceId", "OccurredAt")
+                        .HasFilter("\"InstanceId\" IS NOT NULL");
+
+                    b.HasIndex("OccurredAt", "Id");
+
+                    b.HasIndex("RecordedAt", "Id")
+                        .HasDatabaseName("IX_lifecycle_events_pending_fanout")
+                        .HasFilter("\"FanoutCompletedAt\" IS NULL");
+
+                    b.HasIndex("SourceTable", "SourceId");
+
+                    b.ToTable("lifecycle_events", "flowbit", t =>
+                        {
+                            t.HasCheckConstraint("CK_lifecycle_events_body", "octet_length(\"Body\") BETWEEN 2 AND 16384");
+
+                            t.HasCheckConstraint("CK_lifecycle_events_schema_version", "\"SchemaVersion\" > 0");
+                        });
+                });
+
             modelBuilder.Entity("Flowbit.Infrastructure.Entities.LocalRefreshSessionEntity", b =>
                 {
                     b.Property<string>("Hash")
@@ -3300,6 +3410,536 @@ namespace Flowbit.Infrastructure.Data.Migrations
                     b.HasIndex("WorkflowDefinitionId");
 
                     b.ToTable("user_task_role_policies", "flowbit");
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.WebhookDataProtectionKeyEntity", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("FriendlyName")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Xml")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("webhook_data_protection_keys", "flowbit");
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.WebhookDeliveryAttemptEntity", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<DateTimeOffset>("AcquiredAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("AttemptNumber")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTimeOffset?>("CompletedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("DeliveryId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int?>("DurationMilliseconds")
+                        .HasColumnType("integer");
+
+                    b.Property<int?>("HttpStatus")
+                        .HasColumnType("integer");
+
+                    b.Property<long>("LeaseGeneration")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("Outcome")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<int>("RetryGeneration")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTimeOffset?>("SendIntentAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.PrimitiveCollection<Guid[]>("SigningKeyIds")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid[]")
+                        .HasDefaultValueSql("'{}'::uuid[]");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DeliveryId", "AttemptNumber")
+                        .IsUnique();
+
+                    b.ToTable("webhook_delivery_attempts", "flowbit", t =>
+                        {
+                            t.HasCheckConstraint("CK_webhook_delivery_attempts_completion", "(\"CompletedAt\" IS NULL) = (\"Outcome\" IS NULL)");
+
+                            t.HasCheckConstraint("CK_webhook_delivery_attempts_numbers", "\"AttemptNumber\" > 0 AND \"RetryGeneration\" > 0 AND \"LeaseGeneration\" > 0");
+                        });
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.WebhookDeliveryEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<DateTimeOffset?>("DeadlineAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset>("DueAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("EventId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("EventType")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("FailureCode")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<int>("GenerationAttempts")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTimeOffset?>("GenerationStartedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long?>("InstanceId")
+                        .HasColumnType("bigint");
+
+                    b.Property<bool>("IsTest")
+                        .HasColumnType("boolean");
+
+                    b.Property<DateTimeOffset?>("LastAttemptAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int?>("LastHttpStatus")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("LastOutcome")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<DateTimeOffset?>("LeaseExpiresAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long>("LeaseGeneration")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("LeaseOwner")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<Guid?>("LeaseToken")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("LeasedFromState")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<int>("LifetimeAttempts")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTimeOffset>("OccurredAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("RetryGeneration")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(1);
+
+                    b.Property<long>("Revision")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasDefaultValue(1L);
+
+                    b.Property<long>("RevisionId")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTimeOffset?>("SettledAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("State")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<Guid>("SubscriptionId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<string>("WorkflowKey")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("SubscriptionId")
+                        .HasDatabaseName("IX_webhook_deliveries_outstanding_test")
+                        .HasFilter("\"IsTest\" AND \"State\" IN ('pending', 'retryScheduled', 'delivering')");
+
+                    b.HasIndex("EventId", "SubscriptionId")
+                        .IsUnique();
+
+                    b.HasIndex("InstanceId", "OccurredAt")
+                        .HasFilter("\"InstanceId\" IS NOT NULL");
+
+                    b.HasIndex("OccurredAt", "Id");
+
+                    b.HasIndex("RevisionId", "State");
+
+                    b.HasIndex("SettledAt", "Id")
+                        .HasDatabaseName("IX_webhook_deliveries_settled")
+                        .HasFilter("\"State\" IN ('succeeded', 'discarded')");
+
+                    b.HasIndex("SubscriptionId", "DueAt")
+                        .HasDatabaseName("IX_webhook_deliveries_due")
+                        .HasFilter("\"State\" IN ('pending', 'retryScheduled')");
+
+                    b.HasIndex("SubscriptionId", "LeaseExpiresAt")
+                        .HasDatabaseName("IX_webhook_deliveries_leases")
+                        .HasFilter("\"State\" = 'delivering'");
+
+                    b.HasIndex("SubscriptionId", "State");
+
+                    b.HasIndex("SubscriptionId", "OccurredAt", "Id");
+
+                    b.ToTable("webhook_deliveries", "flowbit", t =>
+                        {
+                            t.HasCheckConstraint("CK_webhook_deliveries_counters", "\"RetryGeneration\" >= 1 AND \"GenerationAttempts\" >= 0 AND \"LifetimeAttempts\" >= \"GenerationAttempts\" AND \"LeaseGeneration\" >= 0 AND \"Revision\" > 0");
+
+                            t.HasCheckConstraint("CK_webhook_deliveries_failure", "\"State\" <> 'failed' OR \"FailureCode\" IS NOT NULL");
+
+                            t.HasCheckConstraint("CK_webhook_deliveries_generation", "(\"GenerationStartedAt\" IS NULL) = (\"DeadlineAt\" IS NULL)");
+
+                            t.HasCheckConstraint("CK_webhook_deliveries_lease", "(\"State\" = 'delivering' AND \"LeaseToken\" IS NOT NULL AND \"LeaseOwner\" IS NOT NULL AND \"LeaseExpiresAt\" IS NOT NULL AND \"LeasedFromState\" IN ('pending', 'retryScheduled')) OR (\"State\" <> 'delivering' AND \"LeaseToken\" IS NULL AND \"LeaseOwner\" IS NULL AND \"LeaseExpiresAt\" IS NULL AND \"LeasedFromState\" IS NULL)");
+
+                            t.HasCheckConstraint("CK_webhook_deliveries_settlement", "(\"State\" IN ('succeeded', 'discarded')) = (\"SettledAt\" IS NOT NULL)");
+
+                            t.HasCheckConstraint("CK_webhook_deliveries_state", "\"State\" IN ('pending', 'retryScheduled', 'delivering', 'succeeded', 'failed', 'discarded')");
+                        });
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.WebhookManagementAuditEntity", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("Actor")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<string>("ChangesJson")
+                        .HasColumnType("jsonb");
+
+                    b.Property<Guid?>("DeliveryId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("OccurredAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<string>("Operation")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<Guid?>("SubscriptionId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("OccurredAt", "Id");
+
+                    b.HasIndex("SubscriptionId", "Id");
+
+                    b.ToTable("webhook_management_audit", "flowbit");
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.WebhookSigningKeyEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("CreatedBy")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<DateTimeOffset?>("OverlapExpiresAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<byte[]>("ProtectedSecret")
+                        .HasColumnType("bytea");
+
+                    b.Property<DateTimeOffset?>("RemoveSecretNotBefore")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("RetiredAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("RevokedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("RevokedBy")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<DateTimeOffset?>("SecretRemovedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<Guid>("SubscriptionId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("RemoveSecretNotBefore")
+                        .HasDatabaseName("IX_webhook_signing_keys_pending_removal")
+                        .HasFilter("\"ProtectedSecret\" IS NOT NULL AND \"Status\" NOT IN ('current', 'previous')");
+
+                    b.HasIndex("SubscriptionId", "CreatedAt");
+
+                    b.HasIndex(new[] { "SubscriptionId" }, "IX_webhook_signing_keys_current")
+                        .IsUnique()
+                        .HasFilter("\"Status\" = 'current'");
+
+                    b.HasIndex(new[] { "SubscriptionId" }, "IX_webhook_signing_keys_previous")
+                        .IsUnique()
+                        .HasFilter("\"Status\" = 'previous'");
+
+                    b.ToTable("webhook_signing_keys", "flowbit", t =>
+                        {
+                            t.HasCheckConstraint("CK_webhook_signing_keys_overlap", "\"Status\" <> 'previous' OR \"OverlapExpiresAt\" IS NOT NULL");
+
+                            t.HasCheckConstraint("CK_webhook_signing_keys_secret", "(\"SecretRemovedAt\" IS NULL) = (\"ProtectedSecret\" IS NOT NULL) AND (\"ProtectedSecret\" IS NOT NULL OR \"Status\" NOT IN ('current', 'previous'))");
+
+                            t.HasCheckConstraint("CK_webhook_signing_keys_status", "\"Status\" IN ('current', 'previous', 'revoked', 'expired', 'retired')");
+                        });
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.WebhookSubscriptionDispatchStateEntity", b =>
+                {
+                    b.Property<Guid>("SubscriptionId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("BackoffSeconds")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTimeOffset?>("BackoffStartedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("BackoffUntil")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("ConsecutiveFailures")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTimeOffset?>("LastAcquiredAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("LastFailureAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int?>("LastHttpStatus")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("LastOutcome")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<DateTimeOffset?>("LastOutcomeAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("LastSuccessAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("now()");
+
+                    b.HasKey("SubscriptionId");
+
+                    b.HasIndex("LastAcquiredAt");
+
+                    b.ToTable("webhook_subscription_dispatch_state", "flowbit", t =>
+                        {
+                            t.HasCheckConstraint("CK_webhook_subscription_dispatch_state_backoff", "(\"BackoffUntil\" IS NULL) = (\"BackoffStartedAt\" IS NULL)");
+
+                            t.HasCheckConstraint("CK_webhook_subscription_dispatch_state_counters", "\"ConsecutiveFailures\" >= 0 AND \"BackoffSeconds\" >= 0");
+                        });
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.WebhookSubscriptionEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset?>("ArchiveSettledAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("ArchivedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ArchivedBy")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("CreatedBy")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<long?>("CurrentRevisionId")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.Property<int>("MaxConcurrency")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<string>("PauseReason")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<long>("Revision")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("State")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("UpdatedBy")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CurrentRevisionId")
+                        .IsUnique()
+                        .HasDatabaseName("IX_webhook_subscriptions_active_revision")
+                        .HasFilter("\"State\" = 'active'");
+
+                    b.HasIndex("State");
+
+                    b.HasIndex("CreatedAt", "Id");
+
+                    b.ToTable("webhook_subscriptions", "flowbit", t =>
+                        {
+                            t.HasCheckConstraint("CK_webhook_subscriptions_archive", "(\"State\" = 'archived' AND \"ArchivedAt\" IS NOT NULL AND \"ArchivedBy\" IS NOT NULL) OR (\"State\" <> 'archived' AND \"ArchivedAt\" IS NULL AND \"ArchivedBy\" IS NULL AND \"ArchiveSettledAt\" IS NULL)");
+
+                            t.HasCheckConstraint("CK_webhook_subscriptions_max_concurrency", "\"MaxConcurrency\" BETWEEN 1 AND 16");
+
+                            t.HasCheckConstraint("CK_webhook_subscriptions_pause_reason", "(\"State\" = 'paused' AND \"PauseReason\" IN ('administrator', 'receiverGone', 'receiverUnavailable')) OR (\"State\" <> 'paused' AND \"PauseReason\" IS NULL)");
+
+                            t.HasCheckConstraint("CK_webhook_subscriptions_revision", "\"Revision\" > 0");
+
+                            t.HasCheckConstraint("CK_webhook_subscriptions_state", "\"State\" IN ('active', 'paused', 'archived')");
+                        });
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.WebhookSubscriptionRevisionEntity", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<int>("ConfigurationRevision")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("CreatedBy")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<string>("EndpointUrl")
+                        .IsRequired()
+                        .HasMaxLength(2048)
+                        .HasColumnType("character varying(2048)");
+
+                    b.PrimitiveCollection<List<string>>("EventTypes")
+                        .IsRequired()
+                        .HasColumnType("text[]");
+
+                    b.Property<Guid>("SubscriptionId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("WorkflowKey")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("EventTypes");
+
+                    NpgsqlIndexBuilderExtensions.HasMethod(b.HasIndex("EventTypes"), "gin");
+
+                    b.HasIndex("SubscriptionId", "ConfigurationRevision")
+                        .IsUnique();
+
+                    b.ToTable("webhook_subscription_revisions", "flowbit", t =>
+                        {
+                            t.HasCheckConstraint("CK_webhook_subscription_revisions_configuration_revision", "\"ConfigurationRevision\" > 0");
+
+                            t.HasCheckConstraint("CK_webhook_subscription_revisions_event_types", "cardinality(\"EventTypes\") > 0");
+                        });
                 });
 
             modelBuilder.Entity("Flowbit.Infrastructure.Entities.WorkflowBusinessKeyClaimEntity", b =>
@@ -5241,6 +5881,87 @@ namespace Flowbit.Infrastructure.Data.Migrations
                         .HasForeignKey("WorkflowDefinitionId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.WebhookDeliveryAttemptEntity", b =>
+                {
+                    b.HasOne("Flowbit.Infrastructure.Entities.WebhookDeliveryEntity", "Delivery")
+                        .WithMany()
+                        .HasForeignKey("DeliveryId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Delivery");
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.WebhookDeliveryEntity", b =>
+                {
+                    b.HasOne("Flowbit.Infrastructure.Entities.LifecycleEventEntity", "Event")
+                        .WithMany()
+                        .HasForeignKey("EventId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Flowbit.Infrastructure.Entities.WebhookSubscriptionRevisionEntity", "DestinationRevision")
+                        .WithMany()
+                        .HasForeignKey("RevisionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Flowbit.Infrastructure.Entities.WebhookSubscriptionEntity", "Subscription")
+                        .WithMany()
+                        .HasForeignKey("SubscriptionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("DestinationRevision");
+
+                    b.Navigation("Event");
+
+                    b.Navigation("Subscription");
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.WebhookSigningKeyEntity", b =>
+                {
+                    b.HasOne("Flowbit.Infrastructure.Entities.WebhookSubscriptionEntity", "Subscription")
+                        .WithMany()
+                        .HasForeignKey("SubscriptionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Subscription");
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.WebhookSubscriptionDispatchStateEntity", b =>
+                {
+                    b.HasOne("Flowbit.Infrastructure.Entities.WebhookSubscriptionEntity", "Subscription")
+                        .WithOne()
+                        .HasForeignKey("Flowbit.Infrastructure.Entities.WebhookSubscriptionDispatchStateEntity", "SubscriptionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Subscription");
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.WebhookSubscriptionEntity", b =>
+                {
+                    b.HasOne("Flowbit.Infrastructure.Entities.WebhookSubscriptionRevisionEntity", "CurrentRevision")
+                        .WithMany()
+                        .HasForeignKey("CurrentRevisionId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.Navigation("CurrentRevision");
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.WebhookSubscriptionRevisionEntity", b =>
+                {
+                    b.HasOne("Flowbit.Infrastructure.Entities.WebhookSubscriptionEntity", "Subscription")
+                        .WithMany()
+                        .HasForeignKey("SubscriptionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Subscription");
                 });
 
             modelBuilder.Entity("Flowbit.Infrastructure.Entities.WorkflowBusinessKeyClaimEntity", b =>

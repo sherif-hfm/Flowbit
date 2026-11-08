@@ -1,0 +1,1009 @@
+@page "/webhooks"
+@implements IDisposable
+@using System.Globalization
+@using System.Net
+@using Flowbit.Ui.Auth
+@inject WorkflowApiClient Api
+@inject TokenState Token
+@inject IJSRuntime JS
+
+<PageTitle>Lifecycle Webhooks · Flowbit</PageTitle>
+
+<PageHeader Eyebrow="Manage" Title="Lifecycle webhooks"
+            Description="Send committed instance, task, delegation, and incident events to external systems, signed with Standard Webhooks. Delivery is at least once and unordered; receivers deduplicate by webhook-id.">
+    <Actions>
+        <button class="btn btn-outline-primary" @onclick="OpenCreate" disabled="@(!Token.HasToken || busy || permissionDenied)"><AppIcon Name="plus" /> Add subscription</button>
+        <button class="btn btn-primary" @onclick="RefreshAsync" disabled="@(!Token.HasToken || busy)"><AppIcon Name="refresh" /> Refresh</button>
+    </Actions>
+</PageHeader>
+
+@if (!string.IsNullOrWhiteSpace(error)) { <div class="alert alert-danger" role="alert">@error</div> }
+@if (!string.IsNullOrWhiteSpace(success)) { <div class="alert alert-success" role="status">@success</div> }
+
+@if (!Token.HasToken)
+{
+    <section class="panel"><EmptyState Icon="token" Title="An administrative identity is required" Description="Webhook management requires the configured settings administrator role."><IdentityAction Class="btn btn-primary" DevelopmentLabel="Set test identity" /></EmptyState></section>
+}
+else if (!permissionDenied)
+{
+    @* After a 401 or 403 the page shows only the permission message above. *@
+    @if (catalog is { Capture.Enabled: false })
+    {
+        <div class="alert alert-warning" role="status">
+            <strong>Lifecycle capture is off.</strong> Subscriptions match nothing until an operator turns on the database capture switch
+            (<span class="mono-id">flowbit.set_lifecycle_event_capture(true, '…')</span>). Test events are still delivered.
+        </div>
+    }
+
+    @if (!string.IsNullOrWhiteSpace(oneTimeSecret) && secretSubscription is not null)
+    {
+        <section class="panel mb-3 border-warning" tabindex="-1" @ref="secretPanel" aria-labelledby="webhook-secret-heading">
+            <div class="section-heading">
+                <div><h2 id="webhook-secret-heading">Save this signing secret now</h2><p>It will not be shown again after this panel closes, you leave the page, or the page reloads.</p></div>
+                <button type="button" class="btn-close" aria-label="Hide one-time secret" @onclick="ClearSecret"></button>
+            </div>
+            <div class="alert alert-warning">Configure the receiver for <strong>@secretSubscription.Name</strong> with this secret and verify each request's <span class="mono-id">webhook-signature</span> with a Standard Webhooks library @WebhookFormatting.SecretInstallDeadline(secretSubscription).</div>
+            <div class="form-grid">
+                <div><span class="form-label d-block">Signing key ID</span><code class="d-block text-break">@secretKeyId</code></div>
+                <div class="full"><span class="form-label d-block">Signing secret</span><code class="d-block text-break user-select-all" id="webhook-one-time-secret">@oneTimeSecret</code></div>
+            </div>
+            <div class="d-flex flex-wrap gap-2 mt-3">
+                <button class="btn btn-primary" @onclick="CopySecretAsync">Copy secret</button>
+                <button class="btn btn-outline-secondary" @onclick="ClearSecret">I saved it</button>
+            </div>
+            @if (copyMessage is not null) { <div class="alert @(copyFailed ? "alert-danger" : "alert-success") mt-3 mb-0" role="@(copyFailed ? "alert" : "status")">@copyMessage</div> }
+        </section>
+    }
+
+    @if (formOpen)
+    {
+        <section class="panel mb-3" aria-labelledby="webhook-form-heading">
+            <div class="section-heading">
+                <div>
+                    <h2 id="webhook-form-heading">@(editing is null ? "Add webhook subscription" : $"Edit {editing.Name}")</h2>
+                    <p>@(editing is null
+                        ? "New subscriptions start paused. Configure the receiver with the secret shown next, send a test event (delivered while paused), then resume."
+                        : "A changed URL, event set, or family applies only to events captured from now on; queued deliveries keep their captured destination.")</p>
+                </div>
+                <button type="button" class="btn-close" aria-label="Close subscription form" @onclick="CloseForm" disabled="@busy"></button>
+            </div>
+            @if (!string.IsNullOrWhiteSpace(formError))
+            {
+                <div class="alert alert-danger" role="alert">@formError@if (formConflict && editing is not null) { <button class="btn btn-sm btn-outline-danger ms-2" @onclick="ReloadEditAsync" disabled="@busy">Load current revision</button> }</div>
+            }
+            <div class="form-grid">
+                <div><label class="form-label" for="webhook-name">Name</label><input id="webhook-name" class="form-control" maxlength="200" autocomplete="off" placeholder="CRM task feed" @ref="formNameInput" @bind="formName" @bind:event="oninput" /></div>
+                <div><label class="form-label" for="webhook-concurrency">Maximum concurrent requests</label><input id="webhook-concurrency" class="form-control" type="number" min="1" max="16" @bind="formConcurrency" /><div class="form-text">1 to 16 requests at a time to this receiver; 4 is the default.</div></div>
+                <div class="full">
+                    <label class="form-label" for="webhook-url">Endpoint URL</label>
+                    <input id="webhook-url" class="form-control mono-id" maxlength="2048" autocomplete="off" spellcheck="false" placeholder="https://receiver.example.com/flowbit/events" @bind="formUrl" @bind:event="oninput" />
+                    <div class="form-text">HTTPS on port 443 unless the operator allowlists the host. A query string may carry a receiver token; Flowbit treats the whole URL as confidential and logs only its scheme, host, and port.</div>
+                </div>
+                <div class="full">
+                    <fieldset>
+                        <legend class="form-label">Events</legend>
+                        <div class="d-flex flex-wrap gap-3">
+                            @foreach (var type in LifecycleEventTypes.Subscribable)
+                            {
+                                var id = "webhook-event-" + type.Replace('.', '-');
+                                <div class="form-check">
+                                    <input id="@id" class="form-check-input" type="checkbox" checked="@formEvents.Contains(type)" @onchange="args => ToggleEvent(type, args.Value is true)" />
+                                    <label class="form-check-label" for="@id">@WebhookFormatting.EventTypeLabel(type) <span class="data-subtitle d-inline mono-id">@type</span></label>
+                                </div>
+                            }
+                        </div>
+                    </fieldset>
+                </div>
+                <div>
+                    <label class="form-label" for="webhook-workflow-key">Workflow family (optional)</label>
+                    <input id="webhook-workflow-key" class="form-control" maxlength="300" autocomplete="off" placeholder="purchase-review" @bind="formWorkflowKey" @bind:event="oninput" />
+                    <div class="form-text">An exact workflow key. Empty matches every family. This filters events; it grants no authority.</div>
+                </div>
+                <div>
+                    <label class="form-label" for="webhook-description">Description (optional)</label>
+                    <input id="webhook-description" class="form-control" maxlength="1000" autocomplete="off" @bind="formDescription" @bind:event="oninput" />
+                </div>
+            </div>
+            <div class="d-flex justify-content-end gap-2 mt-3">
+                <button class="btn btn-outline-secondary" @onclick="CloseForm" disabled="@busy">Cancel</button>
+                <button class="btn btn-primary" @onclick="SaveAsync" disabled="@busy">@(busy ? "Saving…" : editing is null ? "Create paused and reveal secret" : "Save subscription")</button>
+            </div>
+        </section>
+    }
+
+    @if (rotating is not null)
+    {
+        <section class="panel mb-3" aria-labelledby="webhook-rotate-heading">
+            <div class="section-heading"><div><h2 id="webhook-rotate-heading">Rotate the signing secret of @rotating.Name</h2><p>During the overlap, requests carry two signatures, one per key, so receivers can switch without rejecting events.</p></div><button type="button" class="btn-close" aria-label="Close rotation form" @onclick="CloseRotate" disabled="@busy"></button></div>
+            @if (!string.IsNullOrWhiteSpace(formError)) { <div class="alert alert-danger" role="alert">@formError</div> }
+            <div><label class="form-label" for="webhook-overlap">Overlap (seconds)</label><input id="webhook-overlap" class="form-control" type="number" min="0" max="86400" @ref="overlapInput" @bind="overlapSeconds" /><div class="form-text">0 retires the current key immediately; 3600 (one hour) is the default; the maximum is 86400 (24 hours).</div></div>
+            <div class="d-flex justify-content-end gap-2 mt-3"><button class="btn btn-outline-secondary" @onclick="CloseRotate" disabled="@busy">Cancel</button><button class="btn btn-primary" @onclick="RotateAsync" disabled="@busy">@(busy ? "Rotating…" : "Rotate and reveal secret")</button></div>
+        </section>
+    }
+
+    <section class="panel panel-flush mb-3" aria-labelledby="webhook-subscriptions-heading">
+        <div class="section-heading"><div><h2 id="webhook-subscriptions-heading">Subscriptions</h2><p>@SubscriptionSummary</p></div></div>
+        @if (loading && subscriptions is null) { <div class="p-3"><div class="skeleton" role="status" aria-label="Loading subscriptions"></div></div> }
+        else if (subscriptions is null) { <EmptyState Icon="alert" Title="Subscriptions unavailable" Description="Use Refresh to retry. The error appears above." /> }
+        else if (subscriptions.Items.Count == 0) { <EmptyState Icon="webhook" Title="No webhook subscriptions" Description="Add a subscription to send lifecycle events to a receiver." /> }
+        else
+        {
+            <div class="table-responsive">
+                <table class="table align-middle">
+                    <thead><tr><th>Subscription</th><th>State</th><th>Receiver health</th><th>Queue</th><th><span class="visually-hidden">Actions</span></th></tr></thead>
+                    <tbody>
+                    @foreach (var subscription in subscriptions.Items)
+                    {
+                        <tr>
+                            <td>
+                                <span class="data-title">@subscription.Name</span>
+                                <span class="data-subtitle mono-id">@subscription.Destination.Origin · revision @subscription.Destination.ConfigurationRevision</span>
+                                <span class="data-subtitle">@EventSummary(subscription.Destination)</span>
+                            </td>
+                            <td>
+                                <StatusBadge Status="@WebhookFormatting.SubscriptionStateTone(subscription.State, subscription.PauseReason)" Text="@WebhookFormatting.SubscriptionStateLabel(subscription.State, subscription.PauseReason)" />
+                                @if (subscription.ArchivedAt is not null && subscription.ArchiveSettledAt is null) { <span class="data-subtitle">Discarding outstanding work…</span> }
+                            </td>
+                            <td>
+                                <span class="d-block">@WebhookFormatting.HealthSummary(subscription.Health, DateTimeOffset.Now)</span>
+                                <span class="data-subtitle">Last: @WebhookFormatting.OutcomeWithStatus(subscription.Health.LastOutcome, subscription.Health.LastHttpStatus)</span>
+                            </td>
+                            <td>
+                                <span class="d-block">@subscription.Queue.Pending pending · @subscription.Queue.RetryScheduled retrying · @subscription.Queue.Delivering sending</span>
+                                @if (subscription.Queue.Failed > 0) { <span class="data-subtitle text-danger">@subscription.Queue.Failed failed</span> }
+                            </td>
+                            <td class="text-end">
+                                <div class="d-flex flex-wrap justify-content-end gap-2">
+                                    <button class="btn btn-sm btn-outline-secondary" @onclick="() => ToggleDetailsAsync(subscription)" disabled="@busy" aria-expanded="@(expandedId == subscription.Id ? "true" : "false")">@(expandedId == subscription.Id ? "Hide details" : "Details")</button>
+                                    <button class="btn btn-sm btn-outline-secondary" @onclick="() => ShowDeliveriesAsync(subscription)" disabled="@busy">Deliveries</button>
+                                    @if (!WebhookFormatting.IsArchived(subscription))
+                                    {
+                                        <button class="btn btn-sm btn-outline-secondary" @onclick="() => OpenEditAsync(subscription)" disabled="@busy">Edit</button>
+                                        <button class="btn btn-sm btn-outline-primary" @onclick="() => SendTestAsync(subscription)" disabled="@busy">Send test event</button>
+                                        @if (WebhookFormatting.CanPause(subscription))
+                                        {
+                                            <button class="btn btn-sm btn-outline-secondary" @onclick="() => PauseAsync(subscription)" disabled="@busy">Pause</button>
+                                        }
+                                        else if (WebhookFormatting.CanResume(subscription))
+                                        {
+                                            <button class="btn btn-sm btn-outline-primary" @onclick="() => ResumeAsync(subscription)" disabled="@busy">Resume</button>
+                                        }
+                                        <button class="btn btn-sm btn-outline-primary" @onclick="() => OpenRotate(subscription)" disabled="@busy">Rotate secret</button>
+                                        @if (WebhookFormatting.HasPreviousKey(subscription))
+                                        {
+                                            <button class="btn btn-sm btn-outline-secondary" @onclick="() => RevokePreviousAsync(subscription)" disabled="@busy">Revoke previous key</button>
+                                        }
+                                        <button class="btn btn-sm btn-outline-danger" @onclick="() => ArchiveAsync(subscription)" disabled="@busy">Archive</button>
+                                    }
+                                </div>
+                            </td>
+                        </tr>
+                        @if (expandedId == subscription.Id && detail is not null)
+                        {
+                            var shown = detail;
+                            <tr>
+                                <td colspan="5">
+                                    <div class="summary-grid mb-3">
+                                        <div class="summary-item"><span>Endpoint URL</span><strong class="mono-id">@shown.Subscription.Destination.EndpointUrl</strong></div>
+                                        <div class="summary-item"><span>Workflow family</span><strong>@(shown.Subscription.Destination.WorkflowKey ?? "Every family")</strong></div>
+                                        <div class="summary-item"><span>Concurrency</span><strong>@shown.Subscription.MaxConcurrency at a time</strong></div>
+                                        <div class="summary-item"><span>Last changed</span><strong>@WebhookFormatting.FormatTime(shown.Subscription.UpdatedAt) by @shown.Subscription.UpdatedBy</strong></div>
+                                    </div>
+                                    @if (!string.IsNullOrWhiteSpace(shown.Subscription.Description)) { <p class="mb-3">@shown.Subscription.Description</p> }
+                                    <h3 class="h6">Signing keys</h3>
+                                    <ul class="list-unstyled mb-3">
+                                        @foreach (var key in shown.Subscription.SigningKeys)
+                                        {
+                                            <li><span class="mono-id">@key.Id</span> · <StatusBadge Status="@(key.Status is "current" ? "active" : key.Status is "previous" ? "warning" : "neutral")" Text="@key.Status" /> created @WebhookFormatting.FormatTime(key.CreatedAt)@(key.OverlapExpiresAt is { } overlap && key.Status == WebhookSigningKeyStatuses.Previous ? $" · signs until {WebhookFormatting.FormatTime(overlap)}" : string.Empty)</li>
+                                        }
+                                    </ul>
+                                    <h3 class="h6">Destination revisions</h3>
+                                    <p class="form-text mt-0">Deliveries keep the destination captured with their event. An old destination with outstanding work can be discarded in bulk; the receiver reconciles through the API.</p>
+                                    <div class="table-responsive">
+                                        <table class="table table-sm align-middle mb-0">
+                                            <thead><tr><th>Revision</th><th>Destination</th><th>Events</th><th>Outstanding</th><th><span class="visually-hidden">Actions</span></th></tr></thead>
+                                            <tbody>
+                                            @foreach (var revision in shown.Revisions)
+                                            {
+                                                <tr>
+                                                    <td>@revision.Destination.ConfigurationRevision@(revision.IsCurrent ? " (current)" : string.Empty)</td>
+                                                    <td class="mono-id">@revision.Destination.Origin</td>
+                                                    <td>@EventSummary(revision.Destination)</td>
+                                                    <td>@revision.OutstandingDeliveries.ToString("N0")</td>
+                                                    <td class="text-end">
+                                                        @if (!revision.IsCurrent && revision.OutstandingDeliveries > 0
+                                                             && shown.Subscription.State != WebhookSubscriptionStates.Archived)
+                                                        {
+                                                            <button class="btn btn-sm btn-outline-danger" @onclick="() => PrepareRevisionDiscardAsync(shown.Subscription, revision)" disabled="@busy">Discard outstanding</button>
+                                                        }
+                                                    </td>
+                                                </tr>
+                                            }
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </td>
+                            </tr>
+                        }
+                    }
+                    </tbody>
+                </table>
+            </div>
+            <div class="pagination-bar"><span class="pagination-copy">Page @subscriptions.Page of @SubscriptionPages</span><div class="d-flex gap-2"><button class="btn btn-sm btn-outline-secondary" @onclick="() => ChangeSubscriptionPageAsync(-1)" disabled="@(busy || subscriptions.Page <= 1)">Previous</button><button class="btn btn-sm btn-outline-secondary" @onclick="() => ChangeSubscriptionPageAsync(1)" disabled="@(busy || subscriptions.Page >= SubscriptionPages)">Next</button></div></div>
+        }
+    </section>
+
+    <section class="filter-panel" aria-labelledby="webhook-delivery-filter-heading">
+        <div class="section-heading mb-0">
+            <div><h2 id="webhook-delivery-filter-heading">Deliveries</h2><p>Each event becomes one delivery per matching subscription. Filters apply to the event time; From is inclusive and To exclusive.</p></div>
+            <div class="d-flex gap-2"><button class="btn btn-sm btn-outline-primary" @onclick="ApplyDeliveryFiltersAsync" disabled="@busy">Apply</button><button class="btn btn-sm btn-outline-secondary" @onclick="ClearDeliveryFiltersAsync" disabled="@busy">Clear</button></div>
+        </div>
+        <div class="filter-grid mt-3">
+            <div>
+                <label class="form-label" for="delivery-subscription">Subscription</label>
+                <select id="delivery-subscription" class="form-select" @bind="filterSubscription">
+                    <option value="">All subscriptions</option>
+                    @foreach (var subscription in subscriptions?.Items ?? [])
+                    {
+                        <option value="@subscription.Id.ToString("D")">@subscription.Name</option>
+                    }
+                </select>
+            </div>
+            <div>
+                <label class="form-label" for="delivery-state">State</label>
+                <select id="delivery-state" class="form-select" @bind="filterState">
+                    <option value="">Any state</option>
+                    @foreach (var state in WebhookDeliveryStates.All) { <option value="@state">@WebhookFormatting.DeliveryStateLabel(state)</option> }
+                </select>
+            </div>
+            <div>
+                <label class="form-label" for="delivery-type">Event type</label>
+                <select id="delivery-type" class="form-select" @bind="filterEventType">
+                    <option value="">Any event</option>
+                    @foreach (var type in LifecycleEventTypes.Subscribable.Append(LifecycleEventTypes.WebhookTest)) { <option value="@type">@WebhookFormatting.EventTypeLabel(type)</option> }
+                </select>
+            </div>
+            <div><label class="form-label" for="delivery-failure">Failure code</label><input id="delivery-failure" class="form-control mono-id" autocomplete="off" placeholder="receiver_rejected" @bind="filterFailureCode" /></div>
+            <div><label class="form-label" for="delivery-instance">Instance ID</label><input id="delivery-instance" class="form-control" inputmode="numeric" autocomplete="off" @bind="filterInstance" /></div>
+            <div><label class="form-label" for="delivery-workflow-key">Workflow family</label><input id="delivery-workflow-key" class="form-control" autocomplete="off" @bind="filterWorkflowKey" /></div>
+            <div><label class="form-label" for="delivery-from">From (local time)</label><input @key="filterGeneration" id="delivery-from" type="datetime-local" class="form-control" @onchange="args => filterFrom = args.Value?.ToString()" /></div>
+            <div><label class="form-label" for="delivery-to">To (local time)</label><input @key="filterGeneration + 1" id="delivery-to" type="datetime-local" class="form-control" @onchange="args => filterTo = args.Value?.ToString()" /></div>
+            <div class="filter-actions filter-span-2">
+                @if (BulkSubscription is { State: WebhookSubscriptionStates.Archived })
+                {
+                    <span class="form-text">This subscription is archived: the Worker discards its outstanding deliveries automatically.</span>
+                }
+                else if (BulkSubscription is not null)
+                {
+                    <button class="btn btn-sm btn-outline-primary" @onclick="() => PrepareBulkAsync(BulkRetry)" disabled="@busy">Retry failed…</button>
+                    <button class="btn btn-sm btn-outline-danger" @onclick="() => PrepareBulkAsync(BulkDiscard)" disabled="@busy">Discard queued and failed…</button>
+                }
+                else
+                {
+                    <span class="form-text">Choose one subscription to retry or discard its matching deliveries in bulk.</span>
+                }
+            </div>
+        </div>
+        @if (!string.IsNullOrWhiteSpace(filterError)) { <div class="alert alert-danger mt-3 mb-0" role="alert">@filterError</div> }
+        @if (bulkAction is not null && bulkSubscription is not null)
+        {
+            <div class="alert alert-warning mt-3 mb-0" role="alertdialog" aria-labelledby="webhook-bulk-confirm" tabindex="-1" @ref="bulkConfirmation">
+                <p id="webhook-bulk-confirm" class="mb-2">
+                    @if (bulkAction == BulkRetry)
+                    {
+                        <span>Retry @bulkCount.ToString("N0") failed deliveries of <strong>@bulkSubscription.Name</strong>@BulkScopeText in a new retry generation? Each request acts on at most 1,000, oldest first.</span>
+                    }
+                    else
+                    {
+                        <span>Discard @bulkCount.ToString("N0") pending, scheduled, and failed deliveries of <strong>@bulkSubscription.Name</strong>@BulkScopeText? Discarded work is never sent. Each request acts on at most 1,000, oldest first, and skips deliveries being sent now.</span>
+                    }
+                </p>
+                <div class="d-flex gap-2"><button class="btn btn-sm @(bulkAction == BulkRetry ? "btn-primary" : "btn-danger")" @onclick="RunBulkAsync" disabled="@(busy || bulkCount == 0)">@(bulkAction == BulkRetry ? "Retry deliveries" : "Discard deliveries")</button><button class="btn btn-sm btn-outline-secondary" @onclick="CancelBulk" disabled="@busy">Cancel</button></div>
+            </div>
+        }
+    </section>
+
+    <section class="panel panel-flush" aria-labelledby="webhook-delivery-results-heading">
+        <div class="section-heading"><div><h2 id="webhook-delivery-results-heading">Delivery results</h2><p>@DeliverySummary</p></div></div>
+        @if ((loading || loadingDeliveries) && deliveries is null) { <div class="p-3"><div class="skeleton" role="status" aria-label="Loading deliveries"></div></div> }
+        else if (deliveries is null) { <EmptyState Icon="alert" Title="Deliveries unavailable" Description="Use Refresh to retry. The error appears above." /> }
+        else if (deliveries.Items.Count == 0) { <EmptyState Icon="webhook" Title="No deliveries match" Description="Deliveries appear after a matching lifecycle event is captured and fanned out, or after a test event." /> }
+        else
+        {
+            <div class="table-responsive">
+                <table class="table align-middle">
+                    <thead><tr><th>Event</th><th>Subscription</th><th>State</th><th>Attempts</th><th>Last result</th><th><span class="visually-hidden">Actions</span></th></tr></thead>
+                    <tbody>
+                    @foreach (var delivery in deliveries.Items)
+                    {
+                        <tr>
+                            <td><a href="@($"webhooks/deliveries/{delivery.Id:D}")" class="data-title">@WebhookFormatting.EventTypeLabel(delivery.EventType)</a><span class="data-subtitle">@WebhookFormatting.FormatTime(delivery.OccurredAt)@(delivery.InstanceId is { } instance ? $" · instance #{instance}" : string.Empty)</span></td>
+                            <td><span class="d-block">@delivery.SubscriptionName</span><span class="data-subtitle mono-id">@delivery.DestinationOrigin · revision @delivery.ConfigurationRevision</span></td>
+                            <td><StatusBadge Status="@WebhookFormatting.DeliveryStateTone(delivery.State)" Text="@WebhookFormatting.DeliveryStateLabel(delivery.State)" />@if (delivery.DueAt is { } due) { <span class="data-subtitle">Next @WebhookFormatting.FormatTime(due)</span> }</td>
+                            <td>@WebhookFormatting.Budget(delivery)<span class="data-subtitle">@delivery.LifetimeAttempts in total</span></td>
+                            <td>@WebhookFormatting.OutcomeWithStatus(delivery.LastOutcome, delivery.LastHttpStatus)@if (delivery.FailureCode is { } failure) { <span class="data-subtitle mono-id">@failure</span> }</td>
+                            <td class="text-end">
+                                <div class="d-flex justify-content-end gap-2">
+                                    @if (!IsArchived(delivery.SubscriptionId))
+                                    {
+                                        if (delivery.State == WebhookDeliveryStates.Failed) { <button class="btn btn-sm btn-outline-primary" @onclick="() => RetryDeliveryAsync(delivery)" disabled="@busy">Retry</button> }
+                                        if (delivery.State is WebhookDeliveryStates.Pending or WebhookDeliveryStates.RetryScheduled or WebhookDeliveryStates.Failed) { <button class="btn btn-sm btn-outline-danger" @onclick="() => DiscardDeliveryAsync(delivery)" disabled="@busy">Discard</button> }
+                                    }
+                                </div>
+                            </td>
+                        </tr>
+                    }
+                    </tbody>
+                </table>
+            </div>
+            <div class="pagination-bar"><span class="pagination-copy">Page @deliveries.Page of @DeliveryPages · @deliveries.TotalCount.ToString("N0") total</span><div class="d-flex gap-2"><button class="btn btn-sm btn-outline-secondary" @onclick="() => ChangeDeliveryPageAsync(-1)" disabled="@(busy || deliveries.Page <= 1)">Previous</button><button class="btn btn-sm btn-outline-secondary" @onclick="() => ChangeDeliveryPageAsync(1)" disabled="@(busy || deliveries.Page >= DeliveryPages)">Next</button></div></div>
+        }
+        <p class="form-text px-3 pb-3 mb-0">A 2xx response proves the receiver accepted the request, not that it finished downstream work. Pause and archive cannot recall a request already in flight.</p>
+    </section>
+}
+
+@code {
+    private const string BulkRetry = "retry";
+    private const string BulkDiscard = "discard";
+    private const int PageSize = 25;
+
+    // What receives focus after the next render: whatever just opened.
+    private enum FocusTarget { None, Secret, Form, Rotate, BulkConfirmation }
+
+    private WebhookEventCatalogDto? catalog;
+    private PagedResult<WebhookSubscriptionDto>? subscriptions;
+    private PagedResult<WebhookDeliveryDto>? deliveries;
+    private WebhookSubscriptionDetailDto? detail;
+    private Guid? expandedId;
+    private WebhookSubscriptionDto? editing;
+    private WebhookSubscriptionDto? rotating;
+    // A revealed secret stays until it is dismissed, the identity or its permission is lost, or the page goes away.
+    // No other failure clears it, because no screen or API can show it again.
+    private WebhookSubscriptionDto? secretSubscription;
+    private Guid? secretKeyId;
+    private string? oneTimeSecret;
+    private string? copyMessage;
+    private bool copyFailed;
+    private string? error;
+    private string? success;
+    private string? formError;
+    private string? filterError;
+    private bool formOpen;
+    private bool formConflict;
+    private bool loading;
+    private bool loadingDeliveries;
+    // Guards every request: a second click while one runs does nothing.
+    private bool busy;
+    // Set by a 401 or 403, which leaves only the permission message.
+    private bool permissionDenied;
+    private bool disposed;
+    private string formName = string.Empty;
+    private string? formDescription;
+    private string formUrl = string.Empty;
+    private string? formWorkflowKey;
+    private int formConcurrency = 4;
+    private readonly HashSet<string> formEvents = new(StringComparer.Ordinal);
+    private int overlapSeconds = 3600;
+    private int subscriptionPage = 1;
+    private int deliveryPage = 1;
+    private string filterSubscription = string.Empty;
+    private string filterState = string.Empty;
+    private string filterEventType = string.Empty;
+    private string? filterFailureCode;
+    private string? filterInstance;
+    private string? filterWorkflowKey;
+    private string? filterFrom;
+    private string? filterTo;
+    private int filterGeneration;
+    // The last search the API accepted; the list, its paging, and bulk actions all use it.
+    private WebhookDeliverySearch appliedSearch = new(PageSize: PageSize);
+    private string? bulkAction;
+    private WebhookSubscriptionDto? bulkSubscription;
+    private WebhookBulkDeliveryRequest? bulkRequest;
+    private long bulkCount;
+    private int? bulkRevision;
+    private bool bulkIgnoresState;
+    // Bumped when the identity changes or the page is disposed; replies to earlier requests are then ignored.
+    private int identityVersion;
+    private FocusTarget pendingFocus;
+    private ElementReference secretPanel;
+    private ElementReference formNameInput;
+    private ElementReference overlapInput;
+    private ElementReference bulkConfirmation;
+
+    private int SubscriptionPages => subscriptions is null ? 1 : Math.Max(1, (int)Math.Ceiling(subscriptions.TotalCount / (double)subscriptions.PageSize));
+    private int DeliveryPages => deliveries is null ? 1 : Math.Max(1, (int)Math.Ceiling(deliveries.TotalCount / (double)deliveries.PageSize));
+    private string SubscriptionSummary => subscriptions is null ? "Not loaded" : $"{subscriptions.TotalCount:N0} subscriptions, newest first";
+    private string DeliverySummary => deliveries is null ? "Not loaded" : $"{deliveries.TotalCount:N0} matching deliveries, newest event first";
+    private WebhookSubscriptionDto? BulkSubscription => appliedSearch.SubscriptionId is { } id ? subscriptions?.Items.FirstOrDefault(item => item.Id == id) : null;
+
+    // The Worker settles an archived subscription's deliveries, so their actions are hidden when the page knows it.
+    private bool IsArchived(Guid subscriptionId) =>
+        subscriptions?.Items.FirstOrDefault(item => item.Id == subscriptionId) is { State: WebhookSubscriptionStates.Archived };
+    // Bulk routes select by their own states, so a State filter on the list does not narrow them.
+    private string BulkScopeText => bulkRevision is { } revision
+        ? $" captured for destination revision {revision}"
+        : bulkIgnoresState ? " matching the current filters except State (bulk actions do not filter by state)" : " matching the current filters";
+
+    protected override async Task OnInitializedAsync()
+    {
+        Token.Changed += OnTokenChanged;
+        if (Token.HasToken) await RefreshAsync();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        var target = pendingFocus;
+        pendingFocus = FocusTarget.None;
+        ElementReference? element = target switch
+        {
+            FocusTarget.Secret when !string.IsNullOrWhiteSpace(oneTimeSecret) && secretSubscription is not null => secretPanel,
+            FocusTarget.Form when formOpen && !permissionDenied => formNameInput,
+            FocusTarget.Rotate when rotating is not null && !permissionDenied => overlapInput,
+            FocusTarget.BulkConfirmation when bulkAction is not null && bulkSubscription is not null && !permissionDenied => bulkConfirmation,
+            _ => null
+        };
+        if (element is not { } reference) return;
+        try { await reference.FocusAsync(); }
+        catch (Exception)
+        {
+            // Moving focus is a convenience: an element the browser cannot focus leaves focus where it was.
+        }
+    }
+
+    // Reloads the page. The previous message stays until the reload replaces it.
+    private async Task RefreshAsync()
+    {
+        if (!Token.HasToken) { ClearAll(); return; }
+        if (busy) return;
+        var version = identityVersion;
+        busy = true;
+        try
+        {
+            var loadError = await LoadPageAsync(version);
+            if (version != identityVersion) return;
+            error = loadError; success = null;
+        }
+        finally { if (version == identityVersion) busy = false; }
+    }
+
+    // Loads everything the page shows, keeping each part as it arrives, and returns the failure to report (null
+    // once everything loaded). Replies to a request made for an earlier identity are ignored.
+    private async Task<string?> LoadPageAsync(int version)
+    {
+        loading = true;
+        try
+        {
+            var loadedCatalog = await Api.GetWebhookEventCatalogAsync();
+            if (version != identityVersion) return null;
+            catalog = loadedCatalog; permissionDenied = false;
+            var loadedSubscriptions = await Api.GetWebhookSubscriptionsAsync(subscriptionPage, PageSize);
+            if (version != identityVersion) return null;
+            subscriptions = loadedSubscriptions;
+            if (expandedId is { } id)
+            {
+                var loadedDetail = await Api.GetWebhookSubscriptionAsync(id);
+                if (version != identityVersion) return null;
+                detail = loadedDetail;
+                if (loadedDetail is null) expandedId = null;
+            }
+            var loadedDeliveries = await Api.GetWebhookDeliveriesAsync(appliedSearch with { Page = deliveryPage });
+            if (version != identityVersion) return null;
+            deliveries = loadedDeliveries;
+            return null;
+        }
+        catch (Exception ex) { return version == identityVersion ? Fail(ex) : null; }
+        finally { if (version == identityVersion) loading = false; }
+    }
+
+    // The message for a failed request. A 401 or 403 also leaves only the permission message on the page.
+    private string Fail(Exception ex)
+    {
+        var message = WebhookFormatting.ErrorMessage(ex);
+        if (WebhookFormatting.IsPermissionFailure(ex))
+        {
+            // Permission loss clears every restricted view and any one-time secret.
+            permissionDenied = true; error = message; success = null;
+            ClearSecret(); CancelBulk(); CloseForm(); CloseRotate();
+            catalog = null; subscriptions = null; deliveries = null; detail = null; expandedId = null; filterError = null;
+        }
+        return message;
+    }
+
+    private void OpenCreate()
+    {
+        rotating = null; editing = null; formOpen = true; formError = null; formConflict = false;
+        formName = string.Empty; formDescription = null; formUrl = string.Empty; formWorkflowKey = null; formConcurrency = 4;
+        formEvents.Clear();
+        pendingFocus = FocusTarget.Form;
+    }
+
+    private void CloseForm() { formOpen = false; editing = null; formError = null; formConflict = false; }
+
+    private void SetForm(WebhookSubscriptionDto subscription)
+    {
+        rotating = null; editing = subscription; formOpen = true; formError = null; formConflict = false;
+        formName = subscription.Name; formDescription = subscription.Description; formUrl = subscription.Destination.EndpointUrl;
+        formWorkflowKey = subscription.Destination.WorkflowKey; formConcurrency = subscription.MaxConcurrency;
+        formEvents.Clear(); foreach (var type in subscription.Destination.EventTypes) formEvents.Add(type);
+        pendingFocus = FocusTarget.Form;
+    }
+
+    private async Task OpenEditAsync(WebhookSubscriptionDto subscription)
+    {
+        if (busy) return;
+        var version = identityVersion;
+        busy = true; error = null;
+        try
+        {
+            var current = await Api.GetWebhookSubscriptionAsync(subscription.Id);
+            if (version != identityVersion) return;
+            if (current is not null && !WebhookFormatting.IsArchived(current.Subscription)) { SetForm(current.Subscription); return; }
+            // The list was out of date: show the current state, then say why the form did not open.
+            if (editing?.Id == subscription.Id) CloseForm();
+            var loadError = await LoadPageAsync(version);
+            if (version != identityVersion || permissionDenied) return;
+            error = WebhookFormatting.WithReloadFailure(
+                current is null ? "The subscription no longer exists." : $"{current.Subscription.Name} is archived and can no longer be edited.",
+                loadError);
+        }
+        catch (Exception ex) { if (version == identityVersion) error = Fail(ex); }
+        finally { if (version == identityVersion) busy = false; }
+    }
+
+    private async Task ReloadEditAsync() { if (editing is not null) await OpenEditAsync(editing); }
+
+    private void ToggleEvent(string type, bool selected) { if (selected) formEvents.Add(type); else formEvents.Remove(type); }
+
+    private async Task SaveAsync()
+    {
+        if (busy) return;
+        formError = WebhookFormatting.ValidateForm(formName, formUrl, formEvents, formConcurrency);
+        if (formError is not null) return;
+        var events = LifecycleEventTypes.Subscribable.Where(formEvents.Contains).ToArray();
+        var workflowKey = string.IsNullOrWhiteSpace(formWorkflowKey) ? null : formWorkflowKey.Trim();
+        var target = editing;
+        var version = identityVersion;
+        busy = true; error = success = null; formConflict = false;
+        try
+        {
+            string done;
+            if (target is null)
+            {
+                var created = await Api.CreateWebhookSubscriptionAsync(new CreateWebhookSubscriptionRequest(
+                    formName.Trim(), formDescription, formUrl.Trim(), events, workflowKey, formConcurrency));
+                // A secret issued to an earlier identity is never shown to the current one.
+                if (version != identityVersion) return;
+                Reveal(created);
+                CloseForm();
+                done = $"Created {created.Subscription.Name} paused. Save its secret, send a test event, then resume it.";
+                success = done;
+                // Show the secret now rather than after the reload; a failed reload leaves it on screen.
+                StateHasChanged();
+            }
+            else
+            {
+                var updated = await Api.UpdateWebhookSubscriptionAsync(target.Id, new UpdateWebhookSubscriptionRequest(
+                    formName.Trim(), formDescription, formUrl.Trim(), events, workflowKey, formConcurrency, target.Revision));
+                if (version != identityVersion) return;
+                CloseForm();
+                done = $"Saved {updated.Name}. A changed URL, event set, or family applies to events captured from now on (destination revision {updated.Destination.ConfigurationRevision}).";
+            }
+            var loadError = await LoadPageAsync(version);
+            if (version != identityVersion || permissionDenied) return;
+            success = done;
+            error = WebhookFormatting.WithReloadFailure(null, loadError);
+        }
+        catch (Exception ex)
+        {
+            if (version != identityVersion) return;
+            var message = Fail(ex);
+            if (permissionDenied) return;
+            if (target is not null && ex is WorkflowApiException { StatusCode: HttpStatusCode.Conflict })
+            {
+                // Someone saved first: the page shows their version while the form keeps these edits.
+                formConflict = true;
+                var loadError = await LoadPageAsync(version);
+                if (version != identityVersion || permissionDenied) return;
+                formError = WebhookFormatting.WithReloadFailure(WebhookFormatting.ActionFailure(ex, loadError is null), loadError)
+                    + " Your changes are kept; Load current revision replaces them with the saved subscription.";
+            }
+            else
+            {
+                formError = message;
+            }
+        }
+        finally { if (version == identityVersion) busy = false; }
+    }
+
+    private void OpenRotate(WebhookSubscriptionDto subscription)
+    {
+        formOpen = false; editing = null; formConflict = false; rotating = subscription; overlapSeconds = 3600; formError = null;
+        pendingFocus = FocusTarget.Rotate;
+    }
+
+    private void CloseRotate() { rotating = null; formError = null; }
+
+    private async Task RotateAsync()
+    {
+        if (busy || rotating is null) return;
+        if (overlapSeconds is < 0 or > 86400) { formError = "Overlap must be between 0 and 86400 seconds."; return; }
+        var target = rotating;
+        var version = identityVersion;
+        busy = true; error = success = formError = null;
+        try
+        {
+            var rotated = await Api.RotateWebhookSecretAsync(target.Id, new RotateWebhookSecretRequest(target.Revision, overlapSeconds));
+            if (version != identityVersion) return;
+            Reveal(rotated);
+            CloseRotate();
+            var done = $"Rotated the signing secret of {rotated.Subscription.Name}. Install it at the receiver now.";
+            success = done;
+            StateHasChanged();
+            var loadError = await LoadPageAsync(version);
+            if (version != identityVersion || permissionDenied) return;
+            success = done;
+            error = WebhookFormatting.WithReloadFailure(null, loadError);
+        }
+        catch (Exception ex)
+        {
+            if (version != identityVersion) return;
+            var message = Fail(ex);
+            if (permissionDenied) return;
+            if (ex is WorkflowApiException { StatusCode: HttpStatusCode.Conflict }) await ReloadAfterRotationConflictAsync(target, ex, version);
+            else formError = message;
+        }
+        finally { if (version == identityVersion) busy = false; }
+    }
+
+    // After a refused rotation the form takes the subscription's current revision, so a retry is not refused for the
+    // same stale one, and the page reloads. An archived or missing subscription closes the form.
+    private async Task ReloadAfterRotationConflictAsync(WebhookSubscriptionDto target, Exception conflict, int version)
+    {
+        string? reloadError = null;
+        try
+        {
+            var current = await Api.GetWebhookSubscriptionAsync(target.Id);
+            if (version != identityVersion) return;
+            if (rotating?.Id == target.Id)
+            {
+                if (current is null || WebhookFormatting.IsArchived(current.Subscription)) CloseRotate();
+                else rotating = current.Subscription;
+            }
+        }
+        catch (Exception ex)
+        {
+            if (version != identityVersion) return;
+            reloadError = Fail(ex);
+            if (permissionDenied) return;
+        }
+        var loadError = await LoadPageAsync(version);
+        if (version != identityVersion || permissionDenied) return;
+        reloadError ??= loadError;
+        var message = WebhookFormatting.WithReloadFailure(WebhookFormatting.ActionFailure(conflict, reloadError is null), reloadError);
+        if (rotating is null) error = message; else formError = message;
+    }
+
+    private Task PauseAsync(WebhookSubscriptionDto subscription) => RunAsync(async () =>
+    {
+        await Api.PauseWebhookSubscriptionAsync(subscription.Id);
+        return $"Paused {subscription.Name}. It stops matching new events and holds work already captured; resuming does not backfill the gap.";
+    });
+
+    private Task ResumeAsync(WebhookSubscriptionDto subscription) => RunAsync(async () =>
+    {
+        await Api.ResumeWebhookSubscriptionAsync(subscription.Id, subscription.Revision);
+        return $"Resumed {subscription.Name}. Events from the paused period are not backfilled.";
+    });
+
+    private Task SendTestAsync(WebhookSubscriptionDto subscription) => RunAsync(async () =>
+    {
+        var test = await Api.SendWebhookTestAsync(subscription.Id);
+        return $"Queued a signed test event for {subscription.Name}. It is delivered even while paused (event {test.EventId:D}).";
+    });
+
+    private Task RevokePreviousAsync(WebhookSubscriptionDto subscription) => RunAsync(async () =>
+    {
+        await Api.RevokePreviousWebhookSecretAsync(subscription.Id, subscription.Revision);
+        return $"Revoked the previous signing key of {subscription.Name}.";
+    }, $"Stop signing with the previous key of {subscription.Name} now?");
+
+    private Task ArchiveAsync(WebhookSubscriptionDto subscription) => RunAsync(async () =>
+    {
+        await Api.ArchiveWebhookSubscriptionAsync(subscription.Id, subscription.Revision);
+        return $"Archived {subscription.Name}. Outstanding deliveries are being discarded.";
+    }, $"Archive {subscription.Name}? Archiving is irreversible: outstanding deliveries are discarded and its keys retire. A request already in flight may still arrive.");
+
+    private async Task ToggleDetailsAsync(WebhookSubscriptionDto subscription)
+    {
+        if (busy) return;
+        if (expandedId == subscription.Id) { expandedId = null; detail = null; return; }
+        var version = identityVersion;
+        busy = true; error = null;
+        try
+        {
+            var loaded = await Api.GetWebhookSubscriptionAsync(subscription.Id);
+            if (version != identityVersion) return;
+            detail = loaded;
+            expandedId = loaded is null ? null : subscription.Id;
+            if (loaded is null) error = "The subscription no longer exists.";
+        }
+        catch (Exception ex) { if (version == identityVersion) error = Fail(ex); }
+        finally { if (version == identityVersion) busy = false; }
+    }
+
+    private async Task ShowDeliveriesAsync(WebhookSubscriptionDto subscription)
+    {
+        if (busy) return;
+        filterSubscription = subscription.Id.ToString("D");
+        await ApplyDeliveryFiltersAsync();
+    }
+
+    private async Task ApplyDeliveryFiltersAsync()
+    {
+        if (busy) return;
+        filterError = null;
+        if (!TryBuildSearch(out var search)) return;
+        CancelBulk();
+        await LoadDeliveriesAsync(search, 1);
+    }
+
+    private async Task ClearDeliveryFiltersAsync()
+    {
+        if (busy) return;
+        filterSubscription = filterState = filterEventType = string.Empty;
+        filterFailureCode = filterInstance = filterWorkflowKey = filterFrom = filterTo = null;
+        filterGeneration += 2; filterError = null;
+        CancelBulk();
+        await LoadDeliveriesAsync(new WebhookDeliverySearch(PageSize: PageSize), 1);
+    }
+
+    private bool TryBuildSearch(out WebhookDeliverySearch search)
+    {
+        search = new WebhookDeliverySearch(PageSize: PageSize);
+        Guid? subscriptionId = Guid.TryParse(filterSubscription, out var parsedSubscription) ? parsedSubscription : null;
+        long? instanceId = null;
+        if (!string.IsNullOrWhiteSpace(filterInstance))
+        {
+            if (!long.TryParse(filterInstance.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out var parsed) || parsed <= 0)
+            { filterError = "Instance ID must be a positive whole number."; return false; }
+            instanceId = parsed;
+        }
+        if (!TryUtc(filterFrom, out var from) || !TryUtc(filterTo, out var to)) { filterError = "From and To must be valid dates and times."; return false; }
+        if (from is not null && to is not null && from >= to) { filterError = "From must be earlier than To."; return false; }
+        search = new WebhookDeliverySearch(
+            subscriptionId, null, NullIfBlank(filterEventType), NullIfBlank(filterWorkflowKey), instanceId, null,
+            NullIfBlank(filterState), NullIfBlank(filterFailureCode), from, to, 1, PageSize);
+        return true;
+    }
+
+    // A datetime-local value in this page's local time, as the UTC instant the API filters by. Empty text is no bound.
+    private static bool TryUtc(string? text, out DateTimeOffset? value)
+    {
+        value = null;
+        if (DateTimeLocalText.Parse(text) is not { } local) return true;
+        try
+        {
+            value = new DateTimeOffset(DateTime.SpecifyKind(local, DateTimeKind.Local)).ToUniversalTime();
+            return true;
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            // The first or last representable day, shifted by the local offset, falls outside the calendar.
+            return false;
+        }
+    }
+
+    // Loads one page of deliveries. A search becomes the applied one only when the API accepts it, so the list, its
+    // paging, and bulk actions always agree; a rejected filter is reported beside the filters.
+    private async Task LoadDeliveriesAsync(WebhookDeliverySearch search, int page)
+    {
+        var version = identityVersion;
+        busy = loadingDeliveries = true; error = null;
+        try
+        {
+            var loaded = await Api.GetWebhookDeliveriesAsync(search with { Page = page });
+            if (version != identityVersion) return;
+            appliedSearch = search; deliveryPage = page; deliveries = loaded;
+        }
+        catch (Exception ex)
+        {
+            if (version != identityVersion) return;
+            var message = Fail(ex);
+            if (permissionDenied) return;
+            if (ex is WorkflowApiException { StatusCode: HttpStatusCode.BadRequest }) filterError = message; else error = message;
+        }
+        finally { if (version == identityVersion) busy = loadingDeliveries = false; }
+    }
+
+    private async Task ChangeSubscriptionPageAsync(int delta)
+    {
+        if (busy) return;
+        subscriptionPage = Math.Max(1, (subscriptions?.Page ?? subscriptionPage) + delta);
+        await RefreshAsync();
+    }
+
+    private async Task ChangeDeliveryPageAsync(int delta)
+    {
+        if (busy) return;
+        await LoadDeliveriesAsync(appliedSearch, Math.Max(1, deliveryPage + delta));
+    }
+
+    private Task RetryDeliveryAsync(WebhookDeliveryDto delivery) => RunAsync(async () =>
+    {
+        await Api.RetryWebhookDeliveryAsync(delivery.Id, delivery.Revision);
+        return "Queued the delivery in a new retry generation with its original event and destination.";
+    });
+
+    private Task DiscardDeliveryAsync(WebhookDeliveryDto delivery) => RunAsync(async () =>
+    {
+        await Api.DiscardWebhookDeliveryAsync(delivery.Id, delivery.Revision);
+        return "Discarded the delivery.";
+    }, "Discard this delivery? It will never be sent.");
+
+    private Task PrepareBulkAsync(string action)
+    {
+        var subscription = BulkSubscription;
+        if (subscription is null) return Task.CompletedTask;
+        return CountBulkAsync(action, subscription, new WebhookBulkDeliveryRequest(
+            appliedSearch.EventType, appliedSearch.WorkflowKey, appliedSearch.InstanceId, null, appliedSearch.FailureCode, appliedSearch.From, appliedSearch.To),
+            revision: null, ignoresState: appliedSearch.State is not null);
+    }
+
+    // Counted afresh like any bulk discard. The revision's outstanding total also counts deliveries being sent now,
+    // which discard skips.
+    private Task PrepareRevisionDiscardAsync(WebhookSubscriptionDto subscription, WebhookDestinationRevisionDto revision) =>
+        CountBulkAsync(BulkDiscard, subscription,
+            new WebhookBulkDeliveryRequest(null, null, null, revision.Destination.RevisionId, null, null, null),
+            revision.Destination.ConfigurationRevision, ignoresState: false);
+
+    // The confirmation states how many deliveries the bulk route would select: failed ones for a retry; pending,
+    // scheduled, and failed ones for a discard.
+    private async Task CountBulkAsync(string action, WebhookSubscriptionDto subscription, WebhookBulkDeliveryRequest request, int? revision, bool ignoresState)
+    {
+        if (busy) return;
+        var version = identityVersion;
+        busy = true; error = null;
+        CancelBulk();
+        try
+        {
+            var search = new WebhookDeliverySearch(subscription.Id, null, request.EventType, request.WorkflowKey, request.InstanceId,
+                request.RevisionId, null, request.FailureCode, request.From, request.To, 1, 1);
+            string[] states = action == BulkRetry
+                ? [WebhookDeliveryStates.Failed]
+                : [WebhookDeliveryStates.Pending, WebhookDeliveryStates.RetryScheduled, WebhookDeliveryStates.Failed];
+            long count = 0;
+            foreach (var state in states)
+            {
+                var counted = await Api.GetWebhookDeliveriesAsync(search with { State = state });
+                if (version != identityVersion) return;
+                count += counted.TotalCount;
+            }
+            bulkAction = action; bulkSubscription = subscription; bulkRequest = request; bulkCount = count;
+            bulkRevision = revision; bulkIgnoresState = ignoresState;
+            pendingFocus = FocusTarget.BulkConfirmation;
+        }
+        catch (Exception ex) { if (version == identityVersion) error = Fail(ex); }
+        finally { if (version == identityVersion) busy = false; }
+    }
+
+    private void CancelBulk() { bulkAction = null; bulkSubscription = null; bulkRequest = null; bulkCount = 0; bulkRevision = null; bulkIgnoresState = false; }
+
+    private async Task RunBulkAsync()
+    {
+        if (busy || bulkAction is null || bulkSubscription is null || bulkRequest is null) return;
+        var action = bulkAction; var subscription = bulkSubscription; var request = bulkRequest;
+        CancelBulk();
+        await RunAsync(async () =>
+        {
+            var result = action == BulkRetry
+                ? await Api.BulkRetryWebhookDeliveriesAsync(subscription.Id, request)
+                : await Api.BulkDiscardWebhookDeliveriesAsync(subscription.Id, request);
+            return $"{(action == BulkRetry ? "Retried" : "Discarded")} {result.Changed:N0} of {result.Matched:N0} matching deliveries"
+                + (result.Skipped > 0 ? $"; skipped {result.Skipped:N0} being sent now" : string.Empty)
+                + (result.HasMore ? ". More match: repeat the action to continue." : ".");
+        });
+    }
+
+    // Runs one action, then reloads the page so its result is reported against the current state. The action's own
+    // message survives that reload; a refused (409) request is reported and never replayed.
+    private async Task RunAsync(Func<Task<string>> action, string? confirmation = null)
+    {
+        if (busy) return;
+        var version = identityVersion;
+        busy = true;
+        try
+        {
+            if (confirmation is not null && !await ConfirmAsync(confirmation, version)) return;
+            error = success = null;
+            string? done = null;
+            Exception? failure = null;
+            try { done = await action(); }
+            catch (Exception ex)
+            {
+                if (version != identityVersion) return;
+                if (WebhookFormatting.IsPermissionFailure(ex)) { Fail(ex); return; }
+                failure = ex;
+            }
+            if (version != identityVersion) return;
+            var loadError = await LoadPageAsync(version);
+            if (version != identityVersion || permissionDenied) return;
+            success = done;
+            error = WebhookFormatting.WithReloadFailure(failure is null ? null : WebhookFormatting.ActionFailure(failure, loadError is null), loadError);
+        }
+        finally { if (version == identityVersion) busy = false; }
+    }
+
+    // The browser's confirmation dialog; one it cannot show cancels the action.
+    private async Task<bool> ConfirmAsync(string message, int version)
+    {
+        try { return await JS.InvokeAsync<bool>("confirm", message) && version == identityVersion; }
+        catch (Exception ex)
+        {
+            if (version == identityVersion) error = ex.Message;
+            return false;
+        }
+    }
+
+    private void Reveal(WebhookSecretResultDto result)
+    {
+        secretSubscription = result.Subscription; secretKeyId = result.KeyId; oneTimeSecret = result.Secret;
+        copyMessage = null; copyFailed = false;
+        pendingFocus = FocusTarget.Secret;
+    }
+
+    private void ClearSecret() { secretSubscription = null; secretKeyId = null; oneTimeSecret = null; copyMessage = null; copyFailed = false; }
+
+    // A browser that refuses the clipboard, for example outside a secure context, leaves the secret on screen.
+    private async Task CopySecretAsync()
+    {
+        var secret = oneTimeSecret;
+        if (string.IsNullOrEmpty(secret)) return;
+        bool copied;
+        try
+        {
+            await JS.InvokeVoidAsync("navigator.clipboard.writeText", secret);
+            copied = true;
+        }
+        catch (Exception)
+        {
+            copied = false;
+        }
+        if (oneTimeSecret != secret) return;
+        copyFailed = !copied;
+        copyMessage = copied ? "Copied the signing secret." : "The browser did not copy the secret. Select it above and copy it manually.";
+    }
+
+    private void ClearAll()
+    {
+        ClearSecret(); CancelBulk(); CloseForm(); CloseRotate();
+        catalog = null; subscriptions = null; deliveries = null; detail = null; expandedId = null;
+        error = success = filterError = null; subscriptionPage = deliveryPage = 1;
+        loading = loadingDeliveries = busy = permissionDenied = false;
+        pendingFocus = FocusTarget.None;
+    }
+
+    private void OnTokenChanged() => _ = InvokeAsync(async () =>
+    {
+        if (disposed) return;
+        identityVersion++;
+        ClearAll();
+        StateHasChanged();
+        await RefreshAsync();
+        if (!disposed) StateHasChanged();
+    });
+
+    private static string EventSummary(WebhookDestinationDto destination) =>
+        (destination.EventTypes.Count == LifecycleEventTypes.Subscribable.Count ? "All events" : string.Join(", ", destination.EventTypes.Select(WebhookFormatting.EventTypeLabel)))
+        + (destination.WorkflowKey is { } key ? $" · {key}" : " · every family");
+
+    private static string? NullIfBlank(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    public void Dispose()
+    {
+        disposed = true;
+        identityVersion++;
+        Token.Changed -= OnTokenChanged;
+        ClearSecret();
+    }
+}

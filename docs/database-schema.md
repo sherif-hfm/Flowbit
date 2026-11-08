@@ -25,6 +25,7 @@ Table names below omit the `flowbit.` qualifier. The page reflects the current m
 - [Settings](#settings)
 - [Business calendars](#business-calendars)
 - [Retention](#retention)
+- [Lifecycle webhooks](#lifecycle-webhooks)
 - [Local identity](#local-identity)
 - [Database objects outside tables](#database-objects-outside-tables)
 - [Inspect a live database](#inspect-a-live-database)
@@ -32,7 +33,7 @@ Table names below omit the `flowbit.` qualifier. The page reflects the current m
 
 ## Conventions
 
-- **Schema.** All 58 tables, the EF `__EFMigrationsHistory` table, sequences, triggers, and functions live in `flowbit`. The `citext` extension, used for case-insensitive keys and user names, is installed in `public`.
+- **Schema.** All 68 tables, the EF `__EFMigrationsHistory` table, sequences, triggers, and functions live in `flowbit`. The `citext` extension, used for case-insensitive keys and user names, is installed in `public`.
 - **Identifiers.** Most tables use a `bigint` identity `Id`. Natural or composite primary keys are called out per table.
 - **Authored IDs are not foreign keys.** `NodeId`, `FlowId`, `SequenceFlowId`, `SourceNodeId`, `GatewayNodeId`, and similar integer columns refer to elements inside `workflow_definitions.Definition` JSON. Read them together with the row's `WorkflowDefinitionId`.
 - **Snapshots.** Runtime rows copy what they need from the definition (node names, types, external IDs, roles, conditions) when they are created, so open work keeps the rules it started with. Only an audited version change updates them.
@@ -99,6 +100,16 @@ Table names below omit the `flowbit.` qualifier. The page reflects the current m
 | [`business_calendars`](#business_calendars) | [Business calendars](#business-calendars) | Named working weeks, holidays, and time zones that durations can count in. |
 | [`retention_policies`](#retention_policies) | [Retention](#retention) | Retention period per history/audit category. |
 | [`retention_coordinator`](#retention_coordinator) | [Retention](#retention) | Singleton lease and run state for retention cleanup. |
+| [`lifecycle_event_capture_state`](#lifecycle_event_capture_state) | [Lifecycle webhooks](#lifecycle-webhooks) | The singleton database switch every capture trigger reads. |
+| [`lifecycle_events`](#lifecycle_events) | [Lifecycle webhooks](#lifecycle-webhooks) | Committed lifecycle transitions that matched a target, with their exact signed body bytes. |
+| [`webhook_subscriptions`](#webhook_subscriptions) | [Lifecycle webhooks](#lifecycle-webhooks) | Webhook subscription metadata, state, and management revision. |
+| [`webhook_subscription_revisions`](#webhook_subscription_revisions) | [Lifecycle webhooks](#lifecycle-webhooks) | Immutable destination configurations that captures and deliveries keep. |
+| [`webhook_subscription_dispatch_state`](#webhook_subscription_dispatch_state) | [Lifecycle webhooks](#lifecycle-webhooks) | Receiver health, backoff, and acquisition fairness per subscription. |
+| [`webhook_signing_keys`](#webhook_signing_keys) | [Lifecycle webhooks](#lifecycle-webhooks) | Protected signing secrets and their rotation state. |
+| [`webhook_deliveries`](#webhook_deliveries) | [Lifecycle webhooks](#lifecycle-webhooks) | One event for one subscription: queue state, lease fence, and retry budget. |
+| [`webhook_delivery_attempts`](#webhook_delivery_attempts) | [Lifecycle webhooks](#lifecycle-webhooks) | One acquired attempt of a delivery and its safe outcome. |
+| [`webhook_management_audit`](#webhook_management_audit) | [Lifecycle webhooks](#lifecycle-webhooks) | Append-only audit of webhook management and automatic pauses. |
+| [`webhook_data_protection_keys`](#webhook_data_protection_keys) | [Lifecycle webhooks](#lifecycle-webhooks) | The certificate-wrapped Data Protection key ring that protects signing secrets. |
 | [`local_users`](#local_users) | [Local identity](#local-identity) | Local-mode user directory. |
 | [`user_attribute_definitions`](#user_attribute_definitions) | [Local identity](#local-identity) | Typed custom user fields for local users. |
 | [`local_refresh_sessions`](#local_refresh_sessions) | [Local identity](#local-identity) | Rotating, hashed refresh-token sessions for local users. |
@@ -131,6 +142,8 @@ Some ID columns intentionally have **no foreign key**, either because the refere
 | `shared_variable_revisions.RequestId` | `shared_variable_requests.RequestId` |
 | `WorkflowKey` in `workflow_business_key_scopes`, `user_delegations`, `workflow_delegation_policies`, and batch headers | `workflow_definitions.WorkflowKey` (not unique, so it cannot be a foreign-key target) |
 | `local_users.AttributesJson` keys | `user_attribute_definitions.Key` |
+| `lifecycle_events.InstanceId`, `UserTaskId`, `SourceId`, `WorkflowDefinitionId`; `webhook_deliveries.InstanceId` | Runtime rows, kept as immutable references so delivery survives runtime retention and capture never waits on runtime locks |
+| `lifecycle_events.TargetRevisionIds` | `webhook_subscription_revisions.Id`; revisions are retained indefinitely because an uncommitted capture holds no fence |
 
 ## Workflow definitions
 
@@ -1581,7 +1594,7 @@ These tables have no foreign keys, so this area has no relationship diagram.
 
 ### `retention_policies`
 
-One row per retention category: `workflowHistory`, `variableHistory`, `nodeActivity`, `administrativeAudits`, `sharedVariableHistory`, `completedJobs`, and `resolvedIncidents`.
+One row per retention category: `workflowHistory`, `variableHistory`, `nodeActivity`, `administrativeAudits`, `sharedVariableHistory`, `completedJobs`, `resolvedIncidents`, `webhookDeliveries`, and `lifecycleEvents`.
 
 | Column | Meaning |
 | --- | --- |
@@ -1603,6 +1616,142 @@ One durable coordinator row holding the cleanup lease and two bounded run docume
 | `LeaseOwner`, `LeaseGeneration`, `LeaseExpiresAt` | Worker lease for cleanup. |
 | `NextScheduledAt`, `WorkerLastSeenAt` | Scheduling and Worker liveness. |
 | `CurrentRunJson`, `LastRunJson` | Progress and bookmarks of the current run, and the last run's result. |
+
+- **Primary key:** `Id`
+- **References:** none
+- **Referenced by:** none
+
+## Lifecycle webhooks
+
+Transactional capture of lifecycle events and the Worker's webhook delivery queue. Capture triggers on `workflow_instances`, `user_tasks`, `workflow_incidents`, and `user_delegations` write `lifecycle_events` at commit; nothing in this area holds a foreign key to runtime rows. See [deployment](deployment.md#lifecycle-webhooks) and the [runtime reference](../Flowbit/README.md#lifecycle-webhooks).
+
+```mermaid
+erDiagram
+    webhook_subscriptions ||--o{ webhook_subscription_revisions : "configuration history"
+    webhook_subscriptions }o--|| webhook_subscription_revisions : "current revision"
+    webhook_subscriptions ||--|| webhook_subscription_dispatch_state : "receiver health"
+    webhook_subscriptions ||--o{ webhook_signing_keys : "signs with"
+    webhook_subscriptions ||--o{ webhook_deliveries : "delivers"
+    webhook_subscription_revisions ||--o{ webhook_deliveries : "captured destination"
+    lifecycle_events ||--o{ webhook_deliveries : "fanned out to"
+    webhook_deliveries ||--o{ webhook_delivery_attempts : "attempts"
+```
+
+- **Body bound.** Every string a capture function copies into a body is bounded by a column limit, never truncated. Workflow keys are at most 300 characters in every source table and in `lifecycle_events`, and so are task external IDs (`user_tasks.NodeExternalId`). An incident's node external ID comes from the definition JSON, which does not limit it, so it is reported as JSON `null` when it is not a string or is longer than the 300 characters that tokens and tasks can hold. The other fields are numbers, UUIDs, timestamps, and fixed status strings. Even if every character escapes to six bytes, a body stays under 5 KiB, far below the 16 KiB `CK_lifecycle_events_body` check; a body over that check would fail the source commit.
+- **Incident nodes.** An `incident.opened` body reports a node only when an authored node applies. Its capture function reads the source job's `Kind`: version-change and variable-update batch jobs name the initial start event only to anchor their row, so their incidents report null `nodeId` and `nodeExternalId`, as does a `NodeId` that is not positive. An administrative batch job reports the user task whose positions its batch acts on, and every other job kind reports its own node. `LifecycleEventCaptureTests` classifies every job kind, so a new kind must be classified there and, when no node applies, listed in `capture_workflow_incident_lifecycle()`.
+- **Cleanup.** [Retention](#retention) runs the `webhookDeliveries` category before `lifecycleEvents`; both keep rows forever by default. Delivery cleanup ages `succeeded` and `discarded` deliveries from `SettledAt` and deletes each delivery's `webhook_delivery_attempts` rows before the delivery. Pending, scheduled, leased, and failed deliveries are never deleted, so a failure must be retried or discarded first. Event cleanup ages events from `OccurredAt` and deletes one only when `FanoutCompletedAt` is set and no delivery references it. Both skip locked rows instead of waiting. Subscriptions, revisions, dispatch state, management audit, signing-key rows, and the key ring are kept; the Worker only clears the `ProtectedSecret` of a key that is no longer current or previous once its `RemoveSecretNotBefore` has passed. Webhook cleanup never touches runtime rows, `HistoryPrunedAt`, or reactivation eligibility.
+
+### `lifecycle_event_capture_state`
+
+One row (`Id = 1`) with `Enabled`, `ChangedAt`, and `ChangedBy`. Change it only with `flowbit.set_lifecycle_event_capture(enabled, operator)`, which also audits the change. The migration seeds it disabled.
+
+- **Primary key:** `Id`
+- **References:** none
+- **Referenced by:** none
+
+### `lifecycle_events`
+
+One committed transition that matched at least one active target when it committed. A transition matching nothing writes no row.
+
+| Column | Meaning |
+| --- | --- |
+| `Id` | UUIDv7 event id, sent as `webhook-id`. |
+| `Type`, `SchemaVersion`, `OccurredAt`, `RecordedAt` | Event type, body schema version, transition time from the source row, and capture time. |
+| `SourceTable`, `SourceId` | The row change that produced the event (`SourceId` is null for test events). |
+| `WorkflowKey`, `WorkflowDefinitionId`, `WorkflowVersion`, `InstanceId`, `UserTaskId` | Indexed copies of envelope fields; immutable references without foreign keys. |
+| `Body` | The exact compact UTF-8 JSON bytes, built by the trigger and reused for every attempt; at most 16 KiB. |
+| `RecipientUserIds` | Internal canonical recipients (the new assignee, the effective assignee at activation, or the delegate) for the planned notification center; never sent externally. |
+| `TargetRevisionIds` | Subscription revisions captured at commit; no foreign key. |
+| `FanoutCompletedAt` | When the Worker created this event's deliveries; null while pending. |
+
+- **Primary key:** `Id`
+- **References:** none
+- **Referenced by:** `webhook_deliveries.EventId` (`RESTRICT`)
+
+### `webhook_subscriptions`
+
+| Column | Meaning |
+| --- | --- |
+| `Id`, `Name`, `Description` | UUID id and display metadata. |
+| `CurrentRevisionId` | The destination revision that new captures use. |
+| `State`, `PauseReason` | `active`, `paused`, or `archived`; while paused, `administrator`, `receiverGone`, or `receiverUnavailable`. |
+| `MaxConcurrency` | Requests in flight to this receiver, 1–16. |
+| `Revision` | Optimistic management revision. |
+| `CreatedAt`, `CreatedBy`, `UpdatedAt`, `UpdatedBy`, `ArchivedAt`, `ArchivedBy`, `ArchiveSettledAt` | Attribution; `ArchiveSettledAt` marks the end of archive discarding. |
+
+- **Primary key:** `Id`
+- **References:** `CurrentRevisionId` → `webhook_subscription_revisions.Id` (`RESTRICT`)
+- **Referenced by:** revisions, dispatch state, signing keys, and deliveries (`RESTRICT`)
+- **Unique:** (`CurrentRevisionId`) where `State = 'active'`
+
+### `webhook_subscription_revisions`
+
+Immutable delivery configuration: `ConfigurationRevision` (unique per subscription), `EndpointUrl` (confidential; may carry a receiver token), `EventTypes` (`text[]`, nonempty, GIN-indexed for the triggers' match), optional exact `WorkflowKey`, and creation attribution. Retained indefinitely.
+
+- **Primary key:** `Id`
+- **References:** `SubscriptionId` → `webhook_subscriptions.Id` (`RESTRICT`)
+- **Referenced by:** `webhook_subscriptions.CurrentRevisionId`, `webhook_deliveries.RevisionId` (`RESTRICT`)
+- **Unique:** (`SubscriptionId`, `ConfigurationRevision`)
+
+### `webhook_subscription_dispatch_state`
+
+One row per subscription, written by the Worker and by resume so dispatch never touches the management revision: `ConsecutiveFailures`, `BackoffStartedAt`, `BackoffUntil`, `BackoffSeconds`, `LastSuccessAt`, `LastFailureAt`, `LastOutcome`, `LastHttpStatus`, `LastOutcomeAt`, and `LastAcquiredAt`, which orders acquisition fairly.
+
+- **Primary key:** `SubscriptionId` → `webhook_subscriptions.Id` (`RESTRICT`)
+- **Referenced by:** none
+
+### `webhook_signing_keys`
+
+| Column | Meaning |
+| --- | --- |
+| `Id`, `SubscriptionId` | UUID key id and owner. |
+| `ProtectedSecret` | Data Protection payload of the 32-byte secret; cleared (with `SecretRemovedAt`) after the key retires and `RemoveSecretNotBefore` passes. |
+| `Status` | `current`, `previous` (signs until `OverlapExpiresAt`), `revoked`, `expired`, or `retired`. Partial unique indexes allow one current and one previous key per subscription. |
+| `CreatedAt`, `CreatedBy`, `RevokedAt`, `RevokedBy`, `RetiredAt` | Attribution, kept after removal as audit metadata. |
+
+- **Primary key:** `Id`
+- **References:** `SubscriptionId` → `webhook_subscriptions.Id` (`RESTRICT`)
+- **Referenced by:** none
+- **Unique:** (`SubscriptionId`) where `Status = 'current'` (`IX_webhook_signing_keys_current`); (`SubscriptionId`) where `Status = 'previous'` (`IX_webhook_signing_keys_previous`)
+
+### `webhook_deliveries`
+
+| Column | Meaning |
+| --- | --- |
+| `Id`, `EventId`, `SubscriptionId`, `RevisionId` | Delivery id, its event, and the destination revision captured with the event. `(EventId, SubscriptionId)` is unique. |
+| `IsTest`, `EventType`, `WorkflowKey`, `InstanceId`, `OccurredAt` | Copies used by filters and ordering. |
+| `State` | `pending`, `retryScheduled`, `delivering`, `succeeded`, `failed`, or `discarded`; `SettledAt` is set exactly for succeeded and discarded. |
+| `DueAt` | When the delivery may next be acquired. |
+| `RetryGeneration`, `GenerationStartedAt`, `DeadlineAt`, `GenerationAttempts`, `LifetimeAttempts` | Retry budget: 12 send intents within 72 hours of the generation's first send. |
+| `LeaseOwner`, `LeaseToken`, `LeaseGeneration`, `LeaseExpiresAt`, `LeasedFromState` | Lease fence, all set only while `delivering`. |
+| `LastOutcome`, `LastHttpStatus`, `FailureCode`, `LastAttemptAt` | Safe outcome codes; `failed` requires a failure code. |
+| `Revision`, `CreatedAt`, `UpdatedAt` | Optimistic revision for retry and discard. |
+
+- **Primary key:** `Id`
+- **References:** `EventId` → `lifecycle_events.Id`, `SubscriptionId` → `webhook_subscriptions.Id`, `RevisionId` → `webhook_subscription_revisions.Id` (all `RESTRICT`)
+- **Referenced by:** `webhook_delivery_attempts.DeliveryId` (`RESTRICT`)
+- **Unique:** (`EventId`, `SubscriptionId`)
+
+### `webhook_delivery_attempts`
+
+One acquired attempt: `AttemptNumber` (unique per delivery), `RetryGeneration`, `LeaseGeneration`, `SigningKeyIds` (`uuid[]`), `AcquiredAt`, `SendIntentAt` (null when released before sending), `CompletedAt`, `Outcome`, `HttpStatus`, and `DurationMilliseconds`. Response bodies are never stored.
+
+- **Primary key:** `Id`
+- **References:** `DeliveryId` → `webhook_deliveries.Id` (`RESTRICT`)
+- **Referenced by:** none
+- **Unique:** (`DeliveryId`, `AttemptNumber`)
+
+### `webhook_management_audit`
+
+Append-only `Operation`, canonical `Actor` (an administrator or `system`), optional `SubscriptionId` and `DeliveryId`, `OccurredAt`, and bounded `ChangesJson`. It never holds keys, signatures, payloads, URL paths or queries, or remote error text. Kept indefinitely in this release.
+
+- **Primary key:** `Id`
+- **References:** none
+- **Referenced by:** none
+
+### `webhook_data_protection_keys`
+
+The `Flowbit.Webhooks` Data Protection key ring: `FriendlyName` and `Xml`, each key wrapped with the configured certificate. Back it up with the certificate; see [signing keys and the key ring](deployment.md#signing-keys-and-the-key-ring).
 
 - **Primary key:** `Id`
 - **References:** none
@@ -1692,6 +1841,13 @@ Migrations also create these objects with raw SQL. They are part of the schema c
 | `IX_iv_current_name_root_string_ci_instance`, `IX_iv_current_name_root_number_instance` | Expression indexes on `instance_variable_current_values` | Case-insensitive root-string and numeric lookups for variable search. |
 | `IX_user_tasks_AssigneeLower_Status_UpdatedAt_Id`, `IX_node_executions_*_Lower_*` | Expression indexes | Case-insensitive actor and external-ID lookups. |
 | `UX_multi_instance_executions_ActiveTokenNode` | Partial unique index | At most one active multi-instance execution per token and node. |
+| `TR_workflow_instances_lifecycle_insert`, `TR_workflow_instances_lifecycle_status` → `capture_workflow_instance_lifecycle()` | Deferred constraint triggers on `workflow_instances` (`AFTER INSERT`; `AFTER UPDATE OF "Status"` when it changes) | Record `instance.*` events at commit. |
+| `TR_user_tasks_lifecycle_insert`, `TR_user_tasks_lifecycle_update` → `capture_user_task_lifecycle()` | Deferred constraint triggers on `user_tasks` (`AFTER INSERT` unless pending without an assignee; `AFTER UPDATE OF "Status", "Assignee"` when status or the case-insensitive assignee changes) | Record `task.*` events at commit. |
+| `TR_workflow_incidents_lifecycle_insert` → `capture_workflow_incident_lifecycle()` | Deferred constraint trigger on `workflow_incidents` (`AFTER INSERT` of an open incident) | Records `incident.opened`, reading the source job's kind and the node's external ID under the [incident node rules](#lifecycle-webhooks). |
+| `TR_user_delegations_lifecycle_insert` → `capture_user_delegation_lifecycle()` | Deferred constraint trigger on `user_delegations` (`AFTER INSERT`) | Records `delegation.granted`. |
+| `lifecycle_capture_wanted()`, `lifecycle_event_targets()`, `record_lifecycle_event()`, `lifecycle_event_timestamp()`, `lifecycle_json_text()` | Functions | The capture gate (switch, `flowbit.lifecycle_events` setting, any matching target), target matching, and canonical body construction. A new lifecycle status or source table must update these and the capture functions. |
+| `uuid_v7()` | Function | Time-ordered UUIDv7 event and delivery ids; PostgreSQL 18 adds a built-in. |
+| `set_lifecycle_event_capture(boolean, text)`, `record_webhook_test_event(uuid)` | Functions | The audited capture switch, and the signed test event queued for one subscription. |
 
 The former shared-variable conditional tables (`shared_variable_wakes`, `shared_variable_wake_deliveries`, `shared_variable_wake_incidents`, and `workflow_definition_shared_variable_dependencies`) were dropped by the guarded `RemoveSharedVariableConditionalWakes` migration and no longer exist.
 
@@ -1715,7 +1871,7 @@ SELECT c.conrelid::regclass AS child_table,
  ORDER BY 1, 2;
 ```
 
-A database migrated to the current release has 55 `flowbit` tables (plus `__EFMigrationsHistory`) and 112 foreign keys.
+A database migrated to the current release has 68 `flowbit` tables (plus `__EFMigrationsHistory`) and 130 foreign keys.
 
 ## Keeping this page current
 

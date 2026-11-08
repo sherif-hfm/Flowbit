@@ -82,7 +82,7 @@ Other items are not ranked yet.
 
 | ID | Item | Effort | Depends on | Status |
 | --- | --- | --- | --- | --- |
-| [INT-01](int-01-outbound-lifecycle-webhooks.md) | Outbound lifecycle webhooks | M | None | Not started |
+| [INT-01](int-01-outbound-lifecycle-webhooks.md) | Outbound lifecycle webhooks | L | None | In progress |
 
 ## Flowbit.Ui and human work
 

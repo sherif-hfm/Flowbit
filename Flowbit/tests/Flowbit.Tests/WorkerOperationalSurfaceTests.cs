@@ -13,6 +13,7 @@ using WorkerOptions = FlowbitWorker::Flowbit.Worker.WorkerOptions;
 using WorkerOperationalEndpoints = FlowbitWorker::Flowbit.Worker.WorkerOperationalEndpoints;
 using WorkerReadinessHealthCheck = FlowbitWorker::Flowbit.Worker.WorkerReadinessHealthCheck;
 using WorkerTelemetry = FlowbitWorker::Flowbit.Worker.WorkerTelemetry;
+using WebhookTelemetry = FlowbitWorker::Flowbit.Worker.WebhookTelemetry;
 
 namespace Flowbit.Tests;
 
@@ -26,6 +27,11 @@ public sealed class WorkerOperationalSurfaceTests
         builder.WebHost.UseTestServer();
         var telemetry = new WorkerTelemetry();
         builder.Services.AddSingleton(telemetry);
+        using var webhooks = new WebhookTelemetry(TimeProvider.System);
+        webhooks.RecordAttempt(
+            new WebhookSendOutcome("http_retryable", 503, null, 120),
+            new WebhookFinalizeResult(true, "retryScheduled", false));
+        builder.Services.AddSingleton(webhooks);
         builder.Services.AddHealthChecks()
             .AddCheck(
                 "self",
@@ -81,6 +87,9 @@ public sealed class WorkerOperationalSurfaceTests
             "flowbit_worker_shared_wake",
             metrics,
             StringComparison.Ordinal);
+        Assert.Contains("flowbit_webhooks_attempts_total{outcome=\"http_retryable\"} 1", metrics, StringComparison.Ordinal);
+        Assert.Contains("flowbit_webhooks_queue_depth{state=\"failed\"} 0", metrics, StringComparison.Ordinal);
+        Assert.Contains("flowbit_webhooks_send_duration_seconds_sum 0.12", metrics, StringComparison.Ordinal);
     }
 
     [Fact]

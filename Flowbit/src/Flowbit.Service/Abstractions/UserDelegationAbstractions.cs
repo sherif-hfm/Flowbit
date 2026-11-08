@@ -140,6 +140,7 @@ public interface IUserDelegationService
         string? delegateUser,
         string? workflowKey,
         string? acceptanceState,
+        long? delegationId,
         int page,
         int pageSize,
         ActorContext actor,

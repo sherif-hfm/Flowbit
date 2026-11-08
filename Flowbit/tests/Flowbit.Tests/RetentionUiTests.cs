@@ -240,7 +240,9 @@ public sealed class RetentionUiTests
         Assert.Contains("Keep forever", html);
         Assert.Contains("Awaiting Worker initialization", html);
         Assert.Contains("saved policies", html);
-        Assert.Equal(7, html.Split("class=\"panel retention-policy\"", StringSplitOptions.None).Length - 1);
+        Assert.Equal(RetentionCategories.All.Length, html.Split("class=\"panel retention-policy\"", StringSplitOptions.None).Length - 1);
+        Assert.Contains("Settled webhook deliveries", html);
+        Assert.Contains("Lifecycle events", html);
     }
 
     private static RetentionPage Page(HttpMessageHandler handler)

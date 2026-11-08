@@ -25,6 +25,7 @@ Start with the [runnable getting-started guide](getting-started.md). This guide 
 - [Integrate automatic work and durable jobs](#integrate-automatic-work-and-durable-jobs)
 - [Call another workflow](#call-another-workflow)
 - [Read progress, search, and audit](#read-progress-search-and-audit)
+- [Lifecycle webhooks](#lifecycle-webhooks)
 - [Handle errors and concurrent changes](#handle-errors-and-concurrent-changes)
 
 ## Choose the integration boundary
@@ -39,6 +40,7 @@ flowchart LR
     Worker[Flowbit.Worker] <--> DB
     API -->|Synchronous service task| External[Your REST services]
     Worker -->|Durable service task| External
+    Worker -->|Signed lifecycle webhooks| Receiver[Your webhook receiver]
 ```
 
 | Component | Responsibility in an integration |
@@ -46,7 +48,7 @@ flowchart LR
 | Editor | Author and export JSON. The shared HTML/CSS/JavaScript asset folder runs independently of the engine and is also mounted inline in Flowbit.Ui. |
 | API | Validate/version/publish definitions; start, inspect, and advance runtime work over HTTP. |
 | PostgreSQL | Store immutable definition snapshots and transactional runtime state in the `flowbit` schema. |
-| Worker | Execute durable jobs, timer events, and durable conditional wakes. It shares the API's database and required workflow context configuration. |
+| Worker | Execute durable jobs, timer events, and durable conditional wakes, and send [lifecycle webhooks](#lifecycle-webhooks). It shares the API's database and required workflow context configuration. |
 | Flowbit.Ui | Optional Blazor client for visual authoring, exploration, task handling, and operations. Your own application can use the API without running it. |
 
 Keep application business records in your application's store and retain the returned Flowbit instance ID as the link. Use a configured business key when the engine must also enforce domain uniqueness. Update engine state through its APIs and authored activities; direct writes to runtime tables bypass transactions, authorization, subscriptions, and audit.
@@ -571,6 +573,187 @@ Capture is opt-in through `WorkflowAudit:AllowedClaims`, independently of expres
 `FlowInfo(flowId, 'path')` makes instance-lifetime action/traversal summaries available to supported workflow expressions. An explicit human selection is an action; movement of an execution token is a traversal. A multi-instance child vote is action-only, while its aggregate outcome is traversal-only. With `asyncAfter`, the traversal is recorded once, when the durable continuation leaves the task. Counts and last-evidence snapshots let a downstream decision inspect who selected a route, including captured roles and values.
 
 This is an authored expression facility, not a general HTTP query endpoint. It is supported in non-default Exclusive, Inclusive, and Complex outgoing conditions, multi-instance completion conditions, and script tasks; it is rejected in Complex activation conditions, action visibility, assignee/cardinality, and variable/output/header validation. `CountFlow`/`PercentFlow` remain local to the current multi-instance execution. No pre-deployment evidence is invented. See the [flow-evidence runtime reference](../Flowbit/README.md#instance-wide-flow-evidence-flowinfo) for paths, shapes, and persistence behavior.
+
+## Lifecycle webhooks
+
+Instead of polling, a receiver can subscribe to committed lifecycle events: instances starting, completing, faulting, being cancelled or reactivated; tasks being created, assigned, completed, or cancelled; delegations being granted; and incidents opening. Settings administrators manage subscriptions through the [webhook API](api-guide.md#lifecycle-webhooks) or the [Webhooks page](ui-guide.md#lifecycle-webhooks). Operators enable capture and delivery as described in [deployment](deployment.md#lifecycle-webhooks).
+
+How it works:
+
+1. PostgreSQL triggers record each transition **in the transaction that commits it**, for every API, Worker, and raw-SQL path. A rolled-back change records nothing, and a transition that matches no active subscription stores nothing.
+2. Each event targets the subscriptions that matched it at that commit. Later subscription edits never redirect or add targets to recorded events, and nothing is backfilled.
+3. The Worker turns each event into one delivery per target and sends it with Standard Webhooks signatures. Receiver failure never changes workflow state or opens workflow incidents.
+
+Delivery is **at least once** and **unordered**. Arrival order, event timestamps, and ids do not establish workflow order. A `2xx` proves only that the receiver accepted the request.
+
+### Event catalog
+
+Event types are case-sensitive. `GET /api/webhook-event-types` returns the same catalog with each field's description.
+
+| Type | Emitted when |
+| --- | --- |
+| `instance.started` | A new instance row is inserted: an ordinary, message, timer, or child-call start. An idempotent start that returns an existing instance emits nothing. |
+| `instance.completed` | The instance status changes to `completed`, including a terminate end. |
+| `instance.faulted` | The status changes to `faulted` (an error end or an uncaught child failure). A paused job incident alone is not a faulted instance. |
+| `instance.cancelled` | The status changes to `cancelled` by a user, an administrator, or call propagation. Repeating a cancellation emits nothing. |
+| `instance.reactivated` | A completed or cancelled instance returns to running. Its new work item then emits `task.created`, and a later end emits a new, distinct terminal event. |
+| `task.created` | A work item becomes active: inserted active, activated from pending (async-before, sequential multi-instance), or completed directly from pending. One event per normal task or multi-instance child, never the parent. |
+| `task.assigned` | A non-null assignee is first set (`assignmentOperation: "assigned"`) or changes to a different actor (`"reassigned"`), by expression, collection, inheritance, a manager, or task distribution. Identity comparison ignores case. Unassignment and claims are excluded. A pending item's assignment has `taskStatus: "pending"`, and its later activation does not repeat it. |
+| `task.completed` | A work item's status changes to `completed`, by its actor, a delegate, an administrator, or a multi-instance vote. |
+| `task.cancelled` | A work item is cancelled from `active`, or from `pending` when it had an assignee. A pending item without an assignee was never announced, so its cancellation emits nothing. |
+| `delegation.granted` | One delegation grant is persisted (one event per family in a batch). `acceptanceState` is `pending` or `notRequired`. |
+| `incident.opened` | A new incident row is inserted on any path, including the set-based lease-exhaustion insert and timer-start incidents without an instance. A skipped duplicate insert emits nothing. Webhook delivery failures never create incidents. |
+
+One row change that qualifies for several events emits them in the order created, assigned, then completed or cancelled. A transition that commits in one transaction can emit both its start and end events, even if no one observed the waiting state.
+
+`webhook.test` is not subscribable: the test route queues it for one subscription so you can verify a receiver.
+
+### Event bodies
+
+Every body has the same envelope, in this field order, as compact UTF-8 JSON without a byte-order mark:
+
+```json
+{
+  "schemaVersion": 1,
+  "eventId": "019a5e2d-6d40-7000-8000-000000000001",
+  "type": "task.assigned",
+  "timestamp": "2026-11-07T09:00:00.000000Z",
+  "workflowKey": "purchase-review",
+  "workflowDefinitionId": 42,
+  "workflowVersion": 3,
+  "instanceId": 801,
+  "data": {
+    "userTaskId": 1201,
+    "executionTokenId": 901,
+    "nodeId": 5,
+    "nodeExternalId": "TASK_MANAGER_REVIEW",
+    "nodeExecutionId": 1301,
+    "multiInstanceExecutionId": null,
+    "itemIndex": null,
+    "taskStatus": "active",
+    "assignmentOperation": "assigned"
+  }
+}
+```
+
+- `eventId` is a UUIDv7 and is sent as `webhook-id` on every attempt for every subscription.
+- `timestamp` is the transition time from the source row (creation for inserts, update time for activation, assignment, and reactivation, completion time for task settlement, finish time for terminal instance events), not commit order.
+- `workflowDefinitionId` and `workflowVersion` are the version applying when the transition committed. They and `instanceId` are null where they do not apply: delegations have only a family, timer-start incidents have no instance, and tests have none.
+- Every field listed for a type is present; nullable fields are JSON `null`. Fields of other types are absent.
+
+| Type | `data` fields |
+| --- | --- |
+| `instance.started`, `instance.completed`, `instance.faulted`, `instance.cancelled` | `status` (`running`, `completed`, `faulted`, `cancelled`). |
+| `instance.reactivated` | `status: "running"`, `previousStatus` (`completed` or `cancelled`). |
+| `task.created`, `task.completed` | `userTaskId`, `executionTokenId`, `nodeId`, `nodeExternalId` (nullable), `nodeExecutionId` (null for legacy visits), `multiInstanceExecutionId` and zero-based `itemIndex` (null for normal tasks), `taskStatus`. |
+| `task.assigned` | The task fields plus `assignmentOperation` (`assigned` or `reassigned`); `taskStatus` is `active` or `pending`. |
+| `task.cancelled` | The task fields plus `previousTaskStatus` (`active` or `pending`); `taskStatus` is `cancelled`. |
+| `delegation.granted` | `delegationId`, `acceptanceState`. |
+| `incident.opened` | `incidentId`, `jobId` (the incident's original job), `executionTokenId` (nullable), `nodeId` and `nodeExternalId` (null when no authored node applies, as for version-change and variable-update batch jobs; `nodeExternalId` is also null when the node has none or it is longer than 300 characters), `status: "open"`. |
+| `webhook.test` | `subscriptionId`. |
+
+Prefer the version-stable `nodeExternalId` to the version-scoped `nodeId`. Every string field is bounded, so a body stays under 5 KiB. Bodies deliberately omit assignees, actors, business keys, display names, URLs, variables, form values, comments, roles, claims, node attributes, and failure messages. A webhook is a notification, not an access token: read current details through the [callback routes](#read-details-after-an-event) with your own credentials.
+
+### Verify a request
+
+Each request is a `POST` with `Content-Type: application/json; charset=utf-8`, `User-Agent: Flowbit-Webhooks/1.0`, and the [Standard Webhooks](https://github.com/standard-webhooks/standard-webhooks/blob/main/spec/standard-webhooks.md) headers:
+
+```http
+POST /flowbit/events HTTP/1.1
+Host: crm.example.com
+Content-Type: application/json; charset=utf-8
+webhook-id: 019a5e2d-6d40-7000-8000-000000000001
+webhook-timestamp: 1794042000
+webhook-signature: v1,wcywvqJxEx7/57XYECrKs95IPg3NrnsPEvKEMScKEl0=
+
+{"schemaVersion":1,"eventId":"019a5e2d-6d40-7000-8000-000000000001",...}
+```
+
+The signature is `v1,` followed by the Base64 HMAC-SHA256 of the UTF-8 bytes of `webhook-id`, `.`, `webhook-timestamp`, `.`, and the exact body, keyed with the Base64-decoded part of your `whsec_` secret. During a secret rotation overlap the header carries two space-separated `v1` entries, one per key. Existing Standard Webhooks libraries verify these requests. To verify by hand:
+
+1. Read the raw body bytes; do not parse and reserialize the JSON before verifying.
+2. Reject a `webhook-timestamp` outside your tolerance; five minutes is a common default. Each attempt has a fresh timestamp.
+3. Compute the signature for every secret you currently accept and compare each `v1` entry in constant time. Accept the request if any matches.
+4. Check that the body's `eventId` equals `webhook-id`.
+5. Deduplicate durably by `webhook-id` **before** side effects, then answer `2xx`. Answer only after durable acceptance; `202` is fine when you own a durable queue.
+
+Keep deduplication records for as long as an operator might replay failed deliveries: automatic retries span 72 hours, and failed deliveries can be retried manually later. A timestamp check does not replace deduplication.
+
+### Delivery outcomes
+
+| Receiver result | What Flowbit does |
+| --- | --- |
+| Any `2xx` | Succeeded. The response body is ignored and receiver backoff ends. |
+| Network failure, timeout (15 seconds), `408`, `425`, `429`, `5xx` | Retried within the generation's budget; counts toward receiver backoff. |
+| `3xx` | Fails with `redirect_refused`; redirects are never followed. |
+| `410 Gone` | Fails with `receiver_gone` and pauses the subscription automatically. |
+| Other `4xx` | Fails with `receiver_rejected`; an operator retries or discards it. |
+| Blocked address, invalid certificate, unusable signing keys, oversized response headers | Fails with `destination_denied`, `tls_error`, `signing_unavailable`, or `response_headers_too_large`. Flowbit never weakens security to deliver. |
+| Lost lease or Worker shutdown mid-request | `outcomeUnknown`; retried, so the receiver may see the event twice. |
+
+A retry generation allows 12 sends within 72 hours of its first send. Before retry *n* Flowbit waits the *n*th of 10 seconds, 1 minute, 5 minutes, 30 minutes, 1, 2, 4, 8, 12, 16, and 20 hours, each varied by ±10%. A valid `Retry-After` on `429` or `503` is honored as a lower bound of at most 24 hours; a retry that would start after the deadline fails instead (`retry_after_beyond_deadline`, `deadline_exceeded`, or `attempts_exhausted`).
+
+Receiver backoff protects the budget of every queued delivery during an outage. After five consecutive retryable failures, or a `429`/`503` with `Retry-After`, the subscription's queue is held without spending attempts: 30 seconds, then single probe requests, doubling to at most one hour while probes fail. Only a probe, a request sent after backoff began, doubles it; requests already in flight when it began count as failures without extending it. A `2xx` ends backoff. After 72 hours of continuous backoff whose probes kept failing, the subscription pauses itself with reason `receiverUnavailable`. A backoff that saw no probe for more than an hour after its window ended, for example because the queue emptied, starts again at the next failure instead of pausing. Resuming does not backfill events committed while it was paused.
+
+Each subscription sends at most its `maxConcurrency` requests at a time (default 4). Failed deliveries remain until an operator retries them (a new 12-send, 72-hour generation with the same event id and body) or discards them.
+
+### Read details after an event
+
+Bodies carry identifiers only. Read current state through existing routes with an ordinary API access token: an OpenID Connect client-credentials token whose identity claim resolves through the [actor rules](#authenticate-the-actual-actor) and carries the roles below, or a dedicated [Local](local-authentication.md) account.
+
+| Event | Route | Authority |
+| --- | --- | --- |
+| `instance.*` | `GET /api/instances/{instanceId}` | Any authenticated actor. |
+| `task.*` | `GET /api/user-tasks/manage?taskId={userTaskId}` | One of the task version's `taskAssignmentRoles`. |
+| `task.*` | `GET /api/task-distribution/workflows/{workflowKey}/tasks?taskId={userTaskId}` | The family's `taskDistribution` client credentials. |
+| `task.*` | `GET /api/node-executions/{nodeExecutionId}` | `NodeExecution.RequiredRole` or the version's `taskAssignmentRoles`. |
+| `delegation.granted` | `GET /api/user-delegations/manage?delegationId={delegationId}` | `Delegation.AdminRoles`. |
+| `incident.opened` | `GET /api/incidents/{incidentId}` | `WorkflowJobs.RequiredRole` (default `admin`). |
+
+A resource may already have moved on, or been removed by retention, by the time you read it; treat the event as a prompt to read current state.
+
+### Set up a receiver
+
+With a settings administrator token, create a paused subscription, store the one-time secret in your receiver, send a test event, and resume it once the test succeeds. A `workflowKey` filter must name an existing workflow family; these commands use the [getting-started](getting-started.md) example's family.
+
+PowerShell:
+
+```powershell
+$api = "http://localhost:5017"
+$headers = @{ Authorization = "Bearer $env:FLOWBIT_TOKEN" }
+$body = @{
+  name = "CRM task feed"
+  endpointUrl = "https://crm.example.com/flowbit/events"
+  eventTypes = @("task.created", "task.assigned", "task.completed", "task.cancelled")
+  workflowKey = "example-user-task-roles-claim-bypass"   # an existing workflow family; omit it to match every family
+} | ConvertTo-Json
+$created = Invoke-RestMethod -Method Post -Uri "$api/api/webhook-subscriptions" -Headers $headers -ContentType "application/json" -Body $body
+$created.secret   # store in the receiver's secret manager now; it is never shown again
+$id = $created.subscription.id
+Invoke-RestMethod -Method Post -Uri "$api/api/webhook-subscriptions/$id/test" -Headers $headers
+Invoke-RestMethod -Uri "$api/api/webhook-deliveries?subscriptionId=$id" -Headers $headers
+$resume = @{ expectedRevision = $created.subscription.revision } | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri "$api/api/webhook-subscriptions/$id/resume" -Headers $headers -ContentType "application/json" -Body $resume
+```
+
+Bash:
+
+```bash
+API=http://localhost:5017
+created=$(curl -sS -X POST "$API/api/webhook-subscriptions" \
+  -H "Authorization: Bearer $FLOWBIT_TOKEN" -H "Content-Type: application/json" \
+  -d '{"name":"CRM task feed","endpointUrl":"https://crm.example.com/flowbit/events","eventTypes":["task.created","task.assigned","task.completed","task.cancelled"],"workflowKey":"example-user-task-roles-claim-bypass"}')
+echo "$created" | jq -r .secret   # store in the receiver's secret manager now; it is never shown again
+id=$(echo "$created" | jq -r .subscription.id)
+revision=$(echo "$created" | jq -r .subscription.revision)
+curl -sS -X POST "$API/api/webhook-subscriptions/$id/test" -H "Authorization: Bearer $FLOWBIT_TOKEN"
+curl -sS "$API/api/webhook-deliveries?subscriptionId=$id" -H "Authorization: Bearer $FLOWBIT_TOKEN"
+curl -sS -X POST "$API/api/webhook-subscriptions/$id/resume" \
+  -H "Authorization: Bearer $FLOWBIT_TOKEN" -H "Content-Type: application/json" \
+  -d "{\"expectedRevision\":$revision}"
+```
+
+The test is delivered only when an operator has enabled delivery on a Worker, and real lifecycle events are recorded only after the database capture switch is on; see [deployment](deployment.md#lifecycle-webhooks). The destination must be HTTPS on port 443 unless the operator allowlists it. Endpoints that require their own authentication header need a relay, because custom request headers are not part of this release; a tokenized catch URL with the token in its query string works.
 
 ## Handle errors and concurrent changes
 

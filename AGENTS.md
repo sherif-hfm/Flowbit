@@ -628,6 +628,42 @@ Storage follows the hybrid design:
   - The child and the parent's continuation run as the fixed actor `callActivity`.
     Never rebuild authority from a job payload. Unsettled calls block version
     changes on both sides, and a linked child cannot be reactivated.
+- **Lifecycle webhooks.** Committed instance, task, delegation, and incident
+  transitions are delivered to external receivers; see the
+  [runtime reference](Flowbit/README.md#lifecycle-webhooks). Preserve these
+  invariants:
+  - Capture lives only in the deferred constraint triggers on `workflow_instances`,
+    `user_tasks`, `workflow_incidents`, and `user_delegations`
+    (`capture_*_lifecycle()`), gated by the `lifecycle_event_capture_state` switch
+    and the transaction-local `flowbit.lifecycle_events = 'off'` setting. Never add
+    application-level event emission. A new lifecycle status, source column, or
+    source table must update the capture functions and `LifecycleEventCatalog`
+    together; `LifecycleEventCaptureTests` pins the rules. A new `WorkflowJobKinds`
+    value must be classified in `LifecycleEventCaptureTests.JobKindReportsNode` and,
+    when no authored node applies, listed in `capture_workflow_incident_lifecycle()`.
+    Every string copied into a body must be bounded by a column limit; report a value
+    that can exceed it as JSON null rather than truncating it.
+  - Capture runs at commit after every runtime lock and takes none; a transition
+    that matches no active subscription revision writes nothing. Event bodies are
+    built once by the triggers as compact UTF-8 bytes in catalog order and reused
+    for every attempt. Events and deliveries hold immutable runtime ids, never
+    foreign keys to runtime rows, and never variables, business keys, actors,
+    claims, or diagnostics in external bodies.
+  - Delivery uses its own queue (`webhook_deliveries`), Worker services
+    (`LifecycleEventFanoutService`, `WebhookDispatcher`), send concurrency, and
+    PostgreSQL pool (`WebhookDataSource`); never `workflow_jobs`. No connection is
+    held during DNS, signing, or HTTP. Finalization is fenced by lease token,
+    generation, and database-clock expiry. Receiver failure never changes workflow
+    state or opens workflow incidents.
+  - Webhook rows locked together follow subscription, dispatch state, signing key,
+    delivery, attempt. Fanout locks its events, then share-locks their subscriptions
+    before reading their state. Management, dispatch, and cleanup never lock runtime rows.
+  - Signing secrets are protected only by `DataProtectionWebhookSecretProtector`
+    (certificate-wrapped `Flowbit.Webhooks` ring in `webhook_data_protection_keys`);
+    never log or return them after the one-time create/rotate response, and never
+    fall back to machine-local or ephemeral keys; a host whose certificates cannot
+    unwrap every ring key is unavailable. Destination URLs are confidential:
+    logs, metrics, audit, and errors use `WebhookDestinationPolicy.Origin` only.
 - **Generic gateways and scoped interrupts.** `execution_tokens` are the
   authoritative execution positions and an instance may have several active
   tokens. Gateway direction is inferred strictly from topology: a split has one
@@ -1480,9 +1516,10 @@ Storage follows the hybrid design:
   calendars (`/business-calendars`, `/api/business-calendars`) use the same role
   and `UpdatedAt` concurrency.
 
-- **History and audit retention.** `/retention` manages seven deployment-wide
-  categories through `/api/retention`, authorized by `Settings.RequiredRole`.
-  New history categories default to keep forever; the Worker initializes job
+- **History and audit retention.** `/retention` manages nine deployment-wide
+  categories through `/api/retention`, authorized by `Settings.RequiredRole`,
+  including the `webhookDeliveries` and `lifecycleEvents` webhook categories.
+  New history and webhook categories default to keep forever; the Worker initializes job
   and incident periods from its existing configuration once. `Flowbit.Worker`
   performs hourly and durable manually requested cleanup using the same
   coordinator, limits, and database load protections. The UI never executes a
@@ -1597,6 +1634,13 @@ what the cross-version `workflowKey` instance search matches.
   business calendars, `POST /preview` a due time for an unsaved calendar, and
   `GET /time-zones` the host's IANA ids. Duplicate names, stale timestamps, and
   calendars in use return 409.
+- `WebhookEndpoints` (`/api/webhook-event-types`, `/api/webhook-subscriptions`,
+  `/api/webhook-deliveries`): settings administrators read the event catalog and
+  capture switch; create (paused, one-time `whsec_` secret, `no-store`), list, read,
+  replace, pause, resume, test (202, delivered while paused), rotate, revoke the
+  previous key, and archive (202) subscriptions; and search, read, and retry or
+  discard deliveries singly or in bulk (at most 1,000 per request). Revisions are
+  optimistic (`409`); unusable key protection returns `503`.
 - `TaskDistributionEndpoints`
   (`/api/task-distribution/workflows/{workflowKey}/tasks`): `GET /` returns a
   paged family-scoped list using the same task/instance/workflow-version,
@@ -1695,9 +1739,15 @@ what the cross-version `workflowKey` instance search matches.
   (unpublished workflow, missing variable, bad claim, unavailable flow,
   gateway with no matching/default flow, etc.).
 - A request that cannot be bound returns its status with `{"error": ...}` in every
-  environment: `RouteHandlerOptions.ThrowOnBadRequest` is on, a middleware inside
-  the request log catches `BadHttpRequestException`, and `JsonReadError` words a
+  environment: `RouteHandlerOptions.ThrowOnBadRequest` is on, the error-mapping
+  middleware catches `BadHttpRequestException`, and `JsonReadError` words a
   JSON failure with its cause and path, naming no .NET type.
+- That one error-mapping middleware in `Program.cs` sits inside
+  `UseSerilogRequestLogging()`, so the request log records the status each mapped
+  exception returns: a mapped `4xx` at Information after the mapping's warning, and
+  `503` at Error. Only an exception nothing maps reaches the request log, which logs
+  it as a `500` error. Map a new exception type in that middleware, never outside
+  the request log.
 
 ### Blazor UI pages
 
@@ -1766,6 +1816,12 @@ what the cross-version `workflowKey` instance search matches.
   `Components/Shared/DateTimeLocalText` and `BusinessCalendarText`. `@bind` to a
   nullable date would clear the whole field when a typed leading zero briefly
   empties the value.
+- `/webhooks` (`Webhooks.razor`) and `/webhooks/deliveries/{id}`
+  (`WebhookDeliveryDetail.razor`) - settings-administrator webhook subscriptions,
+  one-time secret panel, test events, rotation, pause/resume, archive, and delivery
+  recovery; `WebhookFormatting` owns the pure presentation rules. Secrets live only
+  in transient component state and are cleared on dismissal, identity change,
+  permission loss, and disposal.
 - `/instances/{id}` (`InstanceDetailRoute.razor`, which keys `InstanceDetail.razor`
   by instance id, so a link between a parent and a child gets fresh state) - claim/unclaim, take available
   sequence flows, take authorized parent-level multi-instance interrupt actions,

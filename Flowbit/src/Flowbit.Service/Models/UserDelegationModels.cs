@@ -62,7 +62,8 @@ public sealed record UserDelegationSearch(
     string? WorkflowKey,
     string? AcceptanceState,
     int Page,
-    int PageSize);
+    int PageSize,
+    long? DelegationId = null);
 
 public sealed record WorkflowDelegationPolicyRecord(
     string WorkflowKey,

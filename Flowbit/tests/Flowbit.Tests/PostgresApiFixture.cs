@@ -47,6 +47,11 @@ public sealed class PostgresApiFixture : IAsyncLifetime
     public string ConnectionString => _postgres.GetConnectionString();
     public NpgsqlDataSource DataSource { get; private set; } = null!;
 
+    /// <summary>A generated certificate that wraps the test webhook key ring, shared by every host in the collection.</summary>
+    public string WebhookCertificatePath { get; private set; } = string.Empty;
+
+    public string WebhookCertificatePassword { get; private set; } = string.Empty;
+
     public async Task InitializeAsync()
     {
         await _postgres.StartAsync();
@@ -58,6 +63,10 @@ public sealed class PostgresApiFixture : IAsyncLifetime
         SetEnvironment("WorkflowContext__Config__taskDistributionClientId", "config-distributor");
         SetEnvironment("WorkflowContext__Config__taskDistributionClientSecret", "config-distributor-secret");
         SetEnvironment("WorkflowContext__AllowedClaims__0", "department");
+        WebhookCertificatePath = WebhookTestCertificates.Create(out var webhookCertificatePassword);
+        WebhookCertificatePassword = webhookCertificatePassword;
+        SetEnvironment("Webhooks__KeyProtection__CertificatePath", WebhookCertificatePath);
+        SetEnvironment("Webhooks__KeyProtection__CertificatePassword", webhookCertificatePassword);
 
         // Program reads the process-latched actor identity setting during startup,
         // so the schema must exist before WebApplicationFactory starts the host.
@@ -84,17 +93,46 @@ public sealed class PostgresApiFixture : IAsyncLifetime
 
         await using var scope = Factory.Services.CreateAsyncScope();
         DataSource = scope.ServiceProvider.GetRequiredService<NpgsqlDataSource>();
+
+        // Opt-in producer sweep: every test in the collection then commits through the
+        // lifecycle capture triggers with a catch-all subscription active.
+        if (string.Equals(
+                Environment.GetEnvironmentVariable("FLOWBIT_TEST_LIFECYCLE_CAPTURE"),
+                "all",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            await WebhookTestDatabase.EnableCatchAllCaptureAsync(DataSource);
+        }
     }
 
     public async Task DisposeAsync()
     {
+        await WriteLifecycleCaptureReportAsync();
         Client.Dispose();
         await Factory.DisposeAsync();
         await _postgres.DisposeAsync();
+        WebhookTestCertificates.Delete(WebhookCertificatePath);
         foreach (var pair in _originalEnvironment)
         {
             Environment.SetEnvironmentVariable(pair.Key, pair.Value);
         }
+    }
+
+    /// <summary>
+    /// After a producer sweep, appends how many events of each type the run recorded to the file named by
+    /// FLOWBIT_TEST_LIFECYCLE_CAPTURE_REPORT. Tests that delete events make these lower bounds.
+    /// </summary>
+    private async Task WriteLifecycleCaptureReportAsync()
+    {
+        var path = Environment.GetEnvironmentVariable("FLOWBIT_TEST_LIFECYCLE_CAPTURE_REPORT");
+        if (string.IsNullOrWhiteSpace(path) || DataSource is null)
+        {
+            return;
+        }
+
+        var counts = await WebhookTestDatabase.CaptureReportAsync(DataSource);
+        await File.AppendAllLinesAsync(path, counts.Select(item =>
+            string.Create(CultureInfo.InvariantCulture, $"{item.Type}\t{item.Count}")));
     }
 
     public AppDbContext CreateDbContext()

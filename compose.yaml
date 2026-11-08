@@ -13,6 +13,18 @@ x-runtime-environment: &runtime-environment
   # Npgsql reads the password separately so quotes/semicolons are not parsed as connection-string syntax.
   PGPASSWORD: ${POSTGRES_PASSWORD:-flowbit-local-only}
   WorkflowContext__AllowedClaims__0: depId
+  # The certificate that wraps the shared webhook key ring. Without the file, webhook
+  # secrets cannot be created (503); see docs/deployment.md#lifecycle-webhooks.
+  Webhooks__KeyProtection__CertificatePath: /run/flowbit/webhooks/webhook-keys.pfx
+  Webhooks__KeyProtection__CertificatePassword: ${FLOWBIT_WEBHOOK_CERT_PASSWORD:-flowbit-local-webhooks}
+
+x-webhook-certificate: &webhook-certificate
+  - type: bind
+    source: ${FLOWBIT_WEBHOOK_CERT_DIR:-./dev/webhooks}
+    target: /run/flowbit/webhooks
+    read_only: true
+    bind:
+      create_host_path: true
 
 services:
   postgres:
@@ -42,6 +54,7 @@ services:
       ASPNETCORE_HTTP_PORTS: "8080"
       Authentication__Mode: DevelopmentToken
       WorkflowDurableProcessing__PublicationEnabled: "true"
+    volumes: *webhook-certificate
     ports:
       - "127.0.0.1:${FLOWBIT_API_PORT:-15017}:8080"
     depends_on:
@@ -63,6 +76,9 @@ services:
     environment:
       <<: *runtime-environment
       FlowbitWorker__HealthListenUrl: http://0.0.0.0:8081
+      # Sending is off until you enable it; capture is a separate database switch.
+      Webhooks__DeliveryEnabled: ${FLOWBIT_WEBHOOK_DELIVERY_ENABLED:-false}
+    volumes: *webhook-certificate
     ports:
       - "127.0.0.1:${FLOWBIT_WORKER_PORT:-18081}:8081"
     depends_on:

@@ -17,6 +17,7 @@ For a disposable development database and your first working instance, follow [G
 - [Database migrations](#database-migrations)
 - [Upgrade and compatibility rules](#upgrade-and-compatibility-rules)
 - [Call activity rollout](#call-activity-rollout)
+- [Lifecycle webhooks](#lifecycle-webhooks)
 - [Worker operation](#worker-operation)
 - [Monitoring and recovery](#monitoring-and-recovery)
 - [Retention and backup](#retention-and-backup)
@@ -75,6 +76,9 @@ Use letters, digits, and underscores for the database and user names. Single-quo
 | `FLOWBIT_JWT_ISSUER` | `flowbit-local` | Shared API/UI issuer. |
 | `FLOWBIT_JWT_AUDIENCE` | `flowbit-api` | Shared API/UI audience. |
 | `FLOWBIT_JWT_KEY` | `flowbit-local-development-signing-key-change-me-2026` | Public local-development signing key. |
+| `FLOWBIT_WEBHOOK_CERT_DIR` | `./dev/webhooks` | Host folder mounted read-only into the API and Worker at `/run/flowbit/webhooks`; put `webhook-keys.pfx` there to use [lifecycle webhooks](#lifecycle-webhooks). Without it, webhook secret routes return `503` and everything else works. |
+| `FLOWBIT_WEBHOOK_CERT_PASSWORD` | `flowbit-local-webhooks` | Password of that local certificate. |
+| `FLOWBIT_WEBHOOK_DELIVERY_ENABLED` | `false` | Lets the Worker send webhook requests. |
 
 The PostgreSQL service stores data in the Compose-managed `postgres-data` named volume. Database initialization variables apply when the volume is empty; editing `.env` does not rename an existing database or rotate its user's password. Retain the matching values or update PostgreSQL deliberately. Stop the stack while retaining its database with:
 
@@ -124,6 +128,7 @@ ASP.NET Core configuration accepts JSON and environment variables. Use `__` to s
 | `WorkflowServiceTasks:MaxTimeoutSeconds`, `MaxResponseBodyBytes` | API and Worker | REST upper bounds, defaults 300 seconds and 1,048,576 bytes. Authored node limits still apply. |
 | `WorkflowScript:*` | API and Worker | Jint limits: defaults include 5-second timeout, 100,000 statements, 8,000,000 memory bytes, recursion 128, stack 256, regex timeout 1,000 ms, array size 10,000, and output depth/items/bytes 32 / 10,000 / 1,048,576. |
 | `FlowbitWorker:*` | Worker | Concurrency, lease, polling, operational listener, and cleanup options; see [Worker operation](#worker-operation). |
+| `Webhooks:*` | API and Worker | Lifecycle webhook delivery, its own PostgreSQL pool, the operator's destination policy, and the certificate that wraps the shared webhook key ring; see [lifecycle webhooks](#lifecycle-webhooks). Delivery is off by default. |
 | `Serilog:*` / `Logging:*` | API/UI / Worker | API/UI use Serilog console and rolling file configuration. Worker uses .NET logging configuration. Route logs to the deployment's collector and protect their access. |
 
 For example, these are configuration names and **public placeholders**, not usable credentials:
@@ -539,6 +544,7 @@ Classify the **actual source database and release path** before deployment. The 
 | Error-boundary HTTP status matching | No migration. Upgrade every API, UI, and Worker replica before saving or publishing a definition with `errorMatch` or several boundaries on one host. An older runtime can ignore the matcher or use the first boundary, and a stale Flowbit.Ui replica drops `errorMatch` when it saves, which turns a filtered boundary into a catch-all. Before rolling back, inventory definitions and live work that use matchers or several boundaries, and replace, drain, or cancel them through supported operations; never edit stored JSON or job rows. This release also changes existing definitions in one way: a connection lost while reading a REST response is now a task failure that keeps the received status. A synchronous task with a boundary routes through it, one without rolls back with `400` instead of failing with `500`, and a durable job records the received status instead of `0` and the raw exception message. A durable service job fences the error variable of every boundary on its host, so a concurrent write to any of them opens `output_version_conflict` even if another boundary would have been selected. A durable script job fences its boundary's error variable the same way when the script fails, or when a write is refused at finalization; retrying the incident works from a new snapshot. A corrupt, ambiguous matcher opens `job_invariant_violation` without a retry. |
 | Variable form presentation | No migration. Upgrade every API, UI, and Worker replica before authoring variable `label`, `helpText`, or `options`: an older API drops these properties when it saves a definition, and its strict validation and AI authoring reject them as unknown properties. Definitions saved without them are unchanged. The instance-detail action and interrupt forms now parse entries like the start and task forms, so their `json` and array inputs are submitted as typed JSON instead of text. |
 | Call activities | `AddCallActivityExecution` adds the `call_activity_executions`, `call_activity_results`, and `workflow_definition_call_targets` tables, `workflow_instances."CallRootInstanceId"` and `"CallDepth"`, and `workflow_jobs."CallInvocationId"`. Existing instances get root defaults and no history. Follow [call activity rollout](#call-activity-rollout). Its down migration refuses while call instances, invocations, or call jobs remain. |
+| API request log status | No migration. The API's request log now records the status a mapped error returns, such as `400` or `409`, at Information, and the `503` of an unavailable webhook key ring at Error. Before, it recorded each of these as `500` at Error with a stack trace, while the client received the mapped status. Review log alerts and dashboards that counted those entries as server failures. See [signals and actions](#signals-and-actions). |
 | Secure administrative actions | This release adds a breaking `Workflow.RequiredRole` gate to previously bearer-only administrative-action catalogs, candidates, audits, and batch mutations, plus direct instance actions. Pause administrative submissions and Workers; upgrade every API/Worker replica before resuming. Older replicas would retain the broader access. Existing audit tables/settings are reused; no new migration is needed for this change. |
 
 Before resuming administrative work, confirm the intended `Workflow.RequiredRole` value and update affected clients to send an authorized actor token. Non-admin batch clients now receive `403`; previously queued items whose stored roles no longer meet the setting become terminal `ineligible`/`skipped` outcomes. Review batch results after resuming the Worker; successful items remain committed. Deploy the updated UI to expose immediate instance actions and role-denial handling. Direct instance actions execute without administrative Worker jobs, while authored asynchronous steps keep their usual Worker requirement.
@@ -580,6 +586,109 @@ A call crosses instances through durable jobs, so it needs Workers and matching 
 
 **Retention.** The invocation row stays for the instance's lifetime as the relationship. Captured values become eligible under the existing `workflowHistory` policy after settlement, aged from the parent's terminal time, so there is no new category. Open call jobs, undelivered results, and referenced definitions are not removed.
 
+## Lifecycle webhooks
+
+Lifecycle webhooks send committed instance, task, delegation, and incident events to external receivers. Settings administrators manage subscriptions in the [UI](ui-guide.md#lifecycle-webhooks) or [API](api-guide.md#lifecycle-webhooks); receivers follow the [developer guide](developer-guide.md#lifecycle-webhooks). Three independent controls govern it:
+
+| Control | Where | Effect |
+| --- | --- | --- |
+| Capture switch | Database row `flowbit.lifecycle_event_capture_state`, changed only with `flowbit.set_lifecycle_event_capture` | Whether the capture triggers record events. Every writer reads it, including binaries that were never upgraded, so capture needs no traffic drain. Off by default. |
+| `Webhooks:DeliveryEnabled` | Each Worker | Whether that Worker sends requests. Off by default. Fanout, lease recovery, and archive settlement keep running while it is off. |
+| Subscription state | Webhooks page or API | Whether a subscription matches new events. |
+
+### How capture works
+
+Deferred constraint triggers on `workflow_instances`, `user_tasks`, `workflow_incidents`, and `user_delegations` run at commit, in the order the rows changed, and record each event that matches at least one active subscription in `lifecycle_events`. A failure there fails the source commit; a receiver failure happens later in the Worker and can never fail it. A transition with no matching subscription writes nothing, so a deployment without subscriptions pays one switch read and one subscription query per qualifying change. Capture takes no row locks and reads subscriptions without waiting on management or dispatch.
+
+Data-repair scripts that change those four tables and must not announce their changes run `SET LOCAL flowbit.lifecycle_events = 'off';` inside their transaction. Repair migrations do the same unless they deliberately announce their changes.
+
+### Configuration
+
+| `Webhooks` option | Default | Meaning |
+| --- | ---: | --- |
+| `DeliveryEnabled` | `false` | Worker only: send requests. |
+| `MaxConcurrentSends` | 16 | Worker HTTP sends in flight, separate from workflow-job slots. Each subscription is further limited by its own concurrency (default 4, at most 16), enforced in PostgreSQL across Workers. |
+| `FanoutBatchSize` | 100 | Events turned into deliveries per transaction. |
+| `PollSeconds` | 5 | Authoritative polling interval; `flowbit_lifecycle_events` notifications are wakeup hints. |
+| `HttpTimeoutSeconds` | 15 | Total time for DNS, connection, TLS, and response headers. |
+| `LeaseSeconds` / `HeartbeatSeconds` | 60 / 15 | Delivery lease and its renewal. A lost lease cancels the local request. |
+| `MaxResponseHeaderKilobytes` | 16 | Larger response headers fail the attempt. Response bodies are never read. |
+| `ConnectionLifetimeSeconds` | 120 | Pooled HTTP connection lifetime; addresses are re-checked on every new connection. |
+| `ConnectionPoolSize` | 20 (API: 4) | The webhook queue's own PostgreSQL pool, at least 4. A sending Worker needs one connection per concurrent send for its short prepare, heartbeat, and finalize transactions, plus four for the notification listener, fanout, acquisition, and key-ring reads; below `MaxConcurrentSends` + 4 it logs a startup warning, because a result that cannot be saved in time is sent again. Sends never hold a connection during HTTP. Add the pool to each API and Worker replica's connection budget. |
+| `Network:AllowedHosts` | `[]` | `host` or `host:port` entries the operator trusts: they may use a port other than 443 and resolve to private addresses. Subscription administrators cannot change this policy. |
+| `Network:AllowedCidrs` | `[]` | Address ranges any receiver may use, for internal HTTPS receivers. |
+| `Network:AllowLoopbackHttp` | `false` | Lets local fixtures use their own `http://127.0.0.1` receiver. Startup refuses it outside Development. |
+| `KeyProtection:CertificatePath` / `CertificatePassword` | none | PKCS#12 certificate with a private key that wraps the webhook key ring. Required on the API and every Worker. |
+| `KeyProtection:PreviousCertificates` | `[]` | `{ "Path", "Password" }` entries for earlier certificates, so keys wrapped before a certificate change still unwrap. |
+
+**Destinations.** Subscriptions save only absolute HTTPS URLs on port 443 (or an allowlisted host and port) without user information or fragments. Every new connection resolves the host itself, refuses loopback, private, link-local, metadata, multicast, and other non-public addresses unless allowlisted, including IPv4-mapped and other alternate IPv6 forms, and connects to a checked address while keeping the hostname for TLS and SNI. Redirects, proxies, cookies, and credentials are never used. Logs, metrics, and audit entries carry only the destination's scheme, host, and port: the path and query can contain a receiver token.
+
+### Signing keys and the key ring
+
+Subscriber secrets are protected with ASP.NET Data Protection under the application name `Flowbit.Webhooks`. Its key ring is stored in `flowbit.webhook_data_protection_keys`, so the API (which creates and rotates secrets) and the Workers (which sign) share it without a shared volume. Every ring key is wrapped with the configured certificate, so database backups contain only wrapped keys. There is no fallback to machine-local or ephemeral keys. Key protection is unavailable on a host without a usable certificate, and on a host whose certificates cannot unwrap every key in the ring: there create, rotate, test, resume, and retry return `503`, and the Worker sends nothing and, when delivery is enabled, reports `Degraded` readiness with the reason. A delivery whose own secret cannot be decrypted even after the ring is reloaded fails with `signing_unavailable`; rotate that subscription's secret, then retry it.
+
+Create a certificate for each environment and give only the API and Worker read access to it. PowerShell:
+
+```powershell
+New-Item -ItemType Directory -Force dev/webhooks | Out-Null
+$certificate = New-SelfSignedCertificate -Subject "CN=Flowbit webhook key ring" -KeyAlgorithm RSA -KeyLength 3072 -KeyExportPolicy Exportable -CertStoreLocation Cert:\CurrentUser\My -NotAfter (Get-Date).AddYears(5)
+Export-PfxCertificate -Cert $certificate -FilePath dev/webhooks/webhook-keys.pfx -Password (ConvertTo-SecureString "flowbit-local-webhooks" -AsPlainText -Force) | Out-Null
+Remove-Item "Cert:\CurrentUser\My\$($certificate.Thumbprint)"
+```
+
+Bash:
+
+```bash
+mkdir -p dev/webhooks
+openssl req -x509 -newkey rsa:3072 -sha256 -days 1825 -nodes -subj "/CN=Flowbit webhook key ring" -keyout dev/webhooks/webhook-keys.key -out dev/webhooks/webhook-keys.crt
+openssl pkcs12 -export -inkey dev/webhooks/webhook-keys.key -in dev/webhooks/webhook-keys.crt -out dev/webhooks/webhook-keys.pfx -passout pass:flowbit-local-webhooks
+rm dev/webhooks/webhook-keys.key dev/webhooks/webhook-keys.crt
+```
+
+`.pfx` files are ignored by Git, and the repository includes the `dev/webhooks` folder, so Docker never creates it with another owner. **Back up the certificate with the database and keep it across restores and upgrades.** To change certificates, configure the new one as `CertificatePath` and the old one under `PreviousCertificates` on every API and Worker. Data Protection rotates its own ring keys automatically; that is separate from rotating a subscriber's secret.
+
+**If the certificate is lost**, every subscriber secret is unrecoverable, and Flowbit never generates replacement secrets. Hosts stay unavailable while the ring holds keys that no configured certificate can unwrap, so:
+
+1. Configure a new certificate as `CertificatePath` on every API and Worker, keeping any earlier certificate you still have under `PreviousCertificates`.
+2. Back up the database, then delete the ring keys the lost certificate wrapped. When it was the only certificate, that is every row: `DELETE FROM flowbit.webhook_data_protection_keys;`
+3. Restart the API and Workers, rotate every subscription's secret, and reconfigure each receiver with its new secret.
+4. Retry the deliveries that failed with `signing_unavailable` in bulk.
+
+### Rollout
+
+1. Apply the additive `AddOutboundLifecycleWebhooks` migration with capture and delivery off. It creates the tables, functions, and triggers; `CREATE TRIGGER` briefly blocks writes to the four source tables, so use the normal migration window. There is no historical backfill.
+2. Configure the certificate and network policy on every API and Worker; update Compose, environment, or mounts. Back up the database and the certificate.
+3. Upgrade every API and Worker, then the UI. Capture itself needs no new binaries, but management and delivery do. The Worker's schema gate waits for the migration.
+4. Create a paused subscription for a test receiver, send a test event with delivery enabled on one Worker, and activate the subscription. Then turn capture on, which applies to transitions committed after this statement commits:
+
+   ```sql
+   SELECT flowbit.set_lifecycle_event_capture(true, 'operator@example.com');
+   ```
+
+5. Verify a real lifecycle event, signatures, deduplication, retries, backoff, bulk recovery, backlog, and the retention preview before production subscriptions are activated.
+
+**Rollback** stops delivery (`Webhooks:DeliveryEnabled=false`) and keeps the tables and keys; older binaries keep running with the triggers in place, and queued work waits. Do not use the destructive down migration as a routine rollback for retained or pending data.
+
+**Emergency stop.** For a receiver outage, pause the subscription or disable delivery: captured work is preserved. Turn capture off only for a trigger defect, because transitions committed while it is off are never recorded:
+
+```sql
+SELECT flowbit.set_lifecycle_event_capture(false, 'operator@example.com');
+```
+
+### Monitoring and runbooks
+
+The Worker's `/metrics` adds `flowbit_webhooks_capture_enabled`, `flowbit_webhooks_fanout_pending`, `flowbit_webhooks_fanout_oldest_age_seconds`, `flowbit_webhooks_queue_depth{state}`, `flowbit_webhooks_queue_oldest_due_age_seconds`, `flowbit_webhooks_subscriptions_backing_off`, `flowbit_webhooks_subscriptions_paused`, `flowbit_webhooks_sends_in_flight`, `flowbit_webhooks_attempts_total{outcome}`, `flowbit_webhooks_automatic_pauses_total{reason}`, `flowbit_webhooks_leases_recovered_total`, `flowbit_webhooks_archive_discarded_total`, `flowbit_webhooks_loop_failures_total`, and the `flowbit_webhooks_send_duration_seconds` summary; the `Flowbit.Webhooks` meter carries the same measurements. Labels are bounded codes, never ids, URLs, or actors. Logs name event and delivery ids, never payloads, URLs beyond their origin, signatures, or keys.
+
+| Symptom | Action |
+| --- | --- |
+| Deliveries stay pending | Check `capture_enabled`, a Worker with delivery enabled, `fanout_pending`, and readiness. A paused subscription holds its work; only tests are sent while paused. |
+| Growing backlog for one subscription | Check `subscriptions_backing_off` and the subscription's health on the Webhooks page. Backoff holds its queue without spending attempts; fix the receiver, or pause the subscription. Lower its concurrency if the receiver is overloaded. |
+| A subscription paused itself | `receiverGone` means the receiver answered `410`; `receiverUnavailable` means 72 hours of continuous backoff whose probes kept failing. A backoff that went more than an hour without a probe, for example because its queue emptied, starts again at the next failure instead. Fix the receiver, resume, then retry failed deliveries in bulk. Nothing is backfilled for the paused period. |
+| Many failed deliveries | Filter by failure code. Correct the cause, then retry in bulk, or discard what the receiver no longer needs. Failed deliveries are kept until retried or discarded. |
+| Readiness `Degraded` with key protection | Restore the certificate configuration on that host. When the reason says the ring cannot be unwrapped, add the earlier certificate under `PreviousCertificates`. If the certificate is lost, follow the recovery steps above. |
+| A trigger defect blocks commits | Turn capture off (emergency stop above), fix forward, then turn it back on. Transitions committed meanwhile are not recorded. |
+| `lifecycle_events` or deliveries grow | Configure the `webhookDeliveries` and `lifecycleEvents` [retention](#retention-and-backup) categories. Audit entries, subscription revisions, and the key ring are kept indefinitely in this release; include them in sizing. |
+
 ## Worker operation
 
 The Worker claims available queue rows using PostgreSQL `FOR UPDATE SKIP LOCKED`: concurrent workers skip rows another claiming transaction has locked. Those short row locks establish persisted leases; the Worker then uses lease generations and activation fences throughout execution. Multiple replicas can process independent work while instance transitions remain serialized where required.
@@ -600,7 +709,7 @@ The Worker claims available queue rows using PostgreSQL `FOR UPDATE SKIP LOCKED`
 | `ShutdownDrainSeconds` | 30 | Graceful drain: stopping ends acquisition while running jobs keep their leases and may finish. Jobs still running afterward are cancelled and their leases released for immediate recovery. The host shutdown timeout adds ten seconds; allow the process supervisor at least that much stop time. |
 | `HealthListenUrl` | `http://0.0.0.0:8081` | Unauthenticated operational listener. Bind deliberately. |
 
-Worker option validation rejects inconsistent or out-of-range values at startup. Its runtime connection pool is capped at **the larger of 16 and `MaxConcurrency` + 8 connections per process**, and never exceeds the configured `Maximum Pool Size`. A configured maximum below `MaxConcurrency` + 8 logs a startup warning, because lease checks can then time out under load. Retention uses a separate pool capped at two. Size PostgreSQL connection capacity for every API/Worker replica and administrative connection, not just the dispatcher slot count.
+Worker option validation rejects inconsistent or out-of-range values at startup. Its runtime connection pool is capped at **the larger of 16 and `MaxConcurrency` + 8 connections per process**, and never exceeds the configured `Maximum Pool Size`. A configured maximum below `MaxConcurrency` + 8 logs a startup warning, because lease checks can then time out under load. Retention uses a separate pool capped at two, and [webhooks](#lifecycle-webhooks) a separate pool of `Webhooks:ConnectionPoolSize` (default 20). Size PostgreSQL connection capacity for every API/Worker replica and administrative connection, not just the dispatcher slot count.
 
 External HTTP effects have **at-least-once** semantics. Retries may repeat a call after failure or lease loss; use the stable job ID as the remote service's idempotency key. Variable-version conflicts prevent silent overwrite and can open incidents. A timed-out caller, cancelled host, or database rollback cannot undo a remote side effect.
 
@@ -615,7 +724,7 @@ These endpoints belong to the **Worker listener**, not the main API:
 | Endpoint | Result | Meaning and limits |
 | --- | --- | --- |
 | `GET /health/live` | 200 `Healthy` while the host responds. | Process self-check; no database check. |
-| `GET /health/ready` | 503 `Unhealthy` while migrations included in this Worker build are pending, and until the first successful queue acquisition query; then 200 `Healthy`. | Readiness is latched once both hold. It does not revert after later database outages and does not prove continuing queue progress. |
+| `GET /health/ready` | 503 `Unhealthy` while migrations included in this Worker build are pending, and until the first successful queue acquisition query; then 200 `Healthy`. 200 `Degraded` reports a webhook problem without failing job processing. | Readiness is latched once both hold. It does not revert after later database outages and does not prove continuing queue progress. Webhook receiver outages never affect it. |
 | `GET /metrics` | 200 Prometheus text. | Queue/lease/attempt/incident, runtime, and call activity measurements; restrict exposure. |
 
 PowerShell:
@@ -655,7 +764,9 @@ WHERE c."State" = 'cancelled' AND i."Status" = 'running'
 ORDER BY c."SettledAt";
 ```
 
-Observe queue depth and oldest age, timer lateness, acquisition/instance-lock latency, lease loss, retries, finalization retries, output conflicts, open incidents, and retention work. .NET meters are named `Flowbit.Worker`, `Flowbit.Runtime.Jobs`, and `Flowbit.Runtime.CallActivities`. A successful startup readiness response alone cannot detect a stuck queue; compare these signals over time and inspect Worker logs.
+Observe queue depth and oldest age, timer lateness, acquisition/instance-lock latency, lease loss, retries, finalization retries, output conflicts, open incidents, and retention work. .NET meters are named `Flowbit.Worker`, `Flowbit.Runtime.Jobs`, `Flowbit.Runtime.CallActivities`, and `Flowbit.Webhooks`. A successful startup readiness response alone cannot detect a stuck queue; compare these signals over time and inspect Worker logs.
+
+The API writes one request-log entry per request, `HTTP {method} {path} responded {status} in {elapsed} ms`, giving the status the client received. A client error the API maps, such as `400`, `401`, `403`, or `409`, is logged at Information after a warning that names its cause. `5xx` responses are logged at Error: `503` while the webhook key ring is unavailable, and `500`, with its exception, when nothing maps a failure. Alert on Error entries, not on every unsuccessful status.
 
 Use the UI Operations page or the role-protected jobs/incidents APIs. `WorkflowJobs.RequiredRole` defaults to `admin`. Collection endpoints use opaque keyset cursors; use detail/attempt endpoints to inspect evidence rather than expecting large execution snapshots in every list row.
 
@@ -686,7 +797,7 @@ See the [complete API reference](api-guide.md) for retry request fields and endp
 
 ## Retention and backup
 
-Retention is persisted deployment policy, managed through `/api/retention`. The five history/audit categories initially keep data forever. The first upgraded Worker initializes completed-job and resolved-incident retention from `CompletedJobRetentionDays=30` and `ResolvedIncidentRetentionDays=90`; subsequent restarts do not overwrite saved policies. Use matching bootstrap values on every replica.
+Retention is persisted deployment policy, managed through `/api/retention`. The five history/audit categories and the two webhook categories initially keep data forever. `webhookDeliveries` removes succeeded and discarded deliveries, attempts first, aged from settlement; pending, retrying, leased, and failed deliveries stay protected until they settle or are discarded. `lifecycleEvents` removes events, aged from the event time, only after fanout finished and no delivery references them. Webhook cleanup never sets `HistoryPrunedAt` or changes reactivation eligibility. The first upgraded Worker initializes completed-job and resolved-incident retention from `CompletedJobRetentionDays=30` and `ResolvedIncidentRetentionDays=90`; subsequent restarts do not overwrite saved policies. Use matching bootstrap values on every replica.
 
 Cleanup is performed by the Worker, including manually requested runs. It yields to a busy queue, uses bounded transactions, preserves referenced/current records, and resumes durable progress. Defaults are batches of 250, a 1,000 ms batch delay, 5,000 ms idle delay, a busy threshold of 100 runnable jobs, and 30-second queue lag. Tune with database I/O and workflow latency measurements.
 

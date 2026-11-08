@@ -22,9 +22,12 @@ public static class WorkerOperationalEndpoints
             });
         app.MapGet(
             "/metrics",
-            (WorkerTelemetry telemetry) => Results.Text(
-                telemetry.ExportPrometheus(),
-                "text/plain; version=0.0.4; charset=utf-8"));
+            (WorkerTelemetry telemetry, WebhookTelemetry webhooks) =>
+            {
+                var output = new System.Text.StringBuilder(telemetry.ExportPrometheus());
+                webhooks.WritePrometheus(output);
+                return Results.Text(output.ToString(), "text/plain; version=0.0.4; charset=utf-8");
+            });
         return app;
     }
 }

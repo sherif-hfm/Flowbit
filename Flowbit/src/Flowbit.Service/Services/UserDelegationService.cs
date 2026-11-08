@@ -110,19 +110,25 @@ public sealed class UserDelegationService(
         string? delegateUser,
         string? workflowKey,
         string? acceptanceState,
+        long? delegationId,
         int page,
         int pageSize,
         ActorContext actor,
         CancellationToken cancellationToken)
     {
         await RequireAdministratorAsync(actor, cancellationToken);
+        if (delegationId is <= 0)
+        {
+            throw new WorkflowDomainException("Delegation id must be positive.");
+        }
         var search = new UserDelegationSearch(
             NormalizeOptionalActor(delegator, nameof(delegator)),
             NormalizeOptionalActor(delegateUser, "delegate"),
             NormalizeOptionalWorkflowKey(workflowKey),
             NormalizeAcceptanceState(acceptanceState),
             NormalizePage(page),
-            NormalizePageSize(pageSize));
+            NormalizePageSize(pageSize),
+            delegationId);
         var result = await repository.ListAsync(search, cancellationToken);
         return MapPage(result);
     }

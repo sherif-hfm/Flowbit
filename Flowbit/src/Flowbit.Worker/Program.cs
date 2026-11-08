@@ -55,6 +55,14 @@ var callActivityOptions = builder.Configuration
 callActivityOptions.Validate();
 builder.Services.AddSingleton(callActivityOptions);
 
+// Webhook delivery has its own send concurrency and PostgreSQL pool. The database
+// capture switch, not this file, decides whether lifecycle events are recorded.
+var webhookOptions = builder.Configuration
+    .GetSection(WebhookOptions.SectionName)
+    .Get<WebhookOptions>() ?? new WebhookOptions();
+webhookOptions.Validate(builder.Environment.IsDevelopment());
+builder.Services.AddSingleton(webhookOptions);
+
 builder.Services
     .AddServiceLayer()
     .AddInfrastructure(builder.Configuration);
@@ -78,12 +86,19 @@ builder.Services.AddHostedService<QueueTelemetryService>();
 builder.Services.AddHostedService<RetentionCleanupService>();
 builder.Services.AddHostedService<TimerStartReconciliationService>();
 builder.Services.AddSingleton<WorkerTelemetry>();
+builder.Services.AddSingleton<WebhookTelemetry>();
+builder.Services.AddSingleton<PostgresLifecycleWakeupSignal>();
+builder.Services.AddHostedService(provider =>
+    provider.GetRequiredService<PostgresLifecycleWakeupSignal>());
+builder.Services.AddHostedService<LifecycleEventFanoutService>();
+builder.Services.AddHostedService<WebhookDispatcher>();
 builder.Services.AddHealthChecks()
     .AddCheck(
         "self",
         static () => HealthCheckResult.Healthy(),
         tags: ["live"])
-    .AddCheck<WorkerReadinessHealthCheck>("durable-queue", tags: ["ready"]);
+    .AddCheck<WorkerReadinessHealthCheck>("durable-queue", tags: ["ready"])
+    .AddCheck<WebhookReadinessHealthCheck>("webhooks", tags: ["ready"]);
 
 var app = builder.Build();
 if (connectionPool.IsConstrained)
@@ -93,6 +108,15 @@ if (connectionPool.IsConstrained)
         connectionPool.MaxPoolSize,
         WorkerConnectionPool.ReservedConnections,
         connectionPool.RecommendedMaxPoolSize);
+}
+if (webhookOptions.DeliveryEnabled
+    && webhookOptions.ConnectionPoolSize < webhookOptions.RecommendedConnectionPoolSize)
+{
+    app.Logger.LogWarning(
+        "Webhooks:ConnectionPoolSize ({PoolSize}) is below Webhooks:MaxConcurrentSends + {Reserved} ({Recommended}). Sends may wait for connections when the database is slow, and a delivery whose result cannot be saved is sent again; raise ConnectionPoolSize or lower MaxConcurrentSends.",
+        webhookOptions.ConnectionPoolSize,
+        WebhookOptions.ReservedConnections,
+        webhookOptions.RecommendedConnectionPoolSize);
 }
 app.MapWorkerOperationalEndpoints();
 

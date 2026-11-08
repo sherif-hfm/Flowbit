@@ -24,6 +24,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IWorkflowDefinitionService, WorkflowDefinitionService>();
         services.AddScoped<ISharedVariableService, SharedVariableService>();
         services.AddScoped<ISharedVariableClientService, SharedVariableClientService>();
+        services.AddScoped<IWebhookManagementService, WebhookManagementService>();
         services.AddScoped<WorkflowEngineService>();
         services.AddScoped<IWorkflowEngineService>(provider =>
             provider.GetRequiredService<WorkflowEngineService>());

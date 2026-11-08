@@ -32,6 +32,7 @@ All JSON property names below are the wire names. Database identifiers are integ
 - [Shared variables](#shared-variables)
 - [Shared-variable clients](#shared-variable-clients)
 - [Retention](#retention)
+- [Lifecycle webhooks](#lifecycle-webhooks)
 - [Shared JSON schemas](#shared-json-schemas)
 - [Worker operational endpoints](#worker-operational-endpoints)
 - [API development endpoints](#api-development-endpoints)
@@ -84,6 +85,7 @@ The API does not have one universal error envelope. Clients should branch on HTT
 | `404` | Missing resource, or an intentionally hidden personal-task/node-execution resource. Do not use detail probing to infer task availability. |
 | `409` | Stale work, incompatible version/reactivation, optimistic revision mismatch, or a conflict described below. Refresh the resource before deciding whether to retry. |
 | `413`, `415` | Request exceeds the endpoint limit, or JSON media type is required. The server/reverse proxy may impose a lower limit. |
+| `503` | Webhook key protection is unavailable, so a webhook route that creates, rotates, or uses a signing secret cannot run. `{"error":"description"}` names the configuration to fix; see [lifecycle webhooks](#lifecycle-webhooks). |
 
 Start idempotency is configured on the selected entry node, including its HTTP header name. It is permanently scoped to the stable workflow key across versions and across user/message starts. A committed duplicate returns:
 
@@ -4595,12 +4597,13 @@ Content-Type: application/json
 
 ### GET /api/user-delegations/manage
 
-Administratively search grants by delegator, delegate, workflow and state.
+Administratively search grants by id, delegator, delegate, workflow and state.
 
 **Access:** Delegation administrator. See [authentication](#http-conventions-and-authentication).
 
 | Parameter | Location | Type | Required | Meaning / default |
 | --- | --- | --- | --- | --- |
+| `delegationId` | query | integer (int64) | No | Exact grant id, such as the `delegationId` of a [`delegation.granted`](developer-guide.md#lifecycle-webhooks) webhook; must be positive. |
 | `delegator` | query | string | No | Optional exact selector; omission does not add this filter. |
 | `delegate` | query | string | No | Optional exact selector; omission does not add this filter. |
 | `workflowKey` | query | string | No | Stable authored workflow-family key; URL-encode. |
@@ -6299,7 +6302,7 @@ Content-Type: application/json
 
 ## Retention
 
-Settings administrator permission is required; mutations additionally require a nonblank actor. Categories are `workflowHistory`, `variableHistory`, `nodeActivity`, `administrativeAudits`, `sharedVariableHistory`, `completedJobs`, `resolvedIncidents`. `retentionDays:null` means keep forever. Updates use `expectedRevision`. Preview evaluates a proposed period without saving or deleting; it may be a bounded lower estimate (`isLowerBound`). `/runs` queues or joins a cleanup run using saved policies and returns `202 Location: /api/retention`. The Worker applies bounded deletion and load protection. Pruning instance-owned history permanently prevents reactivation; retained current state and protected audit references are not an instruction to purge an entire workflow.
+Settings administrator permission is required; mutations additionally require a nonblank actor. Categories are `workflowHistory`, `variableHistory`, `nodeActivity`, `administrativeAudits`, `sharedVariableHistory`, `completedJobs`, `resolvedIncidents`, `webhookDeliveries`, and `lifecycleEvents`. `retentionDays:null` means keep forever. `webhookDeliveries` ages from settlement and removes succeeded or discarded deliveries with their attempts; pending, retrying, leased, and failed deliveries stay protected. `lifecycleEvents` ages from the event time and removes only fanned-out events that no delivery references. Neither touches workflow history or reactivation eligibility. Updates use `expectedRevision`. Preview evaluates a proposed period without saving or deleting; it may be a bounded lower estimate (`isLowerBound`). `/runs` queues or joins a cleanup run using saved policies and returns `202 Location: /api/retention`. The Worker applies bounded deletion and load protection. Pruning instance-owned history permanently prevents reactivation; retained current state and protected audit references are not an instruction to purge an entire workflow.
 
 ### GET /api/retention
 
@@ -6457,6 +6460,369 @@ Content-Type: application/json
   "categories": []
 }
 ```
+
+## Lifecycle webhooks
+
+All routes require Settings administrator permission, including reads and secret rotation. They manage subscriptions that send committed lifecycle events to external receivers, signed according to [Standard Webhooks](https://www.standardwebhooks.com/). The event catalog, payloads, signature verification, retries, and receiver guidance are in the [developer guide](developer-guide.md#lifecycle-webhooks); operations are in [deployment](deployment.md#lifecycle-webhooks).
+
+- **Authority.** A subscription's optional `workflowKey` filters which events match; it grants no authority, and workflow managers cannot manage webhooks.
+- **Validation.** `name` is 1–200 characters; `description` at most 1,000. `endpointUrl` is an absolute HTTPS URL of at most 2,048 characters without user information or a fragment, on port 443 unless the operator's allowlist names its host and port. A query string is allowed so tokenized catch URLs work. An IP-literal or `localhost` destination must be public or allowlisted. `eventTypes` is a nonempty list of the eleven [subscribable types](developer-guide.md#event-catalog); duplicates collapse and `webhook.test` is refused. `workflowKey` must name an existing workflow family exactly. `maxConcurrency` is 1–16, default 4.
+- **Confidential URLs.** The full URL can carry a receiver token. Only these settings-administrator reads return it; logs, metrics, audit entries, and error text use the scheme, host, and port (`origin`).
+- **States.** Subscriptions are created `paused` (reason `administrator`) so you can configure the receiver and send a test first. `active` subscriptions match new events. A paused subscription holds captured work and matches nothing new; resume never backfills the gap. The Worker pauses a subscription itself on `410 Gone` (reason `receiverGone`) or after 72 hours of continuous receiver backoff (`receiverUnavailable`). `archived` is irreversible: outstanding deliveries are discarded in bounded batches and its keys retire. Only reads remain: edit, pause, resume, test, rotate, and revoke return `409`. So do single and bulk retry and discard of its deliveries, which the Worker discards itself; their detail reports `canRetry` and `canDiscard` as `false`. At most 100 subscriptions may be non-archived.
+- **Secrets.** Create and rotate return a `whsec_`-prefixed Base64 secret exactly once with `Cache-Control: no-store`; no route returns it again. The server generates 256-bit secrets and stores them only as certificate-protected Data Protection payloads.
+- **Revisions.** Management changes use the subscription's `revision` as `expectedRevision`; a stale value returns `409`. Pause takes no revision because pausing is always safe. A changed URL, event set, or family creates an immutable destination revision used only by events captured afterward. Deliveries use their own `revision` for retry and discard.
+- **Paging and filters.** Lists use numbered pages (default 50, maximum 200) with exact database counts. A page whose offset, `(page - 1) * pageSize`, exceeds 2,147,483,647 returns `400`. Subscriptions are ordered by creation time, newest first; deliveries by event time, newest first; attempts by number. `from` is inclusive and `to` exclusive; both accept any UTC offset and compare instants. `failureCode` must be one of the [failure codes](#get-apiwebhook-deliveries). Each GET route accepts only its documented query parameters, each at most once and matched without regard to case. Invalid filters, an unknown or repeated query parameter, and any `sort` parameter return `400` rather than being ignored.
+- **Key protection.** When the webhook key-ring certificate is missing or unusable, create, rotate, test, resume, and retry return `503`; reads still work.
+
+### GET /api/webhook-event-types
+
+The lifecycle event catalog: schema version, envelope fields, each type's data fields in body order, and the read-only database capture switch.
+
+**Access:** Settings administrator. See [authentication](#http-conventions-and-authentication).
+
+**Parameters:** none; any query parameter returns `400`.
+
+**Body:** none.
+
+**Success:** `200` [WebhookEventCatalogDto](#schema-webhookeventcatalogdto).
+**Errors:** `400` Bad Request (a query parameter); `401` Unauthorized; `403` Forbidden. See [error envelopes](#errors-and-concurrency).
+
+```http
+GET /api/webhook-event-types HTTP/1.1
+Host: localhost:5017
+Authorization: Bearer TOKEN
+```
+
+Response example (excerpt):
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "schemaVersion": 1,
+  "envelopeFields": [
+    { "name": "schemaVersion", "type": "integer", "nullable": false, "description": "The body schema version; 1 in this release." }
+  ],
+  "eventTypes": [
+    {
+      "type": "task.assigned",
+      "description": "A non-null assignee was first set or changed to a different actor. Unassignment and claims are excluded.",
+      "subscribable": true,
+      "dataFields": [
+        { "name": "userTaskId", "type": "integer", "nullable": false, "description": "The work item. A multi-instance child is its own work item." }
+      ]
+    }
+  ],
+  "capture": { "enabled": false, "changedAt": "2026-11-07T09:00:00+00:00", "changedBy": null }
+}
+```
+
+### GET /api/webhook-subscriptions
+
+List subscriptions with their current destination, signing-key metadata, receiver health, and outstanding queue counts.
+
+**Access:** Settings administrator. See [authentication](#http-conventions-and-authentication).
+
+| Parameter | Location | Type | Required | Meaning / default |
+| --- | --- | --- | --- | --- |
+| `page` | query | integer (int32) | No | Default 1. |
+| `pageSize` | query | integer (int32) | No | Default 50; 1–200. |
+
+**Body:** none.
+
+**Success:** `200` [PagedResultOfWebhookSubscriptionDto](#schema-webhooksubscriptiondto) (`items` of WebhookSubscriptionDto), newest first by creation time.
+**Errors:** `400` Bad Request (invalid or too large a page, or any other query parameter, including `sort`); `401` Unauthorized; `403` Forbidden.
+
+```http
+GET /api/webhook-subscriptions?page=1&pageSize=50 HTTP/1.1
+Host: localhost:5017
+Authorization: Bearer TOKEN
+```
+
+### POST /api/webhook-subscriptions
+
+Create a paused subscription with its first destination revision and signing key, and return the signing secret once.
+
+**Access:** Settings administrator. See [authentication](#http-conventions-and-authentication).
+
+**Parameters:** none.
+
+**JSON body:** [CreateWebhookSubscriptionRequest](#schema-createwebhooksubscriptionrequest).
+
+**Success:** `201` [WebhookSecretResultDto](#schema-webhooksecretresultdto) with `Location: /api/webhook-subscriptions/{id}` and `Cache-Control: no-store`.
+**Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden; `409` Conflict (100 non-archived subscriptions); `503` key protection unavailable.
+
+```http
+POST /api/webhook-subscriptions HTTP/1.1
+Host: localhost:5017
+Authorization: Bearer TOKEN
+Content-Type: application/json
+
+{
+  "name": "CRM task feed",
+  "description": "Task assignments for the CRM work queue",
+  "endpointUrl": "https://crm.example.com/flowbit/events",
+  "eventTypes": ["task.created", "task.assigned", "task.completed", "task.cancelled"],
+  "workflowKey": "purchase-review",
+  "maxConcurrency": 4
+}
+```
+
+Response example (excerpt):
+
+```http
+HTTP/1.1 201 Created
+Location: /api/webhook-subscriptions/019a5e2d-6d40-7000-8000-0000000000aa
+Cache-Control: no-store
+Content-Type: application/json
+
+{
+  "subscription": {
+    "id": "019a5e2d-6d40-7000-8000-0000000000aa",
+    "name": "CRM task feed",
+    "state": "paused",
+    "pauseReason": "administrator",
+    "maxConcurrency": 4,
+    "revision": 1,
+    "destination": {
+      "revisionId": 12,
+      "configurationRevision": 1,
+      "endpointUrl": "https://crm.example.com/flowbit/events",
+      "origin": "https://crm.example.com:443",
+      "eventTypes": ["task.created", "task.assigned", "task.completed", "task.cancelled"],
+      "workflowKey": "purchase-review"
+    },
+    "signingKeys": [{ "id": "019a5e2d-6d40-7000-8000-0000000000bb", "status": "current" }]
+  },
+  "keyId": "019a5e2d-6d40-7000-8000-0000000000bb",
+  "secret": "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw"
+}
+```
+
+### GET /api/webhook-subscriptions/{id}
+
+Read one subscription with every destination revision and how many outstanding deliveries still target each.
+
+**Access:** Settings administrator. See [authentication](#http-conventions-and-authentication).
+
+| Parameter | Location | Type | Required | Meaning / default |
+| --- | --- | --- | --- | --- |
+| `id` | path | string (uuid) | Yes | Subscription id. |
+
+**Success:** `200` [WebhookSubscriptionDetailDto](#schema-webhooksubscriptiondetaildto).
+**Errors:** `400` Bad Request (a query parameter); `401` Unauthorized; `403` Forbidden; `404` Not Found.
+
+### PUT /api/webhook-subscriptions/{id}
+
+Replace the name, description, URL, event set, workflow family, and maximum concurrency. Only a changed URL, event set, or family creates a destination revision, and it applies to events captured from then on; queued deliveries keep their captured destination. State changes use the routes below.
+
+**Access:** Settings administrator. See [authentication](#http-conventions-and-authentication).
+
+| Parameter | Location | Type | Required | Meaning / default |
+| --- | --- | --- | --- | --- |
+| `id` | path | string (uuid) | Yes | Subscription id. |
+
+**JSON body:** [UpdateWebhookSubscriptionRequest](#schema-updatewebhooksubscriptionrequest).
+
+**Success:** `200` [WebhookSubscriptionDto](#schema-webhooksubscriptiondto).
+**Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden; `404` Not Found; `409` stale `expectedRevision` or archived.
+
+### POST /api/webhook-subscriptions/{id}/pause
+
+Pause a subscription. It takes no body or expected revision: pausing is always safe, and repeating it changes nothing, including after an automatic pause. A request already sent cannot be recalled.
+
+**Access:** Settings administrator. See [authentication](#http-conventions-and-authentication).
+
+**Success:** `200` [WebhookSubscriptionDto](#schema-webhooksubscriptiondto).
+**Errors:** `401` Unauthorized; `403` Forbidden; `404` Not Found; `409` archived.
+
+### POST /api/webhook-subscriptions/{id}/resume
+
+Activate a paused subscription, including after an automatic pause, and clear its receiver backoff. Events committed while it was paused are not backfilled.
+
+**Access:** Settings administrator. See [authentication](#http-conventions-and-authentication).
+
+**JSON body:** [WebhookRevisionRequest](#schema-webhookrevisionrequest).
+
+**Success:** `200` [WebhookSubscriptionDto](#schema-webhooksubscriptiondto). Resuming an active subscription returns it unchanged.
+**Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden; `404` Not Found; `409` stale revision, archived, or no usable signing key; `503` key protection unavailable.
+
+```http
+POST /api/webhook-subscriptions/019a5e2d-6d40-7000-8000-0000000000aa/resume HTTP/1.1
+Host: localhost:5017
+Authorization: Bearer TOKEN
+Content-Type: application/json
+
+{ "expectedRevision": 1 }
+```
+
+### POST /api/webhook-subscriptions/{id}/test
+
+Queue one signed `webhook.test` event for this subscription only. It is delivered even while the subscription is paused, so you can verify the receiver before activating it.
+
+**Access:** Settings administrator. See [authentication](#http-conventions-and-authentication).
+
+**Success:** `202` [WebhookTestResultDto](#schema-webhooktestresultdto) with `Location: /api/webhook-deliveries/{deliveryId}`.
+**Errors:** `401` Unauthorized; `403` Forbidden; `404` Not Found; `409` archived or a test still outstanding; `503` key protection unavailable.
+
+### POST /api/webhook-subscriptions/{id}/rotate-secret
+
+Install a new current signing key and return its secret once. With a positive `overlapSeconds` (default 3,600; at most 86,400) the old key becomes `previous` and every request carries a second `v1` signature until the overlap ends. `0` retires the old key immediately. A second rotation during an overlap returns `409` unless the previous key is revoked first.
+
+**Access:** Settings administrator. See [authentication](#http-conventions-and-authentication).
+
+**JSON body:** [RotateWebhookSecretRequest](#schema-rotatewebhooksecretrequest).
+
+**Success:** `200` [WebhookSecretResultDto](#schema-webhooksecretresultdto) with `Cache-Control: no-store`.
+**Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden; `404` Not Found; `409` stale revision, archived, or overlap in progress; `503` key protection unavailable.
+
+```http
+POST /api/webhook-subscriptions/019a5e2d-6d40-7000-8000-0000000000aa/rotate-secret HTTP/1.1
+Host: localhost:5017
+Authorization: Bearer TOKEN
+Content-Type: application/json
+
+{ "expectedRevision": 3, "overlapSeconds": 3600 }
+```
+
+### POST /api/webhook-subscriptions/{id}/revoke-previous-secret
+
+Stop signing with the previous key before its overlap ends. Requests already sent may still carry its signature.
+
+**Access:** Settings administrator. See [authentication](#http-conventions-and-authentication).
+
+**JSON body:** [WebhookRevisionRequest](#schema-webhookrevisionrequest).
+
+**Success:** `200` [WebhookSubscriptionDto](#schema-webhooksubscriptiondto).
+**Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden; `404` Not Found; `409` stale revision, archived, or no previous key.
+
+### POST /api/webhook-subscriptions/{id}/archive
+
+Archive irreversibly. The gate commits at once; the Worker then discards outstanding deliveries in bounded batches, fences active leases, and retires both keys. Repeating archive returns the archived subscription without new work.
+
+**Access:** Settings administrator. See [authentication](#http-conventions-and-authentication).
+
+**JSON body:** [WebhookRevisionRequest](#schema-webhookrevisionrequest). `expectedRevision` must always be a positive integer; when the subscription is already archived its value is not compared with the current revision.
+
+**Success:** `202` [WebhookSubscriptionDto](#schema-webhooksubscriptiondto); `archiveSettledAt` is set once the discard work finishes.
+**Errors:** `400` Bad Request (including a missing, zero, or negative `expectedRevision`, even when already archived); `401` Unauthorized; `403` Forbidden; `404` Not Found; `409` stale revision.
+
+### POST /api/webhook-subscriptions/{id}/deliveries/retry
+
+Retry up to 1,000 matching failed deliveries of an active subscription, oldest first, each in a new retry generation. The request is safe to repeat; `hasMore` says whether more failed deliveries still match.
+
+**Access:** Settings administrator. See [authentication](#http-conventions-and-authentication).
+
+**JSON body:** [WebhookBulkDeliveryRequest](#schema-webhookbulkdeliveryrequest). Every field is optional; an empty object matches every failed delivery of the subscription.
+
+**Success:** `200` [WebhookBulkDeliveryResultDto](#schema-webhookbulkdeliveryresultdto).
+**Errors:** `400` Bad Request (an invalid filter); `401` Unauthorized; `403` Forbidden; `404` Not Found; `409` the subscription is archived, not active, or has no usable key; `503` key protection unavailable.
+
+```http
+POST /api/webhook-subscriptions/019a5e2d-6d40-7000-8000-0000000000aa/deliveries/retry HTTP/1.1
+Host: localhost:5017
+Authorization: Bearer TOKEN
+Content-Type: application/json
+
+{ "failureCode": "receiver_rejected", "from": "2026-11-07T00:00:00Z" }
+```
+
+Response example:
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{ "matched": 37, "changed": 37, "skipped": 0, "hasMore": false }
+```
+
+### POST /api/webhook-subscriptions/{id}/deliveries/discard
+
+Discard up to 1,000 matching pending, scheduled, and failed deliveries, oldest first. Deliveries being sent are skipped and counted in `skipped`. Use `revisionId` to discard the outstanding work of a decommissioned destination. An archived subscription returns `409`: the Worker discards its outstanding deliveries itself.
+
+**Access:** Settings administrator. See [authentication](#http-conventions-and-authentication).
+
+**JSON body:** [WebhookBulkDeliveryRequest](#schema-webhookbulkdeliveryrequest).
+
+**Success:** `200` [WebhookBulkDeliveryResultDto](#schema-webhookbulkdeliveryresultdto).
+**Errors:** `400` Bad Request (an invalid filter); `401` Unauthorized; `403` Forbidden; `404` Not Found; `409` the subscription is archived.
+
+### GET /api/webhook-deliveries
+
+Search deliveries. Each event becomes one delivery per subscription that matched it when the event was captured.
+
+**Access:** Settings administrator. See [authentication](#http-conventions-and-authentication).
+
+| Parameter | Location | Type | Required | Meaning / default |
+| --- | --- | --- | --- | --- |
+| `subscriptionId` | query | string (uuid) | No | Exact subscription. |
+| `eventId` | query | string (uuid) | No | Exact event (`webhook-id`). |
+| `eventType` | query | string | No | One lifecycle event type, including `webhook.test`. |
+| `workflowKey` | query | string | No | Exact workflow family. |
+| `instanceId` | query | integer (int64) | No | Positive instance id. |
+| `revisionId` | query | integer (int64) | No | Destination revision the delivery captured. |
+| `state` | query | string | No | `pending`, `retryScheduled`, `delivering`, `succeeded`, `failed`, or `discarded`. |
+| `failureCode` | query | string | No | Exact [failure code](developer-guide.md#delivery-outcomes) of a failed delivery: `receiver_rejected`, `receiver_gone`, `redirect_refused`, `tls_error`, `destination_denied`, `signing_unavailable`, `response_headers_too_large`, `attempts_exhausted`, `deadline_exceeded`, or `retry_after_beyond_deadline`; any other value returns `400`. Retryable outcomes such as `timeout` are never failure codes: a generation they use up fails with one of the last three. |
+| `from` | query | string (date-time) | No | Inclusive event-time lower bound; any UTC offset. URL-encode a `+` as `%2B`. |
+| `to` | query | string (date-time) | No | Exclusive event-time upper bound; any UTC offset. |
+| `page` | query | integer (int32) | No | Default 1. |
+| `pageSize` | query | integer (int32) | No | Default 50; 1–200. |
+
+**Success:** `200` paged result of [WebhookDeliveryDto](#schema-webhookdeliverydto), newest first by event time.
+**Errors:** `400` Bad Request (an invalid filter or page, `from` not earlier than `to`, or an unknown, repeated, or `sort` query parameter); `401` Unauthorized; `403` Forbidden.
+
+```http
+GET /api/webhook-deliveries?subscriptionId=019a5e2d-6d40-7000-8000-0000000000aa&state=failed HTTP/1.1
+Host: localhost:5017
+Authorization: Bearer TOKEN
+```
+
+### GET /api/webhook-deliveries/{id}
+
+Read one delivery with its exact external event body (the bytes receivers verify), captured destination, retry budget, safe failure code, and whether retry or discard is allowed. Internal recipient identifiers are never returned.
+
+**Access:** Settings administrator. See [authentication](#http-conventions-and-authentication).
+
+**Success:** `200` [WebhookDeliveryDetailDto](#schema-webhookdeliverydetaildto).
+**Errors:** `400` Bad Request (a query parameter); `401` Unauthorized; `403` Forbidden; `404` Not Found (including after retention removed it).
+
+### GET /api/webhook-deliveries/{id}/attempts
+
+List a delivery's attempts by number: acquisition and send-intent times, outcome, HTTP status, duration, and the ids of the keys that signed. An attempt without a send intent was released before any request. Response bodies are never stored.
+
+**Access:** Settings administrator. See [authentication](#http-conventions-and-authentication).
+
+| Parameter | Location | Type | Required | Meaning / default |
+| --- | --- | --- | --- | --- |
+| `id` | path | string (uuid) | Yes | Delivery id. |
+| `page` | query | integer (int32) | No | Default 1. |
+| `pageSize` | query | integer (int32) | No | Default 50; 1–200. |
+
+**Success:** `200` paged result of [WebhookDeliveryAttemptDto](#schema-webhookdeliveryattemptdto), by attempt number.
+**Errors:** `400` Bad Request (an invalid or too large page, or any other query parameter, including `sort`); `401` Unauthorized; `403` Forbidden; `404` Not Found.
+
+### POST /api/webhook-deliveries/{id}/retry
+
+Queue a failed delivery in a new retry generation with its original event id, body, and captured destination; its earlier attempts remain. Requires an active subscription (a paused one for a test delivery) and a usable signing key. A stale revision, including a double click, returns `409` and queues nothing.
+
+**Access:** Settings administrator. See [authentication](#http-conventions-and-authentication).
+
+**JSON body:** [WebhookRevisionRequest](#schema-webhookrevisionrequest) with the delivery's `revision`.
+
+**Success:** `202` [WebhookDeliveryActionResultDto](#schema-webhookdeliveryactionresultdto).
+**Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden; `404` Not Found; `409` subscription archived or not active, stale revision, or not failed; `503` key protection unavailable.
+
+### POST /api/webhook-deliveries/{id}/discard
+
+Settle a pending, scheduled, or failed delivery as discarded; it is never sent. A delivery being sent returns `409`; only archive fences an active lease. A delivery of an archived subscription returns `409`: the Worker discards its outstanding deliveries itself.
+
+**Access:** Settings administrator. See [authentication](#http-conventions-and-authentication).
+
+**JSON body:** [WebhookRevisionRequest](#schema-webhookrevisionrequest) with the delivery's `revision`.
+
+**Success:** `200` [WebhookDeliveryActionResultDto](#schema-webhookdeliveryactionresultdto).
+**Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden; `404` Not Found; `409` subscription archived, stale revision, being sent, or already settled.
 
 ## Shared JSON schemas
 
@@ -10725,6 +11091,225 @@ A working period in the calendar's local wall-clock time, from `start` up to `en
 
 </details>
 
+<a id="schema-webhookeventcatalogdto"></a>
+
+<details>
+<summary>WebhookEventCatalogDto</summary>
+
+The lifecycle event catalog and the database capture switch.
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `schemaVersion` | integer (int32) | Yes | Event body schema version; `1`. |
+| `envelopeFields` | array of LifecycleEventFieldDto | Yes | Envelope fields in body order: `name`, `type`, `nullable`, `description`. |
+| `eventTypes` | array of LifecycleEventTypeDto | Yes | Each `type`, `description`, `subscribable` flag, and `dataFields` in body order. `webhook.test` is listed but not subscribable. |
+| `capture` | LifecycleEventCaptureDto | Yes | `enabled`, `changedAt`, and `changedBy` of the database capture switch. Read-only here; see [deployment](deployment.md#lifecycle-webhooks). |
+
+</details>
+
+<a id="schema-createwebhooksubscriptionrequest"></a>
+
+<details>
+<summary>CreateWebhookSubscriptionRequest</summary>
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `name` | string | Yes | 1–200 characters after trimming. |
+| `description` | null or string | No | At most 1,000 characters. |
+| `endpointUrl` | string | Yes | Absolute HTTPS URL; see the [validation rules](#lifecycle-webhooks). |
+| `eventTypes` | array of string | Yes | Nonempty subscribable event types; stored deduplicated in catalog order. |
+| `workflowKey` | null or string | No | Exact existing workflow family; null matches every family. |
+| `maxConcurrency` | null or integer (int32) | No | Concurrent requests to this receiver, 1–16; default 4. |
+
+</details>
+
+<a id="schema-updatewebhooksubscriptionrequest"></a>
+
+<details>
+<summary>UpdateWebhookSubscriptionRequest</summary>
+
+The fields of [CreateWebhookSubscriptionRequest](#schema-createwebhooksubscriptionrequest) plus `expectedRevision` (integer, required): the subscription's current `revision`.
+
+</details>
+
+<a id="schema-webhookrevisionrequest"></a>
+
+<details>
+<summary>WebhookRevisionRequest</summary>
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `expectedRevision` | integer (int64) | Yes | The current `revision` of the subscription or delivery; positive. |
+
+</details>
+
+<a id="schema-rotatewebhooksecretrequest"></a>
+
+<details>
+<summary>RotateWebhookSecretRequest</summary>
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `expectedRevision` | integer (int64) | Yes | The subscription's current `revision`. |
+| `overlapSeconds` | null or integer (int32) | No | 0–86,400; default 3,600. During the overlap requests carry a second signature made with the previous key. |
+
+</details>
+
+<a id="schema-webhooksecretresultdto"></a>
+
+<details>
+<summary>WebhookSecretResultDto</summary>
+
+Returned once by create and rotate, with `Cache-Control: no-store`.
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `subscription` | [WebhookSubscriptionDto](#schema-webhooksubscriptiondto) | Yes | The subscription after the change. |
+| `keyId` | string (uuid) | Yes | The new signing key. Attempts record which keys signed; key ids are not sent to receivers. |
+| `secret` | string | Yes | `whsec_` followed by the Base64 256-bit key. Never returned again. |
+
+</details>
+
+<a id="schema-webhooksubscriptiondto"></a>
+
+<details>
+<summary>WebhookSubscriptionDto</summary>
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `id` | string (uuid) | Yes | Subscription id. |
+| `name`, `description` | string, null or string | Yes | Display metadata. |
+| `state` | string | Yes | `active`, `paused`, or `archived`. |
+| `pauseReason` | null or string | Yes | `administrator`, `receiverGone`, or `receiverUnavailable` while paused; otherwise null. |
+| `maxConcurrency` | integer (int32) | Yes | Concurrent requests allowed to this receiver. |
+| `revision` | integer (int64) | Yes | Optimistic revision for management routes. |
+| `destination` | WebhookDestinationDto | Yes | Current revision: `revisionId`, `configurationRevision`, confidential `endpointUrl`, safe `origin`, `eventTypes`, `workflowKey`, `createdAt`, `createdBy`. |
+| `signingKeys` | array of WebhookSigningKeyDto | Yes | `id`, `status` (`current`, `previous`, `revoked`, `expired`, `retired`), `createdAt`, `createdBy`, `overlapExpiresAt`, `revokedAt`, `revokedBy`, `retiredAt`. Lists show current and previous keys; detail shows every key. Never secret material. |
+| `health` | WebhookReceiverHealthDto | Yes | `consecutiveFailures`, `backoffStartedAt`, `backoffUntil`, `lastSuccessAt`, `lastFailureAt`, `lastOutcome`, `lastHttpStatus`, `lastOutcomeAt`. |
+| `queue` | WebhookQueueCountsDto | Yes | Outstanding `pending`, `retryScheduled`, `delivering`, and `failed` counts. |
+| `createdAt`, `createdBy`, `updatedAt`, `updatedBy` | string | Yes | Audit metadata; `system` marks automatic pauses. |
+| `archivedAt`, `archivedBy`, `archiveSettledAt` | null or string | Yes | Archive time and actor, and when outstanding work finished settling. |
+
+</details>
+
+<a id="schema-webhooksubscriptiondetaildto"></a>
+
+<details>
+<summary>WebhookSubscriptionDetailDto</summary>
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `subscription` | [WebhookSubscriptionDto](#schema-webhooksubscriptiondto) | Yes | The subscription with every signing key. |
+| `revisions` | array of WebhookDestinationRevisionDto | Yes | Newest first: `destination`, `isCurrent`, and `outstandingDeliveries` still targeting it. |
+
+</details>
+
+<a id="schema-webhooktestresultdto"></a>
+
+<details>
+<summary>WebhookTestResultDto</summary>
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `deliveryId` | string (uuid) | Yes | The queued test delivery. |
+| `eventId` | string (uuid) | Yes | The test event, sent as `webhook-id`. |
+| `state` | string | Yes | `pending`. |
+
+</details>
+
+<a id="schema-webhookbulkdeliveryrequest"></a>
+
+<details>
+<summary>WebhookBulkDeliveryRequest</summary>
+
+Every field is optional and uses the [delivery-list](#get-apiwebhook-deliveries) meaning and validation: `eventType`, `workflowKey`, `instanceId`, `revisionId`, `failureCode` (one of the listed failure codes), `from` (inclusive), and `to` (exclusive). `from` and `to` accept any UTC offset. An invalid filter or an unknown member returns `400`, so a misspelled filter never widens the action. The route's subscription is always applied.
+
+</details>
+
+<a id="schema-webhookbulkdeliveryresultdto"></a>
+
+<details>
+<summary>WebhookBulkDeliveryResultDto</summary>
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `matched` | integer (int32) | Yes | Matching deliveries considered by this request, at most 1,000 plus skipped leases. |
+| `changed` | integer (int32) | Yes | Deliveries retried or discarded. |
+| `skipped` | integer (int32) | Yes | Matching deliveries left unchanged, such as ones being sent. |
+| `hasMore` | boolean | Yes | More eligible deliveries still match; repeat the request to continue. |
+
+</details>
+
+<a id="schema-webhookdeliverydto"></a>
+
+<details>
+<summary>WebhookDeliveryDto</summary>
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `id` | string (uuid) | Yes | Delivery id. |
+| `eventId` | string (uuid) | Yes | Event id, sent as `webhook-id` on every attempt. |
+| `subscriptionId`, `subscriptionName` | string | Yes | Owning subscription. |
+| `revisionId`, `configurationRevision`, `destinationOrigin` | integer, integer, string | Yes | The destination captured with the event; the origin omits path and query. |
+| `eventType`, `isTest` | string, boolean | Yes | Lifecycle type; test deliveries come from the test route. |
+| `workflowKey`, `instanceId` | null or string, null or integer | Yes | Copied from the event. |
+| `occurredAt` | string (date-time) | Yes | Event time. |
+| `state` | string | Yes | `pending`, `retryScheduled`, `delivering`, `succeeded`, `failed`, or `discarded`. |
+| `dueAt` | null or string (date-time) | Yes | Next attempt time while pending or scheduled; otherwise null. |
+| `retryGeneration`, `generationAttempts`, `lifetimeAttempts` | integer | Yes | Generation number, send intents in this generation (at most 12), and in total. |
+| `lastOutcome`, `lastHttpStatus`, `failureCode` | null or string, null or integer, null or string | Yes | Safe outcome and failure codes; never remote text. |
+| `lastAttemptAt`, `settledAt` | null or string (date-time) | Yes | Last send intent; settlement for succeeded or discarded deliveries. |
+| `revision` | integer (int64) | Yes | Send as `expectedRevision` to retry or discard. |
+| `createdAt`, `updatedAt` | string (date-time) | Yes | Row timestamps. |
+
+</details>
+
+<a id="schema-webhookdeliverydetaildto"></a>
+
+<details>
+<summary>WebhookDeliveryDetailDto</summary>
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `delivery` | [WebhookDeliveryDto](#schema-webhookdeliverydto) | Yes | The delivery. |
+| `endpointUrl` | string | Yes | Full captured destination URL; confidential. |
+| `body` | string | Yes | The exact external event body sent on every attempt. |
+| `subscriptionState` | string | Yes | The owning subscription's state. |
+| `generationStartedAt`, `deadlineAt` | null or string (date-time) | Yes | When this generation's first send intent happened and its 72-hour deadline. |
+| `maxAttemptsPerGeneration` | integer (int32) | Yes | `12`. |
+| `canRetry`, `canDiscard` | boolean | Yes | Whether the single retry or discard route would currently accept it; both are `false` for a delivery of an archived subscription. |
+
+</details>
+
+<a id="schema-webhookdeliveryattemptdto"></a>
+
+<details>
+<summary>WebhookDeliveryAttemptDto</summary>
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `id`, `attemptNumber` | integer | Yes | Attempt id and its unique number within the delivery. |
+| `retryGeneration`, `leaseGeneration` | integer | Yes | Generation and lease fence of the attempt. |
+| `signingKeyIds` | array of string (uuid) | Yes | Keys that signed the request; empty when nothing was sent. |
+| `acquiredAt`, `sendIntentAt`, `completedAt` | string or null (date-time) | Yes | Lease acquisition, send intent (null when released before sending), and completion. |
+| `outcome`, `httpStatus`, `durationMilliseconds` | null or string, null or integer, null or integer | Yes | Safe outcome, status when headers arrived, and send duration. |
+
+</details>
+
+<a id="schema-webhookdeliveryactionresultdto"></a>
+
+<details>
+<summary>WebhookDeliveryActionResultDto</summary>
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `id` | string (uuid) | Yes | Delivery id. |
+| `state` | string | Yes | `pending` after retry, `discarded` after discard. |
+| `revision` | integer (int64) | Yes | The delivery's new revision. |
+| `retryGeneration` | integer (int32) | Yes | Current retry generation. |
+
+</details>
+
 
 ## Worker operational endpoints
 
@@ -10733,8 +11318,8 @@ These endpoints belong to **Flowbit.Worker**, on its configured operational list
 | Method and path | Purpose and response | Parameters/body | Failure behavior |
 | --- | --- | --- | --- |
 | `GET /health/live` | Process liveness; `200 text/plain` with `Healthy` when live. | None. | Health-check failures return `503` with health status text. |
-| `GET /health/ready` | Reports whether every migration in the Worker build has been applied and the Worker has completed its first successful durable-queue query. | None. | Before both hold it returns `503`; the Worker log lists any pending migrations. The readiness flag then stays set: it is not a continuous database connectivity check or proof that the queue is empty. |
-| `GET /metrics` | Prometheus exposition; `200 text/plain; version=0.0.4; charset=utf-8`. | None. | No custom JSON error contract. |
+| `GET /health/ready` | Reports whether every migration in the Worker build has been applied and the Worker has completed its first successful durable-queue query. Webhook problems (unusable key protection with delivery enabled, or a recently failing webhook loop) report `Degraded`, which still answers `200`. | None. | Before both hold it returns `503`; the Worker log lists any pending migrations. The readiness flag then stays set: it is not a continuous database connectivity check or proof that the queue is empty. Receiver outages never affect it. |
+| `GET /metrics` | Prometheus exposition; `200 text/plain; version=0.0.4; charset=utf-8`, including the `flowbit_webhooks_*` series listed in [deployment](deployment.md#lifecycle-webhooks). | None. | No custom JSON error contract. |
 
 ```http
 GET /health/live HTTP/1.1

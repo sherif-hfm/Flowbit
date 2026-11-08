@@ -36,7 +36,7 @@ Flowbit is a **BPMN-aligned JSON workflow engine** with a visual editor, an HTTP
 | `Flowbit.Api` | Authenticated HTTP operations, definition validation, execution, and queries. | Yes. |
 | PostgreSQL | Stores immutable definition versions, execution state, work items, jobs, and history in the `flowbit` schema; see the [database schema reference](database-schema.md). | Yes. |
 | `Flowbit.Ui` | Blazor operations interface with per-login OIDC sign-in; DevelopmentToken mode provides a process-wide shared test identity. | Used only to obtain the local development token. |
-| `Flowbit.Worker` | Processes durable jobs, timers, retries, asynchronous conditional wakes, administrative batches, and retention cleanup. | No for the first approval; yes for examples requiring durable execution. |
+| `Flowbit.Worker` | Processes durable jobs, timers, retries, asynchronous conditional wakes, administrative batches, retention cleanup, and lifecycle webhook delivery. | No for the first approval; yes for examples requiring durable execution. |
 | Service / Infrastructure / Shared projects | Engine logic, persistence and integrations, and shared contracts behind the API and Worker. | Built as dependencies; applications can integrate entirely through HTTP. |
 
 Flowbit does not import or export BPMN XML or execute arbitrary BPMN diagrams. OIDC requires an external provider and supports one UI instance with per-login in-memory sessions. Read [BPMN support](bpmn-support.md), [OpenID Connect](openid-connect.md), and [deployment](deployment.md) before choosing your integration and hosting boundaries.

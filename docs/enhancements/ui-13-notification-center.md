@@ -42,7 +42,10 @@ Verified on 2026-10-24: not implemented.
 
 ## Builds on
 
-- The events recorded by [INT-01](int-01-outbound-lifecycle-webhooks.md).
+- The events recorded by [INT-01](int-01-outbound-lifecycle-webhooks.md). Its shipped contract for this item:
+  - `lifecycle_events.RecipientUserIds` holds canonical recipients: the new assignee of `task.assigned`, the effective assignee at activation of `task.created` (so a pending assignment can be deferred and released when activation arrives, in either order), and the delegate of `delegation.granted`. No role expansion or directory lookup is done. Recipients never reach external bodies or delivery reads; `SourceTable` and `SourceId` are the target references.
+  - Events are stored only when they match a target. This item adds its own internal target to the `flowbit.lifecycle_capture_wanted` and `flowbit.lifecycle_event_targets` functions, so its events are stored without an external subscriber, and consumes them without `webhook_deliveries`.
+  - INT-01 provides no unread state, recipient fanout, or consumer checkpoints. The `lifecycleEvents` retention category deletes fanned-out events that no delivery references, so this item must add its own protection before consuming events, and must reauthorize access when displaying a notification.
 - Retention policies.
 - [UI-05](ui-05-live-refresh.md) change signals, for a live unread count in a later release.
 

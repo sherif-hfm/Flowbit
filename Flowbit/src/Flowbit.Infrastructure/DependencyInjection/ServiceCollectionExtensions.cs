@@ -8,7 +8,9 @@ using Flowbit.Infrastructure.Data;
 using Flowbit.Infrastructure.Http;
 using Flowbit.Infrastructure.Repositories;
 using Flowbit.Infrastructure.Scripting;
+using Flowbit.Infrastructure.Webhooks;
 using Flowbit.Service.Abstractions;
+using Flowbit.Service.Services;
 
 namespace Flowbit.Infrastructure.DependencyInjection;
 
@@ -67,6 +69,20 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IConditionalBoundarySubscriptionRepository, ConditionalBoundarySubscriptionRepository>();
         services.AddScoped<IUnitOfWork, UnitOfWork>();
         services.AddScoped<DatabaseInitializer>();
+
+        // Hosts register their validated WebhookOptions first; this default serves tools and tests.
+        services.TryAddSingleton(configuration.GetSection(WebhookOptions.SectionName).Get<WebhookOptions>()
+            ?? new WebhookOptions());
+        services.AddSingleton(provider => new WebhookDataSource(
+            connectionString,
+            provider.GetRequiredService<WebhookOptions>().ConnectionPoolSize));
+        services.AddSingleton(provider => new WebhookDestinationPolicy(
+            provider.GetRequiredService<WebhookOptions>().Network));
+        services.TryAddSingleton(TimeProvider.System);
+        services.AddSingleton<IWebhookSecretProtector, DataProtectionWebhookSecretProtector>();
+        services.AddSingleton<IWebhookTransport, WebhookHttpTransport>();
+        services.AddScoped<IWebhookRepository, WebhookRepository>();
+        services.AddScoped<IWebhookDispatchRepository, WebhookDispatchRepository>();
         services.AddHttpClient<IServiceTaskInvoker, HttpServiceTaskInvoker>(client =>
             client.Timeout = Timeout.InfiniteTimeSpan);
         services.AddSingleton<IScriptEvaluator, JintScriptEvaluator>();

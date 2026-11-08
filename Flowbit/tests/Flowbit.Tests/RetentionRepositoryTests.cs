@@ -336,6 +336,7 @@ public sealed class RetentionRepositoryTests(PostgresApiFixture fixture)
         await using var db = fixture.CreateDbContext();
         await db.WorkflowInstances.Where(i => i.Id == instances[0])
             .ExecuteUpdateAsync(set => set.SetProperty(i => i.HistoryPrunedAt, scope.Now));
+        await WebhookTestDatabase.CheckpointCatchAllCaptureAsync(fixture.DataSource);
         try
         {
             var exception = await Assert.ThrowsAsync<PostgresException>(() => db.GetService<IMigrator>()
@@ -352,6 +353,7 @@ public sealed class RetentionRepositoryTests(PostgresApiFixture fixture)
             // guard rejects its own downgrade. Restore the shared fixture for the
             // current model even when an assertion above fails.
             await db.Database.MigrateAsync();
+            await WebhookTestDatabase.ReinstateCatchAllCaptureAsync(fixture.DataSource);
         }
         Assert.Empty(await db.Database.GetPendingMigrationsAsync());
     }

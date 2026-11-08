@@ -297,6 +297,13 @@ diagrams, see the [database schema reference](../docs/database-schema.md).
 - Call activities are stored in `flowbit.call_activity_executions`,
   `flowbit.call_activity_results`, and
   `flowbit.workflow_definition_call_targets`.
+- Lifecycle webhooks are stored in `flowbit.lifecycle_event_capture_state`,
+  `flowbit.lifecycle_events`, `flowbit.webhook_subscriptions`,
+  `flowbit.webhook_subscription_revisions`,
+  `flowbit.webhook_subscription_dispatch_state`,
+  `flowbit.webhook_signing_keys`, `flowbit.webhook_deliveries`,
+  `flowbit.webhook_delivery_attempts`, `flowbit.webhook_management_audit`,
+  and `flowbit.webhook_data_protection_keys`.
 - Durable work is stored in `flowbit.workflow_jobs`,
   `flowbit.workflow_job_attempts`, `flowbit.workflow_job_snapshots`,
   `flowbit.workflow_incidents`, and `flowbit.timer_subscriptions`.
@@ -775,6 +782,23 @@ A `callActivity` starts a child instance of another workflow family and rests un
 
 **Retained identity.** The invocation row is the relationship and outlives history retention. Only its captured values can be cleared, after settlement. A fresh activation ID, not a node-execution reference, is the ownership fence, so pruning history cannot affect it.
 
+## Lifecycle webhooks
+
+Outbound lifecycle webhooks (INT-01) deliver committed transitions to external receivers. Receivers follow the [developer guide](../docs/developer-guide.md#lifecycle-webhooks), administrators the [UI guide](../docs/ui-guide.md#lifecycle-webhooks) and [API reference](../docs/api-guide.md#lifecycle-webhooks), and operators [deployment](../docs/deployment.md#lifecycle-webhooks).
+
+**Capture is in the database, not the engine.** Deferred constraint triggers on `workflow_instances`, `user_tasks`, `workflow_incidents`, and `user_delegations` (`capture_*_lifecycle()` in the `AddOutboundLifecycleWebhooks` migration) derive events from `OLD`/`NEW`, match active subscription revisions, and insert `lifecycle_events` with the exact body bytes. Runtime C# code never describes events, so every API, Worker, raw-SQL, set-based, and `ON CONFLICT DO NOTHING` path is covered by construction. **A new lifecycle status, source column, or source table must update these capture functions**; tests in `LifecycleEventCaptureTests` pin the catalog rules. A new job kind must be classified in `LifecycleEventCaptureTests`, and listed in `capture_workflow_incident_lifecycle()` when its incidents have no authored node. Every string a body copies is bounded by its column, and an incident's node external id longer than the 300 characters a running node can hold is reported as null rather than truncated.
+
+- **Commit semantics.** Column lists and `WHEN` clauses decide at row-change time whether a call is queued, so unrelated updates queue nothing. Queued calls run at commit in change order, after rows written later in the transaction (node executions) exist, and read the definition applying at commit. Rollback, savepoint rollback, an unchanged update, capture off, `SET LOCAL flowbit.lifecycle_events = 'off'`, or no matching target store nothing. A trigger failure fails the source commit.
+- **Locks.** Capture runs after every runtime lock its transaction takes and takes none itself; it reads subscription rows without locks and has no foreign keys to them. Management, dispatch, and cleanup never lock runtime rows. Webhook rows locked together follow subscription → dispatch state → signing key → delivery → attempt. Fanout locks its batch of events, then share-locks their subscriptions before reading their state, so it waits for an archive in progress and never leaves a pending delivery behind a settled archive. Call activities keep their one-existing-instance-per-transaction rule: parent and child events belong to their own transactions.
+- **Recipients.** `RecipientUserIds` holds internal canonical recipients for the planned notification center (UI-13), which will add its own internal target to `lifecycle_capture_wanted` and `lifecycle_event_targets` and must reauthorize access before showing anything. They never reach external bodies or delivery reads.
+
+**Delivery is a separate queue in the Worker.** `LifecycleEventFanoutService` creates one delivery per captured target in the same transaction that marks fanout complete (no highest-seen cursor, because commits arrive out of order), settles archived subscriptions in bounded batches, recovers expired leases as `outcomeUnknown`, and retires key material. `WebhookDispatcher` acquires leases fairly (least-recently-acquired subscription first) up to each subscription's `MaxConcurrency` under its dispatch-state lock, records a send intent before network I/O, signs with `StandardWebhookSignature`, sends through `WebhookHttpTransport` with no database connection held, and finalizes only while the lease token, generation, and expiry still match, retrying a failed finalize briefly so a brief database failure does not resend an accepted request. Prepare-send drops a key revoked or expired since it was loaded, and releases the lease after a rotation so the new current key signs. A paused or backing-off subscription is selected only through a due test, and the next wake comes from each eligible subscription's earliest delivery, a test, or a backoff end, so a held backlog is never scanned; due work that cannot be acquired waits a full poll. Webhook work never uses `workflow_jobs`, never cancels with an instance, and never opens workflow incidents. Its own pool (`WebhookDataSource`, one connection per send plus four by default) and send concurrency keep dead receivers from starving workflow jobs.
+
+- **Budget and backoff.** `WebhookRetryPolicy` owns status classification, the retry schedule (12 sends within 72 hours of a generation's first send intent), `Retry-After`, and receiver backoff: five retryable outcomes, single probes, a one-hour cap, and an automatic pause after 72 hours. Only a probe sent after backoff began doubles it, and a backoff with no probe for over an hour starts again instead of pausing. Chosen times are persisted, never recalculated on restart.
+- **Security.** `WebhookDestinationPolicy` applies the same save-time and connection-time SSRF rules in the API and Worker. Secrets are protected by `DataProtectionWebhookSecretProtector` with the certificate-wrapped `Flowbit.Webhooks` ring in `webhook_data_protection_keys`; it never falls back to machine-local or ephemeral keys, and a host whose certificates cannot unwrap every ring key is unavailable rather than letting Data Protection add a key it can read. Temporary unavailability releases a leased delivery unspent; a secret that cannot be decrypted after reloading the ring fails as `signing_unavailable`.
+- **Readiness.** `WebhookTelemetry` tracks each loop (fanout, dispatch, delivery, signing) separately, so one that keeps failing keeps `/health/ready` degraded even while another succeeds.
+- **Retention.** `webhookDeliveries` and `lifecycleEvents` are retention categories (below). They never touch runtime rows or `HistoryPrunedAt`.
+
 ## Durable async work and timers
 
 `task`, `serviceTask`, `scriptTask`, and `userTask` support `asyncBefore` and
@@ -903,6 +927,8 @@ bounded and identify lower-bound counts when the sample limit is reached.
 | Shared-variable history | Revisions aged from instance finish when workflow-linked, otherwise creation. |
 | Completed jobs | Terminal unleased jobs without open incidents, attempts, and orphan snapshots. |
 | Resolved incidents | Incidents aged from resolution. |
+| Settled webhook deliveries | Succeeded and discarded [webhook](#lifecycle-webhooks) deliveries, attempts first, aged from settlement. Pending, retrying, leased, and failed deliveries are protected. |
+| Lifecycle events | Fanned-out events that no delivery references, aged from the event time. |
 
 The five history/audit policies initially keep data forever. The first upgraded
 Worker initializes the operational policies from
@@ -1442,6 +1468,26 @@ dotnet run --project ./tools/MultiInstanceApiTests/MultiInstanceApiTests.csproj 
 
 The live API runner writes Markdown and JSON evidence under the repository-level
 `TestResults` directory and includes restart recovery plus a 1,000-item load case.
+
+To prove that the [lifecycle capture triggers](#lifecycle-webhooks) accept every
+producer path, run the same suite as a producer sweep. It turns capture on with an
+active subscription to all eleven event types before the first test, and appends
+the number of recorded events per type to the report file when the run ends. Tests
+that delete events make those counts lower bounds:
+
+```powershell
+$env:FLOWBIT_TEST_LIFECYCLE_CAPTURE = 'all'
+$env:FLOWBIT_TEST_LIFECYCLE_CAPTURE_REPORT = "$PWD\lifecycle-capture.tsv"
+dotnet test .\tests\Flowbit.Tests\Flowbit.Tests.csproj
+Remove-Item Env:FLOWBIT_TEST_LIFECYCLE_CAPTURE, Env:FLOWBIT_TEST_LIFECYCLE_CAPTURE_REPORT
+```
+
+From Bash:
+
+```bash
+FLOWBIT_TEST_LIFECYCLE_CAPTURE=all FLOWBIT_TEST_LIFECYCLE_CAPTURE_REPORT="$PWD/lifecycle-capture.tsv" \
+  dotnet test ./tests/Flowbit.Tests/Flowbit.Tests.csproj
+```
 
 ### Browser smoke suite (separate command)
 
