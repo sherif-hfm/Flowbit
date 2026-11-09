@@ -2909,47 +2909,6 @@ namespace Flowbit.Infrastructure.Data.Migrations
                         });
                 });
 
-            modelBuilder.Entity("Flowbit.Infrastructure.Entities.SharedVariableRevisionStateEntity", b =>
-                {
-                    b.Property<short>("Id")
-                        .HasColumnType("smallint");
-
-                    b.Property<string>("AllocatorMode")
-                        .IsRequired()
-                        .ValueGeneratedOnAdd()
-                        .HasMaxLength(16)
-                        .HasColumnType("character varying(16)")
-                        .HasDefaultValue("legacy");
-
-                    b.Property<long>("LastRevision")
-                        .HasColumnType("bigint");
-
-                    b.Property<DateTimeOffset>("UpdatedAt")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("timestamp with time zone")
-                        .HasDefaultValueSql("now()");
-
-                    b.HasKey("Id");
-
-                    b.ToTable("shared_variable_revision_state", "flowbit", t =>
-                        {
-                            t.HasCheckConstraint("CK_shared_variable_revision_state_allocator_mode", "\"AllocatorMode\" IN ('legacy', 'sequence')");
-
-                            t.HasCheckConstraint("CK_shared_variable_revision_state_revision", "\"LastRevision\" >= 0");
-
-                            t.HasCheckConstraint("CK_shared_variable_revision_state_singleton", "\"Id\" = 1");
-                        });
-
-                    b.HasData(
-                        new
-                        {
-                            Id = (short)1,
-                            AllocatorMode = "legacy",
-                            LastRevision = 0L,
-                            UpdatedAt = new DateTimeOffset(new DateTime(2026, 8, 24, 0, 0, 0, 0, DateTimeKind.Unspecified), new TimeSpan(0, 0, 0, 0, 0))
-                        });
-                });
-
             modelBuilder.Entity("Flowbit.Infrastructure.Entities.TimerSubscriptionEntity", b =>
                 {
                     b.Property<long>("Id")

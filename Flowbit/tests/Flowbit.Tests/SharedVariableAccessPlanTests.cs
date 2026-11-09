@@ -148,21 +148,16 @@ public sealed class SharedVariableAccessPlanTests
     }
 
     [Fact]
-    public async Task LegacyCatalogFencePrelocksDefinitionButExactlyLocksExpectedOutputAlias()
+    public async Task CatalogFenceLocksOnlyTheExpectedOutputAlias()
     {
         var definition = CreateOrderedScriptDefinition(
             firstKey: "tests.lock.a",
             secondKey: "tests.lock.z");
-        string[]? compatibilityPrelock = null;
         string[]? exactLocks = null;
         var shared = Proxy<ISharedVariableRepository>((method, args) =>
         {
             switch (method.Name)
             {
-                case nameof(ISharedVariableRepository.PrelockDefinitionKeysForLegacyAllocatorAsync):
-                    compatibilityPrelock = ((IReadOnlyCollection<string>)(args[0]
-                        ?? throw new InvalidOperationException("Definition keys were not supplied."))).ToArray();
-                    return Task.CompletedTask;
                 case nameof(ISharedVariableRepository.LockCurrentAsync):
                     exactLocks = ((IReadOnlyCollection<string>)(args[0]
                         ?? throw new InvalidOperationException("Exact lock keys were not supplied."))).ToArray();
@@ -192,9 +187,6 @@ public sealed class SharedVariableAccessPlanTests
             lockForUpdate: true,
             CancellationToken.None);
 
-        Assert.Equal(
-            ["tests.lock.a", "tests.lock.z"],
-            Assert.IsType<string[]>(compatibilityPrelock));
         Assert.Equal(["tests.lock.z"], Assert.IsType<string[]>(exactLocks));
         Assert.Equal(17, Assert.Single(revisions).Value);
         Assert.DoesNotContain("first", revisions.Keys);

@@ -309,7 +309,7 @@ diagrams, see the [database schema reference](../docs/database-schema.md).
   `flowbit.workflow_job_attempts`, `flowbit.workflow_job_snapshots`,
   `flowbit.workflow_incidents`, and `flowbit.timer_subscriptions`.
 - The deployment-wide shared-variable catalog, current values, immutable
-  revisions, revision-allocator state, request ledger, and API clients and
+  revisions, request ledger, and API clients and
   secrets are stored in the `flowbit.shared_variable_*` tables. Definition
   bindings are in `flowbit.workflow_definition_shared_variable_bindings`. The
   former dependency, wake, delivery, and wake-incident tables were removed by
@@ -388,8 +388,10 @@ or write a shared binding must use
 instance locks out of the external HTTP interval.
 
 Every committed catalog/audit mutation receives a globally unique `Revision`
-from PostgreSQL. Sequence values can contain rollback gaps and revisions on
-different keys are not commit-order timestamps. `ValueRevision` starts at zero
+through `flowbit.next_shared_variable_revision()`, which calls
+`nextval('flowbit.shared_variable_revision_seq')`. Sequence values can contain
+rollback gaps and revisions on different keys are not commit-order timestamps.
+`ValueRevision` starts at zero
 and advances only for an effective set or unset. Description/lifecycle changes
 and identical-value writes leave it unchanged. New durable-job snapshots store
 the shared-output value revisions and therefore conflict only with a real value
@@ -459,28 +461,24 @@ downstream continuation. Unsafe new definitions are rejected. An immutable-ID
 cached runtime proof makes an already-published unsafe definition fail with 409
 before any shared row lock, so it must be drained and republished.
 
-First deploy the database allocator function backed by the existing singleton
-allocator and move all writers to that function. While allocator mode remains
-`legacy`, the first workflow shared lock/write/value fence temporarily prelocks
-all keys bound by that immutable definition in ordinal order. This stage-1 guard
-prevents mixed-version singleton writers from deadlocking with new multi-key
-transitions; it may increase contention. After every API and Worker writer is
-upgraded, seed the PostgreSQL sequence, switch the function to pure `nextval`,
-and set the allocator row to sequence mode. The compatibility prelock then
-becomes a no-op, restoring permanent exact node/flow locking. A database trigger
-rejects every legacy `LastRevision` update, so an old binary fails closed; the
-rejection is the intentional compatibility fail-safe equivalent of renaming or
-removing the old allocator table, while the row remains an EF-compatible
-cutover/audit marker. Then deploy the remaining components, verify shared-value
-reads and writes, and perform the sequence cutover. Mixed legacy replicas are
-prohibited after sequence cutover.
+Shared-variable allocation uses the PostgreSQL sequence permanently. There is no
+allocator mode or definition-wide compatibility prelock. Same-key writes retain
+their catalog-row lock for the transaction, and supplied expected catalog/value
+revisions retain their conflict checks. Nonempty shared locking calls require an
+ambient transaction; exact node/flow locks remain in ordinal order.
 
-Perform the fenced allocator cutover exactly once after all writer replicas are
-upgraded (repeated calls are harmless):
+`RemoveSharedVariableRevisionState` removes the old allocator table and its
+guard/cutover helpers. The migration preserves catalog, current-value, history,
+and request data and advances the sequence above the existing counter, persisted
+revisions, and allocated sequence high-water mark. Fresh installations use the
+sequence after the full migration chain without a separate cutover.
 
-```sql
-SELECT flowbit.cutover_shared_variable_revision_sequence();
-```
+For an existing database, stop all API/Worker writers, apply migrations, deploy
+matching binaries, then restart. Mixed old/new writers are unsupported. A
+rollback also requires stopped writers and matching previous binaries: `Down`
+restores the previous allocator schema in sequence mode while preserving the
+sequence and shared-variable data. See
+[upgrade and compatibility rules](../docs/deployment.md#upgrade-and-compatibility-rules).
 
 ## Intermediate conditional catch events
 

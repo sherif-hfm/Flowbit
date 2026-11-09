@@ -24,8 +24,6 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         Set<WorkflowDefinitionUserTaskConditionEntity>();
 
     public DbSet<SharedVariableEntity> SharedVariables => Set<SharedVariableEntity>();
-    public DbSet<SharedVariableRevisionStateEntity> SharedVariableRevisionStates =>
-        Set<SharedVariableRevisionStateEntity>();
     public DbSet<SharedVariableRevisionEntity> SharedVariableRevisions =>
         Set<SharedVariableRevisionEntity>();
     public DbSet<SharedVariableCurrentValueEntity> SharedVariableCurrentValues =>
@@ -306,29 +304,6 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
             entity.HasIndex(e => e.Key).IsUnique();
             entity.HasIndex(e => new { e.Status, e.Key });
-        });
-
-        modelBuilder.Entity<SharedVariableRevisionStateEntity>(entity =>
-        {
-            entity.ToTable("shared_variable_revision_state", table =>
-            {
-                table.HasCheckConstraint("CK_shared_variable_revision_state_singleton", "\"Id\" = 1");
-                table.HasCheckConstraint("CK_shared_variable_revision_state_revision", "\"LastRevision\" >= 0");
-                table.HasCheckConstraint(
-                    "CK_shared_variable_revision_state_allocator_mode",
-                    "\"AllocatorMode\" IN ('legacy', 'sequence')");
-            });
-            entity.HasKey(e => e.Id);
-            entity.Property(e => e.Id).ValueGeneratedNever();
-            entity.Property(e => e.AllocatorMode).HasMaxLength(16).HasDefaultValue("legacy").IsRequired();
-            entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
-            entity.HasData(new SharedVariableRevisionStateEntity
-            {
-                Id = 1,
-                LastRevision = 0,
-                AllocatorMode = "legacy",
-                UpdatedAt = new DateTimeOffset(2026, 8, 24, 0, 0, 0, TimeSpan.Zero)
-            });
         });
 
         modelBuilder.Entity<SharedVariableRevisionEntity>(entity =>

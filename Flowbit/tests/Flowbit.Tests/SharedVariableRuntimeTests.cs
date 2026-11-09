@@ -441,102 +441,49 @@ public sealed class SharedVariableRuntimeTests(PostgresApiFixture fixture)
     }
 
     [Fact]
-    public async Task LegacyAllocatorPrelocksDefinitionKeysBeforeFirstWorkflowWrite()
+    public async Task WorkflowWritingOneKeyDoesNotWaitForAnUnusedSharedBinding()
     {
         var suffix = Guid.NewGuid().ToString("N");
-        var lowerKey = $"tests.prelock.a.{suffix}";
-        var higherKey = $"tests.prelock.z.{suffix}";
+        var usedKey = $"tests.exact-workflow.a.{suffix}";
+        var unusedKey = $"tests.exact-workflow.z.{suffix}";
         await CreateSharedVariableAsync(
-            lowerKey,
-            WorkflowVariableTypes.String,
-            nullable: false,
-            JsonSerializer.SerializeToElement("lower-initial"));
+            usedKey, WorkflowVariableTypes.String, nullable: false,
+            JsonSerializer.SerializeToElement("used-initial"));
         await CreateSharedVariableAsync(
-            higherKey,
-            WorkflowVariableTypes.String,
-            nullable: false,
-            JsonSerializer.SerializeToElement("higher-initial"));
-        var workflowId = await CreateWorkflowAsync(
-            CreateSharedLockOrderWorkflow(
-                $"shared-prelock-{suffix}",
-                firstKey: lowerKey,
-                secondKey: higherKey));
+            unusedKey, WorkflowVariableTypes.String, nullable: false,
+            JsonSerializer.SerializeToElement("unused-initial"));
+        var definition = CreateSharedLockOrderWorkflow(
+            $"shared-exact-lock-{suffix}", firstKey: usedKey, secondKey: unusedKey);
+        definition.FlowNodes.RemoveAll(node => node.Id == 3);
+        definition.SequenceFlows.RemoveAll(flow => flow.Id == 301);
+        definition.SequenceFlows.Single(flow => flow.Id == 201).TargetRef = 4;
+        var workflowId = await CreateWorkflowAsync(definition);
 
-        string originalAllocatorMode;
-        await using (var allocator = fixture.CreateDbContext())
-        {
-            originalAllocatorMode = await allocator.SharedVariableRevisionStates
-                .Where(state => state.Id == 1)
-                .Select(state => state.AllocatorMode)
-                .SingleAsync();
-            if (string.Equals(
-                    originalAllocatorMode,
-                    "sequence",
-                    StringComparison.Ordinal))
-            {
-                // Another test may already have exercised the irreversible
-                // cutover function. Re-enter legacy mode only for this
-                // collection-serialized compatibility scenario; the function
-                // remains sequence-backed and mode is restored in finally.
-                await allocator.Database.ExecuteSqlRawAsync(
-                    "UPDATE flowbit.shared_variable_revision_state "
-                    + "SET \"AllocatorMode\" = 'legacy' WHERE \"Id\" = 1");
-            }
-        }
+        await using var otherWriter = fixture.CreateDbContext();
+        await using var otherTransaction = await otherWriter.Database.BeginTransactionAsync();
+        _ = await otherWriter.SharedVariables.FromSqlInterpolated(
+                $"""SELECT * FROM flowbit.shared_variables WHERE "Key" = {unusedKey} FOR UPDATE""")
+            .SingleAsync();
+        var startTask = StartAsync(workflowId);
         try
         {
-            await using var legacyWriter = fixture.CreateDbContext();
-            await using var legacyTransaction =
-                await legacyWriter.Database.BeginTransactionAsync();
-            _ = await legacyWriter.SharedVariables
-                .FromSqlInterpolated(
-                    $"""SELECT * FROM flowbit.shared_variables WHERE "Key" = {higherKey} FOR UPDATE""")
-                .SingleAsync();
-
-            var startTask = StartAsync(workflowId);
-            try
-            {
-                await WaitForBlockedSharedVariableLockAsync();
-
-                // This simulates a mixed-version singleton writer: it already
-                // owns the higher catalog key and now takes the legacy allocator.
-                // Directly advance the row because a prior suite test may have
-                // permanently replaced the allocator function with nextval.
-                await legacyWriter.Database.ExecuteSqlRawAsync(
-                    "UPDATE flowbit.shared_variable_revision_state "
-                    + "SET \"LastRevision\" = \"LastRevision\" + 1 WHERE \"Id\" = 1");
-                await legacyTransaction.CommitAsync();
-            }
-            catch
-            {
-                await legacyTransaction.RollbackAsync();
-                throw;
-            }
-
             var instance = await startTask.WaitAsync(TimeSpan.FromSeconds(15));
             Assert.Equal(WorkflowInstanceStatuses.Completed, instance.Status);
+            Assert.NotNull(otherWriter.Database.CurrentTransaction);
             await using var verify = fixture.CreateDbContext();
-            var values = await verify.SharedVariables
+            var values = await verify.SharedVariables.AsNoTracking()
                 .Include(variable => variable.CurrentValue)
-                .Where(variable => variable.Key == lowerKey || variable.Key == higherKey)
-                .ToDictionaryAsync(
-                    variable => variable.Key,
+                .Where(variable => variable.Key == usedKey || variable.Key == unusedKey)
+                .ToDictionaryAsync(variable => variable.Key,
                     variable => variable.CurrentValue!.ValueJson!.RootElement.GetString());
-            Assert.Equal("first-updated", values[lowerKey]);
-            Assert.Equal("second-updated", values[higherKey]);
+            Assert.Equal("first-updated", values[usedKey]);
+            Assert.Equal("unused-initial", values[unusedKey]);
         }
         finally
         {
-            if (string.Equals(
-                    originalAllocatorMode,
-                    "sequence",
-                    StringComparison.Ordinal))
-            {
-                await using var allocator = fixture.CreateDbContext();
-                await allocator.Database.ExecuteSqlRawAsync(
-                    "UPDATE flowbit.shared_variable_revision_state "
-                    + "SET \"AllocatorMode\" = 'sequence' WHERE \"Id\" = 1");
-            }
+            await otherTransaction.RollbackAsync();
+            // Release the held lock before draining a start that failed its deadline.
+            if (!startTask.IsCompleted) await startTask.WaitAsync(TimeSpan.FromSeconds(15));
         }
     }
 
@@ -649,34 +596,6 @@ public sealed class SharedVariableRuntimeTests(PostgresApiFixture fixture)
         {
             Assert.NotEqual(current.ValueRevision, result.Variable.ValueRevision);
         }
-    }
-
-    private async Task WaitForBlockedSharedVariableLockAsync()
-    {
-        var deadline = DateTimeOffset.UtcNow.AddSeconds(10);
-        await using var observer = fixture.CreateDbContext();
-        await observer.Database.OpenConnectionAsync();
-        while (DateTimeOffset.UtcNow < deadline)
-        {
-            await using var command = observer.Database.GetDbConnection().CreateCommand();
-            command.CommandText =
-                """
-                SELECT count(*)
-                FROM pg_stat_activity
-                WHERE wait_event_type = 'Lock'
-                  AND position('FLOWBIT.SHARED_VARIABLES' in upper(query)) > 0
-                  AND position('FOR UPDATE' in upper(query)) > 0
-                """;
-            var blocked = Convert.ToInt32(await command.ExecuteScalarAsync());
-            if (blocked > 0)
-            {
-                return;
-            }
-            await Task.Delay(25);
-        }
-
-        throw new TimeoutException(
-            "The workflow start did not block on the shared dependency row lock.");
     }
 
     private async Task ProcessWorkflowJobAsync(long jobId, int maxActivityCount = 0)

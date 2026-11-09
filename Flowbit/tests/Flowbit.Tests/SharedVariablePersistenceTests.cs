@@ -246,77 +246,129 @@ public sealed class SharedVariablePersistenceTests(PostgresApiFixture fixture)
         await transaction.RollbackAsync();
     }
 
-    [Fact]
-    public async Task SequenceCutoverAllowsDifferentKeyWritesWithoutSingletonLockAndSameKeyCasStillSerializes()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SameKeyWriterWaitsUntilTheOwningTransactionFinishes(bool commit)
     {
-        await using (var cutoverScope = fixture.Factory.Services.CreateAsyncScope())
+        var key = $"tests.sequence-lock.{Guid.NewGuid():N}";
+        var initial = await CreateInIndependentScopeAsync(key);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        var ct = timeout.Token;
+        await using var ownerDb = fixture.CreateDbContext();
+        await using var ownerTransaction = await ownerDb.Database.BeginTransactionAsync(ct);
+        var staged = await new SharedVariableRepository(ownerDb).WriteAsync(
+            WriteCommand(key, JsonSerializer.SerializeToElement(2),
+                initial.Variable.Revision, initial.Variable.ValueRevision), ct);
+        Assert.NotNull(staged);
+        var ownerPid = ((NpgsqlConnection)ownerDb.Database.GetDbConnection()).ProcessID;
+
+        await using var waitingDb = fixture.CreateDbContext();
+        await waitingDb.Database.OpenConnectionAsync(ct);
+        var waitingPid = ((NpgsqlConnection)waitingDb.Database.GetDbConnection()).ProcessID;
+        var waitingWriter = new SharedVariableRepository(waitingDb).WriteAsync(
+            new SharedVariableWriteCommand(key, JsonSerializer.SerializeToElement(3),
+                DeleteValue: false, ExpectedRevision: null, TestCaller(), SharedVariableSources.System), ct);
+        var released = false;
+        try
         {
-            var cutoverDb = cutoverScope.ServiceProvider.GetRequiredService<AppDbContext>();
-            _ = await cutoverDb.Database.SqlQueryRaw<long>(
-                    "SELECT flowbit.cutover_shared_variable_revision_sequence() AS \"Value\"")
-                .SingleAsync();
+            await WaitForCatalogLockAsync(waitingPid, ownerPid, waitingWriter, ct);
+            Assert.False(waitingWriter.IsCompleted);
+            if (commit) await ownerTransaction.CommitAsync(ct);
+            else await ownerTransaction.RollbackAsync(ct);
+            released = true;
+
+            var completed = await waitingWriter;
+            Assert.NotNull(completed);
+            Assert.Equal(3, completed.Variable.Value!.Value.GetInt32());
+            await using var verify = fixture.CreateDbContext();
+            var revisions = await verify.SharedVariableRevisions.AsNoTracking()
+                .Where(row => row.SharedVariableId == initial.Variable.Id)
+                .OrderBy(row => row.Revision).ToArrayAsync(ct);
+            Assert.Equal(commit ? 3 : 2, revisions.Length);
+            Assert.Equal(completed.Revision.Revision, revisions[^1].Revision);
+            Assert.True(completed.Revision.Revision > staged.Revision.Revision);
         }
+        finally
+        {
+            if (!released) await ownerTransaction.RollbackAsync(CancellationToken.None);
+            // Drain the writer before disposing its connection, including assertion failures.
+            try { await waitingWriter; }
+            catch when (timeout.IsCancellationRequested || !released) { }
+        }
+    }
 
-        await using var lockScope = fixture.Factory.Services.CreateAsyncScope();
-        var lockDb = lockScope.ServiceProvider.GetRequiredService<AppDbContext>();
-        await using var lockTransaction = await lockDb.Database.BeginTransactionAsync();
-        _ = await lockDb.Database.SqlQueryRaw<short>(
-                "SELECT \"Id\" AS \"Value\" FROM flowbit.shared_variable_revision_state WHERE \"Id\" = 1 FOR UPDATE")
-            .SingleAsync();
-
+    [Fact]
+    public async Task DifferentKeyWriteCommitsWhileAnotherWriteTransactionRemainsOpen()
+    {
         var suffix = Guid.NewGuid().ToString("N");
-        var firstCreateTask = CreateInIndependentScopeAsync($"tests.sequence-a.{suffix}");
-        var secondCreateTask = CreateInIndependentScopeAsync($"tests.sequence-b.{suffix}");
-        var created = await Task.WhenAll(firstCreateTask, secondCreateTask)
-            .WaitAsync(TimeSpan.FromSeconds(10));
-        Assert.NotEqual(created[0].Revision.Revision, created[1].Revision.Revision);
-        await lockTransaction.RollbackAsync();
+        var first = await CreateInIndependentScopeAsync($"tests.sequence-a.{suffix}");
+        var second = await CreateInIndependentScopeAsync($"tests.sequence-b.{suffix}");
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        var ct = timeout.Token;
+        await using var firstDb = fixture.CreateDbContext();
+        await using var firstTransaction = await firstDb.Database.BeginTransactionAsync(ct);
+        var firstWrite = await new SharedVariableRepository(firstDb).WriteAsync(
+            WriteCommand(first.Variable.Key, JsonSerializer.SerializeToElement(2),
+                first.Variable.Revision, first.Variable.ValueRevision), ct);
+        Assert.NotNull(firstWrite);
 
-        var casKey = $"tests.sequence-cas.{suffix}";
-        var initial = await CreateInIndependentScopeAsync(casKey);
-        var firstWrite = WriteInIndependentScopeAsync(casKey, 2, initial.Variable);
-        var secondWrite = WriteInIndependentScopeAsync(casKey, 3, initial.Variable);
-        var outcomes = await Task.WhenAll(firstWrite, secondWrite)
-            .WaitAsync(TimeSpan.FromSeconds(10));
-        Assert.Single(outcomes, outcome => outcome.Result is not null);
+        await using var secondDb = fixture.CreateDbContext();
+        var secondWrite = await new SharedVariableRepository(secondDb).WriteAsync(
+            WriteCommand(second.Variable.Key, JsonSerializer.SerializeToElement(3),
+                second.Variable.Revision, second.Variable.ValueRevision), ct);
+        Assert.NotNull(secondWrite);
+        Assert.NotEqual(firstWrite.Revision.Revision, secondWrite.Revision.Revision);
+        Assert.NotNull(firstDb.Database.CurrentTransaction);
+
+        await using var verify = fixture.CreateDbContext();
+        var values = await verify.SharedVariables.AsNoTracking()
+            .Include(variable => variable.CurrentValue)
+            .Where(variable => variable.Id == first.Variable.Id || variable.Id == second.Variable.Id)
+            .ToDictionaryAsync(variable => variable.Id,
+                variable => variable.CurrentValue!.ValueJson!.RootElement.GetInt32(), ct);
+        Assert.Equal(1, values[first.Variable.Id]); // The first write is still uncommitted.
+        Assert.Equal(3, values[second.Variable.Id]);
+        await firstTransaction.RollbackAsync(ct);
+    }
+
+    [Fact]
+    public async Task ConcurrentWritesWithTheSameExpectedRevisionCommitExactlyOneChange()
+    {
+        var key = $"tests.sequence-cas.{Guid.NewGuid():N}";
+        var initial = await CreateInIndependentScopeAsync(key);
+        var start = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        var firstWrite = WriteAfterStartAsync(2);
+        var secondWrite = WriteAfterStartAsync(3);
+        start.SetResult();
+        var outcomes = await Task.WhenAll(firstWrite, secondWrite);
+        var winner = Assert.Single(outcomes, outcome => outcome.Result is not null).Result!;
         Assert.Single(outcomes, outcome => outcome.Error is WorkflowConflictException);
 
-        await using var verifyScope = fixture.Factory.Services.CreateAsyncScope();
-        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<AppDbContext>();
-        Assert.Equal(
-            "sequence",
-            await verifyDb.SharedVariableRevisionStates
-                .Where(item => item.Id == 1)
-                .Select(item => item.AllocatorMode)
-                .SingleAsync());
+        await using var verify = fixture.CreateDbContext();
+        var current = await verify.SharedVariables.AsNoTracking()
+            .Include(variable => variable.CurrentValue)
+            .SingleAsync(variable => variable.Id == initial.Variable.Id);
+        Assert.Equal(winner.Variable.Revision, current.CurrentRevision);
+        Assert.Equal(winner.Variable.ValueRevision, current.ValueRevision);
+        Assert.Equal(winner.Variable.Value!.Value.GetInt32(), current.CurrentValue!.ValueJson!.RootElement.GetInt32());
+        var history = await verify.SharedVariableRevisions.AsNoTracking()
+            .Where(revision => revision.SharedVariableId == initial.Variable.Id)
+            .OrderBy(revision => revision.Revision).ToArrayAsync();
+        Assert.Equal(2, history.Length);
+        Assert.Equal(winner.Revision.Revision, history[^1].Revision);
 
-        async Task<SharedVariableMutationResult> CreateInIndependentScopeAsync(string key)
+        async Task<(SharedVariableMutationResult? Result, Exception? Error)> WriteAfterStartAsync(int value)
         {
-            await using var createScope = fixture.Factory.Services.CreateAsyncScope();
-            var repository = createScope.ServiceProvider.GetRequiredService<ISharedVariableRepository>();
-            return await repository.CreateAsync(
-                CreateCommand(key, "number", nullable: false, validation: null,
-                    JsonSerializer.SerializeToElement(1)),
-                CancellationToken.None);
-        }
-
-        async Task<(SharedVariableMutationResult? Result, Exception? Error)> WriteInIndependentScopeAsync(
-            string key,
-            int value,
-            SharedVariableRecord expected)
-        {
+            await start.Task;
             try
             {
                 await using var writeScope = fixture.Factory.Services.CreateAsyncScope();
                 var repository = writeScope.ServiceProvider.GetRequiredService<ISharedVariableRepository>();
-                var result = await repository.WriteAsync(
-                    WriteCommand(
-                        key,
-                        JsonSerializer.SerializeToElement(value),
-                        expected.Revision,
-                        expected.ValueRevision),
-                    CancellationToken.None);
-                return (result, null);
+                return (await repository.WriteAsync(
+                    WriteCommand(key, JsonSerializer.SerializeToElement(value),
+                        initial.Variable.Revision, initial.Variable.ValueRevision), timeout.Token), null);
             }
             catch (Exception exception)
             {
@@ -430,71 +482,67 @@ public sealed class SharedVariablePersistenceTests(PostgresApiFixture fixture)
         await transaction.RollbackAsync();
     }
 
-    [Fact]
-    public async Task LegacyAllocatorPrelockRequiresTransactionAndLocksKeysOnlyInLegacyMode()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SharedLocksRequireATransactionAndLockOnlyRequestedKeys(bool valueStamps)
     {
-        await WithIsolatedDatabaseAsync(async connectionString =>
+        var suffix = Guid.NewGuid().ToString("N");
+        var first = await CreateInIndependentScopeAsync($"tests.exact-lock.a.{suffix}");
+        var second = await CreateInIndependentScopeAsync($"tests.exact-lock.b.{suffix}");
+        var unused = await CreateInIndependentScopeAsync($"tests.exact-lock.z.{suffix}");
+        await using var db = fixture.CreateDbContext();
+        var repository = new SharedVariableRepository(db);
+        await LockAsync([]); // An empty set does not acquire any locks.
+        var failure = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            LockAsync([first.Variable.Key]));
+        Assert.Contains("ambient database transaction", failure.Message, StringComparison.Ordinal);
+
+        await using var transaction = await db.Database.BeginTransactionAsync();
+        await LockAsync([second.Variable.Key, first.Variable.Key, second.Variable.Key]);
+        Assert.False(await CanAcquireCatalogLockNowaitAsync(fixture.DataSource, first.Variable.Key));
+        Assert.False(await CanAcquireCatalogLockNowaitAsync(fixture.DataSource, second.Variable.Key));
+        Assert.True(await CanAcquireCatalogLockNowaitAsync(fixture.DataSource, unused.Variable.Key));
+        await transaction.RollbackAsync();
+        Assert.True(await CanAcquireCatalogLockNowaitAsync(fixture.DataSource, first.Variable.Key));
+        Assert.True(await CanAcquireCatalogLockNowaitAsync(fixture.DataSource, second.Variable.Key));
+
+        async Task LockAsync(string[] keys)
         {
-            await MigrateAsync(connectionString, HardenedSharedVariableMigration);
-            await AddCurrentCatalogReadColumnsAsync(connectionString);
-            var dataSourceBuilder = new NpgsqlDataSourceBuilder(connectionString);
-            dataSourceBuilder.EnableDynamicJson();
-            await using var dataSource = dataSourceBuilder.Build();
-            var options = new DbContextOptionsBuilder<AppDbContext>()
-                .UseNpgsql(dataSource, FlowbitDatabase.ConfigureProvider)
-                .Options;
-            var suffix = Guid.NewGuid().ToString("N");
-            var firstKey = $"tests.allocator-prelock.a.{suffix}";
-            var secondKey = $"tests.allocator-prelock.b.{suffix}";
+            if (valueStamps)
+                _ = await repository.LockValueStampsAsync(keys, includeArchived: true, CancellationToken.None);
+            else
+                _ = await repository.LockCurrentAsync(keys, includeArchived: true, CancellationToken.None);
+        }
+    }
 
-            await using (var setup = new AppDbContext(options))
-            {
-                var repository = new SharedVariableRepository(setup);
-                await repository.CreateAsync(
-                    CreateCommand(firstKey, "number", false, null,
-                        JsonSerializer.SerializeToElement(1)),
-                    CancellationToken.None);
-                await repository.CreateAsync(
-                    CreateCommand(secondKey, "number", false, null,
-                        JsonSerializer.SerializeToElement(1)),
-                    CancellationToken.None);
-                await Assert.ThrowsAsync<InvalidOperationException>(() =>
-                    repository.PrelockDefinitionKeysForLegacyAllocatorAsync(
-                        [secondKey, firstKey],
-                        CancellationToken.None));
-            }
+    private async Task<SharedVariableMutationResult> CreateInIndependentScopeAsync(string key)
+    {
+        await using var scope = fixture.Factory.Services.CreateAsyncScope();
+        var repository = scope.ServiceProvider.GetRequiredService<ISharedVariableRepository>();
+        return await repository.CreateAsync(
+            CreateCommand(key, "number", nullable: false, validation: null,
+                JsonSerializer.SerializeToElement(1)), CancellationToken.None);
+    }
 
-            await using (var legacy = new AppDbContext(options))
-            await using (var legacyTransaction = await legacy.Database.BeginTransactionAsync())
-            {
-                var repository = new SharedVariableRepository(legacy);
-                await repository.PrelockDefinitionKeysForLegacyAllocatorAsync(
-                    [secondKey, firstKey, secondKey],
-                    CancellationToken.None);
-                Assert.False(await CanAcquireCatalogLockNowaitAsync(dataSource, firstKey));
-                Assert.False(await CanAcquireCatalogLockNowaitAsync(dataSource, secondKey));
-                await legacyTransaction.RollbackAsync();
-            }
-
-            await using (var cutover = new AppDbContext(options))
-            {
-                _ = await cutover.Database.SqlQueryRaw<long>(
-                        "SELECT flowbit.cutover_shared_variable_revision_sequence() AS \"Value\"")
-                    .SingleAsync();
-            }
-
-            await using (var sequence = new AppDbContext(options))
-            await using (var sequenceTransaction = await sequence.Database.BeginTransactionAsync())
-            {
-                var repository = new SharedVariableRepository(sequence);
-                await repository.PrelockDefinitionKeysForLegacyAllocatorAsync(
-                    [secondKey, firstKey],
-                    CancellationToken.None);
-                Assert.True(await CanAcquireCatalogLockNowaitAsync(dataSource, firstKey));
-                Assert.True(await CanAcquireCatalogLockNowaitAsync(dataSource, secondKey));
-                await sequenceTransaction.RollbackAsync();
-            }
-        });
+    private async Task WaitForCatalogLockAsync(
+        int waitingPid, int ownerPid, Task waitingWriter, CancellationToken cancellationToken)
+    {
+        await using var observer = await fixture.DataSource.OpenConnectionAsync(cancellationToken);
+        await using var command = new NpgsqlCommand("""
+            SELECT EXISTS (
+                SELECT 1 FROM pg_stat_activity
+                WHERE pid = @waiting AND wait_event_type = 'Lock'
+                  AND @owner = ANY(pg_blocking_pids(pid))
+                  AND query ILIKE '%shared_variables%' AND query ILIKE '%FOR UPDATE%')
+            """, observer);
+        command.Parameters.AddWithValue("waiting", waitingPid);
+        command.Parameters.AddWithValue("owner", ownerPid);
+        while (!(bool)(await command.ExecuteScalarAsync(cancellationToken))!)
+        {
+            Assert.False(waitingWriter.IsCompleted, "The competing write must wait on the catalog row lock.");
+            await Task.Delay(25, cancellationToken);
+        }
     }
 
     private static SharedVariableCreateCommand CreateCommand(
@@ -519,10 +567,10 @@ public sealed class SharedVariablePersistenceTests(PostgresApiFixture fixture)
 
     private static async Task AddCurrentCatalogReadColumnsAsync(string connectionString)
     {
-        // These two tests intentionally keep the old allocator/conditional-wake
+        // This migration test intentionally keeps the old conditional-wake
         // schema while exercising today's repository. Add only its nullable
         // catalog projection column; do not apply newer migrations or alter the
-        // legacy artifacts and allocator behavior that the tests are asserting.
+        // legacy conditional-wake artifacts that this test is asserting.
         await using var connection = new NpgsqlConnection(connectionString);
         await connection.OpenAsync();
         await using var command = new NpgsqlCommand("""

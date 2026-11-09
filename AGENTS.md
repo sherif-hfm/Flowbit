@@ -2503,7 +2503,9 @@ Two revisions have deliberately different meanings:
   changes: a real set/change or unset. Description/lifecycle mutations and an
   identical-value write leave it unchanged.
 
-Revision allocation is PostgreSQL-owned and globally unique. Rollbacks may
+Revision allocation is PostgreSQL-owned and globally unique:
+`flowbit.next_shared_variable_revision()` always calls
+`nextval('flowbit.shared_variable_revision_seq')`. Rollbacks may
 leave gaps, and revisions belonging to different shared keys are not a
 commit-order timestamp. Same-key writes serialize on the catalog/current row.
 Migrations backfill `ValueRevision` from each key's latest
@@ -2554,17 +2556,11 @@ cache repeats the proof by immutable definition ID before runtime locking, so an
 already-published unsafe definition fails with an operational conflict before
 it can acquire a shared row; operators must drain/republish it.
 
-There is one temporary rollout exception to exact locking. While
-`shared_variable_revision_state.AllocatorMode = 'legacy'`, the first shared
-lock, write, or output value fence in a workflow transaction prelocks every
-catalog key bound by that immutable definition, distinct and ordinal. This
-prevents a mixed-version single-key writer from forming a catalog-key/singleton-
-allocator cycle with a new multi-key transition. The PostgreSQL repository
-requires an ambient transaction for that guard. After the fenced sequence
-cutover changes `AllocatorMode` to `sequence`, the same call is a no-op and
-per-node/per-flow exact locking is the permanent steady state. Treat the legacy
-prelock's broader contention as temporary stage-1 serialization, not as the
-long-term access-plan contract.
+Shared locking follows the exact per-node/per-flow plan in every deployment;
+there is no allocator-mode-dependent definition-wide prelock. Nonempty shared
+locking calls require an ambient transaction. Preserve catalog-row `FOR UPDATE`
+locks, ordinal lock order, and catalog/value revision conflict checks when
+changing the allocation implementation.
 
 Any new or republished REST `serviceTask` that reads a shared alias in its URL,
 headers, body, output default, mapping validation, or target validation, or
@@ -2623,15 +2619,15 @@ Production deployment is migration-first:
    then restart the API and Worker replicas. Do not run mixed old/new replicas.
    Every authoring path rejects a shared alias in a conditional condition, and
    shared-value writes no longer create conditional wake work.
-5. After every writer is upgraded, seed a PostgreSQL sequence, switch the
-   allocator function to pure `nextval`, and set the allocator row to sequence
-   mode. The database trigger rejects any later legacy `LastRevision` update,
-   making old binaries fail safely. That trigger rejection is the intentional
-   compatibility fail-safe equivalent of renaming/removing the old allocator
-   table, while retaining the row as the EF-compatible cutover/audit marker. Invoke
-   `SELECT flowbit.cutover_shared_variable_revision_sequence();`; the operation
-   is fenced and idempotent. The workflow compatibility prelock becomes a no-op
-   immediately, leaving only exact monotonic node/flow locks.
+
+`RemoveSharedVariableRevisionState` removes the old allocator table and its
+guard/cutover helpers. Stop every API/Worker writer before applying it, deploy
+matching binaries, then restart. It preserves shared-variable data and advances
+the sequence above the old counter, persisted revisions, and allocated sequence
+high-water mark. Fresh installations use sequence allocation automatically after
+the full migration chain; no manual cutover is needed. Its `Down` restores the
+previous allocator schema in sequence mode while preserving the sequence and
+data; rollback also requires stopped writers and matching previous binaries.
 
 The hard-cut order is stop replicas -> guarded migration -> coordinated binary
 deployment -> restart. Mixed legacy replicas are unsupported. Per-key ACLs,

@@ -43,10 +43,6 @@ public interface ISharedVariableRepository
         bool includeArchived,
         CancellationToken cancellationToken);
 
-    Task PrelockDefinitionKeysForLegacyAllocatorAsync(
-        IReadOnlyCollection<string> keys,
-        CancellationToken cancellationToken);
-
     Task<SharedVariableMutationResult> CreateAsync(
         SharedVariableCreateCommand command,
         CancellationToken cancellationToken);

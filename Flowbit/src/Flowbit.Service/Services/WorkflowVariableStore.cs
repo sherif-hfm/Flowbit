@@ -35,9 +35,6 @@ public sealed class WorkflowVariableStore(
             .ToArray();
         if (lockForUpdate)
         {
-            await sharedVariables.PrelockDefinitionKeysForLegacyAllocatorAsync(
-                SharedCatalogKeys(allBindings.Values),
-                cancellationToken);
             _ = await sharedVariables.LockCurrentAsync(
                 keys,
                 includeArchived: true,
@@ -77,12 +74,6 @@ public sealed class WorkflowVariableStore(
             .Distinct(StringComparer.Ordinal)
             .Order(StringComparer.Ordinal)
             .ToArray();
-        if (lockForUpdate && keys.Length > 0)
-        {
-            await sharedVariables.PrelockDefinitionKeysForLegacyAllocatorAsync(
-                SharedCatalogKeys(bindings.Values),
-                cancellationToken);
-        }
         var stamps = lockForUpdate
             ? await sharedVariables.LockValueStampsAsync(
                 keys,
@@ -181,14 +172,6 @@ public sealed class WorkflowVariableStore(
         IReadOnlyDictionary<string, SharedVariableCurrentValueRecord> current;
         if (lockedKeys.Length > 0)
         {
-            // During the legacy singleton-revision-allocator rollout, every
-            // workflow transaction that will lock a shared row first takes the
-            // immutable definition's complete key set in ordinal order. The
-            // repository makes this a no-op after sequence cutover, restoring
-            // the permanent exact node/flow locking plan automatically.
-            await sharedVariables.PrelockDefinitionKeysForLegacyAllocatorAsync(
-                allKeys,
-                cancellationToken);
             var locked = await sharedVariables.LockCurrentAsync(
                 lockedKeys,
                 includeArchived: false,
@@ -278,9 +261,6 @@ public sealed class WorkflowVariableStore(
         // comparison and suppresses its durable wake expansion as well.
         if (sharedWrites.Count > 0)
         {
-            await sharedVariables.PrelockDefinitionKeysForLegacyAllocatorAsync(
-                SharedCatalogKeys(bindings.Values),
-                cancellationToken);
             var sharedKeys = sharedWrites.Select(item => item.Binding.SharedKey!)
                 .Distinct(StringComparer.Ordinal)
                 .Order(StringComparer.Ordinal)
@@ -375,13 +355,6 @@ public sealed class WorkflowVariableStore(
                 && string.Equals(variable.Scope, VariableScopes.Shared, StringComparison.Ordinal)
                 && !string.IsNullOrWhiteSpace(variable.SharedKey))
             .ToDictionary(variable => variable.Name, StringComparer.OrdinalIgnoreCase);
-
-    private static string[] SharedCatalogKeys(IEnumerable<VariableModel> bindings) =>
-        bindings
-            .Select(binding => binding.SharedKey!)
-            .Distinct(StringComparer.Ordinal)
-            .Order(StringComparer.Ordinal)
-            .ToArray();
 
     private static void EnsureValueAllowed(VariableModel binding, JsonElement value)
     {

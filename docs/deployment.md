@@ -533,7 +533,7 @@ Classify the **actual source database and release path** before deployment. The 
 | Pre-generic-gateway runtime | The retired parallel-specific runtime/JSON vocabulary is not migrated into live generic scopes. Stop all writers, back up retained data, reset/recreate the Flowbit database/schema under a separate approved runbook, apply current migrations, then import canonical definitions. Do not upgrade old in-flight scopes in place. See [gateway rollout](../Flowbit/README.md#gateway-migration-rollout). |
 | Legacy shared-variable conditional wakes | `RemoveSharedVariableConditionalWakes` aborts if dependency, wake, delivery, or incident rows remain. Use a safe-drain release/runbook to replace affected definitions and finish or migrate their instances. Do not delete rows to bypass the guard. Stop all API/Worker replicas for the cutover and deploy API/UI/Worker together. |
 | Shared-variable REST and locking contracts | Run [shared-variable-rest-inventory.sql](../Flowbit/tools/shared-variable-rest-inventory.sql). Unsafe REST use must be empty: tasks accessing shared bindings require `asyncBefore`. Review every reported published multi-key definition, then save/republish through the monotonic lock-order validator or drain it. Existing unsafe definitions fail closed at runtime. |
-| Shared revision allocator transition | Deploy the compatibility allocator/migration, upgrade all writer replicas, then invoke the fenced sequence cutover. Legacy writers are rejected after cutover. Keep the exact staged procedure in [shared-variable deployment notes](../Flowbit/README.md#shared-variables). |
+| Shared revision allocator removal | Stop all API/Worker writers, apply `RemoveSharedVariableRevisionState`, deploy matching binaries, then restart. The migration preserves shared-variable data and makes sequence allocation permanent; mixed old/new writers are unsupported. See [shared-variable deployment notes](../Flowbit/README.md#shared-variables). |
 | Conditional boundaries, role policies, retention | Apply their migrations before upgraded writers/features. Mixed legacy replicas are unsupported for these contracts. Retention rollback is additionally blocked after history has actually been pruned. |
 | Reactivation run boundary | `AddInstanceLastReactivationToken` adds the nullable `workflow_instances.LastReactivationTokenId` and fills it from the `instanceReactivated` history still present. Apply it before upgrading the API, and upgrade every API replica together: an older replica would reactivate without recording the new root token. History that retention already removed cannot be recovered, so the instance diagram of such a reactivated instance may also mark where an earlier run ended. |
 | FlowInfo async-after evidence | No migration. Upgrade every API and Worker replica: an older Worker still records an ordinary async-after user-task traversal twice, and an older API still rejects the deciding vote of an `asyncAfter` multi-instance task in a definition using `FlowInfo`. Evidence already recorded is not rewritten, so affected instances keep the extra traversal in that flow's `FlowInfo` count. See [flow evidence](../Flowbit/README.md#instance-wide-flow-evidence-flowinfo). |
@@ -552,13 +552,20 @@ Classify the **actual source database and release path** before deployment. The 
 
 Before resuming administrative work, confirm the intended `Workflow.RequiredRole` value and update affected clients to send an authorized actor token. Non-admin batch clients now receive `403`; previously queued items whose stored roles no longer meet the setting become terminal `ineligible`/`skipped` outcomes. Review batch results after resuming the Worker; successful items remain committed. Deploy the updated UI to expose immediate instance actions and role-denial handling. Direct instance actions execute without administrative Worker jobs, while authored asynchronous steps keep their usual Worker requirement.
 
-After **all** shared-variable writer replicas have been upgraded and the shared-variable cutover prerequisites above are satisfied, the fenced allocator cutover is:
+For shared-variable allocator removal, stop every API and Worker writer before
+applying migrations, deploy the matching binaries, then restart them. The
+`RemoveSharedVariableRevisionState` migration preserves existing shared-variable
+data and advances the sequence above both stored revisions and previously
+allocated sequence values. Fresh installations use sequence allocation
+automatically after the full migration chain; there is no manual allocator
+cutover or mode setting.
 
-```sql
-SELECT flowbit.cutover_shared_variable_revision_sequence();
-```
-
-Repeated calls are harmless, but calling early intentionally prevents legacy writers from allocating revisions. Treat the original database backup and matching application release as the rollback unit when an upgrade removes state. A reverse EF migration cannot reconstruct deleted workflow or audit data.
+Rolling back this migration also requires stopped writers and matching previous
+binaries. Its `Down` restores the previous allocator schema in `sequence` mode,
+preserving the sequence and shared-variable data. For upgrades that remove other
+state, treat the original database backup and matching application release as the
+rollback unit: a reverse EF migration cannot reconstruct deleted workflow or
+audit data.
 
 ### Enabling durable features
 

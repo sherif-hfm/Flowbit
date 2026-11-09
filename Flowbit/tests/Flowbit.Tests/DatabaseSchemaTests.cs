@@ -23,7 +23,7 @@ public sealed class DatabaseSchemaTests(PostgresApiFixture fixture)
             .Distinct()
             .ToArray();
 
-        Assert.Equal(67, mappedTables.Length);
+        Assert.Equal(66, mappedTables.Length);
         Assert.DoesNotContain(mappedTables, table => table.Name == "lifecycle_event_capture_state");
         Assert.Contains(mappedTables, table => table.Name == "call_activity_executions");
         Assert.Contains(mappedTables, table => table.Name == "call_activity_results");
@@ -68,7 +68,7 @@ public sealed class DatabaseSchemaTests(PostgresApiFixture fixture)
         Assert.Contains(mappedTables, table => table.Name == "shared_variables");
         Assert.Contains(mappedTables, table => table.Name == "shared_variable_current_values");
         Assert.Contains(mappedTables, table => table.Name == "shared_variable_revisions");
-        Assert.Contains(mappedTables, table => table.Name == "shared_variable_revision_state");
+        Assert.DoesNotContain(mappedTables, table => table.Name == "shared_variable_revision_state");
         Assert.Contains(mappedTables, table => table.Name == "shared_variable_requests");
         Assert.Contains(mappedTables, table => table.Name == "shared_variable_clients");
         Assert.Contains(mappedTables, table => table.Name == "shared_variable_client_secrets");
@@ -103,6 +103,26 @@ public sealed class DatabaseSchemaTests(PostgresApiFixture fixture)
         Assert.Equal(expectedNames.Length, actual.Count);
         Assert.All(actual, table => Assert.Equal(FlowbitDatabase.Schema, table.Schema));
         Assert.Equal(expectedNames, actual.Select(table => table.Table).Order(StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public async Task SharedVariableRevisionsUseOnlyTheSequenceAllocator()
+    {
+        await using var connection = await fixture.DataSource.OpenConnectionAsync();
+        await using var command = new NpgsqlCommand("""
+            SELECT to_regclass('flowbit.shared_variable_revision_state') IS NULL
+               AND to_regprocedure('flowbit.cutover_shared_variable_revision_sequence()') IS NULL
+               AND to_regprocedure('flowbit.guard_legacy_shared_variable_revision_update()') IS NULL
+               AND NOT EXISTS (
+                   SELECT 1 FROM pg_trigger
+                   WHERE tgname = 'tr_shared_variable_revision_state_guard_legacy_update')
+               AND EXISTS (
+                   SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+                   WHERE n.nspname = 'flowbit' AND c.relname = 'shared_variable_revision_seq'
+                     AND c.relkind = 'S')
+               AND to_regprocedure('flowbit.next_shared_variable_revision()') IS NOT NULL
+            """, connection);
+        Assert.True((bool)(await command.ExecuteScalarAsync())!);
     }
 
     [Fact]

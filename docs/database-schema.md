@@ -33,7 +33,7 @@ Table names below omit the `flowbit.` qualifier. The page reflects the current m
 
 ## Conventions
 
-- **Schema.** All 67 tables, the EF `__EFMigrationsHistory` table, sequences, triggers, and functions live in `flowbit`. The `citext` extension, used for case-insensitive keys and user names, is installed in `public`.
+- **Schema.** All 66 tables, the EF `__EFMigrationsHistory` table, sequences, triggers, and functions live in `flowbit`. The `citext` extension, used for case-insensitive keys and user names, is installed in `public`.
 - **Identifiers.** Most tables use a `bigint` identity `Id`. Natural or composite primary keys are called out per table.
 - **Authored IDs are not foreign keys.** `NodeId`, `FlowId`, `SequenceFlowId`, `SourceNodeId`, `GatewayNodeId`, and similar integer columns refer to elements inside `workflow_definitions.Definition` JSON. Read them together with the row's `WorkflowDefinitionId`.
 - **Snapshots.** Runtime rows copy what they need from the definition (node names, types, external IDs, roles, conditions) when they are created, so open work keeps the rules it started with. Only an audited version change updates them.
@@ -89,7 +89,6 @@ Table names below omit the `flowbit.` qualifier. The page reflects the current m
 | [`shared_variables`](#shared_variables) | [Shared variables](#shared-variables) | Shared-variable catalog entry and contract. |
 | [`shared_variable_current_values`](#shared_variable_current_values) | [Shared variables](#shared-variables) | Current value projection for a shared variable (one-to-one with the catalog). |
 | [`shared_variable_revisions`](#shared_variable_revisions) | [Shared variables](#shared-variables) | Immutable audit history of every shared-variable mutation. |
-| [`shared_variable_revision_state`](#shared_variable_revision_state) | [Shared variables](#shared-variables) | Singleton revision-allocator state for shared variables. |
 | [`shared_variable_requests`](#shared_variable_requests) | [Shared variables](#shared-variables) | Idempotency ledger for shared-variable HTTP mutations. |
 | [`shared_variable_clients`](#shared_variable_clients) | [Shared variables](#shared-variables) | Machine API clients for the shared-variable API. |
 | [`shared_variable_client_secrets`](#shared_variable_client_secrets) | [Shared variables](#shared-variables) | Hashed secret versions for a shared-variable API client. |
@@ -1337,9 +1336,6 @@ erDiagram
         bigint InstanceId FK
         bigint NodeExecutionId FK
     }
-    shared_variable_revision_state {
-        smallint Id PK
-    }
     shared_variable_requests {
         bigint Id PK
         bigint SharedVariableId FK
@@ -1415,20 +1411,18 @@ Append-only history of catalog and value mutations. It may contain every previou
 - **Referenced by:** [`shared_variable_current_values`](#shared_variable_current_values) (`SourceRevisionId`, `SharedVariableId`, `Revision`), [`shared_variable_requests`](#shared_variable_requests) (`SharedVariableId`, `ResultRevision`)
 - **Unique:** (`Id`, `SharedVariableId`, `Revision`) (alternate key); (`SharedVariableId`, `Revision`) (alternate key); `Revision`
 
-### `shared_variable_revision_state`
+Revision allocation always calls `flowbit.next_shared_variable_revision()`, which
+uses `nextval('flowbit.shared_variable_revision_seq')`. Same-key writes serialize
+on the catalog row inside their transaction; the existing catalog/value revision
+checks reject stale writes when an expected revision is supplied.
 
-A single seeded row (`Id = 1`) that records how shared-variable revisions are allocated.
-
-| Column | Meaning |
-| --- | --- |
-| `AllocatorMode` | `legacy` (the row's `LastRevision` counter) or `sequence` (`flowbit.shared_variable_revision_seq` through `flowbit.next_shared_variable_revision()`). |
-| `LastRevision`, `UpdatedAt` | Legacy counter value and last change. |
-
-- **Primary key:** `Id`
-- **References:** none
-- **Referenced by:** none
-
-`SELECT flowbit.cutover_shared_variable_revision_sequence();` performs the fenced, idempotent cutover. Afterwards the trigger `tr_shared_variable_revision_state_guard_legacy_update` rejects legacy `LastRevision` updates, so old binaries fail safely.
+`RemoveSharedVariableRevisionState` removes the former allocator table, its
+guard trigger/function, and its manual cutover function. It advances the sequence
+above both existing revisions and previously allocated sequence values, including
+allocations from rolled-back transactions, while preserving catalog, current,
+history, and request rows. Fresh installations allocate from the sequence after
+the full migration chain without a separate cutover. See the coordinated
+[deployment procedure](deployment.md#upgrade-and-compatibility-rules).
 
 ### `shared_variable_requests`
 
@@ -1836,8 +1830,7 @@ Migrations also create these objects with raw SQL. They are part of the schema c
 | `evaluate_inbox_visibility_condition()`, `inbox_visibility_compare()`, `inbox_visibility_normalize_value()`, `inbox_visibility_to_number()` | Functions | Evaluate compiled inbox visibility programs inside inbox SQL. |
 | `TR_instance_variable_update_batch_jobs_validate_live_job` → `validate_instance_variable_update_batch_job_definition()` | Deferrable constraint trigger on `instance_variable_update_batch_jobs` | Ensures a linked job belongs to the same workflow definition. |
 | `tr_shared_variable_current_values_value_revision` → `sync_shared_variable_value_revision()` | `AFTER INSERT OR UPDATE OF "Revision"` trigger on `shared_variable_current_values` | Advances the catalog row's `CurrentRevision` and `ValueRevision`. |
-| `tr_shared_variable_revision_state_guard_legacy_update` → `guard_legacy_shared_variable_revision_update()` | `BEFORE UPDATE OF "LastRevision"` trigger on `shared_variable_revision_state` | Rejects legacy allocator updates after the sequence cutover. |
-| `shared_variable_revision_seq`, `next_shared_variable_revision()`, `cutover_shared_variable_revision_sequence()` | Sequence and functions | Allocate global shared-variable revisions and perform the fenced allocator cutover. |
+| `shared_variable_revision_seq`, `next_shared_variable_revision()` | Sequence and function | Allocate global shared-variable revisions through `nextval`; rollbacks may leave gaps. |
 | `IX_iv_current_name_root_string_ci_instance`, `IX_iv_current_name_root_number_instance` | Expression indexes on `instance_variable_current_values` | Case-insensitive root-string and numeric lookups for variable search. |
 | `IX_user_tasks_AssigneeLower_Status_UpdatedAt_Id`, `IX_node_executions_*_Lower_*` | Expression indexes | Case-insensitive actor and external-ID lookups. |
 | `UX_multi_instance_executions_ActiveTokenNode` | Partial unique index | At most one active multi-instance execution per token and node. |
@@ -1873,7 +1866,7 @@ SELECT c.conrelid::regclass AS child_table,
  ORDER BY 1, 2;
 ```
 
-A database migrated to the current release has 67 `flowbit` tables (plus `__EFMigrationsHistory`) and 130 foreign keys.
+A database migrated to the current release has 66 `flowbit` tables (plus `__EFMigrationsHistory`) and 130 foreign keys.
 
 ## Keeping this page current
 

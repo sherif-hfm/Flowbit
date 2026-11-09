@@ -121,39 +121,6 @@ public sealed class SharedVariableRepository(AppDbContext dbContext) : ISharedVa
         CancellationToken cancellationToken) =>
         LoadValueStampsCoreAsync(keys, includeArchived, forUpdate: true, cancellationToken);
 
-    public async Task PrelockDefinitionKeysForLegacyAllocatorAsync(
-        IReadOnlyCollection<string> keys,
-        CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(keys);
-        if (!IsNpgsql()) return;
-        if (dbContext.Database.CurrentTransaction is null)
-        {
-            throw new InvalidOperationException(
-                "Legacy shared-variable allocator prelocking requires an ambient database transaction.");
-        }
-
-        var normalized = NormalizeKeys(keys);
-        if (normalized.Length == 0) return;
-
-        var allocatorMode = await dbContext.SharedVariableRevisionStates.AsNoTracking()
-            .Where(state => state.Id == 1)
-            .Select(state => state.AllocatorMode)
-            .SingleAsync(cancellationToken);
-        if (!string.Equals(allocatorMode, "legacy", StringComparison.Ordinal)) return;
-
-        // Legacy writers take a catalog row before updating the singleton
-        // revision allocator. Locking the definition's complete key set in
-        // exact ordinal order at transaction entry gives new multi-key writers
-        // the same prefix and prevents key/singleton lock inversions.
-        foreach (var key in normalized)
-        {
-            _ = await dbContext.SharedVariables.FromSqlInterpolated(
-                    $"""SELECT * FROM flowbit.shared_variables WHERE "Key" = {key} FOR UPDATE""")
-                .SingleOrDefaultAsync(cancellationToken);
-        }
-    }
-
     private async Task<IReadOnlyDictionary<string, SharedVariableValueStamp>> LoadValueStampsCoreAsync(
         IReadOnlyCollection<string> keys,
         bool includeArchived,
@@ -219,6 +186,12 @@ public sealed class SharedVariableRepository(AppDbContext dbContext) : ISharedVa
         List<SharedVariableEntity> variables;
         if (forUpdate && IsNpgsql())
         {
+            if (dbContext.Database.CurrentTransaction is null)
+            {
+                throw new InvalidOperationException(
+                    "Shared-variable locking requires an ambient database transaction.");
+            }
+
             variables = [];
             foreach (var key in normalized)
             {
@@ -769,24 +742,11 @@ public sealed class SharedVariableRepository(AppDbContext dbContext) : ISharedVa
             .SingleOrDefaultAsync(cancellationToken)
         : await dbContext.SharedVariables.SingleOrDefaultAsync(variable => variable.Key == key, cancellationToken);
 
-    private async Task<long> AllocateRevisionAsync(CancellationToken cancellationToken)
-    {
-        if (IsNpgsql())
-        {
-            return await dbContext.Database
-                .SqlQueryRaw<long>(
-                    "SELECT flowbit.next_shared_variable_revision() AS \"Value\"")
-                .SingleAsync(cancellationToken);
-        }
-
-        var state = await dbContext.SharedVariableRevisionStates.SingleAsync(
-            item => item.Id == 1,
-            cancellationToken);
-        state.LastRevision++;
-        state.UpdatedAt = UtcNow();
-        await dbContext.SaveChangesAsync(cancellationToken);
-        return state.LastRevision;
-    }
+    private Task<long> AllocateRevisionAsync(CancellationToken cancellationToken) =>
+        dbContext.Database
+            .SqlQueryRaw<long>(
+                "SELECT flowbit.next_shared_variable_revision() AS \"Value\"")
+            .SingleAsync(cancellationToken);
 
     private async Task LockIdempotencyRequestAsync(
         SharedVariableCallerRecord caller,
