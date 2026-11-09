@@ -1009,9 +1009,13 @@ public static class WorkflowVersionCompatibilityEvaluator
         var calendar = kind == TimerScheduleKinds.Duration && !string.IsNullOrWhiteSpace(targetNode.Timer?.Calendar)
             ? targetNode.Timer.Calendar.Trim()
             : null;
+        // Cron belongs to timer starts, which open no instance timer, so an open timer with a zone never matches a
+        // catch or boundary; the comparison keeps that explicit.
+        var timeZone = kind == TimerScheduleKinds.Cron ? targetNode.Timer?.TimeZone?.Trim() : null;
         return string.Equals(timer.ScheduleKind, kind, StringComparison.Ordinal)
             && string.Equals(timer.ScheduleExpression, expression, StringComparison.Ordinal)
             && string.Equals(timer.ScheduleCalendar, calendar, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(timer.ScheduleTimeZone, timeZone, StringComparison.Ordinal)
             && timer.AttachedToNodeId == attachedToNodeId
             && timer.CancelActivity == cancelActivity;
     }
@@ -1037,6 +1041,12 @@ public static class WorkflowVersionCompatibilityEvaluator
         {
             kind = TimerScheduleKinds.Cycle;
             expression = timer.TimeCycle.Trim();
+            return true;
+        }
+        if (!string.IsNullOrWhiteSpace(timer?.Cron))
+        {
+            kind = TimerScheduleKinds.Cron;
+            expression = timer.Cron.Trim();
             return true;
         }
 

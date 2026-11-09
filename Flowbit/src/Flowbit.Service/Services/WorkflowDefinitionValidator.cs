@@ -2523,10 +2523,23 @@ public sealed class WorkflowDefinitionValidator(
         var timer = node.Timer
             ?? throw new WorkflowDomainException(
                 $"Timer event #{node.Id} must have a timer configuration.");
+
+        // Cron is a timer-start extension. The migrator keeps cron and timeZone on every timer, so a catch or boundary
+        // that names either is reported here rather than silently losing it.
+        var isStart = BpmnFlowNodeTypes.IsTimerStart(node.Type);
+        if (!isStart && (timer.Cron is not null || timer.TimeZone is not null))
+        {
+            var eventName = BpmnFlowNodeTypes.IsTimerBoundary(node.Type) ? "Timer boundary event" : "Timer catch event";
+            var property = timer.Cron is not null ? "timer.cron" : "timer.timeZone";
+            throw new WorkflowDomainException(
+                $"{eventName} #{node.Id} {property} is supported only on timer start events.");
+        }
+
         if (TimerDefinitionRules.CountConfiguredExpressions(timer) != 1)
         {
-            throw new WorkflowDomainException(
-                $"Timer event #{node.Id} must define exactly one of timeDate, timeDuration, or timeCycle.");
+            throw new WorkflowDomainException(isStart
+                ? $"Timer event #{node.Id} must define exactly one of timeDate, timeDuration, timeCycle, or cron."
+                : $"Timer event #{node.Id} must define exactly one of timeDate, timeDuration, or timeCycle.");
         }
 
         // A catch or boundary may compute its date or duration with an NCalc
@@ -2568,6 +2581,27 @@ public sealed class WorkflowDefinitionValidator(
                 throw new WorkflowDomainException(
                     $"Timer event #{node.Id} timeCycle interval must be at least one second.");
             }
+        }
+
+        // The rules check the dialect and that some calendar date matches; the calculator then reads the expression and
+        // this host must resolve the exact IANA zone. A Worker with other time-zone data checks again when it schedules.
+        if (timer.Cron is not null)
+        {
+            if (!CronTimerSchedule.TryCreate(
+                    timer.Cron,
+                    timer.TimeZone,
+                    "timer.cron",
+                    "timer.timeZone",
+                    out _,
+                    out var cronProblem))
+            {
+                throw new WorkflowDomainException($"Timer start event #{node.Id} {cronProblem}");
+            }
+        }
+        else if (timer.TimeZone is not null)
+        {
+            throw new WorkflowDomainException(
+                $"Timer start event #{node.Id} timer.timeZone needs a cron schedule; only cron takes a time zone.");
         }
     }
 

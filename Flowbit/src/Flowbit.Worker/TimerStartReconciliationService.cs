@@ -405,7 +405,9 @@ public sealed class TimerStartReconciliationService(
         {
             try
             {
-                first = ResolveInitial(timer, defaultActivatedAt, now, calendar);
+                first = !string.IsNullOrWhiteSpace(timer.Cron)
+                    ? (0, ResolveInitialCron(timer, defaultActivatedAt, now))
+                    : ResolveInitial(timer, defaultActivatedAt, now, calendar);
             }
             catch (WorkflowDomainException ex)
             {
@@ -446,6 +448,7 @@ public sealed class TimerStartReconciliationService(
                     ScheduleKind = ScheduleKind(timer),
                     ScheduleExpression = ScheduleExpression(timer),
                     ScheduleCalendar = calendarName,
+                    ScheduleTimeZone = ScheduleTimeZone(timer),
                     CancelActivity = true,
                     NextDueAt = first.Value.DueAt,
                     Occurrence = first.Value.Occurrence
@@ -495,6 +498,8 @@ public sealed class TimerStartReconciliationService(
                 ScheduleKind = ScheduleKind(timer),
                 ScheduleExpression = ScheduleExpression(timer),
                 ScheduleCalendar = calendarName,
+                // A cron start that cannot be scheduled keeps its expression and zone, so the incident shows what failed.
+                ScheduleTimeZone = ScheduleTimeZone(timer),
                 CancelActivity = true,
                 // The subscription never fires while paused; this only holds the timer start's place.
                 NextDueAt = defaultActivatedAt,
@@ -608,14 +613,43 @@ public sealed class TimerStartReconciliationService(
         return (occurrence, dueAt);
     }
 
+    // A cron schedule starts strictly after its default activation. When that occurrence is already more than a minute
+    // late, the schedule skips to its first occurrence after now rather than replaying the backlog; either way it is
+    // occurrence zero, because cron occurrence numbers count persisted occurrences.
+    private static DateTimeOffset ResolveInitialCron(
+        TimerDefinitionModel timer,
+        DateTimeOffset activatedAt,
+        DateTimeOffset now)
+    {
+        if (!CronTimerSchedule.TryCreate(
+                timer.Cron,
+                timer.TimeZone,
+                "timer.cron",
+                "timer.timeZone",
+                out var schedule,
+                out var problem))
+        {
+            throw new WorkflowDomainException(problem!);
+        }
+
+        return WorkflowTimerSchedule.ResolveFirstCronOccurrence(schedule, activatedAt, now, MisfireGrace);
+    }
+
     private static string ScheduleKind(TimerDefinitionModel timer) =>
         !string.IsNullOrWhiteSpace(timer.TimeDate)
             ? TimerScheduleKinds.Date
             : !string.IsNullOrWhiteSpace(timer.TimeDuration)
                 ? TimerScheduleKinds.Duration
-                : TimerScheduleKinds.Cycle;
+                : !string.IsNullOrWhiteSpace(timer.TimeCycle)
+                    ? TimerScheduleKinds.Cycle
+                    : !string.IsNullOrWhiteSpace(timer.Cron)
+                        ? TimerScheduleKinds.Cron
+                        : throw new InvalidOperationException("Timer has no schedule.");
 
     private static string ScheduleExpression(TimerDefinitionModel timer) =>
-        timer.TimeDate ?? timer.TimeDuration ?? timer.TimeCycle
+        timer.TimeDate ?? timer.TimeDuration ?? timer.TimeCycle ?? timer.Cron?.Trim()
         ?? throw new InvalidOperationException("Timer has no expression.");
+
+    private static string? ScheduleTimeZone(TimerDefinitionModel timer) =>
+        !string.IsNullOrWhiteSpace(timer.Cron) ? timer.TimeZone?.Trim() : null;
 }

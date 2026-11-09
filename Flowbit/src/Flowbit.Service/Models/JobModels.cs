@@ -118,6 +118,16 @@ public static class TimerScheduleKinds
     public const string Date = "timeDate";
     public const string Duration = "timeDuration";
     public const string Cycle = "timeCycle";
+
+    /// <summary>
+    /// A timer start's cron schedule. It recurs without end: a subscription with this kind is cancelled, never completed,
+    /// and the database refuses to complete one.
+    /// </summary>
+    public const string Cron = "cron";
+
+    /// <summary>Whether a schedule kind fires more than once, so its late occurrences misfire rather than fire.</summary>
+    public static bool IsRecurring(string? scheduleKind) =>
+        scheduleKind is Cycle or Cron;
 }
 
 public sealed record WorkflowJobCreateRecord
@@ -333,6 +343,9 @@ public sealed record TimerSubscriptionCreateRecord
     /// <summary>The business calendar a duration was counted in; null for wall-clock schedules.</summary>
     public string? ScheduleCalendar { get; init; }
 
+    /// <summary>The IANA time zone a cron schedule runs in; null for every other schedule kind.</summary>
+    public string? ScheduleTimeZone { get; init; }
+
     public required bool CancelActivity { get; init; }
     public required DateTimeOffset NextDueAt { get; init; }
     public long Occurrence { get; init; }
@@ -360,6 +373,9 @@ public sealed record TimerSubscriptionRecord(
 {
     /// <summary>The business calendar a duration was counted in; null for wall-clock schedules.</summary>
     public string? ScheduleCalendar { get; init; }
+
+    /// <summary>The IANA time zone a cron schedule runs in; null for every other schedule kind.</summary>
+    public string? ScheduleTimeZone { get; init; }
 }
 
 public sealed record ConditionalBoundarySubscriptionCreateRecord

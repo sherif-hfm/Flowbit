@@ -1,0 +1,118 @@
+namespace Flowbit.Tests;
+
+/// <summary>
+/// Accepted and rejected cron expressions shared by the server rules, the server calculator, and the editor's mirror,
+/// so the three cannot drift apart. A rejection names the exact problem, worded to follow "timer.cron".
+/// </summary>
+internal static class CronScheduleFixtures
+{
+    private const string Fields = "minute, hour, day of month, month, and day of week";
+    private const string Unsupported = "which is not supported; write numbers, lists, ascending ranges, and steps";
+    private const string Malformed = "is malformed; write *, */n, a, a-b, a/n, or a-b/n.";
+
+    public static readonly string[] Accepted =
+    [
+        "0 8 * * 1-5",
+        "*/15 9-17 * * 1-5",
+        "0 9 1 * *",
+        "0 17 L * *",
+        "0 17 L * 5",
+        "0 8 29 2 *",
+        "0 8 13 * 5",
+        "05 8 * * *",
+        "00 00 01 01 00",
+        "* * * * *",
+        "59 23 31 12 6",
+        "0 0 1 1 0",
+        "0-59 0-23 1-31 1-12 0-6",
+        "*/59 */23 */31 */12 */6",
+        "1/7 2/5 3/9 4/3 *",
+        "0,15,30,45 8,12,18 1,15 1,4,7,10 1-5/2",
+        "5-5 0 * * *",
+        "30 1 * * *",
+        "*/30 * * * *",
+        "0 1-2 * * *",
+        "0 1,2 * * *",
+        "  0\t8 * *   1-5  ",
+        "0 0 29 2 1",
+        "0 0 31 1,3,5,7,8,10,12 *",
+        "0 0 30 4 *",
+        "0 0 L 2 *",
+        "0 0 * * */2",
+        "0 0 * * */1",
+        "0 0 * * 0-6/3",
+        "0,0,1 0 * * 1,1",
+        "\u00850 8 * * 1-5\u0085",
+        "\u3000\u20280 8 * * *\u00A0\r\n"
+    ];
+
+    public static readonly (string Cron, string Problem)[] Rejected =
+    [
+        ("", $"must be a cron expression with five fields: {Fields}."),
+        ("   ", $"must be a cron expression with five fields: {Fields}."),
+        (string.Join(',', Enumerable.Repeat("1", 63)) + " * * * *", "must contain at most 128 characters."),
+        ("@daily", $"'@daily' is an alias, which is not supported; write five fields: {Fields}."),
+        ("0 8 * *", $"'0 8 * *' has 4 fields; write five: {Fields}. Seconds and years are not supported."),
+        ("0 0 8 * * 1-5", $"'0 0 8 * * 1-5' has 6 fields; write five: {Fields}. Seconds and years are not supported."),
+        ("0 8 * * 1-5 2026", $"'0 8 * * 1-5 2026' has 6 fields; write five: {Fields}. Seconds and years are not supported."),
+        ("0 8\n* * 1-5", "may separate its fields only with spaces or tabs."),
+        // .NET's white space takes U+0085 and leaves the U+FEFF byte-order mark, unlike JavaScript's.
+        ("0 8\u0085* * *", "may separate its fields only with spaces or tabs."),
+        ("0 8\u00A0* * *", "may separate its fields only with spaces or tabs."),
+        ("0 8\uFEFF* * *", $"'0 8\uFEFF* * *' has 4 fields; write five: {Fields}. Seconds and years are not supported."),
+        ("\u0085", $"must be a cron expression with five fields: {Fields}."),
+        ("\uFEFF", $"'\uFEFF' has 1 field; write five: {Fields}. Seconds and years are not supported."),
+        ("\uFEFF0 8 * * *", $"minute field '\uFEFF0' uses '\uFEFF', {Unsupported}."),
+        ("0 8 * * *\uFEFF", $"day-of-week field '*\uFEFF' uses '\uFEFF', {Unsupported}."),
+        ("005 8 * * *", "minute value '005' has more than two digits."),
+        ("0 8 * * 1-005", "day-of-week value '005' has more than two digits."),
+        ("0 8 * * 1/2", "day-of-week item '1/2' has an open-ended step; write */n or a range such as 1-5/2."),
+        ("60 8 * * *", "minute value 60 is outside 0 to 59."),
+        ("0 24 * * *", "hour value 24 is outside 0 to 23."),
+        ("0 8 0 * *", "day-of-month value 0 is outside 1 to 31."),
+        ("0 8 32 * *", "day-of-month value 32 is outside 1 to 31."),
+        ("0 8 * 0 *", "month value 0 is outside 1 to 12."),
+        ("0 8 * 13 *", "month value 13 is outside 1 to 12."),
+        ("0 8 * * 7", "day-of-week value 7 is not allowed; write Sunday as 0."),
+        ("0 8 * * 5-7", "day-of-week value 7 is not allowed; write Sunday as 0."),
+        ("0 8 * JAN *", $"month field 'JAN' uses 'J', {Unsupported}."),
+        ("0 8 * * MON", $"day-of-week field 'MON' uses 'M', {Unsupported}."),
+        ("0 8 ? * 1", $"day-of-month field '?' uses '?', {Unsupported}, or L alone for the last day."),
+        ("0 8 15W * *", $"day-of-month field '15W' uses 'W', {Unsupported}, or L alone for the last day."),
+        ("0 8 * * 5#3", $"day-of-week field '5#3' uses '#', {Unsupported}."),
+        ("H 8 * * *", $"minute field 'H' uses 'H', {Unsupported}."),
+        ("0 8 L-2 * *", "day-of-month field 'L-2' uses L with other values; L must be the whole field."),
+        ("0 8 1,L * *", "day-of-month field '1,L' uses L with other values; L must be the whole field."),
+        ("0 8 LW * *", $"day-of-month field 'LW' uses 'W', {Unsupported}, or L alone for the last day."),
+        ("0 8 l * *", $"day-of-month field 'l' uses 'l', {Unsupported}, or L alone for the last day."),
+        ("0 8 * * 5L", $"day-of-week field '5L' uses 'L', {Unsupported}."),
+        ("0 12-8 * * *", "hour range '12-8' is reversed; write ranges in ascending order."),
+        ("*/0 * * * *", "minute step 0 must be from 1 to 59."),
+        ("*/60 * * * *", "minute step 60 must be from 1 to 59."),
+        ("0 0 * * */7", "day-of-week step 7 must be from 1 to 6."),
+        ("0 8 * * 0-6/7", "day-of-week step 7 must be from 1 to 6."),
+        ("0 0 1/32 * *", "day-of-month step 32 must be from 1 to 31."),
+        ("1,,2 * * * *", "minute field '1,,2' has an empty list item."),
+        ("1, * * * *", "minute field '1,' has an empty list item."),
+        ("1-2-3 * * * *", $"minute item '1-2-3' {Malformed}"),
+        ("-5 * * * *", $"minute item '-5' {Malformed}"),
+        ("1/2/3 * * * *", $"minute item '1/2/3' {Malformed}"),
+        ("*/ * * * *", $"minute item '*/' {Malformed}"),
+        ("*-5 * * * *", $"minute item '*-5' {Malformed}"),
+        ("5/- * * * *", $"minute item '5/-' {Malformed}"),
+        ("1/2- * * * *", $"minute item '1/2-' {Malformed}"),
+        ("0/-5 * * * *", $"minute item '0/-5' {Malformed}"),
+        ("0/5-1 * * * *", $"minute item '0/5-1' {Malformed}"),
+        ("0 0 1-5/- * *", $"day-of-month item '1-5/-' {Malformed}"),
+        ("0 8 * * -1", "day-of-week item '-1' is malformed; write *, */n, a, a-b, or a-b/n."),
+        ("0 8 * * 1/-", "day-of-week item '1/-' is malformed; write *, */n, a, a-b, or a-b/n."),
+        ("*,5 * * * *", "minute field '*,5' uses * in a list; write * or */n as the whole field."),
+        ("+5 * * * *", $"minute field '+5' uses '+', {Unsupported}."),
+        ("1.5 * * * *", $"minute field '1.5' uses '.', {Unsupported}."),
+        ("٣ * * * *", $"minute field '٣' uses '٣', {Unsupported}."),
+        ("${minute} * * * *", $"minute field '${{minute}}' uses '$', {Unsupported}."),
+        ("0 8 30 2 *", "'0 8 30 2 *' never matches a calendar date; check its day-of-month, month, and day-of-week fields."),
+        ("0 8 31 4,6,9,11 *", "'0 8 31 4,6,9,11 *' never matches a calendar date; check its day-of-month, month, and day-of-week fields."),
+        ("0 0 30-31 2 1-5", "'0 0 30-31 2 1-5' never matches a calendar date; check its day-of-month, month, and day-of-week fields.")
+    ];
+}

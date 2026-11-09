@@ -1,0 +1,95 @@
+{
+  "id": "example-month-end-close-start",
+  "name": "Example 11 - Month-End Close Start",
+  "initialEventId": 1,
+  "variables": [],
+  "lanes": [],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Manual Test Start",
+      "externalId": "START_MANUAL_MONTH_END_TEST",
+      "type": "startEvent",
+      "laneId": null,
+      "x": 70,
+      "y": 290,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 2,
+      "name": "Last Day of Each Month at 17:00 New York Time",
+      "externalId": "START_MONTH_END_CRON",
+      "type": "timerStartEvent",
+      "laneId": null,
+      "x": 70,
+      "y": 100,
+      "roles": [],
+      "variables": [],
+      "timer": {
+        "timeDate": null,
+        "timeDuration": null,
+        "timeCycle": null,
+        "cron": "0 17 L * *",
+        "timeZone": "America/New_York"
+      }
+    },
+    {
+      "id": 3,
+      "name": "Close the Month",
+      "externalId": "TASK_CLOSE_THE_MONTH",
+      "type": "userTask",
+      "laneId": null,
+      "x": 400,
+      "y": 85,
+      "roles": [],
+      "variables": [],
+      "requiresClaim": false,
+      "claimMode": "fresh"
+    },
+    {
+      "id": 4,
+      "name": "Month Closed",
+      "externalId": "END_MONTH_CLOSED",
+      "type": "endEvent",
+      "laneId": null,
+      "x": 760,
+      "y": 190,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "Manual path",
+      "externalId": "FLOW_MANUAL_MONTH_END_TEST",
+      "sourceRef": 1,
+      "targetRef": 4,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 201,
+      "name": "Scheduled path",
+      "externalId": "FLOW_MONTH_END_FIRED",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 301,
+      "name": "Closed",
+      "externalId": "FLOW_MONTH_CLOSED",
+      "sourceRef": 3,
+      "targetRef": 4,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "cancelRoles": [],
+  "unclaimRoles": [],
+  "taskAssignmentRoles": [],
+  "taskDistribution": null
+}

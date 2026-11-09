@@ -56,3 +56,11 @@ examples do not give:
   `timeDuration` is the optional start variable `slaDuration`. Started without a
   value, the Worker's two attempts fail and open an incident; an administrative
   variable update supplies `PT1H` before the incident is retried.
+
+The EVENT-09 cron scenarios use `cron-every-minute.json`: timer start `#1`
+**Every minute** leads to user task `#2` **Review scheduled run**, which ends at
+`#3`. Each scenario replaces the start's `timer` with its own `cron` and
+`timeZone` (`* * * * *` in `Etc/UTC` for the runtime scenario, `30 1 * * *` in
+`Europe/London` for the preview scenario) and gives the workflow a run-local
+key. The runtime scenario's second version reuses that key with `0 9 1 1 *` in
+`Asia/Tokyo`.

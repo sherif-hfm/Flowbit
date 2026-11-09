@@ -378,6 +378,143 @@ public sealed class HostedEditorSmokeTests(BrowserStackFixture stack)
         });
     }
 
+    [Theory]
+    [InlineData(1440, 900)]
+    [InlineData(1024, 768)]
+    public async Task H15_CronPreviewShowsTheZoneAndUtcAcrossDaylightSavingAndKeepsEdits(int width, int height)
+    {
+        await using var scenario = await stack.CreateScenario($"h15-hosted-cron-preview-{width}", width, height);
+        await scenario.RunAsync("hosted-cron-preview", async () =>
+        {
+            var json = JsonNode.Parse(await File.ReadAllTextAsync(
+                EditorInteractions.FixturePath("editor-cron-schedule.json")))!.AsObject();
+            json["id"] = "hosted-cron-preview-" + Guid.NewGuid().ToString("N");
+            json["flowNodes"]![0]!["timer"] = new JsonObject { ["cron"] = "30 1 * * *", ["timeZone"] = "Europe/London" };
+            json["flowNodes"]![1]!["timer"] = new JsonObject { ["timeDuration"] = "PT1H" };
+            var model = json.Deserialize<WorkflowModel>(new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+            // Unpublished: this Worker-free stack refuses to publish timer definitions, and a preview needs neither.
+            var workflow = await stack.SetupClient.CreateUnpublishedAsync(model);
+            await RuntimeSupport.ApplyIdentityAsync(scenario, "editor-admin", ["admin"]);
+            var page = await scenario.OpenUiAsync($"workflows/{workflow.Id}/edit");
+            await ReadyAsync(page);
+            var editor = page.Locator("#workflow-editor-root");
+            await EditorInteractions.PinInspectorOpenAsync(page);
+            await EditorInteractions.SelectNodeAsync(page, 1);
+            var expression = editor.GetByLabel("Cron expression", new LocatorGetByLabelOptions { Exact = true });
+            var zone = editor.GetByLabel("Time zone", new LocatorGetByLabelOptions { Exact = true });
+            var reference = editor.GetByLabel("Preview after (UTC, optional)", new LocatorGetByLabelOptions { Exact = true });
+            var preview = editor.Locator(".cron-preview");
+            var button = preview.GetByRole(AriaRole.Button, new LocatorGetByRoleOptions { Name = "Preview next 5" });
+            var status = preview.Locator(".cron-preview-status");
+            var rows = preview.Locator("tbody tr");
+            await Assertions.Expect(expression).ToHaveValueAsync("30 1 * * *");
+            await Assertions.Expect(editor).Not.ToContainTextAsync("This standalone editor checks the expression");
+            await Assertions.Expect(status).ToHaveTextAsync("Preview the next five runs as the server calculates them.");
+
+            // Suggestions load from the server on first focus; free text stays allowed.
+            await zone.FocusAsync();
+            await Assertions.Expect(editor.Locator("#timer-cron-zone-1-suggestions option[value='Europe/London']")).ToHaveCountAsync(1);
+
+            // Across the clocks going forward, the skipped 01:30 runs when the clock jumps.
+            // Pressed from the keyboard, the button keeps focus through the request.
+            await reference.FillAsync("2026-03-28T12:00:00Z");
+            await reference.PressAsync("Tab");
+            await Assertions.Expect(button).ToBeFocusedAsync();
+            await page.Keyboard.PressAsync("Enter");
+            await Assertions.Expect(rows).ToHaveCountAsync(5);
+            await Assertions.Expect(button).ToBeFocusedAsync();
+            await Assertions.Expect(preview.Locator("caption"))
+                .ToHaveTextAsync("Next 5 runs after Sat 2026-03-28 12:00 UTC, in Europe/London");
+            await Assertions.Expect(rows.Nth(0).Locator("td"))
+                .ToHaveTextAsync(["Sun 2026-03-29 02:00 +01:00", "Sun 2026-03-29 01:00 UTC"]);
+            // A preview changes nothing the document saves.
+            await Assertions.Expect(page.Locator("#editor-status")).ToHaveTextAsync("Saved");
+
+            // A new reference clears the answer. Across the clocks going back, a fixed time runs once.
+            await reference.FillAsync("2026-10-24T12:00:00Z");
+            await Assertions.Expect(rows).ToHaveCountAsync(0);
+            await button.ClickAsync();
+            await Assertions.Expect(rows.Nth(0).Locator("td"))
+                .ToHaveTextAsync(["Sun 2026-10-25 01:30 +01:00", "Sun 2026-10-25 00:30 UTC"]);
+            await Assertions.Expect(rows.Nth(1).Locator("td"))
+                .ToHaveTextAsync(["Mon 2026-10-26 01:30 +00:00", "Mon 2026-10-26 01:30 UTC"]);
+
+            // A step runs in both offsets of the repeated hour.
+            await expression.FillAsync("*/30 1 * * *");
+            await Assertions.Expect(rows).ToHaveCountAsync(0);
+            await button.ClickAsync();
+            await Assertions.Expect(rows.Locator("td:first-child")).ToHaveTextAsync(
+            [
+                "Sun 2026-10-25 01:00 +01:00",
+                "Sun 2026-10-25 01:30 +01:00",
+                "Sun 2026-10-25 01:00 +00:00",
+                "Sun 2026-10-25 01:30 +00:00",
+                "Mon 2026-10-26 01:00 +00:00"
+            ]);
+            await Assertions.Expect(rows.Nth(2).Locator("td").Nth(1)).ToHaveTextAsync("Sun 2026-10-25 01:00 UTC");
+            await page.Locator("#inspectorPanel").ScreenshotAsync(new LocatorScreenshotOptions
+            {
+                Path = Path.Combine(scenario.ArtifactDirectory, "hosted-cron-preview.png"),
+            });
+
+            // A zone the server does not know gets its message, and the edits stay.
+            await zone.FillAsync("Mars/Olympus");
+            await button.ClickAsync();
+            await Assertions.Expect(status).ToHaveTextAsync(
+                "timeZone 'Mars/Olympus' is not an IANA time zone that this server knows, such as Europe/London.");
+            await Assertions.Expect(zone).ToHaveValueAsync("Mars/Olympus");
+            await Assertions.Expect(expression).ToHaveValueAsync("*/30 1 * * *");
+            await zone.FillAsync("Europe/London");
+
+            // An identity without the workflow role is told so, and the schedule stays.
+            var other = await scenario.Context.NewPageAsync();
+            try
+            {
+                var otherIdentity = new IdentityScreen(other, stack.UiBaseAddress);
+                await otherIdentity.GenerateAndApplyIdentityAsync("schedule-viewer", ["viewer"]);
+                await button.ClickAsync();
+                await Assertions.Expect(status).ToContainTextAsync("You no longer have permission to preview schedules.");
+                await Assertions.Expect(expression).ToHaveValueAsync("*/30 1 * * *");
+                await otherIdentity.GenerateAndApplyIdentityAsync("editor-admin", ["admin"]);
+            }
+            finally
+            {
+                await other.CloseAsync();
+            }
+
+            // The edited schedule saves as an unpublished version, as the server reads it back.
+            await page.Locator("#save-workflow-version").ClickAsync();
+            await Assertions.Expect(page.Locator("#editor-notice")).ToContainTextAsync("Saved unpublished version 2");
+            await Assertions.Expect(page.Locator("#editor-status")).ToHaveTextAsync("Saved");
+            var savedId = long.Parse(Regex.Match(page.Url, @"/workflows/(\d+)/edit").Groups[1].Value);
+            var saved = await stack.SetupClient.GetWorkflowAsync(savedId);
+            var timer = saved.Definition.FlowNodes.Single(node => node.Id == 1).Timer!;
+            Assert.Equal("*/30 1 * * *", timer.Cron);
+            Assert.Equal("Europe/London", timer.TimeZone);
+
+            // At phone width the preview table and the page stay within the viewport.
+            await page.SetViewportSizeAsync(390, 844);
+            await page.WaitForFunctionAsync("document.querySelector('#primary-navigation').getBoundingClientRect().right <= 0");
+            await button.ScrollIntoViewIfNeededAsync();
+            await button.ClickAsync();
+            await Assertions.Expect(rows).ToHaveCountAsync(5);
+            var table = preview.Locator("table");
+            await table.ScrollIntoViewIfNeededAsync();
+            var box = await table.BoundingBoxAsync();
+            Assert.NotNull(box);
+            Assert.InRange(box!.X, 0, 390);
+            Assert.InRange(box.X + box.Width, 0, 390);
+            Assert.True(await page.EvaluateAsync<bool>("document.documentElement.scrollWidth <= window.innerWidth + 2"));
+            Assert.True(await table.EvaluateAsync<bool>("table => table.scrollWidth <= table.clientWidth + 1"));
+            await page.ScreenshotAsync(new PageScreenshotOptions
+            {
+                Path = Path.Combine(scenario.ArtifactDirectory, "hosted-cron-preview-narrow.png"),
+            });
+            await page.SetViewportSizeAsync(width, height);
+            await Assertions.Expect(page.Locator("#editor-status")).ToHaveTextAsync("Saved");
+        });
+    }
+
     // The page also loads Bootstrap, whose .badge would stop the summary wrapping.
     [Theory]
     [InlineData(1440, 900)]

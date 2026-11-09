@@ -7,6 +7,14 @@ namespace Flowbit.Infrastructure.Data;
 
 public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(options)
 {
+    // A NULL comparison would pass a CHECK, so the shape constraint treats one as a violation.
+    internal const string CronShapeConstraintSql =
+        "COALESCE((\"ScheduleKind\" = 'cron' AND btrim(\"ScheduleTimeZone\") <> '' AND \"ScheduleCalendar\" IS NULL "
+        + "AND \"InstanceId\" IS NULL AND \"TokenId\" IS NULL AND \"AttachedToNodeId\" IS NULL) "
+        + "OR (\"ScheduleKind\" <> 'cron' AND \"ScheduleTimeZone\" IS NULL), FALSE)";
+
+    internal const string CronNotCompletedConstraintSql = "\"ScheduleKind\" <> 'cron' OR \"Status\" <> 'completed'";
+
     public DbSet<LocalUserEntity> LocalUsers => Set<LocalUserEntity>();
     public DbSet<UserAttributeEntity> UserAttributes => Set<UserAttributeEntity>();
     public DbSet<LocalRefreshSessionEntity> LocalRefreshSessions => Set<LocalRefreshSessionEntity>();
@@ -2161,7 +2169,18 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                     "\"Status\" IN ('active', 'paused', 'completed', 'cancelled')");
                 table.HasCheckConstraint(
                     "CK_timer_subscriptions_schedule_kind",
-                    "\"ScheduleKind\" IN ('timeDate', 'timeDuration', 'timeCycle')");
+                    "\"ScheduleKind\" IN ('timeDate', 'timeDuration', 'timeCycle', 'cron')");
+                // A cron schedule belongs to a timer start, runs in a named zone, and counts no business calendar;
+                // every other kind has no zone. AddCronTimerSchedules adds these as NOT VALID, and
+                // ValidateCronTimerScheduleConstraints validates them outside a transaction.
+                table.HasCheckConstraint(
+                    "CK_timer_subscriptions_cron_shape",
+                    CronShapeConstraintSql);
+                // A cron schedule ends only when it is cancelled, so neither a defect nor a Worker that cannot read
+                // cron can end one after a single firing.
+                table.HasCheckConstraint(
+                    "CK_timer_subscriptions_cron_not_completed",
+                    CronNotCompletedConstraintSql);
                 table.HasCheckConstraint(
                     "CK_timer_subscriptions_occurrence",
                     "\"Occurrence\" >= 0");
@@ -2176,6 +2195,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(e => e.ScheduleKind).HasMaxLength(32).IsRequired();
             entity.Property(e => e.ScheduleExpression).HasMaxLength(300).IsRequired();
             entity.Property(e => e.ScheduleCalendar).HasMaxLength(100);
+            entity.Property(e => e.ScheduleTimeZone).HasMaxLength(100);
             entity.Property(e => e.Status).HasMaxLength(32).IsRequired();
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
             entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");

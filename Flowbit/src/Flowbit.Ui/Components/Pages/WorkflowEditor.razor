@@ -245,6 +245,65 @@
         }
     }
 
+    /// <summary>
+    /// The outcome of a cron schedule request from the editor: <c>ok</c>, <c>invalid</c> with the server's message,
+    /// <c>forbidden</c> when the caller lacks or lost permission, or <c>unavailable</c>. It carries no credentials.
+    /// </summary>
+    public sealed record TimerScheduleReply(
+        string Status,
+        string? Message = null,
+        TimerSchedulePreviewDto? Preview = null,
+        IReadOnlyList<string>? TimeZones = null);
+
+    [JSInvokable]
+    public async Task<TimerScheduleReply> PreviewTimerSchedule(TimerSchedulePreviewRequest request)
+    {
+        if (disposed) return new("unavailable");
+        if (!CanUseHostedOperations) return new("forbidden");
+        var identity = Token.IdentityKey;
+        try
+        {
+            var preview = await Api.PreviewTimerScheduleAsync(request, lifetime.Token);
+            if (disposed) return new("unavailable");
+            // A preview requested under another identity is not shown.
+            return CanUseHostedOperations && identity == Token.IdentityKey ? new("ok", Preview: preview) : new("forbidden");
+        }
+        catch (WorkflowApiException ex) when (ex.StatusCode == HttpStatusCode.BadRequest)
+        {
+            return new("invalid", ex.Message);
+        }
+        catch (WorkflowApiException ex) when (ex.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+        {
+            return new("forbidden");
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or HttpRequestException or WorkflowApiException
+                                       or JsonException or InvalidOperationException)
+        {
+            return new("unavailable");
+        }
+    }
+
+    [JSInvokable]
+    public async Task<TimerScheduleReply> GetTimerScheduleTimeZones()
+    {
+        if (disposed) return new("unavailable");
+        if (!CanUseHostedOperations) return new("forbidden");
+        try
+        {
+            var zones = await Api.GetTimerScheduleTimeZonesAsync(lifetime.Token);
+            return disposed ? new("unavailable") : new("ok", TimeZones: zones);
+        }
+        catch (WorkflowApiException ex) when (ex.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+        {
+            return new("forbidden");
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or HttpRequestException or WorkflowApiException
+                                       or JsonException or InvalidOperationException)
+        {
+            return new("unavailable");
+        }
+    }
+
     [JSInvokable]
     public Task EditorChanged(bool hasChanges, string revision)
     {

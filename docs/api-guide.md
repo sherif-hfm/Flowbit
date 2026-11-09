@@ -204,7 +204,7 @@ Standard errors include configuration `400`, credentials/session `401`, permissi
 
 ## Workflow definitions
 
-All operations here require workflow-administrator access except `message-start`, which authenticates the configured message client. Definition JSON is a versioned immutable snapshot. POST with an existing model `id` and PUT both create new version rows; neither mutates a running version. Multiple versions can be published, but only one is the default for key-based starts. Publication of durable features requires the configured Worker deployment capability. Definition deletion returns `409` when runtime state or retained audit references the version; it does not detach existing instances from their definition.
+All operations here require workflow-administrator access except `message-start`, which authenticates the configured message client. The two `timer-schedules` routes are read-only authoring help for cron timer starts. Definition JSON is a versioned immutable snapshot. POST with an existing model `id` and PUT both create new version rows; neither mutates a running version. Multiple versions can be published, but only one is the default for key-based starts. Publication of durable features requires the configured Worker deployment capability. Definition deletion returns `409` when runtime state or retained audit references the version; it does not detach existing instances from their definition.
 
 ### GET /api/workflows
 
@@ -557,6 +557,79 @@ Content-Type: application/json
     "totalCount": 1
   }
 }
+```
+
+### POST /api/workflows/timer-schedules/preview
+
+Previews the next occurrences of a timer start's [cron schedule](node-reference.md#cron-schedules), which need not be saved. It uses the Worker's grammar, calculator, time-zone checks, and 36,525-day search horizon with this server's time-zone data. It looks up no definition and saves, schedules, or activates nothing, so it works while durable publication is disabled.
+
+**Access:** Workflow administrator (`Workflow.RequiredRole`), as for authoring; the business-calendar `Settings.RequiredRole` does not grant it. See [authentication](#http-conventions-and-authentication).
+
+**JSON body:** [TimerSchedulePreviewRequest](#schema-timerschedulepreviewrequest).
+
+**Success:** `200` [TimerSchedulePreviewDto](#schema-timerschedulepreviewdto).
+**Errors:** `400` an invalid expression or zone, a `fromUtc` that is not an explicit UTC timestamp, a `count` outside 1 to 10, or fewer occurrences than requested within the search horizon; `401` Unauthorized; `403` Forbidden. See [error envelopes](#errors-and-concurrency).
+
+`fromUtc` is exclusive: an occurrence at that instant is not listed. Each row gives the UTC instant and the zone's local time with its numeric offset, so a repeated daylight-saving hour shows two distinct instants. A preview confirms the calculation under current rules; it cannot promise when a Worker will run. Error messages name the field and cause, such as `cron day-of-week value 7 is not allowed; write Sunday as 0.` or `timeZone 'Mars/Olympus' is not an IANA time zone that this server knows, such as Europe/London.`
+
+```http
+POST /api/workflows/timer-schedules/preview HTTP/1.1
+Host: localhost:5017
+Authorization: Bearer TOKEN
+Content-Type: application/json
+
+{
+  "cron": "0 8 * * 1-5",
+  "timeZone": "Europe/London",
+  "fromUtc": "2026-11-08T12:00:00Z",
+  "count": 5
+}
+```
+
+Response:
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "cron": "0 8 * * 1-5",
+  "timeZone": "Europe/London",
+  "fromUtc": "2026-11-08T12:00:00+00:00",
+  "occurrences": [
+    { "dueAt": "2026-11-09T08:00:00+00:00", "localTime": "2026-11-09T08:00:00+00:00" },
+    { "dueAt": "2026-11-10T08:00:00+00:00", "localTime": "2026-11-10T08:00:00+00:00" },
+    { "dueAt": "2026-11-11T08:00:00+00:00", "localTime": "2026-11-11T08:00:00+00:00" },
+    { "dueAt": "2026-11-12T08:00:00+00:00", "localTime": "2026-11-12T08:00:00+00:00" },
+    { "dueAt": "2026-11-13T08:00:00+00:00", "localTime": "2026-11-13T08:00:00+00:00" }
+  ]
+}
+```
+
+### GET /api/workflows/timer-schedules/time-zones
+
+Lists the IANA time-zone ids this server knows, in ordinal order, for suggesting a cron schedule's zone. On Windows hosts the list can be incomplete; the server validates whatever id a definition or preview submits.
+
+**Access:** Workflow administrator (`Workflow.RequiredRole`). See [authentication](#http-conventions-and-authentication).
+
+**Body:** none.
+
+**Success:** `200` array of strings, always including `Etc/UTC`.
+**Errors:** `401` Unauthorized; `403` Forbidden. See [error envelopes](#errors-and-concurrency).
+
+```http
+GET /api/workflows/timer-schedules/time-zones HTTP/1.1
+Host: localhost:5017
+Authorization: Bearer TOKEN
+```
+
+Response example (excerpt):
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+["Africa/Abidjan", "America/New_York", "Asia/Tokyo", "Etc/UTC", "Europe/London"]
 ```
 
 ### POST /api/workflows/{workflowKey}/message-start
@@ -2904,7 +2977,7 @@ Content-Type: application/json
 
 Every route in this section requires the Job operator role, including endpoints whose OpenAPI metadata does not repeat `401`/`403`. Lists and attempts use opaque cursors. Operational DTOs expose bounded metadata and failure summaries, not job snapshots or persisted external-response bodies. A resolved incident may remain after its completed job has been pruned, so `IncidentDetailDto.job` may be null.
 
-Job statuses: `queued`, `running`, `resultReady`, `retry`, `completed`, `incident`, `cancelled`, `skipped`. Kinds: `asyncBefore`, `asyncAfter`, `timer`, `timerStart`, `timerBoundary`, `conditionalWake`, `callStart`, `callResume`, `callCancel`, `administrativeBatchPrepare`, `administrativeBatchExecute`, `instanceVersionChangeBatchPrepare`, `instanceVersionChangeBatchExecute`, `instanceVariableUpdateBatchPrepare`, `instanceVariableUpdateBatchExecute`. Incident statuses: `open`, `resolved`; `type` is the recorded failure category, including `automatic_loop_limit`; `job_conflict`, a conflict in a job that still owns its work, whose `details` give the cause; and `timer_schedule_failed`, a timer start whose first due time cannot be computed, where retrying schedules the timer start again. Repeated filters are supplied as repeated query parameters. Retry fences the original activation and queues work; it does not immediately finish the workflow. A no-longer-retryable incident/job returns `409`.
+Job statuses: `queued`, `running`, `resultReady`, `retry`, `completed`, `incident`, `cancelled`, `skipped`. Kinds: `asyncBefore`, `asyncAfter`, `timer`, `timerStart`, `timerBoundary`, `conditionalWake`, `callStart`, `callResume`, `callCancel`, `administrativeBatchPrepare`, `administrativeBatchExecute`, `instanceVersionChangeBatchPrepare`, `instanceVersionChangeBatchExecute`, `instanceVariableUpdateBatchPrepare`, `instanceVariableUpdateBatchExecute`. Incident statuses: `open`, `resolved`; `type` is the recorded failure category, including `automatic_loop_limit`; `job_conflict`, a conflict in a job that still owns its work, whose `details` give the cause; and `timer_schedule_failed`, a timer start whose first due time cannot be computed, such as a cron schedule whose zone the Worker cannot resolve, where retrying schedules the timer start again. A timer-start job for a cron schedule never completes its subscription; a failure to calculate its next occurrence rolls the firing back and the job retries, then opens a `job_execution_failed` incident. Repeated filters are supplied as repeated query parameters. Retry fences the original activation and queues work; it does not immediately finish the workflow. A no-longer-retryable incident/job returns `409`.
 
 ### GET /api/jobs
 
@@ -10480,16 +10553,64 @@ Machine credentials for the workflow-family task-distribution API.
 <details>
 <summary>TimerDefinitionModel</summary>
 
-BPMN-aligned timer schedule. Exactly one member must be nonblank. On a timer catch or boundary event, timeDate and timeDuration may also be NCalc expressions over stored instance variables, evaluated when the timer activates.
+BPMN-aligned timer schedule. Exactly one of timeDate, timeDuration, timeCycle, or, on a timer start event only, cron must be nonblank. On a timer catch or boundary event, timeDate and timeDuration may also be NCalc expressions over stored instance variables, evaluated when the timer activates.
 
-Timer kinds: timeDate, timeDuration, timeCycle. Worker execution is required; see BPMN support for node-specific allowed forms.
+Timer kinds: timeDate, timeDuration, timeCycle, and cron on timer starts. Worker execution is required; see BPMN support for node-specific allowed forms.
 
 | Field | JSON type / schema | Required | Meaning / default |
 | --- | --- | --- | --- |
-| `timeDate` | null or string | No | Absolute timer instant, or on a catch or boundary an [expression](node-reference.md#expression-schedules) that gives one, such as `${contractEnd}`; exactly one of timeDate/timeDuration/timeCycle must be nonblank. |
+| `timeDate` | null or string | No | Absolute timer instant, or on a catch or boundary an [expression](node-reference.md#expression-schedules) that gives one, such as `${contractEnd}`; exactly one schedule value must be nonblank. |
 | `timeDuration` | null or string | No | ISO 8601 duration (for example PT30S), or on a catch or boundary an [expression](node-reference.md#expression-schedules) that gives one, such as `if(urgent, 'PT4H', 'P2D')`. An activation whose expression cannot be scheduled fails with `400` and a message that names the node and property but no value. |
 | `timeCycle` | null or string | No | Supported repeating ISO 8601 schedule; see BPMN support for node-specific restrictions. |
+| `cron` | null or string | No | Timer starts only: a five-field [cron schedule](node-reference.md#cron-schedules) such as `0 8 * * 1-5`, at most 128 characters. Omitted when null. |
+| `timeZone` | null or string | No | Required with `cron` and allowed only with it: the exact IANA zone the schedule runs in, such as `Europe/London`, at most 100 characters. Omitted when null. |
 | `calendar` | null or string | No | Optional name of the [business calendar](#business-calendars) whose working time a `timeDuration` counts. Only with `timeDuration`. See [working-time durations](node-reference.md#working-time-durations). |
+
+</details>
+
+<a id="schema-timerscheduleoccurrencedto"></a>
+
+<details>
+<summary>TimerScheduleOccurrenceDto</summary>
+
+One upcoming occurrence of a previewed cron schedule.
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `dueAt` | string (date-time) | Yes | The occurrence as a UTC instant, with offset `+00:00`. |
+| `localTime` | string (date-time) | Yes | The same instant as the local date and time with the offset the schedule's zone shows then, such as `2026-10-25T01:30:00+01:00`. |
+
+</details>
+
+<a id="schema-timerschedulepreviewdto"></a>
+
+<details>
+<summary>TimerSchedulePreviewDto</summary>
+
+The next occurrences of a cron schedule, calculated as the Worker calculates them with this server's time-zone data. A preview reserves nothing.
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `cron` | string | Yes | The expression, trimmed. |
+| `timeZone` | string | Yes | The IANA zone. |
+| `fromUtc` | string (date-time) | Yes | The exclusive UTC reference: the submitted one, or the server's time when it was omitted. |
+| `occurrences` | array of [TimerScheduleOccurrenceDto](#schema-timerscheduleoccurrencedto) | Yes | Exactly the requested number, in increasing order of `dueAt`. |
+
+</details>
+
+<a id="schema-timerschedulepreviewrequest"></a>
+
+<details>
+<summary>TimerSchedulePreviewRequest</summary>
+
+A cron schedule to preview, which need not be saved.
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `cron` | string | Yes | A five-field expression in the [cron dialect](node-reference.md#cron-schedules), at most 128 characters after trimming. |
+| `timeZone` | string | Yes | An IANA zone this server knows, with its exact casing, at most 100 characters. |
+| `fromUtc` | null or string | No | Exclusive UTC reference ending in `Z` or `+00:00`, such as `2026-11-08T12:00:00Z`. Omitted or null means the server's current time. A value without an offset, or with another offset, is rejected. |
+| `count` | null or integer (int32) | No | Occurrences to return, 1 to 10; default 5. A larger value is rejected, not clamped. |
 
 </details>
 

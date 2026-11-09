@@ -2998,6 +2998,10 @@ namespace Flowbit.Infrastructure.Data.Migrations
                         .HasMaxLength(32)
                         .HasColumnType("character varying(32)");
 
+                    b.Property<string>("ScheduleTimeZone")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasMaxLength(32)
@@ -3045,9 +3049,13 @@ namespace Flowbit.Infrastructure.Data.Migrations
 
                     b.ToTable("timer_subscriptions", "flowbit", t =>
                         {
+                            t.HasCheckConstraint("CK_timer_subscriptions_cron_not_completed", "\"ScheduleKind\" <> 'cron' OR \"Status\" <> 'completed'");
+
+                            t.HasCheckConstraint("CK_timer_subscriptions_cron_shape", "COALESCE((\"ScheduleKind\" = 'cron' AND btrim(\"ScheduleTimeZone\") <> '' AND \"ScheduleCalendar\" IS NULL AND \"InstanceId\" IS NULL AND \"TokenId\" IS NULL AND \"AttachedToNodeId\" IS NULL) OR (\"ScheduleKind\" <> 'cron' AND \"ScheduleTimeZone\" IS NULL), FALSE)");
+
                             t.HasCheckConstraint("CK_timer_subscriptions_occurrence", "\"Occurrence\" >= 0");
 
-                            t.HasCheckConstraint("CK_timer_subscriptions_schedule_kind", "\"ScheduleKind\" IN ('timeDate', 'timeDuration', 'timeCycle')");
+                            t.HasCheckConstraint("CK_timer_subscriptions_schedule_kind", "\"ScheduleKind\" IN ('timeDate', 'timeDuration', 'timeCycle', 'cron')");
 
                             t.HasCheckConstraint("CK_timer_subscriptions_status", "\"Status\" IN ('active', 'paused', 'completed', 'cancelled')");
 

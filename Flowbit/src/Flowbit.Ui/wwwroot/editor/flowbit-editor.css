@@ -1240,6 +1240,41 @@
   .flowbit-editor .timer-cycle-controls .field { margin-bottom: 8px; }
   .flowbit-editor .timer-local-zone { margin-top: -5px; }
   .flowbit-editor .empty-note { color: var(--muted); font-size: 13px; line-height: 1.5; }
+  .flowbit-editor .cron-preview-status:empty { display: none; }
+  .flowbit-editor .cron-preview { margin: 4px 0 12px; }
+  .flowbit-editor .cron-preview-button { width: 100%; }
+  .flowbit-editor .cron-preview-button[aria-disabled="true"] { opacity: .45; cursor: progress; transform: none; }
+  .flowbit-editor .cron-preview-status { margin: 8px 0 0; color: var(--muted); font-size: 12px; line-height: 1.4; }
+  .flowbit-editor .cron-preview-status[data-state="invalid"],
+  .flowbit-editor .cron-preview-status[data-state="unavailable"],
+  .flowbit-editor .cron-preview-status[data-state="forbidden"] { color: var(--validation-error); }
+  /* Hosted pages style tables globally, so every property the preview relies on is explicit. */
+  .flowbit-editor .cron-preview-table {
+    width: 100%;
+    margin: 8px 0 0;
+    border-collapse: collapse;
+    caption-side: top;
+    font-size: 12px;
+    line-height: 1.4;
+    color: var(--text);
+    table-layout: fixed;
+  }
+  .flowbit-editor .cron-preview-table caption {
+    padding: 0 0 4px;
+    color: var(--muted);
+    text-align: left;
+    overflow-wrap: anywhere;
+  }
+  .flowbit-editor .cron-preview-table th,
+  .flowbit-editor .cron-preview-table td {
+    padding: 4px 6px 4px 0;
+    border-bottom: 1px solid var(--border);
+    text-align: left;
+    vertical-align: top;
+    overflow-wrap: anywhere;
+    font-variant-numeric: tabular-nums;
+  }
+  .flowbit-editor .cron-preview-table th { color: var(--muted); font-weight: 600; }
   .flowbit-editor .row { display: flex; gap: 8px; }
   .flowbit-editor .row > * { flex: 1; }
   /* The hosted page also loads Bootstrap, whose .badge is a centred, bold, unwrapped pill. */

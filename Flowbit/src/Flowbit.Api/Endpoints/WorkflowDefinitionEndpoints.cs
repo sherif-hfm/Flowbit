@@ -74,6 +74,18 @@ public static class WorkflowDefinitionEndpoints
 
         group.MapWorkflowAiEndpoints();
 
+        // Authoring help: workflow authors, not settings administrators, need these, and neither changes state.
+        group.MapPost("/timer-schedules/preview", PreviewTimerSchedule)
+            .Produces<TimerSchedulePreviewDto>(StatusCodes.Status200OK)
+            .Produces(StatusCodes.Status400BadRequest)
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status403Forbidden);
+
+        group.MapGet("/timer-schedules/time-zones", ListTimerScheduleTimeZones)
+            .Produces<IReadOnlyList<string>>(StatusCodes.Status200OK)
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status403Forbidden);
+
         group.MapGet("/", GetLatestWorkflows)
             .Produces<IReadOnlyList<WorkflowSummaryDto>>(StatusCodes.Status200OK)
             .Produces(StatusCodes.Status401Unauthorized)
@@ -148,6 +160,31 @@ public static class WorkflowDefinitionEndpoints
 
         return app;
     }
+
+    /// <summary>
+    /// Previews the next occurrences of a timer start's cron schedule, which need not be saved.
+    /// </summary>
+    /// <param name="request">The cron expression, time zone, optional UTC reference, and count.</param>
+    /// <param name="service">The timer schedule preview service.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <remarks>
+    /// Uses the Worker's grammar, calculator, and time-zone checks with this server's time-zone data. Nothing is saved,
+    /// scheduled, or activated, so it works while durable publication is disabled. A 400 is returned for an invalid
+    /// schedule, reference, or count, or when the schedule has fewer occurrences than requested within the search horizon.
+    /// </remarks>
+    public static IResult PreviewTimerSchedule(
+        TimerSchedulePreviewRequest request,
+        ITimerSchedulePreviewService service,
+        CancellationToken cancellationToken) =>
+        Results.Ok(service.Preview(request, cancellationToken));
+
+    /// <summary>
+    /// Lists the IANA time-zone ids this server knows, for suggesting a cron schedule's time zone.
+    /// </summary>
+    /// <param name="service">The timer schedule preview service.</param>
+    /// <remarks>The list can be incomplete on a Windows host; the server validates whatever id is submitted.</remarks>
+    public static IResult ListTimerScheduleTimeZones(ITimerSchedulePreviewService service) =>
+        Results.Ok(service.ListTimeZones());
 
     /// <summary>
     /// Lists the latest versions of all workflow definitions.

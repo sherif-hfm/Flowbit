@@ -29,11 +29,19 @@ export async function create(root, dotnet, urls) {
     const notify = (method, ...args) => {
         if (!disposed) dotnet.invokeMethodAsync(method, ...args).catch(() => {});
     };
+    // Blazor holds the API credentials; the editor only asks, and fences each reply against what is on screen.
+    const askHost = (method, ...args) => disposed
+        ? Promise.resolve({ status: "unavailable" })
+        : dotnet.invokeMethodAsync(method, ...args).catch(() => ({ status: "unavailable" }));
     const editor = window.FlowbitEditor.mount(root, {
         mode: "hosted",
         onChange: state => notify("EditorChanged", state.dirty, state.revision),
         onReplace: () => { snapshot = null; notify("EditorReplaced"); },
-        onSaveRequested: () => disposed ? Promise.resolve() : dotnet.invokeMethodAsync("SaveEditor")
+        onSaveRequested: () => disposed ? Promise.resolve() : dotnet.invokeMethodAsync("SaveEditor"),
+        timerSchedules: {
+            preview: request => askHost("PreviewTimerSchedule", request),
+            timeZones: () => askHost("GetTimerScheduleTimeZones")
+        }
     });
     const removed = new MutationObserver(() => { if (!root.isConnected) dispose(); });
     removed.observe(document.body, { childList: true, subtree: true });

@@ -809,7 +809,8 @@ execution, not to every child item. Conditional catches may use
 `conditional.deliveryMode: "durableAsync"` to enqueue control work. Definitions
 may also use
 `timerStartEvent`, `intermediateTimerCatchEvent`, and `timerBoundaryEvent` with
-exactly one ISO-8601 `timeDate`, `timeDuration`, or `timeCycle` schedule. On a
+exactly one ISO-8601 `timeDate`, `timeDuration`, or `timeCycle` schedule, or, on
+a timer start only, a [cron schedule](#cron-timer-starts). On a
 catch or boundary, `timeDate` and `timeDuration` may be NCalc expressions (see
 [expression timers](#expression-timers)).
 Timer boundaries may be interrupting or noninterrupting and may recur.
@@ -911,6 +912,53 @@ own an open timer-start subscription, and it share-locks those default rows so
 runtime writes referencing them are never blocked. Each worker checks an
 immutable default version for timer starts once, so later passes read only key
 columns rather than definition documents.
+
+### Cron timer starts
+
+A timer start may set `timer.cron` with a required IANA `timer.timeZone`
+(see the [node reference](../docs/node-reference.md#cron-schedules)). Ownership
+and invariants:
+
+- **Grammar.** `CronScheduleRules` (Shared) owns Flowbit's restricted dialect,
+  its field limits, and the calendar-feasibility check over the fixed 400-year
+  Gregorian cycle. The editor mirrors it message for message inside its save
+  validator span. Only expressions it accepts reach the calculator.
+- **Calculator.** `CronTimerSchedule` (Service) is the only reader of the pinned
+  Cronos package. It resolves the zone through `IanaTimeZones`, returns UTC
+  instants strictly after its reference, accepts a result only within 36,525
+  days, and treats no result, an unresolvable zone, or the end of the
+  representable range as a scheduling error. Definition validation, the preview
+  service, reconciliation, and successor scheduling all use it.
+- **Dispatch.** Cron is never a `WorkflowTimerSchedule` with a null interval:
+  `WorkflowTimerSchedule.Resolve` throws for it, and
+  `ResolveFirstCronOccurrence`/`ResolveNextCronOccurrence` handle it explicitly.
+  `TimerScheduleKinds.Cron` is recurring for `IsRecurringMisfire`.
+- **First occurrence.** Reconciliation schedules the first occurrence strictly
+  after the default's persisted `DefaultActivatedAt`. If that is more than one
+  minute late at the pass's captured clock, it schedules the first occurrence
+  after that clock instead. The subscription stores `ScheduleKind = cron`, the
+  trimmed expression, the zone in `ScheduleTimeZone`, and `Occurrence = 0`.
+- **Firing.** `ProcessTimerStartJobAsync` keeps the family → job → subscription
+  lock order and its fences, captures the clock once, and either misfires (more
+  than one minute late: no instance, successor strictly after now) or starts the
+  instance and schedules the first occurrence after the nominal time that is at
+  most one minute in the past. Instance creation, the compare-and-swap advance,
+  the successor job, and the job completion commit together. `ReadCronSchedule`
+  reads the subscription's own expression and zone and requires them to match
+  the immutable definition.
+- **Never completed.** A cron subscription is only ever advanced or cancelled.
+  A missing successor throws, rolling back the attempted start, and the job
+  retries into an incident. `CK_timer_subscriptions_cron_not_completed` refuses
+  completion in the database as well, which also stops a Worker released before
+  cron; `CK_timer_subscriptions_cron_shape` keeps cron rows timer-start shaped
+  with a zone and no calendar.
+- **Saved times.** A saved `NextDueAt` is never recalculated by restarts,
+  reconciliation, missing-job repair, or time-zone data updates; only the next
+  successor uses current zone data. `Occurrence` is a fencing generation for
+  cron, not a count of matches.
+- **Preview.** `TimerSchedulePreviewService` backs
+  `POST /api/workflows/timer-schedules/preview` and the zone list inside the
+  workflow-administrator group. It reads no definition and writes nothing.
 
 ## History and audit retention
 
