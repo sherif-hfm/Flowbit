@@ -498,6 +498,53 @@ A timer catch or boundary can take its date or duration from instance data, such
 - **Version changes compare text.** An open expression timer allows an in-place version change only when the target authors the same text, `${...}` wrapper included.
 - **Reactivation.** The [reactivation preview](api-guide.md#get-apiinstancesidreactivation) refuses a target whose expression timer boundary cannot be scheduled (`timer_boundary_unresolvable`) and warns when a timer boundary would already be due (`timer_boundary_already_due`); a commit for a refused target returns `409`.
 
+### Cron timer starts
+
+A timer start can run on a cron schedule in a named time zone, such as every weekday at 08:00 London time. The definition carries the schedule; there is no API that starts, pauses, or moves it:
+
+```http
+POST /api/workflows HTTP/1.1
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{
+  "definition": {
+    "id": "weekday-review",
+    "name": "Weekday review",
+    "flowNodes": [
+      { "id": 1, "name": "Weekdays at 08:00", "type": "timerStartEvent",
+        "timer": { "cron": "0 8 * * 1-5", "timeZone": "Europe/London" } },
+      { "id": 2, "name": "Review", "type": "userTask" },
+      { "id": 3, "name": "Done", "type": "endEvent" }
+    ],
+    "sequenceFlows": [
+      { "id": 101, "sourceRef": 1, "targetRef": 2 },
+      { "id": 201, "name": "Done", "sourceRef": 2, "targetRef": 3 }
+    ]
+  },
+  "publish": true
+}
+```
+
+Before saving, check the expression and see when it would run with the read-only [preview](api-guide.md#post-apiworkflowstimer-schedulespreview), which needs the same workflow-administrator role:
+
+```http
+POST /api/workflows/timer-schedules/preview HTTP/1.1
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{ "cron": "0 8 * * 1-5", "timeZone": "Europe/London", "fromUtc": "2026-11-08T12:00:00Z", "count": 5 }
+```
+
+The [node reference](node-reference.md#cron-schedules) defines the dialect and daylight-saving behavior. For an integration:
+
+- **Activation.** The schedule belongs to the family's published default version. Saving a draft, previewing, or publishing a version that is not the default activates nothing. The first run is the first occurrence strictly after the version became the default; changing the default retires the schedule, and returning to a version later starts a new activation.
+- **System starts.** Each run starts a fresh instance as the system actor `timer`, with process-variable defaults only; a timer start takes no inputs, roles, business key, or idempotency key.
+- **Overlap.** Runs never wait for earlier instances, which may still be open; model mutual exclusion in the workflow if you need it.
+- **No backfill.** An occurrence more than one minute late, for example while the Worker is stopped, starts nothing; the schedule moves to its first occurrence after the Worker's current time. Exactly one minute late still runs. Flowbit never replays missed runs.
+- **No scheduled date in the instance.** A started instance does not receive its scheduled occurrence, and `sys.now` and `sys.today` are UTC, not the schedule's zone: a summer 00:30 run in `Europe/London`, or any 08:00 run in `Asia/Tokyo`, sees the previous date in `sys.today`. Do not derive a business date from it.
+- **Finding the next run.** A published default's next scheduled start is its family's queued `timerStart` job; filter [`GET /api/jobs`](api-guide.md#get-apijobs) by `workflowKey` and `kind=timerStart`.
+
 ## Call another workflow
 
 A [`callActivity`](node-reference.md#callactivity) starts a child instance of another workflow family and waits for it. There is no HTTP operation to start, complete, or retry a call: the engine owns those steps through durable jobs, so a Worker must be running.

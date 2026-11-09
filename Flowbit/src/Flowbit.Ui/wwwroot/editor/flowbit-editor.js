@@ -941,6 +941,15 @@ let instanceOverlay = new Map(); // viewer only: node id -> { state, badge, labe
 // Inspector-only: the Fixed value / Expression choice a user made for a timer
 // node's schedule, by node object. Unset choices are inferred from the value.
 const timerInputModes = new WeakMap();
+// Inspector-only: the hosted cron preview of one timer start. Requests, replies,
+// errors, and the optional UTC reference never enter the model, history, the
+// saved baseline, or AI snapshots; a reply counts only while its generation,
+// node, selection, and schedule are still the ones on screen.
+const cronPreview = {
+  generation: 0, nodeId: null, selection: null, key: "", status: "idle", message: "", result: null, reference: "", refresh: null
+};
+// Server time-zone suggestions, fetched once per mount when first needed: null, a pending promise, or a list.
+let cronTimeZoneSuggestions = null;
 const openInspectorHelp = new Set();
 let inspectorHelpSequence = 0;
 let notifiedViewerSelection = null;
@@ -1670,6 +1679,17 @@ function normalizeTimerDefinition(value) {
   // A calendar is kept only when named, so timers without one export as before.
   const calendar = normalizeMember(source.calendar);
   if (calendar !== null) timer.calendar = calendar;
+  // Likewise cron and its zone. They stay on any timer type, as authored, so
+  // save validation reports them where they do not belong; the expression keeps
+  // its syntax, because a range and an equivalent list can differ in a
+  // repeated daylight-saving hour. Both trim the server's white space.
+  const normalizeCronMember = member => typeof member === "string"
+    ? trimAttributeKey(member) || null
+    : member ?? null;
+  const cron = normalizeCronMember(source.cron);
+  if (cron !== null) timer.cron = cron;
+  const timeZone = normalizeCronMember(source.timeZone);
+  if (timeZone !== null) timer.timeZone = timeZone;
   return timer;
 }
 // Everything a call authors lives on node.callActivity. A type change or Remove these
@@ -1735,9 +1755,11 @@ function applyTypeInvariants(node) {
     delete node.asyncAfter;
     delete node.job;
   }
+  // Another type keeps an imported timer for save validation to report until an
+  // explicit edit removes it; see renderMisplacedTimer.
   if (isTimerEventType(node.type)) {
     node.timer = normalizeTimerDefinition(node.timer);
-  } else {
+  } else if (node.timer == null) {
     delete node.timer;
   }
   if (isTimerBoundaryEventType(node.type) || isConditionalBoundaryEventType(node.type)) {
@@ -3670,8 +3692,31 @@ function changeNodeTypeFromInspector(node, nextType) {
       }
     });
   }
+  // A node that becomes a timer event adopts a schedule kept from its import, or
+  // starts with a one-hour duration; a timer event that becomes anything else
+  // loses its timer.
   if (isTimerEventType(nextType) && !isTimerEventType(previousType)) {
-    node.timer = { timeDate: null, timeDuration: "PT1H", timeCycle: null };
+    const kept = node.timer;
+    node.timer = kept && typeof kept === "object" && !Array.isArray(kept) &&
+      ["timeDate", "timeDuration", "timeCycle", "cron"].some(name => kept[name] != null)
+      ? kept
+      : { timeDate: null, timeDuration: "PT1H", timeCycle: null };
+  }
+  if (isTimerEventType(previousType) && !isTimerEventType(nextType)) {
+    delete node.timer;
+  }
+  // Cron belongs to timer starts. A start or an adopted timer that becomes a
+  // catch or boundary keeps any other schedule but loses cron and its zone in
+  // this same change, with the default duration when nothing else is left.
+  if ((previousType === NODE_TYPE.TIMER_START_EVENT || !isTimerEventType(previousType)) &&
+      isTimerEventType(nextType) &&
+      nextType !== NODE_TYPE.TIMER_START_EVENT && node.timer && typeof node.timer === "object" &&
+      !Array.isArray(node.timer) && ("cron" in node.timer || "timeZone" in node.timer)) {
+    delete node.timer.cron;
+    delete node.timer.timeZone;
+    if (!["timeDate", "timeDuration", "timeCycle"].some(name => hasText(node.timer[name]))) {
+      node.timer = { timeDate: null, timeDuration: "PT1H", timeCycle: null };
+    }
   }
   if (isConditionalCatchEventType(nextType) && !isConditionalCatchEventType(previousType)) {
     node.conditional = { condition: "" };
@@ -4124,6 +4169,7 @@ function renderNodeInspector() {
   } else {
     renderMisplacedCallOnly(node);
   }
+  renderMisplacedTimer(node);
 
   if (isUserTaskType(node.type) || isMessageCatchEventType(node.type) ||
       isTimerCatchEventType(node.type) || isAutomaticType(node.type) ||
@@ -4766,6 +4812,27 @@ function renderMisplacedCallOnly(node) {
   clear.style.marginTop = "8px";
   clear.onclick = () => { delete node.callOnly; renderInspector(); };
   inspector.appendChild(clear);
+}
+
+// Save refuses an imported timer on anything but a timer event, so this shows it
+// and offers its removal; a call lists it with its other unsupported options.
+function renderMisplacedTimer(node) {
+  if (node.timer == null || isTimerEventType(node.type) || isCallActivityType(node.type)) return;
+  const warning = document.createElement("p");
+  warning.className = "empty-note";
+  warning.style.color = "var(--warning-text)";
+  warning.style.marginTop = "12px";
+  warning.style.overflowWrap = "anywhere";
+  warning.textContent = "This imported node defines a timer, which only a timer event can use, so the workflow " +
+    "cannot be saved: " + JSON.stringify(node.timer) + ". Change the node to a timer event to keep its schedule, " +
+    "or remove the timer.";
+  inspector.appendChild(warning);
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.textContent = "Remove this timer";
+  remove.style.marginTop = "8px";
+  remove.onclick = () => { delete node.timer; renderInspector(); };
+  inspector.appendChild(remove);
 }
 
 function callMappingTextField(box, label, value, onInput) {
@@ -5972,19 +6039,29 @@ function renderTimerSection(node) {
     return;
   }
 
-  const selectedKind = node.timer.timeDate != null
-    ? "timeDate"
-    : node.timer.timeCycle != null ? "timeCycle" : "timeDuration";
+  // Only a timer start offers cron, and an imported cron schedule opens in its
+  // editor so it stays visible and repairable.
+  const isTimerStart = node.type === NODE_TYPE.TIMER_START_EVENT;
+  const selectedKind = isTimerStart && node.timer.cron != null
+    ? "cron"
+    : node.timer.timeDate != null
+      ? "timeDate"
+      : node.timer.timeCycle != null ? "timeCycle" : "timeDuration";
   const scheduleField = selectField("Schedule", [
     { value: "timeDate", label: "Absolute date/time" },
     { value: "timeDuration", label: "Duration after activation" },
-    { value: "timeCycle", label: "Repeating cycle" }
+    { value: "timeCycle", label: "Repeating cycle" },
+    ...(isTimerStart ? [{ value: "cron", label: "Cron schedule" }] : [])
   ], selectedKind, value => {
+    // One change replaces the whole schedule, so undo restores the old one in one step.
     node.timer = value === "timeDate"
       ? { timeDate: "2026-12-31T23:00:00Z", timeDuration: null, timeCycle: null }
       : value === "timeCycle"
         ? { timeDate: null, timeDuration: null, timeCycle: "R/P2D" }
-        : { timeDate: null, timeDuration: "PT1H", timeCycle: null };
+        : value === "cron"
+          // No default zone: the author names one, and validation asks until they do.
+          ? { timeDate: null, timeDuration: null, timeCycle: null, cron: "0 8 * * 1-5" }
+          : { timeDate: null, timeDuration: "PT1H", timeCycle: null };
     renderInspector();
   });
 
@@ -6004,7 +6081,9 @@ function renderTimerSection(node) {
   }
 
   let refreshCalendar = () => {};
-  if (selectedKind === "timeCycle") {
+  if (selectedKind === "cron") {
+    renderCronScheduleEditor(node);
+  } else if (selectedKind === "timeCycle") {
     renderCycleEditor(inspector, node.timer.timeCycle ?? "", value => {
       node.timer.timeCycle = value;
     });
@@ -6024,12 +6103,15 @@ function renderTimerSection(node) {
     });
   }
   if (selectedKind === "timeDuration") refreshCalendar = renderTimerCalendarField(node);
+  renderMisplacedTimerSettings(node, selectedKind);
   if (inputMode !== "expression") {
     attachInspectorHelp(scheduleField, "timer-schedule", selectedKind === "timeDate"
       ? "Choose a local date and time. Flowbit saves the equivalent UTC instant with a Z offset."
       : selectedKind === "timeCycle"
         ? "Choose whether the interval repeats forever or a fixed number of times. Recurring intervals must be at least one second."
-        : "Choose an amount and unit. Fixed weeks, days, hours, minutes, and seconds are supported; calendar years and months are not.");
+        : selectedKind === "cron"
+          ? "Starts an instance at each time a five-field cron expression matches in a named time zone, until another version becomes the default. Cron is a Flowbit extension of BPMN, available on timer starts only."
+          : "Choose an amount and unit. Fixed weeks, days, hours, minutes, and seconds are supported; calendar years and months are not.");
   } else if (options.mode !== "hosted") {
     // Stays visible: an export that looks valid may still fail when saved through the API.
     const standaloneNote = document.createElement("p");
@@ -6155,6 +6237,364 @@ function renderTimerCalendarField(node) {
   attachInspectorHelp(input, "timer-calendar",
     "The name of a business calendar. Days then keep the time of day on later working days, and hours count only working hours; weeks cannot be used.");
   return updateValidation;
+}
+// Text as authored; any other imported value as its JSON, so it is never
+// mistaken for the text it would convert to.
+function cronSettingText(value) {
+  return typeof value === "string" ? value : value == null ? "" : JSON.stringify(value);
+}
+// A cron schedule's expression and zone are free text. The expression is
+// checked here as on the server; only the server knows which zones it can
+// resolve, so the browser's own zone data gives at most a hint that never
+// blocks saving or exporting.
+function renderCronScheduleEditor(node) {
+  const expressionId = "timer-cron-" + String(node.id);
+  const expressionField = document.createElement("div");
+  expressionField.className = "field";
+  const expressionLabel = document.createElement("label");
+  expressionLabel.htmlFor = expressionId;
+  expressionLabel.textContent = "Cron expression";
+  const expressionInput = document.createElement("input");
+  expressionInput.type = "text";
+  expressionInput.id = expressionId;
+  expressionInput.spellcheck = false;
+  expressionInput.autocomplete = "off";
+  expressionInput.placeholder = "0 8 * * 1-5";
+  expressionInput.value = cronSettingText(node.timer.cron);
+  const expressionStatus = inspectorStatusLine(expressionId + "-status");
+  expressionInput.setAttribute("aria-describedby", expressionStatus.id);
+  // Stays visible while it applies: a pasted crontab line changes meaning.
+  const daysNote = document.createElement("p");
+  daysNote.className = "empty-note";
+  daysNote.textContent = "Both day fields are restricted, so a date must match both the day of month and the day of week. Crontab would run when either matches.";
+  for (const child of [expressionLabel, expressionInput, expressionStatus, daysNote]) expressionField.appendChild(child);
+  inspector.appendChild(expressionField);
+  attachInspectorHelp(expressionInput, "timer-cron", [
+    "Five fields: minute (0-59), hour (0-23), day of month (1-31, or `L` for the last day), month (1-12), and day of week (0-6, where 0 is Sunday).",
+    "A field is `*`, `*/n`, or a list of numbers, ascending ranges, and steps, such as `1,15`, `1-5`, or `9-17/2`. Day of week takes `*/n` or a range with a step, such as `1-5/2`. Names, seconds, years, `?`, `W`, `#`, and `H` are not supported. At most 128 characters.",
+    "When both day fields are restricted, a date must match both: `0 8 13 * 5` runs only on Friday the 13th, and `0 17 L * 5` only in months that end on a Friday. Crontab runs when either matches.",
+    "Daylight saving: a time the clock skips runs when the clock jumps forward. In a repeated hour, fixed times such as `30 1 * * *` run once, at the first, while `*`, ranges, and steps in the minute or hour field run in both.",
+    "Started instances run as the system and see `sys.now` and `sys.today` in UTC, not in this time zone."
+  ], ["0 8 * * 1-5", "0 17 L * *"]);
+
+  const zoneId = "timer-cron-zone-" + String(node.id);
+  const zoneField = document.createElement("div");
+  zoneField.className = "field";
+  const zoneLabel = document.createElement("label");
+  zoneLabel.htmlFor = zoneId;
+  zoneLabel.textContent = "Time zone";
+  const zoneInput = document.createElement("input");
+  zoneInput.type = "text";
+  zoneInput.id = zoneId;
+  zoneInput.spellcheck = false;
+  zoneInput.autocomplete = "off";
+  zoneInput.placeholder = "Europe/London";
+  zoneInput.value = cronSettingText(node.timer.timeZone);
+  const zoneStatus = inspectorStatusLine(zoneId + "-status");
+  const zoneHint = document.createElement("p");
+  zoneHint.className = "empty-note";
+  zoneHint.textContent = "This browser does not recognize this time zone. Saving checks whether the server knows it.";
+  zoneInput.setAttribute("aria-describedby", zoneStatus.id);
+  for (const child of [zoneLabel, zoneInput, zoneStatus, zoneHint]) zoneField.appendChild(child);
+  inspector.appendChild(zoneField);
+  if (options.timerSchedules) attachCronTimeZoneSuggestions(zoneInput, zoneId + "-suggestions");
+  attachInspectorHelp(zoneInput, "timer-cron-zone", [
+    "An IANA time zone, written with its exact casing, such as `Europe/London`; `Etc/UTC` means UTC. The schedule follows this zone's local time as its offset changes.",
+    options.timerSchedules
+      ? "Suggestions come from the server, which may not list every zone it knows; saving checks the zone."
+      : "Only Flowbit.Ui can check that the server knows this zone."
+  ], ["Europe/London", "Etc/UTC"]);
+
+  const preview = options.timerSchedules ? renderCronPreview(node) : null;
+  if (!options.timerSchedules) {
+    const standaloneNote = document.createElement("p");
+    standaloneNote.className = "empty-note";
+    standaloneNote.textContent = "This standalone editor checks the expression but cannot preview upcoming runs or check the time zone; Flowbit.Ui does both.";
+    inspector.appendChild(standaloneNote);
+  }
+
+  // The document's value decides the type; once an edit writes text, the field
+  // and the document agree again.
+  const update = () => {
+    const cronType = cronSettingTypeProblem("cron", node.timer.cron);
+    const parsed = cronType ? {} : parseCronSchedule(expressionInput.value);
+    const expressionProblem = cronType || (parsed.problem ? "timer.cron " + parsed.problem : "");
+    expressionInput.setAttribute("aria-invalid", expressionProblem ? "true" : "false");
+    expressionStatus.textContent = expressionProblem;
+    daysNote.hidden = !(parsed.schedule && parsed.schedule.restrictsBothDays);
+    const zoneProblem = cronSettingTypeProblem("timeZone", node.timer.timeZone) ||
+      cronTimeZoneProblem(zoneInput.value);
+    zoneInput.setAttribute("aria-invalid", zoneProblem ? "true" : "false");
+    zoneStatus.textContent = zoneProblem || "";
+    zoneHint.hidden = !!zoneProblem || browserRecognizesTimeZone(trimAttributeKey(zoneInput.value));
+    if (preview) preview.refresh();
+  };
+  expressionInput.oninput = () => {
+    node.timer.cron = expressionInput.value;
+    update();
+  };
+  zoneInput.oninput = () => {
+    node.timer.timeZone = zoneInput.value;
+    update();
+  };
+  update();
+}
+function inspectorStatusLine(id) {
+  const status = document.createElement("p");
+  status.className = "expression-validation";
+  status.setAttribute("role", "status");
+  status.setAttribute("aria-live", "polite");
+  status.id = id;
+  return status;
+}
+// Intl accepts ids in any casing and renames some zones, so it can only say
+// that this browser has never heard of one. Without Intl it says nothing.
+function browserRecognizesTimeZone(id) {
+  if (!id || typeof Intl === "undefined" || typeof Intl.DateTimeFormat !== "function") return true;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: id });
+    return true;
+  } catch {
+    return false;
+  }
+}
+// Suggestions load once per mount, on first focus. Free text stays allowed:
+// a Windows server's list can be incomplete, and saving checks the zone.
+function attachCronTimeZoneSuggestions(input, listId) {
+  const list = document.createElement("datalist");
+  list.id = listId;
+  input.setAttribute("list", listId);
+  input.parentNode.appendChild(list);
+  const fill = zones => {
+    if (!Array.isArray(zones) || !list.isConnected) return;
+    list.replaceChildren(...zones.map(zone => {
+      const option = document.createElement("option");
+      option.value = zone;
+      return option;
+    }));
+  };
+  if (Array.isArray(cronTimeZoneSuggestions)) {
+    fill(cronTimeZoneSuggestions);
+    return;
+  }
+  listen(input, "focus", () => {
+    if (Array.isArray(cronTimeZoneSuggestions)) {
+      fill(cronTimeZoneSuggestions);
+      return;
+    }
+    if (!cronTimeZoneSuggestions) {
+      cronTimeZoneSuggestions = Promise.resolve()
+        .then(() => options.timerSchedules.timeZones())
+        .then(reply => {
+          if (disposed) return null;
+          cronTimeZoneSuggestions = reply && reply.status === "ok" && Array.isArray(reply.timeZones)
+            ? reply.timeZones.filter(zone => typeof zone === "string")
+            : null;
+          return cronTimeZoneSuggestions;
+        }, () => {
+          cronTimeZoneSuggestions = null;
+          return null;
+        });
+    }
+    cronTimeZoneSuggestions.then(fill);
+  }, { once: true });
+}
+// Only text the editor accepts is previewed; an imported value of another type
+// is never converted into a request.
+function cronPreviewable(timer) {
+  return typeof timer.cron === "string" && typeof timer.timeZone === "string" &&
+    !parseCronSchedule(timer.cron).problem && !cronTimeZoneProblem(timer.timeZone);
+}
+// Shows the next five occurrences the server calculates, each in the schedule's
+// zone with its offset and in UTC, never only in the viewer's own zone.
+function renderCronPreview(node) {
+  // Another node starts afresh; selecting the same node again keeps only its reference.
+  if (cronPreview.nodeId !== node.id || cronPreview.selection !== selected) {
+    cronPreview.generation++;
+    Object.assign(cronPreview, {
+      selection: selected, key: "", status: "idle", message: "", result: null,
+      reference: cronPreview.nodeId === node.id ? cronPreview.reference : ""
+    });
+    cronPreview.nodeId = node.id;
+  }
+  const section = document.createElement("div");
+  section.className = "cron-preview";
+  const referenceId = "timer-cron-reference-" + String(node.id);
+  const referenceField = document.createElement("div");
+  referenceField.className = "field";
+  const referenceLabel = document.createElement("label");
+  referenceLabel.htmlFor = referenceId;
+  referenceLabel.textContent = "Preview after (UTC, optional)";
+  const referenceInput = document.createElement("input");
+  referenceInput.type = "text";
+  referenceInput.id = referenceId;
+  referenceInput.spellcheck = false;
+  referenceInput.autocomplete = "off";
+  referenceInput.placeholder = "Now, or 2026-11-08T12:00:00Z";
+  referenceInput.value = cronPreview.reference;
+  referenceField.appendChild(referenceLabel);
+  referenceField.appendChild(referenceInput);
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "cron-preview-button";
+  button.textContent = "Preview next 5";
+  const status = inspectorStatusLine(referenceId + "-status");
+  status.className = "cron-preview-status";
+  const results = document.createElement("div");
+  results.className = "cron-preview-results";
+  for (const child of [referenceField, button, status, results]) section.appendChild(child);
+  inspector.appendChild(section);
+
+  // Spacing alone keeps an answer; a value that is not text keys by its JSON.
+  const settingKey = value => typeof value === "string" ? trimAttributeKey(value) : cronSettingText(value);
+  const key = () => JSON.stringify([
+    settingKey(node.timer.cron),
+    settingKey(node.timer.timeZone),
+    cronPreview.reference.trim()
+  ]);
+  const show = () => {
+    status.textContent = cronPreview.status === "loading"
+      ? "Calculating the next five runs…"
+      : cronPreview.status === "ok"
+        ? ""
+        : cronPreview.status === "idle"
+          ? "Preview the next five runs as the server calculates them."
+          : cronPreview.message;
+    status.dataset.state = cronPreview.status;
+    results.replaceChildren(...(cronPreview.status === "ok" && cronPreview.result
+      ? [cronPreviewTable(cronPreview.result)]
+      : []));
+  };
+  const refresh = () => {
+    if (!section.isConnected) return;
+    // A different schedule or reference makes an earlier answer, or a pending one, stale.
+    if (cronPreview.status !== "idle" && cronPreview.key !== key()) {
+      cronPreview.generation++;
+      Object.assign(cronPreview, { key: "", status: "idle", message: "", result: null });
+    }
+    // A disabled button would drop keyboard focus, so a pending request only
+    // marks it unavailable and the click handler ignores it.
+    const loading = cronPreview.status === "loading";
+    button.disabled = !loading && !cronPreviewable(node.timer);
+    button.setAttribute("aria-disabled", loading ? "true" : "false");
+    show();
+  };
+  cronPreview.refresh = refresh;
+  referenceInput.oninput = () => {
+    cronPreview.reference = referenceInput.value;
+    refresh();
+  };
+  button.onclick = async () => {
+    if (cronPreview.status === "loading" || !cronPreviewable(node.timer)) return;
+    const requestKey = key();
+    const generation = ++cronPreview.generation;
+    const requestedSelection = selected;
+    const request = {
+      cron: trimAttributeKey(node.timer.cron),
+      timeZone: trimAttributeKey(node.timer.timeZone),
+      fromUtc: cronPreview.reference.trim() || null,
+      count: 5
+    };
+    Object.assign(cronPreview, { key: requestKey, status: "loading", message: "", result: null });
+    refresh();
+    let reply;
+    try {
+      reply = await options.timerSchedules.preview(request);
+    } catch {
+      reply = null;
+    }
+    // A reply counts only for the request still on screen. A dropped reply that
+    // no newer request replaced leaves the preview idle rather than loading.
+    if (disposed) return;
+    const current = generation === cronPreview.generation;
+    const onScreen = current && cronPreview.nodeId === node.id && getNode(node.id) === node &&
+      selected === requestedSelection && key() === requestKey;
+    if (onScreen) Object.assign(cronPreview, cronPreviewOutcome(reply));
+    else if (current) Object.assign(cronPreview, { key: "", status: "idle", message: "", result: null });
+    else return;
+    if (cronPreview.refresh) cronPreview.refresh();
+  };
+  return { refresh };
+}
+function cronPreviewOutcome(reply) {
+  if (reply && reply.status === "ok" && reply.preview && Array.isArray(reply.preview.occurrences)) {
+    return { status: "ok", message: "", result: reply.preview };
+  }
+  if (reply && reply.status === "invalid") {
+    return { status: "invalid", message: String(reply.message || "The server could not preview this schedule."), result: null };
+  }
+  if (reply && reply.status === "forbidden") {
+    return {
+      status: "forbidden",
+      message: "You no longer have permission to preview schedules. Sign in again; your schedule is unchanged.",
+      result: null
+    };
+  }
+  return {
+    status: "unavailable",
+    message: "The preview service is unavailable. Your schedule is unchanged; try again later.",
+    result: null
+  };
+}
+function cronPreviewTable(preview) {
+  const table = document.createElement("table");
+  table.className = "cron-preview-table";
+  const caption = document.createElement("caption");
+  caption.textContent = (preview.occurrences.length === 1 ? "Next run" : "Next " + preview.occurrences.length + " runs") +
+    " after " + formatCronInstant(preview.fromUtc, true) + ", in " + preview.timeZone;
+  const head = document.createElement("thead");
+  head.innerHTML = "<tr><th scope=\"col\">Local time</th><th scope=\"col\">UTC</th></tr>";
+  const body = document.createElement("tbody");
+  for (const occurrence of preview.occurrences) {
+    const row = document.createElement("tr");
+    const local = document.createElement("td");
+    local.textContent = formatCronInstant(occurrence.localTime, false);
+    const utc = document.createElement("td");
+    utc.textContent = formatCronInstant(occurrence.dueAt, true);
+    row.appendChild(local);
+    row.appendChild(utc);
+    body.appendChild(row);
+  }
+  for (const child of [caption, head, body]) table.appendChild(child);
+  return table;
+}
+// Formats the server's text as is, so no row moves into the viewer's own zone.
+function formatCronInstant(text, utc) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}:\d{2})(?::\d{2}(?:\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/.exec(String(text));
+  if (!match) return String(text);
+  const weekday = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][
+    new Date(Date.UTC(+match[1], +match[2] - 1, +match[3])).getUTCDay()];
+  const date = weekday + " " + match[1] + "-" + match[2] + "-" + match[3] + " " + match[4];
+  return utc ? date + " UTC" : date + " " + (match[5] === "Z" ? "+00:00" : match[5]);
+}
+// Settings the chosen schedule cannot use stay in the document, as imported,
+// until an explicit edit removes them; this offers that edit.
+function renderMisplacedTimerSettings(node, selectedKind) {
+  const isTimerStart = node.type === NODE_TYPE.TIMER_START_EVENT;
+  const misplaced = [];
+  if (!isTimerStart && node.timer.cron != null) misplaced.push("cron");
+  if (node.timer.timeZone != null && (!isTimerStart || selectedKind !== "cron")) misplaced.push("timeZone");
+  if (node.timer.calendar != null && selectedKind !== "timeDuration") misplaced.push("calendar");
+  if (misplaced.length === 0) return;
+  const warning = document.createElement("p");
+  warning.className = "empty-note";
+  warning.style.color = "var(--warning-text)";
+  warning.textContent = "This timer has settings its schedule cannot use: " +
+    misplaced.map(name => "timer." + name).join(", ") + "." +
+    (misplaced.includes("cron") ? " Cron schedules are supported only on timer start events." : "");
+  inspector.appendChild(warning);
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.style.width = "100%";
+  remove.textContent = misplaced.length === 1 ? "Remove this setting" : "Remove these settings";
+  remove.onclick = () => {
+    for (const name of misplaced) delete node.timer[name];
+    if (!["timeDate", "timeDuration", "timeCycle", "cron"].some(name => node.timer[name] != null)) {
+      node.timer.timeDuration = "PT1H";
+    }
+    renderInspector();
+  };
+  inspector.appendChild(remove);
 }
 
 function renderBoundaryHostSection(hostNode) {
@@ -10909,6 +11349,237 @@ function timerScheduleValueProblems(nodeType, property, value, processVariables)
   }
   return problems;
 }
+// Cron schedules on timer starts. These mirror CronScheduleRules on the server,
+// message for message: five fields (minute, hour, day of month, month, day of
+// week) of one- or two-digit ASCII numbers in lists, ascending ranges, and
+// positive steps, plus a whole day-of-month L, and a date must match both day
+// fields. Day of week runs from 0, Sunday, to 6 and takes no open-ended step.
+// White space is the server's too: cron and its zone are trimmed and tested
+// with trimAttributeKey, which matches .NET, never with trim() or \s, which also
+// take U+FEFF and leave U+0085.
+// The server also reads the expression with its calculator and resolves the
+// IANA time zone; the editor checks only that a zone is named, because browsers
+// name some zones differently (Etc/UTC as UTC, Europe/Kyiv as Europe/Kiev).
+const CRON_MAX_LENGTH = 128;
+const CRON_TIME_ZONE_MAX_LENGTH = 100;
+const CRON_FIELDS_DESCRIPTION = "minute, hour, day of month, month, and day of week";
+const CRON_FIELD_SPECS = [
+  { name: "minute", first: 0, last: 59, maxStep: 59, allowsOpenStep: true, allowsLast: false },
+  { name: "hour", first: 0, last: 23, maxStep: 23, allowsOpenStep: true, allowsLast: false },
+  { name: "day-of-month", first: 1, last: 31, maxStep: 31, allowsOpenStep: true, allowsLast: true },
+  { name: "month", first: 1, last: 12, maxStep: 12, allowsOpenStep: true, allowsLast: false },
+  { name: "day-of-week", first: 0, last: 6, maxStep: 6, allowsOpenStep: false, allowsLast: false }
+];
+const CRON_DAYS_IN_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+function isCronDigit(character) {
+  return character >= "0" && character <= "9";
+}
+function addCronRange(values, low, high, step) {
+  for (let value = low; value <= high; value += step) values.add(value);
+}
+function cronMalformedItem(spec, item) {
+  return spec.name + " item '" + item + "' is malformed; write " +
+    (spec.allowsOpenStep ? "*, */n, a, a-b, a/n, or a-b/n." : "*, */n, a, a-b, or a-b/n.");
+}
+function readCronNumber(token, spec) {
+  if (token.length > 2) return { problem: spec.name + " value '" + token + "' has more than two digits." };
+  return { value: Number(token) };
+}
+function readCronValue(token, spec) {
+  const read = readCronNumber(token, spec);
+  if (read.problem) return read;
+  if (spec.name === "day-of-week" && read.value === 7) {
+    return { problem: "day-of-week value 7 is not allowed; write Sunday as 0." };
+  }
+  if (read.value < spec.first || read.value > spec.last) {
+    return { problem: spec.name + " value " + read.value + " is outside " + spec.first + " to " + spec.last + "." };
+  }
+  return read;
+}
+function readCronStep(token, spec) {
+  const read = readCronNumber(token, spec);
+  if (read.problem) return read;
+  if (read.value < 1 || read.value > spec.maxStep) {
+    return { problem: spec.name + " step " + read.value + " must be from 1 to " + spec.maxStep + "." };
+  }
+  return read;
+}
+function parseCronField(text, spec) {
+  const values = new Set();
+  if (text === "*") {
+    addCronRange(values, spec.first, spec.last, 1);
+    return { values, last: false, star: true };
+  }
+  if (spec.allowsLast && text === "L") return { values, last: true, star: false };
+  for (const character of text) {
+    if (!isCronDigit(character) && !",-/*".includes(character) && !(spec.allowsLast && character === "L")) {
+      return {
+        problem: spec.name + " field '" + text + "' uses '" + character + "', which is not supported; " +
+          "write numbers, lists, ascending ranges, and steps" +
+          (spec.allowsLast ? ", or L alone for the last day" : "") + "."
+      };
+    }
+  }
+  if (text.includes("L")) {
+    return { problem: spec.name + " field '" + text + "' uses L with other values; L must be the whole field." };
+  }
+  if (text.includes("*")) {
+    const step = text.startsWith("*/") ? text.slice(2) : null;
+    if (step && [...step].every(isCronDigit)) {
+      const read = readCronStep(step, spec);
+      if (read.problem) return read;
+      addCronRange(values, spec.first, spec.last, read.value);
+      return { values, last: false, star: true };
+    }
+    return {
+      problem: text.includes(",")
+        ? spec.name + " field '" + text + "' uses * in a list; write * or */n as the whole field."
+        : cronMalformedItem(spec, text)
+    };
+  }
+  for (const item of text.split(",")) {
+    if (!item) return { problem: spec.name + " field '" + text + "' has an empty list item." };
+    const slash = item.split("/");
+    const dash = slash[0].split("-");
+    // Only the part before the slash may be a range, so a step holds digits alone.
+    if (slash.length > 2 || dash.length > 2 || slash.some(part => !part) || dash.some(part => !part) ||
+        (slash.length === 2 && ![...slash[1]].every(isCronDigit))) {
+      return { problem: cronMalformedItem(spec, item) };
+    }
+    const low = readCronValue(dash[0], spec);
+    if (low.problem) return low;
+    let high = low.value;
+    if (dash.length === 2) {
+      const read = readCronValue(dash[1], spec);
+      if (read.problem) return read;
+      if (read.value < low.value) {
+        return {
+          problem: spec.name + " range '" + dash[0] + "-" + dash[1] + "' is reversed; write ranges in ascending order."
+        };
+      }
+      high = read.value;
+    }
+    let step = 1;
+    if (slash.length === 2) {
+      if (dash.length === 1) {
+        if (!spec.allowsOpenStep) {
+          return {
+            problem: spec.name + " item '" + item + "' has an open-ended step; write */n or a range such as 1-5/2."
+          };
+        }
+        high = spec.last;
+      }
+      const read = readCronStep(slash[1], spec);
+      if (read.problem) return read;
+      step = read.value;
+    }
+    addCronRange(values, low.value, high, step);
+  }
+  return { values, last: false, star: false };
+}
+// The Gregorian calendar repeats its dates and weekdays every 400 years, so the
+// fields match some date exactly when they match one from 2000 to 2399; fixed
+// years keep the answer independent of today. 2000-01-01 was a Saturday.
+function cronMatchesSomeDate(schedule) {
+  if (schedule.daysOfWeek.size === 7) {
+    for (const month of schedule.months) {
+      if (schedule.lastDayOfMonth) return true;
+      const longest = month === 2 ? 29 : CRON_DAYS_IN_MONTH[month - 1];
+      for (const day of schedule.daysOfMonth) if (day <= longest) return true;
+    }
+    return false;
+  }
+  // Every month has each weekday among its first 28 days.
+  if (!schedule.lastDayOfMonth && schedule.daysOfMonth.size === 31) return true;
+  let weekday = 6;
+  for (let year = 2000; year < 2400; year++) {
+    const leap = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+    for (let month = 1; month <= 12; month++) {
+      const days = month === 2 && leap ? 29 : CRON_DAYS_IN_MONTH[month - 1];
+      if (schedule.months.has(month)) {
+        for (let day = 1; day <= days; day++) {
+          const dayMatches = schedule.lastDayOfMonth ? day === days : schedule.daysOfMonth.has(day);
+          if (dayMatches && schedule.daysOfWeek.has((weekday + day - 1) % 7)) return true;
+        }
+      }
+      weekday = (weekday + days) % 7;
+    }
+  }
+  return false;
+}
+// Returns { schedule } with the selected values of each field, or { problem }
+// worded to follow "timer.cron", as on the server.
+function parseCronSchedule(expression) {
+  const text = typeof expression === "string" ? trimAttributeKey(expression) : "";
+  if (!text) return { problem: "must be a cron expression with five fields: " + CRON_FIELDS_DESCRIPTION + "." };
+  if (text.length > CRON_MAX_LENGTH) return { problem: "must contain at most " + CRON_MAX_LENGTH + " characters." };
+  if (text[0] === "@") {
+    return {
+      problem: "'" + text + "' is an alias, which is not supported; write five fields: " + CRON_FIELDS_DESCRIPTION + "."
+    };
+  }
+  // A character that trimAttributeKey removes entirely is .NET white space.
+  if ([...text].some(character => character !== " " && character !== "\t" && !trimAttributeKey(character))) {
+    return { problem: "may separate its fields only with spaces or tabs." };
+  }
+  const parts = text.split(/[ \t]+/);
+  if (parts.length !== CRON_FIELD_SPECS.length) {
+    return {
+      problem: "'" + text + "' has " + parts.length + " field" + (parts.length === 1 ? "" : "s") +
+        "; write five: " + CRON_FIELDS_DESCRIPTION + ". Seconds and years are not supported."
+    };
+  }
+  const fields = [];
+  for (let index = 0; index < CRON_FIELD_SPECS.length; index++) {
+    const parsed = parseCronField(parts[index], CRON_FIELD_SPECS[index]);
+    if (parsed.problem) return { problem: parsed.problem };
+    fields.push(parsed);
+  }
+  const schedule = {
+    minutes: fields[0].values,
+    hours: fields[1].values,
+    daysOfMonth: fields[2].values,
+    lastDayOfMonth: fields[2].last,
+    months: fields[3].values,
+    daysOfWeek: fields[4].values,
+    // A day field that starts with * leaves the day unrestricted, as crontab reads it.
+    restrictsBothDays: !fields[2].star && !fields[4].star
+  };
+  if (!cronMatchesSomeDate(schedule)) {
+    return {
+      problem: "'" + text + "' never matches a calendar date; check its day-of-month, month, and day-of-week fields."
+    };
+  }
+  return { schedule };
+}
+// The same expression can appear on several timer starts; the date search runs
+// once per expression within one validation.
+function cronScheduleProblem(ctx, expression) {
+  if (!ctx.cronProblems) ctx.cronProblems = new Map();
+  if (!ctx.cronProblems.has(expression)) {
+    ctx.cronProblems.set(expression, parseCronSchedule(expression).problem || null);
+  }
+  return ctx.cronProblems.get(expression);
+}
+// Cron and its zone are text. Any other imported value stays as it is until an
+// edit writes text, and the inspector reports it with these words too.
+function cronSettingTypeProblem(name, value) {
+  return value !== undefined && value !== null && typeof value !== "string"
+    ? "timer." + name + " must be a string."
+    : null;
+}
+// Presence and length only, worded to follow nothing: the server also checks
+// that it knows the zone, with its exact casing, when the definition is saved.
+function cronTimeZoneProblem(timeZone) {
+  if (timeZone !== undefined && timeZone !== null && typeof timeZone !== "string") return null;
+  const trimmed = typeof timeZone === "string" ? trimAttributeKey(timeZone) : "";
+  if (!trimmed) {
+    return "timer.timeZone is required with cron; name an IANA time zone such as Europe/London, or Etc/UTC for UTC.";
+  }
+  return trimmed.length > CRON_TIME_ZONE_MAX_LENGTH
+    ? "timer.timeZone must contain at most " + CRON_TIME_ZONE_MAX_LENGTH + " characters."
+    : null;
+}
 function userTaskDueDateCalendarProblem(dueDate, calendar) {
   if (calendar === undefined || calendar === null) return null;
   if (typeof calendar !== "string") return "dueDateCalendar must be text.";
@@ -11550,10 +12221,34 @@ function validateSaveAsyncJobsAndTimers(ctx) {
         errors.push(label + " " + name + " must be a string.");
       }
     }
-    const configured = ["timeDate", "timeDuration", "timeCycle"]
-      .filter(name => hasText(timer[name]));
+    // Cron is a timer-start extension; a catch or boundary keeps the three ISO
+    // schedules. Blank text counts as absent, as the server's normalization makes it.
+    const isTimerStart = node.type === "timerStartEvent";
+    const presentCron = isPresentTimerSetting(timer.cron);
+    const presentTimeZone = isPresentTimerSetting(timer.timeZone);
+    if (!isTimerStart && (presentCron || presentTimeZone)) {
+      errors.push((node.type === "timerBoundaryEvent" ? "Timer boundary event #" : "Timer catch event #") +
+        node.id + " " + (presentCron ? "timer.cron" : "timer.timeZone") +
+        " is supported only on timer start events.");
+    }
+    if (isTimerStart) {
+      for (const name of ["cron", "timeZone"]) {
+        const typeProblem = cronSettingTypeProblem(name, timer[name]);
+        if (typeProblem) errors.push("Timer start event #" + node.id + " " + typeProblem);
+      }
+    }
+    // Cron counts with the server's white space, as its own checks do; the ISO
+    // schedules' checks still trim as JavaScript does.
+    const configured = (isTimerStart
+      ? ["timeDate", "timeDuration", "timeCycle", "cron"]
+      : ["timeDate", "timeDuration", "timeCycle"])
+      .filter(name => name === "cron"
+        ? typeof timer.cron === "string" && isPresentTimerSetting(timer.cron)
+        : hasText(timer[name]));
     if (configured.length !== 1) {
-      errors.push(label + " must define exactly one of timeDate, timeDuration, or timeCycle.");
+      errors.push(label + " must define exactly one of " + (isTimerStart
+        ? "timeDate, timeDuration, timeCycle, or cron."
+        : "timeDate, timeDuration, or timeCycle."));
       continue;
     }
     if (configured[0] === "timeDate" || configured[0] === "timeDuration") {
@@ -11576,7 +12271,19 @@ function validateSaveAsyncJobsAndTimers(ctx) {
         errors.push(label + " timeCycle interval must be at least one second.");
       }
     }
+    if (configured[0] === "cron") {
+      const cronProblem = cronScheduleProblem(ctx, trimAttributeKey(timer.cron));
+      if (cronProblem) errors.push("Timer start event #" + node.id + " timer.cron " + cronProblem);
+      const zoneProblem = cronTimeZoneProblem(timer.timeZone);
+      if (zoneProblem) errors.push("Timer start event #" + node.id + " " + zoneProblem);
+    } else if (isTimerStart && presentTimeZone) {
+      errors.push("Timer start event #" + node.id +
+        " timer.timeZone needs a cron schedule; only cron takes a time zone.");
+    }
   }
+}
+function isPresentTimerSetting(value) {
+  return value !== undefined && value !== null && (typeof value !== "string" || trimAttributeKey(value) !== "");
 }
 
 function validateSaveServiceTasks(ctx) {
@@ -13430,9 +14137,10 @@ function normalizeLoadedModel(obj) {
           s.job !== undefined && s.job !== null
           ? normalizeJobPolicy(s.job)
           : isCallActivityType(s.type) ? s.job : undefined,
+        // Any other type keeps its timer as authored, which save validation reports.
         timer: ["timerStartEvent", "intermediateTimerCatchEvent", "timerBoundaryEvent"].includes(s.type)
           ? normalizeTimerDefinition(s.timer)
-          : undefined,
+          : s.timer == null ? undefined : JSON.parse(JSON.stringify(s.timer)),
         cancelActivity: ["timerBoundaryEvent", "conditionalBoundaryEvent"].includes(s.type)
           ? (s.cancelActivity === undefined || s.cancelActivity === null
               ? true : s.cancelActivity)

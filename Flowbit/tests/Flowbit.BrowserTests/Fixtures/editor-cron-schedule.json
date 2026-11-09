@@ -1,0 +1,58 @@
+{
+  "id": "browser-cron-schedule",
+  "name": "Browser cron schedule",
+  "initialEventId": null,
+  "variables": [],
+  "lanes": [],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Scheduled start",
+      "type": "timerStartEvent",
+      "laneId": null,
+      "x": 70,
+      "y": 120,
+      "roles": [],
+      "variables": [],
+      "timer": { "timeDate": null, "timeDuration": null, "timeCycle": "R/P1D" }
+    },
+    {
+      "id": 2,
+      "name": "Wait an hour",
+      "type": "intermediateTimerCatchEvent",
+      "laneId": null,
+      "x": 330,
+      "y": 132,
+      "roles": [],
+      "variables": [],
+      "timer": { "timeDate": null, "timeDuration": "PT1H", "timeCycle": null, "cron": "0 8 * * *", "timeZone": "Etc/UTC" }
+    },
+    {
+      "id": 3,
+      "name": "Review",
+      "type": "userTask",
+      "laneId": null,
+      "x": 520,
+      "y": 108,
+      "roles": [],
+      "variables": [],
+      "requiresClaim": false,
+      "claimMode": "fresh"
+    },
+    {
+      "id": 4,
+      "name": "Done",
+      "type": "endEvent",
+      "laneId": null,
+      "x": 820,
+      "y": 120,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "sequenceFlows": [
+    { "id": 101, "name": "", "sourceRef": 1, "targetRef": 2, "roles": [], "variables": [] },
+    { "id": 201, "name": "", "sourceRef": 2, "targetRef": 3, "roles": [], "variables": [] },
+    { "id": 301, "name": "Done", "sourceRef": 3, "targetRef": 4, "roles": [], "variables": [] }
+  ]
+}

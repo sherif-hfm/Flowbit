@@ -899,6 +899,11 @@ public sealed partial class WorkflowEngineService
     private static (string Kind, string Expression) GetTimerExpression(
         TimerDefinitionModel timer)
     {
+        // Instance timers are catches and boundaries, which validation keeps free of cron.
+        if (!string.IsNullOrWhiteSpace(timer.Cron))
+        {
+            throw new WorkflowDomainException("Cron schedules are supported only on timer start events.");
+        }
         if (!string.IsNullOrWhiteSpace(timer.TimeDate))
         {
             return (TimerScheduleKinds.Date, timer.TimeDate.Trim());
@@ -3543,10 +3548,12 @@ public sealed partial class WorkflowEngineService
             joinAmbientTransaction: true,
             forceDurableActivities: true,
             requiredDefaultWorkflowId: job.WorkflowDefinitionId);
+        // The successor is scheduled from the instant the misfire check captured, so one clock reading decides both.
         await ScheduleNextTimerStartOccurrenceAsync(
             workflow,
             subscription,
-            cancellationToken);
+            cancellationToken,
+            now - TimerMisfireGrace);
         if (!await jobs.CompleteAsync(fence, cancellationToken))
         {
             throw new WorkflowConflictException(
@@ -3621,10 +3628,23 @@ public sealed partial class WorkflowEngineService
         DateTimeOffset? notBefore = null)
     {
         var node = GetFlowNode(workflow.Definition, subscription.TimerNodeId);
-        var next = ResolveNextOccurrence(
-            node.Timer!,
-            subscription,
-            notBefore ?? timeProvider.GetUtcNow() - TimerMisfireGrace);
+        var threshold = notBefore ?? timeProvider.GetUtcNow() - TimerMisfireGrace;
+        (long Occurrence, DateTimeOffset DueAt)? next;
+        if (string.Equals(subscription.ScheduleKind, TimerScheduleKinds.Cron, StringComparison.Ordinal))
+        {
+            // A cron schedule never completes. Without a further occurrence the calculator throws, which rolls back
+            // this firing, its instance included, so a start is never committed while its successor is lost.
+            var successor = WorkflowTimerSchedule.ResolveNextCronOccurrence(
+                ReadCronSchedule(subscription, node),
+                subscription.Occurrence,
+                subscription.NextDueAt,
+                threshold);
+            next = (successor.Occurrence, successor.DueAt);
+        }
+        else
+        {
+            next = ResolveNextOccurrence(node.Timer!, subscription, threshold);
+        }
         if (next is null)
         {
             if (!await timerSubscriptions.AdvanceAsync(
@@ -3683,6 +3703,34 @@ public sealed partial class WorkflowEngineService
             job.ScheduledOccurrenceAt,
             now,
             TimerMisfireGrace);
+
+    // A cron subscription carries the expression and zone it was activated with, which must still match its immutable
+    // definition and still read on this host. Zone data that no longer resolves the zone fails the firing, which then
+    // retries and opens an incident; nothing falls back to UTC.
+    private static CronTimerSchedule ReadCronSchedule(
+        TimerSubscriptionRecord subscription,
+        FlowNodeModel node)
+    {
+        if (!string.Equals(node.Timer?.Cron?.Trim(), subscription.ScheduleExpression, StringComparison.Ordinal)
+            || !string.Equals(node.Timer?.TimeZone?.Trim(), subscription.ScheduleTimeZone, StringComparison.Ordinal))
+        {
+            throw new WorkflowJobInvariantException(
+                $"Timer start #{node.Id} no longer matches its cron subscription #{subscription.Id}.");
+        }
+
+        if (!CronTimerSchedule.TryCreate(
+                subscription.ScheduleExpression,
+                subscription.ScheduleTimeZone,
+                "cron",
+                "timeZone",
+                out var schedule,
+                out var problem))
+        {
+            throw new WorkflowDomainException($"Timer start #{node.Id} cannot be scheduled: {problem}");
+        }
+
+        return schedule;
+    }
 
     private (long Occurrence, DateTimeOffset DueAt)? ResolveNextOccurrence(
         TimerDefinitionModel timer,

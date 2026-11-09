@@ -116,7 +116,13 @@ The key pieces:
   `setOverlay(overlay)`, `selectNode(nodeId | null)`, and `dispose`, and its
   `onSelectionChange` callback reports the selected node. An overlay marks nodes
   as `active`, `ended`, `faulted`, or `cancelled`, with an optional badge and a
-  label; invalid entries are ignored.
+  label; invalid entries are ignored. A hosted mount also receives an optional
+  `timerSchedules` capability (`preview(request)`, `timeZones()`), which
+  `workflow-editor-host.js` routes to the `[JSInvokable]`
+  `PreviewTimerSchedule`/`GetTimerScheduleTimeZones` methods of
+  `WorkflowEditor.razor`; Blazor calls the API with its own credentials and
+  replies `{ status: ok|invalid|forbidden|unavailable, ... }`, never throwing to
+  the editor. Without it the editor behaves as standalone.
 - **Isolation**: CSS, DOM queries, theme, and keyboard handling belong to the
   mounting root. Responsive layout and inspector sizing use that container.
   Hosted mode uses the app's light appearance and a compact command bar;
@@ -253,7 +259,7 @@ A repeatable Chromium smoke suite exists at
 real copied editor and the real published API/UI over localhost with a
 disposable PostgreSQL container; see its
 [README](Flowbit/tests/Flowbit.BrowserTests/README.md) for setup and the
-E1–E20/R1–R14 coverage matrix. It is the baseline for editor/runtime UI changes,
+E1–E21/H1–H15/R1–R14 coverage matrix. It is the baseline for editor/runtime UI changes,
 but it does not replace scenario-specific manual verification: the native
 file-picker success/cancel path, visual comparisons, and behaviors outside the
 matrix still need the manual steps above.
@@ -1374,6 +1380,43 @@ Storage follows the hybrid design:
   - **Reactivation.** The preview blocks a target whose expression boundary
     cannot be scheduled (`timer_boundary_unresolvable`) and warns about an
     already-due timer boundary (`timer_boundary_already_due`).
+- **Cron timer starts.** A `timerStartEvent` may set `timer.cron` (a Flowbit
+  extension) with a required IANA `timer.timeZone`; catches and boundaries
+  reject both, and `calendar` is rejected with cron.
+  - **Grammar.** `CronScheduleRules` (Shared) owns the five-field dialect,
+    field limits, and the 400-year Gregorian feasibility check; its problems are
+    worded to follow the property name. The editor's `parseCronSchedule`, inside
+    the save validator markers, must give the same results and messages
+    (`CronScheduleFixtures` feeds both). Only a timer start names cron in the
+    exactly-one-schedule message.
+  - **Calculator.** `CronTimerSchedule` is the only code that reads the pinned
+    Cronos 0.13.0 package (Service only). It resolves the zone through
+    `IanaTimeZones`, returns UTC instants strictly after its reference, accepts a
+    result only within 36,525 days, and returns null for no result or the end of
+    the representable range. Pass the expression exactly as authored: a range and
+    an equivalent list differ in a repeated daylight-saving hour.
+    `CronTimerScheduleTests` pins the calculator; an upgrade must pass it.
+  - **Dispatch.** Never model cron as a `WorkflowTimerSchedule` with a null
+    interval (`Resolve` throws for it). Use `ResolveFirstCronOccurrence` (first
+    after activation; more than one minute late skips to the first after now)
+    and `ResolveNextCronOccurrence` (after the nominal time and at or after
+    `notBefore`; one lookup after any outage). `TimerScheduleKinds.IsRecurring`
+    covers cron for misfires.
+  - **Persistence.** `timer_subscriptions.ScheduleTimeZone` holds the zone and
+    `ScheduleExpression` the trimmed text; `Occurrence` starts at 0 and is a
+    fencing generation. `CK_timer_subscriptions_cron_shape` and
+    `CK_timer_subscriptions_cron_not_completed` keep cron rows timer-start shaped
+    and never completed. `AddCronTimerSchedules` adds them `NOT VALID` in one
+    transaction, and `ValidateCronTimerScheduleConstraints` validates them outside
+    one: keep statements that run outside a transaction in a migration of their
+    own, which a stopped run can apply again. A cron subscription is only
+    advanced or cancelled; a missing successor throws so the firing, its
+    instance included, rolls back. Never recompute a saved `NextDueAt`.
+  - **Preview.** `TimerSchedulePreviewService` backs
+    `POST /api/workflows/timer-schedules/preview` and
+    `GET /api/workflows/timer-schedules/time-zones` inside the
+    `Workflow.RequiredRole` group, not behind `Settings.RequiredRole`. It reads no
+    definition and writes nothing.
 - **Required assignment and assignment inheritance.** A normal `userTask` may set
   `requiresAssignment=true`. While its active work item has no `Assignee`, regular
   inbox and actor-scoped task reads omit it and claim/action endpoints reject it;
@@ -1567,6 +1610,9 @@ what the cross-version `workflowKey` instance search matches.
   `GET /{workflowKey}/callers?candidateId=&deletingId=&page=&pageSize=` (published
   callers and their compatibility with the current default, a candidate, or what would
   remain after a deletion; an advisory `CallersPreviewDto`),
+  `POST /timer-schedules/preview` (the next 1-10 occurrences of an unsaved cron
+  schedule, in its zone and UTC; `TimerSchedulePreviewDto`; writes nothing),
+  `GET /timer-schedules/time-zones` (the host's IANA ids),
   `POST /{workflowKey}/message-start` (start a new instance via a messageStartEvent;
   `AllowAnonymous` — auth is the node's client id/secret + required header, not
   the user JWT; returns a slim `MessageStartAckDto`; a configured idempotency or
@@ -3024,6 +3070,30 @@ when extending the model so new features stay close to BPMN terminology.
   state only (`timerInputModes`, keyed by node object), inferred from the text
   on load; switching never rewrites the text. `timerScheduleValueProblems`
   feeds both the live field and save validation.
+- **Cron schedule input**: only a timer start offers **Cron schedule**; choosing
+  any schedule replaces `node.timer` in one undoable change, and a timer start
+  that becomes a catch or boundary loses `cron`/`timeZone`
+  (`changeNodeTypeFromInspector`). `normalizeTimerDefinition` keeps `cron` and
+  `timeZone` only when present, as authored, on any timer type, so
+  `renderMisplacedTimerSettings` can offer their explicit removal. A timer on
+  any other node type also stays as imported (the loader and
+  `applyTypeInvariants` keep it): save validation reports it, `renderMisplacedTimer`
+  offers **Remove this timer**, and a change to a timer event adopts it, while a
+  timer event that becomes another type loses it. A `cron` or `timeZone` that is
+  not text keeps its value: the field shows it as JSON with
+  `cronSettingTypeProblem`'s message, which save validation also uses, until an
+  edit writes text, and `cronPreviewable` never sends it. From import
+  to the preview request, the editor trims and tests white space in both with
+  `trimAttributeKey`, which matches .NET, never with `trim()` or `\s`, which
+  also take U+FEFF and leave U+0085. The save validator checks `timeZone` only
+  for type, presence, and length and must never read `Intl`; the inspector's
+  `browserRecognizesTimeZone` hint never blocks saving and never judges casing.
+  The hosted preview's request and reply state lives in the per-mount
+  `cronPreview` object, outside the model, history, the baseline, and AI
+  snapshots. A reply counts only while its generation, node, node object,
+  `selected` object, and schedule key are unchanged; a dropped reply that nothing
+  newer replaced returns the preview to idle. Rows show the server's local time
+  and offset and the UTC instant (`formatCronInstant`), never the viewer's zone.
 - **Built-in function casing**: `misspelledBuiltInCall` finds an NCalc built-in
   written in another casing (`If`, `max`) without a parser, so the timer
   expression field, the conditional **Condition (NCalc)** field, and save

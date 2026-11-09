@@ -764,8 +764,9 @@ public static class JobFailureHandling
 }
 
 /// <summary>
-/// BPMN-aligned timer schedule. Exactly one member must be nonblank. On a timer catch or boundary event, timeDate and
-/// timeDuration may also be NCalc expressions over stored instance variables, evaluated when the timer activates.
+/// BPMN-aligned timer schedule. Exactly one of timeDate, timeDuration, timeCycle, or, on a timer start event only, cron
+/// must be nonblank. On a timer catch or boundary event, timeDate and timeDuration may also be NCalc expressions over
+/// stored instance variables, evaluated when the timer activates.
 /// </summary>
 public sealed class TimerDefinitionModel
 {
@@ -788,6 +789,22 @@ public sealed class TimerDefinitionModel
     [JsonPropertyName("calendar")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Calendar { get; set; }
+
+    /// <summary>
+    /// A Flowbit extension: a five-field cron expression, in <see cref="TimeZone"/>, for a timer start event. See
+    /// <see cref="CronScheduleRules"/> for the dialect.
+    /// </summary>
+    [JsonPropertyName("cron")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Cron { get; set; }
+
+    /// <summary>
+    /// The IANA time zone a cron schedule runs in, such as Europe/London or Etc/UTC. Required with cron and allowed
+    /// only with it.
+    /// </summary>
+    [JsonPropertyName("timeZone")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? TimeZone { get; set; }
 }
 
 /// <summary>
@@ -876,7 +893,8 @@ public readonly record struct TimerScheduleValue(TimerScheduleValueKind Kind, st
 
 /// <summary>
 /// Shared authoring/runtime rules for Flowbit's fixed-unit ISO-8601 timer subset.
-/// Calendar years/months and cron syntax are deliberately unsupported.
+/// Calendar years/months are deliberately unsupported; a timer start's cron
+/// schedule follows <see cref="CronScheduleRules"/> instead.
 /// </summary>
 public static class TimerDefinitionRules
 {
@@ -926,7 +944,8 @@ public static class TimerDefinitionRules
     public static int CountConfiguredExpressions(TimerDefinitionModel timer) =>
         (string.IsNullOrWhiteSpace(timer.TimeDate) ? 0 : 1)
         + (string.IsNullOrWhiteSpace(timer.TimeDuration) ? 0 : 1)
-        + (string.IsNullOrWhiteSpace(timer.TimeCycle) ? 0 : 1);
+        + (string.IsNullOrWhiteSpace(timer.TimeCycle) ? 0 : 1)
+        + (string.IsNullOrWhiteSpace(timer.Cron) ? 0 : 1);
 
     public static bool TryParseTimeDate(string? value, out DateTimeOffset timestamp)
     {

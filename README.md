@@ -38,6 +38,7 @@ Choose provider-managed [OpenID Connect](docs/openid-connect.md) or [Local user 
 | Reminders and deadlines | Run recurring reminder branches while work stays open; interrupt and escalate when a deadline arrives. | [Reminder and escalation](examples/timers/05-user-task-reminder-and-deadline.json) |
 | Working-day SLAs | Count deadlines and timers in a business calendar's working days and hours, skipping weekends and holidays in its time zone. | [Working-day deadline](examples/timers/06-working-day-deadline.json) |
 | Deadlines from request data | Take a timer's date or duration from the instance's own data, such as a contract end date or an SLA chosen by urgency; the due time is saved when the timer starts. | [Contract end wait](examples/timers/07-contract-end-wait.json) |
+| Business schedules | Start a workflow on a cron schedule in a named time zone, such as every weekday at 08:00 in London or each month's last day at 17:00 in New York, following the zone through daylight saving. | [Weekday morning start](examples/timers/10-weekday-morning-start.json) |
 | Risk-based escalation | Observe persisted business variables and interrupt an active review when its condition becomes true. | [Conditional boundary](examples/basics/08-interrupting-conditional-boundary.json) |
 | Evidence-aware routing | Use recorded flow actions and traversals in NCalc, JavaScript, and gateway decisions. | [FlowInfo](examples/scripts/03-flowinfo-ncalc-and-javascript.json) |
 
@@ -87,7 +88,7 @@ Start and action forms choose controls from each value's type: number boxes, dat
 | Parallel gateways | Fork concurrent execution tokens and join all static incoming branches. |
 | Inclusive gateways | Select every matching branch and merge using graph reachability and active token positions. |
 | Complex gateways | Evaluate activation conditions with incoming-count helpers and persisted start/reset cycles. |
-| Starts and waits | Manual, message, and timer starts; intermediate message, timer, and conditional catches. |
+| Starts and waits | Manual, message, and timer starts, including cron schedules in a named time zone; intermediate message, timer, and conditional catches. |
 | Boundary events | Error handling plus interrupting or non-interrupting timer and conditional paths. |
 | Call activities | Start a child instance of another workflow's published default, with typed inputs and results, durable delivery, and cascading cancellation. |
 | Scope and completion | Scoped interrupts, cancelling joins, normal ends, terminate ends, and explicit error ends. |

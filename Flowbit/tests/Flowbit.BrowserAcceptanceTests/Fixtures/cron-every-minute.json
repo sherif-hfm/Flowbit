@@ -1,0 +1,46 @@
+{
+  "id": "acceptance-cron-every-minute",
+  "name": "Acceptance cron every minute",
+  "initialEventId": null,
+  "variables": [],
+  "lanes": [],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Every minute",
+      "type": "timerStartEvent",
+      "laneId": null,
+      "x": 80,
+      "y": 120,
+      "roles": [],
+      "variables": [],
+      "timer": { "cron": "* * * * *", "timeZone": "Etc/UTC" }
+    },
+    {
+      "id": 2,
+      "name": "Review scheduled run",
+      "type": "userTask",
+      "laneId": null,
+      "x": 240,
+      "y": 108,
+      "roles": [],
+      "variables": [],
+      "requiresClaim": false,
+      "claimMode": "fresh"
+    },
+    {
+      "id": 3,
+      "name": "Done",
+      "type": "endEvent",
+      "laneId": null,
+      "x": 520,
+      "y": 120,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "sequenceFlows": [
+    { "id": 101, "name": "", "sourceRef": 1, "targetRef": 2, "roles": [], "variables": [] },
+    { "id": 201, "name": "Done", "sourceRef": 2, "targetRef": 3, "roles": [], "variables": [] }
+  ]
+}

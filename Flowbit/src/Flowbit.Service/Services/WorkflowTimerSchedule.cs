@@ -1,3 +1,4 @@
+using System.Globalization;
 using Flowbit.Service.Models;
 using Flowbit.Shared.Models;
 
@@ -7,12 +8,19 @@ namespace Flowbit.Service.Services;
 /// Resolves the fixed-duration timer subset supported by Flowbit into absolute
 /// UTC occurrences. Calendar-relative years and months are deliberately not
 /// accepted because their duration depends on the activation date and timezone.
+/// A timer start's cron schedule has no fixed interval; its occurrences come from
+/// <see cref="CronTimerSchedule"/> through <see cref="ResolveFirstCronOccurrence"/>
+/// and <see cref="ResolveNextCronOccurrence"/>.
 /// </summary>
 public sealed record WorkflowTimerSchedule(
     DateTimeOffset FirstOccurrenceAt,
     TimeSpan? Interval,
     int? TotalOccurrences)
 {
+    /// <summary>
+    /// Whether a recurring occurrence is strictly more than <paramref name="grace"/> late. A misfired occurrence starts
+    /// nothing; the schedule moves to its first occurrence after now instead.
+    /// </summary>
     public static bool IsRecurringMisfire(
         string scheduleKind,
         DateTimeOffset? scheduledOccurrenceAt,
@@ -24,10 +32,7 @@ public sealed record WorkflowTimerSchedule(
             throw new ArgumentOutOfRangeException(nameof(grace));
         }
 
-        return string.Equals(
-                   scheduleKind,
-                   TimerScheduleKinds.Cycle,
-                   StringComparison.Ordinal)
+        return TimerScheduleKinds.IsRecurring(scheduleKind)
                && scheduledOccurrenceAt is DateTimeOffset dueAt
                && dueAt < now - grace;
     }
@@ -42,6 +47,12 @@ public sealed record WorkflowTimerSchedule(
         BusinessCalendar? calendar = null)
     {
         ArgumentNullException.ThrowIfNull(timer);
+
+        if (!string.IsNullOrWhiteSpace(timer.Cron))
+        {
+            throw new WorkflowDomainException(
+                "A cron schedule has no fixed interval; its occurrences are calculated from its expression and time zone.");
+        }
 
         if (!string.IsNullOrWhiteSpace(timer.TimeDate))
         {
@@ -292,6 +303,72 @@ public sealed record WorkflowTimerSchedule(
                 "Timer occurrence exceeds the supported date-time range.");
         }
     }
+
+    /// <summary>
+    /// Resolves a newly activated cron schedule's first due time: its first occurrence strictly after
+    /// <paramref name="activatedAt"/>, unless that is more than <paramref name="grace"/> late at <paramref name="now"/>,
+    /// when the schedule skips to its first occurrence after now instead of replaying the backlog.
+    /// </summary>
+    public static DateTimeOffset ResolveFirstCronOccurrence(
+        CronTimerSchedule schedule,
+        DateTimeOffset activatedAt,
+        DateTimeOffset now,
+        TimeSpan grace)
+    {
+        ArgumentNullException.ThrowIfNull(schedule);
+        if (grace < TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(grace));
+        }
+
+        var first = schedule.Next(activatedAt, inclusive: false)
+            ?? throw NoCronOccurrence(schedule, activatedAt);
+        return first < now - grace
+            ? schedule.Next(now, inclusive: false) ?? throw NoCronOccurrence(schedule, now)
+            : first;
+    }
+
+    /// <summary>
+    /// Resolves a cron schedule's next occurrence: the first instant after <paramref name="currentDueAt"/> that is at or
+    /// after <paramref name="notBefore"/>. The search starts from the later bound, so a long outage costs one lookup, and
+    /// the occurrence number counts persisted occurrences rather than skipped matches. A schedule without a further
+    /// occurrence in the supported horizon is a scheduling error, never the end of the schedule.
+    /// </summary>
+    public static WorkflowTimerOccurrence ResolveNextCronOccurrence(
+        CronTimerSchedule schedule,
+        long currentOccurrence,
+        DateTimeOffset currentDueAt,
+        DateTimeOffset notBefore)
+    {
+        ArgumentNullException.ThrowIfNull(schedule);
+        if (currentOccurrence < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(currentOccurrence));
+        }
+
+        var dueUtc = currentDueAt.ToUniversalTime();
+        var thresholdUtc = notBefore.ToUniversalTime();
+        var next = thresholdUtc > dueUtc
+            ? schedule.Next(thresholdUtc, inclusive: true) ?? throw NoCronOccurrence(schedule, thresholdUtc)
+            : schedule.Next(dueUtc, inclusive: false) ?? throw NoCronOccurrence(schedule, dueUtc);
+        long nextOccurrence;
+        try
+        {
+            nextOccurrence = checked(currentOccurrence + 1);
+        }
+        catch (OverflowException)
+        {
+            throw new WorkflowDomainException(
+                "Timer occurrence exceeds the supported numeric range.");
+        }
+
+        return new WorkflowTimerOccurrence(nextOccurrence, next);
+    }
+
+    private static WorkflowDomainException NoCronOccurrence(CronTimerSchedule schedule, DateTimeOffset from) =>
+        new($"Cron schedule '{schedule.Expression}' in time zone '{schedule.TimeZoneId}' has no occurrence within "
+            + $"{CronTimerSchedule.SearchHorizonDescription} after "
+            + $"{from.ToUniversalTime().ToString("yyyy-MM-dd'T'HH':'mm':'ss'Z'", CultureInfo.InvariantCulture)}.");
 }
 
 public sealed record WorkflowTimerOccurrence(

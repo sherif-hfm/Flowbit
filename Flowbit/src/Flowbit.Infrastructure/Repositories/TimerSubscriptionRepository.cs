@@ -28,6 +28,7 @@ public sealed class TimerSubscriptionRepository(AppDbContext dbContext)
             ScheduleKind = create.ScheduleKind,
             ScheduleExpression = create.ScheduleExpression,
             ScheduleCalendar = create.ScheduleCalendar,
+            ScheduleTimeZone = create.ScheduleTimeZone,
             CancelActivity = create.CancelActivity,
             Status = TimerSubscriptionStatuses.Active,
             NextDueAt = create.NextDueAt,
@@ -305,6 +306,7 @@ public sealed class TimerSubscriptionRepository(AppDbContext dbContext)
             entity.UpdatedAt,
             entity.CompletedAt)
         {
-            ScheduleCalendar = entity.ScheduleCalendar
+            ScheduleCalendar = entity.ScheduleCalendar,
+            ScheduleTimeZone = entity.ScheduleTimeZone
         };
 }

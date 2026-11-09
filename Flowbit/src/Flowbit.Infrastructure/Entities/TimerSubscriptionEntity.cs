@@ -17,6 +17,7 @@ public sealed class TimerSubscriptionEntity
     public string ScheduleKind { get; set; } = string.Empty;
     public string ScheduleExpression { get; set; } = string.Empty;
     public string? ScheduleCalendar { get; set; }
+    public string? ScheduleTimeZone { get; set; }
     public bool CancelActivity { get; set; }
     public string Status { get; set; } = "active";
     public DateTimeOffset NextDueAt { get; set; }

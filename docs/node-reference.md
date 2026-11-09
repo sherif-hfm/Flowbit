@@ -529,7 +529,7 @@ Creates instances on a persisted schedule belonging to the published default wor
 
 | Property | Type | Required / default | Meaning and constraints |
 | --- | --- | --- | --- |
-| `timer` | [timer configuration](#timer-configuration) | Required | Exactly one fixed absolute date, relative duration, or recurrence. A timer start cannot use an [expression schedule](#expression-schedules). Relative timing is based on schedule activation. |
+| `timer` | [timer configuration](#timer-configuration) | Required | Exactly one fixed absolute date, relative duration, recurrence, or [cron schedule](#cron-schedules). A timer start cannot use an [expression schedule](#expression-schedules). Relative timing is based on schedule activation. |
 
 There are no event-specific input variables or roles. Use top-level process-variable defaults to initialize scheduler-created instances; `variables` is omitted from canonical timer-start JSON. `businessKey` and `idempotency` are rejected.
 
@@ -539,6 +539,17 @@ There are no event-specific input variables or roles. Use top-level process-vari
   "name": "Daily check",
   "type": "timerStartEvent",
   "timer": { "timeCycle": "R/P1D" }
+}
+```
+
+A cron schedule follows the local time of a named zone, such as every weekday at 08:00 in London:
+
+```json
+{
+  "id": 4,
+  "name": "Weekday morning review",
+  "type": "timerStartEvent",
+  "timer": { "cron": "0 8 * * 1-5", "timeZone": "Europe/London" }
 }
 ```
 
@@ -888,16 +899,18 @@ Both start-idempotency and catch-delivery header names reject these reserved nam
 
 ## Timer configuration
 
-The required `timer` object belongs only to `timerStartEvent`, `intermediateTimerCatchEvent`, and `timerBoundaryEvent`. Set **exactly one** nonblank property, its *schedule value*; every schedule value is limited to 128 UTF-16 code units after trimming. On a timer catch or boundary, `timeDate` and `timeDuration` may be fixed values or [NCalc expressions](#expression-schedules).
+The required `timer` object belongs only to `timerStartEvent`, `intermediateTimerCatchEvent`, and `timerBoundaryEvent`. Set **exactly one** nonblank property, its *schedule value*: `timeDate`, `timeDuration`, or `timeCycle`, or, on a timer start only, `cron`. Every schedule value is limited to 128 UTF-16 code units after trimming. On a timer catch or boundary, `timeDate` and `timeDuration` may be fixed values or [NCalc expressions](#expression-schedules).
 
 | Property | Type | Required / default | Meaning and constraints |
 | --- | --- | --- | --- |
-| `timeDate` | ISO-8601 timestamp string or expression | One of the three required | Absolute date/time with `Z` or an explicit numeric UTC offset, for example `2030-01-01T09:00:00Z`. Normalized to UTC. A local timestamp without offset is invalid. |
-| `timeDuration` | ISO-8601 duration string or expression | One of the three required | Positive fixed-unit delay, for example `PT30S`, `P2D`, or `P1W`. Supports weeks or day/hour/minute/second components and decimal components, within the runtime duration range. |
-| `timeCycle` | recurrence string | One of the three required | `R/Duration` for unbounded authored recurrence, or `R<n>/Duration` with a positive 32-bit integer occurrence count. For example `R5/PT30S`. The interval must be at least one second. Always a fixed value. |
-| `calendar` | string | Optional; absent | Name of a [business calendar](#working-time-durations) whose working time a `timeDuration` counts, such as `"examples.weekdays"`. Only allowed with `timeDuration`, which must then use whole days and no weeks and be at most 36,525 days long. The calendar must exist, written with its exact casing, and is never an expression. |
+| `timeDate` | ISO-8601 timestamp string or expression | One schedule value required | Absolute date/time with `Z` or an explicit numeric UTC offset, for example `2030-01-01T09:00:00Z`. Normalized to UTC. A local timestamp without offset is invalid. |
+| `timeDuration` | ISO-8601 duration string or expression | One schedule value required | Positive fixed-unit delay, for example `PT30S`, `P2D`, or `P1W`. Supports weeks or day/hour/minute/second components and decimal components, within the runtime duration range. |
+| `timeCycle` | recurrence string | One schedule value required | `R/Duration` for unbounded authored recurrence, or `R<n>/Duration` with a positive 32-bit integer occurrence count. For example `R5/PT30S`. The interval must be at least one second. Always a fixed value. |
+| `cron` | five-field cron string | One schedule value required; timer start only | A Flowbit extension: a [cron schedule](#cron-schedules) such as `0 8 * * 1-5`, in `timeZone`. Always a fixed value. A timer catch or boundary that names `cron` is invalid. |
+| `timeZone` | IANA time-zone id | Required with `cron`; otherwise absent | The zone a cron schedule runs in, such as `Europe/London`, written with its exact casing; `Etc/UTC` means UTC. At most 100 characters after trimming. There is no default zone. Allowed only beside `cron`. |
+| `calendar` | string | Optional; absent | Name of a [business calendar](#working-time-durations) whose working time a `timeDuration` counts, such as `"examples.weekdays"`. Only allowed with `timeDuration`, which must then use whole days and no weeks and be at most 36,525 days long, so it is rejected with `cron` even when the calendar uses the same zone. The calendar must exist, written with its exact casing, and is never an expression. |
 
-No cron or calendar month/year duration is supported, and a `timeCycle` or a timer start cannot use an expression. Relative waits are measured from activation; absolute dates do not move with activation. Timer jobs persist across restarts. Firing can be late when the Worker is unavailable; recurring occurrences more than one minute late skip to a later eligible occurrence. This is a durable schedule, not a hard real-time guarantee. See [timer execution semantics](bpmn-support.md#timers).
+Calendar month/year durations are unsupported, and a `timeCycle`, a `cron` schedule, or a timer start cannot use an expression. Relative waits are measured from activation; absolute dates do not move with activation. Timer jobs persist across restarts. Firing can be late when the Worker is unavailable; recurring occurrences more than one minute late skip to a later eligible occurrence. This is a durable schedule, not a hard real-time guarantee. See [timer execution semantics](bpmn-support.md#timers).
 
 ```json
 {
@@ -938,6 +951,59 @@ On an `intermediateTimerCatchEvent` or `timerBoundaryEvent`, a `timeDate` or `ti
 - **Version changes.** An open expression timer is compatible only with the same authored text, wrapper included: `slaDuration` and `${slaDuration}` differ, and a changed expression blocks the change even if it would give the same due time.
 
 The Flowbit.Ui inspector offers a **Fixed value** or **Expression** choice for these properties. See [correcting a schedule](developer-guide.md#expression-timers) for recovery and the [example catalog](../examples/README.md#durable-jobs-and-timers) for runnable workflows.
+
+### Cron schedules
+
+A `timerStartEvent` may set `cron` and `timeZone` instead of an ISO schedule. Cron is a Flowbit extension, not BPMN serialization, and is not available on timer catches or boundaries.
+
+```json
+{
+  "id": 1,
+  "name": "Month-end close",
+  "type": "timerStartEvent",
+  "timer": { "cron": "0 17 L * *", "timeZone": "America/New_York" }
+}
+```
+
+**Dialect.** The five fields are **minute, hour, day of month, month, and day of week**, separated by one or more spaces or tabs.
+
+| Part | Accepted |
+| --- | --- |
+| Numbers | One or two ASCII digits for every value, range end, and step: `05` means 5, and `005` is rejected. |
+| Ranges of values | Minute `0-59`, hour `0-23`, day of month `1-31`, month `1-12`, day of week `0-6`, where `0` is Sunday and `1` is Monday. `7` is rejected, so Sunday has one spelling. |
+| A field | `*`, `*/n`, or a comma-separated list of `a`, `a-b`, `a/n`, and `a-b/n` items, with ascending ranges. `a/n` runs from `a` to the field's largest value. Day of week takes no open-ended `a/n`; write `*/n` or a range such as `1-5/2`. |
+| Steps | A positive number up to 59, 23, 31, 12, or 6 for the five fields. A step selects calendar-field values; it is not an elapsed interval. |
+| Last day | `L` alone as the whole day-of-month field: the month's last calendar day. No `L` lists, offsets, or weekday forms. |
+| Rejected | Aliases such as `@daily`, month and weekday names, seconds and year fields, reversed ranges, `?`, `W`, `#`, `H`, other separators, signs, decimals, other scripts' digits, and NCalc or `${...}` templates. An expression whose fields match no calendar date, such as `0 8 30 2 *`, is rejected too. |
+
+| Example | Runs in `timeZone` |
+| --- | --- |
+| `0 8 * * 1-5` | Weekdays at 08:00. |
+| `*/15 9-17 * * 1-5` | Each quarter hour from 09:00 through 17:45 on weekdays. |
+| `0 9 1 * *` | The first day of each month at 09:00. |
+| `0 17 L * *` | The last calendar day of each month at 17:00, holidays included. |
+| `0 17 L * 5` | 17:00 on the last day of a month, only when that day is a Friday. |
+| `0 8 29 2 *` | Leap day at 08:00. |
+
+**Both day fields must match.** When both the day-of-month and the day-of-week fields are restricted, a date must match both: `0 8 13 * 5` runs only on Friday the 13th, and `0 17 L * 5` only in months that end on a Friday, not on each month's last Friday. Crontab instead runs when either field matches, so a pasted crontab line that restricts both fields changes meaning; the inspector notes the rule when it applies. Flowbit does not claim compatibility with every Unix or Quartz cron string.
+
+**Daylight saving.** Local times follow `timeZone` as its offset changes:
+
+- A local time the clock skips runs when the clock jumps forward: in `Europe/London`, `30 1 * * *` runs at 02:00 `+01:00` (01:00 UTC) on 29 March 2026. Occurrences that fall in the same skipped hour become one.
+- In a repeated hour, an expression whose minute and hour fields are fixed values or lists runs once, at the first: `30 1 * * *` runs at 01:30 `+01:00` (00:30 UTC) on 25 October 2026 and not again at 01:30 `+00:00`. A wildcard, range, or step in the minute or hour field runs in both offsets, so `*/30 * * * *` runs at 01:00 and 01:30 `+01:00` and again at 01:00 and 01:30 `+00:00`. A range and an equivalent list, `0 1-2 * * *` and `0 1,2 * * *`, therefore differ that night; Flowbit keeps the expression exactly as authored.
+
+**Scheduling.**
+
+- The schedule belongs to the published default version and its activation. The first run is the first occurrence strictly after the version became the default; an occurrence at that exact instant is excluded. A first occurrence found more than one minute late, for example because the Worker was stopped, is skipped, and the schedule moves to its first occurrence after the Worker's current time.
+- Each run starts a new instance even when earlier instances are still open; there is no overlap lock.
+- After a run, the next occurrence is the first one after the run's scheduled time that is at most one minute in the past. An occurrence more than one minute late starts nothing, and the schedule moves to its first occurrence after the Worker's current time; exactly one minute late still runs. A downtime backlog is never replayed.
+- The scheduled time is computed once, in UTC, and saved. Restarts, retries, reconciliation, and later time-zone data updates never move a saved time; the next occurrence uses the Worker's time-zone data when it is calculated.
+- A cron schedule ends only when another version becomes the default or the definition is unpublished or deleted. The database refuses to complete one.
+- If the Worker cannot resolve the zone or calculate an occurrence within 36,525 days, the timer start waits in a `timer_schedule_failed` incident, or the firing rolls back and retries; see [deployment](deployment.md#cron-timer-starts).
+
+**Started instances.** A cron-started instance runs as the system actor `timer`. `sys.now` and `sys.today` are UTC, not the schedule's time zone, so a summer 00:30 run in `Europe/London`, or any 08:00 run in `Asia/Tokyo`, sees the previous date in `sys.today`. The instance does not receive its scheduled occurrence; do not derive a business date from `sys.today`.
+
+**Validation.** Saving through the API checks the dialect, that some calendar date matches, that `timeZone` is present, and that the API's host knows the exact IANA zone; it reports the node and `timer.cron` or `timer.timeZone` with the cause, such as `Timer start event #1 timer.cron day-of-week value 7 is not allowed; write Sunday as 0.` The editor applies the same dialect rules with the same messages in both Flowbit.Ui and the standalone file, but checks only that a zone is named: browsers name some zones differently, so only the server can certify one. In Flowbit.Ui the inspector also [previews the next five runs](ui-guide.md#cron-schedules); the standalone editor cannot.
 
 ## Working-time durations
 

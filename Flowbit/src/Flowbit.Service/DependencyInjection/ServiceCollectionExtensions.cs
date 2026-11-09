@@ -62,6 +62,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IWorkflowSettingsService, WorkflowSettingsService>();
         services.AddScoped<IBusinessCalendarService, BusinessCalendarService>();
         services.AddScoped<IBusinessCalendarResolver, BusinessCalendarResolver>();
+        services.AddScoped<ITimerSchedulePreviewService, TimerSchedulePreviewService>();
         services.AddScoped<IUserDelegationService, UserDelegationService>();
         return services;
     }

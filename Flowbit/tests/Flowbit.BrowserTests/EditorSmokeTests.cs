@@ -1780,4 +1780,137 @@ public sealed class EditorSmokeTests(BrowserStackFixture stack)
             }
         });
     }
+
+    [Theory]
+    [MemberData(nameof(EditorViewports))]
+    public async Task E21_CronScheduleValidatesRepairsUndoesSavesAndReloads(int viewportWidth, int viewportHeight)
+    {
+        await using var scenario = await CreateEditorScenarioAsync(
+            $"e21-cron-schedule-{viewportWidth}x{viewportHeight}", viewportWidth, viewportHeight);
+        await scenario.RunAsync("cron-schedule", async () =>
+        {
+            const string missingZone =
+                "timer.timeZone is required with cron; name an IANA time zone such as Europe/London, or Etc/UTC for UTC.";
+            const string sunday = "timer.cron day-of-week value 7 is not allowed; write Sunday as 0.";
+            await OpenEditorAsync(scenario);
+            var page = scenario.Page;
+            await EditorInteractions.LoadWorkflowAsync(page, EditorInteractions.FixturePath("editor-cron-schedule.json"));
+            var inspector = page.Locator("#inspector");
+
+            // Only a timer start offers cron, and choosing it replaces the cycle.
+            await EditorInteractions.SelectNodeAsync(page, 1);
+            var schedule = FormField(inspector, "Schedule").Locator("select");
+            await Assertions.Expect(schedule.Locator("option")).ToHaveTextAsync(
+                ["Absolute date/time", "Duration after activation", "Repeating cycle", "Cron schedule"]);
+            await schedule.SelectOptionAsync("cron");
+            var expression = page.GetByLabel("Cron expression", new PageGetByLabelOptions { Exact = true });
+            var zone = page.GetByLabel("Time zone", new PageGetByLabelOptions { Exact = true });
+            var expressionStatus = page.Locator("#timer-cron-1-status");
+            var zoneStatus = page.Locator("#timer-cron-zone-1-status");
+            await Assertions.Expect(expression).ToHaveValueAsync("0 8 * * 1-5");
+            await Assertions.Expect(zone).ToHaveValueAsync(string.Empty);
+            await Assertions.Expect(zone).ToHaveAttributeAsync("aria-invalid", "true");
+            await Assertions.Expect(zoneStatus).ToHaveTextAsync(missingZone);
+            await Assertions.Expect(inspector).ToContainTextAsync(
+                "This standalone editor checks the expression but cannot preview upcoming runs or check the time zone");
+            await Assertions.Expect(inspector.Locator(".cron-preview")).ToHaveCountAsync(0);
+
+            // The expression is checked as it is typed, with the server's wording.
+            await expression.FillAsync("0 8 * * 7");
+            await Assertions.Expect(expression).ToHaveAttributeAsync("aria-invalid", "true");
+            await Assertions.Expect(expressionStatus).ToHaveTextAsync(sunday);
+            // The help text mentions the rule too, so look only at the note.
+            var bothDays = inspector.Locator(".empty-note", new LocatorLocatorOptions { HasText = "Both day fields are restricted" });
+            await expression.FillAsync("0 8 13 * 5");
+            await Assertions.Expect(expressionStatus).ToHaveTextAsync(string.Empty);
+            await Assertions.Expect(bothDays).ToBeVisibleAsync();
+            await expression.FillAsync("0 8 * * 1-5");
+            await Assertions.Expect(bothDays).ToBeHiddenAsync();
+
+            // A zone this browser does not know only hints; the server decides when saving.
+            await zone.FillAsync("Mars/Olympus");
+            await Assertions.Expect(zoneStatus).ToHaveTextAsync(string.Empty);
+            var zoneHint = inspector.GetByText("This browser does not recognize this time zone.", new LocatorGetByTextOptions { Exact = false });
+            await Assertions.Expect(zoneHint).ToBeVisibleAsync();
+            await zone.FillAsync("Europe/London");
+            await Assertions.Expect(zoneHint).ToBeHiddenAsync();
+            await Assertions.Expect(zone).ToHaveAttributeAsync("aria-invalid", "false");
+
+            // Keyboard: the expression's info icon precedes it, and the zone's icon and input follow.
+            await expression.FocusAsync();
+            await page.Keyboard.PressAsync("Tab");
+            await Assertions.Expect(page.Locator(":focus")).ToHaveAttributeAsync("aria-label", "Help for Time zone");
+            await page.Keyboard.PressAsync("Tab");
+            await Assertions.Expect(zone).ToBeFocusedAsync();
+            await expression.FocusAsync();
+            await page.Keyboard.PressAsync("Shift+Tab");
+            await Assertions.Expect(page.Locator(":focus")).ToHaveAttributeAsync("aria-label", "Help for Cron expression");
+            await page.Keyboard.PressAsync("Enter");
+            var expressionHelp = FormField(inspector, "Cron expression").Locator(".inspector-help");
+            await Assertions.Expect(expressionHelp).ToBeVisibleAsync();
+            await Assertions.Expect(expressionHelp).ToContainTextAsync("0 17 L * 5");
+            await Assertions.Expect(expressionHelp).ToContainTextAsync("sys.today");
+            await page.Locator("#inspectorPanel").ScreenshotAsync(new LocatorScreenshotOptions
+            {
+                Path = Path.Combine(scenario.ArtifactDirectory, "cron-schedule.png"),
+            });
+
+            // The catch's imported cron settings block saving until they are removed.
+            await page.Locator("#fileMenuSummary").ClickAsync();
+            await page.Locator("#saveBtn").ClickAsync();
+            var errors = await EditorInteractions.WaitForValidationDialogAsync(page);
+            Assert.Contains("Timer catch event #2 timer.cron is supported only on timer start events.", errors, StringComparison.Ordinal);
+            await EditorInteractions.CloseValidationDialogWithEscapeAsync(page);
+            await EditorInteractions.SelectNodeAsync(page, 2);
+            await Assertions.Expect(FormField(inspector, "Schedule").Locator("select option")).ToHaveCountAsync(3);
+            await Assertions.Expect(inspector).ToContainTextAsync(
+                "This timer has settings its schedule cannot use: timer.cron, timer.timeZone.");
+            await inspector.GetByRole(AriaRole.Button, new LocatorGetByRoleOptions { Name = "Remove these settings" }).ClickAsync();
+            await Assertions.Expect(inspector).Not.ToContainTextAsync("settings its schedule cannot use");
+
+            // A schedule change is one history entry; undo and redo keep the cron text and zone.
+            await EditorInteractions.SelectNodeAsync(page, 1);
+            await schedule.SelectOptionAsync("timeCycle");
+            await Assertions.Expect(expression).ToHaveCountAsync(0);
+            await page.Keyboard.PressAsync("Control+z");
+            await Assertions.Expect(schedule).ToHaveValueAsync("cron");
+            await Assertions.Expect(expression).ToHaveValueAsync("0 8 * * 1-5");
+            await Assertions.Expect(zone).ToHaveValueAsync("Europe/London");
+            await page.Keyboard.PressAsync("Control+y");
+            await Assertions.Expect(schedule).ToHaveValueAsync("timeCycle");
+            await page.Keyboard.PressAsync("Control+z");
+            await Assertions.Expect(expression).ToHaveValueAsync("0 8 * * 1-5");
+
+            using var saved = await EditorInteractions.SaveAndCaptureDownloadAsync(page, scenario, scenario.ArtifactDirectory);
+            var nodes = saved.RootElement.GetProperty("flowNodes").EnumerateArray().ToArray();
+            var start = nodes.Single(node => node.GetProperty("id").GetInt32() == 1).GetProperty("timer");
+            Assert.Equal("0 8 * * 1-5", start.GetProperty("cron").GetString());
+            Assert.Equal("Europe/London", start.GetProperty("timeZone").GetString());
+            Assert.True(!start.TryGetProperty("timeCycle", out var cycle) || cycle.ValueKind == JsonValueKind.Null);
+            var wait = nodes.Single(node => node.GetProperty("id").GetInt32() == 2).GetProperty("timer");
+            Assert.False(wait.TryGetProperty("cron", out _));
+            Assert.False(wait.TryGetProperty("timeZone", out _));
+            Assert.Equal("PT1H", wait.GetProperty("timeDuration").GetString());
+
+            // A fresh page reopens the cron schedule.
+            var freshPage = await scenario.Context.NewPageAsync();
+            try
+            {
+                await freshPage.GotoAsync($"{stack.EditorBaseAddress}/",
+                    new PageGotoOptions { WaitUntil = WaitUntilState.Load });
+                await freshPage.WaitForSelectorAsync("#svg");
+                await EditorInteractions.LoadSavedFileAsync(freshPage, scenario.LastSavedFile!);
+                await EditorInteractions.PinInspectorOpenAsync(freshPage);
+                await EditorInteractions.SelectNodeAsync(freshPage, 1);
+                var freshInspector = freshPage.Locator("#inspector");
+                await Assertions.Expect(FormField(freshInspector, "Schedule").Locator("select")).ToHaveValueAsync("cron");
+                await Assertions.Expect(freshPage.Locator("#timer-cron-1")).ToHaveValueAsync("0 8 * * 1-5");
+                await Assertions.Expect(freshPage.Locator("#timer-cron-zone-1")).ToHaveValueAsync("Europe/London");
+            }
+            finally
+            {
+                await freshPage.CloseAsync();
+            }
+        });
+    }
 }

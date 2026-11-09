@@ -524,6 +524,10 @@ public static class WorkflowModelMigrator
             node.Timer.TimeDuration = TrimToNull(node.Timer.TimeDuration);
             node.Timer.TimeCycle = TrimToNull(node.Timer.TimeCycle);
             node.Timer.Calendar = TrimToNull(node.Timer.Calendar);
+            // Validation reports cron or a zone where they do not belong, so both stay. The expression keeps its
+            // syntax: a range and an equivalent list can occur differently in a repeated daylight-saving hour.
+            node.Timer.Cron = TrimToNull(node.Timer.Cron);
+            node.Timer.TimeZone = TrimToNull(node.Timer.TimeZone);
             if (TimerDefinitionRules.TryParseTimeDate(node.Timer.TimeDate, out var timeDate))
             {
                 node.Timer.TimeDate = timeDate.ToUniversalTime().ToString("O");

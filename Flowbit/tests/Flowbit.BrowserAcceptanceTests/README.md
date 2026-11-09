@@ -32,7 +32,9 @@ For all canonical-example runtime, editor, and UI scenarios, append
 `--filter FullyQualifiedName~ExampleWorkflow`. Use
 `--filter FullyQualifiedName~ExampleWorkflowAcceptanceTests` for runtime-only
 coverage, `--filter FullyQualifiedName~ExpressionTimerAcceptanceTests` for
-the expression-timer scenarios, and
+the expression-timer scenarios,
+`--filter FullyQualifiedName~CronScheduleAcceptanceTests` for cron timer
+starts, and
 `--filter FullyQualifiedName~CallActivityAcceptanceTests` for call activities.
 
 Run final regressions separately:
@@ -122,6 +124,8 @@ and timestamps. Native save dialogs and visual review remain manual gates.
 | Canonical role management | One completed, one active, one pending child; policy replacement preserves ownership/history, applies when pending work activates, and distinguishes identical versus conflicting stale edits. |
 | Existing example corrections | Two-step approval's actual one-minute timer return; quorum `joinCancellation` cancels the third review before finalization. |
 | Expression timers (EVENT-01), 1440×900 and 390×844 | The canonical contract-end wait's `${contractEnd}` job is due exactly at the supplied time, on instance detail and in the **Operations** due-time title; an administrative variable update moves the input a day later and the fixture restarts the Worker, yet the saved time fires and **Renew or Close Contract** opens. **Administrative actions** lists the waiting review with both boundaries and their saved due times; a non-interrupting `${reminderAfter}` boundary then adds **Send Reminder** beside the open review, the raw `deadline` boundary then interrupts it, and after completion the reactivation preview warns `timer_boundary_already_due` for that boundary on instance detail. A staged script's boundary that reads a missing `slaDuration` fails both Worker attempts with the job's value-free failure description, and **Operations** lists the open `job_execution_failed` incident; after the value is repaired through the API, keyboard Retry schedules the boundary an hour ahead and the intake continues. |
+| Cron timer starts (EVENT-09), 1440×900, then a 390×844 capture | A published `* * * * *` start in `Etc/UTC` queues its first whole minute after default activation, shown in **Operations** by its due-time tooltip. Each real minute starts one instance at **Review scheduled run** and queues the next minute from the nominal time. With the Worker stopped for 75 seconds past an occurrence, the job stays queued; after the fixture restarts the Worker it completes without a start and the schedule resumes at the first minute after the restart, then fires there. A second version with `0 9 1 1 *` in `Asia/Tokyo`, made the default over HTTP, retires the old schedule, queues midnight UTC on 1 January, and no further minute starts an instance. |
+| Stale cron preview, 1440×900 and 1024×768 | With no Worker, the proxy holds the API's real `200` answer to **Preview next 5** while the button reads as busy, keeps focus, and the status says it is calculating. Editing the expression, or selecting another node and coming back, returns the preview to idle, and the released answer is discarded: no table appears for two seconds. A fresh request then lists both offsets of the 25 October repeated hour for the edited expression. |
 
 Runtime viewports are 1440×900, 1024×768 and 390×844. Administrative cases that
 are not viewport theories capture the relevant state at all three sizes.
