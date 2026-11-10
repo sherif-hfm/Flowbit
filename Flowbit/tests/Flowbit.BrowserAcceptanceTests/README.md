@@ -188,8 +188,9 @@ expiry/rejection times.
 An actual node-retention coverage notice cannot be produced in a bounded fresh
 stack: the public retention policy requires at least one day of age, and this
 harness neither changes clocks nor edits database rows. That browser case
-requires an authentically aged disposable instance; it remains a separate
-validation gate. PostgreSQL tests verify actual retention deletion, coverage
+requires an authentically aged disposable instance; it remains on the
+[deployment checklist](../../../docs/deployment.md#instance-diagram-history-deployment-checks).
+PostgreSQL tests verify actual retention deletion, coverage
 markers, protection and rollback, and component tests verify notice rendering;
 those checks do not claim browser retention verification.
 [Fixture prerequisites](Fixtures/README.md) document the new instance-detail

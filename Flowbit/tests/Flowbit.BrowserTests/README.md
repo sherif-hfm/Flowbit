@@ -257,8 +257,9 @@ Every run writes to `artifacts/browser/runs/<timestamp>-<id>/`:
   Durable waits and stale identity responses use the separate
   [Worker-enabled acceptance suite](../Flowbit.BrowserAcceptanceTests/README.md).
   Actual node-retention browser verification still requires an authentically
-  aged instance; it is an outstanding validation gate, not covered by either
-  fresh-stack browser suite. The acceptance README records that limitation.
+  aged instance; it remains on the [deployment checklist](../../../docs/deployment.md#instance-diagram-history-deployment-checks).
+  Neither fresh-stack browser suite covers it. The acceptance README records
+  that limitation.
 - R9 retains `rich-start-form.png`, `rich-task-form.png`,
   `instance-detail-action.png`, `instance-interrupt-form.png`, and
   `instance-admin-override-form.png`, and E9 retains `variable-form-fields.png`

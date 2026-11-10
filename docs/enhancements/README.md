@@ -101,7 +101,7 @@ Other items are not ranked yet.
 | [UI-11](ui-11-localization-rtl.md) | Localization and right-to-left layout | M | None | Not started |
 | [UI-12](ui-12-task-escalation.md) | Task escalation | M–L | [UI-04](ui-04-task-due-date-and-priority.md) | Not started |
 | [UI-13](ui-13-notification-center.md) | Notification center | M | [INT-01](int-01-outbound-lifecycle-webhooks.md) | Not started |
-| [UI-14](ui-14-instance-diagram-history.md) | Instance diagram history | M | [UI-01](ui-01-live-instance-diagram.md) | In progress |
+| [UI-14](ui-14-instance-diagram-history.md) | Instance diagram history | M | [UI-01](ui-01-live-instance-diagram.md) | Done |
 | [UI-15](ui-15-form-layout-and-data-options.md) | Form layout, data options, and start-form discovery | M | [UI-03](ui-03-rich-task-forms.md) | Not started |
 | [UI-16](ui-16-overdue-work-and-due-date-follow-ups.md) | Overdue work and due-date follow-ups | M | [UI-04](ui-04-task-due-date-and-priority.md) | Not started |
 

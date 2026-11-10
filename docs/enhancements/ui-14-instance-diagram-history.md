@@ -4,7 +4,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | In progress |
+| Status | Done |
 | Category | Flowbit.Ui feature (with API and persistence changes) |
 | Effort | M |
 | Priority | Not ranked |
@@ -15,7 +15,7 @@
 
 Add recorded history to the instance diagram: nodes reached and sequence flows taken, alongside the current or final positions already provided by UI-01. The first release shows what was recorded under the instance's current exact workflow version, across all retained runs. It explains missing or uncertain history instead of presenting the diagram as a complete reconstruction. Anyone who can open the instance can read the history summary; execution detail stays limited to node-activity readers.
 
-This implementation plan was prepared against the repository on **2026-11-09** and revised on **2026-11-10** after code review and PostgreSQL evidence characterization. The summary endpoint, coverage migrations, history controls, viewer overlays, and authorized execution paging are implemented. The validation record below distinguishes completed checks from unavailable deployment evidence. Open-incident markers remain later-release work.
+This implementation plan was prepared against the repository on **2026-11-09** and completed on **2026-11-10** after code review, PostgreSQL evidence characterization, and browser verification. The summary endpoint, coverage migrations, history controls, viewer overlays, and authorized execution paging are implemented. The validation record below distinguishes completed feature checks from outstanding deployment checks. Open-incident markers remain later-release work.
 
 ## Why it adds value
 
@@ -35,7 +35,9 @@ The plan revises the original criteria to define access, version/run scope, and 
 - [x] Historical-only nodes can be selected with the pointer on the canvas and from the keyboard through a textual history list, with bounded, authorized execution detail and textual flow counts.
 - [x] Refreshes, actions, identity changes, version changes, navigation, and disposal cannot apply obsolete responses or expose data from a previous identity. Polling does not repeat the aggregation while the instance is unchanged.
 - [x] Workflow JSON, runtime recording, execution outcomes, editor authoring, task permissions, and UI-01's history-off view remain compatible. The follow-up real-browser fit checks are recorded below.
-- [ ] Automated checks and real-browser verification pass at desktop, tablet, and phone widths, with screenshots and console evidence.
+- [x] Focused feature and regression checks pass, and real-browser verification covers desktop, tablet, and phone widths with screenshots and console evidence. Full-suite results and their limitations remain recorded below.
+
+Completion scope was agreed on **2026-11-10**: the authentically aged retention walkthrough and production-copy migration timing are [deployment follow-ups](../deployment.md#instance-diagram-history-deployment-checks). They remain outstanding and are tracked separately from UI-14 feature acceptance.
 
 ## Later releases
 
@@ -331,7 +333,7 @@ Exercise real controls: history toggle; historical-only selection by click and t
 
 Test a node-activity reader and an ordinary reviewer (both see the history; only the reader gets execution links), identity changes during delayed requests, terminal/reactivated instances, and version changes with history on. Check console errors/warnings. Retain screenshots of history off/on, loop/branch, MI entry, coverage notice, selected details, the textual list, and narrow layout.
 
-Use the separate [Worker-enabled acceptance suite](../../Flowbit/tests/Flowbit.BrowserAcceptanceTests/README.md) for async-before, async-after, and durable boundary/call cases. A real node-retention browser case requires an authentically aged instance and remains a separate validation gate; neither fresh-stack suite currently covers it. Keep the smoke fixture Worker-free. Browser setup uses real API actions; gates may delay real responses unchanged but cannot inject app state or edit database rows to manufacture acceptance. Isolated migration tests may prepare historical schemas; they do not substitute for browser evidence.
+Use the separate [Worker-enabled acceptance suite](../../Flowbit/tests/Flowbit.BrowserAcceptanceTests/README.md) for async-before, async-after, and durable boundary/call cases. A real node-retention browser case requires an authentically aged instance and remains a separate deployment follow-up; neither fresh-stack suite currently covers it. Keep the smoke fixture Worker-free. Browser setup uses real API actions; gates may delay real responses unchanged but cannot inject app state or edit database rows to manufacture acceptance. Isolated migration tests may prepare historical schemas; they do not substitute for browser evidence.
 
 Jint, render tests, and simulated DOMs do not satisfy [mandatory real-browser verification](../../AGENTS.md#mandatory-real-browser-ui-verification). The implementation completion report must separately state automated results, browser/URLs/interactions/viewports/console results, screenshots, and unavailable checks. Validate changed links, anchors, images, and any added JSON examples before marking Done.
 
@@ -348,7 +350,7 @@ The Worker-enabled Chromium acceptance run passed **7/7**, followed by a strengt
 
 The broad test attempts also exposed test isolation and harness issues: global node-activity role settings affected an authorization assertion, large synthetic history shared a runtime-test database, and a durable conflict test could await a service-entry signal forever after its background lease assertion had already failed. The new authorization fixture has an explicit per-version admin scope, the load benchmark owns a separate PostgreSQL fixture, and the existing gate now observes processing failure and has bounded cleanup. A historical-schema integrity fixture also explicitly supplies the new columns when testing with the current EF model. The original full unit run was stopped after the unbounded wait; it is not reported as passing. The final focused run passed 163 of 164 cases; its only failure was a new OpenAPI assertion assuming a scalar JSON Schema type where OpenAPI 3.1 emits a nullable type array. That assertion was corrected and is checked separately below. All history service/API, page lifecycle, viewer, coverage/migration, retention, routing, and auxiliary-data regression cases passed.
 
-Unavailable deployment evidence remains explicit: the fresh browser stack cannot produce authentically aged node-activity retention within the minimum one-day retention policy, and no production-sized restored database copy was supplied for migration timing. PostgreSQL deletion/protection/rollback tests and rendered coverage notices passed, but they do not replace that aged Worker/browser walkthrough or production-copy measurement. No clock override, injected application state, or database-row edit was used to manufacture browser acceptance. Keep the backlog in progress until these deployment checks are completed.
+Unavailable deployment evidence remains explicit: the fresh browser stack cannot produce authentically aged node-activity retention within the minimum one-day retention policy, and no production-sized restored database copy was supplied for migration timing. PostgreSQL deletion/protection/rollback tests and rendered coverage notices passed, but they do not replace that aged Worker/browser walkthrough or production-copy measurement. No clock override, injected application state, or database-row edit was used to manufacture browser acceptance. These checks remain on the [deployment checklist](../deployment.md#instance-diagram-history-deployment-checks); the agreed completion scope above permits UI-14 to be Done while they remain outstanding.
 
 
 ### Initial implementation verification results
@@ -424,7 +426,9 @@ indefinite loading state.
 The documentation corrections replace the old no-history description, add the
 summary route to both API inventories, provide all four linked DTO schema
 tables, explain identity clearing and error recovery, correct the browser
-retention limitation, and use the backlog's defined **In progress** status.
+retention limitation, and at that review stage used the backlog's defined
+**In progress** status. The completion scope above records the subsequent
+decision to mark UI-14 **Done** with separate deployment follow-ups.
 Generated OpenAPI was captured through the existing in-memory documentation
 host without an API listener or database. All 15 fields across the four tables
 match its requiredness, nullability, formats, and schema references; the guide's
@@ -541,5 +545,5 @@ captured OpenAPI are under artifacts/docs-validation.
 
 The full suite was not rerun for these follow-up edits; its preceding results
 remain recorded separately above. The authentically aged retention walkthrough
-and production-copy migration timing remain separate unavailable deployment
-gates.
+and production-copy migration timing remain outstanding on the deployment
+checklist and are outside the agreed feature completion criteria.

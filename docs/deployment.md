@@ -458,6 +458,21 @@ Legacy instances without sufficient surviving evidence retain unknown coverage. 
 
 The repository's EF Core packages are **10.0.9**. These commands pin `dotnet-ef` to that version in an OS-temporary directory and use the Infrastructure project's `DesignTimeAppDbContextFactory`. Run them from the repository root, independently of the publish-directory examples above. The factory reads `ConnectionStrings__Flowbit` directly; it does not load your API appsettings file.
 
+### Instance diagram history deployment checks
+
+UI-14 feature acceptance is complete. The following deployment checks remain
+outstanding; the [implementation validation record](enhancements/ui-14-instance-diagram-history.md#implementation-validation-record--2026-11-10)
+records the automated and browser coverage already completed.
+
+- [ ] Before upgrading a large existing database, measure coverage migration
+  duration and database load on a production-sized restored copy, and use the
+  result to plan the upgrade window.
+- [ ] In a staging environment with authentically aged, retention-eligible node
+  activity, let the upgraded Worker perform cleanup and verify that refreshing
+  the instance diagram updates retained history counts and the partial-coverage
+  notice. Keep screenshot and console evidence. Neither fresh-stack browser
+  suite currently covers this walkthrough.
+
 ### Generate and review a migration script
 
 This generates SQL without applying it to the target database. Supply an explicit intended connection in the environment rather than relying on the factory's development fallback. Reuse the tool directory on subsequent runs; install the tool only when absent.
