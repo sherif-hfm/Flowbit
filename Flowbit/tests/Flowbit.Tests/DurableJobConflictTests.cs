@@ -107,16 +107,32 @@ public sealed class DurableJobConflictTests(PostgresApiFixture fixture)
 
             var block = fixture.ServiceInvocations.BlockNext("/" + path);
             var processing = ProcessAsync(jobId);
-            await block.WaitUntilEnteredAsync(CancellationToken.None);
             try
             {
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                var entered = block.WaitUntilEnteredAsync(timeout.Token);
+                if (await Task.WhenAny(entered, processing) == processing)
+                {
+                    // A lease assertion can fail before the service is invoked. Observe
+                    // that failure instead of waiting forever for its entry signal.
+                    await processing;
+                    Assert.Fail("Job processing finished before the blocked service was invoked.");
+                }
+                await entered;
                 await ArchiveAsync(sharedKey);
             }
             finally
             {
                 block.Release();
+                try
+                {
+                    await processing.WaitAsync(TimeSpan.FromSeconds(30));
+                }
+                finally
+                {
+                    fixture.ServiceInvocations.Reset();
+                }
             }
-            await processing;
 
             var incident = await ConflictIncidentAsync(jobId);
             Assert.Contains("archived", incident.Details);

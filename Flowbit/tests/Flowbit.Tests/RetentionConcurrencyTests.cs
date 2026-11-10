@@ -233,6 +233,59 @@ public sealed class RetentionConcurrencyTests(PostgresApiFixture fixture) : IAsy
         await repository.UpdatePolicyAsync(policy.Category, new(1, policy.Revision), "admin", CancellationToken.None);
     }
 
+    [Fact]
+    public async Task NodeDeletionAndItsCoverageMarkerRollBackTogetherWhenMarkerWriteFails()
+    {
+        var instanceId = await CreateTerminalAsync(0);
+        DateTimeOffset originalRevision;
+        await using (var db = fixture.CreateDbContext())
+        {
+            var instance = await db.WorkflowInstances.SingleAsync(row => row.Id == instanceId);
+            originalRevision = instance.UpdatedAt;
+            var token = new ExecutionTokenEntity { InstanceId = instanceId, NodeId = 1, NodeName = "Visit", NodeType = "task", Status = "completed" };
+            db.ExecutionTokens.Add(token);
+            await db.SaveChangesAsync();
+            db.NodeExecutions.Add(new NodeExecutionEntity
+            {
+                InstanceId = instanceId, WorkflowDefinitionId = instance.WorkflowDefinitionId, ExecutionTokenId = token.Id,
+                NodeId = 1, NodeName = "Visit", NodeType = "task", Status = "completed", CompletionReason = "normal",
+                CreatedAt = instance.CreatedAt, StartedAt = instance.CreatedAt, UpdatedAt = instance.UpdatedAt, CompletedAt = instance.FinishedAt
+            });
+            await db.SaveChangesAsync();
+        }
+        var policy = (await repository.GetAsync(default)).Policies.Single(row => row.Category == RetentionCategories.NodeActivity);
+        await repository.UpdatePolicyAsync(policy.Category, new(1, policy.Revision), "admin", default);
+        await repository.RequestRunAsync("admin", default);
+        var trigger = "retention_node_marker_fail_" + Guid.NewGuid().ToString("N");
+        await using (var create = fixture.DataSource.CreateCommand($"""
+            CREATE FUNCTION flowbit.{trigger}() RETURNS trigger LANGUAGE plpgsql AS $$
+            BEGIN
+                IF NEW."Id" = {instanceId} AND NEW."NodeActivityPrunedAt" IS NOT NULL THEN
+                    RAISE EXCEPTION 'Injected node marker failure' USING ERRCODE = 'P0001';
+                END IF;
+                RETURN NEW;
+            END $$;
+            CREATE TRIGGER {trigger} BEFORE UPDATE ON flowbit.workflow_instances
+                FOR EACH ROW EXECUTE FUNCTION flowbit.{trigger}();
+            """)) await create.ExecuteNonQueryAsync();
+        try
+        {
+            var error = await Assert.ThrowsAsync<PostgresException>(() => repository.ProcessBatchAsync(Options("worker-a"), default));
+            Assert.Equal("P0001", error.SqlState);
+            await using var db = fixture.CreateDbContext();
+            Assert.Single(await db.NodeExecutions.Where(row => row.InstanceId == instanceId).ToArrayAsync());
+            var instance = await db.WorkflowInstances.SingleAsync(row => row.Id == instanceId);
+            Assert.Null(instance.NodeActivityPrunedAt);
+            Assert.Null(instance.HistoryPrunedAt);
+            Assert.Equal(originalRevision, instance.UpdatedAt);
+        }
+        finally
+        {
+            await using var drop = fixture.DataSource.CreateCommand($"DROP TRIGGER {trigger} ON flowbit.workflow_instances; DROP FUNCTION flowbit.{trigger}();");
+            await drop.ExecuteNonQueryAsync();
+        }
+    }
+
     private async Task DrainAsync(string worker)
     {
         for (var tick = 0; tick < 40; tick++)

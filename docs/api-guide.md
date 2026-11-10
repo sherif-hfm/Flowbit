@@ -1200,6 +1200,98 @@ Content-Type: application/json
 }
 ```
 
+### GET /api/instances/{id}/diagram-history
+
+Returns the recorded diagram path for the instance's **current exact workflow
+definition**, across all retained runs. This is a grouped summary, not a page of
+node executions and not a reconstruction from the History table.
+
+**Access:** the same authenticated deployment-level read and canonical actor
+validation as `GET /api/instances/{id}`. No node-activity role is required. Node
+execution searches and links retain their separate [read policy](#node-execution-activity).
+
+**Parameters:** `id` is the instance's int64 database ID. There is no version,
+role, paging, or run selector. **Body:** none.
+
+**Success:** `200` [InstanceDiagramHistoryDto](#schema-instancediagramhistorydto), including empty `nodes` and
+`flows` when no evidence survives. Empty arrays do not imply complete coverage.
+**Errors:** `401` Unauthorized; `403` Forbidden (missing OIDC API scope);
+`404` missing instance; invalid actors use the same error handling as detail.
+Cancellation and database failures never return truncated counts as success.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `instanceId` | int64 | Instance identity. |
+| `workflowId`, `workflowVersion` | int64, integer | Exact displayed definition and its version. |
+| `instanceUpdatedAt` | UTC timestamp | Instance revision read in the same snapshot as the evidence. |
+| `asOf` | UTC timestamp | Database snapshot time; not a live-update promise. |
+| `scope` | string | Always `currentVersionAllRuns`. |
+| `coverage.status` | string | `complete`, `partial`, or `unknown`. Partial takes precedence over unknown. |
+| `coverage.reasons` | string array | All applicable reason codes listed below, in deterministic order. |
+| `coverage.nodeActivityPrunedAt` | nullable UTC timestamp | First actual node-activity deletion, when known. |
+| `nodes` | array of [InstanceDiagramHistoryNodeDto](#schema-instancediagramhistorynodedto) | Unique reached node IDs, sorted numerically. Arrival evidence includes pending work; it does not imply success. |
+| `flows` | array of [InstanceDiagramHistoryFlowDto](#schema-instancediagramhistoryflowdto) | Unique flow IDs, sorted numerically, with positive int64 JSON-number counts. |
+
+No workflow JSON, variables, actors, claims, roles, payloads, incidents, or failure
+text is included. Reuse the definition already returned by instance detail.
+
+`cutover` means seeded open visits survive from the node-ledger migration;
+`nodeActivityPruned` means node-activity retention deleted evidence;
+`unmappedEvidence` or `conflictingEvidence` means retained evidence cannot be
+attributed confidently to the displayed graph. These reasons make coverage
+partial. `legacyCoverageUnknown` means recording from creation could not be
+established, and `retentionCategoryUnknown` means older pruning did not identify
+which category was removed. `multiInstanceEntryUnrecorded` applies whenever a
+flow enters a multi-instance task directly from an async-after node or another
+multi-instance task: an entry ending before children exist has no durable visit.
+These reasons make otherwise unqualified coverage unknown. `HistoryPrunedAt`
+alone does not lower coverage for instances known to have node activity from
+creation. See [coverage and migration metadata](database-schema.md#workflow_instances).
+
+Each traversal is counted once. Ordinary sources use the source visit's exit
+flow. Async-after and multi-instance sources use the target visit's entry flow;
+for multi-instance targets, children are deduplicated by multi-instance execution,
+including pending children. Votes and winning-flow decisions are not additional
+traversals. A counted incoming traversal marks its target reached even when it
+has no retained visit. Null-entry visits mark their node without inventing a flow.
+
+Version changes rebind open visits. An ordinary incoming flow stays on the
+version where its source exited; a task carried across the switch is reached on
+the new version. Counting always uses the displayed source definition: a rebound
+open target contributes its entry only when that displayed source uses
+`asyncAfter` or multi-instance counting. Changing a completed source between those
+categories can therefore add or omit its pre-switch incoming count. The summary
+does not reconstruct another version's source contract. Parent and called-child
+instances have separate summaries. Retention can remove workflow history while retaining node activity,
+so a summary may show a path absent from the History table.
+
+```http
+GET /api/instances/101/diagram-history HTTP/1.1
+Host: localhost:5017
+Authorization: Bearer TOKEN
+```
+
+```json
+{
+  "instanceId": 101,
+  "workflowId": 11,
+  "workflowVersion": 1,
+  "instanceUpdatedAt": "2026-11-10T07:00:00Z",
+  "asOf": "2026-11-10T07:00:01Z",
+  "scope": "currentVersionAllRuns",
+  "coverage": { "status": "complete", "reasons": [], "nodeActivityPrunedAt": null },
+  "nodes": [{ "nodeId": 1 }, { "nodeId": 2 }],
+  "flows": [{ "flowId": 101, "traversalCount": 1 }]
+}
+```
+
+Match `instanceId`, `workflowId`, `workflowVersion`, and `instanceUpdatedAt`
+against the displayed detail before applying the summary. Discard mismatches and
+refresh the coordinated detail once; sustained churn should offer retry rather
+than loop. A client may skip an unchanged poll; explicit refresh/retry, actions,
+and identity/version changes must force a new read. The UI's lazy toggle and
+coverage notices are described in [the diagram guide](ui-guide.md#read-the-instance-diagram).
+
 ### GET /api/instances/{id}/calls
 
 Pages through an instance's direct outgoing calls, newest first. Repeated visits to a node are separate rows, and visits with no child yet are included.
@@ -8274,6 +8366,69 @@ Represents full details of a workflow instance, including variable values and hi
 | `versionChanges` | array of [InstanceVersionChangeAuditDto](#schema-instanceversionchangeauditdto) | No | — |
 | `variableUpdates` | array of [InstanceVariableUpdateAuditDto](#schema-instancevariableupdateauditdto) | No | Append-only administrative variable-update operations applied to this instance, including the actor, reason, and correlated history rows. |
 | `sharedVariables` | array of [SharedVariableBindingMetadataDto](#schema-sharedvariablebindingmetadatadto) | No | — |
+
+</details>
+
+<a id="schema-instancediagramhistorycoveragedto"></a>
+
+<details>
+<summary>InstanceDiagramHistoryCoverageDto</summary>
+
+Recording and retention coverage for the summary's current-version, all-retained-runs scope. See the [history operation](#get-apiinstancesiddiagram-history) for the reason definitions and counting rules.
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `status` | string | Yes | `complete`, `partial`, or `unknown`. Partial takes precedence over unknown when several reasons apply. |
+| `reasons` | array of string | Yes | Every applicable reason in deterministic order: `cutover`, `nodeActivityPruned`, `unmappedEvidence`, `conflictingEvidence`, `legacyCoverageUnknown`, `retentionCategoryUnknown`, `multiInstanceEntryUnrecorded`. Empty when coverage is complete. |
+| `nodeActivityPrunedAt` | null or string (date-time) | Yes | UTC timestamp of the first actual node-activity deletion, or null when no such deletion is recorded. |
+
+</details>
+
+<a id="schema-instancediagramhistorydto"></a>
+
+<details>
+<summary>InstanceDiagramHistoryDto</summary>
+
+Grouped retained node and traversal evidence for one instance's current exact workflow definition. This response contains no workflow JSON, variables, actors, claims, roles, payloads, incidents, or failure text.
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `instanceId` | integer (int64) | Yes | Runtime workflow-instance database ID. |
+| `workflowId` | integer (int64) | Yes | Exact immutable workflow-definition database ID displayed by instance detail. |
+| `workflowVersion` | integer (int32) | Yes | Version number of that definition. |
+| `instanceUpdatedAt` | string (date-time) | Yes | Instance revision read in the same database snapshot as the evidence; match it to displayed detail before applying the summary. |
+| `asOf` | string (date-time) | Yes | UTC database snapshot time; the response is not continuously updated. |
+| `scope` | string | Yes | Always `currentVersionAllRuns`: the current exact definition across all retained runs. |
+| `coverage` | [InstanceDiagramHistoryCoverageDto](#schema-instancediagramhistorycoveragedto) | Yes | Recording and retention coverage, including every applicable reason. |
+| `nodes` | array of [InstanceDiagramHistoryNodeDto](#schema-instancediagramhistorynodedto) | Yes | Unique reached node IDs sorted numerically. Empty is a successful result and does not imply complete coverage. |
+| `flows` | array of [InstanceDiagramHistoryFlowDto](#schema-instancediagramhistoryflowdto) | Yes | Unique sequence-flow IDs and positive traversal counts sorted numerically. Empty is a successful result and does not imply complete coverage. |
+
+</details>
+
+<a id="schema-instancediagramhistoryflowdto"></a>
+
+<details>
+<summary>InstanceDiagramHistoryFlowDto</summary>
+
+One sequence flow with retained traversal evidence attributed to the displayed definition.
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `flowId` | integer (int32) | Yes | Authored sequence-flow ID in the displayed definition. |
+| `traversalCount` | integer (int64) | Yes | Positive JSON-number count of recorded traversals. Multi-instance children are deduplicated by activation; votes are not additional traversals. |
+
+</details>
+
+<a id="schema-instancediagramhistorynodedto"></a>
+
+<details>
+<summary>InstanceDiagramHistoryNodeDto</summary>
+
+One reached node in the displayed definition. Arrival evidence includes pending work and counted incoming traversals; it does not imply successful completion or an available execution-detail record.
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `nodeId` | integer (int32) | Yes | Authored flow-node ID in the displayed definition. |
 
 </details>
 

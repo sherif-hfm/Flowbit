@@ -165,6 +165,7 @@ public sealed class RetentionRepositoryTests(PostgresApiFixture fixture)
         var owned = await verify.WorkflowInstances.Where(i => instances.Contains(i.Id)).OrderBy(i => i.Id).ToArrayAsync();
         Assert.All(owned.Take(3), item => { Assert.NotNull(item.HistoryPrunedAt); Assert.Equal(old, item.FinishedAt); });
         Assert.All(owned.Skip(3), item => Assert.Null(item.HistoryPrunedAt));
+        Assert.All(owned, item => Assert.Null(item.NodeActivityPrunedAt));
         Assert.Equal(2, await verify.InstanceHistory.CountAsync(h => h.InstanceId == instances[3] || h.InstanceId == instances[4]));
     }
 
@@ -220,6 +221,73 @@ public sealed class RetentionRepositoryTests(PostgresApiFixture fixture)
         Assert.True(await verify.InstanceVariableUpdates.AnyAsync(v => v.Id == keyedAudit));
         Assert.Equal(2, await verify.InstanceVariableCurrentValues.CountAsync(v => v.InstanceId == instanceId));
         Assert.Equal("42", (await verify.InstanceVariableCurrentValues.SingleAsync(v => v.InstanceId == instanceId && v.VariableName == "legacy")).ValueJson.RootElement.GetRawText());
+        var retainedInstance = await verify.WorkflowInstances.SingleAsync(row => row.Id == instanceId);
+        Assert.Equal(scope.Now, retainedInstance.NodeActivityPrunedAt);
+        Assert.Equal(scope.Now, retainedInstance.UpdatedAt);
+    }
+
+    [Fact]
+    public async Task NodePruningMarksOnlyActualDeletionsAndKeepsFirstTimestampAcrossBatches()
+    {
+        await using var scope = await Scope.CreateAsync(fixture);
+        var (definition, instances) = await scope.WorkflowAsync("completed", "completed", "running");
+        var old = scope.Now.AddDays(-60);
+        await using (var db = fixture.CreateDbContext())
+        {
+            foreach (var instanceId in instances)
+            {
+                var token = new ExecutionTokenEntity { InstanceId = instanceId, NodeId = 1, NodeName = "Visit", NodeType = "task", Status = "completed" };
+                db.ExecutionTokens.Add(token);
+                await db.SaveChangesAsync();
+                var visits = Enumerable.Range(0, instanceId == instances[0] ? 2 : 1).Select(_ => new NodeExecutionEntity
+                {
+                    InstanceId = instanceId, WorkflowDefinitionId = definition.Id, ExecutionTokenId = token.Id,
+                    NodeId = 1, NodeName = "Visit", NodeType = "task", Status = "completed", CompletionReason = "normal",
+                    CreatedAt = old, StartedAt = old, UpdatedAt = old, CompletedAt = old
+                }).ToArray();
+                db.NodeExecutions.AddRange(visits);
+                await db.SaveChangesAsync();
+                if (instanceId == instances[1])
+                {
+                    token.CurrentNodeExecutionId = visits[0].Id;
+                    await db.SaveChangesAsync();
+                }
+            }
+        }
+        await scope.PolicyAsync(RetentionCategories.NodeActivity, 30);
+        await scope.RunAsync(batchSize: 1);
+        await using (var db = fixture.CreateDbContext())
+        {
+            Assert.False(await db.NodeExecutions.AnyAsync(row => row.InstanceId == instances[0]));
+            Assert.Single(await db.NodeExecutions.Where(row => row.InstanceId == instances[1]).ToArrayAsync());
+            Assert.Single(await db.NodeExecutions.Where(row => row.InstanceId == instances[2]).ToArrayAsync());
+            var deleted = await db.WorkflowInstances.SingleAsync(row => row.Id == instances[0]);
+            Assert.Equal(scope.Now, deleted.NodeActivityPrunedAt);
+            Assert.Equal(scope.Now, deleted.HistoryPrunedAt);
+            Assert.Equal(scope.Now, deleted.UpdatedAt);
+            Assert.True(deleted.NodeActivityFromCreation);
+            Assert.All(await db.WorkflowInstances.Where(row => row.Id == instances[1] || row.Id == instances[2]).ToArrayAsync(), row =>
+            {
+                Assert.Null(row.NodeActivityPrunedAt);
+                Assert.Null(row.HistoryPrunedAt);
+                Assert.Equal(old, row.UpdatedAt);
+            });
+            // A newly eligible retained row is removed in a later run; first deletion time is immutable.
+            var token = await db.ExecutionTokens.SingleAsync(row => row.InstanceId == instances[0]);
+            db.NodeExecutions.Add(new NodeExecutionEntity
+            {
+                InstanceId = instances[0], WorkflowDefinitionId = definition.Id, ExecutionTokenId = token.Id,
+                NodeId = 1, NodeName = "Visit", NodeType = "task", Status = "completed", CompletionReason = "normal",
+                CreatedAt = old, StartedAt = old, UpdatedAt = old, CompletedAt = old
+            });
+            await db.SaveChangesAsync();
+        }
+        scope.AdvanceTime(TimeSpan.FromHours(1));
+        await scope.RunAsync();
+        await using var verify = fixture.CreateDbContext();
+        var final = await verify.WorkflowInstances.SingleAsync(row => row.Id == instances[0]);
+        Assert.Equal(scope.Now, final.NodeActivityPrunedAt);
+        Assert.Equal(scope.Now.AddHours(1), final.UpdatedAt);
     }
 
     [Fact]
@@ -511,6 +579,8 @@ public sealed class RetentionRepositoryTests(PostgresApiFixture fixture)
             await db.WorkflowJobSnapshots.Where(x => SnapshotIds.Contains(x.Id)).ExecuteDeleteAsync();
             await db.MessageDeliveryReceipts.Where(x => ids.Contains(x.InstanceId)).ExecuteDeleteAsync();
             await db.InstanceVariables.Where(x => ids.Contains(x.InstanceId)).ExecuteDeleteAsync();
+            await db.ExecutionTokens.Where(x => ids.Contains(x.InstanceId))
+                .ExecuteUpdateAsync(set => set.SetProperty(x => x.CurrentNodeExecutionId, (long?)null));
             await db.NodeExecutions.Where(x => ids.Contains(x.InstanceId)).ExecuteDeleteAsync();
             await db.WorkflowInstances.Where(x => x.WorkflowKey == Prefix).ExecuteDeleteAsync();
             await db.WorkflowDefinitions.Where(x => x.WorkflowKey == Prefix).ExecuteDeleteAsync();

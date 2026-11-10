@@ -55,6 +55,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IInstanceVersionChangeCandidateRepository, InstanceVersionChangeCandidateRepository>();
         services.AddScoped<IInstanceVariableUpdateCandidateRepository, InstanceVariableUpdateCandidateRepository>();
         services.AddScoped<INodeExecutionQueryRepository, NodeExecutionQueryRepository>();
+        services.AddScoped<IInstanceDiagramHistoryQueryRepository, InstanceDiagramHistoryQueryRepository>();
         services.AddScoped<IWorkflowSettingsRepository, WorkflowSettingsRepository>();
         services.AddScoped<IEngineSettingsRepository, EngineSettingsRepository>();
         services.AddScoped<IBusinessCalendarRepository, BusinessCalendarRepository>();

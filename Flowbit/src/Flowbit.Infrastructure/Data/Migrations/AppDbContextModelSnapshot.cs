@@ -4357,6 +4357,14 @@ namespace Flowbit.Infrastructure.Data.Migrations
                     b.Property<long?>("LastReactivationTokenId")
                         .HasColumnType("bigint");
 
+                    b.Property<bool>("NodeActivityFromCreation")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true);
+
+                    b.Property<DateTimeOffset?>("NodeActivityPrunedAt")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<string>("StartedBy")
                         .HasMaxLength(300)
                         .HasColumnType("character varying(300)");

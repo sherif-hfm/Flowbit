@@ -801,13 +801,18 @@ public sealed class CallActivityRecoveryTests(PostgresApiFixture fixture) : IAsy
     public void Only_timer_and_conditional_hosts_cancel_their_jobs_outside_the_abandon_hook()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
-        while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "Flowbit.slnx")))
+        while (directory is not null
+            && !File.Exists(Path.Combine(directory.FullName, "Flowbit.slnx"))
+            && !File.Exists(Path.Combine(directory.FullName, "Flowbit", "Flowbit.slnx")))
         {
             directory = directory.Parent;
         }
 
         Assert.NotNull(directory);
-        var services = Path.Combine(directory.FullName, "src", "Flowbit.Service", "Services");
+        var solutionDirectory = File.Exists(Path.Combine(directory.FullName, "Flowbit.slnx"))
+            ? directory.FullName
+            : Path.Combine(directory.FullName, "Flowbit");
+        var services = Path.Combine(solutionDirectory, "src", "Flowbit.Service", "Services");
         var reasons = Directory.EnumerateFiles(services, "WorkflowEngineService*.cs")
             .SelectMany(file => Regex.Matches(
                 File.ReadAllText(file),

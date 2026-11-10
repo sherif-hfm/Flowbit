@@ -10,14 +10,67 @@
     <div class="section-heading">
         <div>
             <h2 id="instance-diagram-heading">Diagram</h2>
-            <p>Workflow version @Instance.Workflow.Version. Highlights show where the instance is now, not the path it took.</p>
+            <p>Workflow version @Instance.Workflow.Version. Current and final positions describe the latest run.</p>
         </div>
+        <label class="instance-diagram-history-toggle">
+            <input type="checkbox" checked="@HistoryEnabled" @onchange="HistoryToggleChangedAsync" />
+            Show recorded history
+        </label>
     </div>
     <ul class="instance-diagram-legend" aria-label="Diagram legend">
         <li><span class="instance-diagram-swatch swatch-active" aria-hidden="true"></span>Active or waiting</li>
         <li><span class="instance-diagram-swatch swatch-ended" aria-hidden="true"></span>Ended here</li>
         <li><span class="instance-diagram-swatch swatch-stopped" aria-hidden="true"></span>Faulted or cancelled here</li>
+        @if (HistoryEnabled)
+        {
+            <li><span class="instance-diagram-swatch swatch-reached" aria-hidden="true"></span>Reached</li>
+            <li><span class="instance-diagram-swatch swatch-flow" aria-hidden="true"></span>Flow taken · number of traversals</li>
+        }
     </ul>
+    @if (HistoryEnabled)
+    {
+        <div class="instance-diagram-history-status" role="status">
+            <p>Recorded history for workflow version @Instance.Workflow.Version, across all retained runs. Records belonging to other versions are not shown.</p>
+            @if (HistoryLoading)
+            {
+                <p>Loading recorded history…</p>
+            }
+            else if (HistoryError is not null)
+            {
+                <p>@HistoryError</p>
+                <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="() => HistoryRetry.InvokeAsync()">Retry recorded history</button>
+            }
+            else if (EffectiveHistory is { } summary)
+            {
+                <p>Snapshot <LocalTime Value="@summary.AsOf" />. Reached means arrival or visit evidence exists; it does not mean successful completion.</p>
+                @if (summary.Coverage.Status != "complete")
+                {
+                    <div class="instance-diagram-coverage">
+                        <strong>@(summary.Coverage.Status == "partial" ? "Recorded history is partial." : "Recorded history coverage is uncertain.")</strong>
+                        <ul>
+                            @foreach (var reason in summary.Coverage.Reasons)
+                            {
+                                <li>@CoverageReason(reason)</li>
+                            }
+                        </ul>
+                        @if (summary.Coverage.NodeActivityPrunedAt is { } pruned)
+                        {
+                            <p>Node activity first pruned <LocalTime Value="@pruned" />. Remaining records may be scattered throughout the path.</p>
+                        }
+                    </div>
+                }
+                @if (summary.Nodes.Count == 0 && summary.Flows.Count == 0)
+                {
+                    <p>No retained diagram history was recorded for this workflow version.</p>
+                }
+            }
+            else
+            {
+                <p>Recorded history is not available for the displayed instance.</p>
+                <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="() => HistoryRetry.InvokeAsync()">Retry recorded history</button>
+            }
+        </div>
+    }
     <div class="instance-diagram-layout">
         <div @ref="viewerRoot" class="flowbit-editor instance-diagram-canvas"></div>
         <aside class="instance-diagram-details" aria-labelledby="instance-diagram-details-heading" aria-live="polite">
@@ -35,6 +88,10 @@
                 <p class="instance-diagram-meta">
                     Node #@node.Id · @ExecutionPositionText.NodeTypeLabel(node.Type)@(string.IsNullOrWhiteSpace(node.ExternalId) ? null : $" · {node.ExternalId}")
                 </p>
+                @if (HistoryEnabled)
+                {
+                    <h4>Current/final positions</h4>
+                }
                 @if (marker is null || marker.Positions.Count == 0)
                 {
                     <p class="instance-diagram-note">@(marker?.Label ?? "This node has no current execution position.")</p>
@@ -105,9 +162,65 @@
                     {
                         <p class="instance-diagram-note" role="status">Loading execution details…</p>
                     }
+                    else if (NodeExecutionsError is not null)
+                    {
+                        <p class="instance-diagram-note" role="status">@NodeExecutionsError</p>
+                    }
                     else if (NodeExecutions is not null && VisibleExecutions.Count == 0)
                     {
                         <p class="instance-diagram-note">No node execution details for this node are available to you.</p>
+                    }
+                }
+                @if (HistoryEnabled)
+                {
+                    @if (EffectiveHistory is not null)
+                    {
+                        <h4>Recorded flows</h4>
+                        <ul class="instance-diagram-flow-counts">
+                            @foreach (var flow in NodeFlows(node.Id))
+                            {
+                                <li>@(flow.SourceRef == node.Id && flow.TargetRef == node.Id ? "Incoming and outgoing" : flow.SourceRef == node.Id ? "Outgoing" : "Incoming"): @FlowName(flow) — @FlowCount(flow.Id) @(FlowCount(flow.Id) == 1 ? "traversal" : "traversals")</li>
+                            }
+                        </ul>
+                    }
+                    <h4>Recorded executions</h4>
+                    <p class="instance-diagram-note">Execution records for this version, newest first. Access follows each execution's node-activity permissions.</p>
+                    @if (HistoricalExecutionsLoading)
+                    {
+                        <p class="instance-diagram-note" role="status">Loading recorded executions…</p>
+                    }
+                    else if (HistoricalExecutionsError is not null)
+                    {
+                        <p class="instance-diagram-note" role="status">@HistoricalExecutionsError</p>
+                        <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="() => HistoricalExecutionsPageChanged.InvokeAsync(HistoricalExecutionsPage)">Retry execution details</button>
+                    }
+                    else if (HistoricalExecutions is not null)
+                    {
+                        <p class="instance-diagram-note">@HistoricalExecutionsTotal execution @(HistoricalExecutionsTotal == 1 ? "record" : "records") available to you.</p>
+                        @if (HistoricalExecutions.Count == 0)
+                        {
+                            <p class="instance-diagram-note">No retained execution detail is available to you. An arrival can be recorded even when no work items were created; older records may also have been removed.</p>
+                        }
+                        else
+                        {
+                            <ul class="instance-diagram-recorded-executions">
+                                @foreach (var execution in HistoricalExecutions.Where(item => item.NodeId == node.Id))
+                                {
+                                    <li><a href="@($"node-executions/{execution.Id}")">Execution #@execution.Id</a> · @execution.Status</li>
+                                }
+                            </ul>
+                        }
+                    }
+                    @if (HistoricalExecutionsTotal > 50 || HistoricalExecutionsPage > 1)
+                    {
+                        @* Keep the focused control mounted and focusable while loading and at page boundaries. *@
+                        <nav class="instance-diagram-execution-pages" aria-label="Recorded execution pages" aria-busy="@(HistoricalExecutionsLoading ? "true" : "false")">
+                            <button type="button" class="btn btn-sm btn-outline-secondary" aria-disabled="@(CanLoadPreviousExecutions ? "false" : "true")"
+                                    @onclick="PreviousExecutionsAsync">Previous executions</button>
+                            <span>Page @HistoricalExecutionsPage</span>
+                            <button type="button" class="btn btn-sm btn-outline-secondary" aria-disabled="@(CanLoadNextExecutions ? "false" : "true")"
+                                    @onclick="NextExecutionsAsync">Next executions</button>
+                        </nav>
                     }
                 }
             }
@@ -115,6 +228,24 @@
             {
                 <h3 id="instance-diagram-details-heading">Selected node</h3>
                 <p class="instance-diagram-note">Select a highlighted node to see its work and execution details. Drag to move the diagram. Use the zoom buttons, or hold Ctrl while you scroll, to zoom.</p>
+            }
+            @if (EffectiveHistory is not null)
+            {
+                <details class="instance-diagram-history-list">
+                    <summary>Recorded history</summary>
+                    <ul>
+                        @foreach (var reached in ReachedNodes)
+                        {
+                            <li>
+                                <button type="button" class="instance-diagram-history-node" aria-pressed="@(SelectedNodeId == reached.Id ? "true" : "false")"
+                                        @onclick="() => SelectHistoryNodeAsync(reached.Id)">
+                                    <strong>@NodeName(reached)</strong> · @ExecutionPositionText.NodeTypeLabel(reached.Type)
+                                    <span>Incoming: @NodeCount(reached.Id, incoming: true) · Outgoing: @NodeCount(reached.Id, incoming: false)</span>
+                                </button>
+                            </li>
+                        }
+                    </ul>
+                </details>
             }
         </aside>
     </div>
@@ -137,6 +268,19 @@
     [Parameter] public long NodeExecutionsTotal { get; set; }
 
     [Parameter] public bool NodeExecutionsLoading { get; set; }
+    [Parameter] public string? NodeExecutionsError { get; set; }
+    [Parameter] public bool HistoryEnabled { get; set; }
+    [Parameter] public EventCallback<bool> HistoryEnabledChanged { get; set; }
+    [Parameter] public InstanceDiagramHistoryDto? History { get; set; }
+    [Parameter] public bool HistoryLoading { get; set; }
+    [Parameter] public string? HistoryError { get; set; }
+    [Parameter] public EventCallback HistoryRetry { get; set; }
+    [Parameter] public IReadOnlyList<NodeExecutionSummaryDto>? HistoricalExecutions { get; set; }
+    [Parameter] public long HistoricalExecutionsTotal { get; set; }
+    [Parameter] public int HistoricalExecutionsPage { get; set; } = 1;
+    [Parameter] public bool HistoricalExecutionsLoading { get; set; }
+    [Parameter] public string? HistoricalExecutionsError { get; set; }
+    [Parameter] public EventCallback<int> HistoricalExecutionsPageChanged { get; set; }
 
     private ElementReference viewerRoot;
     private IJSObjectReference? module;
@@ -146,12 +290,17 @@
     private InstanceDiagramOverlay overlay = InstanceDiagramOverlay.Empty;
     private long? loadedWorkflowId;
     private string? appliedSignature;
+    private int? appliedSelectionId;
     private string? failedAttempt;
     private bool mounting;
     private bool syncing;
     private bool viewerReady;
     private string? viewerError;
     private bool disposed;
+    private IReadOnlyList<FlowNodeModel> reachedNodes = [];
+    private readonly Dictionary<int, long> flowCounts = [];
+    private readonly Dictionary<int, long> incomingCounts = [];
+    private readonly Dictionary<int, long> outgoingCounts = [];
 
     private FlowNodeModel? SelectedNode => SelectedNodeId is int nodeId
         ? Instance.Workflow.Definition.FlowNodes.FirstOrDefault(node => node.Id == nodeId)
@@ -160,7 +309,80 @@
     private IReadOnlyList<NodeExecutionSummaryDto> VisibleExecutions =>
         NodeExecutions?.Where(execution => execution.NodeId == SelectedNodeId).ToList() ?? [];
 
-    protected override void OnParametersSet() => overlay = InstanceDiagramOverlay.Build(Instance);
+    private InstanceDiagramHistoryDto? EffectiveHistory => HistoryEnabled && History is not null
+        && InstanceDiagramOverlay.Matches(Instance, History) ? History : null;
+
+    private IReadOnlyList<FlowNodeModel> ReachedNodes => reachedNodes;
+
+    private IEnumerable<SequenceFlowModel> NodeFlows(int id) => Instance.Workflow.Definition.SequenceFlows
+        .Where(flow => flow.SourceRef == id || flow.TargetRef == id).OrderBy(flow => flow.Id);
+
+    private long FlowCount(int id) => flowCounts.GetValueOrDefault(id);
+
+    private long NodeCount(int id, bool incoming) => (incoming ? incomingCounts : outgoingCounts).GetValueOrDefault(id);
+
+    private static string NodeName(FlowNodeModel node) => string.IsNullOrWhiteSpace(node.Name) ? $"Node #{node.Id}" : node.Name;
+    private static string FlowName(SequenceFlowModel flow) => string.IsNullOrWhiteSpace(flow.Name) ? $"Flow #{flow.Id}" : $"{flow.Name} (#{flow.Id})";
+
+    private static string CoverageReason(string reason) => reason switch
+    {
+        "cutover" => "Node activity began after this instance was created; earlier visits were not recorded.",
+        "nodeActivityPruned" => "Retention removed node activity. Missing markers do not establish that a route was never taken.",
+        "legacyCoverageUnknown" => "It is not known whether this older instance was recorded from creation.",
+        "retentionCategoryUnknown" => "Older retention records do not identify whether node activity was removed.",
+        "multiInstanceEntryUnrecorded" => "This workflow has a multi-instance entry from an async-after node or another multi-instance task. An entry that ended before its children existed may be unrecorded.",
+        "unmappedEvidence" => "Some retained records could not be matched to this version's nodes or flows and were omitted.",
+        "conflictingEvidence" => "Some multi-instance entry records disagree. Their traversal counts were omitted.",
+        _ => "Some retained history has uncertain coverage."
+    };
+
+    private Task HistoryToggleChangedAsync(ChangeEventArgs args) => HistoryEnabledChanged.InvokeAsync(args.Value is true);
+
+    private bool CanLoadPreviousExecutions => !HistoricalExecutionsLoading && HistoricalExecutionsError is null
+        && HistoricalExecutionsPage > 1;
+
+    private bool CanLoadNextExecutions => !HistoricalExecutionsLoading && HistoricalExecutionsError is null
+        && (long)HistoricalExecutionsPage * 50 < HistoricalExecutionsTotal;
+
+    private Task PreviousExecutionsAsync() => CanLoadPreviousExecutions
+        ? HistoricalExecutionsPageChanged.InvokeAsync(HistoricalExecutionsPage - 1) : Task.CompletedTask;
+
+    private Task NextExecutionsAsync() => CanLoadNextExecutions
+        ? HistoricalExecutionsPageChanged.InvokeAsync(HistoricalExecutionsPage + 1) : Task.CompletedTask;
+
+    private async Task SelectHistoryNodeAsync(int nodeId)
+    {
+        if (disposed) return;
+        if (viewer is not null)
+        {
+            try { await viewer.InvokeVoidAsync("selectNode", lifetime.Token, nodeId); return; }
+            catch (OperationCanceledException) when (disposed) { return; }
+            catch (JSDisconnectedException) { }
+            catch (JSException) { }
+        }
+        await SelectedNodeIdChanged.InvokeAsync(nodeId);
+    }
+
+    protected override void OnParametersSet()
+    {
+        var history = EffectiveHistory;
+        overlay = InstanceDiagramOverlay.Build(Instance, history);
+        reachedNodes = [];
+        flowCounts.Clear();
+        incomingCounts.Clear();
+        outgoingCounts.Clear();
+        if (history is null) return;
+        var reached = history.Nodes.Select(node => node.NodeId).ToHashSet();
+        reachedNodes = Instance.Workflow.Definition.FlowNodes.Where(node => reached.Contains(node.Id))
+            .OrderBy(NodeName, StringComparer.OrdinalIgnoreCase).ThenBy(node => node.Id).ToList();
+        foreach (var flow in history.Flows) flowCounts[flow.FlowId] = flow.TraversalCount;
+        foreach (var flow in Instance.Workflow.Definition.SequenceFlows)
+        {
+            var count = FlowCount(flow.Id);
+            incomingCounts[flow.TargetRef] = incomingCounts.GetValueOrDefault(flow.TargetRef) + count;
+            outgoingCounts[flow.SourceRef] = outgoingCounts.GetValueOrDefault(flow.SourceRef) + count;
+        }
+    }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
@@ -229,11 +451,18 @@
                     await viewer.InvokeVoidAsync("load", lifetime.Token, reference, applied.ViewerOverlay);
                     loadedWorkflowId = workflow.Id;
                     appliedSignature = applied.Signature;
+                    appliedSelectionId = null;
                 }
                 else if (applied.Signature != appliedSignature)
                 {
                     await viewer.InvokeVoidAsync("setOverlay", lifetime.Token, applied.ViewerOverlay);
                     appliedSignature = applied.Signature;
+                }
+                else if (appliedSelectionId != SelectedNodeId)
+                {
+                    var selection = SelectedNodeId;
+                    await viewer.InvokeVoidAsync("selectNode", lifetime.Token, selection);
+                    appliedSelectionId = selection;
                 }
                 else
                 {
@@ -273,6 +502,7 @@
     public async Task DiagramSelectionChanged(int? nodeId)
     {
         if (disposed) return;
+        appliedSelectionId = nodeId;
         await SelectedNodeIdChanged.InvokeAsync(nodeId);
     }
 

@@ -427,12 +427,155 @@ public sealed class EditorViewerModeTests
     }
 
     [Fact]
+    public void HistoryHasIndependentMapsCountsAndNoAdditionalTabStops()
+    {
+        var engine = EditorRuntimeSmokeTests.CreateEditorEngine(mode: "viewer");
+        using var result = JsonDocument.Parse(engine.Evaluate(LoadDiagram + """
+            (() => {
+              getNode(1).name = '<img src=x onerror=alert(1)>';
+              setInstanceOverlay({ nodes: [
+                { id: 1, reached: true },
+                { id: 2, reached: true, state: 'active', badge: '1/3', label: 'Waiting' },
+                { id: 999, reached: true, state: 'ended' }, { id: '3', reached: true },
+                { id: 4, reached: 'true' }, null
+              ], flows: [
+                { id: 101, traversalCount: 1234 }, { id: 101, traversalCount: 9 },
+                { id: 201, traversalCount: 0 }, { id: 301, traversalCount: -1 },
+                { id: 999, traversalCount: 1 }, { id: '201', traversalCount: 1 },
+                { id: 301, traversalCount: 1.2 }, { id: 201, traversalCount: Infinity },
+                { id: 301, traversalCount: Number.MAX_SAFE_INTEGER + 1 }, null
+              ]});
+              const path = edgesG.children.slice(-2)[0].children.find(edge => edge.attributes['data-flow'] === '101');
+              const label = edgesG.children.slice(-2)[1].children.find(edge => edge.attributes['data-flow'] === '101');
+              const count = childWithClass(label, 'instance-flow-count');
+              const reached = nodeGroup(1), active = nodeGroup(2);
+              const history = {
+                nodes: [...instanceHistoryNodes], flows: [...instanceHistoryFlows], positions: [...instanceOverlay.keys()],
+                reachedTabIndex: reached.attributes.tabindex ?? null,
+                reachedLabel: reached.attributes['aria-label'], reachedTitle: reached.children[0].textContent,
+                historyHalo: !!childWithClass(reached, 'instance-history-halo'),
+                activeHalo: !!childWithClass(active, 'instance-halo'),
+                activeHistoryHalo: !!childWithClass(active, 'instance-history-halo'),
+                activeBadge: childWithClass(active, 'instance-badge').children[1].textContent,
+                activeTabIndex: active.attributes.tabindex,
+                flowClass: path.attributes.class, flowTabIndex: path.attributes.tabindex ?? null,
+                marker: childWithClass(path, 'edge-line').attributes['marker-end'],
+                stroke: !!childWithClass(path, 'instance-history-line'),
+                countLabel: count.attributes['aria-label'], countTitle: count.children[0].textContent,
+                countText: count.children[2].textContent,
+                exact: count.attributes['data-traversal-count']
+              };
+              viewState = { x: 12, y: 34, zoom: .9 };
+              setInstanceOverlay({ nodes: [{ id: 2, state: 'active', badge: '1/3', label: 'Waiting' }] });
+              const cleared = {
+                nodes: instanceHistoryNodes.size, flows: instanceHistoryFlows.size,
+                positions: [...instanceOverlay.keys()], viewState,
+                pathClass: edgesG.children.slice(-2)[0].children[0].attributes.class,
+                historicalHalo: !!childWithClass(nodeGroup(1), 'instance-history-halo')
+              };
+              return JSON.stringify({ history, cleared });
+            })()
+            """).AsString());
+
+        var history = result.RootElement.GetProperty("history");
+        Assert.Equal("[1,2]", history.GetProperty("nodes").GetRawText());
+        Assert.Equal("[[101,1234]]", history.GetProperty("flows").GetRawText());
+        Assert.Equal("[2]", history.GetProperty("positions").GetRawText());
+        Assert.Equal(JsonValueKind.Null, history.GetProperty("reachedTabIndex").ValueKind);
+        Assert.Contains("<img src=x onerror=alert(1)>", history.GetProperty("reachedTitle").GetString());
+        Assert.Contains("Recorded as reached", history.GetProperty("reachedLabel").GetString());
+        Assert.True(history.GetProperty("historyHalo").GetBoolean());
+        Assert.True(history.GetProperty("activeHalo").GetBoolean());
+        Assert.False(history.GetProperty("activeHistoryHalo").GetBoolean());
+        Assert.Equal("1/3", history.GetProperty("activeBadge").GetString());
+        Assert.Equal("0", history.GetProperty("activeTabIndex").GetString());
+        Assert.Contains("instance-flow-taken", history.GetProperty("flowClass").GetString());
+        Assert.DoesNotContain("trace-active", history.GetProperty("flowClass").GetString());
+        Assert.Equal(JsonValueKind.Null, history.GetProperty("flowTabIndex").ValueKind);
+        Assert.Equal("url(#arrow)", history.GetProperty("marker").GetString());
+        Assert.True(history.GetProperty("stroke").GetBoolean());
+        Assert.Equal("Flow taken 1234 times", history.GetProperty("countLabel").GetString());
+        Assert.Equal("Flow taken 1234 times", history.GetProperty("countTitle").GetString());
+        Assert.Equal("×1.2k", history.GetProperty("countText").GetString());
+        Assert.Equal("1234", history.GetProperty("exact").GetString());
+        var cleared = result.RootElement.GetProperty("cleared");
+        Assert.Equal(0, cleared.GetProperty("nodes").GetInt32());
+        Assert.Equal(0, cleared.GetProperty("flows").GetInt32());
+        Assert.Equal("[2]", cleared.GetProperty("positions").GetRawText());
+        Assert.Equal("{\"x\":12,\"y\":34,\"zoom\":0.9}", cleared.GetProperty("viewState").GetRawText());
+        Assert.DoesNotContain("instance-flow-taken", cleared.GetProperty("pathClass").GetString());
+        Assert.False(cleared.GetProperty("historicalHalo").GetBoolean());
+    }
+
+    [Fact]
+    public void CompactTraversalCountsCarryRoundedValuesIntoTheNextSuffixAndKeepExactAccessibleValues()
+    {
+        var engine = EditorRuntimeSmokeTests.CreateEditorEngine(mode: "viewer");
+        using var result = JsonDocument.Parse(engine.Evaluate(LoadDiagram + """
+            (() => {
+              const counts = [999, 1000, 1234, 999949, 999950, 999999, 1000000,
+                999949999, 999950000, 999999999, 1000000000, Number.MAX_SAFE_INTEGER];
+              return JSON.stringify(counts.map(count => {
+                const group = el('g');
+                appendInstanceFlowCount(group, count, { pointAt: () => ({ x: 0, y: 0 }) }, null, false);
+                const badge = group.children[0];
+                return { count, compact: badge.children[2].textContent,
+                  exact: badge.attributes['data-traversal-count'], accessible: badge.attributes['aria-label'] };
+              }));
+            })()
+            """).AsString());
+        var expected = new[] { "×999", "×1k", "×1.2k", "×999.9k", "×1m", "×1m", "×1m",
+            "×999.9m", "×1b", "×1b", "×1b", "×9007199.3b" };
+        var rows = result.RootElement.EnumerateArray().ToArray();
+        Assert.Equal(expected, rows.Select(row => row.GetProperty("compact").GetString()));
+        foreach (var row in rows)
+        {
+            var exact = row.GetProperty("count").GetInt64().ToString(System.Globalization.CultureInfo.InvariantCulture);
+            Assert.Equal(exact, row.GetProperty("exact").GetString());
+            Assert.Equal($"Flow taken {exact} times", row.GetProperty("accessible").GetString());
+        }
+    }
+
+    [Fact]
+    public void HistoricalSelectionPansWithoutChangingZoomAndHistoryDoesNotAffectFit()
+    {
+        var engine = EditorRuntimeSmokeTests.CreateEditorEngine(mode: "viewer");
+        using var result = JsonDocument.Parse(engine.Evaluate(LoadDiagram + """
+            (() => {
+              model.flowNodes.push({ id: 9, name: 'Far history', type: 'userTask', laneId: null, x: 4000, y: 2600 });
+              setInstanceOverlay({ nodes: [{ id: 2, state: 'active' }] });
+              fitViewerContent();
+              const beforeHistory = JSON.stringify(viewState);
+              setInstanceOverlay({ nodes: [{ id: 2, state: 'active' }, { id: 9, reached: true }], flows: [{ id: 101, traversalCount: 9 }] });
+              fitViewerContent();
+              const sameFit = beforeHistory === JSON.stringify(viewState);
+              viewState = { x: 0, y: 0, zoom: .8 };
+              bringViewerNodeIntoView(getNode(2));
+              const visibleDidNotPan = viewState.x === 0 && viewState.y === 0;
+              select('node', 9);
+              bringViewerNodeIntoView(getNode(9));
+              return JSON.stringify({ sameFit, visibleDidNotPan, zoom: viewState.zoom,
+                historicalVisible: boundsInsideViewport(edgeNodeBounds(getNode(9), 20)), selected: selected.nodeId,
+                tabIndex: nodeGroup(9).attributes.tabindex ?? null });
+            })()
+            """).AsString());
+
+        var root = result.RootElement;
+        Assert.True(root.GetProperty("sameFit").GetBoolean());
+        Assert.True(root.GetProperty("visibleDidNotPan").GetBoolean());
+        Assert.Equal(.8, root.GetProperty("zoom").GetDouble());
+        Assert.True(root.GetProperty("historicalVisible").GetBoolean());
+        Assert.Equal(9, root.GetProperty("selected").GetInt32());
+        Assert.Equal(JsonValueKind.Null, root.GetProperty("tabIndex").ValueKind);
+    }
+
+    [Fact]
     public void StandaloneEditorIgnoresInstanceOverlays()
     {
         var engine = EditorRuntimeSmokeTests.CreateEditorEngine();
         using var result = JsonDocument.Parse(engine.Evaluate(LoadDiagram + """
             (() => {
-              setInstanceOverlay({ nodes: [{ id: 2, state: 'active', badge: '1/2', label: 'Waiting for user work' }] });
+              setInstanceOverlay({ nodes: [{ id: 2, state: 'active', badge: '1/2', label: 'Waiting for user work', reached: true }], flows: [{ id: 101, traversalCount: 3 }] });
               const group = nodeGroup(2);
               return JSON.stringify({
                 className: group.attributes.class,

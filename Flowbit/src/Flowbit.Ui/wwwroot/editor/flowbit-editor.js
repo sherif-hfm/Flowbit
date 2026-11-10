@@ -938,6 +938,8 @@ let diagramSearchIndex = -1;
 let snapToGrid = false;
 let gridSize = DEFAULT_GRID_SIZE;
 let instanceOverlay = new Map(); // viewer only: node id -> { state, badge, label }
+let instanceHistoryNodes = new Set(); // retained reached nodes, independent of current positions
+let instanceHistoryFlows = new Map(); // viewer only: flow id -> positive traversal count
 // Inspector-only: the Fixed value / Expression choice a user made for a timer
 // node's schedule, by node object. Unset choices are inferred from the value.
 const timerInputModes = new WeakMap();
@@ -2327,7 +2329,7 @@ function normalizeInstanceOverlay(overlay) {
   const nodes = overlay && Array.isArray(overlay.nodes) ? overlay.nodes : [];
   for (const item of nodes) {
     if (!item || typeof item !== "object" || !Number.isInteger(item.id) ||
-        !INSTANCE_OVERLAY_STATES.has(item.state) || markers.has(item.id)) continue;
+        !getNode(item.id) || !INSTANCE_OVERLAY_STATES.has(item.state) || markers.has(item.id)) continue;
     markers.set(item.id, {
       state: item.state,
       badge: typeof item.badge === "string" ? truncateText(item.badge, 8) : "",
@@ -2337,13 +2339,31 @@ function normalizeInstanceOverlay(overlay) {
   return markers;
 }
 
+function normalizeInstanceHistoryOverlay(overlay) {
+  const nodes = new Set();
+  const flows = new Map();
+  for (const item of Array.isArray(overlay?.nodes) ? overlay.nodes : []) {
+    if (item && Number.isInteger(item.id) && item.reached === true && getNode(item.id)) nodes.add(item.id);
+  }
+  for (const item of Array.isArray(overlay?.flows) ? overlay.flows : []) {
+    if (!item || !Number.isInteger(item.id) || !getFlow(item.id) || flows.has(item.id) ||
+        !Number.isSafeInteger(item.traversalCount) || item.traversalCount <= 0) continue;
+    flows.set(item.id, item.traversalCount);
+  }
+  return { nodes, flows };
+}
+
 function setInstanceOverlay(overlay) {
   instanceOverlay = normalizeInstanceOverlay(overlay);
+  const history = normalizeInstanceHistoryOverlay(overlay);
+  instanceHistoryNodes = history.nodes;
+  instanceHistoryFlows = history.flows;
+  renderEdges();
   renderNodes();
 }
 
 // A state ring outside the shape, so it never competes with the node type's own colors.
-function appendInstanceHalo(g, node) {
+function appendInstanceHalo(g, node, historyOnly = false) {
   const size = nodeSize(node);
   const gap = 6;
   let halo;
@@ -2355,7 +2375,7 @@ function appendInstanceHalo(g, node) {
   } else {
     halo = el("rect", { x: -gap, y: -gap, width: size.w + gap * 2, height: size.h + gap * 2, rx: 16, ry: 16 });
   }
-  halo.setAttribute("class", "instance-halo");
+  halo.setAttribute("class", historyOnly ? "instance-history-halo" : "instance-halo");
   halo.setAttribute("aria-hidden", "true");
   // Behind the shape: right after the node's tooltip title.
   g.insertBefore(halo, g.children[1] ?? null);
@@ -2366,7 +2386,7 @@ function appendInstanceMarker(g, node, marker) {
   g.setAttribute("tabindex", "0");
   g.setAttribute("role", "button");
   g.setAttribute("aria-label",
-    `${name}, ${typeLabel(node.type)}${marker.label ? `: ${marker.label}` : ""}`);
+    `${name}, ${typeLabel(node.type)}${marker.label ? `: ${marker.label}` : ""}${instanceHistoryNodes.has(node.id) ? ". Recorded as reached" : ""}`);
   appendInstanceHalo(g, node);
   if (!marker.badge) return;
   const size = nodeSize(node);
@@ -2381,6 +2401,43 @@ function appendInstanceMarker(g, node, marker) {
   text.textContent = marker.badge;
   badge.appendChild(text);
   g.appendChild(badge);
+}
+
+function compactInstanceFlowCount(count) {
+  if (count < 1000) return String(count);
+  const units = [{ scale: 1000, suffix: "k" }, { scale: 1000000, suffix: "m" }, { scale: 1000000000, suffix: "b" }];
+  for (const [index, unit] of units.entries()) {
+    const rounded = Math.round(count / (unit.scale / 10)) / 10;
+    if (rounded < 1000 || index === units.length - 1) return `${rounded}${unit.suffix}`;
+  }
+}
+
+function appendInstanceFlowCount(group, count, geometry, placement, hasLabel) {
+  const exact = String(count);
+  const compact = compactInstanceFlowCount(count);
+  const caption = `×${compact}`;
+  const point = placement?.point || geometry.pointAt(placement?.t ?? .5);
+  const width = 14 + Array.from(caption).length * 6.5;
+  const badge = el("g", {
+    class: "instance-flow-count", transform: `translate(${point.x},${point.y + (hasLabel ? 13 : 0)})`,
+    role: "img", "aria-label": `Flow taken ${exact} ${count === 1 ? "time" : "times"}`,
+    "data-traversal-count": exact
+  });
+  appendSvgTitle(badge, `Flow taken ${exact} ${count === 1 ? "time" : "times"}`);
+  badge.appendChild(el("rect", { x: -width / 2, y: -9, width, height: 18, rx: 8, ry: 8 }));
+  const text = el("text", { x: 0, y: 4, "text-anchor": "middle", "aria-hidden": "true" });
+  text.textContent = caption;
+  badge.appendChild(text);
+  group.appendChild(badge);
+}
+
+function bringViewerNodeIntoView(node) {
+  const bounds = edgeNodeBounds(node, 20);
+  if (boundsInsideViewport(bounds)) return;
+  const { width, height } = canvasDimensions();
+  viewState.x = (bounds.left + bounds.right - width / viewState.zoom) / 2;
+  viewState.y = (bounds.top + bounds.bottom - height / viewState.zoom) / 2;
+  applyViewBox();
 }
 
 function appendViewerSelectionRing(g, node) {
@@ -2685,15 +2742,16 @@ function renderNodes() {
     const nodeSelected = isSel('node', node.id);
     const primarySelected = selected?.kind === 'node' && selected.nodeId === node.id;
     const instanceMarker = viewerMode ? instanceOverlay.get(node.id) : null;
+    const historyReached = viewerMode && instanceHistoryNodes.has(node.id);
     const g = el("g", {
-      class: `node ${node.type} ${isConditionalBoundaryEventType(node.type) && node.cancelActivity === false ? 'non-interrupting' : ''} ${nodeSelected ? 'selected' : ''} ${primarySelected ? 'primary-selected' : ''} ${traceClass('node', node.id)} ${instanceMarker ? `instance-marked instance-${instanceMarker.state}` : ''}`,
+      class: `node ${node.type} ${isConditionalBoundaryEventType(node.type) && node.cancelActivity === false ? 'non-interrupting' : ''} ${nodeSelected ? 'selected' : ''} ${primarySelected ? 'primary-selected' : ''} ${traceClass('node', node.id)} ${instanceMarker ? `instance-marked instance-${instanceMarker.state}` : ''} ${historyReached ? 'instance-reached' : ''}`,
       transform: `translate(${pos.x},${pos.y})`, "data-id": node.id
     });
     const marker = model.initialEventId === node.id ? " · START" : "";
     const roles = node.rolesVariable != null ? truncateText(`$${node.rolesVariable}`, 20) : roleSummary(node.roles, 20);
     const catchText = isErrorBoundaryEventType(node.type) && errorBoundaryShowsCatchText(node)
       ? ` · Catches: ${errorBoundaryCatchText(node)}` : "";
-    appendSvgTitle(g, `#${node.id} · ${typeLabel(node.type)} · ${node.name || "Unnamed"}${catchText}${node.rolesVariable != null ? ` · Role variable: ${node.rolesVariable} (captured on entry)` : roles ? ` · Roles: ${normalizeRoles(node.roles).join(", ")}` : ""}${instanceMarker?.label ? ` · ${instanceMarker.label}` : ""}`);
+    appendSvgTitle(g, `#${node.id} · ${typeLabel(node.type)} · ${node.name || "Unnamed"}${catchText}${node.rolesVariable != null ? ` · Role variable: ${node.rolesVariable} (captured on entry)` : roles ? ` · Roles: ${normalizeRoles(node.roles).join(", ")}` : ""}${instanceMarker?.label ? ` · ${instanceMarker.label}` : ""}${historyReached ? " · Recorded as reached" : ""}`);
 
     if (isBoundaryEventType(node.type)) {
       const r = BOUNDARY_D / 2;
@@ -2768,6 +2826,11 @@ function renderNodes() {
     }
 
     if (instanceMarker) appendInstanceMarker(g, node, instanceMarker);
+    else if (historyReached) {
+      appendInstanceHalo(g, node, true);
+      g.setAttribute("role", "img");
+      g.setAttribute("aria-label", `${node.name || "Unnamed"}, ${typeLabel(node.type)}: Recorded as reached`);
+    }
     if (viewerMode && nodeSelected) {
       appendViewerSelectionRing(g, node);
       // Among the marked nodes, the selected one is the current one.
@@ -3359,8 +3422,10 @@ function renderEdges() {
     const dashed = isPassThroughType(source.type);
     const isError = isErrorBoundaryEventType(source.type);
     const selectedFlow = isSel('flow', flow.id);
-    const edgeClass = `edge ${dashed ? "auto" : ""} ${isError ? "error" : ""} ${selectedFlow ? "selected" : ""} ${traceClass('flow', flow.id)}`;
+    const traversalCount = viewerMode ? instanceHistoryFlows.get(flow.id) : null;
+    const edgeClass = `edge ${dashed ? "auto" : ""} ${isError ? "error" : ""} ${selectedFlow ? "selected" : ""} ${traceClass('flow', flow.id)} ${traversalCount ? "instance-flow-taken" : ""}`;
     const labelInfo = flowLabelInfo(flow, source);
+    if (traversalCount) labelInfo.title += `\nFlow taken ${traversalCount} ${traversalCount === 1 ? "time" : "times"}`;
     // Viewer flows keep their tooltip but are neither focusable nor selectable.
     const pathGroup = el("g", viewerMode ? { class: edgeClass, "data-flow": flow.id } : {
       class: edgeClass,
@@ -3372,6 +3437,7 @@ function renderEdges() {
     const labelGroup = el("g", { class: edgeClass, "data-flow": flow.id });
     const markerId = selectedFlow ? "arrowSel" : (isError ? "arrowError" : "arrow");
     pathGroup.appendChild(el("path", { d: geometry.d, class: "edge-hit" }));
+    if (traversalCount) pathGroup.appendChild(el("path", { d: geometry.d, class: "instance-history-line", "aria-hidden": "true" }));
     pathGroup.appendChild(el("path", { d: geometry.d, class: "edge-line", "marker-end": `url(#${markerId})` }));
     appendSvgTitle(pathGroup, labelInfo.title);
 
@@ -3386,6 +3452,8 @@ function renderEdges() {
       geometry,
       labelPlacement,
       `flow-label-guide-${flowIndex}`);
+    if (traversalCount) appendInstanceFlowCount(labelGroup, traversalCount, geometry, labelPlacement,
+      !!labelInfo.name || labelInfo.markers.length > 0);
     const selectFlow = (event) => { event.stopPropagation(); select("flow", flow.id); };
     pathGroup.addEventListener("click", selectFlow);
     if (!viewerMode) pathGroup.addEventListener("keydown", event => {
@@ -8502,8 +8570,60 @@ function fitBounds(bounds, padding = 64, maxZoom = ZOOM_MAX) {
 
 function fitView() {
   const layers = [lanesG, edgesG, nodesG].filter(layer => layer.childElementCount > 0);
-  const bounds = combineBounds(layers.map(domBounds));
+  const bounds = viewerMode ? measureViewerBounds(layers) : combineBounds(layers.map(domBounds));
   if (!fitBounds(bounds, 64, viewerMode ? 1 : ZOOM_MAX)) resetViewport();
+}
+
+function measureViewerBounds(layers) {
+  // Measure authored shapes/text and existing current-position markers at full
+  // detail, excluding the history and selection decorations. A later Fit must not
+  // depend on which captions semantic zoom currently hides. The synchronous
+  // attributes are restored before paint; no rendered elements are replaced.
+  const previousZoom = svg.dataset.zoomLevel;
+  const previousLabels = svg.dataset.labelMode;
+  const previousViewBox = svg.getAttribute("viewBox");
+  const bounds = [];
+  try {
+    svg.dataset.zoomLevel = "detail";
+    svg.dataset.labelMode = "all";
+    // SVG text metrics can change slightly with the screen scale (font hinting).
+    // Use a fixed one-to-one measurement scale so repeated Fit cannot drift.
+    const { width, height } = canvasDimensions();
+    svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+    const canvasMatrix = svg.getCTM()?.inverse();
+    if (!canvasMatrix) return null;
+    for (const layer of layers) {
+      if (!layer) continue;
+      for (const element of layer.querySelectorAll("path, rect, circle, ellipse, line, polygon, polyline, text, use")) {
+        if (element.closest(".instance-history-halo, .instance-history-line, .instance-flow-count, .viewer-selection-ring")) continue;
+        const box = element.getBBox();
+        // Empty SVG groups/labels report the origin even on an offset diagram.
+        // Measure graphics individually, retaining horizontal/vertical lines.
+        if (!(box.width > 0 || box.height > 0)) continue;
+        const elementMatrix = element.getCTM();
+        if (!elementMatrix) continue;
+        const matrix = canvasMatrix.multiply(elementMatrix);
+        const corners = [[box.x, box.y], [box.x + box.width, box.y],
+          [box.x, box.y + box.height], [box.x + box.width, box.y + box.height]]
+          .map(([x, y]) => ({ x: matrix.a * x + matrix.c * y + matrix.e,
+            y: matrix.b * x + matrix.d * y + matrix.f }));
+        bounds.push({ left: Math.min(...corners.map(point => point.x)),
+          top: Math.min(...corners.map(point => point.y)),
+          right: Math.max(...corners.map(point => point.x)),
+          bottom: Math.max(...corners.map(point => point.y)) });
+      }
+    }
+    return combineBounds(bounds);
+  } catch (err) {
+    return null;
+  } finally {
+    if (previousViewBox === null) svg.removeAttribute("viewBox");
+    else svg.setAttribute("viewBox", previousViewBox);
+    if (previousZoom === undefined) delete svg.dataset.zoomLevel;
+    else svg.dataset.zoomLevel = previousZoom;
+    if (previousLabels === undefined) delete svg.dataset.labelMode;
+    else svg.dataset.labelMode = previousLabels;
+  }
 }
 
 function boundsInsideViewport(bounds) {
@@ -14993,8 +15113,7 @@ for (const button of root.querySelectorAll("[data-editor-action]")) {
       load(definition, overlay = null) {
         ensureViewerOpen();
         loadFromObject(definition);
-        instanceOverlay = normalizeInstanceOverlay(overlay);
-        renderNodes();
+        setInstanceOverlay(overlay);
         fitViewerContent();
       },
       setOverlay(overlay) {
@@ -15004,7 +15123,10 @@ for (const button of root.querySelectorAll("[data-editor-action]")) {
       selectNode(nodeId) {
         ensureViewerOpen();
         if (nodeId == null) clearSelection();
-        else if (getNode(nodeId)) select("node", nodeId);
+        else if (getNode(nodeId)) {
+          select("node", nodeId);
+          bringViewerNodeIntoView(getNode(nodeId));
+        }
       },
       dispose
     };

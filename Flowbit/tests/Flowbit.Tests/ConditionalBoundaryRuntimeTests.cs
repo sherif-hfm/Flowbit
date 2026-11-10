@@ -36,6 +36,7 @@ public sealed class ConditionalBoundaryRuntimeTests(PostgresApiFixture fixture)
             Assert.Equal(WorkflowInstanceStatuses.Completed, started.Status);
             Assert.Equal(5, started.CurrentNodeId);
             await using var db = fixture.CreateDbContext();
+            await DiagramHistoryEvidenceAssertions.ExitsAsync(fixture, db, started.Id, (1, 10, 1), (4, 40, 1));
             var subscription = await db.ConditionalBoundarySubscriptions.SingleAsync(item =>
                 item.InstanceId == started.Id);
             Assert.Equal(ConditionalBoundarySubscriptionStatuses.Completed, subscription.Status);
@@ -76,6 +77,7 @@ public sealed class ConditionalBoundaryRuntimeTests(PostgresApiFixture fixture)
             await AssertOccurrenceAsync(started.Id, 2, conditionTrue: true);
 
             await using var db = fixture.CreateDbContext();
+            await DiagramHistoryEvidenceAssertions.ExitsAsync(fixture, db, started.Id, (1, 10, 1), (4, 40, 2));
             Assert.Equal(WorkflowInstanceStatuses.Running,
                 (await db.WorkflowInstances.SingleAsync(item => item.Id == started.Id)).Status);
             Assert.Equal(2, await db.InstanceHistory.CountAsync(item =>
@@ -175,6 +177,7 @@ public sealed class ConditionalBoundaryRuntimeTests(PostgresApiFixture fixture)
             }
 
             await using var after = fixture.CreateDbContext();
+            await DiagramHistoryEvidenceAssertions.ExitsAsync(fixture, after, started.Id, (1, 10, 1), (4, 40, 1));
             Assert.Equal(1, await after.InstanceHistory.CountAsync(item =>
                 item.InstanceId == started.Id
                 && item.Note == InstanceHistoryNotes.ConditionalTriggered));

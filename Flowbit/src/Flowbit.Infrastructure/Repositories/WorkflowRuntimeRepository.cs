@@ -3975,6 +3975,10 @@ public sealed partial class WorkflowRuntimeRepository(
 
             var ownerInstance = dbContext.WorkflowInstances.Local.SingleOrDefault(row => row.Id == instanceId)
                 ?? await dbContext.WorkflowInstances.SingleAsync(row => row.Id == instanceId, cancellationToken);
+            // Async-before fan-out can create the first retained evidence of this
+            // arrival without moving the token. Invalidate diagram summaries in
+            // this same transaction, including arrivals from async-after/MI sources.
+            ownerInstance.UpdatedAt = now;
             execution.RolePolicy = await CreateRolePolicyAsync(ownerInstance, node, now, cancellationToken);
             await dbContext.SaveChangesAsync(cancellationToken);
             execution.RolePolicyId = execution.RolePolicy.Id;

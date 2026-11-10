@@ -28,6 +28,12 @@ public sealed class WorkflowInstanceEntity
 
     public DateTimeOffset? HistoryPrunedAt { get; set; }
 
+    /// <summary>Whether retained evidence establishes recording from instance creation.</summary>
+    public bool NodeActivityFromCreation { get; set; } = true;
+
+    /// <summary>First actual retention deletion of node activity; other categories do not set it.</summary>
+    public DateTimeOffset? NodeActivityPrunedAt { get; set; }
+
     /// <summary>
     /// The root token created by the most recent reactivation; null when the instance
     /// was never reactivated. Tokens from this id onward belong to the current run.

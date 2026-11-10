@@ -101,6 +101,26 @@ If the published hosts are missing, the fixture fails with an actionable
 message; publish them first. A missing Docker daemon or browser binary fails
 the run — it never silently connects to a developer's running stack.
 
+## Instance diagram fit checks
+
+`InstanceDiagramFitBrowserTests` uses only a static localhost host, the copied
+canonical editor assets, and real Chromium. These three focused tests require
+the .NET SDK and installed Playwright Chromium, but no Docker or published API/UI.
+Run from the repository root; the command is the same in PowerShell and Bash:
+
+```text
+dotnet test Flowbit/tests/Flowbit.BrowserTests/Flowbit.BrowserTests.csproj -c Release --filter FullyQualifiedName~InstanceDiagramFitBrowserTests --environment FLOWBIT_BROWSER_HEADED=1
+```
+
+The 1024×650 browser viewport contains an 800×448 viewer for the canonical
+async-before/after example and a 900×448 viewer for translated-coordinate and
+long-event-caption variants. Each case checks absolute initial zoom and all five
+nodes remaining visible, repeated **Fit**, history on/off and reload, and
+**Fit** after zooming out far enough to hide labels. History decorations must
+not change the fit. The count `999950` renders compactly as `×1m` while its
+accessible label retains the exact value. Screenshots, measurements, and browser
+diagnostics are saved under `artifacts/browser/fit/<timestamp-id>/`.
+
 ## Options
 
 | Setting | Effect |
@@ -152,7 +172,7 @@ Hosted editor scenarios H1 (1440x900 and 1024x768) and H2 exercise exact-version
 | R5 real polling and disposal | 1440x900 | An open poll-eligible MI detail updates after an out-of-band HTTP completion within the five-second polling window; navigate away/back shows current data; host logs record no error-level circuit issues. |
 | R6 responsive controls and focus | 1024x768, 390x844 | Real responsive navigation, section links preserving the instance path/query, keyboard focus, wheel scrolling to clipped table columns, and parsed submitted JSON. |
 | R7 administrative batch display | 1440x900, 1024x768, 390x844 | Executes immediate administrative actions through the real instance-detail panel, verifies refreshed instance status, variables and history before following the real audit batch link, verifies the frozen request, count order/values, item row, highlight, JSON details, and recent history against HTTP reads, switches batches with real clicks and keyboard-activated Open buttons, exercises zero-match item and recent-batch status filters with restore, checks narrow-table scrolling and document overflow, and records before/after audit screenshots at all three viewports. |
-| R8 live instance diagram | 1440x900, 390x844 | The read-only diagram on instance detail marks exactly the two active parallel user tasks and highlights no flow, with the authoring toolbar, palette and inspector hidden. Dragging a marked node only pans the canvas, and Delete removes nothing. Clicking a node lists its task link and, for an operator with node-execution read access, its node-execution link, and marks the node `aria-current`; Enter selects a focused node and Escape clears the selection. The execution link opens that execution, and Back returns to the diagram. A multi-instance node shows its `1/3` progress badge, a completed instance marks only its end event, and the page has no horizontal overflow. A reviewer without node-execution access sees the task link but no execution link. |
+| R8 instance diagram and recorded history | 1440x900, 1024x768, 390x844 | Nine scenarios retain the history-off current/final markers, node/task links, keyboard selection, pointer panning and read-only shortcuts. The recorded-history toggle preserves pan/zoom and current badges while adding reached nodes and exact flow counts for parallel branches, loops, MI entry and completed instances. A real 51-visit loop exercises 50-record paging without replacing the current-position execution link; an HTTP action plus Refresh updates counts without moving the viewport. Tab reaches the textual history list, whose buttons select historical-only nodes with Enter/Space without adding canvas tab stops. Plain wheel scrolls the page and Ctrl-wheel zooms the canvas. Ordinary reviewers see the same counts without restricted execution links. An MI entry interrupted before fan-out is reached from its ordinary source exit despite having no child execution records; an entry from another MI task has no invented connector and shows the coverage notice. All data comes from real HTTP operations, with screenshots, console checks and horizontal-overflow assertions. |
 | R9 typed task forms | 1440x900, 390x844 | In a browser fixed to `Asia/Tokyo`, the start form shows each value's control: labels with the variable name and type, linked help text, the required state, a number box, True/False and option lists, date and date-time pickers, the default hint, and a text area for an array. A number typed as `12-` shows its error and blocks the start. After valid entries the date-time preview reads `Sent as 2026-09-10T10:30:00+09:00 (Asia/Tokyo).`, and HTTP read-back confirms the exact stored JSON, including `1250.50` and the offset. The task form offers the action's labelled options and help text and completes the instance with the chosen option values; neither page overflows horizontally or logs console warnings. A second case, in `Europe/Berlin`, checks that the mouse wheel over a focused amount leaves it unchanged and moves focus out; that a date or date-time left partly filled from empty shows its error when focus leaves it and blocks the start; that 02:30 on 29 March 2026 is rejected as skipped while 02:30 on 25 October 2026 is sent with `+02:00`; and that the instance-detail action form offers the same controls and completes the instance with the exact stored values. A third case, in `America/New_York`, fills the multi-instance **Interrupt actions** form (a labelled option list with help text, a number, and a date-time sent with `-05:00`), accepts the confirmation, and reads the stored values back. It then takes **Decide** through the instance **Administrative actions** panel, whose typed option lists and date-time (sent with `-04:00`) complete the instance, and reads the audit batch over HTTP to confirm that the action's declarations keep their label, help text, and options. |
 | R10 task due dates and priorities | 1440x900, 390x844 | One instance opens four parallel reviews with a past due date, `PT2H`, `P3D`, and none. My work shows the **Overdue** and **Due soon** badges, the exact due time as the tooltip, `Priority N` under each date, and a dash for the unscheduled task. Sorting by **Due date** ascending and **Priority** in both directions puts the unscheduled task last; the **Due** filter keeps only the overdue review and the priority range only the due-soon review, whose task detail shows **Due** with its badge and **Priority** `60`. HTTP read-back confirms `dueStatus` and `priority`, and neither page overflows horizontally. |
 | R11 business calendars page | 1440x900, 390x844 | A settings administrator sees the seeded `examples.weekdays` calendar on `/business-calendars`, then adds a `Europe/London` calendar with a lunch break Monday to Thursday, a 09:00–13:00 Friday, and a half-day Christmas Eve holiday. Holiday dates and the preview start are typed segment by segment on the keyboard (en-US order, 100 ms between keys). The preview gives `Due Mon 30 Mar 2026 10:00 (UTC+01:00), 2026-03-30 09:00 UTC.` for Friday 27 March 10:00 plus `P1D`, across the clocks going forward. Typing `01/02/2026 09:05 AM` over that start, with leading zeros in the month, day and hour, keeps every segment and gives `Due Mon 5 Jan 2026 09:05 (UTC+00:00), 2026-01-05 09:05 UTC.`; `P1W` is reported as not countable. The saved row shows the grouped week summary and `1 holiday`; editing keeps the name read-only and reloads the periods, the holiday's date and its hours. A closed holiday typed as 01/01/2028 and retyped as 01/03/2028 keeps the second date, the row then shows `2 holidays`, and the API returns both dates. Deleting after a confirmation is refused with the API's message while a published workflow names the calendar, and succeeds once that workflow is deleted. A viewer sees the settings-role message; no horizontal overflow; screenshots. |
@@ -226,7 +246,19 @@ Every run writes to `artifacts/browser/runs/<timestamp>-<id>/`:
 - E13 retains `inspector-help.png` (the user-task inspector with the **Due date** help
   open) at both editor viewports.
 - R8 retains `instance-diagram-running.png`, with Reviewer A selected, and
-  `instance-diagram-finished.png` at both viewports.
+  `instance-diagram-finished.png` at all three viewports. Recorded-history
+  evidence includes `history-off.png`, `history-loop.png`,
+  `history-selected-paged.png`, `history-text-list.png`, `history-reviewer.png`, `history-branch.png`,
+  `history-mi-entry.png`, `history-finished.png`, `history-mi-before-fanout.png`,
+  and `history-coverage-notice.png`. The selected-node panel and expanded
+  textual list are included in the paging and pre-fan-out screenshots.
+  Run these nine cases after publishing/building with
+  `dotnet test Flowbit/tests/Flowbit.BrowserTests/Flowbit.BrowserTests.csproj -c Release --no-build --no-restore --filter FullyQualifiedName~InstanceDiagramSmokeTests`.
+  Durable waits and stale identity responses use the separate
+  [Worker-enabled acceptance suite](../Flowbit.BrowserAcceptanceTests/README.md).
+  Actual node-retention browser verification still requires an authentically
+  aged instance; it is an outstanding validation gate, not covered by either
+  fresh-stack browser suite. The acceptance README records that limitation.
 - R9 retains `rich-start-form.png`, `rich-task-form.png`,
   `instance-detail-action.png`, `instance-interrupt-form.png`, and
   `instance-admin-override-form.png`, and E9 retains `variable-form-fields.png`

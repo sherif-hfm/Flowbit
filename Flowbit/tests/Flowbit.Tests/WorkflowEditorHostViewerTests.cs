@@ -19,8 +19,8 @@ public sealed class WorkflowEditorHostViewerTests
             const window = { FlowbitEditor: { mount: (root, options) => {
               mounted = options;
               return {
-                load(definition, overlay) { calls.push(['load', definition.id, overlay.nodes.length]); },
-                setOverlay(overlay) { calls.push(['setOverlay', overlay.nodes.length]); },
+                load(definition, overlay) { calls.push(['load', definition.id, overlay.nodes.length, overlay.flows?.[0]?.traversalCount ?? null]); },
+                setOverlay(overlay) { calls.push(['setOverlay', overlay.nodes.length, overlay.nodes[0]?.reached ?? null, overlay.flows?.[0]?.traversalCount ?? null]); },
                 selectNode(nodeId) { calls.push(['selectNode', nodeId]); },
                 dispose() { calls.push(['dispose']); }
               };
@@ -34,7 +34,8 @@ public sealed class WorkflowEditorHostViewerTests
               const dotnet = { invokeMethodAsync: (method, nodeId) => { forwarded.push([method, nodeId]); return Promise.resolve(); } };
               const host = await createViewer({ isConnected: true }, dotnet,
                 { template: 'template', stylesheet: 'css', script: 'script' }, 'Instance diagram');
-              await host.load({ arrayBuffer: () => Promise.resolve('{"id":"wf"}') }, { nodes: [{ id: 3 }] });
+              await host.load({ arrayBuffer: () => Promise.resolve('{"id":"wf"}') }, { nodes: [{ id: 3 }], flows: [{ id: 201, traversalCount: 2 }] });
+              host.setOverlay({ nodes: [{ id: 3, reached: true }], flows: [{ id: 201, traversalCount: 3 }] });
               host.setOverlay({ nodes: [] });
               host.selectNode(null);
               mounted.onSelectionChange(3);
@@ -53,7 +54,7 @@ public sealed class WorkflowEditorHostViewerTests
         Assert.Equal("viewer", root.GetProperty("mode").GetString());
         Assert.Equal("Instance diagram", root.GetProperty("label").GetString());
         Assert.Equal(
-            """[["load","wf",1],["setOverlay",0],["selectNode",null],["dispose"]]""",
+            """[["load","wf",1,2],["setOverlay",1,true,3],["setOverlay",0,null,null],["selectNode",null],["dispose"]]""",
             root.GetProperty("calls").GetRawText());
         Assert.Equal("""[["DiagramSelectionChanged",3]]""", root.GetProperty("forwarded").GetRawText());
     }

@@ -603,6 +603,7 @@ Use the resource that matches the question:
 | Which child workflows did this instance call? | `GET /api/instances/{id}/calls`, and `parentCall` on a child's detail. |
 | Which cases currently match business data? | Instance list/search, with workflow key, business key, node selectors, and latest-variable predicates. |
 | What happened on a specific node visit? | `/api/node-executions` and its detail endpoint; visit status, timestamps, reasons, and attributed variable changes. |
+| Which recorded route did this instance take? | `/api/instances/{id}/diagram-history`; complete retained aggregation for the current exact definition, across all runs, with coverage notices. |
 | What values and transitions were recorded for an instance? | Instance detail `variables`/`history` and task history; these are audit collections, not one flat current-value object. |
 
 List enrichment with `includeVariables=true` returns latest values. Repeated `var=name:value` filters use exact, case-insensitive comparisons of latest scalar values; arrays and objects do not match that shorthand. For typed/nested comparisons and Boolean composition use the structured `variableFilter` on the search APIs. Counting, authorization, sorting, and paging remain database-authoritative.
@@ -614,6 +615,51 @@ Node-execution searches apply their own read policy. Latest-variable filters on 
 History `actorClaims` records selected JWT claims per event; node detail `startedByClaims` and `completedByClaims` record the causal starting and completing actors for one visit. Values are objects of string arrays, for example `{"depId":["finance"],"group":["reviewers","approvers"]}`. Arrays preserve repeated values. Treat null/missing as **not recorded**, and `{}` as **no selected claims present**. Claim/unclaim events do not overwrite the node's start/completion snapshots. Delegation keeps the actual caller's claims separate from `actingFor`.
 
 Capture is opt-in through `WorkflowAudit:AllowedClaims`, independently of expression access through `WorkflowContext:AllowedClaims`. Only validated caller identity supplies snapshots; clients do not send audit claims in action bodies. Deferred execution carries the captured causal snapshot through durable work rather than reconstructing it from a Worker's identity or current configuration. Older rows and older queued work are not backfilled. History claims follow workflow-history retention; node claims follow node-activity retention. See [configuration, access, and rollout](deployment.md#selected-claim-audit) and the [response schemas](api-guide.md#schema-instancehistorydto).
+
+### Recorded instance diagram history
+
+Read `GET /api/instances/{id}/diagram-history` only when a consumer needs the
+recorded path. The endpoint shares instance-detail access; it does not grant
+permission to read node-execution details. It returns reached node IDs, int64
+traversal counts, exact definition identity, the instance revision, snapshot time,
+and coverage metadata. It contains no workflow document or sensitive execution
+fields. Use the [API contract and HTTP example](api-guide.md#get-apiinstancesiddiagram-history)
+with the definition from the existing instance-detail response.
+
+Apply the summary only when its instance, definition ID/version, and
+`instanceUpdatedAt` match the displayed detail. Skip repeated polling while that
+revision is unchanged, but force a read after actions, explicit refresh/retry, or
+identity/version changes. Cancel obsolete requests and also reject their responses
+by generation/identity: cancellation alone does not prevent a late response.
+Keep failed or stale history distinct from an empty retained result.
+
+The scope is always `currentVersionAllRuns`. Current/final positions still refer
+to the latest run. Ordinary flow traversals come from source exits; async-after
+and multi-instance source traversals come from target entries. Multi-instance
+children, including pending children, count once per activation, and votes do not
+add traversals. A source exit can mark an MI target reached even when interruption
+occurred before fan-out. Direct async-after/MI-to-MI entries that end before fan-out
+cannot be recovered; `multiInstanceEntryUnrecorded` conservatively flags every
+definition with that edge shape. A reached node means arrival evidence, not success.
+
+Open visits rebind during a version switch: their nodes are reached on the new
+version, while ordinary incoming traversals remain on the version where the
+source exited. Counting uses the displayed source definition. A rebound open
+target contributes its entry only when that displayed source uses `asyncAfter`
+or multi-instance counting. Changing a completed source between those categories
+can add or omit its pre-switch incoming count; the summary does not reconstruct
+another version's source contract. Child instances have their own summaries.
+No other version's geometry is inferred, and no deleted evidence is reconstructed. `coverage` distinguishes
+cutover gaps, known node-activity pruning, uncertain legacy/category coverage,
+and unmappable/conflicting evidence. Workflow-history retention and node-activity
+retention are separate, so the diagram may retain a path absent from History.
+
+For selected-node executions use the existing paged search with `instanceId`,
+`workflowId`, and `nodeId`, all statuses, `id desc`, and a page size of 50. Its exact
+total counts execution records, including MI child records, rather than logical
+activations. Preserve a separate latest-execution lookup for current-position
+links: an async-after wait can still reference a completed visit on an older
+definition. See [the UI walkthrough](ui-guide.md#read-the-instance-diagram).
 
 ### Flow evidence in authored logic
 

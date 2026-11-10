@@ -204,6 +204,107 @@ public sealed class InstanceDiagramComponentTests
         Assert.Contains("href=\"node-executions/9500\"", ended, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task RecordedHistoryHasCoverageTextKeyboardListFlowCountsAndIndependentExecutions()
+    {
+        var instance = RunningReview();
+        instance.Workflow.Definition.SequenceFlows.Add(new() { Id = 101, Name = "Submit", SourceRef = 1, TargetRef = 3 });
+        var summary = InstanceDiagramOverlayTests.DiagramHistory(instance, [new(1), new(3)], [new(101, 7)])
+            with { Coverage = new("partial", ["nodeActivityPruned", "multiInstanceEntryUnrecorded"], Now) };
+        var html = await RenderAsync(instance, 3, [Execution(9001, 1, 3, "active")], history: summary,
+            historicalExecutions: [Execution(8000, 1, 3, "completed")], historicalTotal: 60, historicalPage: 2);
+        Assert.Contains("Show recorded history", html);
+        Assert.Contains("Current/final positions", html);
+        Assert.Contains("Recorded executions", html);
+        Assert.Contains("Recorded history is partial", html);
+        Assert.Contains("Retention removed node activity", html);
+        Assert.Contains("before its children existed", html);
+        Assert.Contains("Incoming: Submit (#101) — 7 traversals", html);
+        Assert.Contains("class=\"instance-diagram-history-node\"", html);
+        Assert.Contains("60 execution records available to you", html);
+        Assert.Contains("Page 2", html);
+        Assert.Contains("node-executions/9001", html);
+        Assert.Contains("node-executions/8000", html);
+    }
+
+    [Fact]
+    public async Task HistoryErrorsOfferLocalRetryWithoutHidingCurrentWork()
+    {
+        var html = await RenderAsync(RunningReview(), 3, [Execution(9001, 1, 3, "active")],
+            historyError: "Recorded history could not be loaded.");
+        Assert.Contains("Retry recorded history", html);
+        Assert.Contains("Recorded history could not be loaded", html);
+        Assert.Contains("node-executions/9001", html);
+        Assert.DoesNotContain("No retained diagram history", html);
+    }
+
+    [Theory]
+    [InlineData(0, "traversals", "records")]
+    [InlineData(1, "traversal", "record")]
+    [InlineData(2, "traversals", "records")]
+    public async Task HistoryCountsUseSingularOnlyForOne(long count, string traversal, string record)
+    {
+        var instance = RunningReview();
+        instance.Workflow.Definition.SequenceFlows.Add(new() { Id = 101, SourceRef = 1, TargetRef = 3 });
+        var html = await RenderAsync(instance, 3, [],
+            history: InstanceDiagramOverlayTests.DiagramHistory(instance, [new(1), new(3)], [new(101, count)]),
+            historicalExecutions: [], historicalTotal: count);
+        Assert.Contains($"— {count} {traversal}</li>", html);
+        Assert.Contains($"{count} execution {record} available to you.", html);
+    }
+
+    [Fact]
+    public async Task EnabledHistoryWithoutAMatchingSnapshotStillOffersRetry()
+    {
+        var instance = RunningReview();
+        var stale = InstanceDiagramOverlayTests.DiagramHistory(instance) with { InstanceUpdatedAt = instance.UpdatedAt.AddSeconds(-1) };
+        var html = await RenderAsync(instance, 3, [], history: stale);
+        Assert.Contains("Recorded history is not available for the displayed instance.", html);
+        Assert.Contains("Retry recorded history", html);
+        Assert.DoesNotContain("Snapshot", html);
+    }
+
+    [Fact]
+    public async Task HistoricalPagerStaysMountedAndFocusableDuringLoading()
+    {
+        var instance = RunningReview();
+        var html = await RenderAsync(instance, 3, [], history: InstanceDiagramOverlayTests.DiagramHistory(instance),
+            historicalTotal: 51, historicalPage: 2, historicalLoading: true);
+        Assert.Contains("Loading recorded executions", html);
+        var pager = Regex.Match(html, "<nav class=\"instance-diagram-execution-pages\".*?</nav>", RegexOptions.Singleline).Value;
+        Assert.NotEmpty(pager);
+        Assert.Contains("aria-busy=\"true\"", pager);
+        Assert.Equal(2, Regex.Matches(pager, "aria-disabled=\"true\"").Count);
+        Assert.DoesNotContain(" disabled", pager);
+        Assert.Contains("Previous executions", pager);
+        Assert.Contains("Next executions", pager);
+    }
+
+    [Theory]
+    [InlineData(1, false, false, 0)]
+    [InlineData(1, false, true, 2)]
+    [InlineData(2, false, false, 1)]
+    [InlineData(2, false, true, 0)]
+    [InlineData(1, true, true, 0)]
+    [InlineData(2, true, false, 0)]
+    public async Task HistoricalPagerGuardsBusyAndUnavailableDirections(int page, bool loading, bool next, int expectedPage)
+    {
+        var diagram = new DiagramComponent();
+        var requested = new List<int>();
+        var values = new Dictionary<string, object?>
+        {
+            [nameof(DiagramComponent.HistoricalExecutionsPage)] = page,
+            [nameof(DiagramComponent.HistoricalExecutionsTotal)] = 51L,
+            [nameof(DiagramComponent.HistoricalExecutionsLoading)] = loading,
+            [nameof(DiagramComponent.HistoricalExecutionsPageChanged)] = EventCallback.Factory.Create<int>(new object(), requested.Add)
+        };
+        foreach (var (name, value) in values) typeof(DiagramComponent).GetProperty(name)!.SetValue(diagram, value);
+        var method = typeof(DiagramComponent).GetMethod(next ? "NextExecutionsAsync" : "PreviousExecutionsAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        await (Task)method.Invoke(diagram, null)!;
+        if (expectedPage == 0) Assert.Empty(requested);
+        else Assert.Equal(expectedPage, Assert.Single(requested));
+    }
+
     private static InstanceDetailDto RunningReview() =>
         InstanceDiagramOverlayTests.Instance("running",
             [InstanceDiagramOverlayTests.Position(1, 3, BpmnFlowNodeTypes.UserTask, "active", task: 501)],
@@ -260,7 +361,13 @@ public sealed class InstanceDiagramComponentTests
         int? selectedNodeId,
         IReadOnlyList<NodeExecutionSummaryDto>? executions,
         bool loading = false,
-        long? total = null)
+        long? total = null,
+        InstanceDiagramHistoryDto? history = null,
+        string? historyError = null,
+        IReadOnlyList<NodeExecutionSummaryDto>? historicalExecutions = null,
+        long historicalTotal = 0,
+        int historicalPage = 1,
+        bool historicalLoading = false)
     {
         var services = new ServiceCollection();
         services.AddLogging();
@@ -270,7 +377,8 @@ public sealed class InstanceDiagramComponentTests
         return await renderer.Dispatcher.InvokeAsync(async () =>
         {
             var component = await renderer.RenderComponentAsync<DiagramComponent>(
-                Parameters(instance, selectedNodeId, executions, loading, total ?? executions?.Count ?? 0));
+                Parameters(instance, selectedNodeId, executions, loading, total ?? executions?.Count ?? 0,
+                    history, historyError, historicalExecutions, historicalTotal, historicalPage, historicalLoading));
             // Expression output is HTML-encoded (for example "·"); assert on the text people read.
             return WebUtility.HtmlDecode(component.ToHtmlString());
         });
@@ -281,14 +389,27 @@ public sealed class InstanceDiagramComponentTests
         int? selectedNodeId = null,
         IReadOnlyList<NodeExecutionSummaryDto>? executions = null,
         bool loading = false,
-        long total = 0) =>
+        long total = 0,
+        InstanceDiagramHistoryDto? history = null,
+        string? historyError = null,
+        IReadOnlyList<NodeExecutionSummaryDto>? historicalExecutions = null,
+        long historicalTotal = 0,
+        int historicalPage = 1,
+        bool historicalLoading = false) =>
         ParameterView.FromDictionary(new Dictionary<string, object?>
         {
             [nameof(DiagramComponent.Instance)] = instance,
             [nameof(DiagramComponent.SelectedNodeId)] = selectedNodeId,
             [nameof(DiagramComponent.NodeExecutions)] = executions,
             [nameof(DiagramComponent.NodeExecutionsTotal)] = total,
-            [nameof(DiagramComponent.NodeExecutionsLoading)] = loading
+            [nameof(DiagramComponent.NodeExecutionsLoading)] = loading,
+            [nameof(DiagramComponent.HistoryEnabled)] = history is not null || historyError is not null,
+            [nameof(DiagramComponent.History)] = history,
+            [nameof(DiagramComponent.HistoryError)] = historyError,
+            [nameof(DiagramComponent.HistoricalExecutions)] = historicalExecutions,
+            [nameof(DiagramComponent.HistoricalExecutionsTotal)] = historicalTotal,
+            [nameof(DiagramComponent.HistoricalExecutionsPage)] = historicalPage,
+            [nameof(DiagramComponent.HistoricalExecutionsLoading)] = historicalLoading
         });
 
     private static T Field<T>(object component, string name) =>

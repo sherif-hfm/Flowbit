@@ -304,9 +304,12 @@ public sealed class RuntimeSmokeTests(BrowserStackFixture stack)
 
                 // Clearing the identity leaves protected operations unavailable.
                 await bobIdentity.ClearIdentityAsync();
-                await Assertions.Expect(page.Locator("#actions")).Not.ToContainTextAsync(
-                    "Approve",
-                    new LocatorAssertionsToContainTextOptions { Timeout = 20_000f });
+                await Assertions.Expect(page.Locator("#diagram")).ToHaveCountAsync(
+                    0, new LocatorAssertionsToHaveCountOptions { Timeout = 20_000f });
+                await Assertions.Expect(page.Locator("#actions .card", new PageLocatorOptions { HasText = "Approve" }))
+                    .ToHaveCountAsync(0);
+                await Assertions.Expect(page.Locator(".instance-flow-count, .instance-diagram-recorded-executions"))
+                    .ToHaveCountAsync(0);
 
                 // Re-applying Alice through the second page restores legitimate
                 // controls: the earlier claim persisted, so actions recover

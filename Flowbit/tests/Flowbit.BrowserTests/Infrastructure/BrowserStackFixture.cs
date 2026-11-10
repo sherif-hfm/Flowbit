@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Net;
+using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using DotNet.Testcontainers.Builders;
@@ -45,6 +47,8 @@ public sealed class BrowserStackFixture : IAsyncLifetime
     private static readonly string[] AdminRoles = ["admin"];
 
     private PostgreSqlContainer? postgres;
+    private bool databaseStoppedForFailure;
+    private ushort databaseHostPort;
     private HostedProcess? api;
     private HostedProcess? ui;
     private HostedProcess? worker;
@@ -348,11 +352,49 @@ public sealed class BrowserStackFixture : IAsyncLifetime
                 .UntilCommandIsCompleted(
                     ["pg_isready", "--dbname=flowbit_browser", "--username=flowbit"],
                     wait => wait.WithTimeout(DatabaseStartupTimeout)));
+        if (IsAcceptance)
+        {
+            // Docker may assign a different random published port when a stopped
+            // container restarts. Keep this run's API connection string valid
+            // through acceptance outages by pinning a fresh ephemeral port.
+            using var reservation = new TcpListener(IPAddress.Loopback, 0);
+            reservation.Start();
+            var port = ((IPEndPoint)reservation.LocalEndpoint).Port;
+            builder = builder.WithPortBinding(port, 5432);
+        }
         postgres = builder.Build();
         using var databaseStart = new CancellationTokenSource(DatabaseStartupTimeout);
         await postgres.StartAsync(databaseStart.Token);
+        databaseHostPort = postgres.GetMappedPublicPort(5432);
         await WriteSetupLogAsync(
             $"PostgreSQL container started ({postgres.Id[..12]}); disposable credentials and database for this run.");
+    }
+
+    /// <summary>Acceptance-only outage of this fixture's disposable database; application rows and API responses are unchanged.</summary>
+    public async Task StopDatabaseForFailureAsync()
+    {
+        if (acceptance is null) throw new InvalidOperationException("A smoke stack cannot interrupt its database; use CreateForAcceptance.");
+        if (postgres is null) throw new InvalidOperationException("The owned database has not been initialized.");
+        if (worker is { HasExited: false }) throw new InvalidOperationException("Stop the owned Worker before interrupting its database.");
+        if (databaseStoppedForFailure) return;
+        databaseStoppedForFailure = true;
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await postgres.StopAsync(timeout.Token);
+        await WriteSetupLogAsync($"Owned PostgreSQL container {postgres.Id[..12]} stopped for an acceptance failure scenario.");
+    }
+
+    /// <summary>Restores the same owned container and waits for PostgreSQL readiness without resetting its data.</summary>
+    public async Task ResumeDatabaseAfterFailureAsync()
+    {
+        if (acceptance is null) throw new InvalidOperationException("A smoke stack cannot interrupt its database; use CreateForAcceptance.");
+        if (!databaseStoppedForFailure) return;
+        if (postgres is null) throw new InvalidOperationException("The owned database is no longer available.");
+        using var timeout = new CancellationTokenSource(DatabaseStartupTimeout);
+        await postgres.StartAsync(timeout.Token);
+        if (postgres.GetMappedPublicPort(5432) != databaseHostPort)
+            throw new InvalidOperationException("The owned database changed its published port while resuming.");
+        databaseStoppedForFailure = false;
+        await WriteSetupLogAsync($"Owned PostgreSQL container {postgres.Id[..12]} resumed after an acceptance failure scenario.");
     }
 
     private async Task StartApiAsync()

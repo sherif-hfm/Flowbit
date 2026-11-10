@@ -78,6 +78,13 @@ public static class WorkflowInstanceEndpoints
             .Produces(StatusCodes.Status401Unauthorized)
             .Produces(StatusCodes.Status404NotFound);
 
+        group.MapGet("/{id:long}/diagram-history", GetInstanceDiagramHistory)
+            .WithSummary("Read recorded diagram history for the current workflow version")
+            .WithDescription("Uses the instance-detail read boundary. Returns grouped retained nodes and traversal counts across all runs, with coverage metadata; execution-detail access is separate.")
+            .Produces<InstanceDiagramHistoryDto>(StatusCodes.Status200OK)
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status404NotFound);
+
         group.MapGet("/{id:long}/calls", GetInstanceCalls)
             .Produces<PagedResult<CallActivityExecutionDto>>(StatusCodes.Status200OK)
             .Produces(StatusCodes.Status401Unauthorized)
@@ -422,6 +429,19 @@ public static class WorkflowInstanceEndpoints
         _ = actorResolver.Resolve(principal);
         var instance = await service.GetDetailAsync(id, cancellationToken);
         return instance is null ? Results.NotFound() : Results.Ok(instance);
+    }
+
+    /// <summary>Shares GetInstance's actor validation and instance-detail read boundary.</summary>
+    public static async Task<IResult> GetInstanceDiagramHistory(
+        long id,
+        ClaimsPrincipal principal,
+        IActorContextResolver actorResolver,
+        IInstanceDiagramHistoryQueryService service,
+        CancellationToken cancellationToken)
+    {
+        _ = actorResolver.Resolve(principal);
+        var history = await service.GetAsync(id, cancellationToken);
+        return history is null ? Results.NotFound() : Results.Ok(history);
     }
 
     /// <summary>

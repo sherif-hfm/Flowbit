@@ -357,7 +357,7 @@ Each row shows the target family and, once chosen, the exact version. An instanc
 
 ### Read the instance diagram
 
-The **Diagram** section draws the exact workflow version the instance runs, read-only, with the editor's shapes. It shows where the instance is now, not the path it took:
+The **Diagram** section draws the exact workflow version the instance runs, read-only, with the editor's shapes. It opens with current or final positions. Turn on **Show recorded history** to add reached nodes and traversal counts:
 
 | Marker | Meaning |
 | --- | --- |
@@ -366,8 +366,30 @@ The **Diagram** section draws the exact workflow version the instance runs, read
 | Badge such as `×2` | Several tokens wait at the same node. When they are several multi-instance executions, the tooltip adds up their progress. |
 | Blue ring | The finished instance ended here, at a normal or terminate end event. |
 | Red ring | The instance faulted here, or this work was cancelled with the instance or by a terminate or error end event. |
+| Dashed grey ring | A node reached in recorded history, without a current/final position. Arrival evidence does not establish successful execution. |
+| Teal flow stroke and count | A recorded sequence-flow traversal. Loops increase the count; the tooltip gives its exact value. Automatic dashes, error styling, labels, and arrowheads remain visible. |
 
-The ring surrounds the node; the node's own outline keeps the color of its type. A running instance marks only its active positions, and a finished instance only its final positions; after a reactivation, those of its last run, even once [retention](#manage-retention) has removed its history. Flows are never highlighted, and earlier visits are not shown.
+The ring surrounds the node; the node's own outline keeps the color of its type. Current/final markers and progress badges retain their meaning when history is enabled. They describe the latest run, including after reactivation and [retention](#manage-retention). Recorded history covers **all retained runs of the current exact version**, including earlier visits. Other versions and called-child instances are not combined into this diagram.
+
+History uses the same access as instance detail: an ordinary reviewer can see the path even without node-activity permission. Execution lists and links remain role restricted. A successful execution recheck that finds no available records clears cached historical execution links too, including a response still loading; it leaves the history summary visible. The summary uses retained node activity, so it can show a path whose rows the separate **History** table no longer lists after workflow-history retention.
+
+The history notice distinguishes complete, partial, and uncertain coverage. It explains deployment-cutover gaps, actual node-activity pruning, uncertain legacy retention, unmappable/conflicting records, and the possibility of an unrecorded entry from an async-after node or multi-instance task into another multi-instance task. Such an entry can end before child work items exist. An ordinary source's exit still records that arrival. Missing markers never prove a route was not taken, and retained records after pruning can be scattered throughout the path.
+
+Open the collapsible **Recorded history** list beside the canvas (below it on narrow screens) for reached-node names, types, and incoming/outgoing totals. Its buttons provide keyboard access to historical-only nodes; selection brings the node into view without changing zoom. Canvas Tab stops remain limited to current/final positions. The selected node separately lists **Current/final positions**, **Recorded flows**, and **Recorded executions**. Executions load 50 at a time, newest first, with an exact total available to your identity. These are execution records, including individual multi-instance children, rather than a count of logical activations. Paging never replaces the current-position links. Keyboard focus stays on the paging control while results load and when reaching the first or last page.
+
+The choice stays on this instance page across ordinary refreshes and actions. It resets on navigation, identity change, or when instance detail is missing or access to it is denied. Existing eligible five-second polls skip the summary when the instance revision is unchanged; there is no additional timer.
+
+A failed or stale history request clears its history decorations and offers **Retry recorded history**. Successfully loaded current positions and task actions remain usable. If refreshing the instance or its related data fails while history is enabled, the history panel shows an error and a retry control; that retry reloads instance detail before requesting a matching summary and keeps the toggle enabled. Errors loading recorded executions offer a separate retry. Empty retained history is a successful result with its own coverage notice.
+
+If instance detail returns `404`, the page clears the previous instance and
+diagram and says **The workflow instance no longer exists.** Check the address
+or return to the instance list. Authentication or permission failures (`401` or
+`403`) also clear protected instance data, with advice to check the current
+identity. A `401` or `403` during **Retry recorded history** shows this same
+unavailable state. **Retry instance** reloads an unavailable instance; other loading
+failures are not presented as a missing instance.
+
+On a version switch, open visits move to the current definition while completed exits keep their earlier definition. A waiting node can therefore be reached on the new version without its old incoming flow being shown. An open target entry moves when its visit is rebound, but the displayed source definition determines whether it counts. Async-after and multi-instance sources use target entries; ordinary sources use their own exits. Changing a completed source between those categories can therefore add or omit its pre-switch incoming count. Earlier versions are never reconstructed. See the [history API](api-guide.md#get-apiinstancesiddiagram-history) for the counting contract.
 
 To inspect a node, click it, or press Tab to reach a marked node and then Enter. The details panel lists each position at that node with its status and these links:
 
@@ -376,13 +398,16 @@ To inspect a node, click it, or press Tab to reach a marked node and then Enter.
 - **Node execution** opens the visit in Activity. It appears only for executions your roles can read: `NodeExecution.RequiredRole` (default `admin`) or the version's `taskAssignmentRoles`. Visits that ended before Flowbit recorded node executions, or that [retention](#manage-retention) removed, have no link. A position queued for background processing after its task finished links the visit it follows.
 - A multi-instance node lists up to five of its work items, finished ones included.
 
-Press Escape or **Clear** to clear the selection. Drag to move the diagram, and use the zoom buttons or hold Ctrl while scrolling to zoom; the plain mouse wheel scrolls the page. **Fit** shows the whole workflow. The diagram opens on the whole workflow, or on the marked nodes when the whole workflow would be too small to read. When the marked nodes are too far apart to read together, it opens on the leftmost of them; drag to reach the others. On a touch screen, drag inside the diagram to move it and outside it to scroll the page. The diagram has no editing, search, or trace tools; change a workflow from **Workflows**.
+Press Escape or **Clear** to clear the selection. Drag to move the diagram, and use the zoom buttons or hold Ctrl (Meta on macOS) while scrolling to zoom; the plain mouse wheel scrolls the page. **Fit** shows the whole workflow. The diagram opens on the whole workflow, or on current/final positions when the whole workflow would be too small to read. When those positions are too far apart to read together, it opens on the leftmost; drag to reach the others. Historical nodes do not affect the initial fit. Toggle, count, paging, and ordinary refresh updates preserve pan and zoom. On a touch screen, drag inside the diagram to move it and outside it to scroll the page. The diagram has no editing, search, or authoring trace tools; change a workflow from **Workflows**.
 
 ## Use instance administrative actions
 
 On `/instances/{id}`, the **Administrative actions** section uses `Workflow.RequiredRole` (default `admin`). The API grants access from its current setting; changing the development identity or receiving `401`/`403` clears administrative data and controls. A custom setting is a comma-separated, case-insensitive role list and replaces the default. Ordinary **My work**, task actions, claims, assignments, and parent interrupts still require their own authored permissions.
 
-The instance page also refreshes its displayed actor and personal actions when the identity changes.
+Changing identity clears the previous instance, its diagram and history selection,
+execution links, calls, personal actions, and version/reactivation controls before
+loading data for the new identity. **Show recorded history** resets off. Responses
+still in flight for the previous identity cannot restore that data.
 
 1. Find the exact task or multi-instance execution, its token, and affected-task count. Parallel positions appear independently. **Refresh tasks**, **Previous**, and **Next** retrieve current positions.
 2. Choose the action button, which shows its destination and flow ID. Enter its typed inputs and optional **Reason (optional)**; reasons are limited to 1,000 Unicode characters. Required inputs must be provided.

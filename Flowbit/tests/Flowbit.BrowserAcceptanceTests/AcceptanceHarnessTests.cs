@@ -17,6 +17,8 @@ public sealed class AcceptanceHarnessTests
         Assert.False(smoke.IsAcceptance);
         Assert.Equal(TimeSpan.FromMinutes(2), smoke.ScenarioBudget);
         await Assert.ThrowsAsync<InvalidOperationException>(smoke.StartWorkerAsync);
+        await Assert.ThrowsAsync<InvalidOperationException>(smoke.StopDatabaseForFailureAsync);
+        await Assert.ThrowsAsync<InvalidOperationException>(smoke.ResumeDatabaseAfterFailureAsync);
         Assert.True(BrowserStackFixture.CreateForAcceptance(new()).IsAcceptance);
     }
 

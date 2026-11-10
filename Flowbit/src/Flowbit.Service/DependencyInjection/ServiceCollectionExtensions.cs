@@ -30,6 +30,7 @@ public static class ServiceCollectionExtensions
             provider.GetRequiredService<WorkflowEngineService>());
         services.AddScoped<IWorkflowInstanceQueryService, WorkflowInstanceQueryService>();
         services.AddScoped<IWorkflowInstanceProjectionService, WorkflowInstanceProjectionService>();
+        services.AddScoped<IInstanceDiagramHistoryQueryService, InstanceDiagramHistoryQueryService>();
         services.AddScoped<IUserTaskRoleManagementService, UserTaskRoleManagementService>();
         services.AddScoped<IConditionalEventRuntimeCoordinator>(provider =>
             provider.GetRequiredService<WorkflowEngineService>());

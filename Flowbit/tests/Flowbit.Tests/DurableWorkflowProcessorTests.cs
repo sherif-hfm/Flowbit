@@ -195,6 +195,7 @@ public sealed class DurableWorkflowProcessorTests(PostgresApiFixture fixture)
             await PromoteAndProcessAsync(boundaryJobId, WorkflowJobClasses.Control);
 
             await using var completed = fixture.CreateDbContext();
+            await DiagramHistoryEvidenceAssertions.ExitsAsync(fixture, completed, instanceId, (1, 101, 1), (3, 301, 1));
             Assert.Equal(
                 WorkflowInstanceStatuses.Completed,
                 await completed.WorkflowInstances
@@ -217,6 +218,41 @@ public sealed class DurableWorkflowProcessorTests(PostgresApiFixture fixture)
             Assert.Equal(
                 TimerSubscriptionStatuses.Completed,
                 terminalSubscriptions.Single(subscription => subscription.TimerNodeId == 3).Status);
+        }
+        finally
+        {
+            await DeleteWorkflowAsync(workflowKey);
+        }
+    }
+
+    [Fact]
+    public async Task TimerCatchRecordsOneExitAndCancelsItsBoundary()
+    {
+        var workflowKey = $"diagram-history-timer-{Guid.NewGuid():N}";
+        try
+        {
+            var instanceId = await InsertAndStartAsync(
+                workflowKey, CreateTimerCatchBoundaryWorkflow(workflowKey));
+            long jobId;
+            DateTimeOffset before;
+            await using (var db = fixture.CreateDbContext())
+            {
+                jobId = await db.WorkflowJobs.Where(job => job.InstanceId == instanceId
+                    && job.Kind == WorkflowJobKinds.Timer).Select(job => job.Id).SingleAsync();
+                before = await db.WorkflowInstances.Where(instance => instance.Id == instanceId)
+                    .Select(instance => instance.UpdatedAt).SingleAsync();
+            }
+
+            await PromoteAndProcessAsync(jobId, WorkflowJobClasses.Control);
+
+            await using var completed = fixture.CreateDbContext();
+            await DiagramHistoryEvidenceAssertions.ExitsAsync(fixture, completed, instanceId, (1, 101, 1), (2, 201, 1));
+            var instance = await completed.WorkflowInstances.SingleAsync(item => item.Id == instanceId);
+            Assert.Equal(WorkflowInstanceStatuses.Completed, instance.Status);
+            Assert.True(instance.UpdatedAt > before);
+            Assert.Equal(TimerSubscriptionStatuses.Cancelled,
+                (await completed.TimerSubscriptions.SingleAsync(item => item.InstanceId == instanceId
+                    && item.TimerNodeId == 3)).Status);
         }
         finally
         {

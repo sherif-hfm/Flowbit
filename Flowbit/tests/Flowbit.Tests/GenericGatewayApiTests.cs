@@ -53,6 +53,8 @@ public sealed class GenericGatewayApiTests(PostgresApiFixture fixture)
             entry.FromNodeId == 5
             && entry.ToNodeId == 6
             && entry.Note == "gateway"));
+        await AssertDiagramHistoryAsync(started.Id,
+            (1, 101, 1), (2, 201, 1), (2, 202, 1), (3, 301, 1), (4, 401, 1), (5, 501, 2), (6, 601, 2));
     }
 
     [Fact]
@@ -88,6 +90,8 @@ public sealed class GenericGatewayApiTests(PostgresApiFixture fixture)
 
         var completed = await TakeTaskAsync(downstream, 601);
         Assert.Equal("completed", completed.InstanceStatus);
+        await AssertDiagramHistoryAsync(started.Id,
+            (1, 101, 1), (2, 201, 1), (2, 202, 1), (3, 301, 1), (5, 501, 1), (6, 601, 1));
     }
 
     [Theory]
@@ -131,6 +135,8 @@ public sealed class GenericGatewayApiTests(PostgresApiFixture fixture)
 
         var completed = await TakeTaskAsync(downstream, 701);
         Assert.Equal("completed", completed.InstanceStatus);
+        await AssertDiagramHistoryAsync(started.Id,
+            (1, 101, 1), (2, 201, 1), (2, 202, 1), (2, 203, 1), (3, 301, 1), (4, 401, 1), (6, 601, 1), (7, 701, 1));
     }
 
     [Fact]
@@ -168,6 +174,8 @@ public sealed class GenericGatewayApiTests(PostgresApiFixture fixture)
 
         var completed = await TakeTaskAsync(coordinator, 701);
         Assert.Equal("completed", completed.InstanceStatus);
+        await AssertDiagramHistoryAsync(started.Id,
+            (1, 101, 1), (2, 201, 1), (2, 202, 1), (2, 203, 1), (3, 301, 1), (4, 401, 1), (6, 601, 1), (7, 701, 1));
     }
 
     [Fact]
@@ -210,6 +218,12 @@ public sealed class GenericGatewayApiTests(PostgresApiFixture fixture)
             && execution.Phase == "start"
             && execution.CompletionReason == "joinCancellation");
         Assert.DoesNotContain(detail.History, entry => entry.Note == "complexReset");
+    }
+
+    private async Task AssertDiagramHistoryAsync(long instanceId, params (int NodeId, int FlowId, int Count)[] expected)
+    {
+        await using var db = fixture.CreateDbContext();
+        await DiagramHistoryEvidenceAssertions.ExitsAsync(fixture, db, instanceId, expected);
     }
 
     [Fact]

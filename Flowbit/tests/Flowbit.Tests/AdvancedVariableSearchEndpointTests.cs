@@ -557,6 +557,8 @@ public sealed class AdvancedVariableSearchEndpointTests
         builder.Services.AddSingleton(instanceQueryService);
         builder.Services.AddSingleton<IWorkflowInstanceProjectionService>(_ =>
             throw new InvalidOperationException("Search tests must not resolve detail projections."));
+        builder.Services.AddSingleton<IInstanceDiagramHistoryQueryService>(_ =>
+            throw new InvalidOperationException("Search tests must not resolve diagram history."));
 
         var app = builder.Build();
         app.UseAuthentication();

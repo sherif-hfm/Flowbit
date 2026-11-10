@@ -93,6 +93,7 @@ public sealed class ConditionalCatchRuntimeTests(PostgresApiFixture fixture)
             Assert.Equal(WorkflowInstanceStatuses.Completed, started.Status);
             Assert.Equal(3, started.CurrentNodeId);
             await using var db = fixture.CreateDbContext();
+            await DiagramHistoryEvidenceAssertions.ExitsAsync(fixture, db, started.Id, (1, 10, 1), (2, 20, 1));
             Assert.Empty(await db.WorkflowJobs
                 .Where(job => job.InstanceId == started.Id
                     && job.Kind == WorkflowJobKinds.ConditionalWake)
@@ -138,6 +139,7 @@ public sealed class ConditionalCatchRuntimeTests(PostgresApiFixture fixture)
                 item.InstanceId == started.Id
                 && item.Note == InstanceHistoryNotes.ConditionalTriggered);
             Assert.Equal("operator", history.PerformedBy);
+            await DiagramHistoryEvidenceAssertions.ExitsAsync(fixture, db, started.Id, (1, 10, 1), (2, 20, 1));
         }
         finally
         {
@@ -197,6 +199,7 @@ public sealed class ConditionalCatchRuntimeTests(PostgresApiFixture fixture)
             await ProcessLeaseAsync(lease);
 
             await using var completed = fixture.CreateDbContext();
+            await DiagramHistoryEvidenceAssertions.ExitsAsync(fixture, completed, started.Id, (1, 10, 1), (2, 20, 1));
             Assert.Equal(
                 WorkflowInstanceStatuses.Completed,
                 (await completed.WorkflowInstances.SingleAsync(item =>

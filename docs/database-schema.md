@@ -401,9 +401,11 @@ One row per started instance. It owns lifecycle status and timestamps. It no lon
 | `StartedBy` | Canonical actor that started the instance. |
 | `BusinessKey`, `BusinessKeyUniqueness` | Optional domain key and its `active`/`all` uniqueness mode. Ownership is held in `workflow_business_key_claims`. |
 | `IdempotencyKey` | Private transport idempotency key for keyed starts. Ownership is held in `workflow_idempotency_claims`. |
-| `CreatedAt`, `UpdatedAt` | Child activity also touches `UpdatedAt` in the same transaction. |
+| `CreatedAt`, `UpdatedAt` | Creation time and instance revision. Moves, multi-instance fan-out, version changes, and retention advance the revision in their transaction. A staged service/script visit changing only from pending to active can retain the instance revision. |
 | `FinishedAt` | Latest terminal transition; the retention age reference. |
 | `HistoryPrunedAt` | Set when retention first deletes instance-owned history. It is allowed only on terminal instances and permanently blocks reactivation. |
+| `NodeActivityFromCreation` | Non-null Boolean, default `true` for new instances, including older API writers that omit the column. Existing instances begin `false`; the separate classification migration promotes those with an unseeded `node` visit at `startEvent`, `messageStartEvent`, or `timerStartEvent` and no `HistoryPrunedAt`. Reactivation/version changes never reset it. |
+| `NodeActivityPrunedAt` | Nullable UTC timestamp of the first actual node-execution deletion by retention. Set in the deleting transaction with `HistoryPrunedAt` and `UpdatedAt`; other retention categories and protected rows never set it. |
 | `CallRootInstanceId`, `CallDepth` | The root of this instance's call tree and its depth, immutable after insertion. A root has null and 0; a child has its root and a positive depth, at most 32. The root is a plain column rather than a foreign key, so creating a nested child never waits on the root's row lock. |
 | `LastReactivationTokenId` | Root token created by the most recent reactivation; null if the instance was never reactivated. Tokens from this ID onward belong to the current run, so it marks the run boundary after retention removes the `instanceReactivated` history row. The migration that added it filled it from the reactivation history still present. It is not a foreign key. |
 
@@ -825,6 +827,8 @@ The instance's event and audit trail: flow traversals, automatic routing, claims
 ### `node_executions`
 
 The authoritative, read-only ledger of committed node visits. A normal visit is correlated to one token, and a parallel fork produces one row per branch token. A normal user task shares its visit with its work item. A multi-instance task produces one `userTaskItem` row per child and no parent row. `/api/node-executions` searches this table.
+
+The [instance diagram history](ui-guide.md#read-the-instance-diagram) aggregates the whole retained set for the current exact definition. Each ordinary source traversal counts its `node` exit once. An async-after source or multi-instance source instead counts the target's entry, using one distinct `MultiInstanceExecutionId` when the target is multi-instance, including pending children. Votes (`SelectedFlowId`) do not add traversals. Ordinary source exits also prove arrivals at multi-instance tasks that ended before fan-out. Arrivals from async-after or multi-instance sources can lack both an exit and children; such edges conservatively report uncertain coverage. Rebinding open visits during a version switch changes their definition, while completed exits remain on their original version; a target-side traversal can therefore move with its still-open target visit. No arrival table, rollup, or new traversal records are introduced.
 
 | Column | Meaning |
 | --- | --- |

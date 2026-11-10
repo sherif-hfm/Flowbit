@@ -36,6 +36,9 @@ the expression-timer scenarios,
 `--filter FullyQualifiedName~CronScheduleAcceptanceTests` for cron timer
 starts, and
 `--filter FullyQualifiedName~CallActivityAcceptanceTests` for call activities.
+Use `--filter FullyQualifiedName~InstanceDiagramHistoryAcceptanceTests` for
+UI-14's durable, delayed-response, keyboard-paging, reactivation, missing-instance,
+API-failure recovery, and expired-token retry scenarios.
 
 Run final regressions separately:
 
@@ -82,6 +85,13 @@ headers or response bodies. Proxy and controlled-service hosts ignore ambient
 Kestrel settings and listen only on ephemeral loopback ports. Gates are released
 during cleanup. Smoke stack construction cannot start a Worker.
 
+The instance-diagram error scenarios may stop and resume only their own
+disposable PostgreSQL container to produce genuine API failures. This helper is
+acceptance-only and refuses to stop the database while a Worker is running.
+Cleanup resumes the container before the stack is disposed. The API proxy still
+forwards the real responses unchanged; no response payload, application state,
+clock, or database row is altered to simulate an error.
+
 Run artifacts are under `artifacts/acceptance/runs/<timestamp>-<id>/`:
 
 - `manifest.json`: browser, localhost addresses, scenario names and host overrides.
@@ -105,7 +115,7 @@ and timestamps. Native save dialogs and visual review remain manual gates.
 | Instance audit, three viewports | Real catalog binding with no leaked value; compatible upgrade/downgrade; two variable-update batches; actor/role/reason/value ordering; section and exact batch links with Back navigation. |
 | Claim/delegation, three viewports | Owner claim, real grant, delegated UI completion; selected claim snapshots, escaping and omission of unselected claims; real delegation attribution. |
 | Representative states, three viewports | Normal and terminal detail, empty sections, gateway/complex state, active MI and early-quorum completed/cancelled children, submitted JSON and section navigation. |
-| Call parent and child, three viewports | The paired examples with a real Worker. A parent shows its running call and marks the call node on its diagram; its link opens the child with fresh page state, and the child's links return. A person finishes the child, the result reaches the parent as `callActivity`, and the panel shows the pinned version and delivered result. |
+| Call parent and child, three viewports | The paired examples with a real Worker. A parent shows its running call and marks the call node on its diagram; recorded history shows the incoming flow while its outgoing flow remains absent. Its link opens the child with fresh page state and history off, and the child's links return. A person finishes the child, the result reaches the parent as `callActivity`, and the panel shows the pinned version and delivered result; enabling history then shows the outgoing traversal. |
 | Call rejection | A child's error end faults the parent at the call with `call_child_faulted`, and the boundary variant writes the diagnostic and continues. |
 | Call cancellation, two viewports | With the Worker stopped, cancelling the parent returns at once, the child refuses actions with `409` and warns that its cancellation is in progress, and the restarted Worker finishes it. |
 | Call incident | A call whose target has no published default shows **Queued** with its code and no child, and the incident's retry starts the child once a default exists. |
@@ -119,6 +129,14 @@ and timestamps. Native save dialogs and visual review remain manual gates.
 | A7 | Identity replacement and clearing hide restricted data; permission-denied and cleared-identity captures; authorized deep-link recovery. |
 | A8, three viewports | Held genuine history/items responses reveal loading branches; release restores the exact real instance row/link and pager; one history and one items request, with no duplicate request after recovery. |
 | Harness, four cases | Smoke rejects Worker activation; proxy transport/gating preserves real content; cleanup releases/disarms gates; ambient endpoint configuration is ignored. |
+| Diagram history durable MI, 1440×900 and 390×844 | A real async-after source enters an async-before sequential MI task. Before the Worker runs there is no target entry count; after fan-out, Refresh shows one traversal and two execution records, including the pending child. The real version-change form, compatibility preview and confirmation preserve the toggle and refresh the new exact version's rebound target evidence; two real votes produce one outgoing traversal. |
+| Diagram history identity, 1024×768 | The proxy holds genuine successful summary and version-filtered execution responses while a second tab changes identity. History resets and released old responses cannot restore counts/links. An ordinary reviewer can turn history on again but sees no restricted execution links. |
+| Diagram history durable boundary, 1440×900 | An initially true interrupting conditional boundary queues its real durable continuation. Worker execution adds exactly the ordinary incoming flow and the boundary's outgoing flow; keyboard list selection opens the boundary details. |
+| Diagram history keyboard paging, three viewports | Fifty real loop actions create 51 execution records. Holding the genuine page response keeps keyboard focus on Next or Previous during loading and at the final/first-page boundary; repeated keyboard activation while unavailable sends no extra request. A real `NodeExecution.RequiredRole` change between the held historical response and current-position revalidation clears both sets of execution links while preserving the diagram summary. The setting is restored afterward. |
+| Diagram history reactivation, 1440×900 and 390×844 | The real reactivation form resumes a completed instance while history stays enabled. Current/final markers describe the new run, both review executions remain available, and completing the second run increments the outgoing flow to two without inventing a second start traversal. |
+| Diagram history missing instance, three viewports | A genuine instance-detail `404` displays the missing-instance message and address/list guidance with no diagram, and does not suggest changing identity. |
+| Diagram history refresh recovery, three viewports and two triggers | Stopping the fixture's database makes manual Refresh fail on instance detail, or makes a real action's following flow lookup fail after its successful action and held detail response. Enabled history shows a local error and retry control. After the database resumes, Retry reloads detail and matching history while preserving the toggle. |
+| Diagram history expired-token retry, 390×844 | A short-lived fixture token is applied through **Apply pasted token** and accepted by the real API. A genuine database outage creates the local history retry state. After database recovery and real token expiry, keyboard Retry receives `401` without an identity-change action, clears protected detail and the diagram, and shows the unavailable state with identity guidance and **Retry instance**. No clock override or synthetic response is used. |
 | Canonical durable examples | REST fail-once success, three-attempt exhaustion and fenced incident recovery; one-attempt `boundaryFirst` versus exhausted `retryFirst` catches, with no incident for handled failures. |
 | Canonical messages and scopes | Timely receipt versus 30-second deadline; rejection of late delivery without mapped writes; inner MI/message/timer cancellation with surviving outer work; ordinary versus terminate end with live siblings. |
 | Canonical role management | One completed, one active, one pending child; policy replacement preserves ownership/history, applies when pending work activates, and distinguishes identical versus conflicting stale edits. |
@@ -148,6 +166,32 @@ it waits the same way before each section-viewport capture. Instance-detail
 section navigation waits for the scroll to end before checking where the section
 landed, and presses the tab again, up to three times, if a panel that finished
 loading moved the section out of view.
+
+The UI-14 scenarios retain `before-durable-arrival`, `mi-fanout-history`,
+`waiting-version-history`, `mi-outcome-once`, `held-summary-discarded`,
+`ordinary-reviewer-history-without-execution-links`, and
+`durable-boundary-history` screenshots, plus real summary/request evidence.
+Paging also retains `next-loading`, `next-boundary`, `previous-loading`,
+`previous-boundary`, and `revoked-after-historical-response`; reactivation retains
+`completed-first-run`, `reactivated-with-prior-history`, and `completed-second-run`.
+Pager loading/boundary states also retain `*-details` panel and `*-details-pager`
+navigation screenshots so the focused control remains readable beside long
+instance audit tables.
+Missing-instance and API-failure cases retain `friendly-instance-not-found`,
+`local-refresh-error`, and `local-retry-restored-history` screenshots, plus panel
+captures. Their API request logs record the genuine `404` or database-unavailable
+responses and successful recovery; expected outage errors in API logs are part
+of those scenarios and must be distinguished from unrelated diagnostics.
+The expiry case retains `expired-token-unavailable` and its panel capture,
+request evidence for the real `500` and subsequent `401`, and the observed token
+expiry/rejection times.
+An actual node-retention coverage notice cannot be produced in a bounded fresh
+stack: the public retention policy requires at least one day of age, and this
+harness neither changes clocks nor edits database rows. That browser case
+requires an authentically aged disposable instance; it remains a separate
+validation gate. PostgreSQL tests verify actual retention deletion, coverage
+markers, protection and rollback, and component tests verify notice rendering;
+those checks do not claim browser retention verification.
 [Fixture prerequisites](Fixtures/README.md) document the new instance-detail
 definition; administrative variants reuse the existing smoke definition.
 The expression-timer cases retain full-page `contract-waiting`,

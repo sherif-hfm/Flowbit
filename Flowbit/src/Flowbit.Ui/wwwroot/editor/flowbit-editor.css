@@ -1790,6 +1790,14 @@
 .flowbit-editor[data-mode="viewer"] .node:focus-visible { outline: 3px solid var(--accent); outline-offset: 4px; }
 /* Keep marked event and gateway names readable at every zoom level. */
 .flowbit-editor[data-mode="viewer"] #svg .node.instance-marked .shape-caption { display: inline !important; }
+.flowbit-editor[data-mode="viewer"] #svg[data-active-tool="pan"] .node.instance-reached,
+.flowbit-editor[data-mode="viewer"] #svg[data-active-tool="pan"] .node.instance-reached * { cursor: pointer !important; }
+.flowbit-editor[data-mode="viewer"] .node .instance-history-halo { fill: none; stroke: #64748b; stroke-width: 2.5; stroke-dasharray: 5 4; pointer-events: none; }
+.flowbit-editor[data-mode="viewer"] .node rect.instance-history-halo { rx: 16; ry: 16; }
+.flowbit-editor[data-mode="viewer"] .edge .instance-history-line { fill: none; stroke: #0f766e; stroke-width: 7; stroke-opacity: .3; pointer-events: none; }
+.flowbit-editor[data-mode="viewer"] .instance-flow-count rect { fill: #f0fdfa; stroke: #0f766e; stroke-width: 1; }
+.flowbit-editor[data-mode="viewer"] .instance-flow-count text { fill: #115e59; font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.flowbit-editor[data-mode="viewer"] .instance-flow-count { cursor: default; }
 @container flowbit-editor (max-width: 480px) {
   .flowbit-editor[data-mode="hosted"] .app-toolbar { padding: 8px; gap: 8px; }
   .flowbit-editor .back-label { display: none; }

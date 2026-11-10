@@ -578,6 +578,8 @@ public sealed class AdministrativeActionBatchLifecycleApiTests(PostgresApiFixtur
         await using var db = fixture.CreateDbContext();
         foreach (var candidate in candidates)
         {
+            await DiagramHistoryEvidenceAssertions.ExitsAsync(fixture, db, candidate.InstanceId,
+                (1, 101, 1), (2, 201, 1), (3, 301, 1));
             Assert.Single(await db.SequenceFlowOccurrences
                 .Where(item => item.InstanceId == candidate.InstanceId
                                && item.SequenceFlowId == 201

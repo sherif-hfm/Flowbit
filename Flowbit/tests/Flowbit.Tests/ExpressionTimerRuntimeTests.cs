@@ -20,12 +20,34 @@ using Xunit;
 namespace Flowbit.Tests;
 
 [Collection(PostgresApiCollection.Name)]
-public sealed class ExpressionTimerRuntimeTests(PostgresApiFixture fixture)
+public sealed class ExpressionTimerRuntimeTests(PostgresApiFixture fixture) : IAsyncLifetime
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private readonly HashSet<long> ownedInstances = [];
 
     // A Friday afternoon; calendars below work Monday to Friday, 09:00 to 17:00 UTC.
     private static readonly DateTimeOffset FridayAfternoon = new(2026, 11, 6, 16, 0, 0, TimeSpan.Zero);
+
+    public Task InitializeAsync() => Task.CompletedTask;
+
+    public async Task DisposeAsync()
+    {
+        // Fixed-clock timers can already be due on the real database clock.
+        // Cancel only this test's unfinished instances through the runtime so
+        // their timers cannot be leased by later tests sharing the fixture.
+        await using var db = fixture.CreateDbContext();
+        var runningInstances = await db.WorkflowInstances.AsNoTracking()
+            .Where(instance => ownedInstances.Contains(instance.Id)
+                && instance.Status == WorkflowInstanceStatuses.Running)
+            .Select(instance => instance.Id)
+            .ToArrayAsync();
+        foreach (var instanceId in runningInstances)
+        {
+            using var response = await SendAsync(
+                fixture.Client, HttpMethod.Post, $"/api/instances/{instanceId}/cancel", null, "operator", "admin");
+            Assert.True(response.StatusCode == HttpStatusCode.NoContent, await response.Content.ReadAsStringAsync());
+        }
+    }
 
     [Fact]
     public async Task ACatchAndABoundaryAreScheduledFromTheActivationsValuesAndKeepTheirDueTimes()
@@ -131,6 +153,7 @@ public sealed class ExpressionTimerRuntimeTests(PostgresApiFixture fixture)
         Assert.Equal(first.Id, task.Id);
         Assert.Equal(UserTaskStatuses.Active, task.Status);
         await using var db = fixture.CreateDbContext();
+        await DiagramHistoryEvidenceAssertions.ExitsAsync(fixture, db, instanceId, (1, 101, 1));
         Assert.False(await db.InstanceVariables.AnyAsync(variable => variable.InstanceId == instanceId && variable.VariableName == "sla"));
     }
 
@@ -994,11 +1017,13 @@ public sealed class ExpressionTimerRuntimeTests(PostgresApiFixture fixture)
                 .EnumerateObject()
                 .ToDictionary(property => property.Name, property => property.Value.Clone()));
 
-    private static async Task<long> StartAsync(HttpClient client, long workflowId, object variables)
+    private async Task<long> StartAsync(HttpClient client, long workflowId, object variables)
     {
         using var response = await SendAsync(client, HttpMethod.Post, "/api/instances", StartRequest(workflowId, variables));
         Assert.True(response.StatusCode == HttpStatusCode.Created, await response.Content.ReadAsStringAsync());
-        return JsonNode.Parse(await response.Content.ReadAsStringAsync())!["id"]!.GetValue<long>();
+        var instanceId = JsonNode.Parse(await response.Content.ReadAsStringAsync())!["id"]!.GetValue<long>();
+        ownedInstances.Add(instanceId);
+        return instanceId;
     }
 
     private async Task<UserTaskEntity[]> ReadTasksAsync(long instanceId)

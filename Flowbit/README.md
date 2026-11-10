@@ -1129,6 +1129,7 @@ and in-flight gateway executions are not migrated.
 - `GET /api/incidents/{id}`
 - `POST /api/incidents/{id}/retry`
 - `GET /api/instances/{id}`
+- `GET /api/instances/{id}/diagram-history` (instance-detail access; grouped retained nodes, traversal counts, and coverage for the current exact version across all runs)
 - `GET /api/instances/{id}/flows`
 - `POST /api/instances/{id}/claim`
 - `POST /api/instances/{id}/unclaim`
@@ -1385,6 +1386,10 @@ with their owning workflow instance by default; an administrator may enable
 node-activity retention for finished instances. Pruning history permanently
 blocks reactivation of the affected instance.
 
+`InstanceDiagramHistoryQueryService` and its focused repository aggregate recorded diagram history independently of rich node-execution search and `WorkflowEngineService`. The summary uses instance-detail access and one consistent database snapshot, with graph-sized results from all retained evidence of the current exact definition. Ordinary sources count `node` exits; async-after and multi-instance sources count target entries, deduplicated by multi-instance execution for child targets. Selected votes never count as traversals. An ordinary exit proves a target reached even when its multi-instance children never existed. Edges from async-after/multi-instance sources into multi-instance targets conservatively report `multiInstanceEntryUnrecorded` because an arrival can end before children exist.
+
+Open visits rebind on version switches, completed exits retain their definition, and target-side counts can move with an open target visit. Counting follows the displayed source definition: changing a completed source between ordinary and async-after/MI categories can add or omit the rebound target’s pre-switch incoming count; another version is never reconstructed. Parent and called-child diagrams remain separate. `NodeActivityFromCreation` and first `NodeActivityPrunedAt` preserve coverage independently of current run/version. The additive migration classifies legacy instances only from unseeded plain/message/timer start evidence without previous history pruning. Node-activity retention sets its marker and the instance revision atomically with actual deletion; other categories do not. Multi-instance fan-out advances the instance revision in its existing transaction so unchanged polls cannot miss new entry evidence. A staged service/script pending-to-active change can leave the revision unchanged because reached-node/flow evidence does not change. See [rollout and classification](../docs/deployment.md#database-migrations) and the [diagram guide](../docs/ui-guide.md#read-the-instance-diagram).
+
 `instance_history` remains a heterogeneous transition and audit log used by
 legacy instance detail and claim/assignment inheritance. It is not a complete
 node-lifecycle ledger and should not be used to derive visit cardinality,
@@ -1541,6 +1546,38 @@ From Bash:
 ```bash
 FLOWBIT_TEST_LIFECYCLE_CAPTURE=all FLOWBIT_TEST_LIFECYCLE_CAPTURE_REPORT="$PWD/lifecycle-capture.tsv" \
   dotnet test ./tests/Flowbit.Tests/Flowbit.Tests.csproj
+```
+
+### Instance diagram summary benchmark
+
+The summary tests always verify exact counts and graph-sized responses for
+100,000 retained loop visits and 100,000 MI child visits. They write response
+sizes, five warmed HTTP timings, environment details, and PostgreSQL
+`EXPLAIN (ANALYZE, BUFFERS)` plans under repository-level
+`artifacts/diagram-history/`. Synthetic rows serve this query load test only;
+the benchmark uses its own disposable PostgreSQL fixture so those rows cannot
+affect other API tests. Runtime and browser scenarios use committed engine actions.
+
+Run the timing check separately, with other test/browser stacks stopped. The
+one-second warmed response target is a local validation target, not a production
+SLA. Ordinary suite runs record `targetMet` without enforcing latency under
+unrelated machine load. Set `FLOWBIT_DIAGRAM_HISTORY_ENFORCE_LATENCY=1` to enforce
+the target and investigate any miss without truncating evidence:
+
+```powershell
+$env:FLOWBIT_DIAGRAM_HISTORY_ENFORCE_LATENCY = '1'
+try {
+    dotnet test ./tests/Flowbit.Tests/Flowbit.Tests.csproj -c Release --filter 'FullyQualifiedName~HundredThousandRetainedVisitsStayExactAndGraphSized'
+} finally {
+    Remove-Item Env:FLOWBIT_DIAGRAM_HISTORY_ENFORCE_LATENCY
+}
+```
+
+From Bash:
+
+```bash
+FLOWBIT_DIAGRAM_HISTORY_ENFORCE_LATENCY=1 \
+  dotnet test ./tests/Flowbit.Tests/Flowbit.Tests.csproj -c Release --filter 'FullyQualifiedName~HundredThousandRetainedVisitsStayExactAndGraphSized'
 ```
 
 ### Browser smoke suite (separate command)

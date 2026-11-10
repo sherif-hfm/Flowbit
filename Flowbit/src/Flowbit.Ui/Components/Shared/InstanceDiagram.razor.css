@@ -10,6 +10,27 @@
 .instance-diagram-swatch { width: .85rem; height: .85rem; background: var(--fb-surface); border: 3px solid var(--diagram-active); border-radius: .25rem; }
 .swatch-ended { border-color: var(--diagram-ended); }
 .swatch-stopped { border-color: var(--diagram-stopped); }
+.swatch-reached { border-color: #64748b; border-style: dashed; }
+.swatch-flow { height: .35rem; border-color: #0f766e; border-radius: 0; }
+.instance-diagram .section-heading { flex-wrap: wrap; gap: .65rem 1rem; }
+.instance-diagram-history-toggle { display: flex; align-items: center; gap: .45rem; font-size: .82rem; cursor: pointer; }
+.instance-diagram-history-toggle input { width: 1rem; height: 1rem; accent-color: #0f766e; }
+.instance-diagram-history-status { margin-bottom: .85rem; font-size: .78rem; color: var(--fb-muted); overflow-wrap: anywhere; }
+.instance-diagram-history-status p { margin: .3rem 0; }
+.instance-diagram-coverage { margin-top: .6rem; padding: .7rem; border-left: 3px solid #a16207; border-radius: .25rem; background: var(--fb-surface-soft); color: var(--fb-text); }
+.instance-diagram-coverage ul { margin: .35rem 0; padding-left: 1.25rem; }
+.instance-diagram-details h4 { margin: .9rem 0 .35rem; font-size: .8rem; }
+.instance-diagram-flow-counts, .instance-diagram-recorded-executions { margin: .4rem 0; padding-left: 1.15rem; font-size: .76rem; overflow-wrap: anywhere; }
+.instance-diagram-recorded-executions { display: grid; gap: .3rem; }
+.instance-diagram-execution-pages { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin-top: .6rem; font-size: .74rem; }
+.instance-diagram-execution-pages button[aria-disabled="true"] { opacity: .65; cursor: default; }
+.instance-diagram-history-list { margin-top: 1rem; padding-top: .7rem; border-top: 1px solid var(--fb-border); font-size: .8rem; }
+.instance-diagram-history-list summary { cursor: pointer; font-weight: 600; }
+.instance-diagram-history-list ul { display: grid; gap: .4rem; margin: .6rem 0 0; padding: 0; list-style: none; }
+.instance-diagram-history-node { width: 100%; padding: .55rem; text-align: left; font: inherit; color: var(--fb-text); background: var(--fb-surface); border: 1px solid var(--fb-border); border-radius: .4rem; overflow-wrap: anywhere; }
+.instance-diagram-history-node span { display: block; margin-top: .25rem; color: var(--fb-muted); font-size: .72rem; }
+.instance-diagram-history-node[aria-pressed="true"] { border-color: #0f766e; }
+.instance-diagram-history-node:focus-visible { outline: 2px solid #0f766e; outline-offset: 2px; }
 
 .instance-diagram-layout { display: grid; grid-template-columns: minmax(0, 1fr) 18rem; gap: 1rem; }
 /* The JavaScript viewer owns this element's children; it needs a definite size. */

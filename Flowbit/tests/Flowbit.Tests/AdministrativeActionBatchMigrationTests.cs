@@ -868,12 +868,14 @@ public sealed class AdministrativeActionBatchMigrationTests(PostgresApiFixture f
 
     private static Task AddCurrentRuntimeReadColumnsAsync(AppDbContext context) =>
         // These fixtures use the current EF model against the historical audit
-        // schema. Add only its nullable read columns; keep migration history and
-        // the administrative audit constraints under test unchanged.
+        // schema. Add the current model's runtime columns while keeping migration
+        // history and the administrative audit constraints under test unchanged.
         context.Database.ExecuteSqlRawAsync("""
             ALTER TABLE flowbit.workflow_instances
                 ADD COLUMN "FinishedAt" timestamp with time zone NULL,
                 ADD COLUMN "HistoryPrunedAt" timestamp with time zone NULL,
+                ADD COLUMN "NodeActivityFromCreation" boolean NOT NULL DEFAULT TRUE,
+                ADD COLUMN "NodeActivityPrunedAt" timestamp with time zone NULL,
                 ADD COLUMN "LastReactivationTokenId" bigint NULL,
                 ADD COLUMN "CallRootInstanceId" bigint NULL,
                 ADD COLUMN "CallDepth" integer NOT NULL DEFAULT 0;

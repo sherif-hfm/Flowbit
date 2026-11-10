@@ -526,6 +526,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             });
             entity.HasKey(e => e.Id);
             entity.Property(e => e.CallDepth).HasDefaultValue(0);
+            entity.Property(e => e.NodeActivityFromCreation).HasDefaultValue(true).HasSentinel(true);
             entity.HasIndex(e => new { e.CallRootInstanceId, e.Status })
                 .HasFilter("\"CallRootInstanceId\" IS NOT NULL");
             entity.Property(e => e.Status).HasMaxLength(32).IsRequired();

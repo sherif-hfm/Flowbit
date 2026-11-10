@@ -62,6 +62,9 @@ public sealed class CallActivityAcceptanceTests(ExampleAcceptanceFixture fixture
             var details = page.Locator(".instance-diagram-details");
             await Assertions.Expect(details).ToContainTextAsync("Waiting for its child instance");
             await Assertions.Expect(details.Locator($"a[href='instances/{childId}']")).ToBeVisibleAsync();
+            await page.GetByRole(AriaRole.Checkbox, new() { Name = "Show recorded history" }).CheckAsync();
+            await Assertions.Expect(page.Locator("#diagram .edge[data-flow='101'] .instance-history-line")).ToHaveCountAsync(1);
+            await Assertions.Expect(page.Locator("#diagram .edge[data-flow='201'] .instance-history-line")).ToHaveCountAsync(0);
             await AssertNoHorizontalOverflowAsync(page);
             await CaptureAsync(scenario, "parent-waiting");
 
@@ -74,6 +77,7 @@ public sealed class CallActivityAcceptanceTests(ExampleAcceptanceFixture fixture
             await Assertions.Expect(childSection).ToContainTextAsync("Root instance");
             await Assertions.Expect(Summary(page)).ToContainTextAsync("Called by");
             await WaitForDiagramAsync(page);
+            await Assertions.Expect(page.GetByRole(AriaRole.Checkbox, new() { Name = "Show recorded history" })).Not.ToBeCheckedAsync();
             await AssertNoHorizontalOverflowAsync(page);
             await CaptureAsync(scenario, "child-waiting");
 
@@ -84,9 +88,12 @@ public sealed class CallActivityAcceptanceTests(ExampleAcceptanceFixture fixture
             await childSection.GetByRole(AriaRole.Link, new LocatorGetByRoleOptions { Name = $"Instance #{instance.Id}" })
                 .First.ClickAsync();
             await Assertions.Expect(page).ToHaveURLAsync(new System.Text.RegularExpressions.Regex($"/instances/{instance.Id}$"));
+            await Assertions.Expect(page.Locator("h1")).ToHaveTextAsync($"Instance #{instance.Id}", new() { Timeout = 30_000 });
             var finished = page.Locator("#call-activities");
             await Assertions.Expect(finished).ToContainTextAsync("Completed");
             await Assertions.Expect(finished).ToContainTextAsync("its results were delivered");
+            await page.GetByRole(AriaRole.Checkbox, new() { Name = "Show recorded history" }).CheckAsync();
+            await Assertions.Expect(page.Locator("#diagram .edge[data-flow='201'] .instance-history-line")).ToHaveCountAsync(1);
             await AssertNoHorizontalOverflowAsync(page);
             await CaptureAsync(scenario, "parent-after-result");
 

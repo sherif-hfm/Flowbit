@@ -21,29 +21,36 @@ internal sealed record InstanceDiagramMarker(
     IReadOnlyList<ExecutionPositionDto> Positions);
 
 /// <summary>One entry of the viewer's <c>setOverlay</c> argument.</summary>
-internal sealed record InstanceDiagramViewerNode(int Id, string State, string? Badge, string Label);
+internal sealed record InstanceDiagramViewerNode(int Id, string? State, string? Badge, string Label, bool Reached = false);
+
+internal sealed record InstanceDiagramViewerFlow(int Id, long TraversalCount);
 
 /// <summary>The viewer's <c>setOverlay</c> argument.</summary>
-internal sealed record InstanceDiagramViewerOverlay(IReadOnlyList<InstanceDiagramViewerNode> Nodes);
+internal sealed record InstanceDiagramViewerOverlay(
+    IReadOnlyList<InstanceDiagramViewerNode> Nodes, IReadOnlyList<InstanceDiagramViewerFlow> Flows);
 
 /// <summary>
 /// Derives the instance diagram's node markers from instance detail: where a
 /// running instance is, or where a finished one ended. It never describes the
-/// path taken. Pure: it reads only the supplied DTO.
+/// path taken unless a matching recorded-history summary is supplied. Pure.
 /// </summary>
 internal sealed class InstanceDiagramOverlay
 {
     private static readonly JsonSerializerOptions SignatureOptions = new(JsonSerializerDefaults.Web);
     private readonly Dictionary<int, InstanceDiagramMarker> markersByNode;
 
-    private InstanceDiagramOverlay(IReadOnlyList<InstanceDiagramMarker> markers)
+    private InstanceDiagramOverlay(IReadOnlyList<InstanceDiagramMarker> markers,
+        IReadOnlySet<int>? reached = null, IReadOnlyList<InstanceDiagramViewerFlow>? flows = null)
     {
         Markers = markers;
         markersByNode = markers.ToDictionary(marker => marker.NodeId);
-        ViewerOverlay = new InstanceDiagramViewerOverlay(markers
-            .Select(marker => new InstanceDiagramViewerNode(
-                marker.NodeId, marker.State, marker.Badge, marker.Label))
-            .ToList());
+        reached ??= new HashSet<int>();
+        var nodes = markers.Select(marker => new InstanceDiagramViewerNode(
+            marker.NodeId, marker.State, marker.Badge, marker.Label, reached.Contains(marker.NodeId)))
+            .Concat(reached.Where(id => !markersByNode.ContainsKey(id))
+                .Select(id => new InstanceDiagramViewerNode(id, null, null, "Reached in recorded history", true)))
+            .OrderBy(node => node.Id).ToList();
+        ViewerOverlay = new InstanceDiagramViewerOverlay(nodes, flows ?? []);
         Signature = JsonSerializer.Serialize(ViewerOverlay, SignatureOptions);
     }
 
@@ -57,6 +64,24 @@ internal sealed class InstanceDiagramOverlay
     internal string Signature { get; }
 
     internal InstanceDiagramMarker? Find(int nodeId) => markersByNode.GetValueOrDefault(nodeId);
+
+    internal static bool Matches(InstanceDetailDto instance, InstanceDiagramHistoryDto history) =>
+        history.InstanceId == instance.Id && history.WorkflowId == instance.Workflow.Id
+        && history.WorkflowVersion == instance.Workflow.Version && history.InstanceUpdatedAt == instance.UpdatedAt
+        && history.Scope == "currentVersionAllRuns";
+
+    internal static InstanceDiagramOverlay Build(InstanceDetailDto instance, InstanceDiagramHistoryDto? history)
+    {
+        var current = Build(instance);
+        if (history is null || !Matches(instance, history)) return current;
+        var nodeIds = instance.Workflow.Definition.FlowNodes.Select(node => node.Id).ToHashSet();
+        var flowIds = instance.Workflow.Definition.SequenceFlows.Select(flow => flow.Id).ToHashSet();
+        var reached = history.Nodes.Where(node => nodeIds.Contains(node.NodeId)).Select(node => node.NodeId).ToHashSet();
+        var flows = history.Flows.Where(flow => flowIds.Contains(flow.FlowId) && flow.TraversalCount > 0)
+            .DistinctBy(flow => flow.FlowId).OrderBy(flow => flow.FlowId)
+            .Select(flow => new InstanceDiagramViewerFlow(flow.FlowId, flow.TraversalCount)).ToList();
+        return new InstanceDiagramOverlay(current.Markers, reached, flows);
+    }
 
     internal static InstanceDiagramOverlay Build(InstanceDetailDto instance)
     {

@@ -42,6 +42,9 @@ public sealed class OpenApiContractTests
         Assert.Equal("InstanceDetailDto", Assert.IsType<Microsoft.OpenApi.OpenApiSchemaReference>(schema).Reference.Id);
         var security = Assert.Single(operation.Security!);
         Assert.Equal("Bearer", Assert.Single(security).Key.Reference.Id);
+        var historyOperation = document.Paths["/api/instances/{id}/diagram-history"].Operations![HttpMethod.Get];
+        var historySecurity = Assert.Single(historyOperation.Security!);
+        Assert.Equal("Bearer", Assert.Single(historySecurity).Key.Reference.Id);
         Assert.DoesNotContain(document.Components!.Schemas!.Keys,
             name => name.Contains("IWorkflow", StringComparison.Ordinal));
         Assert.Empty(factory.Projection.Reads);
@@ -68,6 +71,35 @@ public sealed class OpenApiContractTests
         Assert.DoesNotContain(document.Components!.Schemas!.Keys,
             name => name.Contains("IUserTaskRoleManagement", StringComparison.Ordinal)
                 || name.Contains("IWorkflow", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task DiagramHistoryDocumentsInstanceReadBoundaryAndInt64Counts()
+    {
+        await using var app = await CreateDocumentationHostAsync();
+        using var client = app.GetTestClient();
+        using var response = await client.GetAsync("/openapi/v1.json");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var root = json.RootElement;
+        var operation = root.GetProperty("paths").GetProperty("/api/instances/{id}/diagram-history").GetProperty("get");
+        Assert.False(operation.TryGetProperty("requestBody", out _));
+        var parameter = Assert.Single(operation.GetProperty("parameters").EnumerateArray());
+        Assert.Equal("id", parameter.GetProperty("name").GetString());
+        Assert.Equal("int64", parameter.GetProperty("schema").GetProperty("format").GetString());
+        Assert.Equal(["200", "401", "403", "404"], operation.GetProperty("responses").EnumerateObject().Select(item => item.Name).Order());
+        Assert.Contains("instance detail", operation.GetProperty("description").GetString());
+        var schemas = root.GetProperty("components").GetProperty("schemas");
+        var count = schemas.GetProperty("InstanceDiagramHistoryFlowDto").GetProperty("properties").GetProperty("traversalCount");
+        var countType = count.GetProperty("type");
+        if (countType.ValueKind == JsonValueKind.Array)
+            Assert.Contains(countType.EnumerateArray(), type => type.GetString() == "integer");
+        else
+            Assert.Equal("integer", countType.GetString());
+        Assert.Equal("int64", count.GetProperty("format").GetString());
+        Assert.Contains("activation", count.GetProperty("description").GetString());
+        var fields = schemas.GetProperty("InstanceDiagramHistoryDto").GetProperty("properties").EnumerateObject().Select(item => item.Name).ToArray();
+        Assert.Equal(["instanceId", "workflowId", "workflowVersion", "instanceUpdatedAt", "asOf", "scope", "coverage", "nodes", "flows"], fields);
     }
 
     [Fact]

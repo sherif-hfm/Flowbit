@@ -380,6 +380,31 @@ internal static partial class FlowbitOpenApiEnrichment
 
     private static string DescribeSchemaProperty(Type declaringType, string propertyName, Type propertyType)
     {
+        if (declaringType == typeof(InstanceDiagramHistoryDto))
+        {
+            var historyDescription = propertyName switch
+            {
+                "instanceUpdatedAt" => "The instance revision read in the same database snapshot as the grouped evidence; match it to displayed instance detail.",
+                "asOf" => "The UTC database snapshot time; this summary is not continuously updated.",
+                "scope" => "Always currentVersionAllRuns: the current exact definition across all retained runs.",
+                "nodes" => "Unique reached node IDs, sorted numerically; arrival evidence does not imply successful completion.",
+                "flows" => "Unique sequence-flow IDs and positive int64 traversal counts, sorted numerically; each recorded traversal counts once.",
+                "coverage" => "Recording and retention coverage within the declared version/run scope, including every applicable reason.",
+                _ => null
+            };
+            if (historyDescription is not null) return historyDescription;
+        }
+        if (declaringType == typeof(InstanceDiagramHistoryCoverageDto))
+            return propertyName switch
+            {
+                "status" => "complete, partial, or unknown; partial takes precedence over unknown when several reasons apply.",
+                "reasons" => "All applicable reason codes: cutover, nodeActivityPruned, unmappedEvidence, conflictingEvidence, legacyCoverageUnknown, retentionCategoryUnknown, multiInstanceEntryUnrecorded.",
+                "nodeActivityPrunedAt" => "The UTC time of the first actual node-activity deletion, or null when no such deletion is recorded.",
+                _ => $"{Humanize(propertyName)} for the diagram-history coverage contract."
+            };
+        if (declaringType == typeof(InstanceDiagramHistoryFlowDto) && propertyName == "traversalCount")
+            return "Positive 64-bit JSON-number count of recorded traversals; multi-instance children are deduplicated by activation and votes are not traversals.";
+
         if (declaringType == typeof(EngineSettingDto) && propertyName is "createdBy" or "updatedBy")
             return propertyName == "createdBy"
                 ? "The server-resolved actor who created this setting; null when historical attribution is unknown."

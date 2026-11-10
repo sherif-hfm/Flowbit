@@ -282,7 +282,7 @@ public sealed class InstanceVariableUpdateMigrationTests(PostgresApiFixture fixt
             await using (var compatibility = new NpgsqlConnection(connectionString))
             {
                 await compatibility.OpenAsync();
-                // Keep the migration boundary under test fixed. These nullable
+                // Keep the migration boundary under test fixed. These additive
                 // lifecycle columns only let today's EF model insert fixture
                 // instances; retention behavior is tested separately.
                 await using var columns = new NpgsqlCommand(
@@ -290,6 +290,8 @@ public sealed class InstanceVariableUpdateMigrationTests(PostgresApiFixture fixt
                     ALTER TABLE flowbit.workflow_instances
                         ADD COLUMN IF NOT EXISTS "FinishedAt" timestamp with time zone,
                         ADD COLUMN IF NOT EXISTS "HistoryPrunedAt" timestamp with time zone,
+                        ADD COLUMN IF NOT EXISTS "NodeActivityFromCreation" boolean NOT NULL DEFAULT TRUE,
+                        ADD COLUMN IF NOT EXISTS "NodeActivityPrunedAt" timestamp with time zone,
                         ADD COLUMN IF NOT EXISTS "LastReactivationTokenId" bigint,
                         ADD COLUMN IF NOT EXISTS "CallRootInstanceId" bigint,
                         ADD COLUMN IF NOT EXISTS "CallDepth" integer NOT NULL DEFAULT 0;

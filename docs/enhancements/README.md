@@ -2,7 +2,7 @@
 
 [Documentation home](../index.md) · [BPMN support](../bpmn-support.md) · [Flowbit.Ui guide](../ui-guide.md)
 
-This backlog records candidate new task types, events, integrations, and Flowbit.Ui features. The items come from a review on 2026-10-24 of the [supported node types](../bpmn-support.md#supported-node-types), the [unsupported capabilities](../bpmn-support.md#unsupported-capabilities), and every Flowbit.Ui page. A second review the same day reordered the work toward everyday usability, split combined items, corrected effort estimates, and gave every item its dependencies and first release acceptance criteria. No open item is implemented or scheduled.
+This backlog records candidate new task types, events, integrations, and Flowbit.Ui features. The items come from a review on 2026-10-24 of the [supported node types](../bpmn-support.md#supported-node-types), the [unsupported capabilities](../bpmn-support.md#unsupported-capabilities), and every Flowbit.Ui page. A second review the same day reordered the work toward everyday usability, split combined items, corrected effort estimates, and gave every item its dependencies and first release acceptance criteria. Items marked Open are not implemented or scheduled. In-progress items may have implemented behavior with outstanding verification.
 
 Each item has its own page, described in [Item pages](#item-pages).
 
@@ -101,7 +101,7 @@ Other items are not ranked yet.
 | [UI-11](ui-11-localization-rtl.md) | Localization and right-to-left layout | M | None | Not started |
 | [UI-12](ui-12-task-escalation.md) | Task escalation | M–L | [UI-04](ui-04-task-due-date-and-priority.md) | Not started |
 | [UI-13](ui-13-notification-center.md) | Notification center | M | [INT-01](int-01-outbound-lifecycle-webhooks.md) | Not started |
-| [UI-14](ui-14-instance-diagram-history.md) | Instance diagram history | M | [UI-01](ui-01-live-instance-diagram.md) | Not started |
+| [UI-14](ui-14-instance-diagram-history.md) | Instance diagram history | M | [UI-01](ui-01-live-instance-diagram.md) | In progress |
 | [UI-15](ui-15-form-layout-and-data-options.md) | Form layout, data options, and start-form discovery | M | [UI-03](ui-03-rich-task-forms.md) | Not started |
 | [UI-16](ui-16-overdue-work-and-due-date-follow-ups.md) | Overdue work and due-date follow-ups | M | [UI-04](ui-04-task-due-date-and-priority.md) | Not started |
 

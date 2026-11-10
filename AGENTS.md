@@ -116,7 +116,12 @@ The key pieces:
   `setOverlay(overlay)`, `selectNode(nodeId | null)`, and `dispose`, and its
   `onSelectionChange` callback reports the selected node. An overlay marks nodes
   as `active`, `ended`, `faulted`, or `cancelled`, with an optional badge and a
-  label; invalid entries are ignored. A hosted mount also receives an optional
+  label. Optional `reached` flags and `{ id, traversalCount }` flows live in
+  separate viewer history maps; malformed entries, unknown ids, and invalid
+  counts are ignored. Overlay loads/updates redraw edges and nodes. Historical
+  nodes never add canvas tab stops or change the initial fit; selecting one
+  through the host's textual list brings it into view without changing zoom.
+  Current/final markers and history are independent. A hosted mount also receives an optional
   `timerSchedules` capability (`preview(request)`, `timeZones()`), which
   `workflow-editor-host.js` routes to the `[JSInvokable]`
   `PreviewTimerSchedule`/`GetTimerScheduleTimeZones` methods of
@@ -129,8 +134,8 @@ The key pieces:
   standalone mode retains its branding and theme toggle. Viewer mode also uses
   the light appearance. It removes the toolbar, authoring palette, diagram
   tools, and inspector from the page, keeps the dialogs hidden, keeps the pan
-  tool, and records no history. It draws
-  no trace highlighting and ignores editing shortcuts. Only Ctrl or Meta with
+  tool, and records no undo history. Optional runtime-history decorations use
+  their own classes, never authoring trace highlighting. It ignores editing shortcuts. Only Ctrl or Meta with
   the wheel zooms, so the plain wheel scrolls the page. Blazor owns API/auth,
   route, and saved-version metadata; JavaScript owns the editor subtree.
 - **Rendering**: `render()` is the top-level redraw. It calls `renderLanes()`,
@@ -466,6 +471,27 @@ Storage follows the hybrid design:
   Committed failure descriptions are bounded to 1,000 Unicode characters so a
   caught runtime diagnostic cannot prevent the execution and boundary records
   from committing.
+  Diagram history has its own `IInstanceDiagramHistoryQueryService` and focused
+  repository, with instance-detail authorization and consistent-snapshot SQL
+  aggregation; do not expand rich node-execution search or the engine for it.
+  Normalize the query's fresh local definition with `WorkflowModelMigrator`
+  before attribution, matching instance detail for older JSONB snapshots.
+  Count ordinary source `node` exits, or target entries for async-after/MI
+  sources, deduplicating MI children by execution. Votes are not traversals.
+  Counted exits also mark their targets reached. Open visits rebind on version
+  switches; completed exits retain their version, while a target-side count can
+  move with its open target. Counting follows the displayed source definition;
+  changing a completed source between ordinary and async-after/MI categories can
+  add or omit that rebound entry count without reconstructing another version.
+  Async-after/MI-to-MI edges conservatively report
+  `multiInstanceEntryUnrecorded`. `NodeActivityFromCreation` and first
+  `NodeActivityPrunedAt` survive reactivation and version changes. Actual node
+  retention sets the latter and `UpdatedAt` in the deletion transaction; other
+  categories never set it. MI fan-out advances the owning instance revision in
+  its existing transaction; staged pending-to-active changes need not, because
+  they do not change summary evidence. Stop old Workers before the two coverage
+  migrations; classify legacy coverage in bounded restartable batches before
+  exposing the API. See [rollout](docs/deployment.md#database-migrations).
   `GET /api/node-executions` and `POST /api/node-executions/search` search
   across workflow versions with SQL-backed authorization, exact count, ordering,
   and paging; detail is
@@ -1625,6 +1651,9 @@ what the cross-version `workflowKey` instance search matches.
   `variableFilter` and structured sort),
   `GET /inbox?instanceId=&workflowId=&workflowKey=&businessKey=&nodeId=&nodeExternalId=&dueStatus=&dueFrom=&dueTo=&minPriority=&maxPriority=&var=&includeVariables=&sort=&page=&pageSize=` (paged, actor-scoped),
   `POST /inbox/search` (advanced actor-scoped search), `GET /{id}`,
+  `GET /{id}/diagram-history` (instance-detail read access; grouped retained
+  nodes and traversal counts for the current exact version across all runs,
+  with coverage metadata; execution-detail permission remains separate),
   `GET /{id}/calls?page=&pageSize=` (paged direct outgoing calls, newest first; never
   captured values), `GET /{id}/flows` (available sequence flows), `POST /{id}/claim`,
   `POST /{id}/unclaim`, `POST /{id}/flows/{flowId}` (take a flow),
@@ -1891,11 +1920,15 @@ what the cross-version `workflowKey` instance search matches.
   details), and, for authorized administrators, preview and confirm safe
   completed/cancelled instance reactivation. Its read-only **Diagram** marks a
   running instance's active positions or a finished instance's final positions
-  (from its last run, after a reactivation), never the path taken. Selecting a
-  node lists its task links and node-execution links. The page loads node
-  executions of every status for the selected node through the role-scoped
-  node-execution search, so links appear only for executions the caller may
-  read, and an async-after wait links the completed visit it follows.
+  (from its last run, after a reactivation). **Show recorded history** adds
+  reached nodes and flow counts from all retained runs of the current exact
+  version, with coverage notices for missing or uncertain evidence. The summary
+  uses instance-detail access; execution records and links retain node-activity
+  authorization. Selecting a node keeps current-position links separate from
+  recorded executions, paged 50 at a time through the role-scoped search with
+  an exact version filter. An async-after wait links the completed visit it
+  follows. Identity changes clear the previous instance and its related data
+  before reloading; history resets off and stale responses cannot restore it.
 
 Display sections live in shared child components so pages keep their own
 coordination. The instance detail sections are under

@@ -1352,8 +1352,14 @@ public sealed partial class WorkflowApiClient(HttpClient httpClient, IHttpClient
         }
     }
 
-    public Task<InstanceDetailDto?> GetInstanceAsync(long id, CancellationToken cancellationToken = default) =>
-        httpClient.GetFromJsonAsync<InstanceDetailDto>($"/api/instances/{id}", cancellationToken);
+    public async Task<InstanceDetailDto?> GetInstanceAsync(long id, CancellationToken cancellationToken = default)
+    {
+        using var response = await httpClient.GetAsync($"/api/instances/{id}", cancellationToken);
+        if (response.StatusCode == HttpStatusCode.NotFound) return null;
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<InstanceDetailDto>(cancellationToken)
+            ?? throw new InvalidOperationException("The API returned an empty workflow instance.");
+    }
 
     public async Task<InstanceReactivationPreviewDto?> PreviewInstanceReactivationAsync(
         long id,

@@ -77,6 +77,8 @@ public sealed class NodeExecutionLifecycleCoverageTests(PostgresApiFixture fixtu
             .SingleAsync(candidate => candidate.InstanceId == instance.Id);
         Assert.Equal(ExecutionTokenStatuses.Completed, token.Status);
         Assert.Null(token.CurrentNodeExecutionId);
+        await DiagramHistoryEvidenceAssertions.SummaryAsync(fixture, instance.Id, [1, 2, 3, 4],
+            (101, 1), (201, 1), (301, 1));
     }
 
     [Fact]
@@ -98,6 +100,7 @@ public sealed class NodeExecutionLifecycleCoverageTests(PostgresApiFixture fixtu
         var started = await ReadAsync<MessageStartAckDto>(startResponse);
         Assert.Equal(2, started.CurrentNodeId);
         Assert.Equal(WorkflowInstanceStatuses.Running, started.Status);
+        await DiagramHistoryEvidenceAssertions.SummaryAsync(fixture, started.InstanceId, [1, 2], (101, 1));
 
         long startExecutionId;
         long catchExecutionId;
@@ -154,6 +157,8 @@ public sealed class NodeExecutionLifecycleCoverageTests(PostgresApiFixture fixtu
         var delivered = await ReadAsync<MessageDeliveryAckDto>(deliveryResponse);
         Assert.Equal(WorkflowInstanceStatuses.Completed, delivered.Status);
         Assert.Equal(3, delivered.CurrentNodeId);
+        await DiagramHistoryEvidenceAssertions.SummaryAsync(fixture, started.InstanceId, [1, 2, 3],
+            (101, 1), (201, 1));
 
         await using (var db = fixture.CreateDbContext())
         {
@@ -340,6 +345,8 @@ public sealed class NodeExecutionLifecycleCoverageTests(PostgresApiFixture fixtu
             token.NodeId == 11 && token.Status == ExecutionTokenStatuses.Completed);
         Assert.Equal(2, tokens.Count(token => token.Status == ExecutionTokenStatuses.Cancelled));
         Assert.All(tokens, token => Assert.Null(token.CurrentNodeExecutionId));
+        await DiagramHistoryEvidenceAssertions.SummaryAsync(fixture, instance.Id, [1, 2, 3, 4, 5, 6, 11],
+            (101, 1), (201, 1), (202, 1), (203, 1), (303, 1), (401, 1), (501, 1));
     }
 
     [Fact]
@@ -407,6 +414,8 @@ public sealed class NodeExecutionLifecycleCoverageTests(PostgresApiFixture fixtu
         Assert.DoesNotContain(
             executions,
             execution => execution.Status is NodeExecutionStatuses.Active or NodeExecutionStatuses.Pending);
+        await DiagramHistoryEvidenceAssertions.SummaryAsync(fixture, instance.Id, [1, 2, 3, 4, 5],
+            (101, 1), (201, 1), (202, 1), (401, 1));
     }
 
     private async Task<long> CreateWorkflowAsync(WorkflowModel model)

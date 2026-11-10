@@ -9,6 +9,11 @@
 
 <PageTitle>Instance #@InstanceId · Flowbit</PageTitle>
 
+@if (identityRefreshPending && instance is null)
+{
+    <p role="status">Refreshing actions for the current identity…</p>
+}
+
 @if (!string.IsNullOrWhiteSpace(error))
 {
     <div class="alert alert-danger" role="alert">@error</div>
@@ -21,8 +26,16 @@
 
 @if (instance is null)
 {
-    <PageHeader Eyebrow="Instance" Title="@($"Loading instance #{InstanceId}")" Description="Retrieving process state, actions, variables, and history…" />
-    <div class="panel"><div class="skeleton" role="status"></div></div>
+    @if (error is null)
+    {
+        <PageHeader Eyebrow="Instance" Title="@($"Loading instance #{InstanceId}")" Description="Retrieving process state, actions, variables, and history…" />
+        <div class="panel"><div class="skeleton" role="status"></div></div>
+    }
+    else
+    {
+        <PageHeader Eyebrow="Instance" Title="@($"Instance #{InstanceId} unavailable")" Description="@instanceUnavailableDescription" />
+        <button type="button" class="btn btn-outline-secondary" @onclick="LoadAsync">Retry instance</button>
+    }
 }
 else
 {
@@ -122,7 +135,20 @@ else
                      SelectedNodeIdChanged="OnDiagramNodeSelectedAsync"
                      NodeExecutions="@diagramNodeExecutions"
                      NodeExecutionsTotal="@diagramNodeExecutionTotal"
-                     NodeExecutionsLoading="@diagramNodeExecutionsLoading" />
+                     NodeExecutionsLoading="@diagramNodeExecutionsLoading"
+                     NodeExecutionsError="@diagramNodeExecutionsError"
+                     HistoryEnabled="@diagramHistoryEnabled"
+                     HistoryEnabledChanged="OnDiagramHistoryEnabledChangedAsync"
+                     History="@diagramHistory"
+                     HistoryLoading="@diagramHistoryLoading"
+                     HistoryError="@diagramHistoryError"
+                     HistoryRetry="RetryDiagramHistoryAsync"
+                     HistoricalExecutions="@diagramHistoricalExecutions"
+                     HistoricalExecutionsTotal="@diagramHistoricalTotal"
+                     HistoricalExecutionsPage="@diagramHistoricalPage"
+                     HistoricalExecutionsLoading="@diagramHistoricalLoading"
+                     HistoricalExecutionsError="@diagramHistoricalError"
+                     HistoricalExecutionsPageChanged="OnDiagramHistoryPageChangedAsync" />
 
     @if (instance.HistoryPrunedAt is { } historyPrunedAt)
     {
@@ -824,11 +850,17 @@ else
         }
     }
 
-    protected override async Task OnInitializedAsync()
+    protected override void OnInitialized() => Token.Changed += OnIdentityChanged;
+
+    protected override async Task OnParametersSetAsync()
     {
-        Token.Changed += OnIdentityChanged;
+        if (diagramPageInstanceId == InstanceId) return;
+        diagramPageInstanceId = InstanceId;
+        ResetDiagramState(resetToggle: true, resetSelection: true);
+        ResetInstanceAuxiliaryState();
+        instance = null;
         await LoadAsync();
-        if (!disposed)
+        if (!disposed && pollTask is null)
         {
             pollTask = PollAsync(pollCancellation.Token);
         }
@@ -841,12 +873,13 @@ else
         {
             if (disposed) return;
             identityRefreshPending = true;
-            availableFlows = []; interruptFlows = []; flowInputs.Clear();
+            ResetInstanceAuxiliaryState();
             canChangeVersion = false; showVersionChange = false; versionTargets = []; versionPreview = null;
             loadedVersionTargetSourceId = null; selectedTargetWorkflowId = null; versionChangeReason = string.Empty;
             versionChangeError = null; reactivationAuthorized = false; reactivationPreview = null;
             selectedReactivationNodeId = null; reactivationReason = string.Empty; reactivationError = null; reactivationSuccess = null;
-            diagramNodeExecutions = null; diagramNodeExecutionsLoading = false; diagramSelectionRevision++;
+            ResetDiagramState(resetToggle: true, resetSelection: true);
+            instance = null;
             StateHasChanged();
             await LoadAsync();
             if (!disposed && epoch == Interlocked.Read(ref identityEpoch))
@@ -912,16 +945,32 @@ else
     private bool callsLoading;
     private string? callsError;
 
+    private void ResetInstanceAuxiliaryState()
+    {
+        availableFlows = [];
+        interruptFlows = [];
+        flowInputs.Clear();
+        calls = null;
+        callsPage = 1;
+        callsLoading = false;
+        callsError = null;
+    }
+
     private async Task LoadAsync()
     {
+        var id = InstanceId;
+        var epoch = Interlocked.Read(ref identityEpoch);
         await refreshGate.WaitAsync();
         try
         {
+            if (!IsPageRequestCurrent(id, epoch)) return;
             error = null;
+            instanceUnavailableDescription = "Retry loading this instance.";
             await RefreshInstanceStateAsync(
                 forceVersionTargets: true,
                 forceReactivationPreview: true);
         }
+        catch (Exception) when (!IsPageRequestCurrent(id, epoch)) { }
         catch (Exception ex)
         {
             error = ex.Message;
@@ -933,10 +982,10 @@ else
     }
 
     private async Task ClaimAsync() => await RefreshFrom(async () =>
-        instance = await Api.ClaimAsync(InstanceId));
+        await ApplyInstanceActionAsync(id => Api.ClaimAsync(id)));
 
     private async Task UnclaimAsync() => await RefreshFrom(async () =>
-        instance = await Api.UnclaimAsync(InstanceId));
+        await ApplyInstanceActionAsync(id => Api.UnclaimAsync(id)));
 
     private async Task CancelAsync()
     {
@@ -960,15 +1009,17 @@ else
         await RefreshFrom(async () =>
         {
             var variables = BuildPayload(flow);
-            instance = await Api.TakeFlowAsync(
-                InstanceId,
+            await ApplyInstanceActionAsync(id => Api.TakeFlowAsync(
+                id,
                 flow.Id,
-                new TakeFlowRequest(variables));
+                new TakeFlowRequest(variables)));
         });
     }
 
     private async Task TakeInterruptFlowAsync(SequenceFlowModel flow)
     {
+        var id = InstanceId;
+        var epoch = Interlocked.Read(ref identityEpoch);
         var executionId = SoleActiveMultiInstance?.ExecutionId;
         if (executionId is null || interruptSubmitting)
         {
@@ -979,7 +1030,7 @@ else
         var confirmed = await JS.InvokeAsync<bool>(
             "confirm",
             $"Take '{flowName}' and cancel every unfinished work item?");
-        if (!confirmed)
+        if (!confirmed || !IsPageRequestCurrent(id, epoch))
         {
             return;
         }
@@ -987,14 +1038,17 @@ else
         await refreshGate.WaitAsync();
         try
         {
+            if (!IsPageRequestCurrent(id, epoch)) return;
             interruptSubmitting = true;
             error = null;
             var variables = BuildPayload(flow);
-            instance = await Api.TakeMultiInstanceInterruptFlowAsync(
+            var result = await Api.TakeMultiInstanceInterruptFlowAsync(
                 executionId.Value,
                 flow.Id,
                 new TakeFlowRequest(variables));
+            if (IsPageRequestCurrent(id, epoch)) instance = result;
         }
+        catch (Exception) when (!IsPageRequestCurrent(id, epoch)) { }
         catch (Exception ex)
         {
             error = ex.Message;
@@ -1004,7 +1058,7 @@ else
             interruptSubmitting = false;
             try
             {
-                await RefreshInstanceStateAsync();
+                if (IsPageRequestCurrent(id, epoch)) await RefreshInstanceStateAsync();
             }
             catch (Exception ex)
             {
@@ -1040,7 +1094,7 @@ else
                     {
                         try
                         {
-                            await RefreshInstanceStateAsync(cancellationToken);
+                            await RefreshInstanceStateAsync(cancellationToken, isPoll: true);
                             StateHasChanged();
                         }
                         catch
@@ -1063,19 +1117,56 @@ else
     private async Task RefreshInstanceStateAsync(
         CancellationToken cancellationToken = default,
         bool forceVersionTargets = false,
-        bool forceReactivationPreview = false)
+        bool forceReactivationPreview = false,
+        bool isPoll = false,
+        bool allowHistoryReconcile = true)
     {
-        var refreshed = await Api.GetInstanceAsync(InstanceId, cancellationToken);
-        if (refreshed is not null)
+        var id = InstanceId;
+        var epoch = Interlocked.Read(ref identityEpoch);
+        try
         {
+            var refreshed = await Api.GetInstanceAsync(id, cancellationToken);
+            if (!IsPageRequestCurrent(id, epoch)) return;
+            if (refreshed is null)
+            {
+                ClearUnavailableInstance();
+                error = "The workflow instance no longer exists.";
+                instanceUnavailableDescription = "Check the instance address, or return to the instance list.";
+                return;
+            }
+            if (diagramDisplayedWorkflowId != refreshed.Workflow.Id)
+                ResetDiagramState(resetToggle: false, resetSelection: true);
+            diagramDisplayedWorkflowId = refreshed.Workflow.Id;
             instance = refreshed;
+            if (diagramHistory is not null && !InstanceDiagramOverlay.Matches(instance, diagramHistory))
+                ClearDiagramSummary();
+            if (diagramHistoryEnabled && diagramHistory is null) diagramHistoryLoading = true;
+            await LoadAvailableActionsAsync(cancellationToken);
+            await LoadDiagramNodeExecutionsAsync(cancellationToken);
+            await LoadCallsAsync(cancellationToken);
+            await LoadVersionTargetsAsync(cancellationToken, forceVersionTargets);
+            await LoadReactivationPreviewAsync(cancellationToken, forceReactivationPreview);
+            if (!IsPageRequestCurrent(id, epoch)) return;
+            var mismatch = await LoadDiagramHistoryAsync(force: !isPoll, cancellationToken);
+            await LoadDiagramHistoricalExecutionsAsync(cancellationToken);
+            administrativeRefreshVersion++;
+            if (mismatch && allowHistoryReconcile)
+                await RefreshInstanceStateAsync(cancellationToken, allowHistoryReconcile: false);
         }
-        await LoadAvailableActionsAsync(cancellationToken);
-        await LoadDiagramNodeExecutionsAsync(cancellationToken);
-        await LoadCallsAsync(cancellationToken);
-        await LoadVersionTargetsAsync(cancellationToken, forceVersionTargets);
-        await LoadReactivationPreviewAsync(cancellationToken, forceReactivationPreview);
-        administrativeRefreshVersion++;
+        catch (Exception ex) when (IsPageRequestCurrent(id, epoch))
+        {
+            if (IsDiagramPermissionFailure(ex))
+            {
+                ClearUnavailableInstance();
+                error = "This workflow instance is not available to this identity. Sign in again or check your permissions.";
+                instanceUnavailableDescription = "Check your identity and retry loading this instance.";
+            }
+            else if (!isPoll || diagramHistory is null)
+            {
+                MarkDiagramRefreshFailed();
+            }
+            throw;
+        }
     }
 
     private async Task LoadReactivationPreviewAsync(
@@ -1183,14 +1274,17 @@ else
             return;
         }
 
-        var target = reactivationPreview.Targets.Single(item => item.NodeId == targetNodeId);
+        var id = InstanceId;
+        var epoch = Interlocked.Read(ref identityEpoch);
+        var preview = reactivationPreview;
+        var target = preview.Targets.Single(item => item.NodeId == targetNodeId);
         var targetLabel = string.IsNullOrWhiteSpace(target.NodeName)
             ? $"user task #{target.NodeId}"
             : $"'{target.NodeName}' (node #{target.NodeId})";
         var confirmed = await JS.InvokeAsync<bool>(
             "confirm",
             $"Reactivate instance #{InstanceId} at {targetLabel}? Variables and history will be retained. Completed work and external side effects will not be reversed, so work after this task may repeat.");
-        if (!confirmed)
+        if (!confirmed || !IsPageRequestCurrent(id, epoch))
         {
             return;
         }
@@ -1198,17 +1292,19 @@ else
         await refreshGate.WaitAsync();
         try
         {
+            if (!IsPageRequestCurrent(id, epoch)) return;
             reactivationSubmitting = true;
             reactivationError = null;
             reactivationSuccess = null;
             error = null;
             var refreshed = await Api.ReactivateInstanceAsync(
-                InstanceId,
+                id,
                 new ReactivateInstanceRequest(
                     targetNodeId,
-                    reactivationPreview.WorkflowId,
-                    reactivationPreview.ExpectedUpdatedAt,
+                    preview.WorkflowId,
+                    preview.ExpectedUpdatedAt,
                     reactivationReason.Trim()));
+            if (!IsPageRequestCurrent(id, epoch)) return;
             if (refreshed is null)
             {
                 reactivationError = "The workflow instance no longer exists.";
@@ -1227,12 +1323,18 @@ else
                 await LoadDiagramNodeExecutionsAsync();
                 await LoadVersionTargetsAsync(force: true);
                 await LoadReactivationPreviewAsync(force: true);
+                if (await LoadDiagramHistoryAsync(force: true))
+                    await RefreshInstanceStateAsync(allowHistoryReconcile: false);
+                await LoadDiagramHistoricalExecutionsAsync();
             }
+            catch (Exception) when (!IsPageRequestCurrent(id, epoch)) { }
             catch (Exception ex)
             {
                 error = $"The instance was reactivated, but its available actions could not be refreshed: {ex.Message}";
+                MarkDiagramRefreshFailed();
             }
         }
+        catch (Exception) when (!IsPageRequestCurrent(id, epoch)) { }
         catch (WorkflowApiException ex) when (
             ex.StatusCode is System.Net.HttpStatusCode.Unauthorized
                 or System.Net.HttpStatusCode.Forbidden)
@@ -1448,10 +1550,13 @@ else
             return;
         }
 
+        var id = InstanceId;
+        var epoch = Interlocked.Read(ref identityEpoch);
+        var preview = versionPreview;
         var confirmed = await JS.InvokeAsync<bool>(
             "confirm",
             $"Change instance #{InstanceId} from v{versionPreview.SourceWorkflow.Version} to v{versionPreview.TargetWorkflow.Version}?");
-        if (!confirmed)
+        if (!confirmed || !IsPageRequestCurrent(id, epoch))
         {
             return;
         }
@@ -1459,15 +1564,17 @@ else
         await refreshGate.WaitAsync();
         try
         {
+            if (!IsPageRequestCurrent(id, epoch)) return;
             versionChangeSubmitting = true;
             versionChangeError = null;
             var result = await Api.ChangeInstanceVersionAsync(
-                InstanceId,
+                id,
                 new ChangeInstanceVersionRequest(
                     targetWorkflowId,
-                    versionPreview.ExpectedSourceWorkflowId,
-                    versionPreview.ExpectedUpdatedAt,
+                    preview.ExpectedSourceWorkflowId,
+                    preview.ExpectedUpdatedAt,
                     versionChangeReason.Trim()));
+            if (!IsPageRequestCurrent(id, epoch)) return;
             if (result is null)
             {
                 versionChangeError = "The workflow instance or target version no longer exists.";
@@ -1480,9 +1587,10 @@ else
             versionChangeReason = string.Empty;
             loadedVersionTargetSourceId = null;
             showVersionChange = false;
-            await LoadAvailableActionsAsync();
-            await LoadVersionTargetsAsync();
+            ResetDiagramState(resetToggle: false, resetSelection: true);
+            await RefreshInstanceStateAsync(forceVersionTargets: true);
         }
+        catch (Exception) when (!IsPageRequestCurrent(id, epoch)) { }
         catch (WorkflowApiException ex) when (
             ex.StatusCode == System.Net.HttpStatusCode.Conflict)
         {
@@ -1544,30 +1652,36 @@ else
 
     private async Task LoadAvailableActionsAsync(CancellationToken cancellationToken = default)
     {
+        var id = InstanceId;
         var epoch = Interlocked.Read(ref identityEpoch);
         var flows = instance is null || HasMultiInstances || !CanUseLegacyInstanceActions
             ? []
-            : await Api.GetAvailableFlowsAsync(InstanceId, cancellationToken);
-        if (disposed || epoch != Interlocked.Read(ref identityEpoch)) return;
+            : await Api.GetAvailableFlowsAsync(id, cancellationToken);
+        if (!IsPageRequestCurrent(id, epoch)) return;
         var interrupts = SoleActiveMultiInstance is { } progress
             ? await Api.GetMultiInstanceInterruptFlowsAsync(progress.ExecutionId, cancellationToken)
             : [];
-        if (disposed || epoch != Interlocked.Read(ref identityEpoch)) return;
+        if (!IsPageRequestCurrent(id, epoch)) return;
         availableFlows = flows;
         interruptFlows = interrupts;
     }
 
     private async Task RefreshFrom(Func<Task> action)
     {
+        var id = InstanceId;
+        var epoch = Interlocked.Read(ref identityEpoch);
         await refreshGate.WaitAsync();
         try
         {
+            if (!IsPageRequestCurrent(id, epoch)) return;
             error = null;
             await action();
+            if (!IsPageRequestCurrent(id, epoch)) return;
             // An action can start a call or end the instance, and an ordinary single-token
             // instance is not polled, so everything on the page reloads here.
             await RefreshInstanceStateAsync();
         }
+        catch (Exception) when (!IsPageRequestCurrent(id, epoch)) { }
         catch (Exception ex)
         {
             error = ex.Message;
@@ -1582,9 +1696,15 @@ else
     {
         if (selectedDiagramNodeId == nodeId) return;
         selectedDiagramNodeId = nodeId;
+        ++diagramCurrentGeneration;
+        CancelDiagramRequest(ref diagramCurrentRequest);
         diagramNodeExecutions = null;
+        diagramNodeExecutionTotal = 0;
+        diagramNodeExecutionsError = null;
+        diagramNodeExecutionsLoading = false;
         diagramSelectionRevision++;
-        await LoadDiagramNodeExecutionsAsync();
+        ResetDiagramExecutionPage();
+        await Task.WhenAll(LoadDiagramNodeExecutionsAsync(), LoadDiagramHistoricalExecutionsAsync());
     }
 
     // Node-execution reads are role-scoped: the search returns only executions
@@ -1592,6 +1712,10 @@ else
     // requested because an async-after wait follows a visit that already completed.
     private async Task LoadCallsAsync(CancellationToken cancellationToken = default)
     {
+        var id = InstanceId;
+        var epoch = Interlocked.Read(ref identityEpoch);
+        var pageNumber = callsPage;
+        bool Current() => IsPageRequestCurrent(id, epoch) && callsPage == pageNumber;
         if (instance?.Calls is not { Total: > 0 })
         {
             calls = null;
@@ -1602,12 +1726,14 @@ else
 
         try
         {
-            var page = await Api.GetInstanceCallsAsync(InstanceId, callsPage, CallsPageSize, cancellationToken);
+            var page = await Api.GetInstanceCallsAsync(id, pageNumber, CallsPageSize, cancellationToken);
+            if (!Current()) return;
             // Retention can shorten the list while a reader is on a later page.
             if (page.Items.Count == 0 && page.TotalCount > 0 && callsPage > 1)
             {
-                callsPage = (int)Math.Ceiling(page.TotalCount / (double)CallsPageSize);
-                page = await Api.GetInstanceCallsAsync(InstanceId, callsPage, CallsPageSize, cancellationToken);
+                callsPage = pageNumber = (int)Math.Ceiling(page.TotalCount / (double)CallsPageSize);
+                page = await Api.GetInstanceCallsAsync(id, pageNumber, CallsPageSize, cancellationToken);
+                if (!Current()) return;
             }
 
             calls = page;
@@ -1615,6 +1741,7 @@ else
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            if (!Current()) return;
             // Keep the last page beside the message; the next refresh tries again.
             callsError = ex.Message;
         }
@@ -1639,36 +1766,60 @@ else
     private async Task LoadDiagramNodeExecutionsAsync(CancellationToken cancellationToken = default)
     {
         if (instance is null || selectedDiagramNodeId is not int nodeId) return;
+        CancelDiagramRequest(ref diagramCurrentRequest);
+        using var request = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, pollCancellation.Token);
+        diagramCurrentRequest = request;
+        var generation = ++diagramCurrentGeneration;
         var revision = diagramSelectionRevision;
         var epoch = Interlocked.Read(ref identityEpoch);
+        var id = instance.Id;
+        var workflowId = instance.Workflow.Id;
         diagramNodeExecutionsLoading = diagramNodeExecutions is null;
+        diagramNodeExecutionsError = null;
         IReadOnlyList<NodeExecutionSummaryDto> executions;
         long total;
+        var lookupSucceeded = false;
         try
         {
             var page = await Api.SearchNodeExecutionsAsync(new NodeExecutionSearchBodyRequest
             {
-                InstanceId = instance.Id,
+                InstanceId = id,
                 NodeId = nodeId,
                 Sort = [new SearchSortDto("id", "desc")],
                 Page = 1,
                 PageSize = 50
-            }, cancellationToken);
+            }, request.Token);
             executions = page.Items;
             total = page.TotalCount;
+            lookupSucceeded = true;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (OperationCanceledException) when (request.IsCancellationRequested) { return; }
+        catch (Exception ex)
         {
-            // A failed lookup only leaves the diagram without node-execution links.
             executions = [];
             total = 0;
+            if (IsDiagramRequestCurrent(id, workflowId, epoch) && revision == diagramSelectionRevision
+                && generation == diagramCurrentGeneration)
+            {
+                diagramNodeExecutionsError = ExecutionLookupError(ex);
+                if (IsDiagramPermissionFailure(ex)) ClearHistoricalExecutionPermission();
+            }
         }
 
         if (disposed || revision != diagramSelectionRevision
-            || epoch != Interlocked.Read(ref identityEpoch)) return;
+            || generation != diagramCurrentGeneration || !IsDiagramRequestCurrent(id, workflowId, epoch)) return;
+        if (lookupSucceeded && total == 0 && diagramHistoryEnabled)
+        {
+            // This lookup includes every version, so an empty authorized result
+            // also invalidates any historical page, including one still in flight.
+            // Empty success may mean retention or permission loss; it is not a 403.
+            ResetDiagramExecutionPage();
+            diagramHistoricalExecutions = [];
+        }
         diagramNodeExecutions = executions;
         diagramNodeExecutionTotal = total;
         diagramNodeExecutionsLoading = false;
+        if (ReferenceEquals(diagramCurrentRequest, request)) diagramCurrentRequest = null;
     }
 
     private string? GetFlowInput(int flowId, string variableName) =>
@@ -1711,6 +1862,7 @@ else
     {
         disposed = true;
         Interlocked.Increment(ref identityEpoch);
+        ResetDiagramState(resetToggle: true, resetSelection: true);
         Token.Changed -= OnIdentityChanged;
         pollCancellation.Cancel();
         if (pollTask is not null)

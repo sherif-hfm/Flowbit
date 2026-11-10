@@ -291,11 +291,69 @@ public sealed class InstanceDiagramOverlayTests
         var moved = Overlay.Build(Instance("running", [Position(1, 4, BpmnFlowNodeTypes.UserTask, "active")]));
 
         var json = JsonSerializer.Serialize(first.ViewerOverlay, new JsonSerializerOptions(JsonSerializerDefaults.Web));
-        Assert.Equal("""{"nodes":[{"id":3,"state":"active","badge":null,"label":"Waiting for user work"}]}""", json);
+        Assert.Equal("""{"nodes":[{"id":3,"state":"active","badge":null,"label":"Waiting for user work","reached":false}],"flows":[]}""", json);
         Assert.Equal(first.Signature, same.Signature);
         Assert.NotEqual(first.Signature, moved.Signature);
         Assert.Empty(Overlay.Build(Instance("unknown", [], currentNodeId: 3)).Markers);
     }
+
+    [Fact]
+    public void HistoryMergesWithoutReplacingCurrentPositionsAndHasDeterministicFlowSignature()
+    {
+        var instance = Instance("running", [Position(1, 3, BpmnFlowNodeTypes.UserTask, "active")],
+            definition: new WorkflowModel
+            {
+                FlowNodes = [new() { Id = 1 }, new() { Id = 3 }],
+                SequenceFlows = [new() { Id = 101, SourceRef = 1, TargetRef = 3 }]
+            });
+        var history = DiagramHistory(instance, [new(3), new(1), new(999)], [new(101, 7), new(999, 2)]);
+        var overlay = Overlay.Build(instance, history);
+        Assert.Single(overlay.Markers);
+        Assert.Equal("active", overlay.Find(3)!.State);
+        Assert.Equal(new[] { 1, 3 }, overlay.ViewerOverlay.Nodes.Select(node => node.Id));
+        Assert.All(overlay.ViewerOverlay.Nodes, node => Assert.True(node.Reached));
+        Assert.Null(overlay.ViewerOverlay.Nodes[0].State);
+        Assert.Equal(7, Assert.Single(overlay.ViewerOverlay.Flows).TraversalCount);
+        Assert.Equal(overlay.Signature, Overlay.Build(instance, history with { Nodes = history.Nodes.Reverse().ToArray() }).Signature);
+        Assert.NotEqual(overlay.Signature, Overlay.Build(instance, history with { Flows = [new(101, 8)] }).Signature);
+        Assert.Empty(Overlay.Build(instance, null).ViewerOverlay.Flows);
+        Assert.Equal("active", Overlay.Build(instance, null).Find(3)!.State);
+    }
+
+    [Fact]
+    public void StaleHistoryCannotBeMergedOntoAnotherRevisionOrVersion()
+    {
+        var instance = Instance("running", [Position(1, 3, BpmnFlowNodeTypes.UserTask, "active")],
+            definition: new WorkflowModel
+            {
+                FlowNodes = [new() { Id = 1 }, new() { Id = 3 }],
+                SequenceFlows = [new() { Id = 101, SourceRef = 1, TargetRef = 3 }]
+            });
+        var summary = DiagramHistory(instance, [new(1), new(3)], [new(101, 7)]);
+        var currentOnly = Overlay.Build(instance);
+        var matching = Overlay.Build(instance, summary);
+        Assert.NotEqual(currentOnly.Signature, matching.Signature);
+        Assert.True(Assert.Single(matching.ViewerOverlay.Nodes, node => node.Id == 1).Reached);
+        Assert.Equal(7, Assert.Single(matching.ViewerOverlay.Flows).TraversalCount);
+        foreach (var stale in new[]
+        {
+            summary with { InstanceId = 99 }, summary with { WorkflowId = 99 },
+            summary with { WorkflowVersion = 99 }, summary with { InstanceUpdatedAt = instance.UpdatedAt.AddSeconds(-1) },
+            summary with { Scope = "anotherScope" }
+        })
+        {
+            var rejected = Overlay.Build(instance, stale);
+            Assert.Equal(currentOnly.Signature, rejected.Signature);
+            Assert.DoesNotContain(rejected.ViewerOverlay.Nodes, node => node.Id == 1);
+            Assert.Empty(rejected.ViewerOverlay.Flows);
+        }
+    }
+
+    internal static InstanceDiagramHistoryDto DiagramHistory(InstanceDetailDto instance,
+        IReadOnlyList<InstanceDiagramHistoryNodeDto>? nodes = null,
+        IReadOnlyList<InstanceDiagramHistoryFlowDto>? flows = null) =>
+        new(instance.Id, instance.Workflow.Id, instance.Workflow.Version, instance.UpdatedAt, Now,
+            "currentVersionAllRuns", new("complete", [], null), nodes ?? [], flows ?? []);
 
     private static (string, string) Pair(FlowbitUi::Flowbit.Ui.Components.Shared.InstanceDiagramMarker? marker)
     {

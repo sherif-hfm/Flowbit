@@ -468,9 +468,12 @@ public sealed class RetentionRepository(RetentionDataSource source, TimeProvider
             {
                 await using var mark = Command(connection, transaction, """
                     UPDATE flowbit.workflow_instances SET "HistoryPrunedAt"=COALESCE("HistoryPrunedAt",@now),
+                        "NodeActivityPrunedAt"=CASE WHEN @node_activity
+                            THEN COALESCE("NodeActivityPrunedAt",@now) ELSE "NodeActivityPrunedAt" END,
                         "UpdatedAt"=@now WHERE "Id"=@id
                     """);
                 Add(mark, "now", now); Add(mark, "id", instanceId.Value);
+                Add(mark, "node_activity", spec.Name == "node_executions");
                 await mark.ExecuteNonQueryAsync(ct);
                 if (spec.Name == "instance_history")
                 {

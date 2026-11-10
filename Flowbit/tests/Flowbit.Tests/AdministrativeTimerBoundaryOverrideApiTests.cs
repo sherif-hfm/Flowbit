@@ -54,6 +54,7 @@ public sealed class AdministrativeTimerBoundaryOverrideApiTests(
         Assert.Equal(1, batch.Summary.SucceededItemCount);
 
         await using var db = fixture.CreateDbContext();
+        await DiagramHistoryEvidenceAssertions.ExitsAsync(fixture, db, instance.Id, (1, 101, 1), (6, 401, 1));
         Assert.Equal(
             WorkflowInstanceStatuses.Completed,
             await db.WorkflowInstances
