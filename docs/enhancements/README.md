@@ -36,7 +36,7 @@ The order favors improvements people feel in everyday work over new runtime capa
 3. [UI-04 Task due date and priority](ui-04-task-due-date-and-priority.md): due dates and priorities saved on each work item, with badges, sorting, and filters in My work. Done.
 4. [UI-05 Live refresh](ui-05-live-refresh.md): change signals only, independent of webhooks.
 5. [UI-07 Version compare](ui-07-version-compare.md)
-6. [INT-01 Outbound lifecycle webhooks](int-01-outbound-lifecycle-webhooks.md)
+6. [INT-01 Outbound lifecycle webhooks](int-01-outbound-lifecycle-webhooks.md). Done; deferred verification is tracked in [INT-02](int-02-webhook-verification-follow-ups.md).
 
 ### Next tier
 
@@ -82,7 +82,8 @@ Other items are not ranked yet.
 
 | ID | Item | Effort | Depends on | Status |
 | --- | --- | --- | --- | --- |
-| [INT-01](int-01-outbound-lifecycle-webhooks.md) | Outbound lifecycle webhooks | L | None | In progress |
+| [INT-01](int-01-outbound-lifecycle-webhooks.md) | Outbound lifecycle webhooks | L | None | Done |
+| [INT-02](int-02-webhook-verification-follow-ups.md) | Webhook verification follow-ups | M | [INT-01](int-01-outbound-lifecycle-webhooks.md) | Not started |
 
 ## Flowbit.Ui and human work
 

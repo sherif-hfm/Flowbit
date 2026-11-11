@@ -4,7 +4,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | In progress |
+| Status | Done |
 | Category | Integration |
 | Effort | L — revised from M after planning the event ledger, delivery queue, security, and recovery work |
 | Priority | Recommended order #6 |
@@ -15,7 +15,7 @@
 
 Subscriptions deliver committed lifecycle events to external systems: instance started, completed, faulted, cancelled, or reactivated; task created, assigned, completed, or cancelled; delegation granted; and incident opened. PostgreSQL triggers record each subscribed event in the transaction that makes the change. A separate PostgreSQL-backed queue in the Worker sends HTTP requests signed according to [Standard Webhooks](https://www.standardwebhooks.com/), records attempts, retries transient failures, backs off from unavailable receivers, and exposes failed deliveries for recovery.
 
-The event record also provides the foundation for [UI-13](ui-13-notification-center.md). [UI-05](ui-05-live-refresh.md) remains independent. The first release is implemented, and this document stays its plan and design record: [Current state](#current-state) lists what is verified and what still blocks **Done**. The shipped behavior is described in the [developer guide](../developer-guide.md#lifecycle-webhooks), [API reference](../api-guide.md#lifecycle-webhooks), [UI guide](../ui-guide.md#lifecycle-webhooks), [deployment guide](../deployment.md#lifecycle-webhooks), and [database schema](../database-schema.md#lifecycle-webhooks).
+The event record also provides the foundation for [UI-13](ui-13-notification-center.md). [UI-05](ui-05-live-refresh.md) remains independent. The first release is complete under the revised acceptance scope below, and this document stays its plan and design record: [Current state](#current-state) records the verification evidence and the additional checks deferred to [INT-02](int-02-webhook-verification-follow-ups.md). The shipped behavior is described in the [developer guide](../developer-guide.md#lifecycle-webhooks), [API reference](../api-guide.md#lifecycle-webhooks), [UI guide](../ui-guide.md#lifecycle-webhooks), [deployment guide](../deployment.md#lifecycle-webhooks), and [database schema](../database-schema.md#lifecycle-webhooks).
 
 ## Why it adds value
 
@@ -25,9 +25,9 @@ The event record also provides the foundation for [UI-13](ui-13-notification-cen
 
 ## First release acceptance criteria
 
-Revised by this plan on 2026-11-07. Check these only after implementation and verification.
+Revised on 2026-11-10 at the project owner's request: accept the implemented first release using the evidence in [Current state](#current-state). Additional performance measurements, automated browser and process-level crash acceptance, remaining producer assertions, and key-recovery rehearsals are deferred to [INT-02](int-02-webhook-verification-follow-ups.md). They are no longer completion gates for INT-01; this scope change does not claim those checks passed.
 
-- [ ] All eleven event types in the [catalog](#2-event-catalog-and-producer-coverage) are recorded by database triggers in their source transactions, covering API, Worker, raw SQL, set-based multi-instance, message-start, call-activity, and administrative paths.
+- [x] Database triggers record all eleven event types in the [catalog](#2-event-catalog-and-producer-coverage) in their source transactions, with capture tests and a producer sweep as evidence. Dedicated message-start and administrative-action event assertions remain deferred.
 - [x] Rolled-back mutations, unchanged command retries, and transitions that match no active subscription record nothing. Reactivation records `instance.reactivated` and can produce a later, distinct terminal event.
 - [x] Settings administrators manage subscriptions, filters, signing-key rotation, pause/resume, test events, and archival through the API and Flowbit.Ui.
 - [x] Payloads contain object identifiers, node external IDs, and bounded lifecycle metadata, never variables, business keys, workflow definitions, JWT claims, diagnostics, or credentials. Internal recipient identifiers support UI-13 without being sent externally.
@@ -37,7 +37,7 @@ Revised by this plan on 2026-11-07. Check these only after implementation and ve
 - [x] Failed deliveries and attempts are visible and support revision-protected retry/discard, individually and in bounded bulk.
 - [x] HTTPS, destination checks, bounded HTTP execution, protected keys, and Standard Webhooks signature verification are specified and tested.
 - [x] Retention protects pending and recoverable work without altering runtime history or reactivation eligibility.
-- [ ] Migration, the database capture switch, multiple Workers, crash recovery, receiver backoff, browser interactions, receiver deduplication, and the delivery throughput targets are verified with synthetic local data.
+- [x] Existing PostgreSQL tests and recorded manual browser runs verify migration, the capture switch, dispatch fencing/recovery, receiver backoff, and management interactions. Full process-level multi-Worker crash/restart and receiver-deduplication acceptance, automated browser lifecycle coverage, throughput measurements, and key-recovery rehearsals remain deferred.
 
 ## Later releases
 
@@ -50,7 +50,7 @@ Revised by this plan on 2026-11-07. Check these only after implementation and ve
 
 ## Current state
 
-Verified against the repository on 2026-11-08: the first release is implemented, and the findings of two independent reviews that day are fixed, except the time-zone finding listed last. The item stays **In progress** until the gaps listed last are closed.
+Accepted as **Done** on 2026-11-10 at the project owner's request under the revised acceptance criteria above. The implementation and review fixes were verified on 2026-11-08 as recorded below; the time-zone finding was also fixed that day. This status update preserves the existing test evidence and defers the remaining verification to [INT-02](int-02-webhook-verification-follow-ups.md); it adds no new runtime or browser test results.
 
 - **Capture.** Migration `20261107154545_AddOutboundLifecycleWebhooks` adds the event, subscription, revision, signing-key, delivery, attempt, audit, and key-ring tables, the capture switch `flowbit.set_lifecycle_event_capture`, a `flowbit.uuid_v7()` function for PostgreSQL 17, and deferred constraint triggers on `workflow_instances`, `user_tasks`, `workflow_incidents`, and `user_delegations`. No application code emits events, so every API, Worker, and raw SQL writer is captured once the switch is on. The later `ConsolidateLifecycleCaptureSettings` migration moves the switch into the canonical `Webhooks.CaptureEnabled` row in `engine_settings`, adds actor metadata, and removes the original singleton table. It requires a coordinated API/UI/Worker upgrade; see [deployment](../deployment.md#rollout).
 - **Delivery.** The Worker's [LifecycleEventFanoutService.cs](../../Flowbit/src/Flowbit.Worker/LifecycleEventFanoutService.cs) and [WebhookDispatcher.cs](../../Flowbit/src/Flowbit.Worker/WebhookDispatcher.cs) fan out, lease, sign, send, retry, back off, and pause, gated by `Webhooks:DeliveryEnabled`. `/health/ready` reports a webhook problem as `Degraded` without failing job processing, and `/metrics` adds webhook series.
@@ -67,6 +67,8 @@ The second review's fixes:
 
 - **Lease fence.** Prepare-send and finalize compared the lease expiry with `now()`, the transaction's start, so a lock wait that outlasted the lease still passed: a reproduction on PostgreSQL returned **Send** 1.5 seconds after the lease expired. They now compare with `clock_timestamp()` read after the delivery row is locked. A lease that ends while prepare-send waits is lost, and recovery returns the delivery to the queue without spending an attempt.
 - **Delivery actions.** Delivery list items carry `canRetry` and `canDiscard`, computed with the detail's rules, so each row's **Retry** and **Discard** no longer depend on which subscriptions the loaded page lists. A paused subscription's failed event delivery no longer offers a Retry the API refuses. The bulk actions and the **Subscription** filter keep the filtered subscription, fetching it when the subscription list shows another page.
+
+The subsequent time-zone fix in commit `63faeae` makes displayed times and the deliveries **From** and **To** filters use the browser's zone, with a labelled UTC fallback. See [Times and time zones](../ui-guide.md#times-and-time-zones). This is resolved, not deferred work.
 
 Verified so far:
 
@@ -96,17 +98,16 @@ Verified so far:
   - bulk retry from the first page retried only its two deliveries, which the receiver rejected again;
   - there was no horizontal overflow at 1024×768, 1440×900, or 390×844, and no console errors outside a deliberate UI restart.
 
-Still open before **Done**:
+Deferred verification, tracked in [INT-02](int-02-webhook-verification-follow-ups.md) and no longer blocking **Done**:
 
 - Delivery throughput targets and capture cost with 0, 1, and 100 subscriptions and a 1,000-child multi-instance commit are not measured.
-- Neither browser suite has webhook scenarios, and the multi-Worker crash and restart acceptance run was not built. Dispatch tests cover the remaining failure modes against real PostgreSQL instead:
+- Browser smoke tests now cover webhook time-zone labels and capture-setting navigation, but full subscription/delivery lifecycle scenarios and the multi-Worker crash/restart acceptance run, including receiver deduplication, remain deferred. Dispatch tests cover the following failure modes against real PostgreSQL:
   - acquirers racing at the same time;
   - lease loss during a send and a hard stop;
   - a Worker crash after the receiver accepted;
   - expired leases and stale finalizers.
 - Message-start and administrative-action producers have no per-path event assertions; the producer sweep shows only that they commit with capture on. Call-activity admission, version-change batch, and Worker timer-start incident paths now have them.
 - Restoring the key ring on another host, and the certificate-loss recovery steps in the [deployment guide](../deployment.md#signing-keys-and-the-key-ring), are not rehearsed end to end. Tests cover two hosts sharing the ring, a certificate change through `PreviousCertificates`, and a host that cannot unwrap the ring.
-- The deliveries **From** and **To** filters read the entered time in the UI server's time zone, not the browser's. So does every time Flowbit.Ui shows, so the filters agree with the delivery times on the page, but not with a user's clock when the zones differ. A separate task covers the whole UI.
 
 ## Builds on
 
@@ -298,7 +299,7 @@ Archival first commits the subscription gate, then a bounded coordinator discard
 
 Initial operational defaults: 16 HTTP sends per Worker, per-subscription maximum concurrency 4 (settable from 1 to 16), fanout batch 100, poll interval 5 seconds, HTTP timeout 15 seconds (the low end of the Standard Webhooks recommendation), lease 60 seconds, heartbeat 15 seconds. Enforce per-subscription concurrency under the dispatch-state row lock, not just a process semaphore. An expired request may still reach the receiver while recovery starts: this is not strict remote serialization. Give webhook sends their own concurrency so dead receivers do not starve timers/call results. Update `WorkerConnectionPool` budgets/tests for dispatcher/fanout capacity. No database connection remains held during remote I/O.
 
-Throughput targets, measured and recorded in phase 5 before release: with the defaults and a receiver answering in 100 ms, one subscription sustains at least 25 deliveries per second and one Worker at least 100 across subscriptions; also record database transactions per delivery. Ordering is not promised, so nothing requires one request at a time. That limit would cap a subscription near 18,000 deliveries an hour at 200 ms, so the 400,000 or more events of a 200,000-instance `InstanceLoadTest` run would take over 22 hours to deliver.
+Throughput targets, with measurement deferred to [INT-02](int-02-webhook-verification-follow-ups.md): with the defaults and a receiver answering in 100 ms, target at least 25 deliveries per second for one subscription and at least 100 for one Worker across subscriptions; also record database transactions per delivery. These are unmeasured targets, not a first-release guarantee. Ordering is not promised, so nothing requires one request at a time. That limit would cap a subscription near 18,000 deliveries an hour at 200 ms, so the 400,000 or more events of a 200,000-instance `InstanceLoadTest` run would take over 22 hours to deliver.
 
 ### 6. Acknowledgement, retry, and receiver behavior
 
@@ -438,23 +439,25 @@ Rollout:
 
 ### 11. Implementation phases and completion gates
 
-Keep the capture switch and delivery off until end-to-end release gates pass. Each phase includes tests and owning documentation.
+The phases below retain the original implementation plan. The revised [first release acceptance criteria](#first-release-acceptance-criteria) govern completion; the additional verification assigned to [INT-02](int-02-webhook-verification-follow-ups.md) is deferred. For each deployment, keep capture and delivery off until the rollout checks above pass.
 
 | Phase | Work | Exit gate |
 | --- | --- | --- |
 | 1. Contracts/inventory | Pin the catalog, trigger transition rules, golden bodies, Standard Webhooks vectors, state/retry/backoff rules, DTOs, limits. | Every producer path mapped to its row change and expected events; representative payloads/signature vectors fixed. |
 | 2. Storage/capture | Migration, entities/repositories, capture functions and triggers, capture switch, immutable revisions, protected keys and key ring, audit. | Upgrade populated database; trigger, rollback, and concurrency constraints pass on real PostgreSQL. |
-| 3. Producer coverage | Prove every API/Worker/raw SQL path, set-based MI, and `ON CONFLICT` insert, with no application producer code. | Full producer matrix passes, including writes made outside the current repositories. |
+| 3. Producer coverage | Prove API/Worker/raw SQL paths, set-based MI, and `ON CONFLICT` inserts, with no application producer code. | Capture tests and producer sweep accepted; dedicated message-start and administrative-action event assertions deferred to INT-02. |
 | 4. API | Management, pause/resume, test events, rotation, paging, single and bulk recovery, the delegation filter, authorization, OpenAPI. | HTTP privilege/concurrency/secret-disclosure checks pass. |
-| 5. Dispatch | Fanout, leases/fairness/concurrency, receiver backoff and automatic pause, signatures, SSRF transport, retries/attempts/manual recovery. | Real PostgreSQL and controlled receiver prove duplicate/crash/multi-Worker behavior and the throughput targets. |
-| 6. Operations | Retention, pool budgets, telemetry, readiness, deployment/key-recovery/emergency-stop runbooks. | Cleanup races, old coordinator state, restore, outage isolation, and notification load pass. |
-| 7. UI/release | Pages/client/navigation, browser acceptance, receiver walkthrough, final docs. | Evidence reviewed and every acceptance criterion met before Done. |
+| 5. Dispatch | Fanout, leases/fairness/concurrency, receiver backoff and automatic pause, signatures, SSRF transport, retries/attempts/manual recovery. | Existing PostgreSQL dispatch tests and controlled-receiver checks accepted; process-level crash/restart/deduplication acceptance and throughput measurements deferred to INT-02. |
+| 6. Operations | Retention, pool budgets, telemetry, readiness, deployment/key-recovery/emergency-stop runbooks. | Existing retention, health, pool, and key-protection tests accepted; end-to-end key recovery and capture-load measurements deferred to INT-02. |
+| 7. UI/release | Pages/client/navigation, browser acceptance, receiver walkthrough, final docs. | Recorded manual browser evidence and revised acceptance criteria accepted; full automated browser lifecycle coverage deferred to INT-02. |
 
-Phases 3/4 can proceed in parallel after phase 2 contracts settle; UI can proceed against phase 4 contracts while dispatch is completed. Producer coverage, SSRF, key restore, receiver backoff, and retention protection are first-release requirements.
+The original sequencing allowed phases 3/4 in parallel after phase 2 contracts settled, and UI work against phase 4 contracts while dispatch was completed. The 2026-11-10 scope decision defers only the verification listed in INT-02; it does not change shipped behavior or operational guidance.
 
 ### 12. Tests and verification
 
-| Area | Required scenarios |
+This inventory includes both existing coverage and the additional checks deferred to [INT-02](int-02-webhook-verification-follow-ups.md). It is not a claim that every scenario has run; [Current state](#current-state) records the available evidence.
+
+| Area | Verification scenarios |
 | --- | --- |
 | Atomicity | Rollback and savepoint rollback remove source/event; a trigger error rolls back the source at commit; unchanged retries, capture off, the transaction-local `off` setting, and zero matching subscriptions store nothing. |
 | Instances | Ordinary/message/timer/call start, immediate end, partial parallel end, terminate/error/cancel, reactivation (`instance.reactivated`, then its `task.created`) followed by another end, child completion independent of parent delivery. |

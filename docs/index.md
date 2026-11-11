@@ -50,8 +50,9 @@ are kept as history. The [AI authoring guide](ai-authoring.md) describes support
 
 ## Enhancement backlog
 
-The [enhancement backlog](enhancements/README.md) lists candidate task types,
-events, integrations, and Flowbit.Ui features that are not implemented yet.
+The [enhancement backlog](enhancements/README.md) tracks planned and completed
+task types, events, integrations, and Flowbit.Ui features, plus deferred work
+such as the [webhook verification follow-ups](enhancements/int-02-webhook-verification-follow-ups.md).
 Each item records its status, the evidence for that status, open questions, and
 a plan section to complete before implementation starts.
 
