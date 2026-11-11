@@ -56,6 +56,14 @@ such as the [webhook verification follow-ups](enhancements/int-02-webhook-verifi
 Each item records its status, the evidence for that status, open questions, and
 a plan section to complete before implementation starts.
 
+[TASK-05 automatic multi-instance activities](enhancements/task-05-multi-instance-automatic-activities.md)
+coordinates separate plans for the [shared core](enhancements/task-05a-multi-instance-core.md),
+[service activities](enhancements/task-05b-multi-instance-service-activities.md),
+[script activities](enhancements/task-05c-multi-instance-script-activities.md), and
+[call activities](enhancements/task-05d-multi-instance-call-activities.md).
+All four are planned work required for its first release, not currently supported
+automatic multi-instance behavior.
+
 ## Refactoring history
 
 The staged refactoring plans and gap inventory that guided earlier contributor
