@@ -69,6 +69,12 @@ Other items are not ranked yet.
 [TASK-05](task-05-multi-instance-automatic-activities.md) is the parent release
 plan. Its shared core and three activity plans are separate implementation work
 items; **all four are required for the first release, including call activities**.
+The first release also includes shared-variable collections, reads and writes,
+shared aggregate/error targets, and interrupting/non-interrupting timer and
+conditional boundaries on the whole automatic body. TASK-05A owns their snapshot,
+publication-conflict, and boundary-lifecycle contracts; conditional predicates
+retain the existing instance-only dependency rule. These are planned capabilities,
+not implemented behavior.
 The core owns common contracts, and the parent owns combined validation and
 rollout. Update each subtask's status here, in its file, and in the parent's
 subtask table together.
