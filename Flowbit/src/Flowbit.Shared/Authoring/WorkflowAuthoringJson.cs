@@ -108,6 +108,7 @@ public static class WorkflowAuthoringJson
             [(typeof(MultiInstanceModel), "source")] = typeof(MultiInstanceSources),
             [(typeof(MultiInstanceModel), "completionEvaluation")] = typeof(MultiInstanceCompletionEvaluations),
             [(typeof(VariableModel), "dataType")] = typeof(WorkflowVariableTypes),
+            [(typeof(MultiInstanceOutputVariableModel), "dataType")] = typeof(WorkflowVariableTypes),
             [(typeof(VariableModel), "scope")] = typeof(VariableScopes),
             [(typeof(VariableModel), "access")] = typeof(SharedVariableAccessModes),
             [(typeof(ServiceOutputMappingModel), "dataType")] = typeof(WorkflowVariableTypes),
@@ -133,6 +134,7 @@ public static class WorkflowAuthoringJson
         : type == typeof(SequenceFlowModel) ? ["id", "sourceRef", "targetRef"]
         : type == typeof(LaneModel) ? ["id", "name"]
         : type == typeof(VariableModel) ? ["id", "name", "dataType"]
+        : type == typeof(MultiInstanceOutputVariableModel) ? ["name", "dataType"]
         : type == typeof(VariableOptionModel) ? ["value"]
         : type == typeof(HttpStatusRangeModel) ? ["from", "to"]
         : type == typeof(CallActivityModel) ? ["workflowKey"]

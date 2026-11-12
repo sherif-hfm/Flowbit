@@ -50,6 +50,7 @@ public static class SharedVariableAccessPlanner
             .ToDictionary(variable => variable.Name, StringComparer.OrdinalIgnoreCase);
         var nodes = new Dictionary<int, MutableNodePlan>();
         var flows = new Dictionary<int, SharedVariableFlowAccessPlan>();
+        var automaticPhases = new Dictionary<AutomaticMultiInstanceAccessKey, SharedVariableAutomaticPhaseAccessPlan>();
 
         MutableNodePlan Node(int nodeId)
         {
@@ -169,9 +170,13 @@ public static class SharedVariableAccessPlanner
             {
                 if (IsWritableShared(mapping?.Variable, out var alias)) nodePlan.Producers.Add(alias);
             }
-            // A call writes only instance variables, but a target's rule may read a shared alias.
+            // Ordinary calls write only instance variables; automatic items may
+            // explicitly publish a declared shared target.
             foreach (var mapping in node.CallActivity?.OutputMappings ?? [])
             {
+                if (AutomaticMultiInstanceRules.IsAutomaticBody(node)
+                    && IsWritableShared(mapping?.Variable, out var callOutputAlias))
+                    nodePlan.Producers.Add(callOutputAlias);
                 if (!string.IsNullOrWhiteSpace(mapping?.Variable)
                     && variables.TryGetValue(mapping.Variable, out var target))
                 {
@@ -185,6 +190,22 @@ public static class SharedVariableAccessPlanner
             if (IsWritableShared(node.MultiInstance?.ResultVariable, out var resultAlias))
             {
                 nodePlan.Producers.Add(resultAlias);
+            }
+            if (AutomaticMultiInstanceRules.IsAutomaticBody(node))
+            {
+                if (node.MultiInstance!.CollectionVariable is { } sourceAlias && bindings.TryGetValue(sourceAlias, out var sourceBinding))
+                    nodePlan.Reads.Add(sourceBinding.Name);
+                foreach (var output in node.MultiInstance.OutputVariables ?? [])
+                {
+                    if (output is null) continue;
+                    AddExpressionReads(nodePlan, output.Validation);
+                    AddDefaultReads(nodePlan, output.DefaultValue);
+                }
+                if (variables.TryGetValue(node.MultiInstance.ResultVariable, out var aggregateTarget))
+                    AddExpressionReads(nodePlan, aggregateTarget.Validation);
+                foreach (var mapping in node.CallActivity?.InputMappings ?? [])
+                    if (mapping is not null && bindings.TryGetValue(mapping.SourceVariable, out var inputBinding))
+                        nodePlan.Reads.Add(inputBinding.Name);
             }
 
             if (node.Service is not null)
@@ -245,6 +266,125 @@ public static class SharedVariableAccessPlanner
             flows[flow.Id] = new SharedVariableFlowAccessPlan(flow.Id, producers);
         }
 
+        foreach (var node in (definition.FlowNodes ?? []).Where(AutomaticMultiInstanceRules.IsAutomaticBody))
+        {
+            var configuration = node.MultiInstance!;
+            var initialize = new MutableNodePlan();
+            var stage = new MutableNodePlan();
+            var publish = new MutableNodePlan();
+            var complete = new MutableNodePlan();
+            var boundaries = (definition.FlowNodes ?? []).Where(boundary =>
+                boundary.AttachedToRef == node.Id && BpmnFlowNodeTypes.IsErrorBoundary(boundary.Type)).ToArray();
+            var reserved = boundaries.Select(boundary => boundary.ErrorVariable)
+                .Append(configuration.CollectionVariable).Append(configuration.ResultVariable)
+                .Where(alias => alias is not null).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var reservedKeys = bindings.Values.Where(binding => reserved.Contains(binding.Name))
+                .Select(binding => binding.SharedKey!).ToHashSet(StringComparer.Ordinal);
+
+            void Target(MutableNodePlan phase, string? alias)
+            {
+                if (IsWritableShared(alias, out var canonical)) phase.Producers.Add(canonical);
+                if (alias is not null && variables.TryGetValue(alias, out var variable))
+                {
+                    var dependencies = new MutableNodePlan();
+                    AddExpressionReads(dependencies, variable.Validation);
+                    phase.Reads.UnionWith(dependencies.Reads.Where(read => !string.Equals(read, canonical, StringComparison.OrdinalIgnoreCase)));
+                }
+            }
+            void ItemValidation(MutableNodePlan phase, string? expression)
+            {
+                var dependencies = new MutableNodePlan();
+                AddExpressionReads(dependencies, expression);
+                // The candidate overlay supplies its produced values. Their
+                // catalog rows are still locked/fenced, but an unset old value
+                // must not prevent validating a first successful write.
+                phase.Reads.UnionWith(dependencies.Reads.Where(alias => !phase.Producers.Contains(alias)));
+            }
+            void Save(string phase, MutableNodePlan value, int? boundaryId = null)
+            {
+                var frozenReads = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                if (phase != AutomaticMultiInstanceAccessPhases.Initialize
+                    && bindings.TryGetValue(configuration.CollectionVariable ?? string.Empty, out var sourceBinding))
+                    foreach (var alias in value.Reads.Where(alias => bindings.TryGetValue(alias, out var binding)
+                                 && binding.SharedKey == sourceBinding.SharedKey).ToArray())
+                    {
+                        value.Reads.Remove(alias);
+                        frozenReads.Add(alias);
+                    }
+                automaticPhases[new(node.Id, phase, boundaryId)] = new(value.Producers, value.Reads, frozenReads,
+                    phase == AutomaticMultiInstanceAccessPhases.Initialize ? configuration.CollectionVariable : null);
+            }
+
+            Target(initialize, configuration.ResultVariable);
+            Target(complete, configuration.ResultVariable);
+            foreach (var timer in (definition.FlowNodes ?? []).Where(boundary => boundary.AttachedToRef == node.Id
+                         && BpmnFlowNodeTypes.IsTimerBoundary(boundary.Type)).Select(boundary => boundary.Timer).OfType<TimerDefinitionModel>())
+            {
+                AddExpressionReads(initialize, TimerDefinitionRules.ClassifyScheduleValue(
+                    TimerDefinitionRules.TimeDateProperty, timer.TimeDate, allowExpressions: true).Expression);
+                AddExpressionReads(initialize, TimerDefinitionRules.ClassifyScheduleValue(
+                    TimerDefinitionRules.TimeDurationProperty, timer.TimeDuration, allowExpressions: true).Expression);
+            }
+            if (bindings.TryGetValue(configuration.CollectionVariable ?? string.Empty, out var source))
+                initialize.Reads.Add(source.Name);
+            foreach (var target in AutomaticMultiInstanceRules.ItemOutputTargets(node))
+            {
+                Target(stage, target);
+                Target(publish, target);
+            }
+            foreach (var local in configuration.OutputVariables ?? [])
+            {
+                if (local is null) continue;
+                AddDefaultReads(stage, local.DefaultValue);
+                ItemValidation(stage, local.Validation);
+                ItemValidation(publish, local.Validation);
+            }
+            foreach (var mapping in node.Service?.OutputMappings ?? [])
+            {
+                AddDefaultReads(stage, mapping.DefaultValue);
+                ItemValidation(stage, mapping.Validation);
+                ItemValidation(publish, mapping.Validation);
+            }
+            foreach (var assignment in node.Assignments ?? []) AddExpressionReads(stage, assignment.Expression);
+            foreach (var mapping in node.CallActivity?.InputMappings ?? [])
+                if (bindings.TryGetValue(mapping.SourceVariable, out var binding)) stage.Reads.Add(binding.Name);
+            if (node.Service is { } service)
+                foreach (var alias in ServiceTaskTemplating.GetPlaceholderNames(service.Headers.Select(header => header.Value)
+                    .Prepend(service.Body).Prepend(service.Url).ToArray()).Where(bindings.ContainsKey))
+                    stage.Reads.Add(bindings[alias].Name);
+
+            if (BpmnFlowNodeTypes.IsScriptTask(node.Type) && node.ScriptFormat == ScriptFormats.JavaScript)
+            {
+                // Computed getters/setters cannot be statically narrowed. This
+                // conservative scope belongs only to this dynamic script phase.
+                foreach (var binding in bindings.Values)
+                {
+                    stage.Reads.Add(binding.Name);
+                    if (!reserved.Contains(binding.Name) && !reservedKeys.Contains(binding.SharedKey!)
+                        && binding.Access == SharedVariableAccessModes.ReadWrite)
+                    {
+                        Target(stage, binding.Name);
+                        Target(publish, binding.Name);
+                    }
+                }
+            }
+
+            publish.Reads.ExceptWith(publish.Producers);
+
+            // A collection is copied at initialization and is never reread by
+            // later phases, even when a template/validation names its alias.
+            Save(AutomaticMultiInstanceAccessPhases.Initialize, initialize);
+            Save(AutomaticMultiInstanceAccessPhases.StageItem, stage);
+            Save(AutomaticMultiInstanceAccessPhases.PublishItem, publish);
+            Save(AutomaticMultiInstanceAccessPhases.Complete, complete);
+            foreach (var boundary in boundaries)
+            {
+                var error = new MutableNodePlan();
+                Target(error, boundary.ErrorVariable);
+                Save(AutomaticMultiInstanceAccessPhases.Error, error, boundary.Id);
+            }
+        }
+
         return new SharedVariableAccessPlan(
             nodes.ToDictionary(
                 pair => pair.Key,
@@ -252,7 +392,8 @@ public static class SharedVariableAccessPlanner
                     pair.Key,
                     pair.Value.Producers,
                     pair.Value.Reads)),
-            flows);
+            flows,
+            automaticPhases);
     }
 
     private sealed class MutableNodePlan

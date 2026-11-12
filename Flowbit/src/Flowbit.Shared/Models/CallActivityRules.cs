@@ -139,6 +139,7 @@ public static class CallActivityRules
 
             foreach (var mapping in (node.Service?.OutputMappings ?? []).OfType<ServiceOutputMappingModel>())
             {
+                if (AutomaticMultiInstanceRules.IsLocalOutput(node, mapping.Variable)) continue;
                 var dataType = mapping.DataType ?? WorkflowVariableTypes.Json;
                 var isArray = mapping.IsArray ?? false;
                 Add(new CallSourceDeclaration(
@@ -148,7 +149,8 @@ public static class CallActivityRules
                     MayBeNull: !mapping.Required && !isArray && dataType == WorkflowVariableTypes.Json));
             }
 
-            if (!string.IsNullOrWhiteSpace(node.Service?.StatusVariable))
+            if (!string.IsNullOrWhiteSpace(node.Service?.StatusVariable)
+                && !AutomaticMultiInstanceRules.IsLocalOutput(node, node.Service.StatusVariable))
             {
                 Add(new CallSourceDeclaration(node.Service!.StatusVariable!, WorkflowVariableTypes.Number, false, false));
             }
@@ -200,7 +202,7 @@ public static class CallActivityRules
 
         return MappingListProblem(owner, "inputMappings", call.InputMappings)
             ?? MappingListProblem(owner, "outputMappings", call.OutputMappings)
-            ?? InputSourceProblem(owner, definition, call)
+            ?? InputSourceProblem(owner, definition, node, call)
             ?? OutputTargetProblem(owner, definition, node, call);
     }
 
@@ -317,6 +319,11 @@ public static class CallActivityRules
 
             var parentTarget = (parent.Variables ?? []).FirstOrDefault(variable =>
                 string.Equals(variable.Name, mapping.Variable, StringComparison.OrdinalIgnoreCase));
+            parentTarget ??= AutomaticMultiInstanceRules.IsAutomaticBody(node)
+                ? (node.MultiInstance!.OutputVariables ?? []).Where(output => output is not null)
+                    .Where(output => string.Equals(output.Name, mapping.Variable, StringComparison.OrdinalIgnoreCase))
+                    .Select(AutomaticMultiInstanceRules.ToVariable).FirstOrDefault()
+                : null;
             if (!mapping.Required
                 && parentTarget is { Nullable: false }
                 && matching.Any(source => source.MayBeNull))
@@ -419,7 +426,7 @@ public static class CallActivityRules
         return IsReservedName(name) ? $"'{name}' uses a reserved context prefix." : null;
     }
 
-    private static string? InputSourceProblem(string owner, WorkflowModel definition, CallActivityModel call)
+    private static string? InputSourceProblem(string owner, WorkflowModel definition, FlowNodeModel node, CallActivityModel call)
     {
         var sources = SourceDeclarations(definition);
         foreach (var mapping in call.InputMappings)
@@ -429,7 +436,7 @@ public static class CallActivityRules
                 return $"{owner} input source '{mapping.SourceVariable}' is never declared or produced by this workflow.";
             }
 
-            if (declared.Any(source => source.IsShared))
+            if (declared.Any(source => source.IsShared) && !AutomaticMultiInstanceRules.IsAutomaticBody(node))
             {
                 return $"{owner} input source '{mapping.SourceVariable}' is a shared-variable alias, which a call mapping cannot read.";
             }
@@ -453,12 +460,18 @@ public static class CallActivityRules
         {
             var target = (definition.Variables ?? []).FirstOrDefault(variable =>
                 string.Equals(variable.Name, mapping.Variable, StringComparison.OrdinalIgnoreCase));
+            target ??= AutomaticMultiInstanceRules.IsAutomaticBody(node)
+                ? (node.MultiInstance!.OutputVariables ?? []).Where(output => output is not null)
+                    .Where(output => string.Equals(output.Name, mapping.Variable, StringComparison.OrdinalIgnoreCase))
+                    .Select(AutomaticMultiInstanceRules.ToVariable).FirstOrDefault()
+                : null;
             if (target is null)
             {
                 return $"{owner} output target '{mapping.Variable}' must be a declared process variable.";
             }
 
-            if (string.Equals(target.Scope, VariableScopes.Shared, StringComparison.Ordinal))
+            if (string.Equals(target.Scope, VariableScopes.Shared, StringComparison.Ordinal)
+                && (!AutomaticMultiInstanceRules.IsAutomaticBody(node) || target.Access != SharedVariableAccessModes.ReadWrite))
             {
                 return $"{owner} output target '{target.Name}' is a shared-variable alias; a call writes only instance process variables.";
             }

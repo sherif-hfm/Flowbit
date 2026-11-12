@@ -796,7 +796,10 @@ public sealed class InstanceVariableUpdateBatchService(
                 position.ActivationId,
                 position.WaitState,
                 position.WaitingJobId,
-                position.WaitingTimerSubscriptionId)).ToArray())
+                position.WaitingTimerSubscriptionId)
+            {
+                MultiInstanceActivityKind = position.MultiInstanceActivityKind
+            }).ToArray())
         {
             Variables = item.Variables
         };

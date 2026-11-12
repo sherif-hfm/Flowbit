@@ -255,6 +255,13 @@ public sealed partial class WorkflowEngineService
                 cancellationToken))
             .OrderBy(execution => execution.Id)
             .ToList();
+        var activeAutomaticMultiInstances = automaticMultiInstances is null
+            ? []
+            : (await automaticMultiInstances.GetProgressAsync(instance.Id, cancellationToken))
+                .Select(progress => progress.Execution)
+                .Where(body => body.Status == MultiInstanceRecordStatuses.Active)
+                .OrderBy(body => body.Id)
+                .ToList();
         var activeGatewayExecutions = (await runtime.ListGatewayExecutionsAsync(
                 instance.Id,
                 GatewayExecutionRecordStatuses.Active,
@@ -350,6 +357,7 @@ public sealed partial class WorkflowEngineService
             ActiveTokens = activeTokens,
             OpenUserTasks = openUserTasks,
             ActiveMultiInstanceExecutions = activeMultiInstances,
+            ActiveAutomaticMultiInstances = activeAutomaticMultiInstances,
             ActiveGatewayExecutions = activeGatewayExecutions,
             ActiveGatewayBranches = activeGatewayBranches,
             ActiveComplexGatewayStates = complexStates,

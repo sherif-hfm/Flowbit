@@ -1189,15 +1189,18 @@ public static class InboxVisibilityConditionCompiler
 
                 if (node.Service is not null)
                 {
+                    // Item-local outputs of an automatic body are never stored on the
+                    // instance, so the inbox predicate cannot read them.
                     foreach (var mapping in node.Service.OutputMappings ?? [])
                     {
-                        if (mapping is not null)
+                        if (mapping is not null && !AutomaticMultiInstanceRules.IsLocalOutput(node, mapping.Variable))
                         {
                             Add(mapping.Variable, mapping.DataType, mapping.IsArray, $"service task #{node.Id} output");
                         }
                     }
 
-                    if (!string.IsNullOrWhiteSpace(node.Service.StatusVariable))
+                    if (!string.IsNullOrWhiteSpace(node.Service.StatusVariable)
+                        && !AutomaticMultiInstanceRules.IsLocalOutput(node, node.Service.StatusVariable))
                     {
                         Add(
                             node.Service.StatusVariable,

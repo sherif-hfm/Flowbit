@@ -312,6 +312,20 @@ Parallel branches can create several work items for one instance. Multi-instance
 
 An early quorum, an interrupt, or another actor may cancel unfinished work. With one-per-actor voting, several actors can initially see the same representative item; the first completion wins. A successful child action also does not necessarily complete the parent execution. Inspect **Execution positions**, **Multi-instance results**, and any available parent interrupt controls on instance detail. Engine-only aggregate/default flows are not ordinary action buttons. See [multi-instance semantics](bpmn-support.md#human-work-and-multi-instance-tasks).
 
+The inactive [TASK-05A foundation](enhancements/task-05a-multi-instance-core.md)
+also has a separate **Automatic multi-instance work** panel. Automatic execution
+remains gated until B/C/D integration. When automatic body data is available, the
+panel shows item counts, concurrency and saved results. A current body control
+incident displays **Needs attention**, its type, control job ID and incident ID,
+including when all items have completed but aggregate publication is blocked.
+These correlations grant no Operations or retry permission. Retrying an output
+version conflict accepts the saved publication against current versions; other
+retries preserve the original version checks. While a body is open, instance detail
+refreshes on its own, and the diagram marks the node with an **Automatic items**
+progress badge; the node's panel lists its items. The workflow editor shows the
+multi-instance controls on service, script, and call nodes only when the API reports
+the Development-only capability as open.
+
 ## Inspect instances and activity
 
 Use **Instances** to filter runs, then open a result. On instance detail:

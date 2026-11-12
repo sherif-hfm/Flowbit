@@ -193,6 +193,21 @@ public sealed class WorkflowJobOperationsServiceTests
             detail.LastFailureDescription);
     }
 
+    [Fact]
+    public async Task AutomaticItemCorrelationIsReturnedWithoutChangingOperationsAuthority()
+    {
+        var repository = new StubJobRepository
+        {
+            Job = CreateJob(null, null) with { AutomaticMultiInstanceItemId = 71 }
+        };
+        var service = new WorkflowJobOperationsService(repository, new StubEngineSettingsRepository("ops"), TimeProvider.System);
+        var detail = await service.GetJobAsync(repository.Job.Id,
+            new ActorContext("operator", ["ops"], new Dictionary<string, string>()), CancellationToken.None);
+        Assert.Equal(71, detail!.Summary.AutomaticMultiInstanceItemId);
+        await Assert.ThrowsAsync<WorkflowForbiddenException>(() => service.GetJobAsync(repository.Job.Id,
+            new ActorContext("reader", ["NodeActivityReader"], new Dictionary<string, string>()), CancellationToken.None));
+    }
+
     private sealed class StubEngineSettingsRepository(string? value) : IEngineSettingsRepository
     {
         public Task<EngineSettingRecord?> GetByKeyAsync(string key, CancellationToken cancellationToken) =>

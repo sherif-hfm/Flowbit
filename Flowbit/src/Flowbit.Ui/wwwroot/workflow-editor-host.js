@@ -35,6 +35,7 @@ export async function create(root, dotnet, urls) {
         : dotnet.invokeMethodAsync(method, ...args).catch(() => ({ status: "unavailable" }));
     const editor = window.FlowbitEditor.mount(root, {
         mode: "hosted",
+        automaticMultiInstanceEnabled: urls.automaticMultiInstanceEnabled === true,
         onChange: state => notify("EditorChanged", state.dirty, state.revision),
         onReplace: () => { snapshot = null; notify("EditorReplaced"); },
         onSaveRequested: () => disposed ? Promise.resolve() : dotnet.invokeMethodAsync("SaveEditor"),

@@ -90,7 +90,7 @@ public sealed partial class WorkflowRuntimeRepository
         {
             execution = dbContext.MultiInstanceExecutions.Local.SingleOrDefault(row => row.Id == miId)
                 ?? throw new InvalidOperationException("The multi-instance execution must be locked first.");
-            if (execution.InstanceId != instanceId || execution.Status != MultiInstanceExecutionStatuses.Active)
+            if (execution.ActivityKind != "userTask" || execution.InstanceId != instanceId || execution.Status != MultiInstanceExecutionStatuses.Active)
                 throw new WorkflowConflictException("The multi-instance execution is no longer active.");
             tasks = await dbContext.UserTasks.FromSqlInterpolated($"SELECT * FROM flowbit.user_tasks WHERE \"InstanceId\" = {instanceId} AND \"MultiInstanceExecutionId\" = {miId} AND \"Status\" IN ('active', 'pending') ORDER BY \"Id\" FOR UPDATE")
                 .ToListAsync(cancellationToken);

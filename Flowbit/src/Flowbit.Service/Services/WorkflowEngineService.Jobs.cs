@@ -378,6 +378,10 @@ public sealed partial class WorkflowEngineService
         DateTimeOffset activatedAt,
         CancellationToken cancellationToken)
     {
+        if (!await IsBoundaryHostEligibleAsync(host, token, timer: true, cancellationToken))
+        {
+            return;
+        }
         var boundaries = definition.FlowNodes
             .Where(candidate =>
                 BpmnFlowNodeTypes.IsTimerBoundary(candidate.Type)
@@ -583,6 +587,19 @@ public sealed partial class WorkflowEngineService
                 tokenIds,
                 cancellationToken);
         }
+        if (automaticMultiInstances is not null)
+        {
+            var bodies = await automaticMultiInstances.GetProgressAsync(instanceId, cancellationToken);
+            foreach (var progress in bodies.Where(item => tokenIds.Contains(item.Execution.TokenId)
+                         && item.Execution.Status == MultiInstanceRecordStatuses.Active).OrderBy(item => item.Execution.Id))
+            {
+                await automaticMultiInstances.CancelUnfinishedItemsAsync(
+                    progress.Execution.Id, progress.Execution.ActivationId, reason, cancellationToken);
+                await automaticMultiInstances.SettleAsync(
+                    progress.Execution.Id, progress.Execution.ActivationId,
+                    MultiInstanceRecordStatuses.Cancelled, reason, cancellationToken);
+            }
+        }
         // A timer/scoped continuation may cancel its own host token while the
         // current durable job is still finalizing. Fence every other job in the
         // affected set so in-flight work receives a heartbeat abort without
@@ -594,6 +611,7 @@ public sealed partial class WorkflowEngineService
             reason,
             cancellationToken);
         await AbandonCallsForTokensAsync(instanceId, tokenIds, cancellationToken);
+        await AbandonAutomaticCallsForTokensAsync(instanceId, tokenIds, cancellationToken);
     }
 
     private WorkflowJobCreateRecord BuildJobCreate(
@@ -614,7 +632,9 @@ public sealed partial class WorkflowEngineService
         long? conditionalBoundaryHostTokenId = null,
         bool? conditionalBoundaryCancelActivity = null)
     {
-        var retryDelays = ResolveRetryDelays(node);
+        var automaticControl = kind is WorkflowJobKinds.MultiInstanceStart
+            or WorkflowJobKinds.MultiInstanceDispatch or WorkflowJobKinds.MultiInstanceComplete;
+        var retryDelays = automaticControl ? DefaultRetryDelays : ResolveRetryDelays(node);
         return new WorkflowJobCreateRecord
         {
             InstanceId = instance.Id,
@@ -629,15 +649,15 @@ public sealed partial class WorkflowEngineService
             NodeName = node.Name,
             NodeType = node.Type,
             Kind = kind,
-            QueueClass = BpmnFlowNodeTypes.IsServiceTask(node.Type)
-                         || BpmnFlowNodeTypes.IsScriptTask(node.Type)
+            QueueClass = !automaticControl && (BpmnFlowNodeTypes.IsServiceTask(node.Type)
+                         || BpmnFlowNodeTypes.IsScriptTask(node.Type))
                 ? WorkflowJobClasses.Activity
                 : WorkflowJobClasses.Control,
             Phase = phase,
             DueAt = dueAt,
             Priority = DefaultJobPriority,
             MaxAttempts = retryDelays.Count + 1,
-            FailureHandling = node.Job?.FailureHandling
+            FailureHandling = (automaticControl ? null : node.Job?.FailureHandling)
                 ?? WorkflowJobFailureHandling.BoundaryFirst,
             RetryDelays = retryDelays,
             Payload = JsonSerializer.SerializeToElement(
@@ -1033,11 +1053,22 @@ public sealed partial class WorkflowEngineService
                 return;
             }
 
+            if (lease.Job.Kind is WorkflowJobKinds.MultiInstanceDispatch or WorkflowJobKinds.MultiInstanceComplete)
+            {
+                await ProcessAutomaticMultiInstanceControlJobAsync(lease, fence, cancellationToken);
+                return;
+            }
+            if (lease.Job.Kind == WorkflowJobKinds.MultiInstanceItem)
+                throw new WorkflowJobInvariantException("The automatic activity item adapter is not installed.");
+
             if (lease.Job.Kind == WorkflowJobKinds.AsyncBefore
                 && (BpmnFlowNodeTypes.IsServiceTask(lease.Job.NodeType)
                     || BpmnFlowNodeTypes.IsScriptTask(lease.Job.NodeType))
                 && lease.Job.Status != WorkflowJobStatuses.ResultReady)
             {
+                var entryDefinition = await GetWorkflowAsync(lease.Job.WorkflowDefinitionId, cancellationToken);
+                var entryNode = entryDefinition.Definition.FlowNodes.SingleOrDefault(node => node.Id == lease.Job.NodeId);
+                if (entryNode is not null) EnsureAutomaticMultiInstanceRuntimeAvailable(entryNode);
                 if (BpmnFlowNodeTypes.IsServiceTask(lease.Job.NodeType))
                 {
                     await StageAndInvokeServiceJobAsync(lease, fence, cancellationToken);
@@ -1176,6 +1207,16 @@ public sealed partial class WorkflowEngineService
                 ex.Message);
             await jobs.CompleteAsync(fence, cancellationToken);
         }
+        catch (AutomaticMultiInstancePublicationConflictException)
+        {
+            unitOfWork.DiscardChanges();
+            WorkflowJobRuntimeTelemetry.RecordConflict();
+            if (await jobs.OpenIncidentAsync(fence, "output_version_conflict",
+                    $"Automatic aggregate output conflict at node #{lease.Job.NodeId}.",
+                    "Retry accepts publication of the saved result against the current target value.",
+                    cancellationToken) is not null)
+                WorkflowJobRuntimeTelemetry.RecordIncident();
+        }
         catch (WorkflowOutputVersionConflictException ex)
         {
             unitOfWork.DiscardChanges();
@@ -1264,7 +1305,31 @@ public sealed partial class WorkflowEngineService
             return true;
         }
 
+        if (automaticMultiInstances is not null && job.MultiInstanceExecutionId is long automaticBodyId
+            && token.WaitingMultiInstanceExecutionId == automaticBodyId
+            && job.Kind is WorkflowJobKinds.MultiInstanceItem or WorkflowJobKinds.MultiInstanceDispatch or WorkflowJobKinds.MultiInstanceComplete)
+        {
+            var body = await automaticMultiInstances.GetAsync(automaticBodyId, false, cancellationToken);
+            if (body is null || body.Status != MultiInstanceRecordStatuses.Active
+                || body.ActivationId != job.ActivationId || body.TokenId != token.Id
+                || body.WorkflowDefinitionId != job.WorkflowDefinitionId || body.InstanceId != job.InstanceId)
+                return false;
+            if (job.AutomaticMultiInstanceItemId is long itemId)
+            {
+                var item = await automaticMultiInstances.GetItemAsync(body.Id, itemId, false, cancellationToken);
+                return body.CompletionIntent is null && item?.Status == "active";
+            }
+            return body.ControlGeneration == job.MultiInstanceControlGeneration;
+        }
+
         if (job.Kind != WorkflowJobKinds.TimerBoundary)
+        {
+            return false;
+        }
+
+        var workflow = await GetWorkflowAsync(job.WorkflowDefinitionId, cancellationToken);
+        if (!await IsBoundaryHostEligibleAsync(GetFlowNode(workflow.Definition, token.NodeId),
+                token, timer: true, cancellationToken))
         {
             return false;
         }
@@ -1841,6 +1906,7 @@ public sealed partial class WorkflowEngineService
         ActorContext actor,
         CancellationToken cancellationToken)
     {
+        EnsureAutomaticMultiInstanceRuntimeAvailable(node);
         var payload = ReadJobPayload(job);
 
         // Force the cached immutable-definition safety proof before any shared
@@ -1867,10 +1933,19 @@ public sealed partial class WorkflowEngineService
         }
 
         if (job.Kind == WorkflowJobKinds.AsyncAfter
-            && BpmnFlowNodeTypes.IsUserTask(node.Type)
+            && (BpmnFlowNodeTypes.IsUserTask(node.Type) || AutomaticMultiInstanceRules.IsAutomaticBody(node))
             && payload?.SelectedFlowId is int selectedFlowId)
         {
-            await FinalizeUserTaskAsyncAfterAsync(
+            if (AutomaticMultiInstanceRules.IsAutomaticBody(node))
+            {
+                var body = automaticMultiInstances is not null && job.MultiInstanceExecutionId is long bodyId
+                    ? await automaticMultiInstances.GetAsync(bodyId, true, cancellationToken) : null;
+                if (body is null || body.Status != MultiInstanceRecordStatuses.Completed
+                    || body.TokenId != token.Id || body.ActivationId != token.ActivationId
+                    || body.WorkflowDefinitionId != instance.WorkflowDefinitionId)
+                    throw new WorkflowConflictException("The automatic async-after job no longer owns its completed body.");
+            }
+            await FinalizeSelectedFlowAsyncAfterAsync(
                 instance,
                 token,
                 job,
@@ -2058,7 +2133,7 @@ public sealed partial class WorkflowEngineService
         return accessPlan.SelectNode(node.Id);
     }
 
-    private async Task FinalizeUserTaskAsyncAfterAsync(
+    private async Task FinalizeSelectedFlowAsyncAfterAsync(
         WorkflowInstanceRecord instance,
         ExecutionTokenRecord token,
         WorkflowJobRecord job,
@@ -2084,7 +2159,7 @@ public sealed partial class WorkflowEngineService
                 cancellationToken))
         {
             throw new WorkflowConflictException(
-                "The async-after job no longer owns the user-task wait.");
+                "The async-after job no longer owns the activity wait.");
         }
 
         var stored = await LoadVariablesAsync(
@@ -2102,6 +2177,8 @@ public sealed partial class WorkflowEngineService
             force: administrativeBatch is not null);
         var historyNote = administrativeBatch is not null
             ? NodeExecutionCompletionReasons.AdministrativeAction
+            : AutomaticMultiInstanceRules.IsAutomaticBody(node)
+                ? InstanceHistoryNotes.AutomaticMultiInstanceCompleted
             : job.MultiInstanceExecutionId is null
                 ? "userTaskAsyncAfter"
                 : "multiInstanceAsyncAfter";
@@ -2124,7 +2201,9 @@ public sealed partial class WorkflowEngineService
             cancellationToken,
             traversalUserTaskId: job.UserTaskId,
             traversalMultiInstanceExecutionId: job.MultiInstanceExecutionId,
-            administrativeBatch: administrativeBatch);
+            administrativeBatch: administrativeBatch,
+            historyPayload: AutomaticMultiInstanceRules.IsAutomaticBody(node) && job.MultiInstanceExecutionId is long bodyId
+                ? AutomaticBodyTraversalPayload(bodyId) : null);
         if (await IsInstanceRunningAsync(instance.Id, cancellationToken))
         {
             var resumed = await runtime.GetInstanceAsync(instance.Id, cancellationToken)
@@ -3281,7 +3360,9 @@ public sealed partial class WorkflowEngineService
             ?? throw new WorkflowJobInvariantException("The timer subscription no longer exists.");
         EnsureTimerSubscriptionFence(subscription, hostToken, job);
         if (subscription.AttachedToNodeId != hostToken.NodeId
-            || boundary.AttachedToRef != hostToken.NodeId)
+            || boundary.AttachedToRef != hostToken.NodeId
+            || !await IsBoundaryHostEligibleAsync(GetFlowNode(definition, hostToken.NodeId),
+                hostToken, timer: true, cancellationToken))
         {
             throw new WorkflowConflictException(
                 "The timer boundary host activation is no longer current.");
@@ -3324,6 +3405,8 @@ public sealed partial class WorkflowEngineService
         {
             var ids = new[] { hostToken.Id };
             var completionActor = ToNodeExecutionActor(timerActor);
+            await CancelAutomaticBodyForBoundaryAsync(hostToken,
+                NodeExecutionCompletionReasons.TimerFired, cancellationToken);
             await runtime.CancelOpenUserTasksForTokensAsync(
                 ids,
                 NodeExecutionCompletionReasons.TimerFired,
@@ -3352,6 +3435,8 @@ public sealed partial class WorkflowEngineService
                 job.Id,
                 "interruptingTimerBoundary",
                 cancellationToken);
+            await AbandonCallsForTokensAsync(instance.Id, ids, cancellationToken);
+            await AbandonAutomaticCallsForTokensAsync(instance.Id, ids, cancellationToken);
 
             await runtime.AddTokenHistoryAsync(
                 instance.Id,
@@ -3438,7 +3523,9 @@ public sealed partial class WorkflowEngineService
                 cancellationToken);
             if (currentHost is not null
                 && currentHost.Status == ExecutionTokenRecordStatuses.Active
-                && currentHost.ActivationId == hostToken.ActivationId)
+                && currentHost.ActivationId == hostToken.ActivationId
+                && await IsBoundaryHostEligibleAsync(GetFlowNode(definition, currentHost.NodeId),
+                    currentHost, timer: true, cancellationToken))
             {
                 await ScheduleNextTimerOccurrenceAsync(
                     instance,

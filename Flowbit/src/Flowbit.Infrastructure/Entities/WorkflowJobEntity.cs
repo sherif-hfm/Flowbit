@@ -13,6 +13,10 @@ public sealed class WorkflowJobEntity
     public long? TokenId { get; set; }
     public ExecutionTokenEntity? Token { get; set; }
     public long? MultiInstanceExecutionId { get; set; }
+    public long? AutomaticMultiInstanceItemId { get; set; }
+    public MultiInstanceActivityItemEntity? AutomaticMultiInstanceItem { get; set; }
+    public long? MultiInstanceControlGeneration { get; set; }
+    public bool PublicationFenceRefreshRequested { get; set; }
     public MultiInstanceExecutionEntity? MultiInstanceExecution { get; set; }
     public long? UserTaskId { get; set; }
     public UserTaskEntity? UserTask { get; set; }

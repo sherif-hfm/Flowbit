@@ -39,6 +39,14 @@ public sealed class WorkflowDefinitionReadinessChecker(
         WorkflowModel definition,
         bool publish)
     {
+        // Development may exercise the authored contract before the activity
+        // adapters exist. It must not publish work which would run only once.
+        if (publish && definition.FlowNodes.Any(AutomaticMultiInstanceRules.IsAutomaticBody))
+        {
+            throw new WorkflowDomainException(
+                "Automatic multi-instance publication is unavailable until the service, script, and call adapters pass the integration release gates.");
+        }
+
         if (!publish
             || durableProcessing.PublicationEnabled
             || !RequiresDurableProcessing(definition))

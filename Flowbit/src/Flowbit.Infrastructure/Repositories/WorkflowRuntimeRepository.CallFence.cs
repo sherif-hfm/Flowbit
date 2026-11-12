@@ -67,6 +67,7 @@ public sealed partial class WorkflowRuntimeRepository
         token.WaitState = null;
         token.WaitingJobId = null;
         token.WaitingTimerSubscriptionId = null;
+        token.WaitingMultiInstanceExecutionId = null;
         token.UpdatedAt = now;
         await dbContext.SaveChangesAsync(cancellationToken);
         return true;

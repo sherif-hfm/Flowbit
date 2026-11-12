@@ -40,7 +40,7 @@ public sealed class InstanceDiagramHistoryQueryRepository(AppDbContext dbContext
                    count(DISTINCT "EnteredViaFlowId")
                      + CASE WHEN bool_or("EnteredViaFlowId" IS NULL) THEN 1 ELSE 0 END > 1 AS "ConflictingEntry"
             FROM visits
-            WHERE "ExecutionKind" = 'userTaskItem'
+            WHERE "ExecutionKind" IN ('userTaskItem', 'automaticActivityItem')
             GROUP BY "MultiInstanceExecutionId"
         ), exits AS (
             SELECT "NodeId", "ExitedViaFlowId" AS "FlowId", count(*) AS "Count"

@@ -54,6 +54,11 @@ internal static class ExecutionPositionText
     /// <summary>What an active position is waiting for.</summary>
     internal static string DescribeWait(ExecutionPositionDto position)
     {
+        // Only the body wait itself; the same activation's async-after continuation,
+        // after the body settles, is ordinary background work.
+        if (position.WaitState == "automaticMultiInstance"
+            && position.MultiInstanceActivityKind is "serviceTask" or "scriptTask" or "callActivity")
+            return $"Waiting for automatic {NodeTypeLabel(position.MultiInstanceActivityKind).ToLowerInvariant()} items";
         if (position.Call is { } call) return DescribeCall(call);
         if (BpmnFlowNodeTypes.IsCallActivity(position.NodeType)) return "Waiting for a call activity";
         if (IsBackgroundWait(position)) return "Queued for background processing";

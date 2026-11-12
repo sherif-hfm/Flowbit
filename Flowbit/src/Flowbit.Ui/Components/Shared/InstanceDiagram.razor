@@ -104,6 +104,9 @@
                             var progress = position.MultiInstanceExecutionId is long progressId
                                 ? InstanceDiagramOverlay.FindProgress(Instance, progressId)
                                 : null;
+                            var automaticProgress = position.MultiInstanceExecutionId is long automaticId
+                                ? InstanceDiagramOverlay.FindAutomaticProgress(Instance, automaticId)
+                                : null;
                             var items = ChildExecutions(position);
                             var execution = position.MultiInstanceExecutionId is null ? TokenExecution(position) : null;
                             // A multi-instance position links its visible items; without them, one work item.
@@ -117,6 +120,10 @@
                                 @if (progress is not null)
                                 {
                                     <p>@ProgressText(progress)</p>
+                                }
+                                else if (automaticProgress is not null)
+                                {
+                                    <p>@AutomaticProgressText(automaticProgress)</p>
                                 }
                                 @if (taskId is not null || execution is not null || position.Call?.ChildInstanceId is not null)
                                 {
@@ -137,7 +144,7 @@
                                 }
                                 @if (items.Count > 0)
                                 {
-                                    <ul class="instance-diagram-items" aria-label="Work items">
+                                    <ul class="instance-diagram-items" aria-label="@(automaticProgress is null ? "Work items" : "Automatic items")">
                                         @foreach (var item in items.Take(MaxChildLinks))
                                         {
                                             <li>
@@ -152,7 +159,7 @@
                                     </ul>
                                     @if (items.Count > MaxChildLinks)
                                     {
-                                        <p class="instance-diagram-note">@MoreItemsText(items.Count - MaxChildLinks)</p>
+                                        <p class="instance-diagram-note">@MoreItemsText(items.Count - MaxChildLinks, automaticProgress is null ? "work items" : "items")</p>
                                     }
                                 }
                             </li>
@@ -539,14 +546,19 @@
             : [];
 
     // The lookup returns one page; once it is cut short, the exact number is unknown.
-    private string MoreItemsText(int unlisted) =>
+    private string MoreItemsText(int unlisted, string noun) =>
         NodeExecutions is not null && NodeExecutionsTotal > NodeExecutions.Count
-            ? $"and at least {unlisted} more visible work items"
-            : $"and {unlisted} more visible work items";
+            ? $"and at least {unlisted} more visible {noun}"
+            : $"and {unlisted} more visible {noun}";
 
     private static string ProgressText(MultiInstanceProgressDto progress) =>
         $"{progress.Completed} of {progress.Total} completed · {progress.Active} active" +
         (progress.Pending > 0 ? $" · {progress.Pending} pending" : string.Empty);
+
+    private static string AutomaticProgressText(AutomaticMultiInstanceProgressDto progress) =>
+        $"Automatic items: {progress.CompletedCount} of {progress.TotalCount} completed · {progress.ActiveCount} active" +
+        (progress.PendingCount > 0 ? $" · {progress.PendingCount} pending" : string.Empty) +
+        (progress.FailedCount > 0 ? $" · {progress.FailedCount} need attention" : string.Empty);
 
     private static string ChildLabel(NodeExecutionSummaryDto execution) =>
         execution.ItemIndex is int index

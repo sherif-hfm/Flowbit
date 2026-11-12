@@ -50,7 +50,7 @@ public sealed class ExpressionTimerAcceptanceTests(ExampleAcceptanceFixture fixt
             await WaitForInteractiveAsync(scenario.Page);
             var jobRow = JobRow(scenario.Page, instance.Id);
             await Assertions.Expect(jobRow).ToContainTextAsync("Wait Until Contract End");
-            await Assertions.Expect(jobRow.Locator($"span[title='{timer.DueAt:O}']")).ToBeVisibleAsync();
+            await Assertions.Expect(jobRow.Locator($"time[title='{timer.DueAt:O}']")).ToBeVisibleAsync();
             await CaptureAsync(scenario, "contract-operations");
 
             // Moving the input later does not move the saved due time, even across a Worker restart.

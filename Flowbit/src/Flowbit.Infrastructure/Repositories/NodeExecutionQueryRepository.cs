@@ -43,6 +43,7 @@ public sealed class NodeExecutionQueryRepository(AppDbContext dbContext)
                ne."ExecutionTokenId" AS "TokenId",
                ne."UserTaskId" AS "UserTaskId",
                ne."MultiInstanceExecutionId" AS "MultiInstanceExecutionId",
+               ne."AutomaticMultiInstanceItemId" AS "AutomaticMultiInstanceItemId",
                ne."ItemIndex" AS "ItemIndex",
                ne."EntryGatewayBranchId" AS "EntryGatewayBranchId",
                ne."ExitGatewayBranchId" AS "ExitGatewayBranchId",
@@ -574,6 +575,7 @@ public sealed class NodeExecutionQueryRepository(AppDbContext dbContext)
             TokenId = row.TokenId,
             UserTaskId = row.UserTaskId,
             MultiInstanceExecutionId = row.MultiInstanceExecutionId,
+            AutomaticMultiInstanceItemId = row.AutomaticMultiInstanceItemId,
             ItemIndex = row.ItemIndex,
             EntryGatewayBranchId = row.EntryGatewayBranchId,
             ExitGatewayBranchId = row.ExitGatewayBranchId,
@@ -621,6 +623,7 @@ public sealed class NodeExecutionQueryRepository(AppDbContext dbContext)
             TokenId = row.TokenId,
             UserTaskId = row.UserTaskId,
             MultiInstanceExecutionId = row.MultiInstanceExecutionId,
+            AutomaticMultiInstanceItemId = row.AutomaticMultiInstanceItemId,
             ItemIndex = row.ItemIndex,
             EntryGatewayBranchId = row.EntryGatewayBranchId,
             ExitGatewayBranchId = row.ExitGatewayBranchId,
@@ -672,7 +675,7 @@ public sealed class NodeExecutionQueryRepository(AppDbContext dbContext)
     private static NodeExecutionMultiInstanceDto? ToMultiInstance(
         NodeExecutionPageRow row)
     {
-        if (row.MultiInstanceExecutionId is not long executionId)
+        if (row.MultiInstanceExecutionId is not long executionId || row.ExecutionKind == NodeExecutionRecordKinds.AutomaticActivityItem)
         {
             return null;
         }
@@ -762,6 +765,7 @@ public sealed class NodeExecutionQueryRepository(AppDbContext dbContext)
         public long TokenId { get; set; }
         public long? UserTaskId { get; set; }
         public long? MultiInstanceExecutionId { get; set; }
+        public long? AutomaticMultiInstanceItemId { get; set; }
         public int? ItemIndex { get; set; }
         public long? EntryGatewayBranchId { get; set; }
         public long? ExitGatewayBranchId { get; set; }

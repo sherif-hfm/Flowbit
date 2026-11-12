@@ -22,6 +22,8 @@ public sealed class NodeExecutionEntity
     public MultiInstanceExecutionEntity? MultiInstanceExecution { get; set; }
 
     public int? ItemIndex { get; set; }
+    public long? AutomaticMultiInstanceItemId { get; set; }
+    public MultiInstanceActivityItemEntity? AutomaticMultiInstanceItem { get; set; }
 
     public int NodeId { get; set; }
     public string NodeName { get; set; } = string.Empty;
@@ -70,6 +72,7 @@ public static class NodeExecutionKinds
 {
     public const string Node = "node";
     public const string UserTaskItem = "userTaskItem";
+    public const string AutomaticActivityItem = "automaticActivityItem";
 }
 
 public static class NodeExecutionStatuses

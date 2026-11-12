@@ -621,9 +621,25 @@ public static class WorkflowModelMigrator
             node.Idempotency.Variable = node.Idempotency.Variable?.Trim()!;
         }
 
+        // Preserve automatic and unsupported authored MI metadata. Validation must
+        // reject it, rather than silently changing an imported body's semantics.
+        if (node.MultiInstance is { } automatic && AutomaticMultiInstanceRules.IsAutomaticNode(node))
+        {
+            automatic.Mode = CanonicalizeKnown(automatic.Mode, MultiInstanceModes.Parallel, MultiInstanceModes.Sequential);
+            automatic.Source = CanonicalizeKnown(automatic.Source, MultiInstanceSources.Collection, MultiInstanceSources.Cardinality);
+            automatic.CompletionEvaluation = CanonicalizeKnown(automatic.CompletionEvaluation,
+                MultiInstanceCompletionEvaluations.AfterEach, MultiInstanceCompletionEvaluations.AfterAll);
+            foreach (var output in automatic.OutputVariables ?? [])
+            {
+                if (output is null) continue;
+                output.DataType = CanonicalizeKnown(output.DataType, WorkflowVariableTypes.String,
+                    WorkflowVariableTypes.Number, WorkflowVariableTypes.Boolean, WorkflowVariableTypes.Date,
+                    WorkflowVariableTypes.DateTime, WorkflowVariableTypes.Json);
+            }
+        }
+
         if (!BpmnFlowNodeTypes.IsUserTask(node.Type))
         {
-            node.MultiInstance = null;
             node.RequiresAssignment = false;
             node.AssignmentMode = AssignmentModes.Fresh;
             node.InheritAssignmentFromNodeId = null;

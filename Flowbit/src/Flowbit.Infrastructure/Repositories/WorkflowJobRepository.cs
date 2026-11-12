@@ -112,6 +112,8 @@ public sealed class WorkflowJobRepository(
             WorkflowKey = create.WorkflowKey,
             TokenId = create.TokenId,
             MultiInstanceExecutionId = create.MultiInstanceExecutionId,
+            AutomaticMultiInstanceItemId = create.AutomaticMultiInstanceItemId,
+            MultiInstanceControlGeneration = create.MultiInstanceControlGeneration,
             UserTaskId = create.UserTaskId,
             TimerSubscriptionId = create.TimerSubscriptionId,
             ConditionalBoundarySubscriptionId = create.ConditionalBoundarySubscriptionId,
@@ -197,6 +199,10 @@ public sealed class WorkflowJobRepository(
                 WHERE "Id" = {jobId}
                 FOR UPDATE
                 """)
+            // Leasing and fenced phase changes use SQL updates. A previously
+            // tracked queued record must not hide the lease or recovery state
+            // that is protected by this database lock.
+            .AsNoTracking()
             .SingleOrDefaultAsync(cancellationToken);
 
         if (entity is null)
@@ -1401,15 +1407,18 @@ public sealed class WorkflowJobRepository(
 
     public Task<long> CountOpenByInstanceAsync(
         long instanceId,
-        CancellationToken cancellationToken) =>
-        dbContext.WorkflowJobs
-            .AsNoTracking()
-            .LongCountAsync(job =>
-                job.InstanceId == instanceId
-                && job.Status != WorkflowJobStatuses.Completed
-                && job.Status != WorkflowJobStatuses.Cancelled
-                && job.Status != WorkflowJobStatuses.Skipped,
-                cancellationToken);
+        CancellationToken cancellationToken) => dbContext.Database.SqlQuery<long>($"""
+            SELECT (
+                SELECT count(*) FROM flowbit.workflow_jobs job WHERE job."InstanceId" = {instanceId}
+                    AND job."Status" NOT IN ('completed', 'cancelled', 'skipped')
+                    AND NOT (job."Kind" IN ('multiInstanceDispatch', 'multiInstanceComplete') AND EXISTS (
+                        SELECT 1 FROM flowbit.multi_instance_executions body WHERE body."Id" = job."MultiInstanceExecutionId"
+                            AND body."ActivityKind" <> 'userTask' AND body."Status" = 'active'))
+            ) + (
+                SELECT count(*) FROM flowbit.multi_instance_executions body WHERE body."InstanceId" = {instanceId}
+                    AND body."ActivityKind" <> 'userTask' AND body."Status" = 'active'
+            ) AS "Value"
+            """).SingleAsync(cancellationToken);
 
     public async Task<WorkflowJobQueueStatisticsRecord> GetQueueStatisticsAsync(
         CancellationToken cancellationToken)
@@ -1662,6 +1671,10 @@ public sealed class WorkflowJobRepository(
                 job.TimerSubscriptionId,
                 job.ConditionalBoundarySubscriptionId,
                 job.ConditionalBoundaryOccurrence,
+                job.CallInvocationId,
+                job.AutomaticMultiInstanceItemId,
+                job.MultiInstanceControlGeneration,
+                job.PublicationFenceRefreshRequested,
                 job.ActivationId,
                 job.AutomaticActivationCount,
                 job.NodeId,
@@ -1749,7 +1762,11 @@ public sealed class WorkflowJobRepository(
                 row.CompletedAt,
                 row.AutomaticActivationCount,
                 row.ConditionalBoundarySubscriptionId,
-                row.ConditionalBoundaryOccurrence)).ToArray(),
+                row.ConditionalBoundaryOccurrence,
+                row.CallInvocationId,
+                row.AutomaticMultiInstanceItemId,
+                row.MultiInstanceControlGeneration,
+                row.PublicationFenceRefreshRequested)).ToArray(),
             page,
             pageSize,
             total)
@@ -1865,6 +1882,7 @@ public sealed class WorkflowJobRepository(
                 incident.CreatedAt,
                 incident.UpdatedAt,
                 incident.ResolvedAt,
+                AutomaticMultiInstanceItemId = incident.Job == null ? null : incident.Job.AutomaticMultiInstanceItemId,
                 CallTargetInstanceId = incident.Job!.Kind == WorkflowJobKinds.CallResume
                     ? (long?)incident.Job.CallInvocation!.ParentInstanceId
                     : incident.Job.Kind == WorkflowJobKinds.CallCancel
@@ -1897,7 +1915,8 @@ public sealed class WorkflowJobRepository(
                 incident.CreatedAt,
                 incident.UpdatedAt,
                 incident.ResolvedAt,
-                incident.CallTargetInstanceId)).ToArray(),
+                incident.CallTargetInstanceId,
+                incident.AutomaticMultiInstanceItemId)).ToArray(),
             page,
             pageSize,
             total)
@@ -1916,6 +1935,7 @@ public sealed class WorkflowJobRepository(
             .Select(incident => new
             {
                 Incident = incident,
+                AutomaticMultiInstanceItemId = incident.Job == null ? null : incident.Job.AutomaticMultiInstanceItemId,
                 CallTargetInstanceId = incident.Job!.Kind == WorkflowJobKinds.CallResume
                     ? (long?)incident.Job.CallInvocation!.ParentInstanceId
                     : incident.Job.Kind == WorkflowJobKinds.CallCancel
@@ -1925,7 +1945,11 @@ public sealed class WorkflowJobRepository(
             .SingleOrDefaultAsync(cancellationToken);
         return row is null
             ? null
-            : MapIncident(row.Incident) with { CallTargetInstanceId = row.CallTargetInstanceId };
+            : MapIncident(row.Incident) with
+            {
+                CallTargetInstanceId = row.CallTargetInstanceId,
+                AutomaticMultiInstanceItemId = row.AutomaticMultiInstanceItemId
+            };
     }
 
     public async Task<WorkflowJobRecord?> RetryIncidentAsync(
@@ -1943,6 +1967,9 @@ public sealed class WorkflowJobRepository(
                 incident.JobId,
                 incident.InstanceId,
                 TokenId = incident.Job == null ? null : incident.Job.TokenId,
+                MultiInstanceExecutionId = incident.Job == null ? null : incident.Job.MultiInstanceExecutionId,
+                AutomaticMultiInstanceItemId = incident.Job == null ? null : incident.Job.AutomaticMultiInstanceItemId,
+                JobKind = incident.Job == null ? null : incident.Job.Kind,
                 ActivationId = incident.Job == null
                     ? (Guid?)null
                     : incident.Job.ActivationId
@@ -1992,6 +2019,31 @@ public sealed class WorkflowJobRepository(
                 .SingleOrDefaultAsync(cancellationToken)
                 ?? throw new WorkflowConflictException(
                     "The incident's execution token no longer exists.");
+        }
+        MultiInstanceExecutionEntity? automaticBody = null;
+        MultiInstanceActivityItemEntity? automaticItem = null;
+        // Only the body's own item and control jobs need an open body. Its
+        // async-after job also names the body, but runs after settlement, so
+        // it is retried as an ordinary job.
+        if (incidentLookup.MultiInstanceExecutionId is long bodyId
+            && incidentLookup.JobKind is WorkflowJobKinds.MultiInstanceItem
+                or WorkflowJobKinds.MultiInstanceDispatch or WorkflowJobKinds.MultiInstanceComplete)
+        {
+            automaticBody = await dbContext.MultiInstanceExecutions
+                .FromSqlInterpolated($"SELECT * FROM flowbit.multi_instance_executions WHERE \"Id\" = {bodyId} AND \"ActivityKind\" <> 'userTask' FOR UPDATE")
+                .SingleOrDefaultAsync(cancellationToken);
+            if (automaticBody is not null && (automaticBody.Status != "active"
+                || automaticBody.InstanceId != incidentLookup.InstanceId || automaticBody.TokenId != incidentLookup.TokenId
+                || automaticBody.ActivationId != incidentLookup.ActivationId))
+                throw new WorkflowConflictException("The automatic multi-instance body is no longer current.");
+            if (incidentLookup.AutomaticMultiInstanceItemId is long itemId)
+            {
+                automaticItem = await dbContext.MultiInstanceActivityItems
+                    .FromSqlInterpolated($"SELECT * FROM flowbit.multi_instance_activity_items WHERE \"Id\" = {itemId} AND \"MultiInstanceExecutionId\" = {bodyId} FOR UPDATE")
+                    .SingleOrDefaultAsync(cancellationToken);
+                if (automaticBody is null || automaticItem?.Status != "active")
+                    throw new WorkflowConflictException("The automatic multi-instance item is no longer retryable.");
+            }
         }
         var job = await dbContext.WorkflowJobs
             .FromSqlInterpolated(
@@ -2104,10 +2156,33 @@ public sealed class WorkflowJobRepository(
         job.MaxAttempts = Math.Max(job.MaxAttempts, checked(job.AttemptCount + 1));
         job.DueAt = dueAt;
         job.UpdatedAt = now;
-        job.ResultReadyAt = null;
-        job.ResultJson = null;
+        // A call item publishes its saved candidate from the child's callResume.
+        // The parent's rows are only read here: this transaction must never lock
+        // a second existing instance.
+        var deliveredItemId = job.Kind == WorkflowJobKinds.CallResume && job.CallInvocationId is long deliveredInvocationId
+            ? await dbContext.CallActivityExecutions.AsNoTracking()
+                .Where(call => call.Id == deliveredInvocationId)
+                .Select(call => call.AutomaticMultiInstanceItemId)
+                .SingleOrDefaultAsync(cancellationToken)
+            : null;
+        var automaticCallPublication = deliveredItemId is long candidateItemId
+            && await dbContext.MultiInstanceActivityItems.AsNoTracking()
+                .AnyAsync(item => item.Id == candidateItemId && item.CandidateJson != null, cancellationToken);
+        var publicationOnly = automaticCallPublication || automaticBody is not null
+            && (automaticItem?.CandidateJson is not null || job.Kind == WorkflowJobKinds.MultiInstanceComplete);
+        if (!publicationOnly)
+        {
+            job.ResultReadyAt = null;
+            job.ResultJson = null;
+        }
         job.ErrorJson = null;
-        if (string.Equals(
+        if (publicationOnly)
+        {
+            // Only an output-conflict retry authorizes replacement of a newer value.
+            // Other incidents retain the candidate AND its original version fences.
+            job.PublicationFenceRefreshRequested = incident.Type == "output_version_conflict";
+        }
+        else if (string.Equals(
                 incident.Type,
                 "output_version_conflict",
                 StringComparison.Ordinal))
@@ -2117,6 +2192,20 @@ public sealed class WorkflowJobRepository(
             // the same stable job id; the orphaned snapshot is retained until
             // normal cleanup.
             job.SnapshotId = null;
+        }
+        if (automaticBody is not null)
+        {
+            if (automaticItem is not null)
+            {
+                automaticItem.ErrorCode = null;
+                automaticItem.ErrorDescription = null;
+                automaticItem.UpdatedAt = now;
+            }
+            var otherBlockedItem = await dbContext.WorkflowIncidents.AsNoTracking().AnyAsync(other =>
+                other.Id != incident.Id && other.Status == WorkflowIncidentStatuses.Open
+                && other.Job != null && other.Job.MultiInstanceExecutionId == automaticBody.Id,
+                cancellationToken);
+            if (!otherBlockedItem) automaticBody.AdmissionBlockedReason = null;
         }
         job.LastFailureCode = null;
         job.LastFailureDescription = null;
@@ -2222,7 +2311,8 @@ public sealed class WorkflowJobRepository(
                 .ExecuteDeleteAsync(cancellationToken);
 
         var orphanSnapshotIds = await dbContext.WorkflowJobSnapshots
-            .Where(snapshot => !dbContext.WorkflowJobs.Any(job => job.SnapshotId == snapshot.Id))
+            .Where(snapshot => !dbContext.WorkflowJobs.Any(job => job.SnapshotId == snapshot.Id)
+                && !dbContext.MultiInstanceExecutions.Any(body => body.InputSnapshotId == snapshot.Id))
             .OrderBy(snapshot => snapshot.Id)
             .Select(snapshot => snapshot.Id)
             .Take(batchSize)
@@ -2771,6 +2861,8 @@ public sealed class WorkflowJobRepository(
             WorkflowKey = create.WorkflowKey,
             TokenId = create.TokenId,
             MultiInstanceExecutionId = create.MultiInstanceExecutionId,
+            AutomaticMultiInstanceItemId = create.AutomaticMultiInstanceItemId,
+            MultiInstanceControlGeneration = create.MultiInstanceControlGeneration,
             UserTaskId = create.UserTaskId,
             TimerSubscriptionId = create.TimerSubscriptionId,
             ConditionalBoundarySubscriptionId = create.ConditionalBoundarySubscriptionId,
@@ -2843,7 +2935,10 @@ public sealed class WorkflowJobRepository(
             entity.AutomaticActivationCount,
             entity.ConditionalBoundarySubscriptionId,
             entity.ConditionalBoundaryOccurrence,
-            entity.CallInvocationId);
+            entity.CallInvocationId,
+            entity.AutomaticMultiInstanceItemId,
+            entity.MultiInstanceControlGeneration,
+            entity.PublicationFenceRefreshRequested);
 
     private static WorkflowJobSnapshotRecord MapSnapshot(WorkflowJobSnapshotEntity entity) =>
         new(

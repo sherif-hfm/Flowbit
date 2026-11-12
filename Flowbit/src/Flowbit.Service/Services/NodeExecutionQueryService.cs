@@ -21,7 +21,7 @@ public sealed class NodeExecutionQueryService(
     private const int MaxSortCriteria = 3;
 
     private static readonly IReadOnlyDictionary<string, string> ExecutionKinds =
-        CanonicalMap(NodeExecutionRecordKinds.Node, NodeExecutionRecordKinds.UserTaskItem);
+        CanonicalMap(NodeExecutionRecordKinds.Node, NodeExecutionRecordKinds.UserTaskItem, NodeExecutionRecordKinds.AutomaticActivityItem);
 
     private static readonly IReadOnlyDictionary<string, string> ExecutionStatuses =
         CanonicalMap(

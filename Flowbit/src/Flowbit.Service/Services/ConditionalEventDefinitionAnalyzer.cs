@@ -397,7 +397,8 @@ public sealed class ConditionalEventDefinitionAnalyzer
     /// variable producer, in declaration order and with repeats: process, node,
     /// and sequence-flow variables plus service/message output targets, status
     /// and error targets, and entry idempotency targets. Timer expressions share
-    /// this vocabulary.
+    /// this vocabulary. Item-local outputs of an automatic body are never stored on
+    /// the instance, so they are left out.
     /// </summary>
     internal static IReadOnlyList<string> DeclaredStoredVariableNames(WorkflowModel definition)
     {
@@ -408,12 +409,12 @@ public sealed class ConditionalEventDefinitionAnalyzer
         {
             if (node is null) continue;
             AddVariables(node.Variables);
-            AddTarget(node.Service?.StatusVariable);
+            AddServiceTarget(node, node.Service?.StatusVariable);
             foreach (var mapping in node.Service?.OutputMappings ?? [])
             {
                 if (mapping is not null)
                 {
-                    AddTarget(mapping.Variable);
+                    AddServiceTarget(node, mapping.Variable);
                 }
             }
             foreach (var mapping in node.Message?.OutputMappings ?? [])
@@ -452,6 +453,14 @@ public sealed class ConditionalEventDefinitionAnalyzer
             if (!string.IsNullOrWhiteSpace(value))
             {
                 names.Add(value.Trim());
+            }
+        }
+
+        void AddServiceTarget(FlowNodeModel node, string? value)
+        {
+            if (!AutomaticMultiInstanceRules.IsLocalOutput(node, value?.Trim()))
+            {
+                AddTarget(value);
             }
         }
     }

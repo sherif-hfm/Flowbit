@@ -86,6 +86,12 @@ public static class WorkflowDefinitionEndpoints
             .Produces(StatusCodes.Status401Unauthorized)
             .Produces(StatusCodes.Status403Forbidden);
 
+        // The hosted editor offers only what this server's validator accepts.
+        group.MapGet("/authoring-capabilities", GetAuthoringCapabilities)
+            .Produces<WorkflowAuthoringCapabilitiesDto>(StatusCodes.Status200OK)
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status403Forbidden);
+
         group.MapGet("/", GetLatestWorkflows)
             .Produces<IReadOnlyList<WorkflowSummaryDto>>(StatusCodes.Status200OK)
             .Produces(StatusCodes.Status401Unauthorized)
@@ -185,6 +191,10 @@ public static class WorkflowDefinitionEndpoints
     /// <remarks>The list can be incomplete on a Windows host; the server validates whatever id is submitted.</remarks>
     public static IResult ListTimerScheduleTimeZones(ITimerSchedulePreviewService service) =>
         Results.Ok(service.ListTimeZones());
+
+    public static IResult GetAuthoringCapabilities(
+        [Microsoft.AspNetCore.Mvc.FromServices] AutomaticMultiInstanceOptions automaticMultiInstance) =>
+        Results.Ok(new WorkflowAuthoringCapabilitiesDto(automaticMultiInstance.Enabled));
 
     /// <summary>
     /// Lists the latest versions of all workflow definitions.

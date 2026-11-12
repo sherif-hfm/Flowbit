@@ -336,6 +336,12 @@ try
         .Get<DurableProcessingOptions>() ?? new DurableProcessingOptions();
     builder.Services.AddSingleton(durableProcessingOptions);
 
+    var automaticMultiInstanceOptions = builder.Configuration
+        .GetSection(AutomaticMultiInstanceOptions.SectionName)
+        .Get<AutomaticMultiInstanceOptions>() ?? new AutomaticMultiInstanceOptions();
+    automaticMultiInstanceOptions.ResolveForEnvironment(builder.Environment.IsDevelopment());
+    builder.Services.AddSingleton(automaticMultiInstanceOptions);
+
     var callActivityOptions = builder.Configuration
         .GetSection(CallActivityOptions.SectionName)
         .Get<CallActivityOptions>() ?? new CallActivityOptions();

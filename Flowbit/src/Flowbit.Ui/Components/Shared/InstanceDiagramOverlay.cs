@@ -108,6 +108,10 @@ internal sealed class InstanceDiagramOverlay
         instance.MultiInstances.FirstOrDefault(progress => progress.ExecutionId == executionId)
         ?? (instance.MultiInstance?.ExecutionId == executionId ? instance.MultiInstance : null);
 
+    // Automatic bodies have their own progress collection; human fields never carry one.
+    internal static AutomaticMultiInstanceProgressDto? FindAutomaticProgress(InstanceDetailDto instance, long executionId) =>
+        instance.AutomaticMultiInstances.FirstOrDefault(progress => progress.ExecutionId == executionId);
+
     private static string? ActiveState(ExecutionPositionDto position) =>
         ExecutionPositionText.Is(position.TokenStatus, "active") ? InstanceDiagramStates.Active : null;
 
@@ -170,12 +174,14 @@ internal sealed class InstanceDiagramOverlay
         {
             var summary = $"{progress.Completed} of {progress.Total} completed, {progress.Active} active";
             if (progress.Pending > 0) summary += $", {progress.Pending} pending";
+            if (progress.Blocked > 0) summary += $", {progress.Blocked} need attention";
+            var subject = progress.Automatic ? "Automatic items" : "Multi-instance work";
             // One execution's badge is its progress; several are counted like other positions.
             return count == 1
                 ? new InstanceDiagramMarker(nodeId, state, $"{progress.Completed}/{progress.Total}",
-                    $"Multi-instance work: {summary}", positions)
+                    $"{subject}: {summary}", positions)
                 : new InstanceDiagramMarker(nodeId, state, $"×{count}",
-                    $"Multi-instance work in {count} executions: {summary}", positions);
+                    $"{subject} in {count} executions: {summary}", positions);
         }
 
         // Positions at one node can differ, such as user work beside a background job.
@@ -200,26 +206,42 @@ internal sealed class InstanceDiagramOverlay
         InstanceDetailDto instance,
         IReadOnlyList<ExecutionPositionDto> positions)
     {
-        var executions = new List<MultiInstanceProgressDto>();
+        var executions = new List<MultiInstanceTotals>();
         foreach (var position in positions)
         {
             if (ExecutionPositionText.IsBackgroundWait(position)
-                || position.MultiInstanceExecutionId is not long executionId
-                || FindProgress(instance, executionId) is not { } progress)
+                || position.MultiInstanceExecutionId is not long executionId)
             {
                 return null;
             }
-            executions.Add(progress);
+            if (FindProgress(instance, executionId) is { } human)
+            {
+                executions.Add(new(human.Completed, human.Total, human.Active, human.Pending, 0, false));
+            }
+            // An automatic body counts only while its token waits on it; its own
+            // queued entry or async-after continuation is background work.
+            else if (position.WaitState == "automaticMultiInstance"
+                     && FindAutomaticProgress(instance, executionId) is { } body)
+            {
+                executions.Add(new(body.CompletedCount, body.TotalCount, body.ActiveCount, body.PendingCount,
+                    body.FailedCount, true));
+            }
+            else
+            {
+                return null;
+            }
         }
 
         return new MultiInstanceTotals(
             executions.Sum(progress => progress.Completed),
             executions.Sum(progress => progress.Total),
             executions.Sum(progress => progress.Active),
-            executions.Sum(progress => progress.Pending));
+            executions.Sum(progress => progress.Pending),
+            executions.Sum(progress => progress.Blocked),
+            executions.All(progress => progress.Automatic));
     }
 
-    private sealed record MultiInstanceTotals(int Completed, int Total, int Active, int Pending);
+    private sealed record MultiInstanceTotals(int Completed, int Total, int Active, int Pending, int Blocked, bool Automatic);
 
     private sealed record MarkedPosition(ExecutionPositionDto Position, string? State);
 

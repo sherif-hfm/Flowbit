@@ -657,7 +657,10 @@ public sealed class InstanceVersionChangeBatchService(
                 position.ActivationId,
                 position.WaitState,
                 position.WaitingJobId,
-                position.WaitingTimerSubscriptionId))
+                position.WaitingTimerSubscriptionId)
+            {
+                MultiInstanceActivityKind = position.MultiInstanceActivityKind
+            })
             .ToArray())
         {
             Variables = item.Variables

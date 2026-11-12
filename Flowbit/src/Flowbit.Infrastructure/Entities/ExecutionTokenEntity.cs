@@ -24,6 +24,7 @@ public sealed class ExecutionTokenEntity
     public long[] AutomaticActivationStateIds { get; set; } = [];
     public string? WaitState { get; set; }
     public long? WaitingJobId { get; set; }
+    public long? WaitingMultiInstanceExecutionId { get; set; }
     public long? WaitingTimerSubscriptionId { get; set; }
     public string Status { get; set; } = ExecutionTokenStatuses.Active;
     public long? CurrentNodeExecutionId { get; set; }

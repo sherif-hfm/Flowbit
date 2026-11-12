@@ -632,6 +632,32 @@ Content-Type: application/json
 ["Africa/Abidjan", "America/New_York", "Asia/Tokyo", "Etc/UTC", "Europe/London"]
 ```
 
+### GET /api/workflows/authoring-capabilities
+
+Reports which optional authoring features this server's definition validation accepts, so a hosted editor offers only what saving allows. `automaticMultiInstance` is the server's effective switch for multi-instance service, script, and call activities. It is `true` only on an API running in the `Development` environment with `WorkflowAutomaticMultiInstance:AllowInDevelopment` set, and even then such definitions cannot be published or run. Every other host returns `false`, whatever the option says.
+
+**Access:** Workflow administrator (`Workflow.RequiredRole`). See [authentication](#http-conventions-and-authentication).
+
+**Body:** none.
+
+**Success:** `200` [WorkflowAuthoringCapabilitiesDto](#schema-workflowauthoringcapabilitiesdto).
+**Errors:** `401` Unauthorized; `403` Forbidden. See [error envelopes](#errors-and-concurrency).
+
+```http
+GET /api/workflows/authoring-capabilities HTTP/1.1
+Host: localhost:5017
+Authorization: Bearer TOKEN
+```
+
+Response example:
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{ "automaticMultiInstance": false }
+```
+
 ### POST /api/workflows/{workflowKey}/message-start
 
 Starts a new workflow instance by delivering an initial message payload to a system-only message start event.
@@ -2453,6 +2479,56 @@ Content-Type: application/json
 
 These are parent-execution endpoints. `/flows` discovers authorized immediate interrupts and taking one requires both captured node and action roles but no child assignment or claim. An interrupt cancels unfinished children and advances the parent once; stale competing actions return `409`. Ordinary votes use `/api/user-tasks/{taskId}/flows/{flowId}`. Role reads/edits require task-role-manager permission and replace the parent plus every unfinished active/pending child atomically; completed child history is preserved. The same complete-list and optimistic-policy rules apply as for normal tasks.
 
+The `/flows` and `/roles` resources remain human-only. Automatic execution IDs are inapplicable and return `404` there. The following automatic-item read contracts are an **inactive foundation**: automatic definitions cannot be published or executed until the activity adapters and release checks are integrated. The temporary Development authoring switch does not enable execution. See the [TASK-05A implementation plan](enhancements/task-05a-multi-instance-core.md).
+
+### GET /api/multi-instance-executions/{executionId}/items
+
+Returns a `PagedResult` of payload-free automatic-item summaries ordered by `itemIndex`, then `id`. Authentication and actor validation match instance detail. A human execution ID or missing execution returns `404`; unauthenticated requests to a matching route return `401`. Nonpositive execution IDs and malformed numeric query parameters return `400`; a path ID that cannot match the int64 route constraint returns `404`. Query `page` defaults to 1 and is clamped to at least 1; `pageSize` defaults to 50 and is clamped to 1–200. `totalCount` is calculated in PostgreSQL before paging. An empty automatic execution returns an empty page with count zero.
+
+Each summary has the following camel-case wire fields:
+
+| Fields | JSON type | Meaning |
+| --- | --- | --- |
+| `id`, `instanceId`, `multiInstanceExecutionId` | integer (int64) | Stable item, owning instance, and owning body identities. |
+| `itemIndex` | integer | Immutable zero-based position in the copied collection. |
+| `activityKind` | string | `serviceTask`, `scriptTask`, or `callActivity`. |
+| `status`, `phase` | string | Persisted item lifecycle and execution/publication phase. |
+| `createdAt`, `updatedAt` | date-time string | Item creation and latest transition. |
+| `startedAt`, `completedAt` | null or date-time string | Actual start and settlement; unstarted items retain null start time. |
+| `jobId`, `incidentId`, `nodeExecutionId` | null or integer (int64) | Latest retained item job, open item incident, and retained node visit. Correlations may disappear through retention. |
+| `canReadPayload` | boolean | Current caller meets the body's node-activity read scope. Show payload controls only while true; detail rechecks permission. |
+
+The list never includes the copied element, local result, frozen context, staged shared writes, or candidate publication values. Job/incident IDs confer no Operations authority; those routes still require [Job operator permission](#http-conventions-and-authentication).
+
+### GET /api/multi-instance-executions/{executionId}/items/{itemId}
+
+Returns `{ "summary": { ... }, "item": ..., "variables": ..., "errorCode": ..., "errorDescription": ... }`, where `summary` has the fields above. `item` is the exact element copied at body initialization and `variables` is the committed local-result JSON object, or null before a committed result. Diagnostics are nullable bounded strings. Staging inputs, successful-but-unpublished candidates, HTTP headers, and unrelated shared reads are never returned.
+
+This payload read additionally requires the same scope as node-execution detail: a role from `NodeExecution.RequiredRole` (blank/missing defaults to `admin`) or the body's immutable definition version's `taskAssignmentRoles`. The SQL query applies this scope before selecting payloads. A mismatched body/item pair, human execution, missing resource, or out-of-scope resource returns `404`; unauthenticated requests to a matching route return `401`, and nonpositive IDs return `400`. A path ID that cannot match the int64 route constraint returns `404`. There is no item mutation or skip route and no new retry authority. Existing incident retry keeps its eligibility/conflict response of `409`.
+
+A shared collection element deliberately copied into `item`, or an explicitly authored aggregate result, is workflow payload under this read permission. It does not grant direct access to live shared-catalog values or their history.
+
+Job and incident summaries add nullable `automaticMultiInstanceItemId` without changing Operations permissions. Only `multiInstanceItem` jobs carry it; a call item's call messages leave it null, because their call invocation owns the item. Incident correlation is available while its originating job is retained. Parent-call and outgoing-call summaries add nullable `multiInstanceExecutionId`, `automaticMultiInstanceItemId`, and `itemIndex`; ordinary calls omit them. Call-body execution positions use the automatic progress collection, rather than arbitrarily presenting one item invocation as the whole body's call.
+
+Instance detail also adds `automaticMultiInstances`, separate from the human-only `multiInstance` and `multiInstances`. Every progress object contains `executionId`, `tokenId`, `nodeId`, `activityKind`, `mode`, `status`, `phase`, `totalCount`, `completedCount`, `activeCount`, `pendingCount`, `failedCount`, `cancelledCount`, `effectiveConcurrency`, `admissionBlocked`, nullable `admissionBlockedReason`, `createdAt`, `updatedAt`, and nullable `completedAt`. It contains no item payloads. Execution positions retain `multiInstanceExecutionId` and add nullable `multiInstanceActivityKind`, in instance detail and in instance-list, version-change and variable-update candidate positions alike; an automatic body is named only on the position of the token activation that owns it, so a token that re-entered the node shows none until its own body exists. Clients resolve automatic IDs against `automaticMultiInstances`. An automatic version-change blocker (`automatic_multi_instance_open`) carries the open body's execution ID as `runtimeId`; a queued entry or async-after continuation blocks with no ID. Node activity accepts `executionKind=automaticActivityItem` and adds nullable `automaticMultiInstanceItemId` to summary/detail; automatic rows do not populate human `multiInstance` detail.
+
+Progress additionally exposes nullable `controlJobId`, `controlIncidentId`, and
+`controlIncidentType` for the current generation's open dispatch/completion
+incident. These are payload-free correlations and grant no Operations authority.
+They clear when that incident is resolved or superseded; item counts and
+`admissionBlocked` retain their separate meanings. An aggregate-publication
+incident can therefore appear with every item completed and no failed items.
+Execution positions correlate automatic bodies by token, node **and activation**;
+a new entry waiting to initialize never inherits the previous body's ID.
+
+Automatic item node-activity records preserve incoming-flow evidence and the
+causal completion actor, including selected audit claims. Calls use the fixed
+`callActivity` actor without caller claims. Item shared writes appear in the
+owning node execution's `sharedVariableChanges` while that audit visit is retained.
+An incident retry preserves saved candidates and inputs; only an explicit
+`output_version_conflict` retry relaxes the saved output-version fence. Retrying
+another incident does not authorize replacing an intervening value.
+
 ### GET /api/multi-instance-executions/{executionId}/flows
 
 Discover parent-level interrupt actions for an active multi-instance execution.
@@ -2879,7 +2955,7 @@ Content-Type: application/json
 
 Visibility is SQL-filtered by immutable workflow version before count/order/page: a caller needs its assignment-manager role or the deployment node-activity role. No visible versions means an empty page; an out-of-scope detail is `404`. This grants no mutation rights. Search the committed lifecycle ledger from its deployment cutover, not a reconstructed history of all earlier visits.
 
-Statuses: `pending`, `active`, `completed`, `cancelled`, `faulted`, `merged`. Execution kinds: `node`, `userTaskItem`. Repeated node types, statuses, instance statuses, and completion reasons are OR-combined within their group; different groups are AND-combined. Date `From` bounds are inclusive and `To` bounds exclusive; duration bounds are milliseconds and nonnegative. IDs must be positive; `itemIndex` may be zero. Sort fields: `id`, `instanceId`, `workflowId`, `nodeId`, `createdAt`, `startedAt`, `updatedAt`, `completedAt`, `duration`/`durationMilliseconds`; default `updatedAt DESC, id DESC`, nulls last. Detail variable changes are attributed to that execution, while search filters use the instance’s latest values. Completion-reason vocabulary is listed in the schema notes below.
+Statuses: `pending`, `active`, `completed`, `cancelled`, `faulted`, `merged`. Execution kinds: `node`, `userTaskItem`, `automaticActivityItem` (inactive automatic foundation). Repeated node types, statuses, instance statuses, and completion reasons are OR-combined within their group; different groups are AND-combined. Date `From` bounds are inclusive and `To` bounds exclusive; duration bounds are milliseconds and nonnegative. IDs must be positive; `itemIndex` may be zero. Sort fields: `id`, `instanceId`, `workflowId`, `nodeId`, `createdAt`, `startedAt`, `updatedAt`, `completedAt`, `duration`/`durationMilliseconds`; default `updatedAt DESC, id DESC`, nulls last. Detail variable changes are attributed to that execution, while search filters use the instance’s latest values. Completion-reason vocabulary is listed in the schema notes below.
 
 ### GET /api/node-executions
 
@@ -7509,6 +7585,9 @@ One visit to a call activity, with the version it pinned. It never exposes captu
 | `failureCode` | null or string | Yes | A stable call failure code. |
 | `failureDescription` | null or string | Yes | Safe text of at most 1,000 characters. |
 | `childFaultCode` | null or string | Yes | The child's error end code, when it faulted there. |
+| `automaticMultiInstanceItemId` | null or integer (int64) | No | Automatic-item correlation, omitted for ordinary work; inactive foundation until adapter integration. |
+| `multiInstanceExecutionId` | null or integer (int64) | No | Owning automatic body, omitted for an ordinary call. |
+| `itemIndex` | null or integer (int32) | No | Zero-based automatic item index, omitted for an ordinary call. |
 
 </details>
 
@@ -8067,7 +8146,7 @@ One durable execution-token position exposed by instance APIs.
 | `nodeType` | string | Yes | — |
 | `tokenStatus` | string | Yes | active, completed, faulted, cancelled, or merged. |
 | `arrivedViaFlowId` | null or integer (int32) | Yes | — |
-| `terminationReason` | null or string | Yes | — |
+| `terminationReason` | null or string | Yes | Why the token ended. The inactive automatic-MI foundation uses `multiInstanceFailed` for an uncaught automatic body failure; its stable, value-free fault code identifies the source/result failure. |
 | `userTaskId` | null or integer (int64) | Yes | Exact runtime child/normal work-item database ID. |
 | `multiInstanceExecutionId` | null or integer (int64) | Yes | — |
 | `activationId` | null or string (uuid) | No | — |
@@ -8075,6 +8154,7 @@ One durable execution-token position exposed by instance APIs.
 | `waitingJobId` | null or integer (int64) | No | — |
 | `waitingTimerSubscriptionId` | null or integer (int64) | No | — |
 | `call` | null or [ExecutionPositionCallDto](#schema-executionpositioncalldto) | No | Present while the token waits at a call. |
+| `multiInstanceActivityKind` | null or string | No | `userTask` or the automatic activity kind; automatic body progress is in `automaticMultiInstances`. Inactive automatic foundation until adapter integration. |
 
 </details>
 
@@ -8325,6 +8405,7 @@ Bounded operations projection for an unresolved or historical workflow incident.
 | `updatedAt` | string (date-time) | Yes | Server last-change timestamp; preserve exact precision for optimistic commands. |
 | `resolvedAt` | null or string (date-time) | Yes | — |
 | `callTargetInstanceId` | integer (int64) | No | On a call message's incident, the instance the message acts on: the parent for `callResume` and the child for `callCancel`. `instanceId` is the sender, which may already have ended. Omitted on every other incident. |
+| `automaticMultiInstanceItemId` | null or integer (int64) | No | Automatic-item correlation, omitted for ordinary work; inactive foundation until adapter integration. |
 
 </details>
 
@@ -8360,6 +8441,7 @@ Represents full details of a workflow instance, including variable values and hi
 | `lastReactivationTokenId` | null or integer (int64) | No | The root token created by the most recent reactivation, or null when the instance was never reactivated. Execution positions with this token ID or a later one belong to the current run. It remains after history retention. |
 | `executionPositions` | array of [ExecutionPositionDto](#schema-executionpositiondto) | No | All exposed token positions; the representative currentNode fields do not imply a single active token. |
 | `multiInstances` | array of [MultiInstanceProgressDto](#schema-multiinstanceprogressdto) | No | — |
+| `automaticMultiInstances` | array of automatic progress objects | No | Payload-free body counts/concurrency/admission state described under [Multi-instance executions](#multi-instance-executions). Inactive foundation; human progress remains separate. |
 | `gatewayExecutions` | array of [GatewayExecutionDto](#schema-gatewayexecutiondto) | No | — |
 | `complexGatewayStates` | array of [ComplexGatewayStateDto](#schema-complexgatewaystatedto) | No | — |
 | `completion` | null or [CompletionInfoDto](#schema-completioninfodto) | No | — |
@@ -9192,6 +9274,7 @@ Bounded operations projection for a durable workflow job. Snapshots, result payl
 | `createdAt` | string (date-time) | Yes | Server creation timestamp. |
 | `updatedAt` | string (date-time) | Yes | Server last-change timestamp; preserve exact precision for optimistic commands. |
 | `completedAt` | null or string (date-time) | Yes | Nullable until completed; ISO 8601 timestamp. |
+| `automaticMultiInstanceItemId` | null or integer (int64) | No | Automatic-item correlation, omitted for ordinary work; inactive foundation until adapter integration. |
 
 </details>
 
@@ -9497,6 +9580,8 @@ mode: parallel or sequential; source: collection or cardinality; completionEvalu
 | `cardinalityExpression` | null or string | No | Required bounded integer-count expression for cardinality source. |
 | `onePerActor` | boolean | No | When true for a cardinality source, each authenticated actor may complete at most one item in this multi-instance execution. Default: `false`. |
 | `completionEvaluation` | string | No | afterEach (default) or afterAll; null/unknown values rejected. Default: `"afterEach"`. |
+| `maxConcurrency` | integer (int32) | No | Inactive automatic-body contract only: 1–1,000, sequential permits only 1 or omission; explicit null rejected. Human MI rejects this field. |
+| `outputVariables` | array of local output declarations | No | Inactive automatic-body contract only: required array (possibly empty), at most 100 entries. Each has `name`, `dataType`, optional `isArray`/`nullable` (false), `defaultValue`, and `validation`; other fields are rejected. Human MI rejects this field. |
 | `resultVariable` | string | No | Required destination for ordered child/parent-interrupt JSON results. |
 
 </details>
@@ -9556,6 +9641,7 @@ Authorized detail for one node execution. VariableChanges contains only writes e
 | `tokenId` | integer (int64) | Yes | Runtime execution-token database ID. |
 | `userTaskId` | null or integer (int64) | No | Exact runtime child/normal work-item database ID. |
 | `multiInstanceExecutionId` | null or integer (int64) | No | — |
+| `automaticMultiInstanceItemId` | null or integer (int64) | No | Stable automatic-item identity; inactive foundation until adapter integration. |
 | `itemIndex` | null or integer (int32) | No | — |
 | `entryGatewayBranchId` | null or integer (int64) | No | — |
 | `exitGatewayBranchId` | null or integer (int64) | No | — |
@@ -9722,6 +9808,7 @@ completionReason vocabulary: normal, userAction, messageDelivery, multiInstanceI
 | `tokenId` | integer (int64) | Yes | Runtime execution-token database ID. |
 | `userTaskId` | null or integer (int64) | No | Exact runtime child/normal work-item database ID. |
 | `multiInstanceExecutionId` | null or integer (int64) | No | — |
+| `automaticMultiInstanceItemId` | null or integer (int64) | No | Stable automatic-item identity; inactive foundation until adapter integration. |
 | `itemIndex` | null or integer (int32) | No | — |
 | `entryGatewayBranchId` | null or integer (int64) | No | — |
 | `exitGatewayBranchId` | null or integer (int64) | No | — |
@@ -10168,6 +10255,9 @@ The call that started a child instance. Relations grant no task, claim, cancella
 | `rootInstanceId` | integer (int64) | Yes | — |
 | `depth` | integer (int32) | Yes | This child's depth; a direct child of a root is 1. |
 | `cancellationInProgress` | boolean | Yes | True while this running instance is being stopped because its own call or a call above it was cancelled. Commands on it return `409`. |
+| `automaticMultiInstanceItemId` | null or integer (int64) | No | Automatic-item correlation, omitted for ordinary work; inactive foundation until adapter integration. |
+| `multiInstanceExecutionId` | null or integer (int64) | No | Owning automatic body, omitted for an ordinary call. |
+| `itemIndex` | null or integer (int32) | No | Zero-based automatic item index, omitted for an ordinary call. |
 
 </details>
 
@@ -11233,6 +11323,19 @@ Represents one ordered, user-authored metadata entry attached to a workflow node
 | --- | --- | --- | --- |
 | `key` | string | No | The case-insensitively unique attribute key within its owning element. |
 | `value` | string | No | The opaque string value associated with the key. |
+
+</details>
+
+<a id="schema-workflowauthoringcapabilitiesdto"></a>
+
+<details>
+<summary>WorkflowAuthoringCapabilitiesDto</summary>
+
+Optional authoring features this server's definition validation accepts.
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `automaticMultiInstance` | boolean | Yes | Whether saving accepts `multiInstance` on service, script, and call activities. `false` on every host except a Development API that opted in; publication and execution stay closed either way. |
 
 </details>
 

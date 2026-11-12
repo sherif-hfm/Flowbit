@@ -402,6 +402,7 @@ else
         @if (instance.GatewayExecutions.Count > 0) { <a class="status-tab text-decoration-none" href="#gateway-scopes" @onclick='() => ScrollToSectionAsync("gateway-scopes")' @onclick:preventDefault>Gateway scopes</a> }
         @if (instance.ComplexGatewayStates.Count > 0) { <a class="status-tab text-decoration-none" href="#complex-gateway-states" @onclick='() => ScrollToSectionAsync("complex-gateway-states")' @onclick:preventDefault>Complex states</a> }
         @if (HasMultiInstances || completedMultiInstanceItems.Count > 0) { <a class="status-tab text-decoration-none" href="#multi-instance-results" @onclick='() => ScrollToSectionAsync("multi-instance-results")' @onclick:preventDefault>Multi-instance results</a> }
+        @if (instance.AutomaticMultiInstances.Count > 0) { <a class="status-tab text-decoration-none" href="#automatic-multi-instance-results" @onclick='() => ScrollToSectionAsync("automatic-multi-instance-results")' @onclick:preventDefault>Automatic items</a> }
         @if (instance.VersionChanges.Count > 0) { <a class="status-tab text-decoration-none" href="#version-changes" @onclick='() => ScrollToSectionAsync("version-changes")' @onclick:preventDefault>Version changes</a> }
         @if (instance.VariableUpdates.Count > 0) { <a class="status-tab text-decoration-none" href="#variable-updates" @onclick='() => ScrollToSectionAsync("variable-updates")' @onclick:preventDefault>Variable updates</a> }
         @if (instance.SharedVariables.Count > 0) { <a class="status-tab text-decoration-none" href="#shared-variables" @onclick='() => ScrollToSectionAsync("shared-variables")' @onclick:preventDefault>Shared variables</a> }
@@ -424,6 +425,8 @@ else
     <InstanceMultiInstanceResults ShowSection="@(HasMultiInstances || completedMultiInstanceItems.Count > 0)"
                                   CompletedItems="@completedMultiInstanceItems"
                                   SequenceFlows="@instance.Workflow.Definition.SequenceFlows" />
+
+    <InstanceAutomaticMultiInstanceResults InstanceId="@InstanceId" Executions="@instance.AutomaticMultiInstances" />
 
     @if (HasMultiInstances)
     {
@@ -767,6 +770,11 @@ else
 
     private bool HasCallRelations => instance is { ParentCall: not null } || instance?.Calls is { Total: > 0 };
 
+    // Automatic items, their aggregate, and its continuation all advance through the Worker.
+    private bool IsWaitingForAutomaticItems =>
+        instance?.Status == "running"
+        && instance.AutomaticMultiInstances.Any(body => body.Status == "active");
+
     // A child's result, or a cancelled parent's cascade, arrives through the Worker.
     private bool IsWaitingForCall =>
         instance?.Status == "running"
@@ -1078,6 +1086,7 @@ else
                 if (SoleActiveMultiInstance is null
                     && !IsWaitingForMessage
                     && !IsWaitingForCall
+                    && !IsWaitingForAutomaticItems
                     && ActivePositions.Count <= 1)
                 {
                     continue;

@@ -1,0 +1,199 @@
+@using System.Net
+@using System.Text.Json
+@implements IDisposable
+@inject WorkflowApiClient Api
+@inject Flowbit.Ui.Auth.TokenState Token
+
+@if (Executions.Count > 0)
+{
+    <section id="automatic-multi-instance-results" class="panel mb-3" aria-labelledby="automatic-mi-heading">
+        <div class="section-heading">
+            <div><h2 id="automatic-mi-heading">Automatic multi-instance work</h2><p>Saved item progress and local results. Item indexes start at zero.</p></div>
+        </div>
+        <div class="table-responsive">
+            <table class="table table-sm align-middle">
+                <caption class="visually-hidden">Automatic activity bodies</caption>
+                <thead><tr><th scope="col">Execution</th><th scope="col">State</th><th scope="col">Items</th><th scope="col">Admission</th><th scope="col">Results</th></tr></thead>
+                <tbody>
+                    @foreach (var execution in Executions)
+                    {
+                        <tr @key="execution.ExecutionId">
+                            <td><span class="mono-id">#@execution.ExecutionId</span><span class="data-subtitle">Node #@execution.NodeId · @ExecutionPositionText.NodeTypeLabel(execution.ActivityKind)</span></td>
+                            <td><StatusBadge Status="@execution.Status" /><span class="data-subtitle">@execution.Phase</span>
+                                @if (execution.ControlIncidentId is { } incidentId)
+                                {
+                                    <span class="data-subtitle text-danger">Needs attention · @execution.ControlIncidentType</span>
+                                    <span class="data-subtitle">Control job #@execution.ControlJobId · Incident #@incidentId</span>
+                                }
+                            </td>
+                            <td>@execution.CompletedCount / @execution.TotalCount completed<span class="data-subtitle">@execution.ActiveCount active · @execution.PendingCount pending · @execution.FailedCount blocked/failed · @execution.CancelledCount cancelled</span></td>
+                            <td>Concurrency @execution.EffectiveConcurrency<span class="data-subtitle">@(execution.AdmissionBlocked ? BlockedReason(execution.AdmissionBlockedReason) : execution.Mode)</span></td>
+                            <td><button class="btn btn-sm btn-outline-primary" disabled="@loading" @onclick="() => LoadItemsAsync(execution.ExecutionId, 1)">Show items</button></td>
+                        </tr>
+                        @if (execution.TotalCount == 0)
+                        {
+                            <tr><td colspan="5" class="text-muted">Empty collection: no item work was created. The body publishes an empty aggregate when it completes.</td></tr>
+                        }
+                    }
+                </tbody>
+            </table>
+        </div>
+        @if (loading) { <p role="status">Loading automatic items…</p> }
+        @if (!string.IsNullOrWhiteSpace(error)) { <div class="alert alert-warning" role="alert">@error</div> }
+        @if (items is { } page)
+        {
+            <h3 class="h5">Execution #@selectedExecutionId items</h3>
+            @if (page.Items.Count == 0) { <p>No items on this page.</p> }
+            else
+            {
+                <div class="table-responsive">
+                    <table class="table table-sm align-middle">
+                        <caption class="visually-hidden">Items ordered by collection index</caption>
+                        <thead><tr><th scope="col">Index</th><th scope="col">State</th><th scope="col">Timing</th><th scope="col">Correlation</th><th scope="col">Payload</th></tr></thead>
+                        <tbody>
+                            @foreach (var item in page.Items)
+                            {
+                                <tr @key="item.Id">
+                                    <td>@item.ItemIndex<span class="data-subtitle">Item #@item.Id</span></td>
+                                    <td><StatusBadge Status="@item.Status" /><span class="data-subtitle">@item.Phase</span></td>
+                                    <td><span class="data-subtitle">Created <LocalTime Value="@item.CreatedAt" /></span>
+                                        @if (item.StartedAt is { } started) { <span class="data-subtitle">Started <LocalTime Value="@started" /></span> }
+                                        @if (item.CompletedAt is { } completed) { <span class="data-subtitle">Settled <LocalTime Value="@completed" /></span> }
+                                    </td>
+                                    <td>
+                                        @if (item.JobId is { } jobId) { <span class="data-subtitle">Job #@jobId</span> }
+                                        @if (item.IncidentId is { } incidentId) { <span class="data-subtitle">Incident #@incidentId</span> }
+                                        @if (item.CanReadPayload && item.NodeExecutionId is { } visitId) { <a href="@($"node-executions/{visitId}")">Node visit #@visitId</a> }
+                                    </td>
+                                    <td>
+                                        @if (item.CanReadPayload) { <button class="btn btn-sm btn-outline-secondary" disabled="@detailLoading" @onclick="() => LoadDetailAsync(item)">View item @item.ItemIndex</button> }
+                                        else { <span class="text-muted">Node-activity permission required</span> }
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+            <div class="pagination-bar">
+                <span class="pagination-copy">Page @(page.Page) · @(page.TotalCount.ToString("N0")) items</span>
+                <div class="d-flex gap-2">
+                    <button class="btn btn-sm btn-outline-secondary" disabled="@(loading || page.Page <= 1)" @onclick="() => LoadItemsAsync(selectedExecutionId!.Value, page.Page - 1)">Previous</button>
+                    <button class="btn btn-sm btn-outline-secondary" disabled="@(loading || (long)page.Page * page.PageSize >= page.TotalCount)" @onclick="() => LoadItemsAsync(selectedExecutionId!.Value, page.Page + 1)">Next</button>
+                    <button class="btn btn-sm btn-outline-secondary" disabled="@loading" @onclick="() => LoadItemsAsync(selectedExecutionId!.Value, page.Page)">Refresh items</button>
+                </div>
+            </div>
+            <p class="text-muted small">Job and incident correlations do not grant Operations or retry authority. Retrying an output-version conflict accepts a saved candidate against current values and can replace a newer value without repeating activity work. Other retries preserve the saved version checks.</p>
+        }
+        @if (detailLoading) { <p role="status">Loading item payload…</p> }
+        @if (!string.IsNullOrWhiteSpace(detailError)) { <div class="alert alert-warning" role="alert">@detailError</div> }
+        @if (detail is { } selected)
+        {
+            <section class="mt-3" aria-label="Automatic item detail">
+                <div class="d-flex justify-content-between gap-2"><h3 class="h5">Item @selected.Summary.ItemIndex · #@selected.Summary.Id</h3><button class="btn btn-sm btn-outline-secondary" @onclick="ClearDetail">Close payload</button></div>
+                @if (!string.IsNullOrWhiteSpace(selected.ErrorCode)) { <p class="text-break"><code>@selected.ErrorCode</code>: @selected.ErrorDescription</p> }
+                <h4 class="h6">Copied collection item</h4><pre class="text-break" style="white-space:pre-wrap">@JsonText(selected.Item)</pre>
+                <h4 class="h6">Committed local outputs</h4><pre class="text-break" style="white-space:pre-wrap">@JsonText(selected.Variables)</pre>
+            </section>
+        }
+    </section>
+}
+
+@code {
+    [Parameter] public long InstanceId { get; set; }
+    [Parameter] public IReadOnlyList<AutomaticMultiInstanceProgressDto> Executions { get; set; } = [];
+    private readonly CancellationTokenSource lifetime = new();
+    private long? loadedInstanceId;
+    private long? selectedExecutionId;
+    private long generation;
+    private long detailGeneration;
+    private bool disposed, loading, detailLoading;
+    private string? error, detailError;
+    private PagedResult<AutomaticMultiInstanceItemSummaryDto>? items;
+    private AutomaticMultiInstanceItemDetailDto? detail;
+
+    protected override void OnInitialized() => Token.Changed += IdentityChanged;
+    protected override void OnParametersSet()
+    {
+        if (loadedInstanceId != InstanceId || selectedExecutionId is { } selected && !Executions.Any(execution => execution.ExecutionId == selected))
+        {
+            Reset();
+            loadedInstanceId = InstanceId;
+        }
+    }
+    private void IdentityChanged()
+    {
+        Interlocked.Increment(ref generation);
+        Interlocked.Increment(ref detailGeneration);
+        _ = InvokeAsync(() => { if (disposed) return; Reset(); StateHasChanged(); });
+    }
+    private void Reset()
+    {
+        Interlocked.Increment(ref generation);
+        selectedExecutionId = null; items = null; error = null; loading = false;
+        ClearDetail();
+    }
+    private void ClearDetail()
+    {
+        Interlocked.Increment(ref detailGeneration);
+        detail = null; detailError = null; detailLoading = false;
+    }
+    private async Task LoadItemsAsync(long executionId, int page)
+    {
+        var version = Interlocked.Increment(ref generation);
+        var identity = Token.IdentityKey;
+        var instanceId = InstanceId;
+        selectedExecutionId = executionId; items = null; error = null; loading = true; ClearDetail();
+        try
+        {
+            var loaded = await Api.GetAutomaticMultiInstanceItemsAsync(executionId, page, 50, lifetime.Token);
+            if (Current()) items = loaded;
+        }
+        catch (Exception ex) when (ex is HttpRequestException or WorkflowApiException or JsonException or OperationCanceledException or InvalidOperationException)
+        {
+            if (Current()) error = ReadError(ex);
+        }
+        finally { if (Current()) loading = false; }
+        bool Current() => !disposed && version == Interlocked.Read(ref generation) && identity == Token.IdentityKey
+            && instanceId == InstanceId && selectedExecutionId == executionId;
+    }
+    private async Task LoadDetailAsync(AutomaticMultiInstanceItemSummaryDto item)
+    {
+        if (!item.CanReadPayload || item.InstanceId != InstanceId || item.MultiInstanceExecutionId != selectedExecutionId) return;
+        var version = Interlocked.Increment(ref detailGeneration);
+        var listVersion = Interlocked.Read(ref generation);
+        var identity = Token.IdentityKey;
+        detail = null; detailError = null; detailLoading = true;
+        try
+        {
+            var loaded = await Api.GetAutomaticMultiInstanceItemAsync(item.MultiInstanceExecutionId, item.Id, lifetime.Token);
+            if (Current() && loaded.Summary.InstanceId == InstanceId && loaded.Summary.MultiInstanceExecutionId == selectedExecutionId && loaded.Summary.Id == item.Id) detail = loaded;
+        }
+        catch (Exception ex) when (ex is HttpRequestException or WorkflowApiException or JsonException or OperationCanceledException or InvalidOperationException)
+        {
+            if (Current()) detailError = ReadError(ex);
+        }
+        finally { if (Current()) detailLoading = false; }
+        bool Current() => !disposed && version == Interlocked.Read(ref detailGeneration) && listVersion == Interlocked.Read(ref generation) && identity == Token.IdentityKey;
+    }
+    private static string ReadError(Exception ex) => ex switch
+    {
+        WorkflowApiException { StatusCode: HttpStatusCode.NotFound or HttpStatusCode.Forbidden or HttpStatusCode.Unauthorized } => "This work is no longer available to your current identity.",
+        HttpRequestException { StatusCode: HttpStatusCode.NotFound or HttpStatusCode.Forbidden or HttpStatusCode.Unauthorized } => "This work is no longer available to your current identity.",
+        _ => "Automatic item data could not be loaded. Refresh the items to try again."
+    };
+    private static string BlockedReason(string? reason) => reason switch
+    {
+        "itemIncident" => "Admission paused by an item incident",
+        "queueCapacity" => "Waiting for job queue capacity",
+        "callCapacity" => "Waiting for child-call capacity",
+        _ => string.IsNullOrWhiteSpace(reason) ? "Admission blocked" : reason
+    };
+    private static string JsonText(JsonElement? value) => value?.GetRawText() ?? "Not recorded";
+    public void Dispose()
+    {
+        if (disposed) return;
+        disposed = true; Token.Changed -= IdentityChanged;
+        Reset(); lifetime.Cancel(); lifetime.Dispose();
+    }
+}

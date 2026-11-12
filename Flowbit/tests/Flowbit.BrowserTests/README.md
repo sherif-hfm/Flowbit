@@ -55,6 +55,16 @@ logout, and protocol failures through a fixture-owned identity provider.
 
 ## Prerequisites
 
+`AutomaticMultiInstanceEditorBrowserTests` runs the canonical shared editor through a
+standalone localhost host, without PostgreSQL or a Worker. It checks the closed
+standalone gate and the explicit Development mount capability at 1440×900,
+1024×768 and 390×844, including local declarations, concurrency validation,
+timer attachment and undo. Run it with
+`dotnet test Flowbit/tests/Flowbit.BrowserTests/Flowbit.BrowserTests.csproj --filter FullyQualifiedName~AutomaticMultiInstanceEditorBrowserTests`.
+Screenshots and console evidence are saved under `artifacts/browser/automatic-mi-editor/`.
+This is authoring verification only; it does not satisfy the automatic-MI adapter
+or durable runtime acceptance gates.
+
 `EngineSettingsSmokeTests` (S1) runs at 1440x900, 1024x768 and 390x844. It creates a setting as one administrator and updates it as another, verifies creator/updater metadata through the UI and real API, edits the protected lifecycle capture setting with its Boolean selector, exercises a real concurrent edit and reload, toggles capture, and follows the webhook capture-off link back to Engine settings. It retains `setting-attribution.png`, `capture-edit.png`, `engine-settings.png`, `capture-off.png`, and console diagnostics. After publishing/building with the commands below, run only these cases with `dotnet test Flowbit/tests/Flowbit.BrowserTests/Flowbit.BrowserTests.csproj -c Release --no-build --no-restore --filter FullyQualifiedName~EngineSettingsSmokeTests`.
 
 The AI scenarios H6–H10 run at 1440x900, 1024x768 and 390x844. H8 also checks the

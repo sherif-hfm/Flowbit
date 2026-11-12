@@ -241,7 +241,8 @@ public sealed class WorkflowJobOperationsService(
             job.IncidentId,
             job.CreatedAt,
             job.UpdatedAt,
-            job.CompletedAt);
+            job.CompletedAt,
+            job.AutomaticMultiInstanceItemId);
 
     private static IncidentSummaryDto ToSummary(WorkflowIncidentRecord incident) =>
         new(
@@ -258,7 +259,8 @@ public sealed class WorkflowJobOperationsService(
             incident.CreatedAt,
             incident.UpdatedAt,
             incident.ResolvedAt,
-            incident.CallTargetInstanceId);
+            incident.CallTargetInstanceId,
+            incident.AutomaticMultiInstanceItemId);
 
     private static string? ReadError(JsonElement? error, string propertyName)
     {

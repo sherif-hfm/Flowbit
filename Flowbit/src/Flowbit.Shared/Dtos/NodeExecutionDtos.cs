@@ -21,6 +21,7 @@ public record NodeExecutionSummaryDto
     public required long TokenId { get; init; }
     public long? UserTaskId { get; init; }
     public long? MultiInstanceExecutionId { get; init; }
+    public long? AutomaticMultiInstanceItemId { get; init; }
     public int? ItemIndex { get; init; }
     public long? EntryGatewayBranchId { get; init; }
     public long? ExitGatewayBranchId { get; init; }

@@ -361,6 +361,25 @@ public sealed class InstanceDiagramOverlayTests
         return (marker.State, marker.Label);
     }
 
+    [Fact]
+    public void AnAutomaticBodyShowsItsItemProgressOnlyWhileItsTokenWaitsOnIt()
+    {
+        var body = new AutomaticMultiInstanceProgressDto(70, 1, 3, BpmnFlowNodeTypes.ServiceTask, "parallel", "active",
+            "running", 5, 2, 1, 1, 1, 0, 2, true, "itemIncident", Now, Now, null);
+        var waiting = Position(1, 3, BpmnFlowNodeTypes.ServiceTask, "active", multiInstance: 70, wait: "automaticMultiInstance")
+            with { MultiInstanceActivityKind = BpmnFlowNodeTypes.ServiceTask };
+        var marker = Assert.Single(Overlay.Build(Instance("running", [waiting]) with { AutomaticMultiInstances = [body] }).Markers);
+        Assert.Equal("2/5", marker.Badge);
+        Assert.Equal("Automatic items: 2 of 5 completed, 1 active, 1 pending, 1 need attention", marker.Label);
+
+        // After the body settles, the same activation's async-after continuation is background work.
+        var continuing = waiting with { WaitState = "asyncAfter" };
+        var after = Assert.Single(Overlay.Build(Instance("running", [continuing])
+            with { AutomaticMultiInstances = [body with { Status = "completed", Phase = "settled" }] }).Markers);
+        Assert.Null(after.Badge);
+        Assert.Equal("Queued for background processing", after.Label);
+    }
+
     internal static InstanceDetailDto Instance(
         string status,
         IReadOnlyList<ExecutionPositionDto> positions,

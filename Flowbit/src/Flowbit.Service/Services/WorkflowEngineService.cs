@@ -36,7 +36,9 @@ public sealed partial class WorkflowEngineService(
     IConditionalBoundarySubscriptionRepository? conditionalBoundarySubscriptions = null,
     IBusinessCalendarResolver? businessCalendars = null,
     ICallActivityRepository? callActivities = null,
-    CallActivityOptions? callActivityOptions = null)
+    CallActivityOptions? callActivityOptions = null,
+    IAutomaticMultiInstanceRepository? automaticMultiInstances = null,
+    AutomaticMultiInstanceCoordinator? automaticMultiInstanceCoordinator = null)
     : IWorkflowEngineService, IWorkflowJobProcessor,
       IInstanceVersionChangeBatchExecutor, IConditionalEventRuntimeCoordinator,
       IAdministrativeActionExecutor
@@ -298,6 +300,7 @@ public sealed partial class WorkflowEngineService(
                 hostTokenIds,
                 cancellationToken);
         var hostsById = hostTokens.ToDictionary(token => token.Id);
+        var hostEligibility = new Dictionary<long, bool>();
 
         var durable = new List<ConditionalWakeLatchRequest>();
         var atomic = new List<ConditionalAtomicContinuation>();
@@ -369,6 +372,16 @@ public sealed partial class WorkflowEngineService(
                     || host.ActivationId != subscription.HostActivationId
                     || host.NodeId != subscription.AttachedToNodeId
                     || node.AttachedToRef != host.NodeId)
+                {
+                    continue;
+                }
+                if (!hostEligibility.TryGetValue(host.Id, out var eligible))
+                {
+                    eligible = await IsBoundaryHostEligibleAsync(GetFlowNode(definition, host.NodeId),
+                        host, timer: false, cancellationToken);
+                    hostEligibility.Add(host.Id, eligible);
+                }
+                if (!eligible)
                 {
                     continue;
                 }
@@ -620,6 +633,8 @@ public sealed partial class WorkflowEngineService(
         }
 
         var ids = new[] { host.Id };
+        await CancelAutomaticBodyForBoundaryAsync(host,
+            NodeExecutionCompletionReasons.ConditionalTriggered, cancellationToken);
         await runtime.CancelOpenUserTasksForTokensAsync(
             ids,
             NodeExecutionCompletionReasons.ConditionalTriggered,
@@ -645,6 +660,8 @@ public sealed partial class WorkflowEngineService(
             _processingJobId,
             "interruptingConditionalBoundary",
             cancellationToken);
+        await AbandonCallsForTokensAsync(instance.Id, ids, cancellationToken);
+        await AbandonAutomaticCallsForTokensAsync(instance.Id, ids, cancellationToken);
         await runtime.UpdateExecutionTokenAsync(
             host.Id,
             ToSnapshot(rise.Node),
@@ -687,6 +704,10 @@ public sealed partial class WorkflowEngineService(
         long maxTriggers,
         CancellationToken cancellationToken)
     {
+        if (!await IsBoundaryHostEligibleAsync(host, hostToken, timer: false, cancellationToken))
+        {
+            return 0;
+        }
         var boundaries = definition.FlowNodes
             .Where(candidate =>
                 BpmnFlowNodeTypes.IsConditionalBoundary(candidate.Type)
@@ -5366,6 +5387,7 @@ public sealed partial class WorkflowEngineService(
                 var isExternalOrCpuActivity =
                     BpmnFlowNodeTypes.IsServiceTask(currentNode.Type)
                     || BpmnFlowNodeTypes.IsScriptTask(currentNode.Type);
+                EnsureAutomaticMultiInstanceRuntimeAvailable(currentNode);
                 var requiresSharedServiceIsolation =
                     BpmnFlowNodeTypes.IsServiceTask(currentNode.Type)
                     && string.Equals(
@@ -7892,6 +7914,8 @@ public sealed partial class WorkflowEngineService(
                 NodeExecutionCompletionReasons.ConditionalTriggered,
             InstanceHistoryNotes.CallCompleted =>
                 NodeExecutionCompletionReasons.CallCompleted,
+            InstanceHistoryNotes.AutomaticMultiInstanceCompleted =>
+                NodeExecutionCompletionReasons.MultiInstanceCompleted,
             NodeExecutionCompletionReasons.AdministrativeAction =>
                 NodeExecutionCompletionReasons.AdministrativeAction,
             _ => NodeExecutionCompletionReasons.Normal
@@ -8591,7 +8615,7 @@ public sealed partial class WorkflowEngineService(
         };
     }
 
-    private static bool IsActorActionHistory(InstanceHistoryRecord history) =>
+    internal static bool IsActorActionHistory(InstanceHistoryRecord history) =>
         history.ActionId is not null
         && !string.IsNullOrWhiteSpace(history.PerformedBy)
         && history.Note is not (
@@ -8617,7 +8641,10 @@ public sealed partial class WorkflowEngineService(
             InstanceHistoryNotes.CallChildStarted or
             InstanceHistoryNotes.CallCompleted or
             InstanceHistoryNotes.CallFailed or
-            InstanceHistoryNotes.CallCancelled);
+            InstanceHistoryNotes.CallCancelled or
+            InstanceHistoryNotes.AutomaticMultiInstanceStarted or
+            InstanceHistoryNotes.AutomaticMultiInstanceFailed or
+            InstanceHistoryNotes.AutomaticMultiInstanceCompleted);
 
     private SequenceFlowModel SelectPassThroughFlow(
         long definitionId,
@@ -11139,6 +11166,11 @@ public sealed partial class WorkflowEngineService(
         WorkflowModel definition,
         CancellationToken cancellationToken,
         bool force = false)
+        => await CaptureSequenceFlowInfoAsync(runtime, instanceId, definition, cancellationToken, force);
+
+    internal static async Task<SequenceFlowInfoSnapshot?> CaptureSequenceFlowInfoAsync(
+        IWorkflowRuntimeRepository runtime, long instanceId, WorkflowModel definition,
+        CancellationToken cancellationToken, bool force = false)
     {
         if (!force && !DefinitionUsesSequenceFlowInfo(definition))
         {

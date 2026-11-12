@@ -145,7 +145,8 @@ public sealed class WorkflowVariableStore(
         {
             // An old instance history row must never shadow a name that the
             // immutable current definition explicitly binds to the shared store.
-            if (!bindings.ContainsKey(pair.Key))
+            if (!bindings.ContainsKey(pair.Key)
+                || sharedAccess?.AutomaticPhase?.FrozenReadAliases?.Contains(pair.Key) == true)
             {
                 result[pair.Key] = pair.Value.Clone();
             }
@@ -156,7 +157,10 @@ public sealed class WorkflowVariableStore(
             return result;
         }
 
-        var allKeys = bindings.Values
+        var selectedBindings = sharedAccess?.AutomaticPhase is { } phase
+            ? bindings.Values.Where(binding => phase.LockAliases.Contains(binding.Name)).ToArray()
+            : bindings.Values.ToArray();
+        var allKeys = selectedBindings
             .Select(binding => binding.SharedKey!)
             .Distinct(StringComparer.Ordinal)
             .Order(StringComparer.Ordinal)
@@ -201,7 +205,31 @@ public sealed class WorkflowVariableStore(
                 cancellationToken);
         }
 
-        foreach (var binding in bindings.Values)
+        if (sharedAccess?.AutomaticPhase is { } automaticPhase)
+        {
+            // Automatic phases must fail closed on an unavailable dependency or
+            // a changed immutable binding, before a template can turn it into null.
+            var catalog = await sharedVariables.GetManyByKeyAsync(allKeys, includeArchived: true, cancellationToken);
+            foreach (var binding in selectedBindings)
+            {
+                if (!catalog.TryGetValue(binding.SharedKey!, out var entry)
+                    || entry.Key != binding.SharedKey || entry.Status != SharedVariableStatuses.Active
+                    || entry.DataType != binding.DataType || entry.IsArray != binding.IsArray
+                    || entry.Nullable != binding.Nullable
+                    || (entry.Validation ?? string.Empty).Trim() != (binding.Validation ?? string.Empty).Trim()
+                    || binding.Access is not (SharedVariableAccessModes.Read or SharedVariableAccessModes.ReadWrite)
+                    || automaticPhase.ProducerAliases.Contains(binding.Name) && binding.Access != SharedVariableAccessModes.ReadWrite)
+                    throw new WorkflowConflictException("An automatic multi-instance shared binding is unavailable or its contract changed.");
+                if (automaticPhase.ReadAliases.Contains(binding.Name) && !current.ContainsKey(binding.SharedKey!))
+                {
+                    if (string.Equals(automaticPhase.CollectionSourceAlias, binding.Name, StringComparison.OrdinalIgnoreCase))
+                        throw new AutomaticMultiInstanceValueException(AutomaticMultiInstanceValues.SourceInvalid);
+                    throw new WorkflowConflictException("An automatic multi-instance shared input has no current value.");
+                }
+            }
+        }
+
+        foreach (var binding in selectedBindings)
         {
             if (current.TryGetValue(binding.SharedKey!, out var value))
             {

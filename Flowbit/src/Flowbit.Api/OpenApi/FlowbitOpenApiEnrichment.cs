@@ -355,6 +355,9 @@ internal static partial class FlowbitOpenApiEnrichment
             "workflowId" => "The database identifier of one exact immutable workflow-definition version.",
             "workflowKey" => "The stable, case-sensitive key shared by every version in a workflow family.",
             "taskId" => "The numeric identifier of the exact user-task work item.",
+            "executionId" when operationKey is "GET /api/multi-instance-executions/{executionId}/items"
+                or "GET /api/multi-instance-executions/{executionId}/items/{itemId}" =>
+                "The numeric identifier of an active or settled automatic multi-instance execution.",
             "executionId" => "The numeric identifier of the active multi-instance execution.",
             "flowId" => "The authored integer identifier of the sequence flow to take.",
             "sourceNodeId" => "The authored integer identifier of the administrative action's source node.",

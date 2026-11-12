@@ -112,7 +112,19 @@ else if (execution is not null)
                 </div>
             </section>
 
-            @if (execution.UserTaskId is not null || execution.IsMultiInstance)
+            @if (execution.ExecutionKind == "automaticActivityItem")
+            {
+                <section class="panel" aria-labelledby="execution-automatic-item-heading">
+                    <h2 id="execution-automatic-item-heading">Automatic activity item</h2>
+                    <div class="summary-grid">
+                        <div class="summary-item"><span>Body execution</span><strong>@FormatId(execution.MultiInstanceExecutionId)</strong></div>
+                        <div class="summary-item"><span>Item</span><strong>@FormatId(execution.AutomaticMultiInstanceItemId)</strong></div>
+                        <div class="summary-item"><span>Collection index</span><strong>@(execution.ItemIndex?.ToString() ?? "—")</strong></div>
+                    </div>
+                    <a href="@($"instances/{execution.InstanceId}#automatic-multi-instance-results")">Open automatic item results</a>
+                </section>
+            }
+            @if (execution.UserTaskId is not null || (execution.IsMultiInstance && execution.ExecutionKind != "automaticActivityItem"))
             {
                 <section class="panel" aria-labelledby="execution-work-heading">
                     <div class="section-heading">

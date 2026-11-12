@@ -4,7 +4,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Planned |
+| Status | In progress |
 | Category | Shared runtime foundation |
 | Effort | L |
 | Priority | Required foundation for TASK-05 |
@@ -16,9 +16,9 @@
 
 Build one persisted automatic-item lifecycle shared by service, script, and call activities. This page owns the common workflow JSON, input snapshots, local and shared-variable output contracts, admission, aggregation, persistence, fences, whole-body error/timer/conditional boundaries, item APIs, and shared editor/runtime presentation. Activity adapters own execution details in their linked subtask plans. All four subtasks are required for the parent first release.
 
-This is a proposed implementation plan split from TASK-05 on **2026-11-11**. Automatic multi-instance support is not implemented. The split changes ownership, not the agreed feature scope or runtime semantics. A plan review the same day settled several contracts, and a follow-up review against the code corrected and extended them; the parent lists both under [Open questions](task-05-multi-instance-automatic-activities.md#open-questions).
+This plan was split from TASK-05 on **2026-11-11**. Its common contracts, persistence, coordinator, query/UI scaffolding and lifecycle hooks are implemented behind closed publication/runtime guards. Automatic multi-instance activities are not available for use until the B/C/D adapters and combined integration gates pass. The split changes ownership, not the agreed feature scope or runtime semantics. The parent records the contract reviews under [Open questions](task-05-multi-instance-automatic-activities.md#open-questions).
 
-A subsequent user-requested scope revision on **2026-11-11** includes shared-variable reads/writes and whole-body timer/conditional boundaries in the first release. The contracts below supersede their earlier deferral; this remains planning work, not implemented support. Conditional predicates retain the existing instance-variable-only language: accepting a conditional boundary does not introduce cross-instance shared-variable subscriptions.
+A subsequent user-requested scope revision on **2026-11-11** includes shared-variable reads/writes and whole-body timer/conditional boundaries in the first release. The contracts below supersede their earlier deferral and remain the release acceptance contract. Conditional predicates retain the existing instance-variable-only language: accepting a conditional boundary does not introduce cross-instance shared-variable subscriptions.
 
 ## First release acceptance criteria
 
@@ -393,3 +393,335 @@ Time each documentation update to what users can do. Objects that ship while the
 Authoring and behavior guides change only in the integration change that turns the switch on: [node reference](../node-reference.md), [BPMN support](../bpmn-support.md), [developer guide](../developer-guide.md), [UI guide](../ui-guide.md), [runtime reference](../../Flowbit/README.md), the examples, and the AI [authoring guide](../../authoring/flowbit-authoring/references/authoring-guide.md) and `SKILL.md`, which must drop the statements that a call cannot use `multiInstance` and that collection MI needs `string[]`. The AI authoring package bundles every guide under `docs/` except `docs/enhancements/`, `docs/plans/`, and `docs/refactoring/`, plus the runtime reference, so describing the feature earlier would tell the assistant to author definitions that validation still rejects; record the contracts in this plan until then. The package's generated `workflow.schema.json` follows the model, so it shows the new `multiInstance` fields as soon as 05A changes the model; update `WorkflowAuthoringPackageTests` in that change. These are guides, not the AI instructions or tool descriptions, which stay unchanged. Activity owners supply their specific examples/rules, and the parent owns combined rollout.
 
 Before marking TASK-05A Done, record implemented interfaces/schema, migration sequence, exact shared test/browser results, and adapter integration evidence here. Update this status in the parent and backlog tables together. A completed foundation alone does not complete TASK-05 or authorize a partial first release.
+
+## Implementation record — 2026-11-11
+
+The shared foundation is implemented behind the temporary release guard. The
+status remains **In progress** because the adapter integration and automatic
+runtime/browser release gates above require TASK-05B/C/D. Development can open
+the authored contract and editor controls; publication and activity execution
+remain rejected. Ordinary human MI, service/script work and calls retain their
+existing entry paths.
+
+| Area | Implemented handoff |
+| --- | --- |
+| Contract | `AutomaticMultiInstanceRules`, explicit local declarations, bounded concurrency, raw-import preservation, server/editor validation, generated authoring schema, and Development-only authoring capability. |
+| Persistence | `IAutomaticMultiInstanceRepository`, body-owned immutable snapshot, indexed item rows, publication candidates/results, completion intent, wait/job/ledger ownership, call-item/pin fields, reserved capacity, retention protection, and human-reader isolation. |
+| Coordinator | `AutomaticMultiInstanceCoordinator` captures locked body inputs and per-item context, admits ascending windows, saves candidates separately from publication, fences shared writes, deduplicates dispatch/completion, parks capacity and occupied-entry waits without new activity attempts, and assembles bounded index-ordered results through a result-only query. |
+| Graph lifecycle | `IAutomaticMultiInstanceLifecycle` binds initialization timers, notification draining, subscription closure, call cancellation and success/error continuation to the existing engine transaction. A captured failure stops siblings before the completion phase publishes its partial result. Dispatch/completion are routed by the job processor; item execution remains the adapters' responsibility. |
+| Shared access | Exact initialization, staging, item-publication, aggregate and selected-error phases participate in the monotonic lock proof. The collection and same-key aliases use retained body values after initialization. Retry keeps staged inputs and saved candidates; explicit recovery refreshes output fences without recalculation. |
+| Evidence and queries | Automatic items have their own node-ledger kind, without a parent visit or human tasks/policies. Body settlement and outgoing traversal evidence are separately labelled; traversals retain the body-completion FlowInfo kind. Grouped progress, authorized paged item reads, job/call correlations, version blockers and diagram history handle automatic bodies explicitly. |
+| Presentation | The canonical editor has local-output/concurrency controls and markers. Instance detail has a separate paged automatic-item component with protected details and stale-identity protection; human actions remain human-only. |
+
+The migration sequence is `20261111144523_AddAutomaticMultiInstanceCore`,
+`20261111144824_ValidateAutomaticMultiInstanceConstraints`, and
+`20261111192010_HardenAutomaticMultiInstanceCore`. The second migration
+validates the widened large-table checks outside a transaction; the third, from the
+open-findings corrections below, restores the general job index and adds the call-pin
+and invocation item-pair checks. See the owning
+[schema](../database-schema.md), [API](../api-guide.md),
+[settings](../engine-settings.md#automatic-multi-instance-concurrency-foundation),
+and [deployment](../deployment.md#automatic-multi-instance-foundation) references.
+
+Adapter handoff remains explicit: B/C supply request/evaluation preparation and
+typed failure classification; D supplies intrinsic call entry, pinning, call
+admission and child result delivery. They must commit a stage before work and a
+candidate before publication, use the common activation/item/lease fences, and
+invoke the shared graph lifecycle rather than inventing a second coordinator.
+Core repository tests may seed owned runtime rows; browser release evidence
+must create real bodies through those adapters and must not manufacture rows.
+
+Initialization resolves the concurrency settings against the newly frozen item
+count, so an earlier collection-size estimate cannot narrow the persisted window.
+Error routing uses the saved winning route and current completion/body/token/lease
+fence, locks the selected error phase's live dependencies, restores the frozen
+collection aliases, and validates the declared target before writing. It does not
+add a separate error-value snapshot or version policy. An uncaught deterministic
+aggregate failure uses token termination reason `multiInstanceFailed`.
+
+### Review corrections
+
+The ten implementation-review findings are addressed in the common foundation:
+
+1. Item and aggregate retries retain saved output fences for ordinary incidents.
+   Only `output_version_conflict` recovery authorizes accepting current versions.
+2. `AutomaticMultiInstanceItemFence` supplies invocation-aware callStart/callResume
+   access to the same staging, candidate, publication and failure operations.
+   Parent activation, invocation/item ownership, child result and message lease
+   are rechecked. `HasCurrentOwnerAsync` reads persisted ownership before reusing
+   a saved item stage, even when a runtime token remains tracked from an older
+   phase. The adapter owns call settlement and message acknowledgement;
+   calls cannot use a generic `multiInstanceItem` wrapper. Call admission and
+   end-to-end delivery/recovery remain TASK-05D integration work.
+3. Initialization recaptures FlowInfo from current persisted summaries under the
+   body initialization transaction. The bounded body snapshot retains it once;
+   each item context exposes a separate typed copy without rereading summaries.
+4. Each execution attempt rebuilds local defaults from retained inputs and its
+   current job context. Shared/config/time inputs and output fences stay frozen.
+   Calls receive no job-attempt or caller-claim context.
+5. Saved boundary routes accept the definition's integer IDs, including zero;
+   common failure capture imposes no extra positive-ID restriction. The selected
+   route is still validated against the definition during continuation.
+6. Item visits copy the parent's incoming flow and gateway branch. Grouped
+   diagram history records one incoming traversal for a nonempty body; empty
+   bodies retain the documented possible evidence gap.
+7. Item completion/failure records preserve the captured causal actor, roles,
+   selected audit claims and delegation. Calls retain the fixed system actor.
+   Cancellation does not rewrite already settled item history.
+8. Shared item writes reference the retained item node visit, making them visible
+   in node-execution detail. Pruned visits remain optional; durable candidates
+   and results survive independently.
+9. Execution-position correlation includes activation ID, preventing a new
+   entry from inheriting an older settled body's progress.
+10. Progress batch-loads current control incidents and exposes payload-free
+    `controlJobId`, `controlIncidentId` and `controlIncidentType`. The UI displays
+    **Needs attention** even when all items are complete and no item failed.
+
+Regressions are in the coordinator, completion, persistence and UI test classes,
+including their `*RegressionTests.cs` partials. They exercise PostgreSQL writes,
+retained candidates, incoming history grouping, node-execution shared changes,
+activation reentry, recovery and stale call fences. No new migration is needed
+for these corrections. Publication/readiness/runtime guards remain closed, and
+TASK-05A remains **In progress** until the genuine B/C/D integration gates pass.
+
+### Verification before the review corrections
+
+The following records describe the earlier implementation. Verification of the
+review corrections is recorded separately below; earlier evidence is retained
+to distinguish common regression checks from unavailable adapter acceptance.
+
+- Full solution regression: **4,828 passed, 0 failed, 0 skipped**, in 18 minutes
+  51 seconds. Command: `dotnet test Flowbit/Flowbit.slnx --no-restore --nologo --verbosity quiet --logger "trx;LogFileName=automatic-mi-verified.trx"`.
+  TRX: `Flowbit/tests/Flowbit.Tests/TestResults/automatic-mi-verified.trx`.
+  This run includes the corrected test cleanup for body-owned snapshots and
+  retired fixture jobs. The final isolated automatic-core/OpenAPI refinements
+  landed during this run and are covered by the 320-test final-source run below.
+- Final current-source shared-core/API and durable regression verification:
+  **320 passed, 0 failed, 0 skipped**. This includes all automatic-MI tests,
+  authoring-package/model checks, the four affected durable integration classes,
+  and OpenAPI contracts after the final concurrency/error-routing review fixes.
+  Command: `dotnet test Flowbit/tests/Flowbit.Tests/Flowbit.Tests.csproj --no-restore --filter "FullyQualifiedName~AutomaticMultiInstance|FullyQualifiedName~WorkflowAuthoringPackageTests|FullyQualifiedName~MigrationModelSnapshotTests|FullyQualifiedName~DurableAutomaticLoopGuardIntegrationTests|FullyQualifiedName~DurableAutomaticLoopGuardResetIntegrationTests|FullyQualifiedName~DurableWorkflowProcessorTests|FullyQualifiedName~DurableParallelFinalizationTests|FullyQualifiedName~OpenApiContractTests" --artifacts-path artifacts/task05a-current-tests --logger "trx;LogFileName=automatic-mi-current-final.trx" -v quiet -m:1`.
+  TRX: `Flowbit/tests/Flowbit.Tests/TestResults/automatic-mi-current-final.trx`.
+  The focused boundary/shared subset passed **45/45**, including 16 new scenarios.
+- Earlier combined verification: **264 passed, 0 failed, 0 skipped**, including
+  automatic MI, authoring-package and migration-model checks. Command:
+  `dotnet test Flowbit/tests/Flowbit.Tests/Flowbit.Tests.csproj --filter "FullyQualifiedName~AutomaticMultiInstance|FullyQualifiedName~WorkflowAuthoringPackageTests|FullyQualifiedName~MigrationModelSnapshotTests" --artifacts-path artifacts/task05a-current-tests --logger "trx;LogFileName=combined-mi-current.trx" -v quiet -m:1`.
+  The TRX is `Flowbit/tests/Flowbit.Tests/TestResults/combined-mi-current.trx`.
+  An earlier external-artifact run passed the 261 feature tests but failed three
+  authoring-package source-discovery tests because its output had no repository
+  ancestor; the repository-contained run above resolves that fixture condition
+  without changing the tests.
+- Current common definition/coordinator/shared-access/DTO checks: **121 passed**.
+  This focused set covered the definition, coordinator, exact shared-access,
+  DTO, preserved-invalid-import and existing shared-access-plan suites.
+- PostgreSQL completion checks: **9 passed**, including empty input, reset-triggered
+  interruption, saved-result conflict recovery, stopped siblings before partial
+  publication, duplicate entry, source capture and continuation rollback. The
+  current coordinator and persistence sets also passed **34** and **11** tests.
+  Filters: `FullyQualifiedName~AutomaticMultiInstanceCompletionTests`,
+  `FullyQualifiedName~AutomaticMultiInstanceCoordinatorTests`, and
+  `FullyQualifiedName~AutomaticMultiInstancePersistenceTests` on the same test project.
+- Editor/UI/display tests: **779 passed**. Existing conditional/timer/durable
+  regressions: **45 passed**. New boundary/cancellation and ordinary-call checks:
+  **35 passed**. Fresh/populated migration, snapshot parity and historical schema
+  fixture regressions passed; additive body storage preserves ordinary calls and
+  the existing 1,000-item human fan-out.
+- Real Chromium **151.0.7922.34** editor checks: **3 passed**, with real field edits,
+  help, local declarations/export, concurrency errors, timer attachment/undo and
+  standalone import diagnostics. Command: `dotnet test Flowbit/tests/Flowbit.BrowserTests/Flowbit.BrowserTests.csproj --filter FullyQualifiedName~AutomaticMultiInstanceEditorBrowserTests`.
+  The final viewports/localhost hosts were **1440×900** at
+  `http://127.0.0.1:64443`, **1024×768** at `http://127.0.0.1:64433`, and
+  **390×844** at `http://127.0.0.1:64419`. Browser diagnostics were empty in all
+  three runs. Screenshots, standalone results and JSON evidence are in
+  `artifacts/browser/automatic-mi-editor/20261111-153416-0f149b4d/`,
+  `20261111-153408-64e9dcfb/`, and `20261111-153355-227b7dc7/` respectively.
+- Full real-browser smoke regression: **128 passed, 0 failed, 0 skipped** in
+  21 minutes 40 seconds. Command: `dotnet test Flowbit/tests/Flowbit.BrowserTests/Flowbit.BrowserTests.csproj -c Release --no-build --no-restore --logger "trx;LogFileName=task05a-smoke.trx" --results-directory artifacts/browser/test-results`.
+  The main published-host run used UI `http://127.0.0.1:64817`, API
+  `http://127.0.0.1:64815`, and standalone editor `http://127.0.0.1:64819`;
+  evidence is in `artifacts/browser/runs/20261111-154003-ca825e2c/` and the TRX
+  in `artifacts/browser/test-results/task05a-smoke.trx`.
+- Worker-enabled browser acceptance: the full run finished **118 passed, 5 failed,
+  0 skipped (123 total)** in 34 minutes 29 seconds. Command:
+  `dotnet test Flowbit/tests/Flowbit.BrowserAcceptanceTests/Flowbit.BrowserAcceptanceTests.csproj -c Release --no-build --no-restore --logger "trx;LogFileName=task05a-acceptance.trx" --results-directory artifacts/acceptance/test-results`.
+  All five failed cases subsequently passed in targeted runs. The initial
+  failures were slow Operations loading (both API responses were 200), an expired
+  test response gate (the held upstream response was 200), one local HTTP timeout
+  on a third retry, and two stale timestamp selectors. The existing `LocalTime`
+  component renders `time`; the latter tests incorrectly selected `span`. Only
+  that tag selector was corrected, preserving the exact timestamp assertion.
+  No application behavior, timeout, or assertion requirement was weakened.
+  The targeted runs use the same project, Release/no-build/no-restore flags and
+  results directory, with these filters and TRX names:
+
+  | Filter (`--filter`) | Result | TRX (`--logger "trx;LogFileName=..."`) |
+  | --- | --- | --- |
+  | `FullyQualifiedName~CronScheduleAcceptanceTests` | 1/1 passed, unchanged | `task05a-cron-retry.trx` |
+  | `FullyQualifiedName~A8_RealResponseGatesExposeInitialHistoryAndItemLoading` | 3/3 passed, unchanged | `task05a-loading-retry.trx` |
+  | `FullyQualifiedName~ContractEndKeepsItsSavedScheduleAcrossAVariableEditAndWorkerRestart\|FullyQualifiedName~DurableRetryFirstRetriesEveryFailureThenUsesTheFinalAttempt` | 6/6 passed | `task05a-timer-retry-verification.trx` |
+
+  Main evidence is in `artifacts/acceptance/runs/20261111-155140-91501a23/`
+  (UI `http://127.0.0.1:50231`). Rerun evidence is in
+  `20261111-160416-c3a1bdec/`, `20261111-161140-64990f9b/`, and
+  `20261111-162740-51f3e94c/` respectively. The final six scenarios used Chromium
+  **151.0.7922.34**, UI `http://127.0.0.1:54112`, and 1440×900/390×844 viewports;
+  all six had zero page errors, console errors/warnings, or failed browser requests.
+  These are regression results for existing Worker behavior, not automatic-adapter
+  execution evidence.
+- The two item routes, parameters/defaults, response schemas and Bearer security
+  were compared with live Development OpenAPI at
+  `http://127.0.0.1:50221/openapi/v1.json`; the captured contract is in
+  `artifacts/task05a-openapi-item-contract.json`. Final-source OpenAPI tests also
+  verify that item-route descriptions allow settled bodies while human interrupt
+  routes retain their active-execution wording.
+- Documentation validation checked **1,686 relative links/anchors** and **23 JSON
+  fixtures** with no errors. `git diff --check` was clean.
+
+These common checks do **not** claim automatic REST/script/call execution or
+automatic-item runtime UI acceptance. Those genuine Worker/browser scenarios
+remain integration gates for B/C/D, with the release guards closed meanwhile.
+
+### Review-correction verification
+
+- Full solution regression: **4,878 passed, 0 failed, 0 skipped**, in 14 minutes
+  13 seconds. Command: `dotnet test Flowbit/Flowbit.slnx --no-restore --nologo -v quiet -m:1 --logger "trx;LogFileName=task05a-ten-fixes-full.trx"`.
+  TRX: `Flowbit/tests/Flowbit.Tests/TestResults/task05a-ten-fixes-full.trx`.
+  This build preceded the final isolated causal-actor fallback, tracked-owner
+  check, optional call-index correction and incident text-color adjustment.
+  The final-source focused run below covers those refinements; the UI browser
+  checks use the final rendered markup.
+- Final-source focused regression passed **329/329**, including PostgreSQL,
+  stale tracked-token ownership, both call transports, candidate publication,
+  local retry defaults, FlowInfo retention, audit attribution, current incident
+  projection, UI rendering, OpenAPI, authoring-package and migration-model checks.
+  The real repository call test commits the child-owned message lease and saved
+  candidate before publication, verifies publication-fence acknowledgement and
+  adapter-owned invocation/message settlement, and rejects replay. Invocation
+  ownership uses the stable item FK, independent of optional item-index read
+  enrichment.
+  Command: `dotnet test Flowbit/tests/Flowbit.Tests/Flowbit.Tests.csproj --no-restore --filter "FullyQualifiedName~AutomaticMultiInstance|FullyQualifiedName~OpenApiContractTests|FullyQualifiedName~InstanceProjectionTests|FullyQualifiedName~WorkflowAuthoringPackageTests|FullyQualifiedName~MigrationModelSnapshotTests" --artifacts-path artifacts/task05a-current-tests --logger "trx;LogFileName=task05a-ten-fixes-final.trx" -v quiet -m:1`.
+  TRX: `Flowbit/tests/Flowbit.Tests/TestResults/task05a-ten-fixes-final.trx`.
+- The real published API/UI runtime browser regression passed **7/7**:
+  `dotnet test Flowbit/tests/Flowbit.BrowserTests/Flowbit.BrowserTests.csproj -c Release --no-restore --filter "FullyQualifiedName~InstanceDetailSmokeTests|FullyQualifiedName~RuntimeSmokeTests" --logger "trx;LogFileName=task05a-ten-fixes-browser.trx" --results-directory artifacts/browser/test-results -v quiet`.
+  Both hosts were freshly published from the corrected source. Chromium
+  **151.0.7922.34** used UI `http://127.0.0.1:55293`, API
+  `http://127.0.0.1:55257`, and 1440×900, 1024×768 and 390×844 viewports.
+  Real interactions covered inbox claim/completion, instance navigation,
+  replacement identity, gateway and human-MI detail, polling and responsive
+  layouts. All scenarios had no page errors, console errors/warnings or failed
+  requests. Evidence: `artifacts/browser/runs/20261111-171232-c73613e1/`.
+- The changed automatic progress markup was separately rendered from the actual
+  Razor component with explicit fixture DTOs and served at
+  `http://127.0.0.1:55197`. Chromium **151.0.7922.34** verified the incident type
+  and IDs, keyboard focus and horizontal table scrolling at **1440×900**,
+  **1024×768**, and **390×844**, with no console errors/warnings or page overflow.
+  All three screenshots were visually inspected. Evidence and screenshots:
+  `artifacts/task05a-fix-preview/evidence.json` and `progress-{width}.png` in that
+  directory. This is isolated component layout verification, **not** an automatic
+  execution acceptance test. No production guard was disabled and no application
+  state or database rows were fabricated for browser runtime acceptance.
+- Documentation validation: **1,828 relative links/anchors** and **23 JSON
+  fixtures**, no errors, using `node artifacts/acceptance/validate-doc-links.cjs`.
+  `git diff --check` passed; Git reported only existing line-ending conversion
+  notices. The build retains existing package/analyzer warnings.
+
+### Second review corrections — 2026-11-11
+
+A later review found three defects, corrected here:
+
+1. **Editor type change.** Changing a multi-instance user task into a service or
+   script task kept its human configuration and outcome flows. With the release
+   switch closed, save then refused the node and the inspector offered no way to
+   remove the setting. A type change now never turns one multi-instance contract
+   into another: it removes the human configuration as it did before TASK-05A, and
+   an automatic body still needs its own explicit enable. A service or script body
+   imported while the switch is closed shows **Remove unsupported multi-instance**,
+   as calls already offer **Remove these options**.
+2. **Async-after retry.** A body's `asyncAfter` job names the body but runs after
+   it settles, so retrying its incident always failed with "no longer current".
+   `RetryIncidentAsync` now checks the open body only for `multiInstanceItem`,
+   `multiInstanceDispatch` and `multiInstanceComplete` jobs.
+3. **Call-item cancellation.** Abandoning a running call item queued a `callCancel`
+   job carrying the item id, which `CK_workflow_jobs_automatic_item_shape` refuses,
+   so the cancellation transaction failed. The message now correlates only through
+   its invocation, as §5 specifies for call messages.
+
+Each correction has a regression test that fails against the previous code:
+`EditorAutomaticMultiInstanceTests` (type change, removal, open-switch section),
+`AutomaticMultiInstancePersistenceTests.Async_after_incident_of_a_settled_body_is_retried_as_an_ordinary_job`,
+and `AutomaticMultiInstanceCallCancellationRepositoryTests.Abandoning_a_running_item_call_queues_a_constraint_valid_cancel_message`,
+which drives the engine's own abandonment path against PostgreSQL. With the
+previous code restored, 7 of the 8 new cases failed for the expected reasons
+(the human-to-call case already passed, because a call clears it).
+
+Verification:
+
+- Full solution regression: **4,889 passed, 0 failed, 0 skipped**, in 11 minutes
+  59 seconds. Command: `dotnet test Flowbit/Flowbit.slnx --no-build -m:1 --logger "trx;LogFileName=task05a-fixes-full-2.trx"`.
+  An earlier full run failed one unrelated list test because the new cancellation
+  test committed a child instance without an execution token; the child now has one.
+- Focused regression: **1,313 passed, 0 failed**. Command:
+  `dotnet test Flowbit/tests/Flowbit.Tests/Flowbit.Tests.csproj --no-build -m:1 --filter "FullyQualifiedName~Editor|FullyQualifiedName~AutomaticMultiInstance|FullyQualifiedName~CallActivit|FullyQualifiedName~DurableJobRepository|FullyQualifiedName~WorkflowJobOperations|FullyQualifiedName~DurableWorkflowProcessor|FullyQualifiedName~Incident|FullyQualifiedName~Retry" --logger "trx;LogFileName=task05a-fixes-focused.trx"`.
+- Chromium: `AutomaticMultiInstanceEditorBrowserTests` and
+  `InstanceDiagramFitBrowserTests`, **6 passed**.
+- Real browser (built-in Chromium pane), standalone editor served from the source
+  assets at `http://localhost:5599`. At 1024 wide: a multi-instance user task
+  changed to a service task through the **Type** selector keeps one outgoing flow,
+  save reports only the new task's missing URL, and **Undo** restores the user task
+  and both outcome flows. An imported service body shows the warning and button;
+  clicking it removes the setting and its marker, and **Save** passes validation.
+  At 375×812 the warning wraps inside the inspector, the button fits, the page does
+  not overflow, and the button works. The console was empty throughout.
+- Documentation links: **1,829 relative links/anchors** and **23 JSON fixtures**,
+  no errors; `git diff --check` was clean.
+
+The same review recorded further findings, addressed in the next section.
+
+### Open-findings corrections — 2026-11-11
+
+Each finding the review left open is corrected or narrowed to the part TASK-05A owns:
+
+| Finding | Correction |
+| --- | --- |
+| Call-body pin never written | `AutomaticMultiInstanceCreateRecord` carries the pin and the repository stores it with `PinState` `pinned`, released at settlement. A nonempty call body requires it and every other body refuses it, in the repository and in `CK_multi_instance_executions_call_pin_shape`, so the unpublish guard covers a body before its first child. Resolving the pin stays with TASK-05D. `AddInvocationAsync` records item ownership, `CK_call_activity_executions_automatic_item_pair` keeps the pair whole, and `GetForActivationAsync` reads ordinary calls only. |
+| No fence refresh for a call item's `callResume` | `RetryIncidentAsync` treats a `callResume` whose invocation owns an item with a saved candidate as publication-only: it keeps the result and sets `PublicationFenceRefreshRequested` only for `output_version_conflict`. It reads, never locks, the parent rows. |
+| Over-limit item result without a boundary | `AutomaticMultiInstanceCompletionIntent.BoundaryNodeId` is optional. `RefuseItemResultAsync` stops the body like a caught failure without choosing a route; completion then publishes nothing and takes the catch-all error boundary or faults with `multiInstanceFailed`, as an unacceptable aggregate does. The refused item's visit ends `multiInstanceInterrupt`. |
+| Engine callers and fake-only tests | Item blocking is derived from open incidents on an item's `multiInstanceItem` job or a call item's `callStart`, so it holds whichever path opened the incident (fenced processing, the lease sweeper, or direct enqueue) without writing body rows from job-side locks. `AutomaticMultiInstanceProcessorTests` drives dispatch and completion through the registered `IWorkflowJobProcessor` and the real engine continuation: an empty body completes its instance, and a refused result faults it or takes the catch-all boundary. Routing the entry job to initialization and item jobs to execution remains adapter work (TASK-05B/C/D), as the plans assign. |
+| Human cancellation not kind-filtered | `CancelActiveMultiInstancesForTokensAsync` touches `userTask` rows only; automatic bodies settle through their own repository. |
+| Settled payloads kept forever | Settlement clears items' staged inputs and candidates. Workflow-history retention, when it prunes a finished instance, empties each settled body's input snapshot beside the settled call snapshots it already clears; item results stay. |
+| Local outputs counted as stored variables | `ConditionalEventDefinitionAnalyzer.DeclaredStoredVariableNames` (also used by expression timers), the inbox-visibility symbol table and its editor mirror, and version-compatibility target declarations skip an automatic node's own local outputs. |
+| Editor switch from the UI host | `GET /api/workflows/authoring-capabilities` reports the API's effective switch; `WorkflowEditor.razor` mounts the editor with it and fails closed. |
+| Read surfaces | Instance-list, version-change and variable-update positions name the open body of their own activation with its kind. The version blocker names the body's execution id. Instance detail polls while a body is open. The diagram gives an automatic body an **Automatic items** progress badge and lists its items, and position text treats a settled body's async-after wait as background work. |
+| Dropped job index | The hardening migration restores `IX_workflow_jobs_MultiInstanceExecutionId`. |
+| Schema documentation | The per-table sections of the [database schema](../database-schema.md) list the new kinds, wait state, columns, keys and checks. |
+
+Verification of these corrections:
+
+- Full solution regression: **4,905 passed, 0 failed, 0 skipped**, in 13 minutes
+  10 seconds. Command: `dotnet test Flowbit/Flowbit.slnx --no-build -m:1 --logger "trx;LogFileName=task05a-open-findings-full.trx"`.
+  After the documentation edits, the documentation-reading tests (authoring package
+  and schema) passed **106/106** on a rebuild.
+- New tests: `AutomaticMultiInstanceProcessorTests` (3), pin and invocation-pair
+  constraints, call-item delivery retry (3 cases), item-incident blocking, list
+  position correlation, retention payload clearing, local outputs in conditional,
+  inbox and version-compatibility analysis (server and editor), the open-body
+  blocker id, the automatic diagram badge, and the authoring-capabilities endpoint.
+- Chromium against freshly published API/UI hosts: `HostedEditorSmokeTests`,
+  `EditorSmokeTests`, `AutomaticMultiInstanceEditorBrowserTests`,
+  `InstanceDetailSmokeTests` and the instance-diagram suites, **76 passed**
+  (evidence in `artifacts/browser/runs/20261111-200045-39588e93/`).
+- Real browser (built-in Chromium pane) at 1440×900, published API on
+  `http://127.0.0.1:5617` and UI on `http://127.0.0.1:5652` in Development, over a
+  fresh PostgreSQL that applied all three migrations (the hardening migration's
+  checks and index confirmed in the catalog). With the API option set, selecting a
+  service task in `/workflows/new` showed **Automatic multi-instance**; after
+  restarting only the API without it, the same page hid the section although the UI
+  host still had the option set. Each load called
+  `GET /api/workflows/authoring-capabilities` (200); the console was empty.
+- Documentation links: **2,016 relative links/anchors** and **23 JSON fixtures**,
+  no errors.
+
+Still open after these corrections:
+
+- Adapter integration owned by TASK-05B/C/D: initializing a body from its entry job, executing item jobs, resolving a call body's pin, call admission and result delivery.
+- Review findings outside the recorded list: per-item cost (each item completion reads progress for every body in the instance and lists its open jobs); editor/server differences in first-error order, wording, and acceptance of a local `defaultValue` written as a string; local-output `validation` accepting `FlowInfo` and gateway functions; disabling multi-instance or changing type not reviewing call-only mappings; **Remove these options** on a call also removing a valid automatic body; a falsy imported `multiInstance` loading as an enabled one; sparse inspector help; a possible one-slot capacity over-credit during completion; the first migration's validated foreign keys and indexes on large tables inside its transaction; no shape check for `multiInstanceStart`; and the authoring-side test gaps listed in §12.

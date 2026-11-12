@@ -15,6 +15,9 @@ public sealed class CallActivityExecutionEntity
     public ExecutionTokenEntity? ParentToken { get; set; }
     public Guid ActivationId { get; set; }
     public int ParentNodeId { get; set; }
+    public long? AutomaticMultiInstanceItemId { get; set; }
+    public long? MultiInstanceExecutionId { get; set; }
+    public MultiInstanceActivityItemEntity? AutomaticMultiInstanceItem { get; set; }
 
     /// <summary>The visit's audit row, which history retention can remove.</summary>
     public long? ParentNodeExecutionId { get; set; }

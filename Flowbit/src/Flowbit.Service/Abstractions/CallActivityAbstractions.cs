@@ -43,6 +43,13 @@ public interface ICallActivityRepository
         IReadOnlyCollection<long> tokenIds,
         CancellationToken cancellationToken);
 
+    /// <summary>Automatic item invocations belonging to the exact parent tokens
+    /// being interrupted. Captured input/output payloads are omitted.</summary>
+    Task<IReadOnlyList<CallInvocationRecord>> ListUnsettledAutomaticForTokensAsync(
+        long parentInstanceId,
+        IReadOnlyCollection<long> tokenIds,
+        CancellationToken cancellationToken);
+
     Task<bool> HasUnsettledOutgoingAsync(
         long parentInstanceId,
         CancellationToken cancellationToken);

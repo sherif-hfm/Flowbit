@@ -150,6 +150,9 @@ public sealed record ExecutionPositionDto(
     /// <summary>What a token resting on a call activity is waiting for; absent otherwise.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public ExecutionPositionCallDto? Call { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? MultiInstanceActivityKind { get; init; }
 }
 
 public static class WorkflowCompletionKinds
@@ -572,6 +575,8 @@ public sealed record InstanceDetailDto(
 
     public IReadOnlyList<MultiInstanceProgressDto> MultiInstances { get; init; } = [];
 
+    public IReadOnlyList<AutomaticMultiInstanceProgressDto> AutomaticMultiInstances { get; init; } = [];
+
     public IReadOnlyList<GatewayExecutionDto> GatewayExecutions { get; init; } = [];
 
     public IReadOnlyList<ComplexGatewayStateDto> ComplexGatewayStates { get; init; } = [];
@@ -868,3 +873,11 @@ public sealed record InboxItemDto(
 
     public IReadOnlyList<WorkflowAttributeModel> Attributes { get; init; } = [];
 }
+
+/// <summary>
+/// Authoring features this API accepts, so a hosted editor offers exactly what the
+/// server will save. <c>AutomaticMultiInstance</c> is the server's effective release
+/// switch for multi-instance service, script, and call activities; it is false on every
+/// host except a Development API that opted in.
+/// </summary>
+public sealed record WorkflowAuthoringCapabilitiesDto(bool AutomaticMultiInstance);

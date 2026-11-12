@@ -133,6 +133,7 @@ public sealed class AdministrativeActionCandidateRepository(AppDbContext dbConte
                AND token."InstanceId" = execution."InstanceId"
                AND token."NodeId" = execution."NodeId"
             WHERE execution."Status" = 'active'
+              AND execution."ActivityKind" = 'userTask'
               AND token."Status" = 'active'
         ) AS position
         INNER JOIN flowbit.workflow_instances AS workflow
@@ -277,7 +278,7 @@ public sealed class AdministrativeActionCandidateRepository(AppDbContext dbConte
             .Where(task => userTaskIds.Contains(task.Id))
             .ToDictionaryAsync(task => task.Id, cancellationToken);
         var executions = await dbContext.MultiInstanceExecutions.AsNoTracking()
-            .Where(execution => executionIds.Contains(execution.Id))
+            .Where(execution => execution.ActivityKind == "userTask" && executionIds.Contains(execution.Id))
             .ToDictionaryAsync(execution => execution.Id, cancellationToken);
 
         var instanceIds = tasks.Values.Select(task => task.InstanceId)

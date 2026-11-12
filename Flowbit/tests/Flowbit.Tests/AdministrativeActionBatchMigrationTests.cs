@@ -881,7 +881,10 @@ public sealed class AdministrativeActionBatchMigrationTests(PostgresApiFixture f
                 ADD COLUMN "CallDepth" integer NOT NULL DEFAULT 0;
             ALTER TABLE flowbit.node_executions
                 ADD COLUMN "TriggeredByClaimsJson" jsonb NULL,
-                ADD COLUMN "CompletedByClaimsJson" jsonb NULL;
+                ADD COLUMN "CompletedByClaimsJson" jsonb NULL,
+                ADD COLUMN "AutomaticMultiInstanceItemId" bigint NULL;
+            ALTER TABLE flowbit.execution_tokens
+                ADD COLUMN "WaitingMultiInstanceExecutionId" bigint NULL;
             ALTER TABLE flowbit.instance_history
                 ADD COLUMN "ActorClaimsJson" jsonb NULL;
             """);

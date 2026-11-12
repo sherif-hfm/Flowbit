@@ -90,5 +90,6 @@ public sealed class InstanceDiagramHistoryQueryService(IInstanceDiagramHistoryQu
     }
 
     private static bool IsMultiInstance(FlowNodeModel node) =>
-        BpmnFlowNodeTypes.IsUserTask(node.Type) && node.MultiInstance is not null;
+        node.MultiInstance is not null
+        && (BpmnFlowNodeTypes.IsUserTask(node.Type) || AutomaticMultiInstanceRules.IsAutomaticNode(node));
 }

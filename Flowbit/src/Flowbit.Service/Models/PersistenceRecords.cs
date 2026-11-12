@@ -124,6 +124,7 @@ public sealed record ExecutionTokenRecord(
     int AutomaticActivationCount = 0)
 {
     public IReadOnlyList<long> AutomaticActivationStateIds { get; init; } = [];
+    public long? WaitingMultiInstanceExecutionId { get; init; }
 }
 
 public sealed record InstanceVariableVersionRecord(
@@ -424,7 +425,11 @@ public sealed record InstanceExecutionPositionRecord(
     Guid? ActivationId,
     string? WaitState,
     long? WaitingJobId,
-    long? WaitingTimerSubscriptionId);
+    long? WaitingTimerSubscriptionId)
+{
+    /// <summary><c>userTask</c> for human work, the activity type for an automatic body, or null.</summary>
+    public string? MultiInstanceActivityKind { get; init; }
+}
 
 public sealed record InstanceCompletionProjectionRecord(
     string Kind,
@@ -744,6 +749,7 @@ public static class ExecutionTokenRecordStatuses
 
 public static class ExecutionTokenWaitStates
 {
+    public const string AutomaticMultiInstance = "automaticMultiInstance";
     public const string AsyncBefore = "asyncBefore";
     public const string AsyncAfter = "asyncAfter";
     public const string TimerCatch = "timerCatch";
@@ -761,6 +767,7 @@ public static class NodeExecutionRecordKinds
 {
     public const string Node = "node";
     public const string UserTaskItem = "userTaskItem";
+    public const string AutomaticActivityItem = "automaticActivityItem";
 }
 
 public static class NodeExecutionRecordStatuses
@@ -805,6 +812,9 @@ public static class NodeExecutionCompletionReasons
 
 public static class InstanceHistoryNotes
 {
+    public const string AutomaticMultiInstanceStarted = "automaticMultiInstanceStarted";
+    public const string AutomaticMultiInstanceFailed = "automaticMultiInstanceFailed";
+    public const string AutomaticMultiInstanceCompleted = "automaticMultiInstanceCompleted";
     public const string ConditionalLatched = "conditionalLatched";
     public const string ConditionalTriggered = "conditionalTriggered";
     public const string InstanceReactivated = "instanceReactivated";
@@ -817,6 +827,7 @@ public static class InstanceHistoryNotes
 
 public static class ExecutionTokenTerminationReasons
 {
+    public const string MultiInstanceFailed = "multiInstanceFailed";
     public const string NormalEnd = "normalEnd";
     public const string TerminateEnd = "terminateEnd";
     public const string ErrorEnd = "errorEnd";

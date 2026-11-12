@@ -478,6 +478,7 @@ public sealed class RetentionRepository(RetentionDataSource source, TimeProvider
                 if (spec.Name == "instance_history")
                 {
                     await ClearSettledCallSnapshotsAsync(connection, transaction, instanceId.Value, now, ct);
+                    await ClearSettledAutomaticBodyPayloadsAsync(connection, transaction, instanceId.Value, ct);
                 }
             }
             if (deleted > 0 && sharedIds.Length > 0)
@@ -577,6 +578,32 @@ public sealed class RetentionRepository(RetentionDataSource source, TimeProvider
             """);
         Add(invocations, "id", parentInstanceId); Add(invocations, "now", now);
         await invocations.ExecuteNonQueryAsync(ct);
+    }
+
+    // A settled automatic body keeps its snapshot row, which its foreign key
+    // requires, but no longer needs the frozen collection, instance inputs, or
+    // FlowInfo inside it. Item results stay on their rows; staging payloads are
+    // normally cleared at settlement, and this also clears older rows.
+    private static async Task ClearSettledAutomaticBodyPayloadsAsync(NpgsqlConnection connection,
+        NpgsqlTransaction transaction, long instanceId, CancellationToken ct)
+    {
+        await using var snapshots = Command(connection, transaction, """
+            UPDATE flowbit.workflow_job_snapshots s SET "VariablesJson"='{}'::jsonb, "InvocationJson"=NULL,
+                "FlowInfoJson"=NULL, "SizeBytes"=2
+            FROM flowbit.multi_instance_executions b
+            WHERE b."InputSnapshotId"=s."Id" AND b."InstanceId"=@id AND b."ActivityKind"<>'userTask'
+              AND b."Status"<>'active' AND (s."VariablesJson"<>'{}'::jsonb OR s."InvocationJson" IS NOT NULL)
+            """);
+        Add(snapshots, "id", instanceId);
+        await snapshots.ExecuteNonQueryAsync(ct);
+        await using var items = Command(connection, transaction, """
+            UPDATE flowbit.multi_instance_activity_items i SET "StagedInputJson"=NULL, "CandidateJson"=NULL
+            FROM flowbit.multi_instance_executions b
+            WHERE i."MultiInstanceExecutionId"=b."Id" AND b."InstanceId"=@id AND b."Status"<>'active'
+              AND (i."StagedInputJson" IS NOT NULL OR i."CandidateJson" IS NOT NULL)
+            """);
+        Add(items, "id", instanceId);
+        await items.ExecuteNonQueryAsync(ct);
     }
 
     private static async Task<bool> IsRuntimeBusyAsync(NpgsqlConnection connection, NpgsqlTransaction transaction,
@@ -776,7 +803,7 @@ public sealed class RetentionRepository(RetentionDataSource source, TimeProvider
             "EXISTS (SELECT 1 FROM flowbit.shared_variables s WHERE s.\"Id\"=t.\"SharedVariableId\" AND (s.\"CurrentRevision\"=t.\"Revision\" OR s.\"ValueRevision\"=t.\"Revision\")) OR EXISTS (SELECT 1 FROM flowbit.shared_variable_current_values v WHERE v.\"SourceRevisionId\"=t.\"Id\") OR EXISTS (SELECT 1 FROM flowbit.shared_variable_requests r WHERE r.\"SharedVariableId\"=t.\"SharedVariableId\" AND r.\"ResultRevision\"=t.\"Revision\")")],
         RetentionCategories.CompletedJobs => [new("workflow_jobs", TableKind.Jobs,
             "t.\"WorkerId\" IS NOT NULL OR t.\"LeaseToken\" IS NOT NULL OR t.\"LeaseExpiresAt\" IS NOT NULL OR EXISTS (SELECT 1 FROM flowbit.workflow_incidents i WHERE i.\"JobId\"=t.\"Id\" AND i.\"Status\"='open') OR EXISTS (SELECT 1 FROM flowbit.execution_tokens e WHERE e.\"WaitingJobId\"=t.\"Id\")"),
-            new("workflow_job_snapshots", TableKind.Snapshots, "EXISTS (SELECT 1 FROM flowbit.workflow_jobs j WHERE j.\"SnapshotId\"=t.\"Id\")")],
+            new("workflow_job_snapshots", TableKind.Snapshots, "EXISTS (SELECT 1 FROM flowbit.workflow_jobs j WHERE j.\"SnapshotId\"=t.\"Id\") OR EXISTS (SELECT 1 FROM flowbit.multi_instance_executions b WHERE b.\"InputSnapshotId\"=t.\"Id\")")],
         RetentionCategories.ResolvedIncidents => [new("workflow_incidents", TableKind.Incidents, "FALSE")],
         // Pending, retrying, leased, failed, and paused work stays until it settles or is discarded.
         RetentionCategories.WebhookDeliveries => [new("webhook_deliveries", TableKind.WebhookDeliveries,

@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 namespace Flowbit.Infrastructure.Entities;
 
 public sealed class MultiInstanceExecutionEntity
@@ -8,6 +10,26 @@ public sealed class MultiInstanceExecutionEntity
     public long TokenId { get; set; }
     public ExecutionTokenEntity? Token { get; set; }
     public int NodeId { get; set; }
+    public string ActivityKind { get; set; } = "userTask";
+    public long? WorkflowDefinitionId { get; set; }
+    public Guid? ActivationId { get; set; }
+    public long? InputSnapshotId { get; set; }
+    public WorkflowJobSnapshotEntity? InputSnapshot { get; set; }
+    public string? AggregateScope { get; set; }
+    public string? AggregateSharedKey { get; set; }
+    public long? AggregateValueVersion { get; set; }
+    public int? MaxInstances { get; set; }
+    public int? EffectiveConcurrency { get; set; }
+    public string? Phase { get; set; }
+    public string? AdmissionBlockedReason { get; set; }
+    public int FailedCount { get; set; }
+    public int ResultBytes { get; set; }
+    public long ControlGeneration { get; set; }
+    public long? PinnedChildDefinitionId { get; set; }
+    public int? PinnedChildStartEventId { get; set; }
+    public string? PinState { get; set; }
+    public JsonDocument? CompletionJson { get; set; }
+    public List<MultiInstanceActivityItemEntity> ActivityItems { get; set; } = [];
     public long? RolePolicyId { get; set; }
     public UserTaskRolePolicyEntity? RolePolicy { get; set; }
     public string Mode { get; set; } = "parallel";

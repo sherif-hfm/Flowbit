@@ -19,7 +19,10 @@ public sealed record ParentCallSummaryDto(
     string? ParentNodeName,
     long RootInstanceId,
     int Depth,
-    bool CancellationInProgress = false);
+    bool CancellationInProgress = false,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] long? MultiInstanceExecutionId = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] long? AutomaticMultiInstanceItemId = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? ItemIndex = null);
 
 public sealed record CallCountsDto(long Total, long Unsettled);
 
@@ -58,7 +61,10 @@ public sealed record CallActivityExecutionDto(
     DateTimeOffset? SettledAt,
     string? FailureCode,
     string? FailureDescription,
-    string? ChildFaultCode);
+    string? ChildFaultCode,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] long? MultiInstanceExecutionId = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] long? AutomaticMultiInstanceItemId = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? ItemIndex = null);
 
 /// <summary>A published version that calls a family, and whether it passes the contract check.</summary>
 public sealed record WorkflowCallerDto(

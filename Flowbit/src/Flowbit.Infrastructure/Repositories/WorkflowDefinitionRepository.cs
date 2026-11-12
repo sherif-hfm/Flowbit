@@ -413,6 +413,14 @@ public sealed class WorkflowDefinitionRepository(
             throw new WorkflowDomainException(
                 "Cannot unpublish the default version. Set a different version as default first.");
         }
+        if (await dbContext.MultiInstanceExecutions.AsNoTracking().AnyAsync(body =>
+                body.ActivityKind == "callActivity" && body.PinnedChildDefinitionId == id && body.Status == "active", cancellationToken)
+            || await dbContext.CallActivityExecutions.AsNoTracking().AnyAsync(call =>
+                call.AutomaticMultiInstanceItemId != null && call.ChildDefinitionId == id
+                && (call.State == "queued" || call.State == "running"
+                    || dbContext.WorkflowJobs.Any(job => job.CallInvocationId == call.Id
+                        && job.Status != "completed" && job.Status != "cancelled" && job.Status != "skipped")), cancellationToken))
+            throw new WorkflowDomainException("Cannot unpublish a version pinned by open automatic multi-instance call work.");
 
         var affected = await dbContext.WorkflowDefinitions
             .Where(w => w.Id == id)
@@ -748,6 +756,8 @@ public sealed class WorkflowDefinitionRepository(
     {
         var isInUse = await dbContext.WorkflowInstances.AsNoTracking()
                 .AnyAsync(instance => instance.WorkflowDefinitionId == id, cancellationToken)
+            || await dbContext.MultiInstanceExecutions.AsNoTracking().AnyAsync(body =>
+                body.WorkflowDefinitionId == id || body.PinnedChildDefinitionId == id, cancellationToken)
             || await dbContext.CallActivityExecutions.AsNoTracking()
                 .AnyAsync(call =>
                     call.ParentDefinitionId == id

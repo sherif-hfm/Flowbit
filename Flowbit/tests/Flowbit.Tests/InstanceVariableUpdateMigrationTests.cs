@@ -296,7 +296,10 @@ public sealed class InstanceVariableUpdateMigrationTests(PostgresApiFixture fixt
                         ADD COLUMN IF NOT EXISTS "CallRootInstanceId" bigint,
                         ADD COLUMN IF NOT EXISTS "CallDepth" integer NOT NULL DEFAULT 0;
                     ALTER TABLE flowbit.workflow_jobs
-                        ADD COLUMN IF NOT EXISTS "CallInvocationId" bigint
+                        ADD COLUMN IF NOT EXISTS "CallInvocationId" bigint,
+                        ADD COLUMN IF NOT EXISTS "AutomaticMultiInstanceItemId" bigint,
+                        ADD COLUMN IF NOT EXISTS "MultiInstanceControlGeneration" bigint,
+                        ADD COLUMN IF NOT EXISTS "PublicationFenceRefreshRequested" boolean NOT NULL DEFAULT FALSE
                     """,
                     compatibility);
                 await columns.ExecuteNonQueryAsync();

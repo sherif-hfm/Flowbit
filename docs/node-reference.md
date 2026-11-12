@@ -201,7 +201,7 @@ The APIs return the saved values as `dueAt` and `priority`, with a `dueStatus` o
 
 #### Multi-instance properties
 
-These are properties of the `userTask.multiInstance` object; multi-instance behavior is supported only for user tasks.
+These are properties of the `userTask.multiInstance` object; multi-instance behavior is supported only for user tasks. Saving refuses `multiInstance` on any other node type (apart from an unpublishable Development-only preview); earlier Flowbit versions silently dropped it, so remove it from such imported definitions.
 
 | Property | Type | Required / default | Meaning and constraints |
 | --- | --- | --- | --- |

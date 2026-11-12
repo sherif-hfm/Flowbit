@@ -404,6 +404,9 @@ namespace Flowbit.Infrastructure.Data.Migrations
                     b.Property<DateTimeOffset?>("AdmittedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<long?>("AutomaticMultiInstanceItemId")
+                        .HasColumnType("bigint");
+
                     b.Property<bool>("CapacityReserved")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("boolean")
@@ -447,6 +450,9 @@ namespace Flowbit.Infrastructure.Data.Migrations
 
                     b.Property<JsonDocument>("InputValuesJson")
                         .HasColumnType("jsonb");
+
+                    b.Property<long?>("MultiInstanceExecutionId")
+                        .HasColumnType("bigint");
 
                     b.Property<long>("ParentDefinitionId")
                         .HasColumnType("bigint");
@@ -492,6 +498,10 @@ namespace Flowbit.Infrastructure.Data.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("AutomaticMultiInstanceItemId")
+                        .IsUnique()
+                        .HasFilter("\"AutomaticMultiInstanceItemId\" IS NOT NULL");
+
                     b.HasIndex("ChildDefinitionId");
 
                     b.HasIndex("ChildInstanceId")
@@ -512,12 +522,17 @@ namespace Flowbit.Infrastructure.Data.Migrations
                     b.HasIndex("ParentTokenId", "State")
                         .HasFilter("\"State\" IN ('queued', 'running')");
 
+                    b.HasIndex("AutomaticMultiInstanceItemId", "MultiInstanceExecutionId", "ParentInstanceId");
+
                     b.HasIndex("ParentInstanceId", "ParentTokenId", "ActivationId")
-                        .IsUnique();
+                        .IsUnique()
+                        .HasFilter("\"AutomaticMultiInstanceItemId\" IS NULL");
 
                     b.ToTable("call_activity_executions", "flowbit", t =>
                         {
                             t.HasCheckConstraint("CK_call_activity_executions_admission", "NOT \"CapacityReserved\" OR \"AdmittedAt\" IS NOT NULL");
+
+                            t.HasCheckConstraint("CK_call_activity_executions_automatic_item_pair", "(\"AutomaticMultiInstanceItemId\" IS NULL) = (\"MultiInstanceExecutionId\" IS NULL)");
 
                             t.HasCheckConstraint("CK_call_activity_executions_child_resolution", "(\"ChildInstanceId\" IS NULL AND \"ChildDefinitionId\" IS NULL AND \"ChildStartEventId\" IS NULL) OR (\"ChildInstanceId\" IS NOT NULL AND \"ChildDefinitionId\" IS NOT NULL AND \"ChildStartEventId\" IS NOT NULL)");
 
@@ -916,6 +931,9 @@ namespace Flowbit.Infrastructure.Data.Migrations
                     b.Property<long?>("WaitingJobId")
                         .HasColumnType("bigint");
 
+                    b.Property<long?>("WaitingMultiInstanceExecutionId")
+                        .HasColumnType("bigint");
+
                     b.Property<long?>("WaitingTimerSubscriptionId")
                         .HasColumnType("bigint");
 
@@ -936,6 +954,8 @@ namespace Flowbit.Infrastructure.Data.Migrations
 
                     b.HasIndex("WaitingJobId")
                         .HasFilter("\"WaitingJobId\" IS NOT NULL");
+
+                    b.HasIndex("WaitingMultiInstanceExecutionId");
 
                     b.HasIndex("WaitingTimerSubscriptionId")
                         .HasFilter("\"WaitingTimerSubscriptionId\" IS NOT NULL");
@@ -963,7 +983,7 @@ namespace Flowbit.Infrastructure.Data.Migrations
 
                             t.HasCheckConstraint("CK_execution_tokens_complex_gateway_registration", "(\"ComplexGatewayStateId\" IS NULL AND \"ComplexGatewayCycle\" IS NULL) OR (\"ComplexGatewayStateId\" IS NOT NULL AND \"ComplexGatewayCycle\" IS NOT NULL AND \"ComplexGatewayCycle\" >= 0)");
 
-                            t.HasCheckConstraint("CK_execution_tokens_wait_shape", "(\"WaitState\" IS NULL AND \"WaitingJobId\" IS NULL AND \"WaitingTimerSubscriptionId\" IS NULL) OR (\"WaitState\" IS NOT NULL AND (\"WaitingJobId\" IS NOT NULL OR \"WaitingTimerSubscriptionId\" IS NOT NULL))");
+                            t.HasCheckConstraint("CK_execution_tokens_wait_shape", "(\"WaitState\" IS NULL AND \"WaitingJobId\" IS NULL AND \"WaitingTimerSubscriptionId\" IS NULL AND \"WaitingMultiInstanceExecutionId\" IS NULL) OR (\"WaitState\" IS NOT NULL AND (\"WaitingJobId\" IS NOT NULL OR \"WaitingTimerSubscriptionId\" IS NOT NULL OR (\"WaitState\" = 'automaticMultiInstance' AND \"WaitingMultiInstanceExecutionId\" IS NOT NULL)))");
                         });
                 });
 
@@ -1885,6 +1905,88 @@ namespace Flowbit.Infrastructure.Data.Migrations
                     b.ToTable("message_delivery_receipts", "flowbit");
                 });
 
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.MultiInstanceActivityItemEntity", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<JsonDocument>("CandidateJson")
+                        .HasColumnType("jsonb");
+
+                    b.Property<DateTimeOffset?>("CompletedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ErrorCode")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<string>("ErrorDescription")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.Property<long>("InstanceId")
+                        .HasColumnType("bigint");
+
+                    b.Property<int>("ItemIndex")
+                        .HasColumnType("integer");
+
+                    b.Property<long>("MultiInstanceExecutionId")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("Phase")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<JsonDocument>("ResultJson")
+                        .HasColumnType("jsonb");
+
+                    b.Property<JsonDocument>("SharedWriteCorrelationsJson")
+                        .HasColumnType("jsonb");
+
+                    b.Property<JsonDocument>("StagedInputJson")
+                        .HasColumnType("jsonb");
+
+                    b.Property<DateTimeOffset?>("StartedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("MultiInstanceExecutionId", "InstanceId");
+
+                    b.HasIndex("MultiInstanceExecutionId", "ItemIndex")
+                        .IsUnique();
+
+                    b.HasIndex("MultiInstanceExecutionId", "Status", "ItemIndex");
+
+                    b.ToTable("multi_instance_activity_items", "flowbit", t =>
+                        {
+                            t.HasCheckConstraint("CK_multi_instance_activity_items_index", "\"ItemIndex\" >= 0");
+
+                            t.HasCheckConstraint("CK_multi_instance_activity_items_phase", "\"Phase\" IN ('execution', 'publication', 'settled')");
+
+                            t.HasCheckConstraint("CK_multi_instance_activity_items_size", "COALESCE(octet_length(\"StagedInputJson\"::text), 0) + COALESCE(octet_length(\"CandidateJson\"::text), 0) <= 1048576 AND COALESCE(octet_length(\"ResultJson\"::text), 0) <= 1048576");
+
+                            t.HasCheckConstraint("CK_multi_instance_activity_items_status", "\"Status\" IN ('pending', 'active', 'completed', 'failed', 'cancelled')");
+
+                            t.HasCheckConstraint("CK_multi_instance_activity_items_timestamps", "(\"Status\" = 'pending' AND \"StartedAt\" IS NULL AND \"CompletedAt\" IS NULL) OR (\"Status\" = 'active' AND \"StartedAt\" IS NOT NULL AND \"CompletedAt\" IS NULL) OR (\"Status\" IN ('completed', 'failed', 'cancelled') AND \"CompletedAt\" IS NOT NULL)");
+                        });
+                });
+
             modelBuilder.Entity("Flowbit.Infrastructure.Entities.MultiInstanceExecutionEntity", b =>
                 {
                     b.Property<long>("Id")
@@ -1892,6 +1994,31 @@ namespace Flowbit.Infrastructure.Data.Migrations
                         .HasColumnType("bigint");
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<Guid?>("ActivationId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("ActivityKind")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasDefaultValue("userTask");
+
+                    b.Property<string>("AdmissionBlockedReason")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("AggregateScope")
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<string>("AggregateSharedKey")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<long?>("AggregateValueVersion")
+                        .HasColumnType("bigint");
 
                     b.Property<int>("CancelledCount")
                         .HasColumnType("integer");
@@ -1902,17 +2029,35 @@ namespace Flowbit.Infrastructure.Data.Migrations
                     b.Property<int>("CompletedCount")
                         .HasColumnType("integer");
 
+                    b.Property<JsonDocument>("CompletionJson")
+                        .HasColumnType("jsonb");
+
                     b.Property<string>("CompletionReason")
                         .HasMaxLength(32)
                         .HasColumnType("character varying(32)");
+
+                    b.Property<long>("ControlGeneration")
+                        .HasColumnType("bigint");
 
                     b.Property<DateTimeOffset>("CreatedAt")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("timestamp with time zone")
                         .HasDefaultValueSql("now()");
 
+                    b.Property<int?>("EffectiveConcurrency")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("FailedCount")
+                        .HasColumnType("integer");
+
+                    b.Property<long?>("InputSnapshotId")
+                        .HasColumnType("bigint");
+
                     b.Property<long>("InstanceId")
                         .HasColumnType("bigint");
+
+                    b.Property<int?>("MaxInstances")
+                        .HasColumnType("integer");
 
                     b.Property<string>("Mode")
                         .IsRequired()
@@ -1926,6 +2071,23 @@ namespace Flowbit.Infrastructure.Data.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("boolean")
                         .HasDefaultValue(false);
+
+                    b.Property<string>("Phase")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("PinState")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<long?>("PinnedChildDefinitionId")
+                        .HasColumnType("bigint");
+
+                    b.Property<int?>("PinnedChildStartEventId")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("ResultBytes")
+                        .HasColumnType("integer");
 
                     b.Property<string>("ResultVariable")
                         .IsRequired()
@@ -1959,15 +2121,44 @@ namespace Flowbit.Infrastructure.Data.Migrations
                     b.Property<int?>("WinningFlowId")
                         .HasColumnType("integer");
 
+                    b.Property<long?>("WorkflowDefinitionId")
+                        .HasColumnType("bigint");
+
                     b.HasKey("Id");
+
+                    b.HasIndex("InputSnapshotId");
+
+                    b.HasIndex("PinnedChildDefinitionId");
 
                     b.HasIndex("RolePolicyId");
 
+                    b.HasIndex("WorkflowDefinitionId");
+
+                    b.HasIndex("InstanceId", "NodeId")
+                        .IsUnique()
+                        .HasDatabaseName("IX_multi_instance_executions_open_automatic_node")
+                        .HasFilter("\"ActivityKind\" <> 'userTask' AND \"Status\" = 'active'");
+
                     b.HasIndex("InstanceId", "Status");
+
+                    b.HasIndex("TokenId", "ActivationId")
+                        .IsUnique()
+                        .HasFilter("\"ActivityKind\" <> 'userTask'");
 
                     b.HasIndex("TokenId", "NodeId", "Status");
 
-                    b.ToTable("multi_instance_executions", "flowbit");
+                    b.ToTable("multi_instance_executions", "flowbit", t =>
+                        {
+                            t.HasCheckConstraint("CK_multi_instance_executions_activity_kind", "\"ActivityKind\" IN ('userTask', 'serviceTask', 'scriptTask', 'callActivity')");
+
+                            t.HasCheckConstraint("CK_multi_instance_executions_automatic_counts", "\"FailedCount\" >= 0 AND \"ResultBytes\" BETWEEN 0 AND 1048576 AND \"ControlGeneration\" >= 0");
+
+                            t.HasCheckConstraint("CK_multi_instance_executions_automatic_shape", "\"ActivityKind\" = 'userTask' OR (\"WorkflowDefinitionId\" IS NOT NULL AND \"ActivationId\" IS NOT NULL AND \"InputSnapshotId\" IS NOT NULL AND \"AggregateScope\" IS NOT NULL AND \"AggregateScope\" IN ('instance', 'shared') AND \"AggregateValueVersion\" IS NOT NULL AND \"EffectiveConcurrency\" IS NOT NULL AND \"EffectiveConcurrency\" BETWEEN 0 AND 1000 AND \"MaxInstances\" IS NOT NULL AND \"MaxInstances\" >= 1 AND \"TotalCount\" BETWEEN 0 AND \"MaxInstances\" AND \"RolePolicyId\" IS NULL AND NOT \"OnePerActor\" AND \"Phase\" IS NOT NULL AND \"Phase\" IN ('running', 'dispatch', 'completing', 'errorCompletion', 'settled') AND ((\"AggregateScope\" = 'instance' AND \"AggregateSharedKey\" IS NULL) OR (\"AggregateScope\" = 'shared' AND \"AggregateSharedKey\" IS NOT NULL)))");
+
+                            t.HasCheckConstraint("CK_multi_instance_executions_call_pin_shape", "(\"PinnedChildDefinitionId\" IS NULL AND \"PinnedChildStartEventId\" IS NULL AND \"PinState\" IS NULL AND (\"ActivityKind\" <> 'callActivity' OR \"TotalCount\" = 0)) OR (\"ActivityKind\" = 'callActivity' AND \"TotalCount\" > 0 AND \"PinnedChildDefinitionId\" IS NOT NULL AND \"PinnedChildStartEventId\" IS NOT NULL AND \"PinState\" IN ('pinned', 'released') AND (\"PinState\" = 'pinned') = (\"Status\" = 'active'))");
+
+                            t.HasCheckConstraint("CK_multi_instance_executions_completion_size", "COALESCE(octet_length(\"CompletionJson\"::text), 0) <= 1048576");
+                        });
                 });
 
             modelBuilder.Entity("Flowbit.Infrastructure.Entities.MultiInstanceFlowCountEntity", b =>
@@ -2002,6 +2193,9 @@ namespace Flowbit.Infrastructure.Data.Migrations
                         .HasColumnType("bigint");
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<long?>("AutomaticMultiInstanceItemId")
+                        .HasColumnType("bigint");
 
                     b.Property<string>("CompletedActingFor")
                         .HasMaxLength(300)
@@ -2135,6 +2329,10 @@ namespace Flowbit.Infrastructure.Data.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("AutomaticMultiInstanceItemId")
+                        .IsUnique()
+                        .HasFilter("\"AutomaticMultiInstanceItemId\" IS NOT NULL");
+
                     b.HasIndex("EntryGatewayBranchId");
 
                     b.HasIndex("ExitGatewayBranchId");
@@ -2161,6 +2359,8 @@ namespace Flowbit.Infrastructure.Data.Migrations
 
                     b.HasIndex("UpdatedAt", "Id");
 
+                    b.HasIndex("AutomaticMultiInstanceItemId", "MultiInstanceExecutionId", "InstanceId");
+
                     b.HasIndex("InstanceId", "UpdatedAt", "Id");
 
                     b.HasIndex("Status", "UpdatedAt", "Id");
@@ -2175,9 +2375,9 @@ namespace Flowbit.Infrastructure.Data.Migrations
                         {
                             t.HasCheckConstraint("CK_node_executions_completion_reason", "((\"Status\" IN ('pending', 'active') AND \"CompletionReason\" IS NULL) OR (\"Status\" IN ('completed', 'cancelled', 'faulted', 'merged') AND \"CompletionReason\" IN ('normal', 'userAction', 'administrativeAction', 'messageDelivery', 'multiInstanceItem', 'multiInstanceCompleted', 'multiInstanceInterrupt', 'boundaryCaught', 'normalEnd', 'terminateEnd', 'errorEnd', 'instanceCancelled', 'gatewayScopeCancelled', 'gatewayJoinMerged', 'parallelFork', 'parallelJoin', 'inclusiveSplit', 'inclusiveMerge', 'complexActivation', 'complexReset', 'scopedInterrupt', 'scopedInterruptSkipped', 'timerFired', 'conditionalTriggered', 'callCompleted', 'callFailed')))");
 
-                            t.HasCheckConstraint("CK_node_executions_execution_kind", "\"ExecutionKind\" IN ('node', 'userTaskItem')");
+                            t.HasCheckConstraint("CK_node_executions_execution_kind", "\"ExecutionKind\" IN ('node', 'userTaskItem', 'automaticActivityItem')");
 
-                            t.HasCheckConstraint("CK_node_executions_multi_instance_shape", "(\"ExecutionKind\" = 'node' AND \"MultiInstanceExecutionId\" IS NULL AND \"ItemIndex\" IS NULL) OR (\"ExecutionKind\" = 'userTaskItem' AND \"UserTaskId\" IS NOT NULL AND \"MultiInstanceExecutionId\" IS NOT NULL AND \"ItemIndex\" IS NOT NULL)");
+                            t.HasCheckConstraint("CK_node_executions_multi_instance_shape", "(\"ExecutionKind\" = 'node' AND \"MultiInstanceExecutionId\" IS NULL AND \"ItemIndex\" IS NULL AND \"AutomaticMultiInstanceItemId\" IS NULL) OR (\"ExecutionKind\" = 'userTaskItem' AND \"UserTaskId\" IS NOT NULL AND \"MultiInstanceExecutionId\" IS NOT NULL AND \"ItemIndex\" IS NOT NULL AND \"AutomaticMultiInstanceItemId\" IS NULL) OR (\"ExecutionKind\" = 'automaticActivityItem' AND \"UserTaskId\" IS NULL AND \"MultiInstanceExecutionId\" IS NOT NULL AND \"ItemIndex\" IS NOT NULL AND \"AutomaticMultiInstanceItemId\" IS NOT NULL)");
 
                             t.HasCheckConstraint("CK_node_executions_status", "\"Status\" IN ('pending', 'active', 'completed', 'cancelled', 'faulted', 'merged')");
 
@@ -4805,6 +5005,9 @@ namespace Flowbit.Infrastructure.Data.Migrations
                         .HasColumnType("integer")
                         .HasDefaultValue(0);
 
+                    b.Property<long?>("AutomaticMultiInstanceItemId")
+                        .HasColumnType("bigint");
+
                     b.Property<long?>("CallInvocationId")
                         .HasColumnType("bigint");
 
@@ -4864,6 +5067,9 @@ namespace Flowbit.Infrastructure.Data.Migrations
                     b.Property<int>("MaxAttempts")
                         .HasColumnType("integer");
 
+                    b.Property<long?>("MultiInstanceControlGeneration")
+                        .HasColumnType("bigint");
+
                     b.Property<long?>("MultiInstanceExecutionId")
                         .HasColumnType("bigint");
 
@@ -4890,6 +5096,9 @@ namespace Flowbit.Infrastructure.Data.Migrations
 
                     b.Property<int>("Priority")
                         .HasColumnType("integer");
+
+                    b.Property<bool>("PublicationFenceRefreshRequested")
+                        .HasColumnType("boolean");
 
                     b.Property<string>("QueueClass")
                         .IsRequired()
@@ -4948,7 +5157,14 @@ namespace Flowbit.Infrastructure.Data.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("MultiInstanceExecutionId");
+                    b.HasIndex("AutomaticMultiInstanceItemId")
+                        .IsUnique()
+                        .HasFilter("\"AutomaticMultiInstanceItemId\" IS NOT NULL");
+
+                    b.HasIndex("MultiInstanceExecutionId")
+                        .IsUnique()
+                        .HasDatabaseName("IX_workflow_jobs_automatic_control_slot")
+                        .HasFilter("\"Kind\" IN ('multiInstanceDispatch', 'multiInstanceComplete') AND \"Status\" NOT IN ('completed', 'cancelled', 'skipped')");
 
                     b.HasIndex("SnapshotId");
 
@@ -4965,6 +5181,10 @@ namespace Flowbit.Infrastructure.Data.Migrations
                         .IsUnique()
                         .HasFilter("\"ConditionalBoundarySubscriptionId\" IS NOT NULL AND \"ConditionalBoundaryOccurrence\" IS NOT NULL");
 
+                    b.HasIndex("MultiInstanceExecutionId", "MultiInstanceControlGeneration")
+                        .IsUnique()
+                        .HasFilter("\"MultiInstanceControlGeneration\" IS NOT NULL");
+
                     b.HasIndex("TimerSubscriptionId", "ScheduledOccurrenceAt")
                         .IsUnique()
                         .HasFilter("\"TimerSubscriptionId\" IS NOT NULL AND \"ScheduledOccurrenceAt\" IS NOT NULL");
@@ -4974,6 +5194,8 @@ namespace Flowbit.Infrastructure.Data.Migrations
                         .HasDatabaseName("IX_workflow_jobs_updated_id");
 
                     b.HasIndex("WorkflowDefinitionId", "WorkflowKey");
+
+                    b.HasIndex("AutomaticMultiInstanceItemId", "MultiInstanceExecutionId", "InstanceId");
 
                     b.HasIndex("InstanceId", "Status", "Id");
 
@@ -4994,11 +5216,17 @@ namespace Flowbit.Infrastructure.Data.Migrations
                         .HasDatabaseName("IX_workflow_jobs_expired_lease_class")
                         .HasFilter("\"Status\" IN ('running', 'resultReady') AND \"LeaseExpiresAt\" IS NOT NULL");
 
+                    b.HasIndex(new[] { "MultiInstanceExecutionId" }, "IX_workflow_jobs_MultiInstanceExecutionId");
+
                     b.ToTable("workflow_jobs", "flowbit", t =>
                         {
                             t.HasCheckConstraint("CK_workflow_jobs_attempts", "\"AttemptCount\" >= 0 AND \"MaxAttempts\" > 0 AND \"AttemptCount\" <= \"MaxAttempts\"");
 
                             t.HasCheckConstraint("CK_workflow_jobs_automatic_activation_count", "\"AutomaticActivationCount\" >= 0");
+
+                            t.HasCheckConstraint("CK_workflow_jobs_automatic_control_shape", "(\"Kind\" NOT IN ('multiInstanceDispatch', 'multiInstanceComplete') AND \"MultiInstanceControlGeneration\" IS NULL) OR (\"Kind\" IN ('multiInstanceDispatch', 'multiInstanceComplete') AND \"MultiInstanceControlGeneration\" IS NOT NULL AND \"MultiInstanceControlGeneration\" >= 0 AND \"MultiInstanceExecutionId\" IS NOT NULL AND \"InstanceId\" IS NOT NULL AND \"TokenId\" IS NOT NULL AND \"QueueClass\" = 'control' AND \"UserTaskId\" IS NULL)");
+
+                            t.HasCheckConstraint("CK_workflow_jobs_automatic_item_shape", "(\"AutomaticMultiInstanceItemId\" IS NULL AND \"Kind\" <> 'multiInstanceItem') OR (\"AutomaticMultiInstanceItemId\" IS NOT NULL AND \"Kind\" = 'multiInstanceItem' AND \"MultiInstanceExecutionId\" IS NOT NULL AND \"InstanceId\" IS NOT NULL AND \"TokenId\" IS NOT NULL AND \"UserTaskId\" IS NULL AND \"QueueClass\" = 'activity')");
 
                             t.HasCheckConstraint("CK_workflow_jobs_conditional_boundary_occurrence", "(\"ConditionalBoundarySubscriptionId\" IS NULL AND \"ConditionalBoundaryOccurrence\" IS NULL) OR (\"ConditionalBoundarySubscriptionId\" IS NOT NULL AND \"ConditionalBoundaryOccurrence\" > 0)");
 
@@ -5224,6 +5452,14 @@ namespace Flowbit.Infrastructure.Data.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
+                    b.HasOne("Flowbit.Infrastructure.Entities.MultiInstanceActivityItemEntity", "AutomaticMultiInstanceItem")
+                        .WithMany()
+                        .HasForeignKey("AutomaticMultiInstanceItemId", "MultiInstanceExecutionId", "ParentInstanceId")
+                        .HasPrincipalKey("Id", "MultiInstanceExecutionId", "InstanceId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.Navigation("AutomaticMultiInstanceItem");
+
                     b.Navigation("ChildDefinition");
 
                     b.Navigation("ChildInstance");
@@ -5324,6 +5560,11 @@ namespace Flowbit.Infrastructure.Data.Migrations
                         .HasForeignKey("InstanceId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
+
+                    b.HasOne("Flowbit.Infrastructure.Entities.MultiInstanceExecutionEntity", null)
+                        .WithMany()
+                        .HasForeignKey("WaitingMultiInstanceExecutionId")
+                        .OnDelete(DeleteBehavior.NoAction);
 
                     b.Navigation("ComplexGatewayState");
 
@@ -5548,13 +5789,35 @@ namespace Flowbit.Infrastructure.Data.Migrations
                     b.Navigation("WaitHistory");
                 });
 
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.MultiInstanceActivityItemEntity", b =>
+                {
+                    b.HasOne("Flowbit.Infrastructure.Entities.MultiInstanceExecutionEntity", "Execution")
+                        .WithMany("ActivityItems")
+                        .HasForeignKey("MultiInstanceExecutionId", "InstanceId")
+                        .HasPrincipalKey("Id", "InstanceId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Execution");
+                });
+
             modelBuilder.Entity("Flowbit.Infrastructure.Entities.MultiInstanceExecutionEntity", b =>
                 {
+                    b.HasOne("Flowbit.Infrastructure.Entities.WorkflowJobSnapshotEntity", "InputSnapshot")
+                        .WithMany()
+                        .HasForeignKey("InputSnapshotId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
                     b.HasOne("Flowbit.Infrastructure.Entities.WorkflowInstanceEntity", "Instance")
                         .WithMany("MultiInstanceExecutions")
                         .HasForeignKey("InstanceId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
+
+                    b.HasOne("Flowbit.Infrastructure.Entities.WorkflowDefinitionEntity", null)
+                        .WithMany()
+                        .HasForeignKey("PinnedChildDefinitionId")
+                        .OnDelete(DeleteBehavior.Restrict);
 
                     b.HasOne("Flowbit.Infrastructure.Entities.UserTaskRolePolicyEntity", "RolePolicy")
                         .WithMany()
@@ -5566,6 +5829,13 @@ namespace Flowbit.Infrastructure.Data.Migrations
                         .HasForeignKey("TokenId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
+
+                    b.HasOne("Flowbit.Infrastructure.Entities.WorkflowDefinitionEntity", null)
+                        .WithMany()
+                        .HasForeignKey("WorkflowDefinitionId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.Navigation("InputSnapshot");
 
                     b.Navigation("Instance");
 
@@ -5624,6 +5894,14 @@ namespace Flowbit.Infrastructure.Data.Migrations
                         .HasForeignKey("WorkflowDefinitionId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
+
+                    b.HasOne("Flowbit.Infrastructure.Entities.MultiInstanceActivityItemEntity", "AutomaticMultiInstanceItem")
+                        .WithMany()
+                        .HasForeignKey("AutomaticMultiInstanceItemId", "MultiInstanceExecutionId", "InstanceId")
+                        .HasPrincipalKey("Id", "MultiInstanceExecutionId", "InstanceId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.Navigation("AutomaticMultiInstanceItem");
 
                     b.Navigation("EntryGatewayBranch");
 
@@ -6213,6 +6491,14 @@ namespace Flowbit.Infrastructure.Data.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
+                    b.HasOne("Flowbit.Infrastructure.Entities.MultiInstanceActivityItemEntity", "AutomaticMultiInstanceItem")
+                        .WithMany()
+                        .HasForeignKey("AutomaticMultiInstanceItemId", "MultiInstanceExecutionId", "InstanceId")
+                        .HasPrincipalKey("Id", "MultiInstanceExecutionId", "InstanceId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.Navigation("AutomaticMultiInstanceItem");
+
                     b.Navigation("CallInvocation");
 
                     b.Navigation("ConditionalBoundarySubscription");
@@ -6307,6 +6593,8 @@ namespace Flowbit.Infrastructure.Data.Migrations
 
             modelBuilder.Entity("Flowbit.Infrastructure.Entities.MultiInstanceExecutionEntity", b =>
                 {
+                    b.Navigation("ActivityItems");
+
                     b.Navigation("FlowCounts");
 
                     b.Navigation("NodeExecutions");

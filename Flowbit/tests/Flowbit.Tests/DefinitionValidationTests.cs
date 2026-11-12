@@ -1184,7 +1184,7 @@ public sealed class DefinitionValidationTests
     [Theory]
     [InlineData(BpmnFlowNodeTypes.EndEvent)]
     [InlineData(BpmnFlowNodeTypes.ErrorEndEvent)]
-    public void Normalize_ClearsFieldsThatDoNotBelongToTerminalEvents(string terminalType)
+    public void Normalize_ClearsLegacyTerminalFieldsButPreservesUnsupportedMiForExplicitRejection(string terminalType)
     {
         var model = LoadModel("votes-users-list.json");
         var terminal = model.FlowNodes.First(node => BpmnFlowNodeTypes.IsEnd(node.Type));
@@ -1240,7 +1240,9 @@ public sealed class DefinitionValidationTests
         Assert.Empty(terminal.Assignments);
         Assert.Null(terminal.Script);
         Assert.Null(terminal.AssigneeExpression);
-        Assert.Null(terminal.MultiInstance);
+        Assert.NotNull(terminal.MultiInstance);
+        Assert.Equal($"Flow node #{terminal.Id} cannot define multiInstance.",
+            AutomaticMultiInstanceRules.FindAuthoredProblem(terminal, enabled: true));
         Assert.Null(terminal.AttachedToRef);
         Assert.Null(terminal.ErrorVariable);
         Assert.Null(terminal.BusinessKey);

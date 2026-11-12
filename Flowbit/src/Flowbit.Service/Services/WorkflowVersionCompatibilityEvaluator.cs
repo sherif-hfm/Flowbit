@@ -64,6 +64,7 @@ public static class WorkflowVersionCompatibilityEvaluator
             sourceNodes,
             targetNodes,
             blockers);
+        ValidateAutomaticMultiInstances(context, sourceNodes, blockers);
 
         if (RequiresExactTopology(context))
         {
@@ -132,6 +133,32 @@ public static class WorkflowVersionCompatibilityEvaluator
                     $"Call activity #{nodeId} changes its target, mappings, flow, or boundary.",
                     nodeId));
             }
+        }
+    }
+
+    private static void ValidateAutomaticMultiInstances(
+        WorkflowVersionCompatibilityContext context,
+        IReadOnlyDictionary<int, FlowNodeModel> sourceNodes,
+        ICollection<WorkflowVersionCompatibilityIssue> blockers)
+    {
+        // A body wait, queued entry, incident or async-after continuation is never
+        // rebound, even when the target's node contract is byte-for-byte equal.
+        var nodeIds = context.ActiveTokens.Select(token => token.NodeId)
+            .Concat(context.OpenJobs.Select(job => job.NodeId))
+            .Concat(context.ActiveAutomaticMultiInstances.Select(body => body.NodeId))
+            .Distinct().Order();
+        foreach (var nodeId in nodeIds)
+        {
+            if (!sourceNodes.TryGetValue(nodeId, out var node) || !AutomaticMultiInstanceRules.IsAutomaticBody(node))
+                continue;
+            // A queued entry or async-after continuation has no open body; it still blocks.
+            var body = context.ActiveAutomaticMultiInstances.Where(item => item.NodeId == nodeId)
+                .OrderBy(item => item.Id).FirstOrDefault();
+            blockers.Add(Issue(WorkflowVersionCompatibilityCodes.AutomaticMultiInstanceOpen,
+                body is null
+                    ? $"Automatic multi-instance node #{nodeId} has open entry or continuation work."
+                    : $"Automatic multi-instance node #{nodeId} has open body execution #{body.Id}.",
+                nodeId, runtimeId: body?.Id));
         }
     }
 
@@ -404,6 +431,8 @@ public static class WorkflowVersionCompatibilityEvaluator
             {
                 continue;
             }
+
+            if (AutomaticMultiInstanceRules.IsAutomaticBody(sourceNode)) continue;
 
             if (!JsonContractEquals(sourceNode.MultiInstance, targetNode.MultiInstance)
                 || !string.Equals(
@@ -1065,7 +1094,10 @@ public static class WorkflowVersionCompatibilityEvaluator
             Add(node.Variables, $"node #{node.Id} variable", allowNullable: false);
             foreach (var mapping in node.Service?.OutputMappings ?? [])
             {
-                if (mapping is null || string.IsNullOrWhiteSpace(mapping.Variable))
+                // An item-local output lives on its automatic item, never as an
+                // instance variable, so it declares nothing here.
+                if (mapping is null || string.IsNullOrWhiteSpace(mapping.Variable)
+                    || AutomaticMultiInstanceRules.IsLocalOutput(node, mapping.Variable))
                 {
                     continue;
                 }

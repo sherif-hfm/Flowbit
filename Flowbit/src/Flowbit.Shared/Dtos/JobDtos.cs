@@ -25,7 +25,9 @@ public sealed record JobSummaryDto(
     long? IncidentId,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
-    DateTimeOffset? CompletedAt);
+    DateTimeOffset? CompletedAt,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    long? AutomaticMultiInstanceItemId = null);
 
 /// <summary>
 /// Administrative detail for one job without exposing its immutable execution
@@ -83,7 +85,9 @@ public sealed record IncidentSummaryDto(
     DateTimeOffset UpdatedAt,
     DateTimeOffset? ResolvedAt,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    long? CallTargetInstanceId = null);
+    long? CallTargetInstanceId = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    long? AutomaticMultiInstanceItemId = null);
 
 public sealed record IncidentDetailDto(
     IncidentSummaryDto Summary,

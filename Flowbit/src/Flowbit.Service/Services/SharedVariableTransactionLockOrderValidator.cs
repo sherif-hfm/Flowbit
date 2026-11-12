@@ -48,7 +48,9 @@ public static class SharedVariableTransactionLockOrderValidator
 
         var nodeKeys = flowNodes.ToDictionary(
             node => node.Id,
-            node => KeysForAliases(accessPlan.ForNode(node.Id).LockAliases));
+            node => KeysForAliases(AutomaticMultiInstanceRules.IsAutomaticBody(node)
+                ? accessPlan.ForAutomaticPhase(node.Id, AutomaticMultiInstanceAccessPhases.Initialize).LockAliases
+                : accessPlan.ForNode(node.Id).LockAliases));
         var flowKeys = sequenceFlows.ToDictionary(
             flow => flow.Id,
             flow => KeysForAliases(accessPlan.ForFlow(flow.Id).ProducerAliases));
@@ -103,6 +105,13 @@ public static class SharedVariableTransactionLockOrderValidator
 
         IEnumerable<string?> NodeWriteTargets(FlowNodeModel node)
         {
+            if (AutomaticMultiInstanceRules.IsAutomaticBody(node))
+            {
+                // Entry resets only the aggregate. Items never produce ordinary
+                // instance values, so they cannot trigger this inline drain.
+                yield return node.MultiInstance!.ResultVariable;
+                yield break;
+            }
             if (BpmnFlowNodeTypes.IsEntry(node.Type))
             {
                 // Process initialization writes only authored defaults and the
@@ -186,7 +195,7 @@ public static class SharedVariableTransactionLockOrderValidator
                 $"durable pre-node finalization for node #{node.Id}",
                 new Cursor(node.Id, BypassAsyncBefore: true)));
         }
-        foreach (var node in flowNodes.Where(node => node.AsyncAfter))
+        foreach (var node in flowNodes.Where(node => node.AsyncAfter && !AutomaticMultiInstanceRules.IsAutomaticBody(node)))
         {
             scenarios.Add(SimulationState.Start(
                 $"asyncAfter finalization for node #{node.Id}",
@@ -197,7 +206,7 @@ public static class SharedVariableTransactionLockOrderValidator
                     SkipPostWrites: true)));
         }
 
-        foreach (var node in flowNodes.Where(IsExternalRestingOrBoundary))
+        foreach (var node in flowNodes.Where(node => IsExternalRestingOrBoundary(node) && !AutomaticMultiInstanceRules.IsAutomaticBody(node)))
         {
             foreach (var flow in outgoing[node.Id])
             {
@@ -241,7 +250,7 @@ public static class SharedVariableTransactionLockOrderValidator
 
         // Delivering a child's failure starts a new transaction, which writes the boundary's
         // error variable and continues from there. The normal outcome is covered above.
-        foreach (var node in flowNodes.Where(node => BpmnFlowNodeTypes.IsCallActivity(node.Type)))
+        foreach (var node in flowNodes.Where(node => BpmnFlowNodeTypes.IsCallActivity(node.Type) && !AutomaticMultiInstanceRules.IsAutomaticBody(node)))
         {
             foreach (var boundary in boundariesByHost.GetValueOrDefault(node.Id, []))
             {
@@ -258,6 +267,51 @@ public static class SharedVariableTransactionLockOrderValidator
                     state.Queue.Add(new Cursor(boundary.Id));
                     scenarios.Add(state);
                 }
+            }
+        }
+
+        foreach (var node in flowNodes.Where(AutomaticMultiInstanceRules.IsAutomaticBody))
+        {
+            // Reserved dispatch separates initial/refill admission from reset or
+            // item publication. A phase must never borrow future-node locks to
+            // make a descending acquisition appear safe.
+            foreach (var phase in new[] { AutomaticMultiInstanceAccessPhases.StageItem, AutomaticMultiInstanceAccessPhases.PublishItem })
+            {
+                var state = SimulationState.Empty($"automatic node #{node.Id} {phase}");
+                Acquire(state, KeysForAliases(accessPlan.ForAutomaticPhase(node.Id, phase).LockAliases), phase);
+                scenarios.Add(state);
+            }
+
+            var completion = SimulationState.Empty($"automatic node #{node.Id} aggregate completion");
+            Acquire(completion, KeysForAliases(accessPlan.ForAutomaticPhase(node.Id, AutomaticMultiInstanceAccessPhases.Complete).LockAliases),
+                $"node #{node.Id} aggregate publication");
+            var aggregatePost = BuildPostWritePlan([node.MultiInstance!.ResultVariable]);
+            foreach (var triggered in Subsets(aggregatePost.AtomicTargets, includeEmpty: true))
+            {
+                var success = completion.Clone();
+                // Aggregate notifications drain before the body's continuation.
+                success.Queue.AddRange(triggered.Select(target => new Cursor(target)));
+                if (!node.AsyncAfter)
+                    success.Queue.AddRange(outgoing[node.Id].Select(flow => new Cursor(flow.TargetRef, AfterDrain: true)));
+                scenarios.Add(success);
+                foreach (var boundary in boundariesByHost.GetValueOrDefault(node.Id, []))
+                {
+                    var failure = completion.Clone();
+                    failure.Queue.AddRange(triggered.Select(target => new Cursor(target)));
+                    // The error target is acquired only after the aggregate
+                    // drain; using a deferred acquisition cursor preserves that
+                    // ordering in every branch of the proof.
+                    failure.Queue.Add(new Cursor(boundary.Id, AutomaticErrorHostId: node.Id, AfterDrain: true));
+                    scenarios.Add(failure);
+                }
+            }
+            foreach (var boundary in boundariesByHost.GetValueOrDefault(node.Id, []))
+                scenarios.Add(SimulationState.Start($"automatic node #{node.Id} refused aggregate",
+                    new Cursor(boundary.Id, AutomaticErrorHostId: node.Id)));
+            if (node.AsyncAfter)
+            {
+                foreach (var flow in outgoing[node.Id])
+                    scenarios.Add(SimulationState.Start($"automatic node #{node.Id} asyncAfter continuation", new Cursor(flow.TargetRef)));
             }
         }
 
@@ -304,6 +358,8 @@ public static class SharedVariableTransactionLockOrderValidator
                 nodePostWrites,
                 boundaryPostWrites,
                 boundariesByHost,
+                accessPlan,
+                KeysForAliases,
                 ref analyzedStates);
         }
     }
@@ -316,6 +372,8 @@ public static class SharedVariableTransactionLockOrderValidator
         IReadOnlyDictionary<int, PostWritePlan> nodePostWrites,
         IReadOnlyDictionary<int, PostWritePlan> boundaryPostWrites,
         IReadOnlyDictionary<int, FlowNodeModel[]> boundariesByHost,
+        SharedVariableAccessPlan accessPlan,
+        Func<IEnumerable<string>, string[]> keysForAliases,
         ref int analyzedStates)
     {
         var pending = new Stack<SimulationState>();
@@ -348,7 +406,26 @@ public static class SharedVariableTransactionLockOrderValidator
 
             var cursor = state.Queue[0];
             state.Queue.RemoveAt(0);
+            if (cursor.AfterDrain && state.Queue.Any(queued => !queued.AfterDrain))
+            {
+                state.Queue.Add(cursor);
+                pending.Push(state);
+                continue;
+            }
             var node = nodes[cursor.NodeId];
+            if (cursor.AutomaticErrorHostId is { } hostId)
+            {
+                Acquire(state, keysForAliases(accessPlan.ForAutomaticPhase(hostId,
+                    AutomaticMultiInstanceAccessPhases.Error, node.Id).LockAliases), $"automatic node #{hostId} error boundary #{node.Id}");
+                foreach (var triggered in Subsets(boundaryPostWrites[node.Id].AtomicTargets, includeEmpty: true))
+                {
+                    var next = state.Clone();
+                    next.Queue.InsertRange(0, triggered.Select(target => new Cursor(target))
+                        .Append(new Cursor(node.Id, AfterDrain: true)));
+                    pending.Push(next);
+                }
+                continue;
+            }
             if (RequiresPreNodeDurableBoundary(node) && !cursor.BypassAsyncBefore)
             {
                 pending.Push(state);
@@ -387,9 +464,9 @@ public static class SharedVariableTransactionLockOrderValidator
             // Keep those acquisitions as distinct phases: sorting their union
             // would incorrectly prove z-then-a safe as the synthetic order a,z.
             // A call that fails before admission reaches its boundary in the entry transaction.
-            if (BpmnFlowNodeTypes.IsServiceTask(node.Type)
+            if (!AutomaticMultiInstanceRules.IsAutomaticBody(node) && (BpmnFlowNodeTypes.IsServiceTask(node.Type)
                 || BpmnFlowNodeTypes.IsScriptTask(node.Type)
-                || BpmnFlowNodeTypes.IsCallActivity(node.Type))
+                || BpmnFlowNodeTypes.IsCallActivity(node.Type)))
             {
                 foreach (var boundary in boundariesByHost.GetValueOrDefault(node.Id, []))
                 {
@@ -424,6 +501,7 @@ public static class SharedVariableTransactionLockOrderValidator
         {
             return [[]];
         }
+        if (AutomaticMultiInstanceRules.IsAutomaticBody(node)) return [[]];
         if (BpmnFlowNodeTypes.IsConditionalCatch(node.Type))
         {
             if (node.Conditional?.EffectiveDeliveryMode == ConditionalEventDeliveryModes.Atomic)
@@ -468,10 +546,11 @@ public static class SharedVariableTransactionLockOrderValidator
     }
 
     private static bool IsExternalRestingOrBoundary(FlowNodeModel node) =>
-        IsExternalResting(node) || BpmnFlowNodeTypes.IsTimerBoundary(node.Type);
+        IsExternalResting(node) || BpmnFlowNodeTypes.IsTimerBoundary(node.Type)
+        || BpmnFlowNodeTypes.IsConditionalBoundary(node.Type);
 
     private static bool RequiresPreNodeDurableBoundary(FlowNodeModel node) =>
-        node.AsyncBefore
+        AutomaticMultiInstanceRules.IsAutomaticBody(node) || node.AsyncBefore
         || node.AsyncAfter
            && (BpmnFlowNodeTypes.IsServiceTask(node.Type)
                || BpmnFlowNodeTypes.IsScriptTask(node.Type));
@@ -540,7 +619,9 @@ public static class SharedVariableTransactionLockOrderValidator
         int NodeId,
         bool BypassAsyncBefore = false,
         bool BypassAsyncAfter = false,
-        bool SkipPostWrites = false);
+        bool SkipPostWrites = false,
+        int? AutomaticErrorHostId = null,
+        bool AfterDrain = false);
 
     private sealed record PostWritePlan(IReadOnlyList<int> AtomicTargets)
     {
@@ -583,7 +664,7 @@ public static class SharedVariableTransactionLockOrderValidator
 
         public string Signature() =>
             string.Join(',', Queue.Select(cursor =>
-                $"{cursor.NodeId}:{cursor.BypassAsyncBefore}:{cursor.BypassAsyncAfter}:{cursor.SkipPostWrites}"))
+                $"{cursor.NodeId}:{cursor.BypassAsyncBefore}:{cursor.BypassAsyncAfter}:{cursor.SkipPostWrites}:{cursor.AutomaticErrorHostId}:{cursor.AfterDrain}"))
             + "|"
             + string.Join("\u001f", HeldKeys.Order(StringComparer.Ordinal));
     }

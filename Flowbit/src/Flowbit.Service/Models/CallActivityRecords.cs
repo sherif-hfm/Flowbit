@@ -60,7 +60,12 @@ public sealed record CallInvocationCreateRecord(
     bool CapacityReserved,
     string? CausedBy,
     string? FailureCode = null,
-    string? FailureDescription = null);
+    string? FailureDescription = null)
+{
+    /// <summary>Set together for an automatic call item; both null for an ordinary call.</summary>
+    public long? MultiInstanceExecutionId { get; init; }
+    public long? AutomaticMultiInstanceItemId { get; init; }
+}
 
 public sealed record CallInvocationRecord(
     long Id,
@@ -88,7 +93,10 @@ public sealed record CallInvocationRecord(
     DateTimeOffset UpdatedAt,
     DateTimeOffset? AdmittedAt,
     DateTimeOffset? StartedAt,
-    DateTimeOffset? SettledAt);
+    DateTimeOffset? SettledAt,
+    long? MultiInstanceExecutionId = null,
+    long? AutomaticMultiInstanceItemId = null,
+    int? ItemIndex = null);
 
 public sealed record CallResultRecord(
     long ChildInstanceId,

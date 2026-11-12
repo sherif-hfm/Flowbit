@@ -4,7 +4,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Planned |
+| Status | In progress |
 | Category | New task type |
 | Effort | L |
 | Priority | Not ranked |
@@ -53,7 +53,7 @@ The plan refines the original criteria to include persistence, recovery, compati
 
 ## Current state
 
-Verified on **2026-11-11**: automatic multi-instance execution is not implemented; ordinary call activities are implemented. [BPMN support](../bpmn-support.md#human-work-and-multi-instance-tasks) still limits MI to human tasks. TASK-05A records the human-specific storage, loader, job ownership, and node-ledger gaps; the activity subtasks record their adapter-specific evidence. This is documentation-only planning work.
+Verified on **2026-11-11**: automatic multi-instance execution is not implemented; ordinary call activities are implemented. [BPMN support](../bpmn-support.md#human-work-and-multi-instance-tasks) still limits MI to human tasks. TASK-05A records the human-specific storage, loader, job ownership, and node-ledger gaps; the activity subtasks record their adapter-specific evidence. The shared contract, schema, editor scaffolding and read surfaces are now being implemented behind a closed runtime release boundary.
 
 ## Subtasks
 
@@ -61,7 +61,7 @@ All four subtasks are required for the first release. Their detailed implementat
 
 | ID | Plan and owned scope | Effort | Depends on | Status |
 | --- | --- | --- | --- | --- |
-| TASK-05A | [Shared core](task-05a-multi-instance-core.md): JSON/local and shared outputs, snapshots, persistence, concurrency, coordinator, aggregate publication, body boundaries, item APIs and shared UI. | L | Existing runtime | Planned |
+| TASK-05A | [Shared core](task-05a-multi-instance-core.md): JSON/local and shared outputs, snapshots, persistence, concurrency, coordinator, aggregate publication, body boundaries, item APIs and shared UI. | L | Existing runtime | In progress |
 | TASK-05B | [Service activities](task-05b-multi-instance-service-activities.md): REST staging, local/shared mappings and status, idempotency, retries and body-boundary integration. | M | TASK-05A | Planned |
 | TASK-05C | [Script activities](task-05c-multi-instance-script-activities.md): NCalc/JavaScript local/shared evaluation, sandbox, context, body-boundary integration, and script authoring. | M | TASK-05A | Planned |
 | TASK-05D | [Call activities](task-05d-multi-instance-call-activities.md): version pinning, child invocation/local/shared mappings, message ownership, call failure/body boundaries/cancellation and child navigation. | L | TASK-05A; [TASK-01](task-01-call-activity.md) (Done) | Planned |
@@ -193,4 +193,4 @@ Before marking Done, satisfy every first-release criterion for **service, script
 
 ## Implementation evidence
 
-No implementation has started. This section is reserved for the integrated test/browser/migration/rollout evidence; each subtask records its own results when implemented.
+TASK-05A implementation is in progress behind the release boundary; see its implementation evidence. B/C/D and combined Worker/browser/migration/rollout gates remain required. No automatic runtime support is released.

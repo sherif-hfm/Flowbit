@@ -458,6 +458,59 @@ Legacy instances without sufficient surviving evidence retain unknown coverage. 
 
 The repository's EF Core packages are **10.0.9**. These commands pin `dotnet-ef` to that version in an OS-temporary directory and use the Infrastructure project's `DesignTimeAppDbContextFactory`. Run them from the repository root, independently of the publish-directory examples above. The factory reads `ConnectionStrings__Flowbit` directly; it does not load your API appsettings file.
 
+### Automatic multi-instance foundation
+
+The automatic multi-instance schema and shared contract are staged behind the
+TASK-05 release boundary. Automatic service/script/call definitions cannot be
+published or executed yet. `WorkflowAutomaticMultiInstance:AllowInDevelopment`
+on the API opens authoring validation only when the API's environment is
+`Development`; other environments ignore it. The hosted editor reads the API's
+effective value from `GET /api/workflows/authoring-capabilities` and shows its
+controls only when that is true, so the UI host's own environment and settings
+never decide it; the standalone editor remains closed. The separate publication
+and runtime guards remain closed until the activity adapters and integration gates
+are complete. Do not use this option as a production feature switch.
+
+Apply `20261111144523_AddAutomaticMultiInstanceCore`, then
+`20261111144824_ValidateAutomaticMultiInstanceConstraints`, then
+`20261111192010_HardenAutomaticMultiInstanceCore`. The second migration
+validates widened constraints outside a transaction. The third restores the
+general job index on the body column and adds the call-pin and invocation
+item-pair checks; it fails if a database already holds a nonempty call body
+without a pin, which no released build can create. Existing human execution
+rows keep activity kind `userTask`; ordinary call activation uniqueness excludes
+only rows with an automatic item identity. The additions include body-owned
+snapshots, persisted item candidates/results, activation and control-generation
+fences, reserved control capacity, and call-item/pin fields for adapter integration.
+See the [database schema](database-schema.md) and the inactive
+[concurrency settings](engine-settings.md#automatic-multi-instance-concurrency-foundation).
+
+Completed-job retention keeps snapshots referenced by bodies. Item results live
+on their item rows and survive job and node-activity pruning. A body's staged item
+inputs and candidates are cleared when it settles, and workflow-history retention
+empties a settled body's input snapshot when it prunes the finished instance, so
+item detail then shows no copied element. Publication recovery
+preserves automatic candidates and input snapshots; ordinary job recovery keeps
+its existing behavior. Only retrying an `output_version_conflict` explicitly
+accepts the saved candidate against current output versions and can replace a
+more recent value without repeating the activity. Retrying other incidents keeps
+the original version fences, so a subsequent output conflict still requires
+explicit recovery. This applies to item and aggregate publication, including a
+call item's `callResume`. A body's `asyncAfter` continuation runs after the body
+has settled and retries as an ordinary job. Catalog lifecycle, access, and
+contract checks still apply. Automatic progress reports the current
+dispatch/completion job's open incident separately from item counts; a completed
+set of items can still need aggregate-publication recovery. While an item's own
+job (or a call item's `callStart`) has an open incident, that item counts as
+needing attention and the body admits no further items; retrying the incident
+resumes admission.
+
+The release integration must upgrade every API/Worker/UI replica before enabling
+automatic execution. Legacy processors do not understand the new wait/job/item
+shapes. Once automatic bodies exist, reverting binaries requires draining or
+explicitly cancelling/reconciling that work; retain the additive schema and audit
+evidence. The current foundation does not claim Worker or adapter acceptance.
+
 ### Instance diagram history deployment checks
 
 UI-14 feature acceptance is complete. The following deployment checks remain

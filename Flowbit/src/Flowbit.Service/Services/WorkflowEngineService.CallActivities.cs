@@ -53,6 +53,7 @@ public sealed partial class WorkflowEngineService
         CancellationToken cancellationToken)
     {
         // Routing can visit a token that already rests here; a visit owns one invocation.
+        EnsureAutomaticMultiInstanceRuntimeAvailable(node);
         if (token.WaitState is not null
             || await CallActivities.GetForActivationAsync(token.Id, token.ActivationId, cancellationToken) is not null)
         {
@@ -974,9 +975,23 @@ public sealed partial class WorkflowEngineService
         }
 
         var unsettled = await callActivities.ListUnsettledForTokensAsync(instanceId, tokenIds, cancellationToken);
+        await AbandonInvocationsAsync(instanceId, unsettled, cancellationToken);
+    }
+
+    private async Task AbandonAutomaticCallsForTokensAsync(
+        long instanceId, IReadOnlyCollection<long> tokenIds, CancellationToken cancellationToken)
+    {
+        if (callActivities is null) return;
+        var unsettled = await callActivities.ListUnsettledAutomaticForTokensAsync(instanceId, tokenIds, cancellationToken);
+        await AbandonInvocationsAsync(instanceId, unsettled, cancellationToken);
+    }
+
+    private async Task AbandonInvocationsAsync(long instanceId,
+        IReadOnlyList<CallInvocationRecord> unsettled, CancellationToken cancellationToken)
+    {
         foreach (var invocation in unsettled)
         {
-            if (!await callActivities.SettleAsync(
+            if (!await CallActivities.SettleAsync(
                     invocation.Id,
                     CallInvocationStates.Cancelled,
                     null,
@@ -1006,6 +1021,8 @@ public sealed partial class WorkflowEngineService
                 continue;
             }
 
+            // A call message correlates through its invocation, which owns any
+            // automatic item. Only a multiInstanceItem job may name an item.
             var parentDefinition = await GetWorkflowAsync(invocation.ParentDefinitionId, cancellationToken);
             await jobs.EnqueueAsync(
                 BuildCallMessageJob(

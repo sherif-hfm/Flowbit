@@ -33,7 +33,7 @@ Table names below omit the `flowbit.` qualifier. The page reflects the current m
 
 ## Conventions
 
-- **Schema.** All 66 tables, the EF `__EFMigrationsHistory` table, sequences, triggers, and functions live in `flowbit`. The `citext` extension, used for case-insensitive keys and user names, is installed in `public`.
+- **Schema.** All 67 tables, the EF `__EFMigrationsHistory` table, sequences, triggers, and functions live in `flowbit`. The `citext` extension, used for case-insensitive keys and user names, is installed in `public`.
 - **Identifiers.** Most tables use a `bigint` identity `Id`. Natural or composite primary keys are called out per table.
 - **Authored IDs are not foreign keys.** `NodeId`, `FlowId`, `SequenceFlowId`, `SourceNodeId`, `GatewayNodeId`, and similar integer columns refer to elements inside `workflow_definitions.Definition` JSON. Read them together with the row's `WorkflowDefinitionId`.
 - **Snapshots.** Runtime rows copy what they need from the definition (node names, types, external IDs, roles, conditions) when they are created, so open work keeps the rules it started with. Only an audited version change updates them.
@@ -63,7 +63,8 @@ Table names below omit the `flowbit.` qualifier. The page reflects the current m
 | [`complex_gateway_states`](#complex_gateway_states) | [Execution positions and gateways](#execution-positions-and-gateways) | Persistent phase and cycle state of one Complex gateway node in an instance. |
 | [`user_tasks`](#user_tasks) | [User tasks and multi-instance work](#user-tasks-and-multi-instance-work) | Human work items: one per user-task visit, or one per multi-instance child. |
 | [`user_task_role_policies`](#user_task_role_policies) | [User tasks and multi-instance work](#user-tasks-and-multi-instance-work) | Immutable role snapshot captured when a task or multi-instance approval is entered. |
-| [`multi_instance_executions`](#multi_instance_executions) | [User tasks and multi-instance work](#user-tasks-and-multi-instance-work) | Parent execution of a multi-instance user task. |
+| [`multi_instance_executions`](#multi_instance_executions) | [User tasks and multi-instance work](#user-tasks-and-multi-instance-work) | Parent execution of human work or an automatic body. |
+| [`multi_instance_activity_items`](#multi_instance_activity_items) | [User tasks and multi-instance work](#user-tasks-and-multi-instance-work) | Durable automatic-item identity, candidate publication, and local result storage; currently inactive. |
 | [`multi_instance_flow_counts`](#multi_instance_flow_counts) | [User tasks and multi-instance work](#user-tasks-and-multi-instance-work) | Per-flow completed-item counts for one multi-instance execution. |
 | [`instance_variables`](#instance_variables) | [Variables, history, and flow evidence](#variables-history-and-flow-evidence) | Append-only history of every instance-variable write. |
 | [`instance_variable_current_values`](#instance_variable_current_values) | [Variables, history, and flow evidence](#variables-history-and-flow-evidence) | Trigger-maintained latest value per instance variable, used for search. |
@@ -321,13 +322,14 @@ One durable visit to a call activity. One invocation owns at most one child, and
 | `CausedBy` | The actor whose transition reached the call, for audit only. It grants nothing. |
 | `CreatedAt`, `UpdatedAt`, `StartedAt`, `SettledAt` | Lifecycle times. |
 | `SnapshotsPrunedAt` | When retention cleared the captured values. |
+| `MultiInstanceExecutionId`, `AutomaticMultiInstanceItemId` | Inactive until automatic multi-instance is enabled: the automatic body and item an item invocation belongs to. Both are set or both are null; an ordinary call has neither. |
 
 - **Primary key:** `Id`
-- **References:** `ParentInstanceId`, `ChildInstanceId` → [`workflow_instances`](#workflow_instances) (`RESTRICT`); `ParentTokenId` → [`execution_tokens`](#execution_tokens) (`RESTRICT`); `ParentNodeExecutionId` → [`node_executions`](#node_executions) (optional, `SET NULL`); `ParentDefinitionId`, `ChildDefinitionId` → [`workflow_definitions`](#workflow_definitions) (`RESTRICT`)
+- **References:** `ParentInstanceId`, `ChildInstanceId` → [`workflow_instances`](#workflow_instances) (`RESTRICT`); `ParentTokenId` → [`execution_tokens`](#execution_tokens) (`RESTRICT`); `ParentNodeExecutionId` → [`node_executions`](#node_executions) (optional, `SET NULL`); `ParentDefinitionId`, `ChildDefinitionId` → [`workflow_definitions`](#workflow_definitions) (`RESTRICT`); (`AutomaticMultiInstanceItemId`, `MultiInstanceExecutionId`, `ParentInstanceId`) → [`multi_instance_activity_items`](#multi_instance_activity_items) (optional, `RESTRICT`)
 - **Referenced by:** [`call_activity_results`](#call_activity_results).`InvocationId`, [`workflow_jobs`](#workflow_jobs).`CallInvocationId`
-- **Unique:** (`ParentInstanceId`, `ParentTokenId`, `ActivationId`); `ChildInstanceId` where it is not null
+- **Unique:** (`ParentInstanceId`, `ParentTokenId`, `ActivationId`) where `AutomaticMultiInstanceItemId IS NULL`; `ChildInstanceId` where it is not null; `AutomaticMultiInstanceItemId` where it is not null
 - **Indexes:** (`ParentInstanceId`, `Id`) for paged history; (`ParentTokenId`, `State`) for unsettled calls; `RootInstanceId` for reserved unsettled calls, used by admission counting
-- **Checks:** `CK_call_activity_executions_state`, `_reservation`, `_admission`, `_settlement`, `_child_shape`, `_child_resolution`, and `_depth`
+- **Checks:** `CK_call_activity_executions_state`, `_reservation`, `_admission`, `_settlement`, `_child_shape`, `_child_resolution`, `_depth`, and `_automatic_item_pair`
 
 ### `call_activity_results`
 
@@ -528,16 +530,17 @@ An instance may have several active tokens, for example one per parallel branch.
 | `NodeId`, `NodeName`, `NodeType`, `NodeExternalId` | Snapshot of the node the token is on. Instance-list node filters and current-node display read the latest token. |
 | `Status` | `active`, `completed`, `faulted`, `cancelled`, or `merged`. |
 | `ActivationId` | Fence regenerated on each node activation. Jobs, timers, conditional subscriptions, and administrative items must present the matching value. |
-| `WaitState`, `WaitingJobId`, `WaitingTimerSubscriptionId` | Durable wait kind (`asyncBefore`, `asyncAfter`, `timerCatch`, `timerBoundary`, `conditionalWake`, `callStart`) and the job or timer the token waits for. While a call's child runs, the token has no wait state: it rests as a user task does, and the invocation records what it waits for. These columns have no foreign keys. |
+| `WaitState`, `WaitingJobId`, `WaitingTimerSubscriptionId` | Durable wait kind (`asyncBefore`, `asyncAfter`, `timerCatch`, `timerBoundary`, `conditionalWake`, `callStart`) and the job or timer the token waits for. While a call's child runs, the token has no wait state: it rests as a user task does, and the invocation records what it waits for. These two id columns have no foreign keys. |
+| `WaitingMultiInstanceExecutionId` | Inactive until automatic multi-instance is enabled: the automatic body the token waits on, with wait state `automaticMultiInstance` and no single waiting job. `CK_execution_tokens_wait_shape` requires a waiting job, timer, or (for this wait state) body whenever a wait state is set. |
 | `ArrivedViaFlowId` | The sequence flow that brought the token here. |
 | `CurrentNodeExecutionId` | The current visit in `node_executions` (unique). It is null at a multi-instance parent. |
 | `GatewayBranchId` | The gateway branch the token belongs to, which places it in the gateway scope tree. |
 | `ComplexGatewayStateId`, `ComplexGatewayCycle`, `ComplexDrainStateIds`, `AutomaticActivationStateIds` | Complex-gateway bookkeeping (GIN-indexed arrays). |
 | `AutomaticActivationCount` | Consecutive automatic activations, checked against `Workflow.Async.MaxConsecutiveAutomaticActivations`. |
-| `FaultCode`, `FaultDescription`, `TerminationReason` | Error-end fault snapshot and why the token ended. |
+| `FaultCode`, `FaultDescription`, `TerminationReason` | Fault snapshot and why the token ended. The inactive automatic-MI foundation uses `multiInstanceFailed` for an uncaught body failure, with a stable source/result fault code. |
 
 - **Primary key:** `Id`
-- **References:** `ComplexGatewayStateId` → [`complex_gateway_states`](#complex_gateway_states) (optional, `NO ACTION`); `CurrentNodeExecutionId` → [`node_executions`](#node_executions) (optional, `NO ACTION`); `GatewayBranchId` → [`gateway_branches`](#gateway_branches) (optional, `NO ACTION`); `InstanceId` → [`workflow_instances`](#workflow_instances) (required, `CASCADE`)
+- **References:** `ComplexGatewayStateId` → [`complex_gateway_states`](#complex_gateway_states) (optional, `NO ACTION`); `CurrentNodeExecutionId` → [`node_executions`](#node_executions) (optional, `NO ACTION`); `GatewayBranchId` → [`gateway_branches`](#gateway_branches) (optional, `NO ACTION`); `InstanceId` → [`workflow_instances`](#workflow_instances) (required, `CASCADE`); `WaitingMultiInstanceExecutionId` → [`multi_instance_executions`](#multi_instance_executions) (optional, `NO ACTION`)
 - **Referenced by:** [`administrative_action_batch_items`](#administrative_action_batch_items).`TokenId`, [`conditional_boundary_subscriptions`](#conditional_boundary_subscriptions).`HostTokenId`, [`gateway_executions`](#gateway_executions).`InterruptingTokenId`, [`multi_instance_executions`](#multi_instance_executions).`TokenId`, [`node_executions`](#node_executions).`ExecutionTokenId`, [`timer_subscriptions`](#timer_subscriptions).`TokenId`, [`user_tasks`](#user_tasks).`TokenId`, [`workflow_jobs`](#workflow_jobs).`TokenId`, [`call_activity_executions`](#call_activity_executions).`ParentTokenId`
 - **Unique:** `CurrentNodeExecutionId`
 
@@ -680,10 +683,11 @@ Captures task roles and per-flow action roles together on entry, so later variab
 
 ### `multi_instance_executions`
 
-One row per activation of a multi-instance user task. The parent token stays on the node while children run as `user_tasks` rows, and this row aggregates their outcomes.
+One row per activation of a multi-instance user task. The parent token stays on the node while children run as `user_tasks` rows, and this row aggregates their outcomes. `ActivityKind` is `userTask` for these rows. The same table also holds automatic bodies of service, script, and call activities, which stay inactive until automatic multi-instance is enabled; their extra columns and rules are under [Automatic multi-instance foundation](#automatic-multi-instance-foundation). Readers of human work filter `ActivityKind = 'userTask'`.
 
 | Column | Meaning |
 | --- | --- |
+| `ActivityKind` | `userTask` (the default) or an automatic activity type. |
 | `InstanceId`, `TokenId`, `NodeId` | Owning instance, parent token, and task node. At most one active execution exists per token and node. |
 | `Mode`, `Source` | `parallel` or `sequential`; `collection` or `cardinality`. |
 | `OnePerActor` | Whether one actor may complete at most one child. |
@@ -694,9 +698,139 @@ One row per activation of a multi-instance user task. The parent token stays on 
 | `RolePolicyId` | Role snapshot shared by the parent and its children. |
 
 - **Primary key:** `Id`
-- **References:** `InstanceId` → [`workflow_instances`](#workflow_instances) (required, `CASCADE`); `RolePolicyId` → [`user_task_role_policies`](#user_task_role_policies) (optional, `RESTRICT`); `TokenId` → [`execution_tokens`](#execution_tokens) (required, `RESTRICT`)
-- **Referenced by:** [`administrative_action_batch_items`](#administrative_action_batch_items).`MultiInstanceExecutionId`, [`multi_instance_flow_counts`](#multi_instance_flow_counts).`ExecutionId`, [`node_executions`](#node_executions).`MultiInstanceExecutionId`, [`user_tasks`](#user_tasks).`MultiInstanceExecutionId`, [`workflow_jobs`](#workflow_jobs).`MultiInstanceExecutionId`
-- **Unique:** (`TokenId`, `NodeId`) where `Status = 'active'`
+- **References:** `InstanceId` → [`workflow_instances`](#workflow_instances) (required, `CASCADE`); `RolePolicyId` → [`user_task_role_policies`](#user_task_role_policies) (optional, `RESTRICT`); `TokenId` → [`execution_tokens`](#execution_tokens) (required, `RESTRICT`); `WorkflowDefinitionId`, `PinnedChildDefinitionId` → [`workflow_definitions`](#workflow_definitions) (optional, `RESTRICT`); `InputSnapshotId` → [`workflow_job_snapshots`](#workflow_job_snapshots) (optional, `RESTRICT`)
+- **Referenced by:** [`administrative_action_batch_items`](#administrative_action_batch_items).`MultiInstanceExecutionId`, [`multi_instance_flow_counts`](#multi_instance_flow_counts).`ExecutionId`, [`node_executions`](#node_executions).`MultiInstanceExecutionId`, [`user_tasks`](#user_tasks).`MultiInstanceExecutionId`, [`workflow_jobs`](#workflow_jobs).`MultiInstanceExecutionId`, [`multi_instance_activity_items`](#multi_instance_activity_items).`MultiInstanceExecutionId`, [`execution_tokens`](#execution_tokens).`WaitingMultiInstanceExecutionId`, [`call_activity_executions`](#call_activity_executions).`MultiInstanceExecutionId`
+- **Unique:** (`TokenId`, `NodeId`) where `Status = 'active'`; (`InstanceId`, `NodeId`) where `ActivityKind <> 'userTask' AND Status = 'active'`; (`TokenId`, `ActivationId`) where `ActivityKind <> 'userTask'`
+- **Checks:** `CK_multi_instance_executions_activity_kind`, `_automatic_shape`, `_automatic_counts`, `_completion_size`, and `_call_pin_shape`
+
+### Automatic multi-instance foundation
+
+The `AddAutomaticMultiInstanceCore` and `ValidateAutomaticMultiInstanceConstraints`
+migrations install the storage foundation described below. Automatic execution remains
+inactive pending adapter integration; these objects do not enable service, script, or
+call multi-instance execution. Existing rows retain `ActivityKind = 'userTask'`,
+their human task/role/vote semantics, and their existing result format.
+
+```mermaid
+erDiagram
+    multi_instance_executions ||--o{ multi_instance_activity_items : "execution and instance ownership"
+    workflow_job_snapshots ||--o{ multi_instance_executions : "InputSnapshotId"
+    multi_instance_activity_items |o--o| workflow_jobs : "AutomaticMultiInstanceItemId"
+    multi_instance_activity_items |o--o| node_executions : "AutomaticMultiInstanceItemId"
+    multi_instance_activity_items |o--o| call_activity_executions : "AutomaticMultiInstanceItemId"
+    multi_instance_executions |o--o{ execution_tokens : "WaitingMultiInstanceExecutionId"
+```
+
+`multi_instance_executions` adds:
+
+| Columns | Contract |
+| --- | --- |
+| `ActivityKind` | Required `userTask` (default), `serviceTask`, `scriptTask`, or `callActivity`. |
+| `WorkflowDefinitionId`, `ActivationId` | Immutable automatic definition/token activation correlation. Definition FK uses `RESTRICT`. |
+| `InputSnapshotId` | `RESTRICT` FK to `workflow_job_snapshots`; retains the copied collection, body inputs and optional FlowInfo captured at successful initialization independently of job retention. FlowInfo is stored once in `VariablesJson.flowInfo` and counts toward the 1 MiB bound. |
+| `AggregateScope`, `AggregateSharedKey`, `AggregateValueVersion` | `instance` or `shared` output identity and publication fence. A shared aggregate requires a key; instance aggregates have no shared key. |
+| `MaxInstances`, `EffectiveConcurrency` | Captured positive item limit from the existing setting and admitted window (0 for an empty body; otherwise at most 1,000). The independent snapshot/result limits also bound fan-out. |
+| `Phase`, `AdmissionBlockedReason`, `ControlGeneration` | `running`, `dispatch`, `completing`, `errorCompletion`, or `settled`; optional admission reason and nonnegative control generation. |
+| `CompletionJson` | First accepted error-completion route/diagnostic intent, bounded to 1 MiB and retained independently of control-job cleanup. |
+| `FailedCount`, `ResultBytes` | Nonnegative failures and bounded aggregate accounting (0–1,048,576 bytes). |
+| `PinnedChildDefinitionId`, `PinnedChildStartEventId`, `PinState` | The target version and default plain start a nonempty call body pins at initialization; the call adapter resolves them, and they do not implement child execution. `CK_multi_instance_executions_call_pin_shape` requires all three on a nonempty call body and refuses them on every other body: `PinState` is `pinned` while the body is active and `released` once it settles. The pinned definition FK uses `RESTRICT`, and definition operations refuse unpublication while a pinned body is open, before its first child exists. |
+
+The automatic shape check requires the definition, activation, snapshot, aggregate and
+window fields and excludes role policies/one-per-actor behavior. A filtered unique index
+on `(InstanceId, NodeId)` permits one active automatic body per node. Another unique
+index on `(TokenId, ActivationId)` fences initialization, including settled history.
+`(Id, InstanceId)` is an alternate key for item ownership. An unsettled automatic body
+counts as one reserved slot in the instance's open-job count; its dispatch/completion
+job uses that slot without counting twice.
+
+Body settlement and its outgoing traversal have separate history evidence: both use
+`automaticMultiInstanceCompleted`, with payload `purpose` values `settlement` and
+`traversal` respectively. Aggregate assembly reads bounded, index-ordered pages of
+item status and committed local results; it never loads staged inputs or candidates.
+
+Automatic item node visits copy `EnteredViaFlowId` and `EntryGatewayBranchId`
+from the current parent activation. Diagram history groups those entries by body,
+so a nonempty body contributes one arrival regardless of its item count. An empty
+body has no item visit and retains the documented possibility of missing incoming
+evidence. Completion copies the captured causal actor, roles, selected audit
+claims and delegation fields into the visit's completion fields; calls capture
+only the fixed system actor. Shared publication sets the revision's
+`NodeExecutionId` to the retained item visit. Audit pruning removes that optional
+link without removing the item's saved inputs, candidate or committed result.
+
+Current control incidents are projected from existing `workflow_jobs` and
+`workflow_incidents`, matched to body activation and control generation. They
+add no schema columns and do not inflate failed-item counts. An item's staged
+context retains shared/environment inputs and output versions; resolved local
+defaults are rebuilt per execution attempt rather than persisted as retry state.
+
+### `multi_instance_activity_items`
+
+Automatic items are runtime state. They are never human tasks and contain no assignee,
+claim, role policy, or selected flow. The copied element lives only in the body snapshot;
+an item stores its zero-based `ItemIndex`.
+
+| Columns | Contract |
+| --- | --- |
+| `Id`, `InstanceId`, `MultiInstanceExecutionId`, `ItemIndex` | Stable identity and ownership; nonnegative index, unique per execution. |
+| `Status`, `Phase` | `pending`, `active`, `completed`, `failed`, or `cancelled`; `execution`, `publication`, or `settled`. Recoverable incidents keep admitted items active and keep their slot. |
+| `StagedInputJson`, `CandidateJson` | Frozen item inputs and accepted execution candidate. Combined JSONB text size is at most 1 MiB. Candidate survives publication conflicts. Both are cleared when the body settles, since nothing reads them afterwards. |
+| `ResultJson`, `SharedWriteCorrelationsJson` | Committed local result (at most 1 MiB) and value-free shared-write correlations. |
+| `ErrorCode`, `ErrorDescription` | Bounded diagnostics, 100 and 1,000 characters respectively. |
+| `CreatedAt`, `UpdatedAt`, `StartedAt`, `CompletedAt` | Lifecycle times; pending items are unstarted, active items have a start, terminal items have completion. |
+
+The composite FK `(MultiInstanceExecutionId, InstanceId)` references the body with
+`CASCADE`; `(Id, MultiInstanceExecutionId, InstanceId)` is an alternate ownership key.
+Admission and paging use `(MultiInstanceExecutionId, Status, ItemIndex)`. Item creation
+and ledger creation use bounded set-based inserts; cancellation updates bounded batches.
+Job and ledger retention never delete items. A body's snapshot row stays while the body
+references it, including completed history. When workflow-history retention prunes a
+finished instance, it empties each settled body's snapshot (`VariablesJson` becomes `{}`
+and `InvocationJson` and `FlowInfoJson` are cleared), so item detail then shows no copied
+element; item `ResultJson` stays. Removing an instance requires deleting
+its retained jobs, call references, ledger references, and token body-wait references
+before deleting the body/items; the application does not delete instances.
+
+The foundation also extends these tables:
+
+- `execution_tokens.WaitingMultiInstanceExecutionId` is an optional `NO ACTION` FK to
+  the body. The wait-shape check accepts an `automaticMultiInstance` wait with this
+  correlation, independently of an individual item job.
+- `node_executions` accepts `automaticActivityItem`, requiring an item, MI execution,
+  and index while refusing a user-task ID. `AutomaticMultiInstanceItemId` is unique,
+  and its composite item/body/instance FK uses `RESTRICT`. Pending items have pending
+  visits; automatic token entry, including the queued interval before initialization,
+  creates no parent visit. An empty body has no fabricated visit; pre-initialization
+  failures remain on the entry job/incident.
+- `workflow_jobs.AutomaticMultiInstanceItemId` has a unique non-null index and a
+  composite item/body/instance FK (`RESTRICT`). `multiInstanceItem` requires that
+  correlation and the activity queue, and no other job kind may carry it: a call
+  item's `callStart`, `callResume`, and `callCancel` reach the item through their
+  invocation. An item counts as blocked, and admission pauses, while its own
+  `multiInstanceItem` job or parent-owned `callStart` has an open incident; this is
+  read from the incident, so it holds however the incident opened. Dispatch/completion use the control queue and
+  `MultiInstanceControlGeneration`; the generation is unique per body and a filtered
+  unique index allows one open control job per body. `PublicationFenceRefreshRequested`
+  records an authorized publication retry without clearing successful candidates or
+  frozen inputs; a call item's `callResume` carries it too. A body's `asyncAfter` job
+  names the body but runs after it settles and retries as an ordinary job. Ordinary-job
+  retry semantics are unchanged. `IX_workflow_jobs_MultiInstanceExecutionId` indexes
+  the body column for every job kind, beside the partial control-slot index.
+- `call_activity_executions` adds nullable `AutomaticMultiInstanceItemId` and
+  `MultiInstanceExecutionId`, with a composite item/body/parent-instance FK (`RESTRICT`)
+  and unique non-null item ownership. `CK_call_activity_executions_automatic_item_pair`
+  requires both or neither, so a half-set pair cannot bypass the composite FK. Ordinary
+  `(ParentInstanceId, ParentTokenId, ActivationId)` uniqueness applies only when the
+  item ID is null. Retention cannot erase this identity and make an item invocation
+  appear ordinary.
+
+The large `workflow_jobs` and `node_executions` checks are first installed `NOT VALID`;
+the separate validation migration scans them outside a transaction and can resume after
+interruption. A third migration, `HardenAutomaticMultiInstanceCore`, restores the general
+`IX_workflow_jobs_MultiInstanceExecutionId` index and adds the call-pin and invocation
+item-pair checks. Both concurrency settings are seeded as strings (`4` and `1000`); see
+[engine settings](engine-settings.md). Downgrade refuses to remove this schema while any
+automatic body history exists. The migration does not fabricate past automatic work.
 
 ### `multi_instance_flow_counts`
 
@@ -834,11 +968,12 @@ The [instance diagram history](ui-guide.md#read-the-instance-diagram) aggregates
 | --- | --- |
 | `InstanceId`, `WorkflowDefinitionId`, `ExecutionTokenId` | Owning instance, version, and token. |
 | `NodeId`, `NodeName`, `NodeType`, `NodeExternalId`, `NodeRolesJson` | Immutable node snapshot. |
-| `ExecutionKind` | `node` or `userTaskItem`. |
+| `ExecutionKind` | `node`, `userTaskItem`, or `automaticActivityItem` (one per automatic item, inactive until automatic multi-instance is enabled). |
 | `Status` | `pending`, `active`, `completed`, `cancelled`, `faulted`, or `merged`. |
 | `CompletionReason` | Why the visit ended, for example `userAction`, `boundaryCaught`, or `parallelJoin`. It is required exactly when the visit is terminal. |
 | `UserTaskId` | The work item sharing this visit (unique). |
 | `MultiInstanceExecutionId`, `ItemIndex` | Multi-instance parent and child index (unique together). |
+| `AutomaticMultiInstanceItemId` | The automatic item an `automaticActivityItem` row records (unique). |
 | `EnteredViaFlowId`, `SelectedFlowId`, `ExitedViaFlowId` | Entry, chosen, and exit flows. |
 | `EntryGatewayBranchId`, `ExitGatewayBranchId` | Gateway branch correlation. |
 | `TriggeredBy*`, `CompletedBy*` | Actor, roles, claims, and delegation snapshots for whoever started and completed the visit. |
@@ -953,11 +1088,11 @@ erDiagram
 
 ### `workflow_jobs`
 
-Each row is one unit of durable work, leased by `Flowbit.Worker` with `FOR UPDATE SKIP LOCKED`. The same table serves instance work (async continuations, timers, durable conditional wakes) and instance-less control work (administrative, version-change, and variable-update batch phases).
+Each row is one unit of durable work, leased by `Flowbit.Worker` with `FOR UPDATE SKIP LOCKED`. The same table serves instance work (async continuations, timers, durable conditional wakes) and instance-less control work (administrative, version-change, and variable-update batch phases). Locked finalization reads use the current persisted lease and publication-recovery fields even when the same context previously enqueued or read the job.
 
 | Column | Meaning |
 | --- | --- |
-| `Kind` | `asyncBefore`, `asyncAfter`, `timer`, `timerStart`, `timerBoundary`, `conditionalWake`, `callStart`, `callResume`, `callCancel`, `administrativeBatchPrepare`, `administrativeBatchExecute`, `instanceVersionChangeBatchPrepare`, `instanceVersionChangeBatchExecute`, `instanceVariableUpdateBatchPrepare`, or `instanceVariableUpdateBatchExecute`. |
+| `Kind` | `asyncBefore`, `asyncAfter`, `timer`, `timerStart`, `timerBoundary`, `conditionalWake`, `callStart`, `callResume`, `callCancel`, `administrativeBatchPrepare`, `administrativeBatchExecute`, `instanceVersionChangeBatchPrepare`, `instanceVersionChangeBatchExecute`, `instanceVariableUpdateBatchPrepare`, or `instanceVariableUpdateBatchExecute`; inactive until automatic multi-instance is enabled, also `multiInstanceStart`, `multiInstanceItem`, `multiInstanceDispatch`, and `multiInstanceComplete`. |
 | `QueueClass`, `Priority`, `DueAt` | `control` or `activity` queue, priority, and earliest run time. |
 | `Status` | `queued`, `running`, `resultReady`, `retry`, `completed`, `incident`, `cancelled`, or `skipped`. |
 | `Phase`, `PayloadJson`, `ResultJson`, `ErrorJson` | Job-specific progress, input, staged result, and last error. |
@@ -970,11 +1105,14 @@ Each row is one unit of durable work, leased by `Flowbit.Worker` with `FOR UPDAT
 | `SnapshotId` | Frozen input snapshot in `workflow_job_snapshots`. |
 | `WorkflowDefinitionId`, `WorkflowKey`, `NodeId`, `NodeName`, `NodeType` | Version and node context. |
 | `AutomaticActivationCount` | Carries the automatic-loop allowance. |
+| `AutomaticMultiInstanceItemId`, `MultiInstanceControlGeneration`, `PublicationFenceRefreshRequested` | Automatic-body correlation: the item a `multiInstanceItem` job runs, a dispatch or completion job's control generation, and an authorized publication-only retry. See [Automatic multi-instance foundation](#automatic-multi-instance-foundation). |
 
 - **Primary key:** `Id`
-- **References:** `ConditionalBoundarySubscriptionId` → [`conditional_boundary_subscriptions`](#conditional_boundary_subscriptions) (optional, `RESTRICT`); `InstanceId` → [`workflow_instances`](#workflow_instances) (optional, `CASCADE`); `MultiInstanceExecutionId` → [`multi_instance_executions`](#multi_instance_executions) (optional, `RESTRICT`); `SnapshotId` → [`workflow_job_snapshots`](#workflow_job_snapshots) (optional, `RESTRICT`); `TimerSubscriptionId` → [`timer_subscriptions`](#timer_subscriptions) (optional, `RESTRICT`); `TokenId` → [`execution_tokens`](#execution_tokens) (optional, `RESTRICT`); `UserTaskId` → [`user_tasks`](#user_tasks) (optional, `RESTRICT`); (`WorkflowDefinitionId`, `WorkflowKey`) → [`workflow_definitions`](#workflow_definitions) (`Id`, `WorkflowKey`) (required, `RESTRICT`); `CallInvocationId` → [`call_activity_executions`](#call_activity_executions) (optional, `RESTRICT`)
+- **References:** `ConditionalBoundarySubscriptionId` → [`conditional_boundary_subscriptions`](#conditional_boundary_subscriptions) (optional, `RESTRICT`); `InstanceId` → [`workflow_instances`](#workflow_instances) (optional, `CASCADE`); `MultiInstanceExecutionId` → [`multi_instance_executions`](#multi_instance_executions) (optional, `RESTRICT`); `SnapshotId` → [`workflow_job_snapshots`](#workflow_job_snapshots) (optional, `RESTRICT`); `TimerSubscriptionId` → [`timer_subscriptions`](#timer_subscriptions) (optional, `RESTRICT`); `TokenId` → [`execution_tokens`](#execution_tokens) (optional, `RESTRICT`); `UserTaskId` → [`user_tasks`](#user_tasks) (optional, `RESTRICT`); (`WorkflowDefinitionId`, `WorkflowKey`) → [`workflow_definitions`](#workflow_definitions) (`Id`, `WorkflowKey`) (required, `RESTRICT`); `CallInvocationId` → [`call_activity_executions`](#call_activity_executions) (optional, `RESTRICT`); (`AutomaticMultiInstanceItemId`, `MultiInstanceExecutionId`, `InstanceId`) → [`multi_instance_activity_items`](#multi_instance_activity_items) (optional, `RESTRICT`)
 - **Referenced by:** [`administrative_action_batches`](#administrative_action_batches).`ExecutionJobId`, [`administrative_action_batches`](#administrative_action_batches).`PreparationJobId`, [`instance_variable_update_batch_jobs`](#instance_variable_update_batch_jobs).`JobId`, [`workflow_incidents`](#workflow_incidents).`JobId`, [`workflow_instance_version_change_batches`](#workflow_instance_version_change_batches).`ExecutionJobId`, [`workflow_instance_version_change_batches`](#workflow_instance_version_change_batches).`PreparationJobId`, [`workflow_job_attempts`](#workflow_job_attempts).`JobId`
-- **Unique:** (`ConditionalBoundarySubscriptionId`, `ConditionalBoundaryOccurrence`) where `ConditionalBoundarySubscriptionId IS NOT NULL AND ConditionalBoundaryOccurrence IS NOT NULL`; (`TimerSubscriptionId`, `ScheduledOccurrenceAt`) where `TimerSubscriptionId IS NOT NULL AND ScheduledOccurrenceAt IS NOT NULL`; (`CallInvocationId`, `Kind`) where `CallInvocationId IS NOT NULL`
+- **Unique:** (`ConditionalBoundarySubscriptionId`, `ConditionalBoundaryOccurrence`) where `ConditionalBoundarySubscriptionId IS NOT NULL AND ConditionalBoundaryOccurrence IS NOT NULL`; (`TimerSubscriptionId`, `ScheduledOccurrenceAt`) where `TimerSubscriptionId IS NOT NULL AND ScheduledOccurrenceAt IS NOT NULL`; (`CallInvocationId`, `Kind`) where `CallInvocationId IS NOT NULL`; `AutomaticMultiInstanceItemId` where it is not null; (`MultiInstanceExecutionId`, `MultiInstanceControlGeneration`) where the generation is not null; `MultiInstanceExecutionId` among open dispatch and completion jobs (`IX_workflow_jobs_automatic_control_slot`)
+- **Indexes:** `MultiInstanceExecutionId` (`IX_workflow_jobs_MultiInstanceExecutionId`)
+- **Checks:** include `CK_workflow_jobs_automatic_item_shape` and `CK_workflow_jobs_automatic_control_shape`
 
 ### `workflow_job_attempts`
 
@@ -1005,7 +1143,7 @@ Stores the inputs a job must use when it runs later: the variable overlay, the p
 
 - **Primary key:** `Id`
 - **References:** none
-- **Referenced by:** [`workflow_jobs`](#workflow_jobs).`SnapshotId`
+- **Referenced by:** [`workflow_jobs`](#workflow_jobs).`SnapshotId`, [`multi_instance_executions`](#multi_instance_executions).`InputSnapshotId`
 
 Snapshots have no outgoing foreign keys. Retention removes orphaned snapshots together with completed jobs.
 

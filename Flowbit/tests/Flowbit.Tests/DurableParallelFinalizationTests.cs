@@ -199,7 +199,8 @@ public sealed class DurableParallelFinalizationTests(PostgresApiFixture fixture)
             .Where(definition => definition.WorkflowKey == workflowKey)
             .ExecuteDeleteAsync();
         await cleanup.WorkflowJobSnapshots
-            .Where(snapshot => !cleanup.WorkflowJobs.Any(job => job.SnapshotId == snapshot.Id))
+            .Where(snapshot => !cleanup.WorkflowJobs.Any(job => job.SnapshotId == snapshot.Id)
+                && !cleanup.MultiInstanceExecutions.Any(body => body.InputSnapshotId == snapshot.Id))
             .ExecuteDeleteAsync();
     }
 

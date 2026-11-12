@@ -13,6 +13,9 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton(new ServiceTaskOptions());
         services.TryAddSingleton(new MessageDeliveryOptions());
         services.TryAddSingleton(new DurableProcessingOptions());
+        services.TryAddSingleton(new AutomaticMultiInstanceOptions());
+        services.AddScoped<AutomaticMultiInstanceCoordinator>();
+        services.AddScoped<IAutomaticMultiInstanceQueryService, AutomaticMultiInstanceQueryService>();
         services.TryAddSingleton(new CallActivityOptions());
         services.TryAddSingleton(TimeProvider.System);
         services.TryAddSingleton<IConditionalEventDefinitionAnalyzer, ConditionalEventDefinitionAnalyzer>();

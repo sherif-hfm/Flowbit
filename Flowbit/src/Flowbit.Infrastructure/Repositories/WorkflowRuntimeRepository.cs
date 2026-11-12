@@ -61,18 +61,21 @@ public sealed partial class WorkflowRuntimeRepository(
         var token = NewToken(entity, node, now);
         dbContext.ExecutionTokens.Add(token);
         await dbContext.SaveChangesAsync(cancellationToken);
-        var nodeExecution = NewNodeExecution(
-            entity,
-            token,
-            node,
-            NodeExecutionKinds.Node,
-            NodeExecutionStatuses.Active,
-            null,
-            null,
-            new NodeExecutionActorRecord(startedBy, startedByRoles) { AuditClaims = actorClaims },
-            now);
-        dbContext.NodeExecutions.Add(nodeExecution);
-        token.CurrentNodeExecution = nodeExecution;
+        if (!IsAutomaticMultiInstance(node))
+        {
+            var nodeExecution = NewNodeExecution(
+                entity,
+                token,
+                node,
+                NodeExecutionKinds.Node,
+                NodeExecutionStatuses.Active,
+                null,
+                null,
+                new NodeExecutionActorRecord(startedBy, startedByRoles) { AuditClaims = actorClaims },
+                now);
+            dbContext.NodeExecutions.Add(nodeExecution);
+            token.CurrentNodeExecution = nodeExecution;
+        }
         await dbContext.SaveChangesAsync(cancellationToken);
         return ToRecord(entity, token, null);
     }
@@ -1186,10 +1189,13 @@ public sealed partial class WorkflowRuntimeRepository(
                 execution.Id,
                 execution.TokenId,
                 execution.NodeId,
+                execution.ActivityKind,
+                execution.ActivationId,
                 execution.UpdatedAt
             })
             .ToListAsync(cancellationToken);
         var multiByTokenAndNode = currentMultiInstances
+            .Where(execution => execution.ActivityKind == "userTask")
             .GroupBy(execution => (execution.TokenId, execution.NodeId))
             .ToDictionary(
                 group => group.Key,
@@ -1197,6 +1203,11 @@ public sealed partial class WorkflowRuntimeRepository(
                     .OrderByDescending(execution => execution.UpdatedAt)
                     .ThenByDescending(execution => execution.Id)
                     .First().Id);
+        // An automatic body belongs to exactly one token activation; a token that
+        // entered the node again must not inherit an older body's correlation.
+        var automaticByActivation = currentMultiInstances
+            .Where(execution => execution.ActivityKind != "userTask" && execution.ActivationId is not null)
+            .ToDictionary(execution => (execution.TokenId, execution.NodeId, execution.ActivationId!.Value));
         var taskSummaries = await GetUserTaskWorkSummariesAsync(instanceIds, cancellationToken);
         var variablesByInstance = includeVariables
             ? await GetLatestVariableValuesAsync(instanceIds, cancellationToken)
@@ -1225,6 +1236,9 @@ public sealed partial class WorkflowRuntimeRepository(
                 multiByTokenAndNode.TryGetValue(
                     (candidate.Id, candidate.NodeId),
                     out var multiInstanceExecutionId);
+                automaticByActivation.TryGetValue(
+                    (candidate.Id, candidate.NodeId, candidate.ActivationId),
+                    out var automatic);
                 return new InstanceExecutionPositionRecord(
                     candidate.Id,
                     candidate.NodeId,
@@ -1235,11 +1249,14 @@ public sealed partial class WorkflowRuntimeRepository(
                     candidate.ArrivedViaFlowId,
                     candidate.TerminationReason,
                     userTaskId == 0 ? null : userTaskId,
-                    multiInstanceExecutionId == 0 ? null : multiInstanceExecutionId,
+                    multiInstanceExecutionId != 0 ? multiInstanceExecutionId : automatic?.Id,
                     candidate.ActivationId == Guid.Empty ? null : candidate.ActivationId,
                     candidate.WaitState,
                     candidate.WaitingJobId,
-                    candidate.WaitingTimerSubscriptionId);
+                    candidate.WaitingTimerSubscriptionId)
+                {
+                    MultiInstanceActivityKind = multiInstanceExecutionId != 0 ? "userTask" : automatic?.ActivityKind
+                };
             }).ToArray();
             InstanceCompletionProjectionRecord? completion = null;
             if (e.Status == WorkflowInstanceStatuses.Completed)
@@ -1917,22 +1934,25 @@ public sealed partial class WorkflowRuntimeRepository(
             task.RolePolicy = await CreateRolePolicyAsync(instance, node, now, cancellationToken);
             dbContext.UserTasks.Add(task);
         }
-        var nodeExecutionStatus = node.AsyncBefore
-            ? NodeExecutionStatuses.Pending
-            : NodeExecutionStatuses.Active;
-        var nodeExecution = NewNodeExecution(
-            instance,
-            token,
-            node,
-            NodeExecutionKinds.Node,
-            nodeExecutionStatus,
-            gatewayBranchId,
-            arrivedViaFlowId,
-            triggeredBy,
-            now,
-            task);
-        dbContext.NodeExecutions.Add(nodeExecution);
-        token.CurrentNodeExecution = nodeExecution;
+        if (!IsAutomaticMultiInstance(node))
+        {
+            var nodeExecutionStatus = node.AsyncBefore
+                ? NodeExecutionStatuses.Pending
+                : NodeExecutionStatuses.Active;
+            var nodeExecution = NewNodeExecution(
+                instance,
+                token,
+                node,
+                NodeExecutionKinds.Node,
+                nodeExecutionStatus,
+                gatewayBranchId,
+                arrivedViaFlowId,
+                triggeredBy,
+                now,
+                task);
+            dbContext.NodeExecutions.Add(nodeExecution);
+            token.CurrentNodeExecution = nodeExecution;
+        }
         await dbContext.SaveChangesAsync(cancellationToken);
         return ToRecord(token);
     }
@@ -1973,6 +1993,10 @@ public sealed partial class WorkflowRuntimeRepository(
         {
             var create = creates[index];
             var token = tokens[index];
+            // Automatic bodies have no parent visit, including queued entry and
+            // entry failures before any items exist. Their item repository owns
+            // every automaticActivityItem visit after successful initialization.
+            if (IsAutomaticMultiInstance(create.Node)) continue;
             UserTaskEntity? task = null;
             if (create.Node.Type == BpmnFlowNodeTypes.UserTask
                 && !create.Node.IsMultiInstance)
@@ -2137,6 +2161,7 @@ public sealed partial class WorkflowRuntimeRepository(
         token.WaitState = null;
         token.WaitingJobId = null;
         token.WaitingTimerSubscriptionId = null;
+        token.WaitingMultiInstanceExecutionId = null;
         token.UpdatedAt = now;
         instance.UpdatedAt = now;
 
@@ -2242,12 +2267,14 @@ public sealed partial class WorkflowRuntimeRepository(
         {
             return token.WaitState == waitState
                    && token.WaitingJobId == waitingJobId
-                   && token.WaitingTimerSubscriptionId == waitingTimerSubscriptionId;
+                   && token.WaitingTimerSubscriptionId == waitingTimerSubscriptionId
+                   && token.WaitingMultiInstanceExecutionId is null;
         }
 
         token.WaitState = waitState;
         token.WaitingJobId = waitingJobId;
         token.WaitingTimerSubscriptionId = waitingTimerSubscriptionId;
+        token.WaitingMultiInstanceExecutionId = null;
         token.UpdatedAt = DateTimeOffset.UtcNow;
         return true;
     }
@@ -2269,7 +2296,8 @@ public sealed partial class WorkflowRuntimeRepository(
             || token.ActivationId != activationId
             || token.WaitState != waitState
             || token.WaitingJobId != waitingJobId
-            || token.WaitingTimerSubscriptionId != waitingTimerSubscriptionId)
+            || token.WaitingTimerSubscriptionId != waitingTimerSubscriptionId
+            || token.WaitingMultiInstanceExecutionId is not null)
         {
             return false;
         }
@@ -2277,6 +2305,7 @@ public sealed partial class WorkflowRuntimeRepository(
         token.WaitState = null;
         token.WaitingJobId = null;
         token.WaitingTimerSubscriptionId = null;
+        token.WaitingMultiInstanceExecutionId = null;
         token.UpdatedAt = DateTimeOffset.UtcNow;
         return true;
     }
@@ -2429,6 +2458,7 @@ public sealed partial class WorkflowRuntimeRepository(
         token.WaitState = null;
         token.WaitingJobId = null;
         token.WaitingTimerSubscriptionId = null;
+        token.WaitingMultiInstanceExecutionId = null;
         token.UpdatedAt = now;
         await CompleteCurrentNodeExecutionAsync(token, completion, now, cancellationToken);
         var persistedTasks = await dbContext.UserTasks
@@ -2525,6 +2555,7 @@ public sealed partial class WorkflowRuntimeRepository(
             token.WaitState = null;
             token.WaitingJobId = null;
             token.WaitingTimerSubscriptionId = null;
+            token.WaitingMultiInstanceExecutionId = null;
             token.UpdatedAt = now;
             await CompleteCurrentNodeExecutionAsync(
                 token,
@@ -2593,6 +2624,7 @@ public sealed partial class WorkflowRuntimeRepository(
             token.WaitState = null;
             token.WaitingJobId = null;
             token.WaitingTimerSubscriptionId = null;
+            token.WaitingMultiInstanceExecutionId = null;
             token.UpdatedAt = now;
             await CompleteCurrentNodeExecutionAsync(
                 token,
@@ -3471,9 +3503,12 @@ public sealed partial class WorkflowRuntimeRepository(
             : null;
         try
         {
+            // Human executions only. Automatic bodies settle through the
+            // automatic repository, which also cancels their items and ledger.
             var localExecutions = dbContext.MultiInstanceExecutions.Local
                 .Where(execution =>
-                    distinctTokenIds.Contains(execution.TokenId)
+                    execution.ActivityKind == "userTask"
+                    && distinctTokenIds.Contains(execution.TokenId)
                     && execution.Status == MultiInstanceExecutionStatuses.Active)
                 .ToList();
             if (localExecutions.Any(execution =>
@@ -3484,7 +3519,8 @@ public sealed partial class WorkflowRuntimeRepository(
 
             await dbContext.MultiInstanceExecutions
                 .Where(execution =>
-                    distinctTokenIds.Contains(execution.TokenId)
+                    execution.ActivityKind == "userTask"
+                    && distinctTokenIds.Contains(execution.TokenId)
                     && execution.Status == MultiInstanceExecutionStatuses.Active)
                 .ExecuteUpdateAsync(setters => setters
                     .SetProperty(
@@ -4246,14 +4282,14 @@ public sealed partial class WorkflowRuntimeRepository(
         if (forUpdate)
         {
             entity = await dbContext.MultiInstanceExecutions
-                .FromSqlInterpolated($"SELECT * FROM flowbit.multi_instance_executions WHERE \"TokenId\" = {tokenId} AND \"Status\" = {MultiInstanceExecutionStatuses.Active} ORDER BY \"Id\" DESC LIMIT 1 FOR UPDATE")
+                .FromSqlInterpolated($"SELECT * FROM flowbit.multi_instance_executions WHERE \"TokenId\" = {tokenId} AND \"ActivityKind\" = 'userTask' AND \"Status\" = {MultiInstanceExecutionStatuses.Active} ORDER BY \"Id\" DESC LIMIT 1 FOR UPDATE")
                 .Include(execution => execution.RolePolicy)
                 .SingleOrDefaultAsync(cancellationToken);
         }
         else
         {
             entity = await dbContext.MultiInstanceExecutions.Include(execution => execution.RolePolicy).AsNoTracking()
-                .Where(e => e.TokenId == tokenId
+                .Where(e => e.ActivityKind == "userTask" && e.TokenId == tokenId
                             && e.Status == MultiInstanceExecutionStatuses.Active)
                 .OrderByDescending(e => e.Id)
                 .FirstOrDefaultAsync(cancellationToken);
@@ -4267,7 +4303,7 @@ public sealed partial class WorkflowRuntimeRepository(
         CancellationToken cancellationToken)
     {
         var query = dbContext.MultiInstanceExecutions.Include(execution => execution.RolePolicy).AsNoTracking()
-            .Where(execution => execution.InstanceId == instanceId);
+            .Where(execution => execution.ActivityKind == "userTask" && execution.InstanceId == instanceId);
         if (!string.IsNullOrWhiteSpace(status))
         {
             query = query.Where(execution => execution.Status == status);
@@ -4283,13 +4319,13 @@ public sealed partial class WorkflowRuntimeRepository(
     {
         var entities = await dbContext.MultiInstanceExecutions.Include(execution => execution.RolePolicy).AsNoTracking()
             .Where(execution =>
-                execution.InstanceId == instanceId
+                execution.ActivityKind == "userTask" && execution.InstanceId == instanceId
                 && execution.Status == MultiInstanceExecutionStatuses.Active)
             .OrderBy(execution => execution.Id)
             .ToListAsync(cancellationToken);
         var byId = entities.ToDictionary(execution => execution.Id);
         foreach (var tracked in dbContext.MultiInstanceExecutions.Local.Where(execution =>
-                     execution.InstanceId == instanceId))
+                     execution.ActivityKind == "userTask" && execution.InstanceId == instanceId))
         {
             byId[tracked.Id] = tracked;
         }
@@ -4523,14 +4559,14 @@ public sealed partial class WorkflowRuntimeRepository(
         if (forUpdate)
         {
             entity = await dbContext.MultiInstanceExecutions
-                .FromSqlInterpolated($"SELECT * FROM flowbit.multi_instance_executions WHERE \"Id\" = {executionId} FOR UPDATE")
+                .FromSqlInterpolated($"SELECT * FROM flowbit.multi_instance_executions WHERE \"Id\" = {executionId} AND \"ActivityKind\" = 'userTask' FOR UPDATE")
                 .Include(execution => execution.RolePolicy)
                 .SingleOrDefaultAsync(cancellationToken);
         }
         else
         {
             entity = await dbContext.MultiInstanceExecutions.Include(execution => execution.RolePolicy).AsNoTracking()
-                .SingleOrDefaultAsync(e => e.Id == executionId, cancellationToken);
+                .SingleOrDefaultAsync(e => e.Id == executionId && e.ActivityKind == "userTask", cancellationToken);
         }
         return entity is null ? null : ToRecord(entity);
     }
@@ -4879,7 +4915,7 @@ public sealed partial class WorkflowRuntimeRepository(
 
         var ids = executionIds.Distinct().ToList();
         var executions = await dbContext.MultiInstanceExecutions.Include(execution => execution.RolePolicy).AsNoTracking()
-            .Where(execution => ids.Contains(execution.Id))
+            .Where(execution => execution.ActivityKind == "userTask" && ids.Contains(execution.Id))
             .Select(execution => new
             {
                 Execution = execution,
@@ -6771,7 +6807,8 @@ public sealed partial class WorkflowRuntimeRepository(
             entity.WaitingTimerSubscriptionId,
             entity.AutomaticActivationCount)
         {
-            AutomaticActivationStateIds = entity.AutomaticActivationStateIds
+            AutomaticActivationStateIds = entity.AutomaticActivationStateIds,
+            WaitingMultiInstanceExecutionId = entity.WaitingMultiInstanceExecutionId
         };
 
     private static GatewayExecutionRecord ToRecord(GatewayExecutionEntity entity) =>
@@ -6891,6 +6928,9 @@ public sealed partial class WorkflowRuntimeRepository(
             CompletedActingFor = entity.CompletedActingFor,
             CompletedDelegationId = entity.CompletedDelegationId
         };
+
+    private static bool IsAutomaticMultiInstance(CurrentNodeSnapshot node) =>
+        node.IsMultiInstance && node.Type is BpmnFlowNodeTypes.ServiceTask or BpmnFlowNodeTypes.ScriptTask or BpmnFlowNodeTypes.CallActivity;
 
     private static NodeExecutionEntity NewNodeExecution(
         WorkflowInstanceEntity instance,

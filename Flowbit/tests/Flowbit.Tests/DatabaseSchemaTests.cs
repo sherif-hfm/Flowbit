@@ -23,7 +23,8 @@ public sealed class DatabaseSchemaTests(PostgresApiFixture fixture)
             .Distinct()
             .ToArray();
 
-        Assert.Equal(66, mappedTables.Length);
+        Assert.Equal(67, mappedTables.Length);
+        Assert.Contains(mappedTables, table => table.Name == "multi_instance_activity_items");
         Assert.DoesNotContain(mappedTables, table => table.Name == "lifecycle_event_capture_state");
         Assert.Contains(mappedTables, table => table.Name == "call_activity_executions");
         Assert.Contains(mappedTables, table => table.Name == "call_activity_results");

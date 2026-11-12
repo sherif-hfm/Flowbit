@@ -20,6 +20,41 @@ public sealed class OpenApiContractTests
         new(StringComparer.OrdinalIgnoreCase) { "get", "post", "put", "patch", "delete" };
 
     [Fact]
+    public async Task AutomaticItemReadRoutesDescribeSettledBodiesAndKeepPayloadSeparate()
+    {
+        await using var factory = new WorkflowInstanceDetailEndpointTests.DetailApiFactory();
+        await using var scope = factory.Services.CreateAsyncScope();
+        var provider = scope.ServiceProvider.GetRequiredKeyedService<IOpenApiDocumentProvider>("v1");
+        var document = await provider.GetOpenApiDocumentAsync();
+        foreach (var path in new[] { "/api/multi-instance-executions/{executionId}/items",
+                     "/api/multi-instance-executions/{executionId}/items/{itemId}" })
+        {
+            var operation = document.Paths[path].Operations![HttpMethod.Get];
+            var execution = operation.Parameters!.Single(parameter => parameter.Name == "executionId");
+            Assert.Equal("The numeric identifier of an active or settled automatic multi-instance execution.", execution.Description);
+            Assert.Equal("int64", execution.Schema!.Format);
+            Assert.Equal(["200", "400", "401", "403", "404"], operation.Responses!.Keys.Order());
+            Assert.Equal("Bearer", Assert.Single(Assert.Single(operation.Security!)).Key.Reference.Id);
+        }
+        var human = document.Paths["/api/multi-instance-executions/{executionId}/flows"].Operations![HttpMethod.Get];
+        Assert.Equal("The numeric identifier of the active multi-instance execution.",
+            human.Parameters!.Single(parameter => parameter.Name == "executionId").Description);
+        var schemas = document.Components!.Schemas!;
+        var progress = schemas["AutomaticMultiInstanceProgressDto"].Properties!;
+        Assert.Equal("int64", progress["controlJobId"].Format);
+        Assert.Equal("int64", progress["controlIncidentId"].Format);
+        Assert.Contains("controlIncidentType", progress.Keys);
+        Assert.DoesNotContain("candidate", progress.Keys);
+        Assert.DoesNotContain("variables", progress.Keys);
+        var summary = schemas["AutomaticMultiInstanceItemSummaryDto"].Properties!;
+        Assert.Contains("canReadPayload", summary.Keys);
+        Assert.DoesNotContain("item", summary.Keys);
+        Assert.DoesNotContain("variables", summary.Keys);
+        Assert.Equal(new[] { "errorCode", "errorDescription", "item", "summary", "variables" },
+            schemas["AutomaticMultiInstanceItemDetailDto"].Properties!.Keys.Order());
+    }
+
+    [Fact]
     public async Task InstanceDetailRetainsItsProductionOpenApiContract()
     {
         await using var factory = new WorkflowInstanceDetailEndpointTests.DetailApiFactory();

@@ -15,6 +15,59 @@ namespace Flowbit.Tests;
 public sealed class DurableJobRepositoryTests(PostgresApiFixture fixture)
 {
     [Fact]
+    public async Task LockedReadUsesFreshLeaseAndPublicationStateInTheEnqueueContext()
+    {
+        var suffix = $"fresh-job-fence-{Guid.NewGuid():N}";
+        try
+        {
+            await using var db = fixture.CreateDbContext();
+            var definition = NewDefinition(suffix);
+            db.WorkflowDefinitions.Add(definition);
+            await db.SaveChangesAsync();
+            var instance = NewInstance(definition, suffix);
+            db.WorkflowInstances.Add(instance);
+            await db.SaveChangesAsync();
+            var repository = new WorkflowJobRepository(db, fixture.DataSource);
+            var queued = await repository.EnqueueAsync(new WorkflowJobCreateRecord
+            {
+                InstanceId = instance.Id,
+                WorkflowDefinitionId = definition.Id,
+                WorkflowKey = suffix,
+                ActivationId = Guid.NewGuid(),
+                NodeId = 20,
+                NodeName = "Fresh fence",
+                NodeType = "serviceTask",
+                Kind = WorkflowJobKinds.AsyncBefore,
+                QueueClass = WorkflowJobClasses.Control,
+                Phase = WorkflowJobKinds.AsyncBefore,
+                Priority = int.MaxValue,
+                DueAt = DateTimeOffset.UtcNow
+            }, default);
+            var lease = Assert.Single(await repository.LeaseRunnableAsync(new(
+                $"fresh-fence-{suffix}", 1, 0, 1, TimeSpan.FromMinutes(1)), default));
+            Assert.Equal(queued.Id, lease.Job.Id);
+            Assert.Equal(WorkflowJobStatuses.Queued, db.WorkflowJobs.Local.Single(job => job.Id == queued.Id).Status);
+
+            await using var transaction = await db.Database.BeginTransactionAsync();
+            var locked = await repository.GetForUpdateAsync(queued.Id, default);
+            Assert.Equal(WorkflowJobStatuses.Running, locked!.Status);
+            Assert.Equal(lease.LeaseToken, locked.LeaseToken);
+            Assert.Equal(lease.LeaseGeneration, locked.LeaseGeneration);
+            await db.WorkflowJobs.Where(job => job.Id == queued.Id).ExecuteUpdateAsync(update =>
+                update.SetProperty(job => job.PublicationFenceRefreshRequested, true));
+            Assert.True((await repository.GetForUpdateAsync(queued.Id, default))!.PublicationFenceRefreshRequested);
+            await db.WorkflowJobs.Where(job => job.Id == queued.Id).ExecuteUpdateAsync(update =>
+                update.SetProperty(job => job.PublicationFenceRefreshRequested, false));
+            Assert.False((await repository.GetForUpdateAsync(queued.Id, default))!.PublicationFenceRefreshRequested);
+            await transaction.CommitAsync();
+        }
+        finally
+        {
+            await DeleteWorkflowAsync(suffix);
+        }
+    }
+
+    [Fact]
     public async Task EnqueueManyPersistsConditionalWakeWaveInInputOrder()
     {
         var suffix = $"conditional-wave-{Guid.NewGuid():N}";

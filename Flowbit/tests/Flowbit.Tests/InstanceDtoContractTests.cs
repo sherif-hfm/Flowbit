@@ -86,7 +86,8 @@ public sealed class InstanceDtoContractTests
                 "WaitState",
                 "WaitingJobId",
                 "WaitingTimerSubscriptionId",
-                "Call"
+                "Call",
+                "MultiInstanceActivityKind"
             },
             typeof(ExecutionPositionDto).GetProperties().Select(property => property.Name));
         Assert.Equal(
@@ -144,6 +145,10 @@ public sealed class InstanceDtoContractTests
             typeof(InstanceDetailDto).GetProperties(),
             property => property.Name == "MultiInstances"
                         && property.PropertyType == typeof(IReadOnlyList<MultiInstanceProgressDto>));
+        Assert.Contains(
+            typeof(InstanceDetailDto).GetProperties(),
+            property => property.Name == "AutomaticMultiInstances"
+                        && property.PropertyType == typeof(IReadOnlyList<AutomaticMultiInstanceProgressDto>));
         Assert.Contains(
             typeof(UserTaskWorkSummaryDto).GetProperties(),
             property => property.Name == "NormalTaskCount");

@@ -25,6 +25,13 @@ public sealed class CallActivityRepository(AppDbContext dbContext) : ICallActivi
             ParentTokenId = call.ParentTokenId,
             ActivationId = call.ActivationId,
             ParentNodeId = call.ParentNodeId,
+            MultiInstanceExecutionId = call.MultiInstanceExecutionId,
+            AutomaticMultiInstanceItemId = call.AutomaticMultiInstanceItemId,
+            AutomaticMultiInstanceItem = call.AutomaticMultiInstanceItem == null ? null : new MultiInstanceActivityItemEntity
+            {
+                Id = call.AutomaticMultiInstanceItem.Id,
+                ItemIndex = call.AutomaticMultiInstanceItem.ItemIndex
+            },
             ParentNodeExecutionId = call.ParentNodeExecutionId,
             RootInstanceId = call.RootInstanceId,
             ChildDepth = call.ChildDepth,
@@ -50,9 +57,17 @@ public sealed class CallActivityRepository(AppDbContext dbContext) : ICallActivi
         CallInvocationCreateRecord create,
         CancellationToken cancellationToken)
     {
+        if ((create.MultiInstanceExecutionId is null) != (create.AutomaticMultiInstanceItemId is null))
+        {
+            throw new ArgumentException(
+                "An automatic call item names both its body and its item; an ordinary call names neither.",
+                nameof(create));
+        }
         var now = DateTimeOffset.UtcNow;
         var entity = new CallActivityExecutionEntity
         {
+            MultiInstanceExecutionId = create.MultiInstanceExecutionId,
+            AutomaticMultiInstanceItemId = create.AutomaticMultiInstanceItemId,
             ParentInstanceId = create.ParentInstanceId,
             ParentTokenId = create.ParentTokenId,
             ActivationId = create.ActivationId,
@@ -97,9 +112,12 @@ public sealed class CallActivityRepository(AppDbContext dbContext) : ICallActivi
         Guid activationId,
         CancellationToken cancellationToken)
     {
+        // An ordinary call owns one invocation per activation. Automatic items share
+        // their body's activation, so they are looked up by item, never here.
         var entity = await dbContext.CallActivityExecutions.AsNoTracking()
             .SingleOrDefaultAsync(
-                call => call.ParentTokenId == parentTokenId && call.ActivationId == activationId,
+                call => call.ParentTokenId == parentTokenId && call.ActivationId == activationId
+                        && call.AutomaticMultiInstanceItemId == null,
                 cancellationToken);
         return entity is null ? null : ToRecord(entity);
     }
@@ -146,12 +164,28 @@ public sealed class CallActivityRepository(AppDbContext dbContext) : ICallActivi
         var entities = await dbContext.CallActivityExecutions.AsNoTracking()
             .Where(call =>
                 call.ParentInstanceId == parentInstanceId
+                && call.AutomaticMultiInstanceItemId == null
                 && tokenIds.Contains(call.ParentTokenId)
                 && (call.State == CallInvocationStates.Queued || call.State == CallInvocationStates.Running))
             .OrderBy(call => call.Id)
             .Select(WithoutSnapshots)
             .ToListAsync(cancellationToken);
         return entities.Select(ToRecord).ToList();
+    }
+
+    public async Task<IReadOnlyList<CallInvocationRecord>> ListUnsettledAutomaticForTokensAsync(
+        long parentInstanceId, IReadOnlyCollection<long> tokenIds, CancellationToken cancellationToken)
+    {
+        if (tokenIds.Count == 0) return [];
+        var tracked = dbContext.ExecutionTokens.Local.Where(token => tokenIds.Contains(token.Id)).ToArray();
+        if (tracked.Length == tokenIds.Count && tracked.All(token => !BpmnFlowNodeTypes.IsCallActivity(token.NodeType)))
+            return [];
+        var entities = await dbContext.CallActivityExecutions.AsNoTracking()
+            .Where(call => call.ParentInstanceId == parentInstanceId
+                && call.AutomaticMultiInstanceItemId != null && tokenIds.Contains(call.ParentTokenId)
+                && (call.State == CallInvocationStates.Queued || call.State == CallInvocationStates.Running))
+            .OrderBy(call => call.Id).Select(WithoutSnapshots).ToListAsync(cancellationToken);
+        return entities.Select(ToRecord).ToArray();
     }
 
     public Task<bool> HasUnsettledOutgoingAsync(
@@ -540,7 +574,10 @@ public sealed class CallActivityRepository(AppDbContext dbContext) : ICallActivi
             entity.UpdatedAt,
             entity.AdmittedAt,
             entity.StartedAt,
-            entity.SettledAt);
+            entity.SettledAt,
+            entity.MultiInstanceExecutionId,
+            entity.AutomaticMultiInstanceItemId,
+            entity.AutomaticMultiInstanceItem?.ItemIndex);
 
     private static JsonDocument ToDocument(CallValueSnapshot snapshot) =>
         JsonSerializer.SerializeToDocument(new StoredSnapshot(

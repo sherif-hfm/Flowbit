@@ -21,6 +21,9 @@ public sealed record WorkflowVersionCompatibilityContext
 
     public IReadOnlyList<MultiInstanceExecutionRecord> ActiveMultiInstanceExecutions { get; init; } = [];
 
+    /// <summary>Open automatic bodies, kept apart from the human executions above.</summary>
+    public IReadOnlyList<AutomaticMultiInstanceRecord> ActiveAutomaticMultiInstances { get; init; } = [];
+
     public IReadOnlyList<GatewayExecutionRecord> ActiveGatewayExecutions { get; init; } = [];
 
     public IReadOnlyList<GatewayBranchRecord> ActiveGatewayBranches { get; init; } = [];
@@ -133,6 +136,7 @@ public static class WorkflowVersionCompatibilityCodes
         "conditional_catch_shared_dependency_unsupported";
     public const string MultiInstanceContractChanged = "multi_instance_contract_changed";
     public const string MultiInstanceOutcomeChanged = "multi_instance_outcome_changed";
+    public const string AutomaticMultiInstanceOpen = "automatic_multi_instance_open";
 
     public const string TopologyNodeMissing = "topology_node_missing";
     public const string TopologyNodeAdded = "topology_node_added";

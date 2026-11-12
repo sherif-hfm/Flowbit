@@ -2283,10 +2283,12 @@ public static class BusinessKeyUniqueness
 }
 
 /// <summary>
-/// Configures parallel or sequential repetitions of a user task.
+/// Configures parallel or sequential repetitions of a human or automatic activity.
 /// </summary>
 public sealed class MultiInstanceModel
 {
+    private int? maxConcurrency;
+    private List<MultiInstanceOutputVariableModel>? outputVariables;
     [JsonPropertyName("mode")]
     public string Mode { get; set; } = MultiInstanceModes.Parallel;
 
@@ -2315,8 +2317,57 @@ public sealed class MultiInstanceModel
     [JsonPropertyName("completionEvaluation")]
     public string CompletionEvaluation { get; set; } = MultiInstanceCompletionEvaluations.AfterEach;
 
+    [JsonPropertyName("maxConcurrency")]
+    [JsonNumberHandling(JsonNumberHandling.Strict)]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? MaxConcurrency
+    {
+        get => maxConcurrency;
+        set { maxConcurrency = value; HasMaxConcurrency = true; }
+    }
+
+    [JsonIgnore]
+    public bool HasMaxConcurrency { get; private set; }
+
+    /// <summary>Automatic item-local output contracts. Null means the required list was omitted.</summary>
+    [JsonPropertyName("outputVariables")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<MultiInstanceOutputVariableModel>? OutputVariables
+    {
+        get => outputVariables;
+        set { outputVariables = value; HasOutputVariables = true; }
+    }
+
+    [JsonIgnore]
+    public bool HasOutputVariables { get; private set; }
+
     [JsonPropertyName("resultVariable")]
     public string ResultVariable { get; set; } = string.Empty;
+}
+
+/// <summary>A bounded automatic-item local contract, with no process scope or presentation metadata.</summary>
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed class MultiInstanceOutputVariableModel
+{
+    [JsonPropertyName("name")]
+    public string Name { get; set; } = string.Empty;
+
+    [JsonPropertyName("dataType")]
+    public string DataType { get; set; } = string.Empty;
+
+    [JsonPropertyName("isArray")]
+    public bool IsArray { get; set; }
+
+    [JsonPropertyName("nullable")]
+    public bool Nullable { get; set; }
+
+    [JsonPropertyName("defaultValue")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public JsonElement? DefaultValue { get; set; }
+
+    [JsonPropertyName("validation")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Validation { get; set; }
 }
 
 public static class MultiInstanceModes

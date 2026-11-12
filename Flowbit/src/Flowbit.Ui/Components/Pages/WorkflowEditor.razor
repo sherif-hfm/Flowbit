@@ -148,13 +148,17 @@
         {
             if (firstRender)
             {
+                // The API's validator owns the release switch; the UI host's own
+                // environment and configuration never decide it.
+                var automaticMultiInstanceEnabled = await ReadAutomaticMultiInstanceEnabledAsync();
                 module = await JS.InvokeAsync<IJSObjectReference>("import", lifetime.Token, "./workflow-editor-host.js");
                 callback = DotNetObjectReference.Create(this);
                 host = await module.InvokeAsync<IJSObjectReference>("create", lifetime.Token, editorRoot, callback, new
                 {
                     stylesheet = Assets["editor/flowbit-editor.css"],
                     template = Assets["editor/editor-template.js"],
-                    script = Assets["editor/flowbit-editor.js"]
+                    script = Assets["editor/flowbit-editor.js"],
+                    automaticMultiInstanceEnabled
                 });
                 if (error is null && definitionLoaded) await LoadEditorAsync(loadRevision);
             }
@@ -164,6 +168,20 @@
         catch (JSDisconnectedException) when (disposed) { }
         catch (Exception ex) when (!disposed) { error = DisplayError(ex); }
         if (firstRender && !disposed) await InvokeAsync(StateHasChanged);
+    }
+
+    // Fails closed: without an answer the editor keeps automatic multi-instance hidden,
+    // and the server would refuse such a definition anyway.
+    private async Task<bool> ReadAutomaticMultiInstanceEnabledAsync()
+    {
+        try
+        {
+            return (await Api.GetAuthoringCapabilitiesAsync(lifetime.Token)).AutomaticMultiInstance;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return false;
+        }
     }
 
     private async Task LoadEditorAsync(long revision)

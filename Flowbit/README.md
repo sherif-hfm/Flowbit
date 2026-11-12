@@ -4,6 +4,45 @@
 
 Start with the [developer documentation](../docs/index.md) for HTTP onboarding, the complete API reference, BPMN support, and deployment. This README retains the detailed runtime implementation reference.
 
+## Automatic multi-instance foundation
+
+[TASK-05A](../docs/enhancements/task-05a-multi-instance-core.md) supplies common
+body/item persistence and publication operations. Publication and runtime guards
+remain closed until the B/C/D adapters and integration evidence are complete.
+Development authoring opt-in does not enable execution.
+
+`AutomaticMultiInstanceCoordinator` retains collection, instance inputs and
+FlowInfo once per body. Items retain staged shared/environment inputs and output
+versions, then rebuild local defaults for each execution attempt. Accepted
+candidates commit before publication and survive retries and job retention.
+Only explicit output-version-conflict recovery refreshes publication fences.
+
+`AutomaticMultiInstanceItemFence` accepts either a service/script item lease or
+a call invocation with its parent `callStart`/child `callResume` lease. Common
+operations recheck parent activation, body, item, invocation, message ownership
+and live lease; they never lock the child instance. A call start may stage inputs
+or report admission failure; successful candidates require a running invocation
+and its immutable child result. Calls use the fixed `callActivity` actor without
+caller claims or `sys.jobId`/`sys.jobAttempt`. The call adapter owns invocation
+settlement and message acknowledgement in the publication transaction. Call
+admission, capacity, pin resolution, execution and recovery integration remain
+TASK-05D; the body already requires and stores the pin it resolves, and invocations
+can record their item. Retrying a call item's `callResume` output conflict refreshes
+its publication fences without locking the parent.
+
+Adapters hand a result that retrying cannot change, such as one over the body's
+result limit, to `RefuseItemResultAsync`: siblings stop, nothing is published, and
+the body takes its catch-all error boundary or faults with `multiInstanceFailed`.
+An open incident on an item's own job, or a call item's `callStart`, pauses
+admission until it is retried. Settlement clears staged inputs and candidates.
+
+Item visits retain incoming-flow and completion audit evidence. Shared writes
+reference the retained visit; audit pruning does not erase durable item state.
+Progress correlates execution positions to the exact activation and batch-loads
+current control incidents separately from item counts. See the
+[schema reference](../docs/database-schema.md#automatic-multi-instance-foundation)
+and [recovery contract](../docs/deployment.md#automatic-multi-instance-foundation).
+
 ## Projects
 
 Authentication supports provider-managed OpenID Connect or [Local database-backed users](../docs/local-authentication.md). Local mode signs HS256 tokens with exact-case `Username` identity, accepts trusted external tokens without a directory lookup, and persists account/attribute/hashed-refresh state in the `flowbit` schema. `LocalIdentityService` owns account validation and session behavior behind `ILocalIdentityRepository`; the API owns signing and the UI owns per-browser protected session storage. Directory writes/refresh rotation use an independent transaction advisory lock; they do not change workflow actor storage or locking. Apply the additive migration before enabling Local mode. DevelopmentToken remains development-only.

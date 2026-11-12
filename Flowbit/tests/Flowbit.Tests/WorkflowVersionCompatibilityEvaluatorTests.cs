@@ -11,6 +11,91 @@ public sealed class WorkflowVersionCompatibilityEvaluatorTests
     private static readonly DateTimeOffset Now =
         new(2026, 8, 2, 12, 0, 0, TimeSpan.Zero);
 
+    [Theory]
+    [InlineData(BpmnFlowNodeTypes.ServiceTask, WorkflowJobKinds.AsyncBefore)]
+    [InlineData(BpmnFlowNodeTypes.ScriptTask, WorkflowJobKinds.AsyncAfter)]
+    [InlineData(BpmnFlowNodeTypes.CallActivity, WorkflowJobKinds.MultiInstanceStart)]
+    public void Automatic_body_blocks_switch_even_when_contract_is_unchanged(string type, string kind)
+    {
+        var model = BasicModel();
+        var node = model.FlowNodes.Single(node => node.Id == 2);
+        node.Type = type;
+        node.MultiInstance = new MultiInstanceModel { CompletionEvaluation = "afterAll", OutputVariables = [] };
+        var source = Definition(11, 1, model);
+        var target = Definition(12, 2, Clone(model));
+        var context = Context(source, target) with
+        {
+            OpenJobs = [Job(source) with { Kind = kind, Phase = kind, Status = WorkflowJobStatuses.Incident, NodeType = type }]
+        };
+        var result = WorkflowVersionCompatibilityEvaluator.Evaluate(context);
+        Assert.Contains(result.Blockers, issue => issue.Code == WorkflowVersionCompatibilityCodes.AutomaticMultiInstanceOpen && issue.NodeId == 2);
+    }
+
+    [Fact]
+    public void Open_automatic_body_blocker_names_its_execution()
+    {
+        var model = BasicModel();
+        var node = model.FlowNodes.Single(node => node.Id == 2);
+        node.Type = BpmnFlowNodeTypes.ServiceTask;
+        node.AsyncBefore = true;
+        node.MultiInstance = new MultiInstanceModel { CompletionEvaluation = "afterAll", OutputVariables = [] };
+        var source = Definition(11, 1, model);
+        var now = DateTimeOffset.UtcNow;
+        var body = new AutomaticMultiInstanceRecord(42, 1, 7, 11, Guid.NewGuid(), 2, BpmnFlowNodeTypes.ServiceTask,
+            "parallel", "active", "running", "results", "instance", null, 1, 9, 1000, 2, 3, 0, 0, 0, 2, null, 1, now, now, null);
+        var context = Context(source, Definition(12, 2, Clone(model))) with { ActiveAutomaticMultiInstances = [body] };
+
+        var result = WorkflowVersionCompatibilityEvaluator.Evaluate(context);
+
+        var blocker = Assert.Single(result.Blockers, issue => issue.Code == WorkflowVersionCompatibilityCodes.AutomaticMultiInstanceOpen);
+        Assert.Equal((2, 42L), (blocker.NodeId!.Value, blocker.RuntimeId!.Value));
+        Assert.Contains("#42", blocker.Message);
+    }
+
+    [Fact]
+    public void Item_local_output_does_not_declare_a_stored_instance_variable_in_the_target()
+    {
+        var model = BasicModel();
+        model.FlowNodes.Add(new FlowNodeModel
+        {
+            Id = 4, Name = "Notify", Type = BpmnFlowNodeTypes.ServiceTask, AsyncBefore = true,
+            Service = new ServiceTaskModel { Url = "https://example.test/notify",
+                OutputMappings = [new ServiceOutputMappingModel { Variable = "receipt", Path = "id", DataType = WorkflowVariableTypes.String }] },
+            MultiInstance = new MultiInstanceModel { CompletionEvaluation = "afterAll",
+                OutputVariables = [new MultiInstanceOutputVariableModel { Name = "receipt", DataType = WorkflowVariableTypes.String }] }
+        });
+        var context = Context(Definition(11, 1, model), Definition(12, 2, Clone(model))) with
+        {
+            CurrentVariables = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase) { ["receipt"] = Json(7) }
+        };
+
+        var result = WorkflowVersionCompatibilityEvaluator.Evaluate(context);
+
+        // A stored "receipt" is unrelated to the item-local output of the same name.
+        Assert.Contains(result.Warnings, issue => issue.Code == WorkflowVersionCompatibilityCodes.VariableUndeclaredInTarget
+            && issue.VariableName == "receipt");
+        Assert.DoesNotContain(result.Blockers, issue => issue.Code == WorkflowVersionCompatibilityCodes.VariableTypeIncompatible);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Ordinary_open_job_blocks_adding_or_removing_multi_instance(bool adding)
+    {
+        var model = BasicModel();
+        var node = model.FlowNodes.Single(node => node.Id == 2);
+        node.Type = BpmnFlowNodeTypes.ServiceTask;
+        node.AsyncBefore = true;
+        node.MultiInstance = adding ? null : new MultiInstanceModel { CompletionEvaluation = "afterAll", OutputVariables = [] };
+        var source = Definition(11, 1, model);
+        var targetModel = Clone(model);
+        targetModel.FlowNodes.Single(node => node.Id == 2).MultiInstance = adding
+            ? new MultiInstanceModel { CompletionEvaluation = "afterAll", OutputVariables = [] } : null;
+        var context = Context(source, Definition(12, 2, targetModel)) with { OpenJobs = [Job(source)] };
+        Assert.Contains(WorkflowVersionCompatibilityEvaluator.Evaluate(context).Blockers,
+            issue => issue.Code == WorkflowVersionCompatibilityCodes.OpenJobContractChanged);
+    }
+
     [Fact]
     public void Compatible_change_ignores_cosmetics_and_allows_role_management_permission()
     {

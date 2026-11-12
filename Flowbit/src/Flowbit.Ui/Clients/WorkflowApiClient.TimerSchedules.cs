@@ -3,7 +3,7 @@ using Flowbit.Shared.Dtos;
 
 namespace Flowbit.Ui.Clients;
 
-/// <summary>Workflow authors' cron schedule preview and time-zone suggestions for the editor.</summary>
+/// <summary>Workflow authors' cron schedule preview, time-zone suggestions, and authoring capabilities for the editor.</summary>
 public sealed partial class WorkflowApiClient
 {
     public async Task<TimerSchedulePreviewDto> PreviewTimerScheduleAsync(
@@ -14,6 +14,14 @@ public sealed partial class WorkflowApiClient
         await EnsureSuccessAsync(response, cancellationToken);
         return await response.Content.ReadFromJsonAsync<TimerSchedulePreviewDto>(cancellationToken)
             ?? throw new InvalidOperationException("The API returned an empty timer schedule preview.");
+    }
+
+    public async Task<WorkflowAuthoringCapabilitiesDto> GetAuthoringCapabilitiesAsync(CancellationToken cancellationToken = default)
+    {
+        using var response = await httpClient.GetAsync("/api/workflows/authoring-capabilities", cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<WorkflowAuthoringCapabilitiesDto>(cancellationToken)
+            ?? throw new InvalidOperationException("The API returned empty authoring capabilities.");
     }
 
     public async Task<IReadOnlyList<string>> GetTimerScheduleTimeZonesAsync(CancellationToken cancellationToken = default)

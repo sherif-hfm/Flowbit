@@ -17,7 +17,8 @@ internal sealed class WorkflowInstanceProjectionService(
     IWorkflowDefinitionRepository definitions,
     IInstanceVariableUpdateRepository? variableUpdates = null,
     IWorkflowVariableStore? workflowVariables = null,
-    ICallActivityRepository? callActivities = null) : IWorkflowInstanceProjectionService
+    ICallActivityRepository? callActivities = null,
+    IAutomaticMultiInstanceRepository? automaticMultiInstances = null) : IWorkflowInstanceProjectionService
 {
     private static readonly JsonSerializerOptions InstanceVariableUpdateJsonOptions =
         new(JsonSerializerDefaults.Web);
@@ -68,7 +69,10 @@ internal sealed class WorkflowInstanceProjectionService(
                     row.Invocation.SettledAt,
                     row.Invocation.FailureCode,
                     row.Invocation.FailureDescription,
-                    row.Invocation.ChildFaultCode))
+                    row.Invocation.ChildFaultCode,
+                    row.Invocation.MultiInstanceExecutionId,
+                    row.Invocation.AutomaticMultiInstanceItemId,
+                    row.Invocation.ItemIndex))
                 .ToList(),
             rows.Page,
             rows.PageSize,
@@ -108,7 +112,10 @@ internal sealed class WorkflowInstanceProjectionService(
                 .FirstOrDefault(node => node.Id == invocation.ParentNodeId)?.Name,
             rootInstanceId,
             instance.CallDepth,
-            await IsCancellationInProgressAsync(instance, invocation, rootInstanceId, cancellationToken));
+            await IsCancellationInProgressAsync(instance, invocation, rootInstanceId, cancellationToken),
+            invocation.MultiInstanceExecutionId,
+            invocation.AutomaticMultiInstanceItemId,
+            invocation.ItemIndex);
     }
 
     // The instance's own call answers this for a direct child of the root, so only a deeper
@@ -293,6 +300,7 @@ internal sealed class WorkflowInstanceProjectionService(
         {
             ExecutionPositions = projection.ExecutionPositions,
             MultiInstances = projection.MultiInstances,
+            AutomaticMultiInstances = projection.AutomaticMultiInstances,
             GatewayExecutions = projection.GatewayExecutions,
             ComplexGatewayStates = projection.ComplexGatewayStates,
             Completion = projection.Completion,
@@ -324,6 +332,11 @@ internal sealed class WorkflowInstanceProjectionService(
         var multiExecutions = includeHistory
             ? await runtime.ListMultiInstancesAsync(instance.Id, null, cancellationToken)
             : await runtime.ListCurrentMultiInstancesAsync(instance.Id, cancellationToken);
+        var automaticProgress = automaticMultiInstances is null ? []
+            : await automaticMultiInstances.GetProgressAsync(instance.Id, cancellationToken);
+        var automaticByTokenAndNode = automaticProgress
+            .GroupBy(progress => (progress.Execution.TokenId, progress.Execution.NodeId, progress.Execution.ActivationId))
+            .ToDictionary(group => group.Key, group => group.OrderByDescending(progress => progress.Execution.Id).First());
 
         var taskByTokenAndNode = tasks
             .GroupBy(task => (task.TokenId, task.NodeId))
@@ -353,6 +366,7 @@ internal sealed class WorkflowInstanceProjectionService(
             {
                 taskByTokenAndNode.TryGetValue((token.Id, token.NodeId), out var task);
                 multiByTokenAndNode.TryGetValue((token.Id, token.NodeId), out var multi);
+                automaticByTokenAndNode.TryGetValue((token.Id, token.NodeId, token.ActivationId), out var automatic);
                 return new ExecutionPositionDto(
                     token.Id,
                     token.NodeId,
@@ -363,12 +377,13 @@ internal sealed class WorkflowInstanceProjectionService(
                     token.ArrivedViaFlowId,
                     token.TerminationReason,
                     task?.Id,
-                    multi?.Id,
+                    multi?.Id ?? automatic?.Execution.Id,
                     token.ActivationId == Guid.Empty ? null : token.ActivationId,
                     token.WaitState,
                     token.WaitingJobId,
                     token.WaitingTimerSubscriptionId)
                 {
+                    MultiInstanceActivityKind = automatic?.Execution.ActivityKind ?? (multi is not null ? "userTask" : null),
                     Call = token.Status == ExecutionTokenRecordStatuses.Active
                         ? callsByToken.GetValueOrDefault(token.Id)
                         : null
@@ -482,7 +497,21 @@ internal sealed class WorkflowInstanceProjectionService(
             multiProgress,
             gatewayDtos,
             complexStateDtos,
-            completion);
+            completion)
+        {
+            AutomaticMultiInstances = automaticProgress.Select(progress => new AutomaticMultiInstanceProgressDto(
+                progress.Execution.Id, progress.Execution.TokenId, progress.Execution.NodeId, progress.Execution.ActivityKind,
+                progress.Execution.Mode, progress.Execution.Status, progress.Execution.Phase, progress.Execution.TotalCount,
+                progress.Execution.CompletedCount, progress.ActiveCount, progress.PendingCount, progress.Execution.FailedCount,
+                progress.Execution.CancelledCount, progress.Execution.EffectiveConcurrency,
+                progress.Execution.AdmissionBlockedReason is not null, progress.Execution.AdmissionBlockedReason,
+                progress.Execution.CreatedAt, progress.Execution.UpdatedAt, progress.Execution.CompletedAt)
+            {
+                ControlJobId = progress.ControlJobId,
+                ControlIncidentId = progress.ControlIncidentId,
+                ControlIncidentType = progress.ControlIncidentType
+            }).ToList()
+        };
     }
 
     public async Task<MultiInstanceProgressDto?> GetMultiInstanceProgressAsync(

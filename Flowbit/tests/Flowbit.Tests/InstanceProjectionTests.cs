@@ -21,7 +21,9 @@ namespace Flowbit.Tests;
 /// the engine before the detail/execution projection moved into
 /// <c>WorkflowInstanceProjectionService</c>; the current-projection baseline
 /// was recorded post-extraction against the same moved code (whose equivalence
-/// is covered by the full suite). All counts must hold through the service.
+/// is covered by the full suite). Automatic bodies add one bounded existence
+/// read even when the current definition no longer contains their node. These
+/// historical bodies must remain visible after version changes and pruning.
 /// </summary>
 [Collection(PostgresApiCollection.Name)]
 public sealed class InstanceProjectionTests(PostgresApiFixture fixture)
@@ -31,20 +33,20 @@ public sealed class InstanceProjectionTests(PostgresApiFixture fixture)
     // variable-update audits, tokens, tasks, multi-instance executions,
     // grouped multi-instance progress, gateway executions, gateway branches,
     // complex gateway states, and grouped work summaries).
-    private const int ExpectedDetailReaderCommands = 17;
+    private const int ExpectedDetailReaderCommands = 18;
 
     // Reader commands for the first detail projection on a workflow whose
     // immutable definition is not yet cached: the warm baseline plus the
     // one-time definition lookup (the version-change audit definitions are
     // then already cached by that lookup).
-    private const int ExpectedDetailColdCacheReaderCommands = 18;
+    private const int ExpectedDetailColdCacheReaderCommands = 19;
 
     // Reader commands for one current-only (slim-ack) execution projection:
     // current tokens, current user tasks, current multi-instance executions,
     // grouped multi-instance progress, current (active) gateway executions,
     // and complex gateway states. With no active gateway execution there is
     // no branch read, so this is the floor for the ack paths.
-    private const int ExpectedCurrentReaderCommands = 7;
+    private const int ExpectedCurrentReaderCommands = 8;
 
     [Fact]
     public async Task AuthenticatedDetailRemainsReadableWithoutListVisibility()

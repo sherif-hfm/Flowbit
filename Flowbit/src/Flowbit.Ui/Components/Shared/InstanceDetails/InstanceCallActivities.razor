@@ -19,6 +19,10 @@
                 <div class="summary-item"><span>Parent call</span><strong>@(parent.ParentNodeName ?? "Unnamed call") · Node #@parent.ParentNodeId</strong></div>
                 <div class="summary-item"><span>Root instance</span><strong><a href="@($"instances/{parent.RootInstanceId}")">Instance #@parent.RootInstanceId</a></strong></div>
                 <div class="summary-item"><span>Depth</span><strong>@parent.Depth</strong></div>
+                @if (parent.AutomaticMultiInstanceItemId is { } parentItemId)
+                {
+                    <div class="summary-item"><span>Automatic parent item</span><strong>#@parentItemId · Index @parent.ItemIndex · Body #@parent.MultiInstanceExecutionId</strong></div>
+                }
                 <div class="summary-item"><span>Call state</span><strong><StatusBadge Status="@parent.State" Text="@CallActivityFormatting.StateLabel(parent.State, true)" /></strong></div>
             </div>
             @if (CallActivityFormatting.ParentCancellationNotice(parent, InstanceStatus) is { } notice)
@@ -56,6 +60,10 @@
                                         <span class="mono-id">#@call.InvocationId</span>
                                         <span class="data-subtitle">@(call.NodeName ?? "Unnamed call") · Node #@call.NodeId</span>
                                         <span class="data-subtitle">Token #@call.TokenId</span>
+                                        @if (call.AutomaticMultiInstanceItemId is { } callItemId)
+                                        {
+                                            <span class="data-subtitle">Automatic item #@callItemId · Index @call.ItemIndex · Body #@call.MultiInstanceExecutionId</span>
+                                        }
                                     </td>
                                     <td>
                                         <StatusBadge Status="@CallActivityFormatting.BadgeStatus(call.State, call.CapacityReserved)"

@@ -19,7 +19,8 @@ namespace Flowbit.Service.Services;
 public sealed class WorkflowDefinitionValidator(
     IScriptEvaluator scriptEvaluator,
     ServiceTaskOptions serviceTaskOptions,
-    IConditionalEventDefinitionAnalyzer? conditionalEventAnalyzer = null)
+    IConditionalEventDefinitionAnalyzer? conditionalEventAnalyzer = null,
+    AutomaticMultiInstanceOptions? automaticMultiInstanceOptions = null)
     : IWorkflowDefinitionValidator
 {
     private readonly IConditionalEventDefinitionAnalyzer conditionalAnalyzer =
@@ -44,6 +45,33 @@ public sealed class WorkflowDefinitionValidator(
         "X-Client-Secret"
     };
 
+    private void ValidateAuthoredAutomaticMultiInstance(WorkflowModel definition)
+    {
+        foreach (var node in definition.FlowNodes ?? [])
+        {
+            if (AutomaticMultiInstanceRules.FindAuthoredProblem(node, automaticMultiInstanceOptions?.Enabled == true) is { } problem)
+                throw new WorkflowDomainException(problem);
+        }
+    }
+
+    private static void ValidateAutomaticMultiInstance(WorkflowModel definition)
+    {
+        foreach (var node in definition.FlowNodes.Where(AutomaticMultiInstanceRules.IsAutomaticBody))
+        {
+            if (AutomaticMultiInstanceRules.FindLocalProblem(definition, node) is { } problem)
+                throw new WorkflowDomainException(problem);
+            foreach (var output in node.MultiInstance!.OutputVariables!)
+            {
+                if (output.DefaultValue is { } value
+                    && value.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined)
+                    && !TypedOutputValueValidator.IsValidAuthoredDefault(value, output.DataType, output.IsArray))
+                    throw new WorkflowDomainException($"Automatic multi-instance activity #{node.Id} local output '{output.Name}' defaultValue must be {TypedOutputValueValidator.DescribeExpected(output.DataType, output.IsArray)}.");
+                if (!string.IsNullOrWhiteSpace(output.Validation) && !SequenceFlowConditionEvaluator.IsValid(output.Validation))
+                    throw new WorkflowDomainException($"Automatic multi-instance activity #{node.Id} local output '{output.Name}' has an invalid validation expression.");
+            }
+        }
+    }
+
     /// <summary>
     /// Validates authored workflow definition input before tolerant
     /// normalization. Rejects metadata the migrator would otherwise discard, in
@@ -51,6 +79,7 @@ public sealed class WorkflowDefinitionValidator(
     /// </summary>
     public void ValidateAuthored(WorkflowModel definition)
     {
+        ValidateAuthoredAutomaticMultiInstance(definition);
         ValidateAuthoredCallActivityMetadata(definition);
         ValidateAuthoredGatewayControlFlowMetadata(definition);
         ValidateAuthoredClaimBypassMetadata(definition);
@@ -72,6 +101,7 @@ public sealed class WorkflowDefinitionValidator(
     /// </summary>
     public void ValidateNormalized(WorkflowModel definition)
     {
+        ValidateAuthoredAutomaticMultiInstance(definition);
         if (string.IsNullOrWhiteSpace(definition.Id))
         {
             throw new WorkflowDomainException("Workflow id is required and is used as the stable workflow key.");
@@ -131,6 +161,7 @@ public sealed class WorkflowDefinitionValidator(
         ValidateTaskDistribution(definition);
 
         ValidateProcessVariables(definition.Variables);
+        ValidateAutomaticMultiInstance(definition);
         ValidateEntryProcessVariableCollisions(definition);
         ValidateSharedVariableProducerAccess(definition);
 
@@ -328,7 +359,9 @@ public sealed class WorkflowDefinitionValidator(
 
             if (BpmnFlowNodeTypes.IsServiceTask(node.Type))
             {
-                ValidateServiceTask(node, definition.Variables);
+                ValidateServiceTask(node, AutomaticMultiInstanceRules.IsAutomaticBody(node)
+                    ? definition.Variables.Concat(node.MultiInstance!.OutputVariables!.Select(AutomaticMultiInstanceRules.ToVariable)).ToList()
+                    : definition.Variables);
             }
 
             if (BpmnFlowNodeTypes.IsScriptTask(node.Type))
@@ -668,12 +701,6 @@ public sealed class WorkflowDefinitionValidator(
                     $"Call activity #{node.Id} cannot set asyncBefore, asyncAfter, or job; a call is always durable.");
             }
 
-            if (node.MultiInstance is not null)
-            {
-                throw new WorkflowDomainException(
-                    $"Call activity #{node.Id} cannot define multiInstance.");
-            }
-
             if (node.Timer is not null
                 || node.Conditional is not null
                 || node.CancelActivity is not null
@@ -686,7 +713,7 @@ public sealed class WorkflowDefinitionValidator(
                 || !string.IsNullOrWhiteSpace(node.DueDateCalendar)
                 || !string.IsNullOrWhiteSpace(node.PriorityExpression)
                 || !string.IsNullOrWhiteSpace(node.RolesVariable)
-                || HasUnsupportedScopedInterruptNodeMetadata(node))
+                || HasUnsupportedScopedInterruptNodeMetadata(node, allowAutomaticMultiInstance: true))
             {
                 throw new WorkflowDomainException(
                     $"Call activity #{node.Id} can define only callActivity; remove its other runtime settings.");
@@ -1081,7 +1108,7 @@ public sealed class WorkflowDefinitionValidator(
         }
     }
 
-    private static bool HasUnsupportedScopedInterruptNodeMetadata(FlowNodeModel node) =>
+    private static bool HasUnsupportedScopedInterruptNodeMetadata(FlowNodeModel node, bool allowAutomaticMultiInstance = false) =>
         node.Roles is { Count: > 0 }
         || node.RequiresClaim
         || !string.Equals(node.ClaimMode, ClaimModes.Fresh, StringComparison.OrdinalIgnoreCase)
@@ -1099,7 +1126,7 @@ public sealed class WorkflowDefinitionValidator(
         || node.RequiresAssignment
         || !string.Equals(node.AssignmentMode, AssignmentModes.Fresh, StringComparison.OrdinalIgnoreCase)
         || node.InheritAssignmentFromNodeId is not null
-        || node.MultiInstance is not null
+        || (node.MultiInstance is not null && !allowAutomaticMultiInstance)
         || node.AttachedToRef is not null
         || !string.IsNullOrWhiteSpace(node.ErrorVariable)
         || !string.IsNullOrWhiteSpace(node.ErrorCode)
@@ -2396,7 +2423,8 @@ public sealed class WorkflowDefinitionValidator(
                 || BpmnFlowNodeTypes.IsServiceTask(host.Type)
                 || BpmnFlowNodeTypes.IsScriptTask(host.Type))
             && host.AsyncBefore;
-        if (!durableWait && !asyncAutomatic)
+        var automaticCallBody = BpmnFlowNodeTypes.IsCallActivity(host.Type) && AutomaticMultiInstanceRules.IsAutomaticBody(host);
+        if (!durableWait && !asyncAutomatic && !automaticCallBody)
         {
             throw new WorkflowDomainException(
                 $"{eventName} #{node.Id} host #{host.Id} must be a durable wait or an automatic task with asyncBefore enabled.");
@@ -3881,6 +3909,10 @@ public sealed class WorkflowDefinitionValidator(
             .Where(v => !string.IsNullOrWhiteSpace(v.Name))
             .Select(v => v.Name!)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (AutomaticMultiInstanceRules.IsAutomaticBody(node))
+        {
+            declared.UnionWith(node.MultiInstance!.OutputVariables!.Select(output => output.Name));
+        }
 
         foreach (var assignment in node.Assignments)
         {

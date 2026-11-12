@@ -62,7 +62,7 @@ Other items are not ranked yet.
 | [TASK-02](task-02-external-task.md) | External task for pull-based workers | L | None | Not started |
 | [TASK-03](task-03-business-rule-task-decision-table.md) | Business rule task with decision tables | M | None | Not started |
 | [TASK-04](task-04-email-and-chat-send.md) | Email and chat send connectors | M | None | Not started |
-| [TASK-05](task-05-multi-instance-automatic-activities.md) | Multi-instance service, script, and call activities | L | [TASK-01](task-01-call-activity.md) | Planned |
+| [TASK-05](task-05-multi-instance-automatic-activities.md) | Multi-instance service, script, and call activities | L | [TASK-01](task-01-call-activity.md) | In progress |
 
 ### TASK-05 delivery subtasks
 
@@ -81,7 +81,7 @@ subtask table together.
 
 | ID | Subtask | Effort | Depends on | Status |
 | --- | --- | --- | --- | --- |
-| [TASK-05A](task-05a-multi-instance-core.md) | Shared automatic multi-instance core | L | None | Planned |
+| [TASK-05A](task-05a-multi-instance-core.md) | Shared automatic multi-instance core | L | None | In progress |
 | [TASK-05B](task-05b-multi-instance-service-activities.md) | Multi-instance service activities | M | [TASK-05A](task-05a-multi-instance-core.md) | Planned |
 | [TASK-05C](task-05c-multi-instance-script-activities.md) | Multi-instance script activities | M | [TASK-05A](task-05a-multi-instance-core.md) | Planned |
 | [TASK-05D](task-05d-multi-instance-call-activities.md) | Multi-instance call activities | L | [TASK-05A](task-05a-multi-instance-core.md), [TASK-01](task-01-call-activity.md) | Planned |

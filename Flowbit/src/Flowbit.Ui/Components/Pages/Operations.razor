@@ -89,6 +89,10 @@
                             <td>
                                 <span class="mono-id">#@incident.Id</span>
                                 <span class="data-subtitle">Job #@incident.JobId</span>
+                                @if (incident.AutomaticMultiInstanceItemId is { } incidentItemId)
+                                {
+                                    <span class="data-subtitle">Automatic item #@incidentItemId</span>
+                                }
                                 <StatusBadge Status="@incident.Status" />
                             </td>
                             <td>
@@ -201,6 +205,10 @@
                         <tr>
                             <td>
                                 <span class="mono-id">#@job.Id</span>
+                                @if (job.AutomaticMultiInstanceItemId is { } jobItemId)
+                                {
+                                    <span class="data-subtitle">Automatic item #@jobItemId</span>
+                                }
                                 @if (job.InstanceId is not null)
                                 {
                                     <a class="data-subtitle" href="@($"instances/{job.InstanceId}")">

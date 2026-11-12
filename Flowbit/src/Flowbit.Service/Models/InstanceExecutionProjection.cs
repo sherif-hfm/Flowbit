@@ -14,4 +14,7 @@ public sealed record InstanceExecutionProjection(
     IReadOnlyList<MultiInstanceProgressDto> MultiInstances,
     IReadOnlyList<GatewayExecutionDto> GatewayExecutions,
     IReadOnlyList<ComplexGatewayStateDto> ComplexGatewayStates,
-    CompletionInfoDto? Completion);
+    CompletionInfoDto? Completion)
+{
+    public IReadOnlyList<AutomaticMultiInstanceProgressDto> AutomaticMultiInstances { get; init; } = [];
+}

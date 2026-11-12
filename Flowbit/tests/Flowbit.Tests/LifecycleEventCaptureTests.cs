@@ -6,6 +6,7 @@ using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using Flowbit.Infrastructure.Entities;
+using Flowbit.Infrastructure.Repositories;
 using Flowbit.Service.Abstractions;
 using Flowbit.Service.Models;
 using Flowbit.Service.Services;
@@ -51,6 +52,10 @@ public sealed class LifecycleEventCaptureTests(PostgresApiFixture fixture)
             [WorkflowJobKinds.TimerStart] = true,
             [WorkflowJobKinds.TimerBoundary] = true,
             [WorkflowJobKinds.ConditionalWake] = true,
+            [WorkflowJobKinds.MultiInstanceStart] = true,
+            [WorkflowJobKinds.MultiInstanceItem] = true,
+            [WorkflowJobKinds.MultiInstanceDispatch] = true,
+            [WorkflowJobKinds.MultiInstanceComplete] = true,
             [WorkflowJobKinds.CallStart] = true,
             [WorkflowJobKinds.CallResume] = true,
             [WorkflowJobKinds.CallCancel] = true,
@@ -1444,15 +1449,56 @@ public sealed class LifecycleEventCaptureTests(PostgresApiFixture fixture)
         int nodeId,
         bool exhaustedLease = false)
     {
+        long? instanceId = null, tokenId = null, bodyId = null, itemId = null, controlGeneration = null;
+        var activationId = Guid.NewGuid();
+        if (kind is WorkflowJobKinds.MultiInstanceItem or WorkflowJobKinds.MultiInstanceDispatch or WorkflowJobKinds.MultiInstanceComplete)
+        {
+            // Exercise the trigger with valid durable ownership, including the
+            // automatic-item/control constraints that ordinary jobs do not use.
+            await using var db = fixture.CreateDbContext();
+            var instance = new WorkflowInstanceEntity
+            {
+                WorkflowDefinitionId = workflowId, WorkflowKey = workflowKey, Status = "running"
+            };
+            db.WorkflowInstances.Add(instance);
+            await db.SaveChangesAsync();
+            var token = new ExecutionTokenEntity
+            {
+                InstanceId = instance.Id, NodeId = nodeId, NodeName = "Lifecycle capture node",
+                NodeType = BpmnFlowNodeTypes.ServiceTask, ActivationId = activationId
+            };
+            db.ExecutionTokens.Add(token);
+            await db.SaveChangesAsync();
+            await using var transaction = await db.Database.BeginTransactionAsync();
+            var repository = new AutomaticMultiInstanceRepository(db);
+            var body = await repository.CreateAsync(new AutomaticMultiInstanceCreateRecord
+            {
+                InstanceId = instance.Id, TokenId = token.Id, WorkflowDefinitionId = workflowId,
+                ActivationId = activationId, NodeId = nodeId, NodeName = token.NodeName,
+                ActivityKind = token.NodeType, Mode = "parallel", ResultVariable = "results",
+                AggregateScope = "instance", AggregateValueVersion = 0, MaxInstances = 1,
+                EffectiveConcurrency = 1, TotalCount = 1, ResultBytes = 2,
+                InputSnapshot = JsonSerializer.SerializeToElement(new { collection = new[] { 1 } })
+            }, default);
+            instanceId = instance.Id;
+            tokenId = token.Id;
+            bodyId = body.Id;
+            if (kind == WorkflowJobKinds.MultiInstanceItem)
+                itemId = (await repository.AdmitAsync(body.Id, activationId, 1, default)).Single().Id;
+            else
+                controlGeneration = body.ControlGeneration;
+            await transaction.CommitAsync();
+        }
         await using var connection = await fixture.DataSource.OpenConnectionAsync();
         await using var command = new NpgsqlCommand("""
             INSERT INTO flowbit.workflow_jobs
                 ("InstanceId", "WorkflowDefinitionId", "WorkflowKey", "ActivationId", "NodeId", "NodeName", "NodeType",
                  "Kind", "QueueClass", "Phase", "Status", "Priority", "AttemptCount", "MaxAttempts", "FailureHandling",
                  "RetryDelays", "DueAt", "WorkerId", "LeaseToken", "LeaseGeneration", "LeaseExpiresAt", "HeartbeatAt",
-                 "StartedAt", "CreatedAt", "UpdatedAt")
-            VALUES (NULL, @definition, @key, gen_random_uuid(), @node, 'Lifecycle capture node', 'task',
-                    @kind, 'control', 'execute', CASE WHEN @exhausted THEN 'running' ELSE 'incident' END, 0, 4, 4,
+                 "StartedAt", "CreatedAt", "UpdatedAt", "TokenId", "MultiInstanceExecutionId",
+                 "AutomaticMultiInstanceItemId", "MultiInstanceControlGeneration")
+            VALUES (@instance, @definition, @key, @activation, @node, 'Lifecycle capture node', 'task',
+                    @kind, @queue, 'execute', CASE WHEN @exhausted THEN 'running' ELSE 'incident' END, 0, 4, 4,
                     'boundaryFirst', '{}', now(),
                     CASE WHEN @exhausted THEN 'lifecycle-capture-tests' END,
                     CASE WHEN @exhausted THEN gen_random_uuid() END,
@@ -1460,13 +1506,19 @@ public sealed class LifecycleEventCaptureTests(PostgresApiFixture fixture)
                     CASE WHEN @exhausted THEN @expired END,
                     CASE WHEN @exhausted THEN @expired END,
                     CASE WHEN @exhausted THEN now() END,
-                    now(), now())
+                    now(), now(), @token, @body, @item, @generation)
             RETURNING "Id"
             """, connection);
         command.Parameters.AddWithValue("definition", workflowId);
         command.Parameters.AddWithValue("key", workflowKey);
         command.Parameters.AddWithValue("node", nodeId);
         command.Parameters.AddWithValue("kind", kind);
+        command.Parameters.AddWithValue("queue", itemId is null ? "control" : "activity");
+        command.Parameters.AddWithValue("activation", activationId);
+        foreach (var parameter in new[] { ("instance", instanceId), ("token", tokenId), ("body", bodyId),
+                     ("item", itemId), ("generation", controlGeneration) })
+            command.Parameters.AddWithValue(parameter.Item1, NpgsqlTypes.NpgsqlDbType.Bigint,
+                (object?)parameter.Item2 ?? DBNull.Value);
         command.Parameters.AddWithValue("exhausted", exhaustedLease);
         command.Parameters.AddWithValue("expired", LongExpiredLease);
         return (long)(await command.ExecuteScalarAsync())!;

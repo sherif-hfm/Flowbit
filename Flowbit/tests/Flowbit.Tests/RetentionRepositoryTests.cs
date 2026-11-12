@@ -125,6 +125,89 @@ public sealed class RetentionRepositoryTests(PostgresApiFixture fixture)
     }
 
     [Fact]
+    public async Task HistoryClearsSettledAutomaticBodyPayloadsAndKeepsItemResults()
+    {
+        await using var scope = await Scope.CreateAsync(fixture);
+        var old = scope.Now.AddDays(-60);
+        var (definition, instances) = await scope.WorkflowAsync("completed", "running");
+        long[] bodyIds = [], snapshotIds = [];
+        try
+        {
+            await using (var db = fixture.CreateDbContext())
+            {
+                var tokens = instances.Select(id => new ExecutionTokenEntity
+                {
+                    InstanceId = id, NodeId = 2, NodeName = "Body", NodeType = BpmnFlowNodeTypes.ServiceTask,
+                    Status = id == instances[0] ? "completed" : "active"
+                }).ToArray();
+                db.ExecutionTokens.AddRange(tokens);
+                await db.SaveChangesAsync();
+                MultiInstanceExecutionEntity Body(ExecutionTokenEntity token, bool settled) => new()
+                {
+                    InstanceId = token.InstanceId, TokenId = token.Id, NodeId = 2, WorkflowDefinitionId = definition.Id,
+                    ActivationId = Guid.NewGuid(), ActivityKind = BpmnFlowNodeTypes.ServiceTask, ResultVariable = "results",
+                    AggregateScope = "instance", AggregateValueVersion = 1, MaxInstances = 10, EffectiveConcurrency = 1,
+                    TotalCount = 1, CompletedCount = settled ? 1 : 0, ResultBytes = 20,
+                    Phase = settled ? "settled" : "running", Status = settled ? "completed" : "active",
+                    CreatedAt = old, UpdatedAt = old, CompletedAt = settled ? old : null,
+                    InputSnapshot = new WorkflowJobSnapshotEntity
+                    {
+                        Kind = "automaticMultiInstance", VariablesJson = JsonDocument.Parse("""{ "collection": ["private"] }"""),
+                        InvocationJson = JsonDocument.Parse("""{ "User": "causal" }"""), EvaluationTime = old, SizeBytes = 60, CreatedAt = old
+                    },
+                    ActivityItems =
+                    [
+                        new()
+                        {
+                            InstanceId = token.InstanceId, ItemIndex = 0, Status = settled ? "completed" : "active",
+                            Phase = settled ? "settled" : "publication", StartedAt = old, CompletedAt = settled ? old : null,
+                            StagedInputJson = JsonDocument.Parse("""{ "staged": 1 }"""),
+                            CandidateJson = JsonDocument.Parse("""{ "candidate": 1 }"""),
+                            ResultJson = JsonDocument.Parse("""{ "answer": 42 }"""), CreatedAt = old, UpdatedAt = old
+                        }
+                    ]
+                };
+                var bodies = new[] { Body(tokens[0], settled: true), Body(tokens[1], settled: false) };
+                db.MultiInstanceExecutions.AddRange(bodies);
+                db.InstanceHistory.AddRange(instances.Select(id => new InstanceHistoryEntity
+                {
+                    InstanceId = id, WorkflowDefinitionId = definition.Id, FromStepId = 1, ToStepId = 2, PerformedAt = old
+                }));
+                await db.SaveChangesAsync();
+                bodyIds = bodies.Select(body => body.Id).ToArray();
+                snapshotIds = bodies.Select(body => body.InputSnapshotId!.Value).ToArray();
+            }
+
+            await scope.PolicyAsync(RetentionCategories.WorkflowHistory, 30);
+            await scope.RunAsync();
+
+            await using var verify = fixture.CreateDbContext();
+            var settledSnapshot = await verify.WorkflowJobSnapshots.AsNoTracking().SingleAsync(row => row.Id == snapshotIds[0]);
+            Assert.Equal("{}", settledSnapshot.VariablesJson.RootElement.GetRawText());
+            Assert.Null(settledSnapshot.InvocationJson);
+            Assert.Equal(2, settledSnapshot.SizeBytes);
+            var settledItem = await verify.MultiInstanceActivityItems.AsNoTracking().SingleAsync(row => row.MultiInstanceExecutionId == bodyIds[0]);
+            Assert.Null(settledItem.StagedInputJson);
+            Assert.Null(settledItem.CandidateJson);
+            Assert.Equal(42, settledItem.ResultJson!.RootElement.GetProperty("answer").GetInt32());
+
+            // A running instance is never pruned, and its open body keeps everything.
+            var openSnapshot = await verify.WorkflowJobSnapshots.AsNoTracking().SingleAsync(row => row.Id == snapshotIds[1]);
+            Assert.Equal("private", openSnapshot.VariablesJson.RootElement.GetProperty("collection")[0].GetString());
+            var openItem = await verify.MultiInstanceActivityItems.AsNoTracking().SingleAsync(row => row.MultiInstanceExecutionId == bodyIds[1]);
+            Assert.NotNull(openItem.StagedInputJson);
+            Assert.NotNull(openItem.CandidateJson);
+        }
+        finally
+        {
+            // The scope deletes its instances; bodies and their restricted snapshots go first.
+            await using var cleanup = fixture.CreateDbContext();
+            await cleanup.MultiInstanceExecutions.Where(row => bodyIds.Contains(row.Id)).ExecuteDeleteAsync();
+            await cleanup.WorkflowJobSnapshots.Where(row => snapshotIds.Contains(row.Id)).ExecuteDeleteAsync();
+        }
+    }
+
+    [Fact]
     public async Task HistoryUsesFinishClockAndPreservesPermanentMessageReceiptsAndFlowSummaries()
     {
         await using var scope = await Scope.CreateAsync(fixture);

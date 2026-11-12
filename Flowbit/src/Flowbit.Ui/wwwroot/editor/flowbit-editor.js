@@ -653,11 +653,22 @@ function normalizeConditionalDefinition(value) {
   }
   return normalized;
 }
-function normalizeMultiInstanceForLoad(source) {
+function normalizeMultiInstanceForLoad(source, automatic = false) {
+  // Automatic imports keep every authored value until validation or an explicit
+  // edit. In particular, never erase human-only settings on collection bodies.
+  if (automatic && (source === null || typeof source !== "object" || Array.isArray(source))) return source;
   const mode = canonicalizeKnownValue(source.mode, ["parallel", "sequential"], "parallel");
   const instanceSource = canonicalizeKnownValue(source.source, ["collection", "cardinality"], "collection");
   const completionEvaluation = canonicalizeKnownValue(
     source.completionEvaluation, ["afterEach", "afterAll"], "afterEach");
+  if (automatic) {
+    const normalized = { ...JSON.parse(JSON.stringify(source)), mode, source: instanceSource, completionEvaluation };
+    if (Array.isArray(normalized.outputVariables)) for (const output of normalized.outputVariables) {
+      if (output && typeof output === "object" && !Array.isArray(output))
+        output.dataType = canonicalizeKnownValue(output.dataType, ["string", "number", "boolean", "date", "datetime", "json"], undefined);
+    }
+    return normalized;
+  }
   return {
     mode,
     source: instanceSource,
@@ -665,7 +676,9 @@ function normalizeMultiInstanceForLoad(source) {
     cardinalityExpression: source.cardinalityExpression ?? null,
     onePerActor: !!source.onePerActor,
     completionEvaluation,
-    resultVariable: source.resultVariable ?? ""
+    resultVariable: source.resultVariable ?? "",
+    ...(Object.prototype.hasOwnProperty.call(source, "maxConcurrency") ? { maxConcurrency: source.maxConcurrency } : {}),
+    ...(Object.prototype.hasOwnProperty.call(source, "outputVariables") ? { outputVariables: source.outputVariables } : {})
   };
 }
 const HTTP_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"];
@@ -1803,7 +1816,7 @@ function applyTypeInvariants(node) {
     node.businessKey.uniqueness = canonicalizeKnownValue(
       node.businessKey.uniqueness, ["active", "all"], undefined);
   }
-  if (!isUserTaskType(node.type)) delete node.multiInstance;
+  if (!isUserTaskType(node.type) && !["serviceTask", "scriptTask", "callActivity"].includes(node.type)) delete node.multiInstance;
   if (isEndEventType(node.type)) {
     node.requiresClaim = false;
     node.claimMode = CLAIM_MODE.FRESH;
@@ -2070,11 +2083,18 @@ function applyTypeInvariants(node) {
     }
   }
 
-  if (isSingleOutgoingType(node.type)) keepFirstOutgoingFlow(node);
+  if (isSingleOutgoingType(node.type) && !(node.multiInstance != null && ["serviceTask", "scriptTask", "callActivity"].includes(node.type))) keepFirstOutgoingFlow(node);
 }
 function nextCompletionPriority(flows) {
   return flows.reduce((max, flow) => Number.isInteger(flow.completionPriority) && flow.completionPriority > 0
     ? Math.max(max, flow.completionPriority) : max, 0) + 1;
+}
+function applyTypeInvariantsForRender(node) {
+  const importedMultiInstance = node.multiInstance;
+  applyTypeInvariants(node);
+  // Redrawing an unsupported imported body must not silently turn it into a
+  // valid single activity. Explicit type changes still apply full cleanup.
+  if (!isUserTaskType(node.type) && importedMultiInstance != null) node.multiInstance = importedMultiInstance;
 }
 function nextConditionPriority(sourceId) {
   return outgoingFlows(sourceId).reduce((max, flow) =>
@@ -2133,7 +2153,8 @@ function applyFlowInvariants(flow) {
   if (flow.attributes == null) flow.attributes = [];
   const source = getNode(flow.sourceRef);
   // A call's outgoing flow keeps what was imported on it, as the call does.
-  if (source && isCallActivityType(source.type)) return;
+  if (source && (isCallActivityType(source.type) ||
+      (source.multiInstance != null && ["serviceTask", "scriptTask"].includes(source.type)))) return;
   const isUserTaskFlow = source && source.type === NODE_TYPE.USER_TASK;
   const gateway = source && isGatewayType(source.type);
   const splitRouting = gateway && outgoingFlows(source.id).length >= 2;
@@ -2692,7 +2713,7 @@ function pullPointToward(point, toward, distance) {
 function render() {
   syncSelectedNodeIds();
   wfNameInput.value = model.name || "";
-  model.flowNodes.forEach(applyTypeInvariants);
+  model.flowNodes.forEach(applyTypeInvariantsForRender);
   normalizeExclusiveGatewayPriorities();
   model.sequenceFlows.forEach(applyFlowInvariants);
   renderDiagramLayers();
@@ -2819,10 +2840,11 @@ function renderNodes() {
           rolesText.textContent = roles;
           g.appendChild(rolesText);
         }
-        if (node.multiInstance) appendMultiInstanceMarker(g, node.multiInstance.mode);
         if (node.requiresAssignment) appendAssigneeMarker(g, "Assignment required before the task is visible");
         else if (node.assignee) appendAssigneeMarker(g);
       }
+      if (node.multiInstance && (isUserTaskType(node.type) || saveIsAutomaticMultiInstanceType(node.type)))
+        appendMultiInstanceMarker(g, node.multiInstance.mode);
     }
 
     if (instanceMarker) appendInstanceMarker(g, node, instanceMarker);
@@ -3705,6 +3727,9 @@ function changeNodeTypeFromInspector(node, nextType) {
     return false;
   }
   const previousType = node.type;
+  if (previousType !== nextType && node.multiInstance && saveIsAutomaticMultiInstanceType(previousType)) {
+    if (!confirm("Changing the type removes this automatic multi-instance configuration and its local output declarations. Review output mappings, assignments, and attached boundaries after changing the type. Continue?")) return false;
+  }
   if (isServiceTaskType(previousType) &&
       (isScriptTaskType(nextType) || isCallActivityType(nextType))) {
     // Neither failure has an HTTP status, and a filter must never quietly
@@ -3732,6 +3757,14 @@ function changeNodeTypeFromInspector(node, nextType) {
     node.variables = materializeMessageStartVariables(node);
   }
   node.type = nextType;
+  // A type change never reinterprets one multi-instance contract as another:
+  // a human configuration does not become an automatic body, and an automatic
+  // body is removed (after the confirmation above). Enabling an automatic body
+  // is always its own explicit edit.
+  if (previousType !== nextType &&
+      (saveIsAutomaticMultiInstanceType(previousType) || !isUserTaskType(nextType))) {
+    delete node.multiInstance;
+  }
   // Only an explicit type change clears call settings; selecting a node keeps
   // invalid imported ones visible for save validation.
   if (isCallActivityType(previousType) && !isCallActivityType(nextType)) {
@@ -3848,7 +3881,7 @@ function changeNodeTypeFromInspector(node, nextType) {
 function renderNodeInspector() {
   const node = getNode(selected.nodeId);
   if (!node) { selected = null; return renderInspector(); }
-  applyTypeInvariants(node);
+  applyTypeInvariantsForRender(node);
   inspector.innerHTML = `<h2>Node #${node.id}</h2>`;
   field("Node ID", "text", node.id, null, true);
   field("Name", "text", node.name, v => { node.name = v; renderNodes(); renderEdges(); });
@@ -4217,6 +4250,7 @@ function renderNodeInspector() {
   if (isCallActivityType(node.type)) {
     renderCallActivitySection(node);
   }
+  if (saveIsAutomaticMultiInstanceType(node.type)) renderAutomaticMultiInstanceSection(node);
 
   if (isMessageCatchEventType(node.type)) {
     renderMessageSection(node);
@@ -4238,10 +4272,30 @@ function renderNodeInspector() {
     renderMisplacedCallOnly(node);
   }
   renderMisplacedTimer(node);
+  // Calls offer the same removal through "Remove these options". A service or
+  // script body imported while automatic multi-instance is unavailable has no
+  // visible section, so it needs this explicit way out as well.
+  const unavailableAutomaticBody = (isServiceTaskType(node.type) || isScriptTaskType(node.type)) &&
+    !saveAutomaticMultiInstanceEnabled();
+  if (!isUserTaskType(node.type) && node.multiInstance != null &&
+      (!saveIsAutomaticMultiInstanceType(node.type) || unavailableAutomaticBody)) {
+    const warning = document.createElement("p");
+    warning.className = "empty-note";
+    warning.textContent = unavailableAutomaticBody
+      ? "Automatic multi-instance is not available in this editor yet. Remove this imported configuration before saving."
+      : "This imported node cannot use multi-instance. Remove its unsupported configuration before saving.";
+    inspector.appendChild(warning);
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.textContent = "Remove unsupported multi-instance";
+    remove.onclick = () => { delete node.multiInstance; render(); };
+    inspector.appendChild(remove);
+  }
 
   if (isUserTaskType(node.type) || isMessageCatchEventType(node.type) ||
       isTimerCatchEventType(node.type) || isAutomaticType(node.type) ||
-      isServiceTaskType(node.type) || isScriptTaskType(node.type)) {
+      isServiceTaskType(node.type) || isScriptTaskType(node.type) ||
+      (isCallActivityType(node.type) && node.multiInstance && saveAutomaticMultiInstanceEnabled())) {
     renderBoundaryHostSection(node);
   }
 
@@ -4300,6 +4354,139 @@ function renderNodeInspector() {
   configureInspectorItemDeleteButton(del, "Switch to Select to delete this node");
   del.onclick = () => deleteNode(node.id);
   inspector.appendChild(del);
+}
+
+function setAutomaticMultiInstance(node, enabled) {
+  const list = value => Array.isArray(value) ? value : [];
+  const targetNames = [...list(node.service?.outputMappings), ...list(node.assignments),
+    ...list(node.callActivity?.outputMappings)].filter(Boolean).map(mapping => mapping.variable);
+  if (node.service?.statusVariable) targetNames.push(node.service.statusVariable);
+  if (enabled) {
+    const process = new Map((model.variables || []).map(variable => [String(variable.name).toLowerCase(), variable]));
+    const incompatible = targetNames.filter(name => {
+      const variable = process.get(String(name).toLowerCase());
+      return !variable || !isSharedProcessVariable(variable) || !isWritableProcessVariable(variable);
+    });
+    if (incompatible.length) {
+      alert("Automatic items write declared local outputs or readWrite shared aliases. Remove or redirect these existing output mappings/assignments before enabling multi-instance: " + incompatible.join(", ") + ".");
+      return false;
+    }
+    node.multiInstance = { mode: "parallel", source: "collection", collectionVariable: "", completionEvaluation: "afterAll", outputVariables: [], resultVariable: "" };
+    if (node.type !== "callActivity") node.asyncBefore = true;
+  } else {
+    const locals = saveAutomaticLocalOutputs(node);
+    if (targetNames.some(name => saveIsAutomaticLocalOutput(node, name)) ||
+        (node.scriptFormat === "javascript" && hasText(node.script) && locals.length)) {
+      alert("Remove or redirect item-local writes before disabling multi-instance. Local outputs must not become process writes implicitly.");
+      return false;
+    }
+    if (node.type === "callActivity" && findObservableBoundaries(node.id).length) {
+      alert("Remove this call's timer and conditional boundaries before disabling multi-instance; ordinary calls cannot host them.");
+      return false;
+    }
+    if (!confirm("Disable automatic multi-instance and remove its collection, aggregate, and local output declarations?")) return false;
+    delete node.multiInstance;
+  }
+  return true;
+}
+
+function renderAutomaticMultiInstanceSection(node) {
+  if (!saveAutomaticMultiInstanceEnabled()) return;
+  const title = document.createElement("h2");
+  title.textContent = "Automatic multi-instance";
+  inspector.appendChild(title);
+  attachInspectorHelp(title, "automatic-multi-instance", [
+    "Development preview: these controls validate the shared contract. Publication and execution remain disabled until the activity adapters are integrated.",
+    "Run one durable item per collection element. The Worker initializes a frozen collection and instance inputs; item-local outputs are collected in index order after every item succeeds.",
+    "Other shared inputs, configuration and time are captured when each item starts. Shared outputs require readWrite access. Parallel shared writes may conflict; publication recovery accepts saved candidates against current values and can replace newer values without repeating the activity.",
+    "Conditional boundaries observe the activity from entry. Timer boundaries start when the body initializes, after queue waits. Interrupting boundaries cancel unfinished items; committed shared writes remain.",
+    "The aggregate contains copied collection elements and declared local outputs, governed by instance and node-activity payload permissions. No shared output is copied unless explicitly mapped to a local."
+  ]);
+  inspector.appendChild(variableCheckbox("Multi-instance", node.multiInstance != null, checked => {
+    setAutomaticMultiInstance(node, checked);
+    render();
+  }));
+  if (node.multiInstance == null) return;
+  const multi = node.multiInstance;
+  if (typeof multi !== "object" || Array.isArray(multi)) {
+    const warning = document.createElement("p");
+    warning.className = "empty-note";
+    warning.textContent = "The imported multiInstance value must be an object. Disable it to remove the invalid value.";
+    inspector.appendChild(warning);
+    return;
+  }
+  const status = document.createElement("p");
+  status.className = "expression-validation";
+  status.setAttribute("role", "status");
+  status.setAttribute("aria-live", "polite");
+  const updateValidation = () => { status.textContent = automaticMultiInstanceProblem(createSaveValidationContext(model), node) || ""; };
+  const edited = callback => value => { callback(value); updateValidation(); renderNodes(); };
+  selectField("Execution mode", MULTI_INSTANCE_MODE_OPTIONS, multi.mode, edited(value => { multi.mode = value; }));
+  const scopedLabel = variable => variable.name + (isSharedProcessVariable(variable) ? " · shared" : " · instance");
+  const collections = (model.variables || []).filter(variable => variable.isArray &&
+    (!isSharedProcessVariable(variable) || ["read", "readWrite"].includes(variable.access)));
+  const choices = (variables, current) => [ { value: "", label: "Select a variable" },
+    ...variables.map(variable => ({ value: variable.name, label: scopedLabel(variable) })),
+    ...(current && !variables.some(variable => variable.name === current) ? [{ value: current, label: String(current) + " · invalid imported value" }] : []) ];
+  selectField("Collection variable", choices(collections, multi.collectionVariable), multi.collectionVariable || "", edited(value => { multi.collectionVariable = value; }));
+  const concurrency = field("Maximum concurrency (optional)", "number", multi.maxConcurrency ?? "", edited(value => {
+    if (value === "") delete multi.maxConcurrency; else multi.maxConcurrency = Number(value);
+  }));
+  concurrency.min = "1";
+  concurrency.max = "1000";
+  concurrency.step = "1";
+  attachInspectorHelp(concurrency, "automatic-concurrency", "Parallel mode uses the engine's default when omitted. The configured cap and item count further limit it; the effective value is fixed when the body initializes. Sequential mode accepts omission or 1. Worker limits also apply.");
+  const results = (model.variables || []).filter(variable => variable.dataType === "json" && !variable.isArray && isWritableProcessVariable(variable));
+  selectField("Aggregate result variable", choices(results, multi.resultVariable), multi.resultVariable || "", edited(value => { multi.resultVariable = value; }));
+  const completion = field("Completion evaluation", "text", multi.completionEvaluation ?? "", edited(value => { multi.completionEvaluation = value; }));
+  attachInspectorHelp(completion, "automatic-completion", "Automatic bodies require afterAll. Each aggregate row includes kind, index, item, status and declared local variables; empty collections complete with [].");
+  const outputsTitle = document.createElement("h3");
+  outputsTitle.textContent = "Item-local outputs";
+  inspector.appendChild(outputsTitle);
+  if (!Array.isArray(multi.outputVariables)) {
+    const warning = document.createElement("p");
+    warning.className = "empty-note";
+    warning.textContent = "outputVariables must be an array. Add a local output to replace this invalid value.";
+    inspector.appendChild(warning);
+  }
+  for (const [index, output] of (Array.isArray(multi.outputVariables) ? multi.outputVariables : []).entries()) {
+    const box = document.createElement("div");
+    box.className = "field inspector-card";
+    inspector.appendChild(box);
+    const heading = document.createElement("strong");
+    heading.textContent = "Local output " + (index + 1);
+    box.appendChild(heading);
+    if (output && typeof output === "object" && !Array.isArray(output)) {
+      const addField = (label, type, value, callback) => box.appendChild(field(label, type, value, edited(callback)).parentNode);
+      addField("Local name", "text", output.name ?? "", value => { output.name = value; });
+      box.appendChild(selectField("Local data type", VARIABLE_DATA_TYPES.map(value => ({ value, label: value })), output.dataType, edited(value => { output.dataType = value; })));
+      box.appendChild(variableCheckbox("Local array", output.isArray === true, edited(value => { output.isArray = value; })));
+      box.appendChild(variableCheckbox("Local nullable", output.nullable === true, edited(value => { output.nullable = value; })));
+      addField("Local default value (optional)", "text", defaultValueToText(output.defaultValue), value => { output.defaultValue = parseDefaultValue(value, output); });
+      addField("Local validation (NCalc, optional)", "text", output.validation ?? "", value => { output.validation = value.trim() ? value : null; });
+    } else {
+      const warning = document.createElement("p");
+      warning.textContent = "Invalid local declaration: " + JSON.stringify(output);
+      box.appendChild(warning);
+    }
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.textContent = "Remove local output " + (index + 1);
+    remove.onclick = () => { multi.outputVariables.splice(index, 1); renderInspector(); };
+    box.appendChild(remove);
+  }
+  const add = document.createElement("button");
+  add.type = "button";
+  add.textContent = "+ Add local output";
+  add.disabled = Array.isArray(multi.outputVariables) && multi.outputVariables.length >= 100;
+  add.onclick = () => {
+    if (!Array.isArray(multi.outputVariables)) multi.outputVariables = [];
+    multi.outputVariables.push({ name: "", dataType: "string", isArray: false, nullable: false });
+    renderInspector();
+  };
+  inspector.appendChild(add);
+  inspector.appendChild(status);
+  updateValidation();
 }
 
 function renderStartVariablesSection(node) {
@@ -5127,7 +5314,7 @@ function renderCallActivitySection(node) {
     inspector.appendChild(clear);
   }
 
-  if (hasCallAsyncSettings(node) || node.multiInstance != null || hasOtherCallRuntimeSettings(node)) {
+  if (hasCallAsyncSettings(node) || (node.multiInstance != null && !saveAutomaticMultiInstanceEnabled()) || hasOtherCallRuntimeSettings(node)) {
     const warning = document.createElement("p");
     warning.className = "empty-note";
     warning.style.color = "var(--warning-text)";
@@ -9801,8 +9988,13 @@ function buildInboxVisibilitySymbols(definitionOrVariables) {
     const nodeProducer = "flow node #" + String(node.id);
     addVariables(node.variables, nodeProducer);
     if (node.service && typeof node.service === "object") {
-      addMappings(node.service.outputMappings, nodeProducer + " service output");
-      add(node.service.statusVariable, "number", false, nodeProducer + " service status");
+      // Item-local outputs of an automatic body are never stored on the instance.
+      addMappings((Array.isArray(node.service.outputMappings) ? node.service.outputMappings : [])
+        .filter(mapping => !saveIsAutomaticLocalOutput(node, mapping && mapping.variable)),
+        nodeProducer + " service output");
+      if (!saveIsAutomaticLocalOutput(node, node.service.statusVariable)) {
+        add(node.service.statusVariable, "number", false, nodeProducer + " service status");
+      }
     }
     if (node.message && typeof node.message === "object") {
       addMappings(node.message.outputMappings, nodeProducer + " message output");
@@ -10491,6 +10683,22 @@ function saveIsSharedProcessVariable(variable) {
 }
 function saveIsWritableProcessVariable(variable) {
   return !saveIsSharedProcessVariable(variable) || variable.access === "readWrite";
+}
+function saveIsAutomaticMultiInstanceType(type) {
+  return ["serviceTask", "scriptTask", "callActivity"].includes(type);
+}
+function saveAutomaticMultiInstanceEnabled() {
+  // The host sends its effective Development-only capability. Standalone never
+  // opens this release gate, even when an arbitrary mount option is supplied.
+  return typeof options !== "undefined" && options.mode === "hosted" && options.automaticMultiInstanceEnabled === true;
+}
+function saveAutomaticLocalOutputs(node) {
+  return node && saveIsAutomaticMultiInstanceType(node.type) && Array.isArray(node.multiInstance?.outputVariables)
+    ? node.multiInstance.outputVariables.filter(output => output && typeof output === "object" && !Array.isArray(output)) : [];
+}
+function saveIsAutomaticLocalOutput(node, name) {
+  return typeof name === "string" && saveAutomaticLocalOutputs(node)
+    .some(output => typeof output.name === "string" && output.name.toLowerCase() === name.toLowerCase());
 }
 function declaredVariablesReferencedByExpression(expression, variables, predicate) {
     if (typeof expression !== "string" || !expression) return [];
@@ -11921,10 +12129,10 @@ function validateSaveScriptTasks(ctx) {
       }
       if (!hasText(assignment.variable)) {
         errors.push(label + " has an assignment with no variable name.");
-      } else if (!processByName.has(assignment.variable.trim().toLowerCase())) {
+      } else if (!processByName.has(assignment.variable.trim().toLowerCase()) && !saveIsAutomaticLocalOutput(node, assignment.variable)) {
         errors.push(label + " assigns '" + assignment.variable.trim() +
           "' which is not a declared process variable.");
-      } else if (!saveIsWritableProcessVariable(
+      } else if (processByName.has(assignment.variable.trim().toLowerCase()) && !saveIsWritableProcessVariable(
           processByName.get(assignment.variable.trim().toLowerCase()))) {
         errors.push(label + " cannot assign read-only shared variable '" +
           assignment.variable.trim() + "'.");
@@ -12459,14 +12667,17 @@ function validateSaveServiceTasks(ctx) {
       errors.push(label + " must have exactly one outgoing sequence flow.");
     }
 
+    const outputContext = node.multiInstance ? { ...ctx, processByName: new Map([
+      ...ctx.processByName, ...saveAutomaticLocalOutputs(node).map(output => [String(output.name).toLowerCase(), output])
+    ]) } : ctx;
     const outputTargets = validateTypedOutputMappings(
-      ctx,
+      outputContext,
       "Service task #" + String(node.id),
       service.outputMappings,
       "response",
       true);
     if (hasText(service.statusVariable)) {
-      validateRuntimeOutputTarget(ctx, label + " statusVariable", service.statusVariable, "number");
+      validateRuntimeOutputTarget(outputContext, label + " statusVariable", service.statusVariable, "number");
       if (outputTargets.has(service.statusVariable.trim().toLowerCase())) {
         errors.push(label + " statusVariable cannot also be an output mapping target.");
       }
@@ -12676,7 +12887,8 @@ function validateSaveWaitBoundaries(ctx) {
       "intermediateTimerCatchEvent"].includes(host.type);
     const asyncAutomatic = host && ["task", "serviceTask", "scriptTask"].includes(host.type) &&
       host.asyncBefore === true;
-    if (!durableWait && !asyncAutomatic) {
+    const automaticCall = host && host.type === "callActivity" && host.multiInstance != null && saveAutomaticMultiInstanceEnabled();
+    if (!durableWait && !asyncAutomatic && !automaticCall) {
       errors.push(label +
         " attachedToRef must reference a durable wait or an automatic task with asyncBefore enabled.");
     }
@@ -12735,9 +12947,10 @@ function callSourceDeclarations(candidate) {
     }
     const service = node.service && typeof node.service === "object" ? node.service : null;
     for (const mapping of Array.isArray(service && service.outputMappings) ? service.outputMappings : []) {
+      if (saveIsAutomaticLocalOutput(node, mapping && mapping.variable)) continue;
       add(mapping && mapping.variable, (mapping && mapping.dataType) || "json", mapping && mapping.isArray);
     }
-    if (service) add(service.statusVariable, "number", false);
+    if (service && !saveIsAutomaticLocalOutput(node, service.statusVariable)) add(service.statusVariable, "number", false);
     add(node.errorVariable, "string", false);
   }
   for (const flow of flows.filter(Boolean)) {
@@ -12935,7 +13148,6 @@ function validateSaveCallActivities(ctx) {
       errors.push(label + " must have one unconditional outgoing sequence flow without " +
         "user-action or multi-instance metadata.");
     }
-    if (node.multiInstance != null) errors.push(label + " cannot define multiInstance.");
     if (hasOtherCallRuntimeSettings(node)) {
       errors.push(label + " can define only callActivity; remove its other runtime settings.");
     }
@@ -12979,7 +13191,7 @@ function validateSaveCallActivities(ctx) {
       if (!declared) {
         errors.push(label + " input source '" + mapping.sourceVariable +
           "' is never declared or produced by this workflow.");
-      } else if (declared.some(entry => entry.isShared)) {
+      } else if (!node.multiInstance && declared.some(entry => entry.isShared)) {
         errors.push(label + " input source '" + mapping.sourceVariable +
           "' is a shared-variable alias, which a call mapping cannot read.");
       } else if (!declared.some(entry =>
@@ -12989,10 +13201,11 @@ function validateSaveCallActivities(ctx) {
       }
     }
     for (const mapping of outputs) {
-      const target = ctx.processByName.get(mapping.variable.toLowerCase());
+      const target = saveAutomaticLocalOutputs(node).find(output => typeof output.name === "string" && output.name.toLowerCase() === mapping.variable.toLowerCase())
+        || ctx.processByName.get(mapping.variable.toLowerCase());
       if (!target) {
         errors.push(label + " output target '" + mapping.variable + "' must be a declared process variable.");
-      } else if (target.scope === "shared") {
+      } else if (target.scope === "shared" && (!node.multiInstance || target.access !== "readWrite")) {
         errors.push(label + " output target '" + target.name +
           "' is a shared-variable alias; a call writes only instance process variables.");
       } else if (target.dataType !== mapping.dataType || !!target.isArray !== (mapping.isArray === true)) {
@@ -13702,6 +13915,84 @@ function validateSaveEntryIdentity(ctx) {
   }
 }
 
+// Mirrors AutomaticMultiInstanceRules.FindAuthoredProblem/FindLocalProblem.
+// Adapter-specific checks remain in their existing service/script/call phases.
+function automaticMultiInstanceProblem(ctx, node) {
+  if (!saveAutomaticMultiInstanceEnabled()) return "Flow node #" + node.id + " automatic multiInstance is not enabled.";
+  const multi = node.multiInstance;
+  const owner = "Automatic multi-instance activity #" + node.id;
+  if (!multi || typeof multi !== "object" || Array.isArray(multi)) return owner + " multiInstance must be an object.";
+  if (multi.source !== "collection") return owner + " source must be 'collection'.";
+  if (multi.cardinalityExpression != null) return owner + " cannot define cardinalityExpression.";
+  if (multi.onePerActor !== undefined && typeof multi.onePerActor !== "boolean") return owner + " onePerActor must be true or false.";
+  if (multi.onePerActor) return owner + " cannot set onePerActor=true.";
+  if (multi.completionEvaluation !== "afterAll") return owner + " requires completionEvaluation='afterAll'.";
+  if (!["parallel", "sequential"].includes(multi.mode)) return owner + " mode must be 'parallel' or 'sequential'.";
+  if (Object.prototype.hasOwnProperty.call(multi, "maxConcurrency") && (!Number.isInteger(multi.maxConcurrency) || multi.maxConcurrency < 1 || multi.maxConcurrency > 1000))
+    return owner + " maxConcurrency must be an integer from 1 to 1000.";
+  if (multi.mode === "sequential" && multi.maxConcurrency != null && multi.maxConcurrency !== 1)
+    return owner + " sequential mode accepts only maxConcurrency=1 or omission.";
+  if (node.type !== "callActivity" && node.asyncBefore !== true) return owner + " requires asyncBefore=true.";
+  const find = name => typeof name === "string" ? ctx.processByName.get(name.toLowerCase()) : null;
+  const same = (left, right) => !!left && !!right &&
+    (String(left.name).toLowerCase() === String(right.name).toLowerCase() ||
+      (saveIsSharedProcessVariable(left) && saveIsSharedProcessVariable(right) &&
+       typeof left.sharedKey === "string" && typeof right.sharedKey === "string" && left.sharedKey.toLowerCase() === right.sharedKey.toLowerCase()));
+  const source = find(multi.collectionVariable);
+  if (!source || !source.isArray || !supportedVariableTypes.has(source.dataType) ||
+      (saveIsSharedProcessVariable(source) && !["read", "readWrite"].includes(source.access)))
+    return owner + " collectionVariable must reference a declared readable typed-array variable.";
+  const result = find(multi.resultVariable);
+  if (!result || result.dataType !== "json" || result.isArray || !saveIsWritableProcessVariable(result) ||
+      (!saveIsSharedProcessVariable(result) && !Array.isArray(result.defaultValue)))
+    return owner + " resultVariable must reference a writable scalar json variable accepting an array; an instance target requires an array defaultValue.";
+  if (same(source, result)) return owner + " collectionVariable and resultVariable must be different.";
+  if (!Array.isArray(multi.outputVariables)) return owner + " requires an outputVariables array (which may be empty).";
+  if (multi.outputVariables.length > 100) return owner + " permits at most 100 outputVariables.";
+  const names = new Set();
+  const producers = callSourceDeclarations(ctx.candidate);
+  for (const output of multi.outputVariables) {
+    if (output === null) return owner + " outputVariables cannot contain null entries.";
+    if (typeof output !== "object" || Array.isArray(output)) return owner + " outputVariables entries must be objects.";
+    for (const key of Object.keys(output)) {
+      if (!["name", "dataType", "isArray", "nullable", "defaultValue", "validation"].includes(key))
+        return owner + " local output has unknown property '" + key + "'.";
+    }
+    if (!hasText(output.name) || Array.from(output.name).length > 300) return owner + " local output names must contain 1 to 300 Unicode scalar values.";
+    if (output.name !== output.name.trim() || CALL_RESERVED_NAME.test(output.name)) return owner + " local output '" + output.name + "' must be trimmed and cannot use a reserved context prefix.";
+    const key = output.name.toLowerCase();
+    if (names.has(key)) return owner + " local output '" + output.name + "' is duplicated.";
+    names.add(key);
+    if (producers.has(key)) return owner + " local output '" + output.name + "' collides with a process variable or producer.";
+    if (!supportedVariableTypes.has(output.dataType)) return owner + " local output '" + output.name + "' has unsupported dataType '" + String(output.dataType ?? "") + "'.";
+    for (const member of ["isArray", "nullable"]) {
+      if (output[member] !== undefined && typeof output[member] !== "boolean") return owner + " local output '" + output.name + "' " + member + " must be true or false.";
+    }
+    if (output.validation != null && typeof output.validation !== "string") return owner + " local output '" + output.name + "' validation must be an NCalc string.";
+    if (output.defaultValue != null && !validTypedValue(output.defaultValue, output)) return owner + " local output '" + output.name + "' defaultValue does not match its declared type.";
+  }
+  const boundaries = ctx.nodes.filter(candidate => candidate && candidate.type === "errorBoundaryEvent" && candidate.attachedToRef === node.id);
+  const reserved = [source, result, ...boundaries.map(boundary => find(boundary.errorVariable)).filter(Boolean)];
+  const targets = [...(Array.isArray(node.service?.outputMappings) ? node.service.outputMappings : []),
+    ...(Array.isArray(node.assignments) ? node.assignments : []),
+    ...(Array.isArray(node.callActivity?.outputMappings) ? node.callActivity.outputMappings : [])].map(mapping => mapping && mapping.variable);
+  if (hasText(node.service?.statusVariable)) targets.push(node.service.statusVariable);
+  for (const name of targets.filter(name => typeof name === "string")) {
+    const target = find(name);
+    if (target && reserved.some(value => same(value, target))) return owner + " item target '" + name + "' overlaps its collection, aggregate, or boundary error target.";
+    if (!names.has(name.toLowerCase()) && (!target || !saveIsSharedProcessVariable(target) || target.access !== "readWrite"))
+      return owner + " item target '" + name + "' must be a declared local output or readWrite shared alias.";
+  }
+  if (boundaries.some(boundary => same(find(boundary.errorVariable), source) || same(find(boundary.errorVariable), result)))
+    return owner + " boundary error target must differ from its collection and aggregate targets.";
+  if (ctx.nodes.some(other => other && other.id !== node.id && other.multiInstance && same(result, find(other.multiInstance.resultVariable))))
+    return owner + " resultVariable must not be another multi-instance node's aggregate target.";
+  const outgoing = ctx.outgoingFor(node.id);
+  if (outgoing.length !== 1 || outgoing.some(flow => hasUnsupportedPassThroughMetadata(flow)))
+    return owner + " requires exactly one ordinary unconditional outgoing flow without outcome settings.";
+  return null;
+}
+
 function validateSaveMultiInstance(ctx) {
   const errors = ctx.errors;
   const nodes = ctx.nodes;
@@ -13709,12 +14000,24 @@ function validateSaveMultiInstance(ctx) {
   const processByName = ctx.processByName;
   for (const node of nodes) {
     const multi = node && node.multiInstance;
-    if (!multi) continue;
+    if (multi == null) continue;
     const label = saveNodeLabel(node);
+
+    if (saveIsAutomaticMultiInstanceType(node.type)) {
+      const problem = automaticMultiInstanceProblem(ctx, node);
+      if (problem) errors.push(problem);
+      if (saveAutomaticMultiInstanceEnabled()) for (const flow of ctx.outgoingFor(node.id)) {
+        validateSaveCallSettingTypes(errors, saveFlowLabel(flow), flow, CALL_FLOW_SETTING_TYPES);
+      }
+      continue;
+    }
 
     if (node.type !== "userTask") {
       errors.push(label + " has multiInstance configuration but is not a userTask.");
       continue;
+    }
+    if (Object.prototype.hasOwnProperty.call(multi, "maxConcurrency") || Object.prototype.hasOwnProperty.call(multi, "outputVariables")) {
+      errors.push("User task #" + node.id + " cannot define automatic multi-instance maxConcurrency or outputVariables.");
     }
     if (!["parallel", "sequential"].includes(multi.mode)) {
       errors.push(label + " has unsupported multi-instance mode '" + String(multi.mode) + "'.");
@@ -13933,7 +14236,8 @@ function prepareWorkflowExport(candidate = model) {
         [ASSIGNMENT_MODE.FRESH, ASSIGNMENT_MODE.PREVIOUS, ASSIGNMENT_MODE.FROM_NODE],
         undefined);
     }
-    if (node.multiInstance) {
+    if (node.multiInstance && typeof node.multiInstance === "object" && !Array.isArray(node.multiInstance)) {
+      if (saveIsAutomaticMultiInstanceType(node.type)) node.multiInstance = normalizeMultiInstanceForLoad(node.multiInstance, true);
       node.multiInstance.mode = canonicalizeKnownValue(
         node.multiInstance.mode, ["parallel", "sequential"], "parallel");
       node.multiInstance.source = canonicalizeKnownValue(
@@ -14224,6 +14528,8 @@ function normalizeLoadedModel(obj) {
   if (Array.isArray(obj.flowNodes)) {
     // Already BPMN schema.
     const importedCallIds = new Set(obj.flowNodes.filter(s => isCallActivityType(s.type)).map(s => s.id));
+    const importedPreservedFlowIds = new Set([...importedCallIds,
+      ...obj.flowNodes.filter(s => ["serviceTask", "scriptTask", "callActivity"].includes(s.type) && s.multiInstance != null).map(s => s.id)]);
     refuseMalformedCallVariables(obj, importedCallIds);
     const loadedProcessVariables = (obj.variables || []).map(variable => normalizeVariable(variable, true));
     model = {
@@ -14299,7 +14605,7 @@ function normalizeLoadedModel(obj) {
         priority: (s.type ?? "userTask") === "userTask"
           ? loadedUserTaskDueValue(s.priority)
           : undefined,
-        multiInstance: s.multiInstance ? normalizeMultiInstanceForLoad(s.multiInstance) : null,
+        multiInstance: s.multiInstance != null ? normalizeMultiInstanceForLoad(s.multiInstance, (s.type ?? "userTask") !== "userTask") : null,
         service: isServiceTaskType(s.type) ? normalizeService(s.service, loadedProcessVariables) : undefined,
         scriptFormat: isScriptTaskType(s.type)
           ? (s.scriptFormat === SCRIPT_FORMAT.JAVASCRIPT ? SCRIPT_FORMAT.JAVASCRIPT : SCRIPT_FORMAT.NCALC)
@@ -14345,7 +14651,7 @@ function normalizeLoadedModel(obj) {
         idempotency: (isStartEventType(s.type) || isMessageStartEventType(s.type)) && s.idempotency !== undefined
           ? normalizeIdempotencyForLoad(s.idempotency) : undefined
       })),
-      sequenceFlows: (obj.sequenceFlows || []).map(f => keepImportedCallFlowSettings(f, importedCallIds, {
+      sequenceFlows: (obj.sequenceFlows || []).map(f => keepImportedCallFlowSettings(f, importedPreservedFlowIds, {
         id: f.id,
         name: f.name ?? "",
         externalId: f.externalId ?? null,
@@ -14412,7 +14718,7 @@ function keepImportedCallSettings(source, node) {
     "timer", "conditional", "cancelActivity", "service", "message", "businessKey", "idempotency",
     "assignments", "script", "usesFlowInfo", "attachedToRef", "errorVariable",
     "errorCode", "errorDescription", "gatewayRef", "inboxVisibilityCondition",
-    "dueDate", "dueDateCalendar", "priority", "assignee", "roles", "multiInstance"
+    "dueDate", "dueDateCalendar", "priority", "assignee", "roles"
   ]) {
     if (source[property] != null) node[property] = copy(source[property]);
   }

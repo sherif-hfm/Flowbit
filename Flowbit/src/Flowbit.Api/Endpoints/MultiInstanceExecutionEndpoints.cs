@@ -14,6 +14,19 @@ public static class MultiInstanceExecutionEndpoints
             .WithTags("Multi-Instance Executions")
             .RequireAuthorization();
 
+        group.MapGet("/{executionId:long}/items", ListAutomaticItems)
+            .WithSummary("Page payload-free automatic activity items in index order")
+            .Produces<PagedResult<AutomaticMultiInstanceItemSummaryDto>>()
+            .Produces(StatusCodes.Status400BadRequest)
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status404NotFound);
+        group.MapGet("/{executionId:long}/items/{itemId:long}", GetAutomaticItem)
+            .WithSummary("Read an automatic item's copied input and committed local result within node-activity visibility")
+            .Produces<AutomaticMultiInstanceItemDetailDto>()
+            .Produces(StatusCodes.Status400BadRequest)
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status404NotFound);
+
         group.MapGet("/{executionId:long}/flows", GetInterruptFlows)
             .Produces<IReadOnlyList<SequenceFlowModel>>()
             .Produces(StatusCodes.Status401Unauthorized)
@@ -42,6 +55,21 @@ public static class MultiInstanceExecutionEndpoints
             .Produces(StatusCodes.Status409Conflict);
 
         return app;
+    }
+
+    private static async Task<IResult> ListAutomaticItems(long executionId, ClaimsPrincipal principal,
+        IActorContextResolver actorResolver, IAutomaticMultiInstanceQueryService service,
+        CancellationToken cancellationToken, int page = 1, int pageSize = 50)
+    {
+        var result = await service.ListItemsAsync(executionId, page, pageSize, actorResolver.Resolve(principal), cancellationToken);
+        return result is null ? Results.NotFound() : Results.Ok(result);
+    }
+
+    private static async Task<IResult> GetAutomaticItem(long executionId, long itemId, ClaimsPrincipal principal,
+        IActorContextResolver actorResolver, IAutomaticMultiInstanceQueryService service, CancellationToken cancellationToken)
+    {
+        var result = await service.GetItemAsync(executionId, itemId, actorResolver.Resolve(principal), cancellationToken);
+        return result is null ? Results.NotFound() : Results.Ok(result);
     }
 
     private static async Task<IResult> GetRoles(long executionId, ClaimsPrincipal principal,

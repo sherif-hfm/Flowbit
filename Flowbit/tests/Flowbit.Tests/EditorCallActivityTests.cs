@@ -357,7 +357,7 @@ public sealed class EditorCallActivityTests
     [Theory]
     [InlineData("""{ "flowNodes.2.asyncBefore": true }""", "cannot set asyncBefore")]
     [InlineData("""{ "flowNodes.2.asyncAfter": true }""", "cannot set asyncBefore")]
-    [InlineData("""{ "flowNodes.2.multiInstance": { "mode": "parallel", "source": "cardinality", "cardinality": "2", "resultVariable": "items" } }""", "cannot define multiInstance")]
+    [InlineData("""{ "flowNodes.2.multiInstance": { "mode": "parallel", "source": "cardinality", "cardinality": "2", "resultVariable": "items" } }""", "automatic multiInstance is not enabled")]
     [InlineData("""{ "flowNodes.2.callActivity.versionBinding": "exact" }""", "unsupported callActivity.versionBinding")]
     [InlineData("""{ "flowNodes.2.callActivity.inputMappings": "amount" }""", "must be an array")]
     [InlineData("""{ "flowNodes.2.callActivity.outputMappings": null }""", "must be an array")]

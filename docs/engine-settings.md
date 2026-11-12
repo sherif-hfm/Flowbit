@@ -20,6 +20,8 @@ A **runtime default** is what a consumer uses without a usable setting. A **seed
 | [Delegation.AdminRoles](#delegationadminroles) | Delegation and acceptance-policy administration. | `admin` |
 | [Workflow.Gateway.MaxActiveTokens](#workflowgatewaymaxactivetokens) | Active-token bound at gateway splits. | `1000` |
 | [Workflow.MultiInstance.MaxInstances](#workflowmultiinstancemaxinstances) | Multi-instance child count and durable-job capacity. | `1000`; job capacity `2000` |
+| [Workflow.MultiInstance.DefaultConcurrency](#automatic-multi-instance-concurrency-foundation) | Inactive automatic-body default window. | `4` |
+| [Workflow.MultiInstance.MaxConcurrency](#automatic-multi-instance-concurrency-foundation) | Inactive automatic-body window cap. | `1000` |
 | [Workflow.Async.MaxConsecutiveAutomaticActivations](#workflowasyncmaxconsecutiveautomaticactivations) | Consecutive durable automatic activity activations. | `1000` |
 | [WorkflowBatchActions.MaxAffectedTasks](#workflowbatchactionsmaxaffectedtasks) | Tasks affected by one administrative action batch. | `10000` |
 | [WorkflowVersionChanges.MaxBatchInstances](#workflowversionchangesmaxbatchinstances) | Instances frozen into one version-change batch. | `10000` |
@@ -229,6 +231,31 @@ Bounds the collection size or evaluated cardinality of a multi-instance user tas
 The same value also sets the **per-instance open durable-job bound to twice the limit**, computed with 64-bit arithmetic (default `2000`). Capacity checking covers individual enqueues and complete conditional-wake waves under the instance lock, credits the job currently completing when applicable, and rejects additional work that would exceed the bound. Lowering it can prevent new jobs for an existing instance until capacity is available. It is separate from Worker execution slots and does not delete, cancel, or throttle already-enqueued jobs by itself.
 
 See [multi-instance authoring](node-reference.md#multi-instance-properties) and [durable work](../Flowbit/README.md#durable-async-work-and-timers). Implementation: [multi-instance initialization](../Flowbit/src/Flowbit.Service/Services/WorkflowEngineService.cs), [enqueue checks](../Flowbit/src/Flowbit.Service/Services/WorkflowEngineService.Jobs.cs), and [capacity calculation](../Flowbit/src/Flowbit.Service/Services/WorkflowJobCapacity.cs).
+
+### Automatic multi-instance concurrency foundation
+
+`Workflow.MultiInstance.DefaultConcurrency` and `Workflow.MultiInstance.MaxConcurrency`
+are seeded by `AddAutomaticMultiInstanceCore` with values `4` and `1000` respectively.
+They are **inactive until automatic activity adapters and runtime integration are
+enabled**. They do not change human multi-instance tasks or ordinary durable jobs.
+
+Both use positive signed 32-bit integer strings, allowing surrounding whitespace
+and a leading `+`. A parseable value above `1000` is capped at `1000`; missing,
+blank, malformed, overflowing, zero, or negative values use the setting's default.
+For example, `"2000"` yields `1000`, while `"2147483648"` falls back. Settings
+management continues to store strings without validating them.
+
+The shared resolver chooses the smallest of the authored `maxConcurrency` (or
+the default setting), the cap, and the frozen item count. Sequential bodies use
+one slot; an empty body uses zero. The body persists that effective value and its
+item limit, so setting changes apply to new bodies. This is independent of Worker
+`MaxConcurrency`, `ActivityConcurrency`, and `MaxPerInstance`; their existing
+execution limits still apply. Open automatic bodies reserve one control-job slot
+in per-instance capacity accounting, while their dispatch/completion jobs do not
+consume a second slot.
+
+See [deployment status](deployment.md#automatic-multi-instance-foundation) and
+the [shared resolver](../Flowbit/src/Flowbit.Service/Services/AutomaticMultiInstanceLimits.cs).
 
 ### Workflow.Async.MaxConsecutiveAutomaticActivations
 

@@ -282,6 +282,86 @@ not inject application state or edit database rows to manufacture acceptance.
 
 ## Runtime engine (`Flowbit/`)
 
+### Automatic multi-instance foundation (TASK-05A)
+
+Automatic service/script/call MI is under development; publication and runtime
+execution remain closed pending TASK-05B/C/D and common integration. The temporary
+`WorkflowAutomaticMultiInstance:AllowInDevelopment` API option opens common validation
+only in Development. The hosted editor takes the API's effective value from
+`GET /api/workflows/authoring-capabilities`, never from the UI host's configuration;
+standalone and other environments keep the gate closed. Do not remove the separate
+readiness/runtime guards merely to exercise editor controls, or let an automatic
+body run as one ordinary activity.
+
+`AutomaticMultiInstanceRules` owns the common authored contract, including dedicated
+local output declarations; the migrators preserve automatic settings and invalid
+imports for validation. `IAutomaticMultiInstanceRepository` separates automatic
+body/item state from human tasks. Existing execution rows default to `userTask`;
+human readers explicitly filter that kind. Automatic progress uses a separate
+DTO collection, never human `MultiInstance`/`MultiInstances` fields.
+
+`AutomaticMultiInstanceCoordinator` owns shared item admission, candidate storage,
+and publication operations under the caller's ambient transaction and locked
+instance/gateway/token. Lock body/items before jobs and shared rows. Commit the
+candidate-storage transaction before publication; a rollback must never erase the
+only accepted external result. Shared candidates, inputs and local results belong
+to the item/body and survive job retention. `AutomaticMultiInstanceValues` owns
+bounded snapshots and index-ordered aggregate envelopes; `AutomaticMultiInstanceLimits`
+owns the 1–1,000 concurrency parsing/fallback/cap contract.
+
+Retain FlowInfo once on the body at successful initialization. Rebuild local
+defaults from frozen inputs for each actual execution attempt. Only explicit
+`output_version_conflict` recovery refreshes saved publication fences; other
+incident retries retain them. `AutomaticMultiInstanceItemFence` supports ordinary
+item leases and invocation-aware callStart/callResume leases under parent locks,
+without locking the child instance. Calls use the fixed system actor, no caller
+claims or job-attempt expression context; their adapter owns invocation settlement
+and message acknowledgement. This port does not implement TASK-05D admission or
+delivery integration. Item visits retain incoming-flow and completion attribution;
+shared writes link the retained visit. Progress matches the exact activation and
+batch-loads current control incidents independently of item counts.
+
+The coordinator also owns initialization/reset, durable capacity backoff,
+saved error-route capture, and aggregate publication. The engine supplies its
+`IAutomaticMultiInstanceLifecycle` graph callbacks for timer/conditional lifetime,
+notification draining, cancellation and continuation. Dispatch/completion jobs
+use the reserved control slot; a capacity wait reuses its persisted result-ready
+job without consuming another activity attempt. Exact automatic access phases
+separate initialization, staging, item publication, aggregate publication and the
+selected error route. Shared collection reads always use the body snapshot after
+initialization. The monotonic lock proof treats these durable phases separately.
+Error routing uses the saved winning route and current completion fence, acquires
+the selected error phase's live dependencies, and validates the target before
+writing. It does not introduce a separate error-value snapshot or version policy.
+Initialization resolves concurrency from current settings and the newly frozen
+item count, rather than a caller's earlier collection count.
+
+Automatic entry and items never create a duplicate parent node visit. Fresh
+database activation/lease fences protect every mutation; cancellation cleanup
+can still settle work after the owning token has moved. Uncaught deterministic
+aggregate failures end the token with `multiInstanceFailed` and a stable,
+value-free fault code. An item result that retrying cannot change goes through
+`RefuseItemResultAsync`: the body stops at once, publishes nothing, then takes its
+catch-all error boundary or faults the same way.
+
+An item is blocked while its own `multiInstanceItem` job, or a call item's
+`callStart`, has an open incident. Progress and admission read this from the
+incident; never write body or item rows when an incident opens, because that runs
+from job-side locks and would invert the runtime lock order. Only `multiInstanceItem`
+jobs carry `AutomaticMultiInstanceItemId`; call messages reach the item through their
+invocation, and incident retry checks an open body only for the item, dispatch and
+completion kinds. A nonempty call body stores its target pin at creation
+(`CK_multi_instance_executions_call_pin_shape`). `CancelActiveMultiInstancesForTokensAsync`
+handles human executions only; automatic bodies settle through their own repository.
+Settling a body clears its items' staged inputs and candidates. Item-local outputs are
+never stored instance variables: conditional, timer-expression, inbox-visibility and
+version-compatibility analysis must skip them, as `CallActivityRules.SourceDeclarations` does.
+Common hooks and tests
+do not substitute for TASK-05B/C/D preparation/execution/delivery integration or
+real Worker/browser release evidence. Record those gates in
+[TASK-05A](docs/enhancements/task-05a-multi-instance-core.md) before changing its
+release status.
+
 ### Waiting-task role policies
 
 `userTask.rolesVariable` and selectable non-default outgoing-flow

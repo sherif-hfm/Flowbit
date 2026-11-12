@@ -36,6 +36,10 @@ public static class WorkflowJobKinds
     public const string TimerStart = "timerStart";
     public const string TimerBoundary = "timerBoundary";
     public const string ConditionalWake = "conditionalWake";
+    public const string MultiInstanceStart = "multiInstanceStart";
+    public const string MultiInstanceItem = "multiInstanceItem";
+    public const string MultiInstanceDispatch = "multiInstanceDispatch";
+    public const string MultiInstanceComplete = "multiInstanceComplete";
 
     /// <summary>Creates a call activity's child. It is owned by the parent's waiting token.</summary>
     public const string CallStart = "callStart";
@@ -137,6 +141,8 @@ public sealed record WorkflowJobCreateRecord
     public required string WorkflowKey { get; init; }
     public long? TokenId { get; init; }
     public long? MultiInstanceExecutionId { get; init; }
+    public long? AutomaticMultiInstanceItemId { get; init; }
+    public long? MultiInstanceControlGeneration { get; init; }
     public long? UserTaskId { get; init; }
     public long? TimerSubscriptionId { get; init; }
     public long? ConditionalBoundarySubscriptionId { get; init; }
@@ -205,7 +211,10 @@ public sealed record WorkflowJobRecord(
     int AutomaticActivationCount = 0,
     long? ConditionalBoundarySubscriptionId = null,
     long? ConditionalBoundaryOccurrence = null,
-    long? CallInvocationId = null);
+    long? CallInvocationId = null,
+    long? AutomaticMultiInstanceItemId = null,
+    long? MultiInstanceControlGeneration = null,
+    bool PublicationFenceRefreshRequested = false);
 
 public sealed record WorkflowJobLeaseRequest(
     string WorkerId,
@@ -282,7 +291,8 @@ public sealed record WorkflowIncidentRecord(
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
     DateTimeOffset? ResolvedAt,
-    long? CallTargetInstanceId = null);
+    long? CallTargetInstanceId = null,
+    long? AutomaticMultiInstanceItemId = null);
 
 public sealed record WorkflowJobQueueStatisticsRecord(
     long RunnableDepth,

@@ -258,7 +258,10 @@ public sealed class WorkflowInstanceQueryService(
                     position.ActivationId,
                     position.WaitState,
                     position.WaitingJobId,
-                    position.WaitingTimerSubscriptionId))
+                    position.WaitingTimerSubscriptionId)
+                {
+                    MultiInstanceActivityKind = position.MultiInstanceActivityKind
+                })
                 .ToArray(),
             Completion = row.Completion is null
                 ? null

@@ -88,6 +88,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     public DbSet<UserTaskEntity> UserTasks => Set<UserTaskEntity>();
     public DbSet<UserTaskRolePolicyEntity> UserTaskRolePolicies => Set<UserTaskRolePolicyEntity>();
     public DbSet<MultiInstanceExecutionEntity> MultiInstanceExecutions => Set<MultiInstanceExecutionEntity>();
+    public DbSet<MultiInstanceActivityItemEntity> MultiInstanceActivityItems => Set<MultiInstanceActivityItemEntity>();
     public DbSet<MultiInstanceFlowCountEntity> MultiInstanceFlowCounts => Set<MultiInstanceFlowCountEntity>();
     public DbSet<GatewayExecutionEntity> GatewayExecutions => Set<GatewayExecutionEntity>();
     public DbSet<GatewayBranchEntity> GatewayBranches => Set<GatewayBranchEntity>();
@@ -574,9 +575,10 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 table.HasCheckConstraint(
                     "CK_execution_tokens_wait_shape",
                     "(\"WaitState\" IS NULL AND \"WaitingJobId\" IS NULL "
-                    + "AND \"WaitingTimerSubscriptionId\" IS NULL) OR "
+                    + "AND \"WaitingTimerSubscriptionId\" IS NULL AND \"WaitingMultiInstanceExecutionId\" IS NULL) OR "
                     + "(\"WaitState\" IS NOT NULL AND "
-                    + "(\"WaitingJobId\" IS NOT NULL OR \"WaitingTimerSubscriptionId\" IS NOT NULL))");
+                    + "(\"WaitingJobId\" IS NOT NULL OR \"WaitingTimerSubscriptionId\" IS NOT NULL "
+                    + "OR (\"WaitState\" = 'automaticMultiInstance' AND \"WaitingMultiInstanceExecutionId\" IS NOT NULL)))");
                 table.HasCheckConstraint(
                     "CK_execution_tokens_automatic_activation_count",
                     "\"AutomaticActivationCount\" >= 0");
@@ -627,6 +629,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.HasIndex(e => e.CurrentNodeExecutionId).IsUnique();
             entity.HasIndex(e => e.WaitingJobId)
                 .HasFilter("\"WaitingJobId\" IS NOT NULL");
+            entity.HasOne<MultiInstanceExecutionEntity>().WithMany()
+                .HasForeignKey(e => e.WaitingMultiInstanceExecutionId).OnDelete(DeleteBehavior.NoAction);
             entity.HasIndex(e => e.WaitingTimerSubscriptionId)
                 .HasFilter("\"WaitingTimerSubscriptionId\" IS NOT NULL");
             entity.HasOne(e => e.Instance)
@@ -653,7 +657,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             {
                 table.HasCheckConstraint(
                     "CK_node_executions_execution_kind",
-                    "\"ExecutionKind\" IN ('node', 'userTaskItem')");
+                    "\"ExecutionKind\" IN ('node', 'userTaskItem', 'automaticActivityItem')");
                 table.HasCheckConstraint(
                     "CK_node_executions_status",
                     "\"Status\" IN ('pending', 'active', 'completed', 'cancelled', 'faulted', 'merged')");
@@ -672,9 +676,11 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                     + "'callCompleted', 'callFailed')))");
                 table.HasCheckConstraint(
                     "CK_node_executions_multi_instance_shape",
-                    "(\"ExecutionKind\" = 'node' AND \"MultiInstanceExecutionId\" IS NULL AND \"ItemIndex\" IS NULL) OR "
+                    "(\"ExecutionKind\" = 'node' AND \"MultiInstanceExecutionId\" IS NULL AND \"ItemIndex\" IS NULL AND \"AutomaticMultiInstanceItemId\" IS NULL) OR "
                     + "(\"ExecutionKind\" = 'userTaskItem' AND \"UserTaskId\" IS NOT NULL "
-                    + "AND \"MultiInstanceExecutionId\" IS NOT NULL AND \"ItemIndex\" IS NOT NULL)");
+                    + "AND \"MultiInstanceExecutionId\" IS NOT NULL AND \"ItemIndex\" IS NOT NULL AND \"AutomaticMultiInstanceItemId\" IS NULL) OR "
+                    + "(\"ExecutionKind\" = 'automaticActivityItem' AND \"UserTaskId\" IS NULL "
+                    + "AND \"MultiInstanceExecutionId\" IS NOT NULL AND \"ItemIndex\" IS NOT NULL AND \"AutomaticMultiInstanceItemId\" IS NOT NULL)");
                 table.HasCheckConstraint(
                     "CK_node_executions_timestamps",
                     "(\"Status\" = 'pending' AND \"StartedAt\" IS NULL AND \"CompletedAt\" IS NULL) OR "
@@ -694,6 +700,12 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(e => e.NodeExternalId).HasMaxLength(300);
             entity.Property(e => e.NodeType).HasMaxLength(64).IsRequired();
             entity.Property(e => e.ExecutionKind).HasMaxLength(32).IsRequired();
+            entity.HasIndex(e => e.AutomaticMultiInstanceItemId).IsUnique()
+                .HasFilter("\"AutomaticMultiInstanceItemId\" IS NOT NULL");
+            entity.HasOne(e => e.AutomaticMultiInstanceItem).WithMany()
+                .HasForeignKey(e => new { e.AutomaticMultiInstanceItemId, e.MultiInstanceExecutionId, e.InstanceId })
+                .HasPrincipalKey(e => new { e.Id, e.MultiInstanceExecutionId, e.InstanceId })
+                .OnDelete(DeleteBehavior.Restrict);
             entity.Property(e => e.Status).HasMaxLength(32).IsRequired();
             entity.Property(e => e.CompletionReason).HasMaxLength(64);
             entity.Property(e => e.NodeRolesJson).HasColumnType("jsonb");
@@ -894,8 +906,46 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         {
             entity.HasOne(e => e.RolePolicy).WithMany()
                 .HasForeignKey(e => e.RolePolicyId).OnDelete(DeleteBehavior.Restrict);
-            entity.ToTable("multi_instance_executions");
+            entity.ToTable("multi_instance_executions", table =>
+            {
+                table.HasCheckConstraint("CK_multi_instance_executions_activity_kind",
+                    "\"ActivityKind\" IN ('userTask', 'serviceTask', 'scriptTask', 'callActivity')");
+                table.HasCheckConstraint("CK_multi_instance_executions_automatic_shape",
+                    "\"ActivityKind\" = 'userTask' OR (\"WorkflowDefinitionId\" IS NOT NULL AND \"ActivationId\" IS NOT NULL "
+                    + "AND \"InputSnapshotId\" IS NOT NULL AND \"AggregateScope\" IS NOT NULL AND \"AggregateScope\" IN ('instance', 'shared') AND \"AggregateValueVersion\" IS NOT NULL "
+                    + "AND \"EffectiveConcurrency\" IS NOT NULL AND \"EffectiveConcurrency\" BETWEEN 0 AND 1000 AND \"MaxInstances\" IS NOT NULL AND \"MaxInstances\" >= 1 "
+                    + "AND \"TotalCount\" BETWEEN 0 AND \"MaxInstances\" AND \"RolePolicyId\" IS NULL AND NOT \"OnePerActor\" "
+                    + "AND \"Phase\" IS NOT NULL AND \"Phase\" IN ('running', 'dispatch', 'completing', 'errorCompletion', 'settled') "
+                    + "AND ((\"AggregateScope\" = 'instance' AND \"AggregateSharedKey\" IS NULL) OR (\"AggregateScope\" = 'shared' AND \"AggregateSharedKey\" IS NOT NULL)))");
+                table.HasCheckConstraint("CK_multi_instance_executions_automatic_counts",
+                    "\"FailedCount\" >= 0 AND \"ResultBytes\" BETWEEN 0 AND 1048576 AND \"ControlGeneration\" >= 0");
+                table.HasCheckConstraint("CK_multi_instance_executions_completion_size",
+                    "COALESCE(octet_length(\"CompletionJson\"::text), 0) <= 1048576");
+                // Only a nonempty call body pins a target: pinned while open, released once settled.
+                table.HasCheckConstraint("CK_multi_instance_executions_call_pin_shape",
+                    "(\"PinnedChildDefinitionId\" IS NULL AND \"PinnedChildStartEventId\" IS NULL AND \"PinState\" IS NULL "
+                    + "AND (\"ActivityKind\" <> 'callActivity' OR \"TotalCount\" = 0)) OR "
+                    + "(\"ActivityKind\" = 'callActivity' AND \"TotalCount\" > 0 AND \"PinnedChildDefinitionId\" IS NOT NULL "
+                    + "AND \"PinnedChildStartEventId\" IS NOT NULL AND \"PinState\" IN ('pinned', 'released') "
+                    + "AND (\"PinState\" = 'pinned') = (\"Status\" = 'active'))");
+            });
             entity.HasKey(e => e.Id);
+            entity.HasAlternateKey(e => new { e.Id, e.InstanceId });
+            entity.Property(e => e.ActivityKind).HasMaxLength(64).HasDefaultValue("userTask").IsRequired();
+            entity.Property(e => e.AggregateScope).HasMaxLength(16);
+            entity.Property(e => e.AggregateSharedKey).HasMaxLength(300);
+            entity.Property(e => e.Phase).HasMaxLength(32);
+            entity.Property(e => e.AdmissionBlockedReason).HasMaxLength(64);
+            entity.Property(e => e.PinState).HasMaxLength(32);
+            entity.Property(e => e.CompletionJson).HasColumnType("jsonb");
+            entity.HasOne<WorkflowDefinitionEntity>().WithMany().HasForeignKey(e => e.PinnedChildDefinitionId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.InputSnapshot).WithMany().HasForeignKey(e => e.InputSnapshotId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<WorkflowDefinitionEntity>().WithMany().HasForeignKey(e => e.WorkflowDefinitionId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasIndex(e => new { e.InstanceId, e.NodeId }).IsUnique()
+                .HasDatabaseName("IX_multi_instance_executions_open_automatic_node")
+                .HasFilter("\"ActivityKind\" <> 'userTask' AND \"Status\" = 'active'");
+            entity.HasIndex(e => new { e.TokenId, e.ActivationId }).IsUnique()
+                .HasFilter("\"ActivityKind\" <> 'userTask'");
             entity.Property(e => e.Mode).HasMaxLength(32).IsRequired();
             entity.Property(e => e.Source).HasMaxLength(32).IsRequired();
             entity.Property(e => e.OnePerActor).HasDefaultValue(false);
@@ -914,6 +964,40 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 .WithMany(e => e.MultiInstanceExecutions)
                 .HasForeignKey(e => e.TokenId)
                 .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<MultiInstanceActivityItemEntity>(entity =>
+        {
+            entity.ToTable("multi_instance_activity_items", table =>
+            {
+                table.HasCheckConstraint("CK_multi_instance_activity_items_index", "\"ItemIndex\" >= 0");
+                table.HasCheckConstraint("CK_multi_instance_activity_items_status",
+                    "\"Status\" IN ('pending', 'active', 'completed', 'failed', 'cancelled')");
+                table.HasCheckConstraint("CK_multi_instance_activity_items_phase",
+                    "\"Phase\" IN ('execution', 'publication', 'settled')");
+                table.HasCheckConstraint("CK_multi_instance_activity_items_size",
+                    "COALESCE(octet_length(\"StagedInputJson\"::text), 0) + COALESCE(octet_length(\"CandidateJson\"::text), 0) <= 1048576 "
+                    + "AND COALESCE(octet_length(\"ResultJson\"::text), 0) <= 1048576");
+                table.HasCheckConstraint("CK_multi_instance_activity_items_timestamps",
+                    "(\"Status\" = 'pending' AND \"StartedAt\" IS NULL AND \"CompletedAt\" IS NULL) OR "
+                    + "(\"Status\" = 'active' AND \"StartedAt\" IS NOT NULL AND \"CompletedAt\" IS NULL) OR "
+                    + "(\"Status\" IN ('completed', 'failed', 'cancelled') AND \"CompletedAt\" IS NOT NULL)");
+            });
+            entity.HasKey(e => e.Id);
+            entity.HasAlternateKey(e => new { e.Id, e.MultiInstanceExecutionId, e.InstanceId });
+            entity.Property(e => e.Status).HasMaxLength(32).IsRequired();
+            entity.Property(e => e.Phase).HasMaxLength(32).IsRequired();
+            entity.Property(e => e.StagedInputJson).HasColumnType("jsonb");
+            entity.Property(e => e.CandidateJson).HasColumnType("jsonb");
+            entity.Property(e => e.ResultJson).HasColumnType("jsonb");
+            entity.Property(e => e.SharedWriteCorrelationsJson).HasColumnType("jsonb");
+            entity.Property(e => e.ErrorCode).HasMaxLength(100);
+            entity.Property(e => e.ErrorDescription).HasMaxLength(1000);
+            entity.HasIndex(e => new { e.MultiInstanceExecutionId, e.ItemIndex }).IsUnique();
+            entity.HasIndex(e => new { e.MultiInstanceExecutionId, e.Status, e.ItemIndex });
+            entity.HasOne(e => e.Execution).WithMany(e => e.ActivityItems)
+                .HasForeignKey(e => new { e.MultiInstanceExecutionId, e.InstanceId })
+                .HasPrincipalKey(e => new { e.Id, e.InstanceId }).OnDelete(DeleteBehavior.Cascade);
         });
 
         modelBuilder.Entity<MultiInstanceFlowCountEntity>(entity =>
@@ -1907,6 +1991,11 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 table.HasCheckConstraint(
                     "CK_call_activity_executions_admission",
                     "NOT \"CapacityReserved\" OR \"AdmittedAt\" IS NOT NULL");
+                // The composite item FK is MATCH SIMPLE; this keeps a half-set pair from
+                // bypassing it or from leaving an ordinary call naming a body.
+                table.HasCheckConstraint(
+                    "CK_call_activity_executions_automatic_item_pair",
+                    "(\"AutomaticMultiInstanceItemId\" IS NULL) = (\"MultiInstanceExecutionId\" IS NULL)");
             });
             entity.HasKey(e => e.Id);
             entity.Property(e => e.TargetWorkflowKey).HasMaxLength(CallActivityConstraints.MaxWorkflowKeyLength).IsRequired();
@@ -1920,7 +2009,13 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(e => e.CausedBy).HasMaxLength(UserTaskConstraints.MaxActorNameLength);
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
             entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
-            entity.HasIndex(e => new { e.ParentInstanceId, e.ParentTokenId, e.ActivationId }).IsUnique();
+            entity.HasIndex(e => new { e.ParentInstanceId, e.ParentTokenId, e.ActivationId }).IsUnique()
+                .HasFilter("\"AutomaticMultiInstanceItemId\" IS NULL");
+            entity.HasIndex(e => e.AutomaticMultiInstanceItemId).IsUnique()
+                .HasFilter("\"AutomaticMultiInstanceItemId\" IS NOT NULL");
+            entity.HasOne(e => e.AutomaticMultiInstanceItem).WithMany()
+                .HasForeignKey(e => new { e.AutomaticMultiInstanceItemId, e.MultiInstanceExecutionId, e.ParentInstanceId })
+                .HasPrincipalKey(e => new { e.Id, e.MultiInstanceExecutionId, e.InstanceId }).OnDelete(DeleteBehavior.Restrict);
             entity.HasIndex(e => e.ChildInstanceId)
                 .IsUnique()
                 .HasFilter("\"ChildInstanceId\" IS NOT NULL");
@@ -2299,6 +2394,15 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                     "CK_workflow_jobs_conditional_boundary_occurrence",
                     "(\"ConditionalBoundarySubscriptionId\" IS NULL AND \"ConditionalBoundaryOccurrence\" IS NULL) OR "
                     + "(\"ConditionalBoundarySubscriptionId\" IS NOT NULL AND \"ConditionalBoundaryOccurrence\" > 0)");
+                table.HasCheckConstraint("CK_workflow_jobs_automatic_item_shape",
+                    "(\"AutomaticMultiInstanceItemId\" IS NULL AND \"Kind\" <> 'multiInstanceItem') OR "
+                    + "(\"AutomaticMultiInstanceItemId\" IS NOT NULL AND \"Kind\" = 'multiInstanceItem' AND \"MultiInstanceExecutionId\" IS NOT NULL "
+                    + "AND \"InstanceId\" IS NOT NULL AND \"TokenId\" IS NOT NULL AND \"UserTaskId\" IS NULL AND \"QueueClass\" = 'activity')");
+                table.HasCheckConstraint("CK_workflow_jobs_automatic_control_shape",
+                    "(\"Kind\" NOT IN ('multiInstanceDispatch', 'multiInstanceComplete') AND \"MultiInstanceControlGeneration\" IS NULL) OR "
+                    + "(\"Kind\" IN ('multiInstanceDispatch', 'multiInstanceComplete') AND \"MultiInstanceControlGeneration\" IS NOT NULL AND \"MultiInstanceControlGeneration\" >= 0 "
+                    + "AND \"MultiInstanceExecutionId\" IS NOT NULL AND \"InstanceId\" IS NOT NULL AND \"TokenId\" IS NOT NULL "
+                    + "AND \"QueueClass\" = 'control' AND \"UserTaskId\" IS NULL)");
             });
             entity.HasKey(e => e.Id);
             entity.Property(e => e.WorkflowKey).HasMaxLength(300).IsRequired();
@@ -2317,6 +2421,20 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(e => e.ErrorJson).HasColumnType("jsonb");
             entity.Property(e => e.LastFailureCode).HasMaxLength(100);
             entity.Property(e => e.LastFailureDescription).HasMaxLength(1000);
+            entity.HasOne(e => e.AutomaticMultiInstanceItem).WithMany()
+                .HasForeignKey(e => new { e.AutomaticMultiInstanceItemId, e.MultiInstanceExecutionId, e.InstanceId })
+                .HasPrincipalKey(e => new { e.Id, e.MultiInstanceExecutionId, e.InstanceId })
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasIndex(e => e.AutomaticMultiInstanceItemId).IsUnique()
+                .HasFilter("\"AutomaticMultiInstanceItemId\" IS NOT NULL");
+            entity.HasIndex(e => new { e.MultiInstanceExecutionId, e.MultiInstanceControlGeneration }).IsUnique()
+                .HasFilter("\"MultiInstanceControlGeneration\" IS NOT NULL");
+            entity.HasIndex(e => e.MultiInstanceExecutionId).IsUnique()
+                .HasDatabaseName("IX_workflow_jobs_automatic_control_slot")
+                .HasFilter("\"Kind\" IN ('multiInstanceDispatch', 'multiInstanceComplete') AND \"Status\" NOT IN ('completed', 'cancelled', 'skipped')");
+            // Named so it stays separate from the partial control-slot index above. It
+            // supports the restrictive foreign key and body lookups for every job kind.
+            entity.HasIndex(e => e.MultiInstanceExecutionId, "IX_workflow_jobs_MultiInstanceExecutionId");
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
             entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
             entity.HasIndex(e => new { e.QueueClass, e.Priority, e.DueAt, e.Id })
