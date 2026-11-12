@@ -30,6 +30,7 @@ This subtask is one part of TASK-05's first release. Completing REST support doe
 - [ ] Retry, restart, queue-capacity recovery, and shared-item/aggregate publication recovery do not invoke a successfully executed item again once its response/result is durably saved. At-least-once external effects and authored idempotency keys are documented accurately.
 - [ ] Body cancellation, an interrupting timer/conditional boundary, or a caught failure cancels/fences unfinished work. A late HTTP response cannot commit locals or shared writes, advance the parent, or overwrite its aggregate. Non-interrupting timer/conditional boundaries leave the body running and create their own continuation under the core's subscription/firing rules.
 - [ ] Editor authoring, import/export, validation, markers, runtime item detail, and authorized incident navigation work without changing ordinary REST tasks or human MI behavior.
+- [ ] Until the parent's integration step, service bodies publish and run only on a Development host with the release switch open. Script and call bodies stay rejected until their own adapters land, and every other environment rejects all three (§1).
 - [ ] REST-specific automated tests, controlled HTTP integration scenarios, canonical examples, documentation, and real-browser evidence satisfy the completion handoff below.
 
 ## Scope, non-goals, and current evidence
@@ -55,7 +56,7 @@ Agree the adapter boundary with TASK-05A before changing ordinary REST execution
 
 | Responsibility | Owner and integration rule |
 | --- | --- |
-| Entry and item jobs | TASK-05A transfers the parent `asyncBefore` job into the body wait and admits `multiInstanceItem` activity jobs. REST entry must not call `ExecuteServiceTaskAsync` once before fan-out. |
+| Entry and item jobs | TASK-05A's `InitializeBodyAsync` transfers the parent `asyncBefore` job into the body wait and its dispatch admits `multiInstanceItem` activity jobs. Calling it from the entry job and executing an item job are adapter work (see **Release boundary** below). REST entry must not call `ExecuteServiceTaskAsync` once before fan-out. |
 | Staging/invocation | This adapter reuses existing REST template construction and invoker mechanics against frozen body inputs and the item's saved shared/settings/clock context. |
 | Mapping/failure outcome | This adapter validates local/shared output and status candidates and returns success or the existing service failure classification, including eligible HTTP status. |
 | Item persistence and refill | TASK-05A checks shared `ValueRevision` fences and atomically commits the validated shared batch, locals, item/counts/ledger, and durable dispatch/completion signal. Capacity contention cannot undo accepted success and trigger another HTTP invocation. |
@@ -63,6 +64,13 @@ Agree the adapter boundary with TASK-05A before changing ordinary REST execution
 | Limits, version changes, retention | Use the core's captured concurrency, item/snapshot/result bounds, active-work retention, and open-body version blocker. Do not add REST-only competing settings or lifecycle state. |
 
 The common schema/migration and core runtime must be present before this adapter runs. Do not ship a REST-only feature gate that allows incomplete cancellation/recovery or suggests the parent release is finished without calls.
+
+**Release boundary.** The foundation's publication, runtime, and item-job guards are unconditional, so no service body can be published or run today, even on a Development host. Open them for service bodies only, as [TASK-05A §8](task-05a-multi-instance-core.md#8-definition-validation-compatibility-and-safety-of-loading) records under **Opening by activity kind**:
+
+- A service body publishes only when the release switch is enabled, which only a Development host allows, and every automatic body in its definition has an installed adapter. This is not the REST-only gate ruled out above: no other environment can open it, and the integration change removes it.
+- The service adapter counts as installed only in the change that completes its entry, item, failure, and cancellation paths.
+- Routing the body's `asyncBefore` entry job to `InitializeBodyAsync` and its `multiInstanceItem` jobs to this adapter is adapter work in `WorkflowEngineService.Jobs.cs`, shared with [TASK-05C](task-05c-multi-instance-script-activities.md). Whichever lands first adds one dispatch by node type; the other adds its case.
+- Tests pin that script and call bodies stay refused at publication, entry, and item processing until their adapters land, and that a host outside Development refuses service bodies whatever its options say.
 
 ### 2. Proposed REST workflow JSON
 

@@ -15,7 +15,7 @@
 
 Run both NCalc and JavaScript `scriptTask` nodes once per collection item, with independent local outputs, staged shared reads/writes, durable recovery, and ordered aggregate results. Both formats support parallel and sequential modes, instance/shared typed collections, and body timer/conditional boundaries in both interrupting and non-interrupting modes. This subtask is required for the same first release as service and call activities; splitting the plan does not defer any activity type.
 
-This is an implementation plan based on the repository reviewed on **2026-11-11**. Automatic multi-instance scripts are not implemented. JSON examples below describe the proposed contract and are not currently runnable definitions.
+This is an implementation plan. It was first written against the repository reviewed on **2026-11-11**, before the TASK-05A foundation landed, and was revised on **2026-11-12** against that foundation (commit `03aeb8a`); see [Plan review](#plan-review-2026-11-12). Automatic multi-instance scripts are not implemented: the foundation rejects their publication and execution. JSON examples below describe the proposed contract and are not currently runnable definitions.
 
 [TASK-05A](task-05a-multi-instance-core.md) is authoritative for the common workflow JSON, local-output declarations, input snapshots, limits, admission, persistence, item lifecycle, aggregate publication, query/API contracts, compatibility, migration, and rollout. This page specifies the script adapter and its verification. It must not introduce another scheduler, item table, result envelope, or aggregate writer.
 
@@ -27,10 +27,11 @@ This is an implementation plan based on the repository reviewed on **2026-11-11*
 - [ ] Local/shared defaults, type conversion, nullability, and validation follow their respective contracts in both formats. The core commits a successful shared write batch, locals, and item completion atomically; a failed attempt publishes no partial batch.
 - [ ] JavaScript executes in the existing Jint sandbox outside runtime/shared row locks, with all existing resource and value-bridge limits. Computed names cannot bypass declaration/access checks or canonical-key collision rules.
 - [ ] Evaluation retries reuse item identity and frozen staged inputs and start with fresh buffers. Publication-only conflict retries preserve the saved candidate, refresh output fences through authorized recovery, and never reevaluate successful work or publish through stale activation/lease fences.
-- [ ] Script errors and local validation failures use the existing durable retry/error-boundary policy, integrated with whole-body cancellation and incidents from TASK-05A. A caught failure publishes the core's partial result before the boundary continues.
+- [ ] Script errors and authored output failures use the existing durable retry/error-boundary policy, integrated with whole-body cancellation and incidents from TASK-05A. A caught failure publishes the core's partial result before the boundary continues. A result that retrying cannot change, such as one over a size limit, is refused through the core; it is never retried and never waits in an incident (§5).
 - [ ] Interrupting timer/conditional boundaries cancel/fence the whole body; non-interrupting firings create a continuation while its items keep running. Attachments, subscriptions, races, and final publication follow TASK-05A, with existing instance-only conditional predicates.
 - [ ] Shared editor authoring, invalid-import preservation, script-format/type changes, undo/redo, runtime progress/results, and permissions work in a real browser.
-- [ ] Automated regressions, canonical HTTP examples, owning documentation, and browser evidence are complete before this subtask is Done. Parent TASK-05 still requires all four subtasks.
+- [ ] Until the parent's integration step, script bodies publish and run only on a Development host with the release switch open. Service and call bodies stay rejected until their own adapters land, and every other environment rejects all three (§1).
+- [ ] Automated regressions, HTTP scenarios, and browser evidence are complete, and the script sections of the owning guides and the canonical examples are prepared, before this subtask is Done. They merge into the guides and the example catalog in the parent's integration change, as [TASK-05A §13](task-05a-multi-instance-core.md#13-documentation-and-completion-handoff) requires (§9). Parent TASK-05 still requires all four subtasks.
 
 ## Non-goals
 
@@ -40,29 +41,50 @@ No standalone script-item API or bespoke Operations page is needed; integrate th
 
 ## Current state
 
-- `WorkflowModel.cs` already models `scriptFormat`, ordered NCalc `assignments`, and a JavaScript `script` body. The existing multi-instance model and runtime currently describe human tasks.
-- `WorkflowModelMigrator` and editor `applyTypeInvariants` remove MI settings from non-user tasks. Core normalization/validation work must preserve script MI and malformed imported settings instead of silently removing them.
-- `WorkflowEngineService.Jobs.cs` contains `EvaluateStagedScript`, which evaluates against a durable snapshot and resolves writes using process-variable declarations. That target resolution cannot be reused unchanged for item locals.
-- `WorkflowEngineService.cs` contains `EngineScriptContext`, script coercion/validation helpers, and ordinary script execution. `IScriptContext` and `IScriptEvaluator` in `Flowbit.Service/Abstractions/Services.cs` separate the engine's variable behavior from Jint.
-- `Flowbit.Infrastructure/Scripting/JintScriptEvaluator.cs` already enforces a sandbox and bounded execution/value conversion. Its `execution` object includes variable getters/setters and `getFlowInfo`; MI does not need another scripting API.
-- `SharedVariableAccessPlanner` currently treats script assignments as possible process producers, and JavaScript's computed targets can widen its writable shared-variable plan. Automatic MI must exclude locals while retaining declared shared reads/targets and their validation dependencies, without changing ordinary scripts.
-- Ordinary job incident retry clears result/error and, for `output_version_conflict`, its snapshot. The MI publication-retry branch must preserve the successfully evaluated candidate independently and never fall through to that fresh-evaluation path.
+Checked against the code on **2026-11-12**, after the TASK-05A foundation (commit `03aeb8a`).
+
+Already provided by the foundation; this subtask uses it and does not rebuild it:
+
+- **Model and loaders.** `WorkflowModelMigrator` and the editor keep `multiInstance` on service, script, and call nodes and preserve invalid imported values.
+- **Common rules.** `AutomaticMultiInstanceRules` and `WorkflowDefinitionValidator` require `asyncBefore`, the explicit `afterAll`, and that every NCalc assignment target is a declared local output or a `readWrite` shared alias other than the collection, aggregate, and boundary error targets. The editor's `automaticMultiInstanceProblem` mirrors them. JavaScript targets are computed, so nothing checks them at save.
+- **Shared access plans.** `SharedVariableAccessPlanner` builds one plan per phase (initialize, stage item, publish item, complete, error). NCalc plans are exact. A JavaScript body's staging plan reads every shared binding of the definition, and its staging and publication plans treat every `readWrite` binding except the reserved targets as a possible producer.
+- **Coordinator.** `AutomaticMultiInstanceCoordinator` provides `InitializeBodyAsync`, `CaptureItemContextAsync`, `SaveCandidateAsync`, `PublishCandidateAsync`, `CaptureItemFailureAsync`, and `RefuseItemResultAsync`. `CaptureItemContextAsync` already builds the item context: staged shared values and output fences, `mi.item`/`mi.index`/`mi.total`, `sys.jobId`/`sys.jobAttempt`, the frozen `FlowInfo`, and fresh local defaults for each attempt.
+- **Publication retry.** `WorkflowJobRepository.RetryIncidentAsync` keeps a saved candidate and requests a fence refresh only for `output_version_conflict`.
+- **Editor section.** `renderAutomaticMultiInstanceSection` shows the common controls when the release switch is open.
+
+Still closed or missing; this subtask owns the script part:
+
+- **Three closed guards.** `WorkflowDefinitionReadinessChecker.EnsureDurablePublicationAllowed` refuses to publish any definition with an automatic body, whatever the release switch says. `WorkflowEngineService.EnsureAutomaticMultiInstanceRuntimeAvailable` throws at every entry path. A leased `multiInstanceItem` job throws "The automatic activity item adapter is not installed."
+- **Entry and item processing.** Nothing routes a body's `asyncBefore` entry job to `InitializeBodyAsync` or executes an item job.
+- **Script target resolution.** `EvaluateStagedScript` in `WorkflowEngineService.Jobs.cs` and `EngineScriptContext` in `WorkflowEngineService.cs` resolve write targets from process-variable declarations only, so they cannot be reused unchanged for item locals. `IScriptContext` and `IScriptEvaluator` in `Flowbit.Service/Abstractions/Services.cs` separate the engine's variable behavior from Jint, and `JintScriptEvaluator` already enforces the sandbox and bounded value conversion; MI needs no other scripting API.
+- **Script authoring.** The NCalc target choices, JavaScript help, and format/type transitions in the editor have not been checked against the script contract below.
 
 ## Plan
 
 ### 1. Integrate through the core activity-adapter seam
 
-Implement an automatic-MI script adapter using the core's item job dispatch and fences. The adapter receives the immutable definition/script, parent snapshot, staged shared context, item value/index/total, stable item/job identity, current attempt metadata, and local/shared target declarations. It returns a validated candidate containing local results and shared writes, or a classified script failure; the coordinator owns persistence and the adapter never writes runtime variables or advances a graph token itself.
+Implement the script adapter on the coordinator operations the foundation already provides. The adapter names the instance inputs to freeze, supplies the permitted `config.*`/`setting.*`/`sys.*` values when an item first stages, evaluates the script in a dedicated context, and returns a candidate of local results and shared writes or a classified failure (§5). The coordinator owns persistence, and the adapter never writes runtime variables or advances a graph token itself.
 
 The responsibilities are:
 
-| Stage | Script-specific responsibility | Core responsibility |
+| Stage | Script-specific responsibility | Core responsibility (implemented) |
 | --- | --- | --- |
-| Definition validation | Validate format/body/assignments, local-or-writable-shared targets, context references, and validation dependencies. | Validate common MI schema, binding/source/result contracts, alias/key collisions, topology, limits, durable readiness, and lock order. |
-| Stage item | Build an independent context from the body snapshot, shared values captured now, and fresh local defaults. | Own the item/job lease, shared access locks and target value-version capture, persisted staging, activation/state fences, and lifecycle. |
-| Evaluate | Run NCalc assignments or the existing Jint evaluator, then validate the complete local/shared candidate overlay. | Release runtime/shared row locks before evaluation; apply cancellation/lease protocol. |
-| Finalize | Return local/shared candidates or bounded failure metadata; do not persist them directly. | Recheck fresh database state and shared `ValueRevision` fences, atomically commit shared writes/locals/success once, settle failures, refill admission, and queue aggregate completion. |
+| Definition validation | Add what the common rules do not check: context references in a body's expressions and the remaining script cases in §6. | Common MI schema, `asyncBefore`, `afterAll`, NCalc target resolution, alias/key collisions, topology, limits, and lock order. |
+| Initialize body | Route the body's `asyncBefore` entry job to `InitializeBodyAsync` and name the instance inputs it must freeze (§4). | Capture the collection and those inputs under the initialization locks, reset the aggregate, arm timers, and queue the first dispatch or the empty completion. |
+| Stage item | Pass the permitted `config.*`/`setting.*`/`sys.*` values and the stage time to `CaptureItemContextAsync`, in a transaction committed before evaluation. | Lock the phase's shared rows, persist the staged shared values and output fences once, and build the context with `mi.*`, job identity, frozen `FlowInfo`, and fresh local defaults for this attempt. |
+| Evaluate | Run NCalc assignments or the existing Jint evaluator in the MI script context, then validate the complete local/shared overlay. | Hold no runtime or shared row lock during evaluation; apply the cancellation/lease protocol. |
+| Finalize | Build the candidate (§4), commit it with `SaveCandidateAsync`, then call `PublishCandidateAsync`; on failure call the coordinator exit §5 assigns. | Recheck fresh state and `ValueRevision` fences, commit shared writes, locals, and success once, refill admission, and queue aggregate completion. |
 | Publish | No adapter-specific aggregate operation. | Assemble ordered results, validate/fence the aggregate write, drain notifications, and continue once. |
+
+An item job that finds a saved candidate goes straight to publication. This holds for every retry, not only authorized conflict recovery: a database failure after `SaveCandidateAsync` committed must not evaluate the script again.
+
+**Release boundary.** The foundation's three guards (see Current state) are unconditional, so no script body can be published or run today, even on a Development host. Replace each with a check by activity kind:
+
+- Publication is allowed when the release switch is enabled and every automatic body in the definition has an installed adapter.
+- Runtime entry and item processing proceed for a kind whose adapter is installed and keep failing closed for the others.
+- Tests pin that service and call bodies stay rejected while only the script adapter exists, and that hosts outside Development reject script bodies too.
+
+TASK-05B needs the same routing in the same block of `WorkflowEngineService.Jobs.cs`. Whichever adapter lands first adds one dispatch by node type for the entry job and the item job; the other adds its case to it. The per-kind opening is a shared contract, recorded in [TASK-05A §8](task-05a-multi-instance-core.md#8-definition-validation-compatibility-and-safety-of-loading) under **Opening by activity kind**.
 
 Require `asyncBefore: true` for MI scripts. The editor enables it as part of enabling MI; malformed imported/API definitions without it fail validation. The existing parent `asyncBefore` job initializes the body rather than evaluating the script once. `asyncAfter` remains optional and applies once after the whole aggregate succeeds, never after each item. Count the body once under the automatic-activation loop guard; item attempts must not multiply or reset that count.
 
@@ -100,7 +122,9 @@ This node fragment uses a parent `amounts` variable declared `number[]`, a scala
 
 For `amounts = [10, 20]` and `multiplier = 2`, the core's ordered result rows contain local `variables` of `{ "scaledAmount": 20, "adjustedAmount": 20 }` and `{ "scaledAmount": 40, "adjustedAmount": 41 }`. The second assignment reads a prior write in the same item. It never reads the previous item's output. Switching to parallel mode changes admission only, not these results.
 
-Resolve every assignment target against local declarations before evaluation. Preserve ordinary ordered assignment/coercion behavior and existing NCalc syntax/function casing. Use `[mi.item]`, `[mi.index]`, and `[mi.total]` for exact context names. This feature adds no dotted object-property expression language; use JavaScript for object item traversal.
+Resolve every assignment target against the local declarations and the declared `readWrite` shared aliases before evaluation. Preserve ordinary ordered assignment/coercion behavior and existing NCalc syntax/function casing. Use `[mi.item]`, `[mi.index]`, and `[mi.total]` for exact context names. This feature adds no dotted object-property expression language; use JavaScript for object item traversal.
+
+Define and test what `[mi.item]` gives an NCalc expression for each element type: `string`, `number`, `boolean`, `date` and `datetime` (as their authored text), and `json`. A `json` element that is an object or array has no usable NCalc value, so decide whether a body with a `json[]` collection and NCalc assignments reading `mi.item` is rejected at save or fails at evaluation, and make the editor say so.
 
 ### 3. Proposed JavaScript example
 
@@ -147,6 +171,17 @@ Freeze the instance variables, copied collection, and causal actor/allowlisted c
 
 Do not make a global change to `EngineScriptContext` that redirects ordinary scripts. Introduce a dedicated MI context or explicit execution-scope adapter for local/shared candidates, reusing established coercion and validation helpers. Tests must demonstrate that ordinary process-writing scripts and their shared-variable behavior remain unchanged.
 
+The coordinator's operations fix the rest of the adapter contract. Specify and test each point:
+
+- **Instance inputs to freeze.** `InitializeBodyAsync` freezes only the instance variables the adapter names. For NCalc, name the variables that assignment expressions, local default templates, and local validations reference. JavaScript can read any name, including stored variables no declaration mentions, so either list the stored names under the instance lock or ask TASK-05A for an "every instance variable" request. An entry whose snapshot exceeds 1 MiB fails before any item runs; test a JavaScript body near that limit.
+- **Staged environment.** `CaptureItemContextAsync` accepts only `config.*`, `setting.*`, and `sys.*` values and persists them on the item until the body settles. NCalc passes only the names its expressions reference. JavaScript needs all of them, so every item of up to 1,000 stores a copy that counts toward its 1 MiB limit. Measure that, test it, and document it; if it is too large, agree a body-level copy with TASK-05A instead of trimming what a script can read.
+- **Validation context.** The candidate's `ValidationContext` is saved with it and counts toward the same limit. Supply only the names the local `validation` expressions reference, never the whole evaluation context.
+- **Shared output fences.** Staging captures a fence for every possible producer; for JavaScript that is every `readWrite` binding. `SaveCandidateAsync` refuses a candidate whose fences are not exactly its written aliases, and one that writes the same shared key through two aliases. Narrow the fences to the aliases the script wrote, and reject the second alias as a script error at `setVariable`.
+- **JavaScript lock scope.** Each JavaScript item locks every `readWrite` binding of the definition when it stages. Parallel items and other instances using those keys therefore wait on each other for those short transactions. Test it with several Workers, and tell authors to declare only the bindings a body needs, or to use NCalc, whose plan is exact.
+- **Shared binding without a value.** An automatic phase fails with a conflict when a binding it reads has no current value (`Unset_shared_validation_dependency_prevents_the_error_write` pins this). A JavaScript body's staging plan reads every binding, so by that rule it cannot stage while any binding of its definition was never set, including a `readWrite` target the script is about to set for the first time, while an NCalc body can make that first write. Confirm this with a PostgreSQL test, then agree a rule with TASK-05A before implementing: proposed, a binding in the conservative JavaScript scope that has no value is absent from the context (`hasVariable` is false), as in an ordinary script, while a statically named dependency keeps failing closed.
+- **Reads of a local without a value.** The context holds a declared local only once it has a default or a write. Define `getVariable`, `hasVariable`, and an NCalc reference for a local in neither state, and keep both formats consistent with an ordinary script's missing variable.
+- **Bulk and reserved reads.** State what `execution.getVariables()` returns (frozen instance inputs, staged shared values, `mi.*`, context values, and the item's own writes) and what an item reads from its own `resultVariable` and `collectionVariable` names.
+
 ### 5. Sandbox, jobs, failures, and cancellation
 
 Reuse `IScriptEvaluator` and the current Jint sandbox. Preserve timeout, statement, memory, recursion, execution-stack, regex, array, value-depth/item/byte, and cancellation limits; do not relax them because evaluation now runs per item. NCalc keeps its existing evaluator and validation behavior. Apply the core snapshot/aggregate bounds and combined 1 MiB item input/candidate limit, including shared values, in addition to evaluator limits. Retain candidates independently of job cleanup. Shared outputs keep catalog/audit evidence and bounded value-free item correlations; do not copy their values automatically into aggregate locals or ordinary instance history.
@@ -155,9 +190,23 @@ Stage under the core's normal instance/gateway/token/body/item/job lock order, a
 
 Script parsing/execution, sandbox constraint, and an authored local/shared candidate violating a valid target value contract use the script's existing durable job policy. `boundaryFirst` tries the applicable catch-all error boundary before retries; `retryFirst` exhausts the configured attempts first. Missing/archived bindings, binding access or contract drift, and `ValueRevision` conflicts are operational incidents, not business failures caught by an error boundary. Once evaluation has produced a saved candidate, publication recovery retains it and never reevaluates the script; before evaluation, the staging incident can retry only after its binding problem is resolved. Script bodies retain one catch-all error boundary with no HTTP-status matcher, and also support body timer/conditional boundaries in interrupting and non-interrupting modes. Per-item boundaries remain excluded. Conditional predicates and timer expressions keep their existing source contracts; shared catalog changes do not create conditional wakes.
 
+Map every failure to one coordinator exit. The foundation offers four, and this table is the adapter's contract:
+
+| Failure | Detected | Exit |
+| --- | --- | --- |
+| Missing body, script exception, sandbox limit, NCalc evaluation error, coercion to a declared type, or a write the MI context rejects (undeclared, ordinary instance, read-only shared, context, or reserved target). | Adapter, during evaluation. | Authored failure: the node's `job` policy. `boundaryFirst` takes the catch-all boundary through `CaptureItemFailureAsync`; `retryFirst` retries first; without a boundary the item's job opens an incident after its attempts. |
+| A declared non-nullable local left without a value, a local `validation` that is false, or a shared write failing its catalog type, nullability, or validation. | Adapter, after evaluation, with the helpers the coordinator uses. `SaveCandidateAsync` repeats the check and answers `multi_instance_result_invalid`. | The same authored failure. The coordinator's refusal is a second line, not the classifier. |
+| Staged input plus candidate over 1 MiB (`SaveCandidateAsync`), or the accepted locals taking the body past its result limit (`PublishCandidateAsync`): `multi_instance_result_too_large`. | Coordinator. | `RefuseItemResultAsync` in a fresh transaction. Never retried and never left in an incident. |
+| Shared output `ValueRevision` changed since staging. | `PublishCandidateAsync`. | Publication incident over the saved candidate; authorized retry refreshes the fence without evaluating again. |
+| Missing or archived binding, access or contract drift, lost lease, or a stale activation. | Coordinator. | Operational conflict or incident; never an error boundary. |
+
+One case needs a decision with TASK-05A. `PublishCandidateAsync` validates the saved locals again against the shared values current at publication, so a local `validation` that reads a shared alias can pass at evaluation and fail at publication with no version conflict. Evaluating again is not allowed, and the candidate cannot change. Proposed: treat it as the authored output failure of the second row, applied to the saved candidate.
+
+A script over frozen inputs gives the same result on every attempt, except for `sys.jobAttempt`, the clock, and randomness it reads itself. Retries therefore rarely help a script, and `retryFirst` only delays the boundary by the retry schedule. Say so in the field help and guides, and recommend an error boundary on a script body.
+
 Delegate whole-body routing/cancellation to TASK-05A. A caught failure settles the failing parent-item ledger visit, cancels unfinished sibling work, publishes the core's partial result, and routes the body once. With no matching error boundary and exhausted retries, the item remains incident-blocked and the body waits; a script that throws for one item on every attempt remains blocked unless the instance/body is cancelled or an interrupting timer/conditional boundary fires, the core's documented first-release limit. Keep its ledger visit active while recovery is possible; attempts/incidents carry failure evidence. An evaluation retry runs the same item job with fresh buffers and frozen inputs, preserving committed siblings; publication-only retry uses the saved candidate without reevaluation or fresh locals. Item incidents pause new admissions according to the core; resolving only one of several incidents must not unblock the whole body.
 
-Shared item output conflicts open a publication incident over the retained successful candidate; aggregate conflicts belong to the core completion job. Authorized recovery refreshes only output fences and publishes saved values without script reevaluation. A saved read-modify-write result is not recalculated or merged: accepting publication retry can overwrite a newer value. Parallel writes to one shared key can conflict even within one body; sequential staging can observe earlier commits, but external writers can still cause a conflict. Add an MI-specific `WorkflowJobRepository` recovery branch so generic result/snapshot clearing cannot destroy the saved candidate. Deterministic aggregate failures take the boundary or fault the instance as the core specifies.
+Shared item output conflicts open a publication incident over the retained successful candidate; aggregate conflicts belong to the core completion job. Authorized recovery refreshes only output fences and publishes saved values without script reevaluation. A saved read-modify-write result is not recalculated or merged: accepting publication retry can overwrite a newer value. Parallel writes to one shared key can conflict even within one body; sequential staging can observe earlier commits, but external writers can still cause a conflict. The foundation's `RetryIncidentAsync` already keeps the saved candidate and requests a fence refresh only for `output_version_conflict`; pin it with script cases instead of adding another branch. Deterministic aggregate failures take the boundary or fault the instance as the core specifies.
 
 Scope cancellation, termination, fault, parent-call cancellation, or an interrupting timer/conditional boundary immediately closes item recovery authority and fences late evaluations. Previously committed shared writes remain committed; cancellation is not compensation. Non-interrupting boundaries leave item slots and the body intact while their own continuation runs. TASK-05A owns subscription activation/lifetime, repeating/latched firing, empty-input and completion races, notification draining, and version-switch/reactivation restrictions. Do not create one subscription per script item.
 
@@ -165,9 +214,14 @@ Conditional subscriptions begin at token entry even when it is queued behind ano
 
 ### 6. Validation, editor, and runtime UI
 
-Add script-specific rules beside the shared automatic-MI rule helper. Check supported `scriptFormat`, required body/assignment shape, local/shared target resolution, binding access and alias/key collisions, expression dependencies, body-boundary settings, and incompatible values before normalization loses evidence. Require explicit `completionEvaluation: "afterAll"`; human MI retains its existing defaults.
+The common rules already check `asyncBefore`, the explicit `afterAll`, NCalc target resolution, binding access, alias/key collisions, body-boundary settings, and the topology; the access planner and the lock-order proof already cover every automatic phase. Verify them with script cases and change them only where a case fails. Add the script rules the foundation does not have, in the server validator and in the editor's save validator with the same messages and error order:
 
-Update producer and shared-access analysis so automatic NCalc assignments and computed JavaScript setters distinguish locals from declared shared producers. A downstream call must not discover a local as a parent variable. Include staged shared reads/targets, validation dependencies, and publication/continuation segments in the access and lock-order proof; retain ordinary scripts' current plan. Publication/readiness and AI authoring validation must call the same server rules; do not change AI instructions or tool names/descriptions.
+- **Context references.** Ordinary scripts are only parse-checked, so nothing rejects `[mi.completed]`, `[mi.remaining]`, or an unknown `mi.*` name in a body's assignment, local default, or local validation today. Reject them at save for an NCalc body; validation of ordinary script tasks stays unchanged.
+- **Local validation language.** A local output's `validation` is only parse-checked, so it accepts `FlowInfo` and gateway functions, which TASK-05A lists as an open finding. Take ownership here: reject `FlowInfo` and the gateway and multi-instance outcome functions, as other variable and output validation expressions do.
+- **JavaScript.** Targets stay a runtime check. The save validator cannot prove a computed name, so the field help states the allowed targets and the runtime error names the rejected one.
+- **Evidence.** Check these before normalization can lose the authored value.
+
+A downstream call must not discover a local as a parent variable; pin that with a script case. Publication/readiness and AI authoring validation must call the same server rules; do not change AI instructions or tool names/descriptions.
 
 In the canonical editor assets:
 
@@ -187,10 +241,10 @@ Paths below are relative to the repository root. Coordinate shared-file edits wi
 | --- | --- | --- |
 | 1. Characterize existing scripts | `Flowbit/tests/Flowbit.Tests/TypedInputsScriptTests.cs`, `JintScriptEvaluatorTests.cs`, `JintScriptEvaluatorFlowInfoTests.cs`; shared model/validator tests. | Ordinary script reads/writes, coercion, validation, sandbox, and FlowInfo behavior are pinned. |
 | 2. Item evaluator adapter | `Flowbit/src/Flowbit.Service/Services/WorkflowEngineService.Jobs.cs` (`EvaluateStagedScript`), `WorkflowEngineService.cs` (`EngineScriptContext`/coercion), `Abstractions/Services.cs`; `Flowbit.Infrastructure/Scripting/JintScriptEvaluator.cs` only where isolation/cancellation integration requires it. | Both formats return isolated local/shared candidates through the core seam without direct runtime writes. |
-| 3. Definition/access analysis | `WorkflowDefinitionValidator.cs`, `SharedVariableAccessPlanner.cs`, `SharedVariableTransactionLockOrderValidator.cs`, `CallActivityRules.SourceDeclarations`, and shared/core normalization. | Static/dynamic declaration/access/key checks, shared reads/writes, and monotonic lock-order proof pass; ordinary scripts remain compatible; locals are never process producers. |
-| 4. Durable integration | Core automatic-MI coordinator, `WorkflowEngineService.Jobs.cs`, `WorkflowJobRepository` recovery, Worker dispatch, and common boundary/cancellation paths. | Sequential/parallel jobs, saved-candidate publication recovery, body timer/conditional modes, restart/stale-result handling, and no successful reevaluation pass. |
+| 3. Definition rules | `WorkflowDefinitionValidator.cs`, `AutomaticMultiInstanceRules.cs`, and the editor save validator for the §6 additions; script cases for the existing `SharedVariableAccessPlanner.cs`, `SharedVariableTransactionLockOrderValidator.cs`, and `CallActivityRules.SourceDeclarations` behavior. | Context-reference and local-validation rules agree between server and editor; existing access plans and lock-order proof pass for both formats; ordinary scripts remain compatible; locals are never process producers. |
+| 4. Durable integration and release boundary | `WorkflowDefinitionReadinessChecker.cs`, `WorkflowEngineService.AutomaticMultiInstance.cs` (runtime guard), `WorkflowEngineService.Jobs.cs` (entry and item routing, shared with TASK-05B), the coordinator's existing operations, and common boundary/cancellation paths. `WorkflowJobRepository` recovery needs tests only. | Script bodies publish and run only on a Development host with the switch open; service and call bodies stay closed. Sequential/parallel jobs, every failure exit in §5, saved-candidate publication recovery, body timer/conditional modes, restart/stale-result handling, and no successful reevaluation pass. |
 | 5. Authoring and UI | `Flowbit/src/Flowbit.Ui/wwwroot/editor/flowbit-editor.js`; template/CSS only if needed; core instance detail/Operations projections. | Round trips, invalid import, format/type changes, local controls, permissions, and real-browser scenarios pass. |
-| 6. Examples/docs/handoff | Owning pages below and canonical MI examples. | HTTP scenarios, linked documentation, recorded checks, and parent release checklist agree with implemented behavior. |
+| 6. Examples/docs/handoff | Prepared script sections for the owning pages below and prepared canonical MI examples, merged in the parent's integration change (§9). | HTTP scenarios, prepared documentation, recorded checks, and parent release checklist agree with implemented behavior. |
 
 The script evaluator/context work can progress after core contracts are fixed, but runtime delivery depends on the core's persistence, admission, cancellation, retention, and recovery guarantees. Do not ship a temporary all-items-in-one-transaction or in-memory fan-out implementation.
 
@@ -208,6 +262,10 @@ Add focused automatic-MI script tests; these are required scenarios, not claims 
 | Boundaries/cancellation | `boundaryFirst`/`retryFirst`, no boundary, script/local/shared-validation failures, multiple incidents, error capture closing subscriptions before partial/error writes, conditions at queued entry, timers before reset/admission, incident/completion lifetime and closure before async-after, interrupting timer/conditional cancellation without a new partial aggregate, preserved triggering writes, non-interrupting repeats/latches/spawned siblings and empty-input/finalization races under core fences, late evaluator rejection, no rollback of committed shared writes, and no shared-write conditional wake. |
 | Locking and publication | Canonical multi-key acquisition at staging/finalize, dynamic JavaScript conservative access, shared aggregate/error targets and validation dependencies, unsafe continuation rejected before evaluation, publication-only retry acceptance without recomputation or automatic conflict merge, and no aggregate write on cancellation or while its incident is unresolved. |
 | Regression | Ordinary scripts still write process/shared variables, human MI behavior unchanged, local producers absent from call compatibility, automatic-loop guard preserved, and protected UI payload/retry access unchanged. |
+| Release boundary | With only the script adapter installed: script bodies publish and run on a Development host with the switch open; service and call bodies are refused at publication, entry, and item processing; a host outside Development refuses script bodies whatever its options say. |
+| Failure exits | One case per row of the §5 table, in both formats, with and without a boundary and under both `failureHandling` values; over-limit candidates and results are refused without a retry or an incident; a local validation that fails only at publication follows the agreed rule; a retry after a committed candidate never evaluates again. |
+| Adapter contract | Named instance inputs for NCalc and the whole-instance snapshot for JavaScript, including a stored variable no declaration names and a snapshot near 1 MiB; staged `config.*`/`setting.*` size per item; minimal validation context; JavaScript fences narrowed to written aliases; one shared key written through two aliases; a shared binding without a value in both formats; reads of a local without a value; `getVariables()`; `mi.item` for every element type; rejected `mi.completed`/`mi.remaining` references; `usesFlowInfo` on a JavaScript body. |
+| Scale | A 1,000-item body in both formats with default Worker settings and with several Workers, recording duration and queries per item. Scripts are the fastest items, so they expose the per-item cost TASK-05A lists as an open finding (each completion reads progress for every body of the instance and lists its open jobs) and the JavaScript lock scope of §4. |
 
 Extend relevant existing `TypedInputsScriptTests`, `JintScriptEvaluatorTests`, `JintScriptEvaluatorFlowInfoTests`, shared-variable access-plan/runtime suites, `DurableWorkflowProcessorTests`, `DurableJobConflictTests`, `DurableParallelFinalizationTests`, automatic-loop guard integration suites, `EditorValidatorTests`, and `EditorValidatorCharacterizationTests`. Core owns the full lifecycle/migration/query race matrix; include script cases rather than duplicating another runtime harness.
 
@@ -227,7 +285,10 @@ Capture changed inspector/marker and queued, blocked, completed, and cancelled r
 
 ### 9. Documentation and handoff
 
-Update behavior guides only with the implementation. This subtask plan does not claim that the proposed scripting contract has shipped.
+This subtask plan does not claim that the proposed scripting contract has shipped. Follow the timing in [TASK-05A §13](task-05a-multi-instance-core.md#13-documentation-and-completion-handoff):
+
+- **With this subtask's code:** implementation invariants in [AGENTS.md](../../AGENTS.md), and any operational, setting, schema, or route reference this subtask changes, marked inactive until automatic multi-instance is enabled.
+- **Prepared here, merged in the parent's integration change:** the script sections of the behavior guides in the table below and the canonical examples. The AI authoring package bundles those guides and the example catalog, so merging them earlier would tell the assistant to author definitions that publication still refuses. Until then keep the example definitions as test fixtures outside `examples/`, run them over HTTP on the Development test hosts, and record the contract in this plan.
 
 | Owning page | Script-specific update |
 | --- | --- |
@@ -239,6 +300,28 @@ Update behavior guides only with the implementation. This subtask plan does not 
 | [Runtime reference](../../Flowbit/README.md) and [AGENTS.md](../../AGENTS.md) | Explicit MI local/shared context, unlocked evaluation/value fencing, shared producer/access/lock-order proof, publication-only recovery, and sandbox invariants. |
 | [Example catalog](../../examples/README.md) and [MI examples](../../examples/multi-instance/README.md) | Canonical NCalc and JavaScript definitions in both modes with typed instance/shared inputs, ordered locals and shared effects, empty input, timer/conditional boundaries in both modes, and bounded failure/conflict recovery. |
 
-Coordinate API/schema documentation with TASK-05A; do not invent script-specific tables or routes. Validate relative links/anchors/images and JSON, then execute canonical examples through HTTP. Keep PowerShell and Bash walkthroughs aligned. Include examples in existing authoring-knowledge/catalog validation without changing AI instructions/tools.
+Coordinate API/schema documentation with TASK-05A; do not invent script-specific tables or routes. Validate relative links/anchors/images and JSON, then execute the prepared examples through HTTP. Keep PowerShell and Bash walkthroughs aligned. The integration change adds the examples to the existing authoring-knowledge/catalog validation without changing AI instructions/tools.
 
-Handoff to the parent requires the adapter seam and local-context contract implemented, both formats passing the required matrix, screenshots/browser evidence recorded, current documentation updated, and any limitations explicitly resolved or reflected in the parent acceptance criteria. Keep shared decisions in TASK-05A and synchronize this subtask's status with the parent/backlog. TASK-05 cannot be Done until core, service, script, and call subtasks all meet their first-release gates.
+Handoff to the parent requires the adapter seam and local-context contract implemented, both formats passing the required matrix, screenshots/browser evidence recorded, the documentation above updated or prepared as its timing requires, and any limitations explicitly resolved or reflected in the parent acceptance criteria. Keep shared decisions in TASK-05A and synchronize this subtask's status with the parent/backlog. TASK-05 cannot be Done until core, service, script, and call subtasks all meet their first-release gates.
+
+## Plan review (2026-11-12)
+
+This plan was reviewed against the parent plan, TASK-05A, and the foundation code (commit `03aeb8a`). No script-adapter code exists yet. The review changed the plan as follows:
+
+- **Current state** now separates what the foundation provides from what this subtask must add. Target resolution for NCalc, the per-phase shared access plans, the item context, and publication-only retry are already implemented; the earlier text planned them again.
+- **Release boundary** (§1) is new. The foundation's publication, runtime, and item-job guards are unconditional, and no adapter plan said how a subtask opens them for its own acceptance evidence.
+- **Adapter contract** (§4) records what the coordinator's operations require: named instance inputs, the staged environment, a minimal validation context, narrowed JavaScript fences, the JavaScript lock scope, and read semantics.
+- **Failure exits** (§5) map every failure to one coordinator operation. The earlier text sent size-limit failures through the retry policy, which the core's refusal rule forbids.
+- **Validation** (§6) names the two rules still missing: context references and the local-validation language.
+- **Tests** (§8) add the release boundary, failure exits, adapter contract, and scale rows.
+- **Documentation timing** (§9 and the acceptance criteria) now follows TASK-05A §13. The earlier criteria required guides and canonical examples before integration, when publication still refuses them.
+
+The per-kind opening of the publication, runtime, and item-job guards (§1) was decided on 2026-11-12 and is recorded in TASK-05A §8, TASK-05B, and TASK-05D.
+
+Decisions still to agree with TASK-05A before implementation, because they change a shared contract:
+
+1. How a JavaScript body treats a shared binding that has no value (§4).
+2. The exit for a local validation that fails only at publication (§5).
+3. Whether a JavaScript item stores every `config.*`/`setting.*` value or the body stores one copy (§4).
+4. An "every instance variable" request for a JavaScript body's snapshot (§4).
+5. Ownership of the local-validation language rule that TASK-05A lists as an open finding (§6).
