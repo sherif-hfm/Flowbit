@@ -314,7 +314,8 @@ An early quorum, an interrupt, or another actor may cancel unfinished work. With
 
 The inactive [TASK-05A foundation](enhancements/task-05a-multi-instance-core.md)
 also has a separate **Automatic multi-instance work** panel. Automatic execution
-remains gated until B/C/D integration. When automatic body data is available, the
+remains gated until B/C/D integration; only a Development API with the release
+switch open can already run script bodies. When automatic body data is available, the
 panel shows item counts, concurrency and saved results. A current body control
 incident displays **Needs attention**, its type, control job ID and incident ID,
 including when all items have completed but aggregate publication is blocked.

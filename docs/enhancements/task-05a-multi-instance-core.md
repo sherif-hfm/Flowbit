@@ -316,6 +316,41 @@ Until the parent's integration step, one release switch in the automatic-MI rule
 - Each adapter's tests pin that the kinds not yet installed stay refused at publication, entry, and item processing, and that a host outside Development refuses every kind.
 - The integration change removes the per-kind checks together with the option.
 
+Implemented with TASK-05C on 2026-11-12: `AutomaticMultiInstanceRules.InstalledAdapterKinds`
+is that one list and holds `scriptTask` only. All three guards also require the open
+switch, so a host outside Development refuses every kind at publication, at runtime
+entry, and at item processing, including a definition another host published. The
+Worker resolves the option for its own environment, as the API does; its refused
+entry and item jobs retry and then wait in an incident, and a retry on an open Worker
+resumes them.
+
+**Size measure (corrected 2026-11-12).** The item and body size checks first counted
+compact JSON, while the tables' check constraints count `octet_length(column::text)`,
+the text PostgreSQL prints for stored `jsonb` (spaces after commas and colons, numbers
+in full). A value could pass the code and then break the constraint with an unmapped
+error, which a Worker treats as an unexpected failure and evaluates again. Every
+automatic limit now counts `JsonbText.ByteCount`, the same text, so the code always
+refuses first and an oversized item takes `RefuseItemResultAsync` once.
+
+**Script adapter decisions (agreed 2026-11-12).** TASK-05C raised five questions that
+change shared contracts; each takes the proposal its plan recorded:
+
+1. A binding that a JavaScript body's staging plan reads only because of its
+   conservative scope, and that has never been set, is absent from the item context
+   (`hasVariable` is false). `SharedVariableAutomaticPhaseAccessPlan.OptionalReadAliases`
+   carries these; a statically named dependency still fails closed.
+2. A local validation that passes at evaluation and fails against the shared values
+   current at publication is the authored output failure of the saved candidate. It
+   follows the node's job policy; the script is never evaluated again.
+3. Each JavaScript item stores its own copy of every `config.*`/`setting.*` value in
+   its staged input, within the 1 MiB item limit. No body-level copy is added.
+4. The adapter lists a JavaScript body's stored instance-variable names under the
+   instance lock and passes them as named inputs; no "every instance variable"
+   request is added to the coordinator.
+5. TASK-05C owns the local-validation language rule: a local output's validation
+   rejects `FlowInfo`, the gateway helpers, and `CountFlow`/`PercentFlow`, and an
+   item's expressions read no `mi.*` name except `mi.item`, `mi.index`, and `mi.total`.
+
 For the first release, **block every workflow-version switch while an automatic MI entry/body/completion is open**, including incident-blocked work, an entry waiting for another body of its node, and its async-after continuation. Return a precise compatibility blocker identifying the node/execution. A target that adds, removes, or changes `multiInstance` on a node holding an open job is already blocked: `ValidateOpenJobs` compares the full `DurableNodeContract` before `JobDescriptorMatches`, and `CanonicalNode` includes `multiInstance`, so it reports `open_job_contract_changed`; open ordinary calls keep their unsettled-call blockers. Pin both with regression tests rather than adding a second mechanism. Do not implement partial rebinding of item jobs/snapshots. Completed executions remain immutable history and do not by themselves block switching at a later supported wait.
 
 Preserve unsettled-call version blockers on both parent and child in addition to the MI blocker. Automatic bodies/items are not new reactivation targets; retain the existing ordinary-user-task target restriction, prohibition on reactivating linked children, and requirement to settle calls/stop descendants before root reactivation. Reaching the node again through a loop or later valid reactivation creates a fresh activation, execution, items, and job/invocation identities. Terminal-state detection must not complete an instance while an automatic body still has pending, active, or recoverable work.
@@ -733,4 +768,4 @@ Verification of these corrections:
 Still open after these corrections:
 
 - Adapter integration owned by TASK-05B/C/D: initializing a body from its entry job, executing item jobs, resolving a call body's pin, call admission and result delivery. Each adapter also opens the publication, runtime, and item-job guards for its own kind, as §8 records under **Opening by activity kind**.
-- Review findings outside the recorded list: per-item cost (each item completion reads progress for every body in the instance and lists its open jobs); editor/server differences in first-error order, wording, and acceptance of a local `defaultValue` written as a string; local-output `validation` accepting `FlowInfo` and gateway functions; disabling multi-instance or changing type not reviewing call-only mappings; **Remove these options** on a call also removing a valid automatic body; a falsy imported `multiInstance` loading as an enabled one; sparse inspector help; a possible one-slot capacity over-credit during completion; the first migration's validated foreign keys and indexes on large tables inside its transaction; no shape check for `multiInstanceStart`; and the authoring-side test gaps listed in §12.
+- Review findings outside the recorded list: per-item cost (each item completion reads progress for every body in the instance and lists its open jobs); editor/server differences in first-error order, wording, and acceptance of a local `defaultValue` written as a string; local-output `validation` accepting `FlowInfo` and gateway functions (closed by TASK-05C on 2026-11-12, decision 5 above); disabling multi-instance or changing type not reviewing call-only mappings; **Remove these options** on a call also removing a valid automatic body; a falsy imported `multiInstance` loading as an enabled one; sparse inspector help; a possible one-slot capacity over-credit during completion; the first migration's validated foreign keys and indexes on large tables inside its transaction; no shape check for `multiInstanceStart`; and the authoring-side test gaps listed in §12.

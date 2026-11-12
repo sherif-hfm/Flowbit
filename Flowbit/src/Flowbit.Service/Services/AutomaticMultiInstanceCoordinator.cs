@@ -308,10 +308,9 @@ public sealed partial class AutomaticMultiInstanceCoordinator(
         {
             LocalVariables = locals.Deserialize<Dictionary<string, JsonElement>>()!
         });
-        AutomaticMultiInstanceValues.RequireSize(JsonSerializer.SerializeToElement(new
-        {
-            input = item.StagedInput, candidate = value
-        }), AutomaticMultiInstanceRules.MaxSnapshotBytes, AutomaticMultiInstanceValues.ResultTooLarge);
+        // The item row's check constraint bounds both columns together.
+        AutomaticMultiInstanceValues.RequireSize(JsonbText.ByteCount(item.StagedInput.Value) + JsonbText.ByteCount(value),
+            AutomaticMultiInstanceRules.MaxSnapshotBytes, AutomaticMultiInstanceValues.ResultTooLarge);
         return await repository.SaveCandidateAsync(body.Id, item.Id, body.ActivationId, value, cancellationToken);
     }
 
@@ -369,7 +368,8 @@ public sealed partial class AutomaticMultiInstanceCoordinator(
                 !actual.TryGetValue(expected.Key, out var current) || current != expected.Value))
             throw new AutomaticMultiInstancePublicationConflictException();
         var locals = JsonSerializer.SerializeToElement(candidate.LocalVariables);
-        var localBytes = JsonSerializer.SerializeToUtf8Bytes(locals).Length - 2;
+        // These locals replace the "{}" the minimum envelope counted for this row.
+        var localBytes = JsonbText.ByteCount(locals) - 2;
         if (body.ResultBytes + (long)localBytes > AutomaticMultiInstanceRules.MaxResultBytes)
             throw new AutomaticMultiInstanceValueException(AutomaticMultiInstanceValues.ResultTooLarge);
         var results = await variables.WriteAsync(definition, body.WorkflowDefinitionId, body.InstanceId,
@@ -377,7 +377,7 @@ public sealed partial class AutomaticMultiInstanceCoordinator(
                 SetBy: causalActor.User, NodeExecutionId: item.NodeExecutionId)).ToArray(), causalActor, cancellationToken);
         var changed = await repository.CompleteItemAsync(body.Id, item.Id, body.ActivationId, locals,
             JsonSerializer.SerializeToElement(results),
-            localBytes, cancellationToken);
+            (int)localBytes, cancellationToken);
         if (!changed) throw new WorkflowConflictException("The automatic item lost publication ownership.");
         if (job.PublicationFenceRefreshRequested
             && !await repository.AcknowledgePublicationFenceRefreshAsync(body.Id, job.Id, body.ActivationId,

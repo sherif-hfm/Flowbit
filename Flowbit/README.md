@@ -7,9 +7,15 @@ Start with the [developer documentation](../docs/index.md) for HTTP onboarding, 
 ## Automatic multi-instance foundation
 
 [TASK-05A](../docs/enhancements/task-05a-multi-instance-core.md) supplies common
-body/item persistence and publication operations. Publication and runtime guards
-remain closed until the B/C/D adapters and integration evidence are complete.
-Development authoring opt-in does not enable execution.
+body/item persistence and publication operations. Publication, runtime entry, and
+item processing each require the release switch, which opens only on a Development
+host with `WorkflowAutomaticMultiInstance:AllowInDevelopment`, and an installed
+adapter. The API and the Worker each resolve the switch for themselves. Only the
+script adapter ([TASK-05C](../docs/enhancements/task-05c-multi-instance-script-activities.md))
+is installed, so open Development hosts publish and run script bodies, and every
+other host refuses all automatic bodies, including ones another host published.
+Every automatic size limit counts `JsonbText.ByteCount`, the text PostgreSQL prints
+for the stored `jsonb`, which is what the size check constraints measure.
 
 `AutomaticMultiInstanceCoordinator` retains collection, instance inputs and
 FlowInfo once per body. Items retain staged shared/environment inputs and output
@@ -1836,7 +1842,9 @@ guards. No result membership is filtered in memory.
 backfill plus an `AFTER INSERT` trigger maintains
 `flowbit.instance_variable_current_values`, keeping only the greatest source ID
 per instance/name. Its variable-name, `jsonb_ops` GIN, root case-insensitive
-string, and root numeric indexes support the shared SQL compiler; targeted
+string, and root numeric indexes support the shared SQL compiler. The string index
+holds an MD5 of the lowercased value, so long strings can be stored, and
+`$eqIgnoreCase` compares the full value after matching the hash; targeted
 expression indexes can be added later for measured hot nested paths. Latest
 `includeVariables` enrichment also reads this projection.
 

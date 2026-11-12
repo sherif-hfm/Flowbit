@@ -18,6 +18,22 @@ public static class AutomaticMultiInstanceRules
 
     public static bool IsAutomaticBody(FlowNodeModel node) => IsAutomaticNode(node) && node.MultiInstance is not null;
 
+    /// <summary>
+    /// The activity kinds whose adapter is installed. Publication, runtime entry, and
+    /// item processing read nothing else, so a kind stays refused until its adapter's
+    /// entry, item, failure, and cancellation paths are complete. The integration change
+    /// removes this list together with the Development-only release switch.
+    /// </summary>
+    public static IReadOnlySet<string> InstalledAdapterKinds { get; } =
+        new HashSet<string>(StringComparer.Ordinal) { BpmnFlowNodeTypes.ScriptTask };
+
+    /// <summary>Whether an automatic body of this node type has an installed activity adapter.</summary>
+    public static bool IsAdapterInstalled(string? nodeType) =>
+        nodeType is not null && InstalledAdapterKinds.Contains(nodeType);
+
+    public static string AdapterUnavailableMessage(FlowNodeModel node) =>
+        $"Automatic multi-instance {node.Type} #{node.Id} cannot be published or run until its activity adapter is installed.";
+
     public static bool IsLocalOutput(FlowNodeModel node, string? name) =>
         IsAutomaticBody(node) && (node.MultiInstance!.OutputVariables ?? []).Any(output =>
             output is not null && string.Equals(output.Name, name, StringComparison.OrdinalIgnoreCase));

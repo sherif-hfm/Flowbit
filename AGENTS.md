@@ -284,14 +284,43 @@ not inject application state or edit database rows to manufacture acceptance.
 
 ### Automatic multi-instance foundation (TASK-05A)
 
-Automatic service/script/call MI is under development; publication and runtime
-execution remain closed pending TASK-05B/C/D and common integration. The temporary
-`WorkflowAutomaticMultiInstance:AllowInDevelopment` API option opens common validation
-only in Development. The hosted editor takes the API's effective value from
+Automatic service/script/call MI is under development until the TASK-05 integration
+step. The temporary `WorkflowAutomaticMultiInstance:AllowInDevelopment` option opens
+common validation only in Development; the API and the Worker each resolve it for
+their own environment. The hosted editor takes the API's effective value from
 `GET /api/workflows/authoring-capabilities`, never from the UI host's configuration;
-standalone and other environments keep the gate closed. Do not remove the separate
-readiness/runtime guards merely to exercise editor controls, or let an automatic
-body run as one ordinary activity.
+standalone and other environments keep the gate closed. Publication, runtime entry,
+and item processing each require the open switch and an installed activity kind:
+`AutomaticMultiInstanceRules.InstalledAdapterKinds` is the one list the three guards
+read (`WorkflowDefinitionReadinessChecker.EnsureDurablePublicationAllowed`,
+`EnsureAutomaticMultiInstanceRuntimeAvailable`, and the item-job dispatch in
+`WorkflowEngineService.AutomaticMultiInstanceScripts.cs`), so a body published on an
+open host neither starts nor runs on a closed one; its jobs retry, then wait in an
+incident. Only `scriptTask` is installed; service and call bodies stay refused at
+all three. Add a kind only in the change that completes its entry, item, failure,
+and cancellation paths, and never let an automatic body run as one ordinary activity.
+
+**Script adapter (TASK-05C).** `WorkflowEngineService.AutomaticMultiInstanceScripts.cs`
+routes a script body's `asyncBefore` job to `InitializeBodyAsync` and runs each
+`multiInstanceItem` job as stage, evaluate, save, publish in separate transactions:
+no runtime or shared lock is held while NCalc or Jint runs, and an item whose
+candidate is saved goes straight to publication on every later attempt. It freezes
+an NCalc body's referenced instance inputs and every stored name for JavaScript,
+never the body's own aggregate target or its collection, which the snapshot already
+holds once; NCalc items stage only the `config.*`/`setting.*`/`sys.*` names they
+reference, JavaScript items all of them. An entry failure (a source that cannot be
+frozen) takes the catch-all boundary through `EnterAutomaticErrorBoundaryAsync`, the
+same route as a body's own error: Error-phase locks only and a validated error
+target, never ordinary pass-through and the node's ordinary lock plan.
+`EvaluateAutomaticScriptItem` uses its own `IScriptContext`, never
+`EngineScriptContext`: writes resolve to declared locals or writable shared aliases
+outside the reserved collection/aggregate/error targets, one key through two aliases
+fails, and fences narrow to the aliases written. Failures take exactly one exit:
+authored script/output failures follow the node's job policy (`CaptureItemFailureAsync`
+or retry, then an incident); size refusals go through `RefuseItemResultAsync`; a
+shared value conflict opens `output_version_conflict` over the saved candidate. A
+JavaScript stage's conservative shared reads are `OptionalReadAliases`, absent when
+unset, while statically named dependencies still fail closed.
 
 `AutomaticMultiInstanceRules` owns the common authored contract, including dedicated
 local output declarations; the migrators preserve automatic settings and invalid
@@ -307,7 +336,11 @@ candidate-storage transaction before publication; a rollback must never erase th
 only accepted external result. Shared candidates, inputs and local results belong
 to the item/body and survive job retention. `AutomaticMultiInstanceValues` owns
 bounded snapshots and index-ordered aggregate envelopes; `AutomaticMultiInstanceLimits`
-owns the 1–1,000 concurrency parsing/fallback/cap contract.
+owns the 1–1,000 concurrency parsing/fallback/cap contract. Every automatic size
+limit counts `JsonbText.ByteCount`: the bytes PostgreSQL prints for the stored
+`jsonb` (`octet_length(value::text)`, with spaces after commas and colons and numbers
+in full), the measure the size check constraints use. Never measure compact JSON
+for a limit a database check also enforces; the code must refuse first.
 
 Retain FlowInfo once on the body at successful initialization. Rebuild local
 defaults from frozen inputs for each actual execution attempt. Only explicit
@@ -521,7 +554,11 @@ Storage follows the hybrid design:
   `AFTER INSERT` PostgreSQL trigger upserts that row into
   `instance_variable_current_values` only when its source ID is newer. The
   projection has a composite primary key, variable-name lookup, default
-  `jsonb_ops` GIN, root case-insensitive-string, and root-numeric indexes.
+  `jsonb_ops` GIN, root case-insensitive-string, and root-numeric indexes. The
+  string index holds `md5(lower(value))`, never the value: a B-tree entry is
+  limited to 2,704 bytes, and a whole-value index made every longer string write
+  fail. Keep any new value index bounded the same way, and keep the compiler's
+  hash predicate followed by its exact comparison.
   Latest-value enrichment and all five advanced variable searches read this
   projection; audit and execution-attributed-change reads continue to use
   history. One validated service-layer AST and one infrastructure SQL compiler
@@ -977,7 +1014,10 @@ Storage follows the hybrid design:
   (before persistence) so an error-boundary catch leaves nothing half-written.
   A script/assignment/validation failure routes out an attached
   `errorBoundaryEvent` like a service-task failure; with no boundary the
-  transition fails (rollback + 400). `IScriptEvaluator`
+  transition fails (rollback + 400). NCalc division by zero and a result that
+  is not a finite number are such failures: `EvaluateValue` maps
+  `ArithmeticException` and `SerializeScriptValue` a non-finite value to a
+  `WorkflowDomainException`, never an unexpected exception. `IScriptEvaluator`
   (`JintScriptEvaluator` in the infrastructure layer) also parse-checks a
   `javascript` body at author time (`Engine.PrepareScript`, no execution) via
   `ValidateDefinition`.

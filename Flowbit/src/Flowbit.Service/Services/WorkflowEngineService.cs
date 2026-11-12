@@ -38,7 +38,8 @@ public sealed partial class WorkflowEngineService(
     ICallActivityRepository? callActivities = null,
     CallActivityOptions? callActivityOptions = null,
     IAutomaticMultiInstanceRepository? automaticMultiInstances = null,
-    AutomaticMultiInstanceCoordinator? automaticMultiInstanceCoordinator = null)
+    AutomaticMultiInstanceCoordinator? automaticMultiInstanceCoordinator = null,
+    AutomaticMultiInstanceOptions? automaticMultiInstanceOptions = null)
     : IWorkflowEngineService, IWorkflowJobProcessor,
       IInstanceVersionChangeBatchExecutor, IConditionalEventRuntimeCoordinator,
       IAdministrativeActionExecutor
@@ -9485,7 +9486,7 @@ public sealed partial class WorkflowEngineService(
                     items.Add(CoerceScriptScalar(JsonElementToObject(item), variable.DataType));
                 }
 
-                coerced = JsonSerializer.SerializeToElement(items);
+                coerced = SerializeScriptValue(items, variable);
             }
             else if (result is IEnumerable enumerable
                      && result is not string
@@ -9498,23 +9499,39 @@ public sealed partial class WorkflowEngineService(
                     items.Add(CoerceScriptScalar(raw, variable.DataType));
                 }
 
-                coerced = JsonSerializer.SerializeToElement(items);
+                coerced = SerializeScriptValue(items, variable);
             }
             else
             {
                 // A scalar result is wrapped so a declared array variable still
                 // receives a single-element value.
-                coerced = JsonSerializer.SerializeToElement(
-                    new[] { CoerceScriptScalar(result, variable.DataType) });
+                coerced = SerializeScriptValue(
+                    new[] { CoerceScriptScalar(result, variable.DataType) }, variable);
             }
         }
         else
         {
-            coerced = JsonSerializer.SerializeToElement(CoerceScriptScalar(result, variable.DataType));
+            coerced = SerializeScriptValue(CoerceScriptScalar(result, variable.DataType), variable);
         }
 
         EnsureProcessVariableValueAllowed(variable, coerced);
         return coerced;
+    }
+
+    // A division by zero or an overflow gives an infinite or NaN double, which JSON
+    // cannot hold. That is the script's own failure, so it routes like any other
+    // rejected write instead of escaping as an unexpected exception.
+    private static JsonElement SerializeScriptValue(object? value, VariableModel variable)
+    {
+        try
+        {
+            return JsonSerializer.SerializeToElement(value);
+        }
+        catch (ArgumentException)
+        {
+            throw new WorkflowDomainException(
+                $"Process variable '{variable.Name}' cannot hold the result: it is not a finite number.");
+        }
     }
 
     private static void EnsureProcessVariableValueAllowed(VariableModel variable, JsonElement value)

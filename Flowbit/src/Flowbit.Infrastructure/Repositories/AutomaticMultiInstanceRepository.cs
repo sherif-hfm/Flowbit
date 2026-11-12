@@ -4,6 +4,7 @@ using Flowbit.Infrastructure.Data;
 using Flowbit.Infrastructure.Entities;
 using Flowbit.Service.Abstractions;
 using Flowbit.Service.Models;
+using Flowbit.Service.Services;
 using Microsoft.EntityFrameworkCore;
 
 namespace Flowbit.Infrastructure.Repositories;
@@ -46,13 +47,15 @@ public sealed class AutomaticMultiInstanceRepository(AppDbContext db) : IAutomat
         var actor = create.ActivityKind == "callActivity" ? new NodeExecutionActorRecord("callActivity", []) : create.ActorContext;
         var actorJson = actor is null ? null : JsonSerializer.Serialize(actor);
         var snapshotSize = Size(create.InputSnapshot) + (actorJson is null ? 0 : Encoding.UTF8.GetByteCount(actorJson));
-        if (snapshotSize > PayloadLimit) throw new ArgumentException("Automatic body input exceeds 1 MiB.", nameof(create));
+        // The causal actor shares the snapshot row's limit. Its few bytes can tip a source
+        // that fits on its own, which is the same deterministic refusal as an oversized one.
+        if (snapshotSize > PayloadLimit) throw new AutomaticMultiInstanceValueException(AutomaticMultiInstanceValues.SourceInvalid);
         var snapshot = new WorkflowJobSnapshotEntity
         {
             Kind = "automaticMultiInstance", VariablesJson = Document(create.InputSnapshot),
             InvocationJson = actorJson is null ? null : JsonDocument.Parse(actorJson),
             OutputVariableVersionsJson = JsonDocument.Parse("{}"), EvaluationTime = create.InitializedAt,
-            SizeBytes = snapshotSize, CreatedAt = create.InitializedAt
+            SizeBytes = (int)snapshotSize, CreatedAt = create.InitializedAt
         };
         db.WorkflowJobSnapshots.Add(snapshot);
         var entity = new MultiInstanceExecutionEntity
@@ -525,10 +528,11 @@ public sealed class AutomaticMultiInstanceRepository(AppDbContext db) : IAutomat
         if (db.Database.CurrentTransaction is null) throw new InvalidOperationException("Automatic multi-instance mutations require an ambient runtime transaction.");
     }
 
-    private static int Size(JsonElement value) => Encoding.UTF8.GetByteCount(value.GetRawText());
+    // The measure the size check constraints use, so these guards and the database agree.
+    private static long Size(JsonElement value) => JsonbText.ByteCount(value);
     private static void CheckSize(JsonElement first, JsonElement? second)
     {
-        if (Size(first) + (long)(second.HasValue ? Size(second.Value) : 0) > PayloadLimit)
+        if (Size(first) + (second.HasValue ? Size(second.Value) : 0) > PayloadLimit)
             throw new ArgumentException("Automatic item staged input and candidate exceed 1 MiB.");
     }
     private static JsonDocument Document(JsonElement element) => JsonDocument.Parse(element.GetRawText());

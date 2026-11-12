@@ -450,6 +450,8 @@ Use a separate process rooted at the Worker publish directory with `dotnet Flowb
 
 Use a migration identity with DDL permission for the `flowbit` schema and a separate runtime identity with the permissions required by runtime queries, sequences, triggers, and functions. Provision database connectivity before migration; migrations do not provision your database host, backups, or service credentials.
 
+`HashInstanceVariableStringIndex` replaces the case-insensitive string index on `instance_variable_current_values`, which made any write of a string variable longer than about 2.7 KB fail. It builds the new index, then drops the old one, in one transaction that blocks writes to that table while the index builds, so apply it with API and Worker replicas stopped, as for other migrations. Rolling it back fails while any stored string is too long for the old index.
+
 For instance diagram history, stop every Worker before applying `AddInstanceNodeActivityCoverage` and `ClassifyInstanceNodeActivityCoverage`, then restart only upgraded Workers. An older Worker can prune node activity without its new permanent marker; mixed Worker versions are unsupported. Apply both migrations before the upgraded API, and upgrade the API before the UI. Existing API binaries can continue inserting instances during these migrations: the database default records new instances as covered from creation. Finish classification before exposing the new summary route.
 
 The first migration adds the coverage flag conservatively as `false` for existing rows and switches its insert default to `true`. The second classifies existing instances from surviving unseeded plain/message/timer start visits, excluding any instance with `HistoryPrunedAt`. It commits windows of at most 1,000 instance IDs outside a surrounding transaction, captures an upper ID bound, and safely repeats after interruption. Do not wrap this migration's generated SQL in an external transaction. Measure its execution time and database load on a production-sized restored copy before rollout. The local automated test exercises 2,009 instances across three batches; it is not a production capacity measurement.
@@ -461,15 +463,32 @@ The repository's EF Core packages are **10.0.9**. These commands pin `dotnet-ef`
 ### Automatic multi-instance foundation
 
 The automatic multi-instance schema and shared contract are staged behind the
-TASK-05 release boundary. Automatic service/script/call definitions cannot be
-published or executed yet. `WorkflowAutomaticMultiInstance:AllowInDevelopment`
-on the API opens authoring validation only when the API's environment is
-`Development`; other environments ignore it. The hosted editor reads the API's
+TASK-05 release boundary. `WorkflowAutomaticMultiInstance:AllowInDevelopment`
+opens automatic multi-instance only on a host whose environment is `Development`;
+other environments ignore it. Set it on both the API and the Worker: each host
+decides for itself. On the API it opens authoring validation, publication, and
+starting an instance that reaches a body. The hosted editor reads the API's
 effective value from `GET /api/workflows/authoring-capabilities` and shows its
 controls only when that is true, so the UI host's own environment and settings
-never decide it; the standalone editor remains closed. The separate publication
-and runtime guards remain closed until the activity adapters and integration gates
-are complete. Do not use this option as a production feature switch.
+never decide it; the standalone editor remains closed. On the Worker it opens a
+body's entry and item jobs. With the option in effect on both, a Development API
+can publish a multi-instance script task, and a Development Worker runs its items.
+A host where it is not in effect refuses a published body anyway: the API refuses
+to start an instance that reaches one, and the Worker's entry and item jobs fail,
+retry, and then wait in an incident that a retry on an open Worker resumes. Service
+and call bodies stay refused at publication, entry, and item processing until their
+adapters are installed. Do not use this option as a production feature switch. A
+script body needs a running Worker even for an empty collection, and each JavaScript
+item stores its own copy of every `config.*` and `setting.*` value within its 1 MiB
+staged-input limit.
+
+Every automatic multi-instance size limit (the 1 MiB body snapshot, an item's staged
+input and candidate together, its result, and the aggregate) counts the bytes
+PostgreSQL prints for the stored JSON, which is what the tables' size checks
+measure. That text has a space after each comma and colon and writes numbers in
+full, so it can be much larger than compact JSON: an array of zeros takes three
+bytes per element, and `1E+300` takes 301. A value over a limit is refused before
+it is written.
 
 Apply `20261111144523_AddAutomaticMultiInstanceCore`, then
 `20261111144824_ValidateAutomaticMultiInstanceConstraints`, then

@@ -4,7 +4,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Planned |
+| Status | In progress |
 | Category | Automatic multi-instance activity adapter |
 | Effort | M |
 | Priority | Part of the TASK-05 first release |
@@ -15,7 +15,7 @@
 
 Run both NCalc and JavaScript `scriptTask` nodes once per collection item, with independent local outputs, staged shared reads/writes, durable recovery, and ordered aggregate results. Both formats support parallel and sequential modes, instance/shared typed collections, and body timer/conditional boundaries in both interrupting and non-interrupting modes. This subtask is required for the same first release as service and call activities; splitting the plan does not defer any activity type.
 
-This is an implementation plan. It was first written against the repository reviewed on **2026-11-11**, before the TASK-05A foundation landed, and was revised on **2026-11-12** against that foundation (commit `03aeb8a`); see [Plan review](#plan-review-2026-11-12). Automatic multi-instance scripts are not implemented: the foundation rejects their publication and execution. JSON examples below describe the proposed contract and are not currently runnable definitions.
+This is an implementation plan. It was first written against the repository reviewed on **2026-11-11**, before the TASK-05A foundation landed, and was revised on **2026-11-12** against that foundation (commit `03aeb8a`); see [Plan review](#plan-review-2026-11-12). The script adapter was implemented on **2026-11-12**; see [Implementation record](#implementation-record-2026-11-12). Script bodies publish and run only on Development API and Worker hosts with the release switch open; every other host still refuses them, and the JSON examples below run only there.
 
 [TASK-05A](task-05a-multi-instance-core.md) is authoritative for the common workflow JSON, local-output declarations, input snapshots, limits, admission, persistence, item lifecycle, aggregate publication, query/API contracts, compatibility, migration, and rollout. This page specifies the script adapter and its verification. It must not introduce another scheduler, item table, result envelope, or aggregate writer.
 
@@ -325,3 +325,157 @@ Decisions still to agree with TASK-05A before implementation, because they chang
 3. Whether a JavaScript item stores every `config.*`/`setting.*` value or the body stores one copy (§4).
 4. An "every instance variable" request for a JavaScript body's snapshot (§4).
 5. Ownership of the local-validation language rule that TASK-05A lists as an open finding (§6).
+
+All five were agreed on 2026-11-12 with the proposals above; see the record below.
+
+## Implementation record (2026-11-12)
+
+The script adapter is implemented on the TASK-05A foundation. The status stays **In
+progress**: the browser-acceptance, scale, and prepared-documentation gates listed
+under [Still open](#still-open) are not complete.
+
+### Decisions
+
+The five questions above took the proposals this plan recorded. TASK-05A records them
+under **Script adapter decisions** in its §8:
+
+1. In a JavaScript body, a shared binding that the conservative staging scope alone
+   reads, and that has never been set, is absent from the item context. A statically
+   named dependency (a local default or validation) still fails closed.
+2. A local validation that fails only against the shared values current at
+   publication is the saved candidate's authored output failure. It follows the
+   node's job policy and never evaluates the script again.
+3. Each JavaScript item stores its own copy of every `config.*`/`setting.*` value.
+   Measured on a Development stack with two workflow settings and no configuration
+   values: **579 bytes** of staged input per item, so 1,000 items use about 0.6 MB in
+   total and each item stays far under its 1 MiB limit.
+4. The adapter lists a JavaScript body's stored instance-variable names under the
+   instance lock and passes them as named inputs.
+5. TASK-05C owns the local-validation language rule (see **Validation** below).
+
+`[mi.item]` in NCalc (§2) keeps an ordinary script's conversion of each JSON kind
+rather than adding a rule: `string`, `number`, and `boolean` arrive as their values,
+`date` and `datetime` as their authored text, a `json` object as its JSON text, and a
+`json` array as a list. Nothing is rejected at save; the editor's help says to use
+JavaScript to read object properties.
+
+### What changed
+
+| Area | Change |
+| --- | --- |
+| Release boundary | `AutomaticMultiInstanceRules.InstalledAdapterKinds` holds `scriptTask`. Publication, runtime entry, and item processing each require the open switch and an installed kind (`WorkflowDefinitionReadinessChecker`, now given `AutomaticMultiInstanceOptions` through `WorkflowDefinitionService`; `EnsureAutomaticMultiInstanceRuntimeAvailable`, now given them by the engine; the item-job dispatch). The Worker resolves the switch for its own environment, as the API does. Service and call bodies stay refused at all three. |
+| Routing | `WorkflowEngineService.Jobs.cs` sends a body's `asyncBefore` job and every `multiInstanceItem` job to one dispatch by node type in `WorkflowEngineService.AutomaticMultiInstanceScripts.cs`, the seam TASK-05B adds its case to. `FinalizeAsyncContinuationAsync` refuses a body's entry job. |
+| Entry | Names the instance inputs to freeze (NCalc references; every stored name for JavaScript; never the aggregate target or the collection, which the snapshot holds once) and calls `InitializeBodyAsync`. A source failure follows the node's job policy: retry, the catch-all boundary with the stable code in its error variable, or an incident. The boundary is taken by `EnterAutomaticErrorBoundaryAsync`, the route a body's own error uses: Error-phase locks only, with the error target validated. |
+| Sizes | `JsonbText.ByteCount` counts the bytes PostgreSQL prints for stored `jsonb`, which the size check constraints measure. Every automatic limit uses it (snapshot, staged input, staged input plus candidate, result, aggregate), so the code refuses a value before the database could. |
+| Items | Stage (`CaptureItemContextAsync`, with the referenced or full `config.*`/`setting.*`/`sys.*` environment), evaluate with no transaction, save (`SaveCandidateAsync`), and publish (`PublishCandidateAsync`), each in its own transaction. An item with a saved candidate always goes straight to publication. |
+| Item context | `EvaluateAutomaticScriptItem` uses its own `IScriptContext`, not `EngineScriptContext`. Writes resolve to declared locals, then to `readWrite` shared aliases outside the collection, aggregate, and error targets; every other target fails with a message naming it, and one shared key through two aliases fails at the second write. Fences narrow to the aliases written; the validation context holds only the names local validations reference. An item never reads its own aggregate target. |
+| Failure exits | Script errors (`script_task_failed`), including NCalc division by zero and a number that is not finite, and output-contract failures (`multi_instance_result_invalid`) follow the node's job policy through `CaptureItemFailureAsync` or a retry, then a `job_execution_failed` incident. Size refusals use `RefuseItemResultAsync`. A shared value conflict opens `output_version_conflict` over the saved candidate. |
+| Shared access | `SharedVariableAutomaticPhaseAccessPlan.OptionalReadAliases` carries decision 1; the planner and `WorkflowVariableStore.MergeEffectiveValuesAsync` use it. |
+| Validation | Server (`FindItemExpressionProblem`, `ValidateFlowInfoUsage`, `ValidateGatewayExpressionUsage`) and editor (`automaticItemExpressionProblem`, `validateFlowInfoUsage`, `validateGatewayExpressionUsage`) reject `mi.*` names other than `mi.item`/`mi.index`/`mi.total` in local defaults, local validations, and NCalc body assignments, and `FlowInfo`, gateway helpers, and `CountFlow`/`PercentFlow` in local validations. Item-context messages are identical on both sides. |
+| Editor | A body's NCalc assignment targets list its item-local outputs and writable shared aliases, rebuilt on focus, and keep an unavailable imported value visible. Script-format help, the JavaScript target note, and **Insert example** describe item work. Enabling multi-instance on a JavaScript task with a script asks the author to review its `setVariable` targets. |
+| Documentation | [AGENTS.md](../../AGENTS.md), [API reference](../api-guide.md#get-apiworkflowsauthoring-capabilities), [deployment](../deployment.md#automatic-multi-instance-foundation), [UI guide](../ui-guide.md), [database schema](../database-schema.md#automatic-multi-instance-foundation), [TASK-05A](task-05a-multi-instance-core.md), the parent, and the backlog. |
+
+### Verification
+
+- New PostgreSQL scenarios (`AutomaticMultiInstanceScriptRuntimeTests`, 8/8) publish
+  through an API host with the switch open and run every job through the registered
+  processor: the NCalc sequential example (one item admitted at a time, exact
+  aggregate), the JavaScript parallel example with items finished in reverse order,
+  a caught failure (partial result `completed`/`failed`/`cancelled`, boundary taken),
+  an uncaught failure (retried with the same staged input, then an incident, nothing
+  published), a shared output conflict (incident over the saved candidate; retry
+  publishes it, replacing the newer value, with one evaluation in total), an
+  interrupting timer that fires during evaluation (body cancelled, late result
+  fenced, no aggregate), an unset shared collection (entry failure takes the
+  boundary), and service and call bodies refused at publication.
+- Unit and parity tests: `AutomaticMultiInstanceScriptAdapterTests` (21) and
+  `EditorAutomaticMultiInstanceScriptTests` (8). One foundation test that pinned
+  script bodies as refused at runtime now pins only service and call bodies.
+- A verification pass added seven PostgreSQL scenarios (15/15 pass): `asyncAfter` runs
+  once after the aggregate; an empty collection completes with no evaluation;
+  sequential items read shared values that earlier items committed; a JavaScript body
+  stages while a binding was never set and writes it first; `retryFirst` retries
+  before the boundary; a local validation failure takes the boundary with
+  `multi_instance_result_invalid`; a validation that fails only at publication does
+  too, after one evaluation; and a JavaScript body freezes every instance variable, so
+  an oversized one fails entry where an NCalc body does not. A processor test pins a
+  service body's entry job (retried with the adapter message) and item job
+  (`job_invariant_violation`) as refused at runtime, and a unit test pins that a
+  downstream call never reads a local.
+- Focused regression before the last editor change: **2,076 passed, 1 failed** (the
+  foundation test above, then updated), 2,077 total, in 5 minutes 10 seconds. Command:
+  `dotnet test Flowbit/tests/Flowbit.Tests/Flowbit.Tests.csproj --no-build -m:1 --filter "FullyQualifiedName~AutomaticMultiInstance|FullyQualifiedName~Editor|FullyQualifiedName~Script|FullyQualifiedName~SharedVariable|FullyQualifiedName~Durable|FullyQualifiedName~DefinitionValidation|FullyQualifiedName~WorkflowAuthoringPackage|FullyQualifiedName~CallActivity|FullyQualifiedName~Incident|FullyQualifiedName~Retry"`.
+- Full solution after the final code: **4,940 passed, 1 failed**, 4,941 total, in
+  11 minutes 50 seconds. Command: `dotnet test Flowbit/Flowbit.slnx --no-build -m:1`.
+  The failure, `WorkflowAiConversationTests.ATruncatedResponseAndTheDeadlinePauseTheRun`,
+  hit that test's one-second mocked-client timeout under load; it is in AI authoring,
+  which this change does not touch, and passed 3 of 3 runs alone.
+- Real browser (built-in Chromium pane), Release-published API
+  (`http://127.0.0.1:15617`, Development, switch open), Worker, and UI
+  (`http://127.0.0.1:15652`) over a disposable PostgreSQL. In the hosted editor at
+  1024×768: imported the NCalc example, saw both item-local outputs offered as
+  assignment targets, changed a target and restored it with Ctrl+Z, typed
+  `[mi.completed]` and got the new save error, corrected it, saved, published, and
+  started. The Worker completed the body with the exact aggregate above, and item
+  detail showed each copied item and its locals. The JavaScript example with a
+  failing line completed two items and blocked one (**Admission paused by an item
+  incident**, aggregate still `[]`); retrying the incident in **Jobs & incidents**
+  re-ran only that item, which failed again over the same input. Instance detail had
+  no page overflow at 1440×900 and 390×844, and the hosted script inspector showed its
+  item targets at 1024×768 and 390×844. The console had no errors or warnings; the
+  Worker logged only the expected script failures.
+
+- Review fixes (2026-11-12, after a second review): an entry failure takes the boundary
+  under Error-phase locks with its error target validated; NCalc division by zero and
+  a number that is not finite are script failures, in ordinary scripts too; every size
+  limit counts the stored `jsonb` text; the collection is frozen once; and runtime
+  entry and item processing need the open switch, which the Worker now resolves. New
+  tests: six PostgreSQL scenarios in `AutomaticMultiInstanceScriptRuntimeTests` (a held
+  row lock on a `readWrite` binding no longer blocks the entry route; a refused error
+  code waits in a `job_conflict` incident; `[mi.item] % 0` takes the boundary; 4,000
+  copies of `1E+300`, 28 KB compact but about 1.2 MB stored, are refused once; a 600 KB
+  collection runs; a closed host refuses the start and the entry and item jobs, and
+  an open host then finishes), `JsonbTextTests` (28 values compared with PostgreSQL's
+  own `octet_length(value::jsonb::text)`), four ordinary-script cases in
+  `ErrorBoundaryMatchingRuntimeTests`, and adapter unit cases. The first full run
+  after these tests failed 10 cases with PostgreSQL `53300: too many clients`: each
+  API test host registered its connection pools as ready-made instances, which the
+  container never disposes, so stopped hosts kept idle connections for five minutes.
+  `AddInfrastructure` now lets the container build and dispose both pools
+  (`InfrastructureConfigurationTests` pins it). Full solution then: **4,997 passed,
+  0 failed**, in 12 minutes 46 seconds (`dotnet test Flowbit/Flowbit.slnx --no-build`).
+  No editor or UI file changed, so no browser check was needed.
+
+### Still open
+
+Review findings (2026-11-12), confirmed by reading the code and not yet fixed:
+
+- **JavaScript lock scope wording.** A JavaScript stage locks every shared binding of the
+  definition for update, read-only ones and the aggregate included, not only the
+  `readWrite` bindings that the help, AGENTS.md, and this record describe.
+- **Smaller gaps.** Item-owner locks take the job before the item row (the instance lock
+  serializes them, but AGENTS.md orders items first); the server finds `mi.*` names
+  through the NCalc parser, so an unparseable expression or a name inside a string
+  literal can give a different first error than the editor; an item that reads its own
+  aggregate target passes save and then fails (NCalc) or reads nothing (JavaScript);
+  switching script format on a body drops its assignments or script without a prompt;
+  the body section's live status does not update while an assignment is typed; the
+  help does not say that sequential items see earlier items' shared writes.
+
+Tests the plan lists that do not exist yet: a staged-input size refusal for a script
+item (a result over its limit is covered), FlowInfo and `usesFlowInfo` on a body, a shared collection's success path, conditional
+boundaries and non-interrupting timers on a script body, missing or archived bindings
+as incidents, several item incidents at once, no conditional wake from a shared write,
+the automatic-loop guard, a snapshot just under 1 MiB, and NCalc failure rows under
+both `failureHandling` values.
+
+- Worker-enabled browser acceptance scenarios in
+  `Flowbit/tests/Flowbit.BrowserAcceptanceTests/` for script bodies, with screenshots;
+  the manual browser check above does not replace them.
+- Script-specific cases for non-interrupting timer and conditional boundaries, a
+  shared typed collection's success path, sequential shared visibility, and the
+  JavaScript lock scope under several Workers. TASK-05A's common tests cover the
+  boundary lifecycle itself.
+- The 1,000-item scale run in both formats, recording duration and queries per item.
+- The prepared script sections of the owning guides and the canonical example
+  definitions (§9); the runtime tests hold equivalent fixtures for now.

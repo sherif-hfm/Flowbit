@@ -25,18 +25,23 @@ public static class ServiceCollectionExtensions
             ?? throw new InvalidOperationException(
                 "Connection string 'Flowbit' is missing (legacy key 'WorkflowEngine' is also supported).");
 
-        var dataSourceBuilder = new NpgsqlDataSourceBuilder(connectionString);
-        dataSourceBuilder.EnableDynamicJson();
-        var dataSource = dataSourceBuilder.Build();
-
-        services.AddSingleton(dataSource);
-        services.AddSingleton(new RetentionDataSource(connectionString));
+        // The container builds each pool, so it also disposes it when its host stops. A
+        // pool registered as a ready-made instance is never disposed: its idle connections
+        // stayed open until Npgsql pruned them, and short-lived hosts, such as tests', used
+        // up the server's connection limit.
+        services.AddSingleton(_ =>
+        {
+            var dataSourceBuilder = new NpgsqlDataSourceBuilder(connectionString);
+            dataSourceBuilder.EnableDynamicJson();
+            return dataSourceBuilder.Build();
+        });
+        services.AddSingleton(_ => new RetentionDataSource(connectionString));
         services.AddScoped<IRetentionRepository, RetentionRepository>();
         services.TryAddSingleton(new ServiceTaskOptions());
         services.TryAddSingleton(new MessageDeliveryOptions());
         services.TryAddSingleton(new ScriptOptions());
-        services.AddDbContext<AppDbContext>(options =>
-            options.UseNpgsql(dataSource, FlowbitDatabase.ConfigureProvider));
+        services.AddDbContext<AppDbContext>((provider, options) =>
+            options.UseNpgsql(provider.GetRequiredService<NpgsqlDataSource>(), FlowbitDatabase.ConfigureProvider));
         services.AddMemoryCache();
         services.AddScoped<ILocalIdentityRepository, LocalIdentityRepository>();
         services.AddSingleton<ILocalPasswordHasher, LocalPasswordHasher>();

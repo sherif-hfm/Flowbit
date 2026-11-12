@@ -346,7 +346,7 @@ Each NCalc `assignments` entry has:
 | `variable` | string | Required | Declared process target name, matched case-insensitively. A shared target must have write access. |
 | `expression` | string | Required nonblank | Valid NCalc expression over current values and expression context. Later assignments can read earlier assignments' staged values. Supports instance-wide `FlowInfo` where used with its literal arguments. |
 
-Scalar results assigned to an array target are wrapped as one-element arrays; existing arrays have their elements coerced. Numeric/Boolean conversions and final target validation are shared by both script formats. Example: declare `subtotal`, `tax`, and `total` as process numbers before using this fragment.
+Scalar results assigned to an array target are wrapped as one-element arrays; existing arrays have their elements coerced. Numeric/Boolean conversions and final target validation are shared by both script formats. An assignment that divides by zero, or whose result is a number that is not finite (`1 % 0`, `1 / 0`), fails the script like any other assignment error, so an attached error boundary catches it. Example: declare `subtotal`, `tax`, and `total` as process numbers before using this fragment.
 
 ```json
 {

@@ -220,7 +220,8 @@ public sealed class WorkflowVariableStore(
                     || binding.Access is not (SharedVariableAccessModes.Read or SharedVariableAccessModes.ReadWrite)
                     || automaticPhase.ProducerAliases.Contains(binding.Name) && binding.Access != SharedVariableAccessModes.ReadWrite)
                     throw new WorkflowConflictException("An automatic multi-instance shared binding is unavailable or its contract changed.");
-                if (automaticPhase.ReadAliases.Contains(binding.Name) && !current.ContainsKey(binding.SharedKey!))
+                if (automaticPhase.ReadAliases.Contains(binding.Name) && !current.ContainsKey(binding.SharedKey!)
+                    && !automaticPhase.OptionalReadAliases.Contains(binding.Name))
                 {
                     if (string.Equals(automaticPhase.CollectionSourceAlias, binding.Name, StringComparison.OrdinalIgnoreCase))
                         throw new AutomaticMultiInstanceValueException(AutomaticMultiInstanceValues.SourceInvalid);

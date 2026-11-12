@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
+using Flowbit.Infrastructure.Data;
 using Flowbit.Infrastructure.DependencyInjection;
 using Flowbit.Service.Abstractions;
 using Xunit;
@@ -36,6 +37,25 @@ public sealed class InfrastructureConfigurationTests
 
         var dataSource = provider.GetRequiredService<NpgsqlDataSource>();
         Assert.Equal("legacy_fallback", new NpgsqlConnectionStringBuilder(dataSource.ConnectionString).Database);
+    }
+
+    // A pool registered as a ready-made instance was never disposed, so each stopped test
+    // host kept its idle connections until Npgsql pruned them, and a full test run ran out
+    // of PostgreSQL connections. The container now owns and disposes both pools.
+    [Fact]
+    public async Task AddInfrastructure_DisposesItsConnectionPoolsWithTheContainer()
+    {
+        var provider = BuildProvider(BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["ConnectionStrings:Flowbit"] = ConnectionString("flowbit_primary")
+        }));
+        var runtime = provider.GetRequiredService<NpgsqlDataSource>();
+        var retention = provider.GetRequiredService<RetentionDataSource>();
+
+        await provider.DisposeAsync();
+
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => runtime.OpenConnectionAsync().AsTask());
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => retention.DataSource.OpenConnectionAsync().AsTask());
     }
 
     [Fact]

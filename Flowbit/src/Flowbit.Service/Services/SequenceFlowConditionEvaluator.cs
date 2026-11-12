@@ -216,6 +216,32 @@ public static class SequenceFlowConditionEvaluator
     }
 
     /// <summary>
+    /// The parameter names an expression references, as NCalc parses them (a bracketed
+    /// name such as <c>[mi.item]</c> without its brackets). An expression that does not
+    /// parse references nothing; save validation reports it separately.
+    /// </summary>
+    internal static IReadOnlyCollection<string> ParameterNames(string? condition)
+    {
+        var expression = Normalize(condition);
+        if (expression is null)
+        {
+            return [];
+        }
+
+        try
+        {
+            var ncalc = CreateExpression(expression, variables: null);
+            return ncalc.HasErrors()
+                ? []
+                : ncalc.GetParameterNames().Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        }
+        catch (NCalcException)
+        {
+            return [];
+        }
+    }
+
+    /// <summary>
     /// Evaluates an expression and returns the raw typed result (not coerced to a
     /// boolean), for use by scriptTask assignments. Instance variables are exposed
     /// as NCalc parameters (same as <see cref="Evaluate"/>), and the same custom
@@ -258,6 +284,13 @@ public static class SequenceFlowConditionEvaluator
         }
         catch (InvalidOperationException ex)
         {
+            throw new WorkflowDomainException(
+                $"Expression '{expression}' could not be evaluated: {ex.Message}");
+        }
+        catch (ArithmeticException ex)
+        {
+            // Integer division or modulo by zero, and overflow. The Boolean
+            // evaluators above already treat these as an unresolvable expression.
             throw new WorkflowDomainException(
                 $"Expression '{expression}' could not be evaluated: {ex.Message}");
         }

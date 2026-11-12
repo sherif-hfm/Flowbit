@@ -75,24 +75,27 @@ public static class AutomaticMultiInstanceValues
         var buffer = new ArrayBufferWriter<byte>();
         using var writer = new Utf8JsonWriter(buffer);
         writer.WriteStartArray();
+        // "[" and "]", then each row and the ", " before every row after the first.
+        long storedBytes = 2;
+        var written = 0;
         foreach (var row in rows.OrderBy(row => row.Index))
         {
             if (row.Index < 0 || row.Index >= collection.Count
                 || row.Status != "completed" && (!partial || row.Status is not ("failed" or "cancelled"))
                 || row.Status == "completed" && row.Variables.ValueKind != JsonValueKind.Object)
                 throw new AutomaticMultiInstanceValueException(ResultInvalid);
-            writer.WriteStartObject();
-            writer.WriteString("kind", "item");
-            writer.WriteNumber("index", row.Index);
-            writer.WritePropertyName("item");
-            collection[row.Index].WriteTo(writer);
-            writer.WriteString("status", row.Status);
-            writer.WritePropertyName("variables");
-            (row.Status == "completed" ? row.Variables : EmptyObject).WriteTo(writer);
-            writer.WriteEndObject();
-            writer.Flush();
-            if (buffer.WrittenCount + 1 > AutomaticMultiInstanceRules.MaxResultBytes)
+            var envelope = JsonSerializer.SerializeToElement(new
+            {
+                kind = "item",
+                index = row.Index,
+                item = collection[row.Index],
+                status = row.Status,
+                variables = row.Status == "completed" ? row.Variables : EmptyObject
+            });
+            storedBytes += (written++ > 0 ? 2 : 0) + JsonbText.ByteCount(envelope);
+            if (storedBytes > AutomaticMultiInstanceRules.MaxResultBytes)
                 throw new AutomaticMultiInstanceValueException(ResultTooLarge);
+            envelope.WriteTo(writer);
         }
         writer.WriteEndArray();
         writer.Flush();
@@ -100,12 +103,16 @@ public static class AutomaticMultiInstanceValues
         return document.RootElement.Clone();
     }
 
-    public static int RequireSize(JsonElement value, int limit, string errorCode)
-    {
-        var bytes = JsonSerializer.SerializeToUtf8Bytes(value).Length;
-        if (bytes > limit) throw new AutomaticMultiInstanceValueException(errorCode);
-        return bytes;
-    }
+    /// <summary>
+    /// Refuses a value larger than <paramref name="limit"/> and returns its size. Every
+    /// automatic multi-instance limit counts the bytes PostgreSQL stores
+    /// (<see cref="JsonbText"/>), the measure its check constraints use.
+    /// </summary>
+    public static int RequireSize(JsonElement value, int limit, string errorCode) =>
+        RequireSize(JsonbText.ByteCount(value), limit, errorCode);
+
+    public static int RequireSize(long bytes, int limit, string errorCode) =>
+        bytes > limit ? throw new AutomaticMultiInstanceValueException(errorCode) : (int)bytes;
 
     private static JsonElement EmptyObject => JsonSerializer.SerializeToElement(new { });
 }

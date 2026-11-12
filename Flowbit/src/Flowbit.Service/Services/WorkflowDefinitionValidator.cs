@@ -69,7 +69,68 @@ public sealed class WorkflowDefinitionValidator(
                 if (!string.IsNullOrWhiteSpace(output.Validation) && !SequenceFlowConditionEvaluator.IsValid(output.Validation))
                     throw new WorkflowDomainException($"Automatic multi-instance activity #{node.Id} local output '{output.Name}' has an invalid validation expression.");
             }
+            if (FindItemExpressionProblem(node) is { } itemProblem)
+                throw new WorkflowDomainException(itemProblem);
         }
+    }
+
+    private static readonly string[] ItemContextNames = ["mi.item", "mi.index", "mi.total"];
+
+    /// <summary>
+    /// An item reads only <c>mi.item</c>, <c>mi.index</c>, and <c>mi.total</c>: progress
+    /// such as <c>mi.completed</c> depends on completion order. A local output validation
+    /// cannot use the multi-instance outcome functions either. Mirrored by the editor's
+    /// <c>automaticItemExpressionProblem</c>.
+    /// </summary>
+    private static string? FindItemExpressionProblem(FlowNodeModel node)
+    {
+        var owner = $"Automatic multi-instance activity #{node.Id}";
+        string? Context(string? expression, string where, bool template)
+        {
+            if (string.IsNullOrWhiteSpace(expression)) return null;
+            var names = template
+                ? ServiceTaskTemplating.GetPlaceholderNames(expression)
+                : SequenceFlowConditionEvaluator.ParameterNames(expression);
+            var invalid = names
+                .Where(name => name.StartsWith("mi.", StringComparison.OrdinalIgnoreCase)
+                    && !ItemContextNames.Contains(name, StringComparer.OrdinalIgnoreCase))
+                .OrderBy(name => expression.IndexOf(name, StringComparison.OrdinalIgnoreCase))
+                .FirstOrDefault();
+            return invalid is null ? null
+                : $"{owner} {where} can read only [mi.item], [mi.index], and [mi.total]; '{invalid}' is not item context.";
+        }
+
+        foreach (var output in node.MultiInstance!.OutputVariables!)
+        {
+            if (Context(output.Validation, $"local output '{output.Name}' validation", false) is { } validation)
+                return validation;
+            if (!string.IsNullOrWhiteSpace(output.Validation)
+                && Regex.IsMatch(output.Validation, @"(?i)\b(?:CountFlow|PercentFlow)\s*\("))
+                return $"{owner} local output '{output.Name}' validation cannot use CountFlow or PercentFlow.";
+            if (output.DefaultValue is { } value)
+            {
+                var templates = value.ValueKind switch
+                {
+                    JsonValueKind.String => [value.GetString()],
+                    JsonValueKind.Array => value.EnumerateArray().Where(item => item.ValueKind == JsonValueKind.String)
+                        .Select(item => item.GetString()).ToArray(),
+                    _ => Array.Empty<string?>()
+                };
+                foreach (var template in templates)
+                    if (Context(template, $"local output '{output.Name}' defaultValue", true) is { } defaults)
+                        return defaults;
+            }
+        }
+
+        if (BpmnFlowNodeTypes.IsScriptTask(node.Type)
+            && !string.Equals(node.ScriptFormat, ScriptFormats.JavaScript, StringComparison.Ordinal))
+        {
+            foreach (var assignment in node.Assignments ?? [])
+                if (assignment is not null
+                    && Context(assignment.Expression, $"assignment for '{assignment.Variable}'", false) is { } problem)
+                    return problem;
+        }
+        return null;
     }
 
     /// <summary>
@@ -3742,6 +3803,17 @@ public sealed class WorkflowDefinitionValidator(
                     && string.Equals(node.ScriptFormat, ScriptFormats.NCalc, StringComparison.Ordinal),
                     $"Script task #{node.Id} assignment for '{assignment.Variable}'");
             }
+
+            // Like other variable and output validations, a local output's rule
+            // cannot read flow evidence.
+            foreach (var output in node.MultiInstance?.OutputVariables ?? [])
+            {
+                if (output is not null)
+                {
+                    Check(output.Validation, false,
+                        $"Automatic multi-instance activity #{node.Id} local output '{output.Name}' validation");
+                }
+            }
         }
     }
 
@@ -3849,6 +3921,15 @@ public sealed class WorkflowDefinitionValidator(
                 {
                     Check(assignment.Expression, null, false,
                         $"Script task #{node.Id} assignment for '{assignment.Variable}'");
+                }
+            }
+
+            foreach (var output in node.MultiInstance?.OutputVariables ?? [])
+            {
+                if (output is not null)
+                {
+                    Check(output.Validation, null, false,
+                        $"Automatic multi-instance activity #{node.Id} local output '{output.Name}' validation");
                 }
             }
         }

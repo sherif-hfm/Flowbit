@@ -1058,17 +1058,33 @@ public sealed partial class WorkflowEngineService
                 await ProcessAutomaticMultiInstanceControlJobAsync(lease, fence, cancellationToken);
                 return;
             }
+            // Service and script bodies share these two routes. Each kind's adapter
+            // adds its case to the dispatch by node type; a kind without one keeps
+            // failing closed and never runs as one ordinary activity.
             if (lease.Job.Kind == WorkflowJobKinds.MultiInstanceItem)
-                throw new WorkflowJobInvariantException("The automatic activity item adapter is not installed.");
+            {
+                await ProcessAutomaticMultiInstanceItemJobAsync(lease, fence, cancellationToken);
+                return;
+            }
+
+            if (lease.Job.Kind == WorkflowJobKinds.AsyncBefore
+                && (BpmnFlowNodeTypes.IsServiceTask(lease.Job.NodeType)
+                    || BpmnFlowNodeTypes.IsScriptTask(lease.Job.NodeType)))
+            {
+                var entryDefinition = await GetWorkflowAsync(lease.Job.WorkflowDefinitionId, cancellationToken);
+                var entryNode = entryDefinition.Definition.FlowNodes.SingleOrDefault(node => node.Id == lease.Job.NodeId);
+                if (entryNode is not null && AutomaticMultiInstanceRules.IsAutomaticBody(entryNode))
+                {
+                    await ProcessAutomaticMultiInstanceEntryJobAsync(lease, fence, entryNode, cancellationToken);
+                    return;
+                }
+            }
 
             if (lease.Job.Kind == WorkflowJobKinds.AsyncBefore
                 && (BpmnFlowNodeTypes.IsServiceTask(lease.Job.NodeType)
                     || BpmnFlowNodeTypes.IsScriptTask(lease.Job.NodeType))
                 && lease.Job.Status != WorkflowJobStatuses.ResultReady)
             {
-                var entryDefinition = await GetWorkflowAsync(lease.Job.WorkflowDefinitionId, cancellationToken);
-                var entryNode = entryDefinition.Definition.FlowNodes.SingleOrDefault(node => node.Id == lease.Job.NodeId);
-                if (entryNode is not null) EnsureAutomaticMultiInstanceRuntimeAvailable(entryNode);
                 if (BpmnFlowNodeTypes.IsServiceTask(lease.Job.NodeType))
                 {
                     await StageAndInvokeServiceJobAsync(lease, fence, cancellationToken);
@@ -1907,6 +1923,13 @@ public sealed partial class WorkflowEngineService
         CancellationToken cancellationToken)
     {
         EnsureAutomaticMultiInstanceRuntimeAvailable(node);
+        // A body's entry job initializes the body through its adapter. It must never
+        // run the activity once as an ordinary continuation.
+        if (AutomaticMultiInstanceRules.IsAutomaticBody(node) && job.Kind == WorkflowJobKinds.AsyncBefore)
+        {
+            throw new WorkflowJobInvariantException(
+                $"Automatic multi-instance entry job #{job.Id} reached the ordinary async continuation.");
+        }
         var payload = ReadJobPayload(job);
 
         // Force the cached immutable-definition safety proof before any shared

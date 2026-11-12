@@ -55,6 +55,14 @@ var callActivityOptions = builder.Configuration
 callActivityOptions.Validate();
 builder.Services.AddSingleton(callActivityOptions);
 
+// The Worker runs automatic multi-instance entry and item jobs, so it reads the same
+// temporary release switch as the API: open only in Development with AllowInDevelopment.
+var automaticMultiInstanceOptions = builder.Configuration
+    .GetSection(AutomaticMultiInstanceOptions.SectionName)
+    .Get<AutomaticMultiInstanceOptions>() ?? new AutomaticMultiInstanceOptions();
+automaticMultiInstanceOptions.ResolveForEnvironment(builder.Environment.IsDevelopment());
+builder.Services.AddSingleton(automaticMultiInstanceOptions);
+
 // Webhook delivery has its own send concurrency and PostgreSQL pool. The database
 // capture switch, not this file, decides whether lifecycle events are recorded.
 var webhookOptions = builder.Configuration

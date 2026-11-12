@@ -197,8 +197,7 @@ internal static class VariableFilterSqlCompiler
                 VariableFilterComparisonOperator.Equal =>
                     $"{target} = CAST(@{AddJsonParameter(operand)} AS jsonb)",
                 VariableFilterComparisonOperator.EqualIgnoreCase =>
-                    $"jsonb_typeof({target}) = 'string' AND " +
-                    $"lower({RootText(target)}) = lower(@{AddParameter(operand.GetString()!)})",
+                    CompileEqualIgnoreCase(target, operand.GetString()!),
                 VariableFilterComparisonOperator.LegacyEqualIgnoreCase =>
                     $"jsonb_typeof({target}) NOT IN ('array', 'object') AND " +
                     $"lower({RootText(target)}) = lower(@{AddParameter(operand.GetString()!)})",
@@ -230,6 +229,19 @@ internal static class VariableFilterSqlCompiler
                     comparisonOperator,
                     "Unsupported variable-filter comparison operator.")
             };
+
+        // The projection indexes an MD5 of each lowercased root string, because a whole
+        // value can exceed a B-tree entry. Matching that hash selects the indexed rows;
+        // the full comparison then rejects any hash collision, so results are exact.
+        private string CompileEqualIgnoreCase(string target, string operand)
+        {
+            var parameter = AddParameter(operand);
+            var text = RootText(target);
+            return
+                $"jsonb_typeof({target}) = 'string' AND " +
+                $"md5(lower({text})) = md5(lower(@{parameter})) AND " +
+                $"lower({text}) = lower(@{parameter})";
+        }
 
         private string CompileMembership(
             string target,

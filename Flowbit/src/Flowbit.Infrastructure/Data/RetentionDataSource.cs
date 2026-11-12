@@ -3,7 +3,7 @@ using Npgsql;
 namespace Flowbit.Infrastructure.Data;
 
 /// <summary>Maintenance has its own small pool; it cannot consume the runtime pool's connections.</summary>
-public sealed class RetentionDataSource : IAsyncDisposable
+public sealed class RetentionDataSource : IAsyncDisposable, IDisposable
 {
     public NpgsqlDataSource DataSource { get; }
 
@@ -18,4 +18,7 @@ public sealed class RetentionDataSource : IAsyncDisposable
     }
 
     public ValueTask DisposeAsync() => DataSource.DisposeAsync();
+
+    // The container disposes this pool; a synchronously disposed container needs this.
+    public void Dispose() => DataSource.Dispose();
 }

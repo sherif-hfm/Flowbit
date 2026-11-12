@@ -737,6 +737,55 @@ public sealed class ErrorBoundaryMatchingRuntimeTests(PostgresApiFixture fixture
         }
     }
 
+    // An integer division by zero throws and a floating one gives infinity, which no
+    // variable can hold. Both are the script's own failure, so the catch-all routes them
+    // in either execution mode instead of an unexpected exception escaping.
+    [Theory]
+    [InlineData(false, "1 % 0")]
+    [InlineData(false, "1 / 0")]
+    [InlineData(true, "1 % 0")]
+    [InlineData(true, "0.0 / 0")]
+    public async Task AnNCalcArithmeticFailureTakesTheScriptsCatchAll(bool asyncBefore, string expression)
+    {
+        var key = Key();
+        try
+        {
+            var definition = Definition(key, "unused", [Unfiltered(CatchAll)]);
+            definition.Variables.Add(new VariableModel
+            {
+                Id = 2,
+                Name = "score",
+                DataType = WorkflowVariableTypes.Number,
+                DefaultValue = JsonSerializer.SerializeToElement(0)
+            });
+            var host = definition.FlowNodes.Single(node => node.Id == 10);
+            host.Type = BpmnFlowNodeTypes.ScriptTask;
+            host.Service = null;
+            host.AsyncBefore = asyncBefore;
+            host.Job = asyncBefore
+                ? new JobPolicyModel { FailureHandling = JobFailureHandling.BoundaryFirst, RetryDelays = [] }
+                : null;
+            host.ScriptFormat = ScriptFormats.NCalc;
+            host.Assignments = [new AssignmentModel { Variable = "score", Expression = expression }];
+            var instanceId = await InsertAndStartAsync(key, definition);
+            if (asyncBefore)
+            {
+                await PromoteAndProcessAsync(await SingleJobIdAsync(instanceId));
+            }
+
+            await AssertRoutedAsync(instanceId, CatchAll);
+            await using var db = fixture.CreateDbContext();
+            var failure = await LatestVariableAsync(db, instanceId, "failure");
+            Assert.True(failure!.Contains("could not be evaluated", StringComparison.Ordinal)
+                || failure.Contains("not a finite number", StringComparison.Ordinal), failure);
+            Assert.Equal("0", await LatestVariableAsync(db, instanceId, "score"));
+        }
+        finally
+        {
+            await DeleteWorkflowAsync(key);
+        }
+    }
+
     [Fact]
     public async Task Synchronous_AFailedHandlerPathRollsBackTheWholeTransition()
     {

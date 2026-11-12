@@ -300,6 +300,7 @@ public static class SharedVariableAccessPlanner
                 // must not prevent validating a first successful write.
                 phase.Reads.UnionWith(dependencies.Reads.Where(alias => !phase.Producers.Contains(alias)));
             }
+            var optionalStageReads = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             void Save(string phase, MutableNodePlan value, int? boundaryId = null)
             {
                 var frozenReads = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -312,7 +313,10 @@ public static class SharedVariableAccessPlanner
                         frozenReads.Add(alias);
                     }
                 automaticPhases[new(node.Id, phase, boundaryId)] = new(value.Producers, value.Reads, frozenReads,
-                    phase == AutomaticMultiInstanceAccessPhases.Initialize ? configuration.CollectionVariable : null);
+                    phase == AutomaticMultiInstanceAccessPhases.Initialize ? configuration.CollectionVariable : null,
+                    phase == AutomaticMultiInstanceAccessPhases.StageItem
+                        ? optionalStageReads.Where(value.Reads.Contains).ToHashSet(StringComparer.OrdinalIgnoreCase)
+                        : null);
             }
 
             Target(initialize, configuration.ResultVariable);
@@ -357,15 +361,20 @@ public static class SharedVariableAccessPlanner
             {
                 // Computed getters/setters cannot be statically narrowed. This
                 // conservative scope belongs only to this dynamic script phase.
+                // A binding read only because of it may still be unset: the item
+                // sees it as missing rather than failing the whole stage. Targets
+                // go first so a binding another target's validation names stays
+                // a required dependency.
+                foreach (var binding in bindings.Values.Where(binding =>
+                             !reserved.Contains(binding.Name) && !reservedKeys.Contains(binding.SharedKey!)
+                             && binding.Access == SharedVariableAccessModes.ReadWrite))
+                {
+                    Target(stage, binding.Name);
+                    Target(publish, binding.Name);
+                }
                 foreach (var binding in bindings.Values)
                 {
-                    stage.Reads.Add(binding.Name);
-                    if (!reserved.Contains(binding.Name) && !reservedKeys.Contains(binding.SharedKey!)
-                        && binding.Access == SharedVariableAccessModes.ReadWrite)
-                    {
-                        Target(stage, binding.Name);
-                        Target(publish, binding.Name);
-                    }
+                    if (stage.Reads.Add(binding.Name)) optionalStageReads.Add(binding.Name);
                 }
             }
 

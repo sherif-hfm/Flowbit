@@ -634,7 +634,7 @@ Content-Type: application/json
 
 ### GET /api/workflows/authoring-capabilities
 
-Reports which optional authoring features this server's definition validation accepts, so a hosted editor offers only what saving allows. `automaticMultiInstance` is the server's effective switch for multi-instance service, script, and call activities. It is `true` only on an API running in the `Development` environment with `WorkflowAutomaticMultiInstance:AllowInDevelopment` set, and even then such definitions cannot be published or run. Every other host returns `false`, whatever the option says.
+Reports which optional authoring features this server's definition validation accepts, so a hosted editor offers only what saving allows. `automaticMultiInstance` is the server's effective switch for multi-instance service, script, and call activities. It is `true` only on an API running in the `Development` environment with `WorkflowAutomaticMultiInstance:AllowInDevelopment` set. Even then only script bodies can be published and run, and only a Worker with the same option in effect runs their jobs; publishing a service or call body returns `400` naming the node until its activity adapter is installed. Every other host returns `false`, whatever the option says, refuses to publish any automatic body, and returns `400` for a start or action that would route a token into one.
 
 **Access:** Workflow administrator (`Workflow.RequiredRole`). See [authentication](#http-conventions-and-authentication).
 

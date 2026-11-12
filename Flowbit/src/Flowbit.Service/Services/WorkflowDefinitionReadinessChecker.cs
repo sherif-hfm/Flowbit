@@ -11,7 +11,8 @@ public sealed class WorkflowDefinitionReadinessChecker(
     IConditionalEventDefinitionAnalyzer? conditionalEventAnalyzer = null,
     DurableProcessingOptions? durableProcessingOptions = null,
     IBusinessCalendarRepository? businessCalendars = null,
-    IWorkflowDefinitionRepository? definitions = null)
+    IWorkflowDefinitionRepository? definitions = null,
+    AutomaticMultiInstanceOptions? automaticMultiInstanceOptions = null)
 {
     private readonly IConditionalEventDefinitionAnalyzer conditionalAnalyzer =
         conditionalEventAnalyzer ?? new ConditionalEventDefinitionAnalyzer();
@@ -39,12 +40,24 @@ public sealed class WorkflowDefinitionReadinessChecker(
         WorkflowModel definition,
         bool publish)
     {
-        // Development may exercise the authored contract before the activity
-        // adapters exist. It must not publish work which would run only once.
+        // Until the integration step, only a Development host with the release switch
+        // open may publish an automatic body, and only of a kind whose adapter is
+        // installed. A body of any other kind would otherwise run as one activity.
         if (publish && definition.FlowNodes.Any(AutomaticMultiInstanceRules.IsAutomaticBody))
         {
-            throw new WorkflowDomainException(
-                "Automatic multi-instance publication is unavailable until the service, script, and call adapters pass the integration release gates.");
+            if (automaticMultiInstanceOptions?.Enabled != true)
+            {
+                throw new WorkflowDomainException(
+                    "Automatic multi-instance publication is unavailable until the service, script, and call adapters pass the integration release gates.");
+            }
+
+            var unavailable = definition.FlowNodes.FirstOrDefault(node =>
+                AutomaticMultiInstanceRules.IsAutomaticBody(node)
+                && !AutomaticMultiInstanceRules.IsAdapterInstalled(node.Type));
+            if (unavailable is not null)
+            {
+                throw new WorkflowDomainException(AutomaticMultiInstanceRules.AdapterUnavailableMessage(unavailable));
+            }
         }
 
         if (!publish

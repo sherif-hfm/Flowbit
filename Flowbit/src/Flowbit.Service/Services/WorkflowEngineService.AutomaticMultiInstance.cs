@@ -46,11 +46,21 @@ public sealed partial class WorkflowEngineService
         await transaction.CommitAsync(cancellationToken);
     }
 
-    // Development can exercise the shared authoring contract before B/C/D are
-    // installed. It must never let a body fall through to one ordinary activity.
-    internal static void EnsureAutomaticMultiInstanceRuntimeAvailable(FlowNodeModel node)
+    private void EnsureAutomaticMultiInstanceRuntimeAvailable(FlowNodeModel node) =>
+        EnsureAutomaticMultiInstanceRuntimeAvailable(node, automaticMultiInstanceOptions?.Enabled == true);
+
+    // A body runs only on a host whose release switch is open (Development with
+    // WorkflowAutomaticMultiInstance:AllowInDevelopment) and only through its kind's
+    // installed adapter. Otherwise it fails closed at every entry path, so a body
+    // published elsewhere cannot run here and can never fall through to one
+    // ordinary activity.
+    internal static void EnsureAutomaticMultiInstanceRuntimeAvailable(FlowNodeModel node, bool released)
     {
-        if (AutomaticMultiInstanceRules.IsAutomaticBody(node))
+        if (!AutomaticMultiInstanceRules.IsAutomaticBody(node)) return;
+        if (!released)
+            throw new WorkflowDomainException(
+                $"Automatic multi-instance node #{node.Id} cannot run on this host: automatic multi-instance runs only on a Development host with the release switch open.");
+        if (!AutomaticMultiInstanceRules.IsAdapterInstalled(node.Type))
             throw new WorkflowDomainException(
                 $"Automatic multi-instance node #{node.Id} cannot execute until its activity adapters and runtime integration are installed.");
     }

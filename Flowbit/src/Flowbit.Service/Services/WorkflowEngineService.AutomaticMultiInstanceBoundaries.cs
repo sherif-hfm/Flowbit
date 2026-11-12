@@ -74,26 +74,13 @@ public sealed partial class WorkflowEngineService
         }
         if (boundary is not null)
         {
-            if (!string.IsNullOrWhiteSpace(boundary.ErrorVariable))
-            {
-                await WriteAutomaticMultiInstanceErrorAsync(instance, body, definition, boundary,
-                    token.CurrentNodeExecutionId, actor, failureCode ?? string.Empty, cancellationToken);
-                await ResumeForVariableChangesAsync(instance, actor, cancellationToken);
-                if (!IsSameRunnableActivation(token,
-                        await runtime.GetExecutionTokenAsync(token.Id, false, cancellationToken))) return;
-            }
-            await runtime.AddTokenHistoryAsync(instance.Id, token.Id, null, node.Id, boundary.Id,
-                actor.User, new Dictionary<string, JsonElement>
-                {
-                    ["executionId"] = JsonSerializer.SerializeToElement(body.Id),
-                    ["aggregatePublished"] = JsonSerializer.SerializeToElement(completion.AggregatePublished),
-                    ["failureCode"] = JsonSerializer.SerializeToElement(failureCode)
-                }, "error", cancellationToken, actor.ActingFor, actor.DelegationId, actorClaims: actor.AuditClaims);
-            await runtime.UpdateExecutionTokenAsync(token.Id, ToSnapshot(boundary),
-                ExecutionTokenRecordStatuses.Active, token.GatewayBranchId, null, null, null,
-                ToNodeExecutionActor(actor), new NodeExecutionCompletionRecord(NodeExecutionRecordStatuses.Faulted,
-                    NodeExecutionCompletionReasons.BoundaryCaught, null, null, token.GatewayBranchId,
-                    ToNodeExecutionActor(actor), failureCode, failureCode), cancellationToken);
+            if (!await EnterAutomaticErrorBoundaryAsync(instance, token, node, boundary, definition, actor,
+                    failureCode ?? string.Empty, body.Id, new()
+                    {
+                        ["executionId"] = JsonSerializer.SerializeToElement(body.Id),
+                        ["aggregatePublished"] = JsonSerializer.SerializeToElement(completion.AggregatePublished)
+                    }, cancellationToken))
+                return;
         }
         else
         {
@@ -124,24 +111,72 @@ public sealed partial class WorkflowEngineService
         }
     }
 
-    internal async Task WriteAutomaticMultiInstanceErrorAsync(WorkflowInstanceRecord instance,
+    /// <summary>
+    /// Takes an automatic body's selected error boundary: writes and validates the error
+    /// variable under only the Error-phase locks, drains the notifications it causes,
+    /// then moves the token onto the boundary. Returns false when a drained condition
+    /// moved the token, which then owns the continuation. The caller routes onward.
+    /// A body's error route and a failure before any body exists (an entry job whose
+    /// source cannot be frozen) share it, so both take the route the lock-order proof
+    /// models: a fresh Error-phase segment followed by the boundary's continuation.
+    /// </summary>
+    private async Task<bool> EnterAutomaticErrorBoundaryAsync(WorkflowInstanceRecord instance,
+        ExecutionTokenRecord token, FlowNodeModel node, FlowNodeModel boundary, WorkflowModel definition,
+        ActorContext actor, string failureCode, long? executionId, Dictionary<string, JsonElement> history,
+        CancellationToken cancellationToken)
+    {
+        if (!string.IsNullOrWhiteSpace(boundary.ErrorVariable))
+        {
+            await WriteAutomaticErrorTargetAsync(instance, definition, node, boundary, token.CurrentNodeExecutionId,
+                actor, failureCode, executionId, cancellationToken);
+            await ResumeForVariableChangesAsync(instance, actor, cancellationToken);
+            if (!IsSameRunnableActivation(token,
+                    await runtime.GetExecutionTokenAsync(token.Id, false, cancellationToken))) return false;
+        }
+        history["failureCode"] = JsonSerializer.SerializeToElement(failureCode);
+        await runtime.AddTokenHistoryAsync(instance.Id, token.Id, null, node.Id, boundary.Id,
+            actor.User, history, "error", cancellationToken, actor.ActingFor, actor.DelegationId,
+            actorClaims: actor.AuditClaims);
+        await runtime.UpdateExecutionTokenAsync(token.Id, ToSnapshot(boundary),
+            ExecutionTokenRecordStatuses.Active, token.GatewayBranchId, null, null, null,
+            ToNodeExecutionActor(actor), new NodeExecutionCompletionRecord(NodeExecutionRecordStatuses.Faulted,
+                NodeExecutionCompletionReasons.BoundaryCaught, null, null, token.GatewayBranchId,
+                ToNodeExecutionActor(actor), failureCode, failureCode), cancellationToken);
+        return true;
+    }
+
+    internal Task WriteAutomaticMultiInstanceErrorAsync(WorkflowInstanceRecord instance,
         AutomaticMultiInstanceRecord body, WorkflowModel definition, FlowNodeModel boundary,
-        long? nodeExecutionId, ActorContext actor, string failureCode, CancellationToken cancellationToken)
+        long? nodeExecutionId, ActorContext actor, string failureCode, CancellationToken cancellationToken) =>
+        WriteAutomaticErrorTargetAsync(instance, definition, GetFlowNode(definition, body.NodeId), boundary,
+            nodeExecutionId, actor, failureCode, body.Id, cancellationToken);
+
+    // With a body, a validation that names the collection reads the body's frozen copy.
+    // An entry failure has no body: an instance collection is read as stored, and a
+    // shared one is absent, because reading it would take a lock the Error phase does
+    // not hold.
+    private async Task WriteAutomaticErrorTargetAsync(WorkflowInstanceRecord instance,
+        WorkflowModel definition, FlowNodeModel node, FlowNodeModel boundary,
+        long? nodeExecutionId, ActorContext actor, string failureCode, long? executionId,
+        CancellationToken cancellationToken)
     {
         if (workflowVariables is null || automaticMultiInstances is null)
             throw new WorkflowJobInvariantException("The automatic error route requires its variable store and body snapshot.");
         var target = definition.Variables.FirstOrDefault(variable =>
             string.Equals(variable.Name, boundary.ErrorVariable, StringComparison.OrdinalIgnoreCase))
             ?? throw new WorkflowConflictException("The automatic error target is no longer declared.");
-        var scope = sharedAccessPlanCache.GetOrAdd(body.WorkflowDefinitionId, definition)
-            .SelectAutomaticPhase(body.NodeId, AutomaticMultiInstanceAccessPhases.Error, boundary.Id);
+        var scope = sharedAccessPlanCache.GetOrAdd(instance.WorkflowDefinitionId, definition)
+            .SelectAutomaticPhase(node.Id, AutomaticMultiInstanceAccessPhases.Error, boundary.Id);
         var context = await LoadInstanceVariablesAsync(instance.Id, cancellationToken);
-        var snapshot = await automaticMultiInstances.GetInputSnapshotAsync(body.Id, cancellationToken)
-            ?? throw new WorkflowConflictException("The automatic body input snapshot is missing.");
-        var collection = snapshot.GetProperty("collection");
-        context[GetFlowNode(definition, body.NodeId).MultiInstance!.CollectionVariable!] = collection.Clone();
-        foreach (var alias in scope.AutomaticPhase!.FrozenReadAliases!)
-            context[alias] = collection.Clone();
+        if (executionId is long bodyId)
+        {
+            var snapshot = await automaticMultiInstances.GetInputSnapshotAsync(bodyId, cancellationToken)
+                ?? throw new WorkflowConflictException("The automatic body input snapshot is missing.");
+            var collection = snapshot.GetProperty("collection");
+            context[node.MultiInstance!.CollectionVariable!] = collection.Clone();
+            foreach (var alias in scope.AutomaticPhase!.FrozenReadAliases!)
+                context[alias] = collection.Clone();
+        }
 
         // The saved winning route is fenced by the completion/body/token lease.
         // Its diagnostic is produced here under the selected error phase's live

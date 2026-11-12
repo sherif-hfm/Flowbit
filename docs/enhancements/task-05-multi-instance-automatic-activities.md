@@ -63,7 +63,7 @@ All four subtasks are required for the first release. Their detailed implementat
 | --- | --- | --- | --- | --- |
 | TASK-05A | [Shared core](task-05a-multi-instance-core.md): JSON/local and shared outputs, snapshots, persistence, concurrency, coordinator, aggregate publication, body boundaries, item APIs and shared UI. | L | Existing runtime | In progress |
 | TASK-05B | [Service activities](task-05b-multi-instance-service-activities.md): REST staging, local/shared mappings and status, idempotency, retries and body-boundary integration. | M | TASK-05A | Planned |
-| TASK-05C | [Script activities](task-05c-multi-instance-script-activities.md): NCalc/JavaScript local/shared evaluation, sandbox, context, body-boundary integration, and script authoring. | M | TASK-05A | Planned |
+| TASK-05C | [Script activities](task-05c-multi-instance-script-activities.md): NCalc/JavaScript local/shared evaluation, sandbox, context, body-boundary integration, and script authoring. | M | TASK-05A | In progress |
 | TASK-05D | [Call activities](task-05d-multi-instance-call-activities.md): version pinning, child invocation/local/shared mappings, message ownership, call failure/body boundaries/cancellation and child navigation. | L | TASK-05A; [TASK-01](task-01-call-activity.md) (Done) | Planned |
 
 TASK-05A is the single owner of common schemas, settings/defaults, coordinator transitions, query contracts, and shared components. B/C/D consume those contracts and own activity execution details. TASK-05D supplies the call-specific schema/FK/retention requirements to A’s migration sequence; it does not introduce another item store or coordinator. This parent owns release-wide scope, integration acceptance, and rollout.

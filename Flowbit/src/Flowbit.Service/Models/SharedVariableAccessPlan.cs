@@ -17,12 +17,18 @@ public sealed record SharedVariableAutomaticPhaseAccessPlan(
     IReadOnlySet<string> ProducerAliases,
     IReadOnlySet<string> ReadAliases,
     IReadOnlySet<string>? FrozenReadAliases = null,
-    string? CollectionSourceAlias = null)
+    string? CollectionSourceAlias = null,
+    IReadOnlySet<string>? OptionalReadAliases = null)
 {
     public IReadOnlySet<string> ProducerAliases { get; } = ProducerAliases.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
     public IReadOnlySet<string> ReadAliases { get; } = ReadAliases.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
     public IReadOnlySet<string>? FrozenReadAliases { get; } =
         (FrozenReadAliases ?? new HashSet<string>()).ToFrozenSet(StringComparer.OrdinalIgnoreCase);
+    // Reads only a dynamic JavaScript body might make. A binding here that has never
+    // been set is left out of the context, as an ordinary script's missing variable
+    // is, instead of failing the phase as a statically named dependency does.
+    public IReadOnlySet<string> OptionalReadAliases { get; } =
+        (OptionalReadAliases ?? new HashSet<string>()).ToFrozenSet(StringComparer.OrdinalIgnoreCase);
     // A phase reads mutable shared dependencies under the same exact ordered
     // locks as its targets; later phases reacquire their own live dependencies.
     public IReadOnlySet<string> LockAliases { get; } = ProducerAliases.Concat(ReadAliases).ToFrozenSet(StringComparer.OrdinalIgnoreCase);

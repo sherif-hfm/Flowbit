@@ -4371,6 +4371,12 @@ function setAutomaticMultiInstance(node, enabled) {
       alert("Automatic items write declared local outputs or readWrite shared aliases. Remove or redirect these existing output mappings/assignments before enabling multi-instance: " + incompatible.join(", ") + ".");
       return false;
     }
+    // A computed setVariable target cannot be checked here. Nothing is redirected:
+    // the author reviews the script, and a write to a process variable fails the item.
+    if (node.type === "scriptTask" && node.scriptFormat === "javascript" && hasText(node.script) &&
+        !confirm("Once multi-instance is enabled, execution.setVariable may write only item-local outputs or readWrite shared aliases; a write to a process variable fails the item. Review this script after enabling. Enable multi-instance?")) {
+      return false;
+    }
     node.multiInstance = { mode: "parallel", source: "collection", collectionVariable: "", completionEvaluation: "afterAll", outputVariables: [], resultVariable: "" };
     if (node.type !== "callActivity") node.asyncBefore = true;
   } else {
@@ -4396,7 +4402,7 @@ function renderAutomaticMultiInstanceSection(node) {
   title.textContent = "Automatic multi-instance";
   inspector.appendChild(title);
   attachInspectorHelp(title, "automatic-multi-instance", [
-    "Development preview: these controls validate the shared contract. Publication and execution remain disabled until the activity adapters are integrated.",
+    "Development preview: script bodies can be published and run on this Development host. Service and call bodies are refused at publication until their adapters are installed.",
     "Run one durable item per collection element. The Worker initializes a frozen collection and instance inputs; item-local outputs are collected in index order after every item succeeds.",
     "Other shared inputs, configuration and time are captured when each item starts. Shared outputs require readWrite access. Parallel shared writes may conflict; publication recovery accepts saved candidates against current values and can replace newer values without repeating the activity.",
     "Conditional boundaries observe the activity from entry. Timer boundaries start when the body initializes, after queue waits. Interrupting boundaries cancel unfinished items; committed shared writes remain.",
@@ -5370,7 +5376,23 @@ function renderScriptSection(node) {
     applyTypeInvariants(node);
     renderInspector();
   });
-  attachInspectorHelp(formatField, "script-format", node.scriptFormat === SCRIPT_FORMAT.JAVASCRIPT
+  attachInspectorHelp(formatField, "script-format", isAutomaticScriptBody(node)
+    ? (node.scriptFormat === SCRIPT_FORMAT.JAVASCRIPT
+      ? [
+          "Runs once for each collection item in the sandboxed JavaScript engine, with the same limits as an ordinary script.",
+          "`execution.setVariable(name, value)` writes this body's item-local outputs or readWrite shared aliases. Any other name, a process variable included, fails the item at runtime and names the rejected target.",
+          "`execution.getVariable('mi.item')`, `'mi.index'` (from 0) and `'mi.total'` read the item. Instance variables are frozen when the body starts; shared values, configuration and the clock when the item first runs. Returned objects are copies.",
+          "Every readWrite shared binding of this workflow is locked briefly while each item starts, so declare only the bindings this body needs, or use NCalc, which locks exactly what it names.",
+          "Retrying runs the same script over the same inputs, so it rarely helps; attach an error boundary to this task."
+        ]
+      : [
+          "Runs once for each collection item. Assignments run in order, and a later one reads an earlier one's value for the same item.",
+          "Targets are this body's item-local outputs or readWrite shared aliases; a process variable cannot be written from an item.",
+          "Read the item with `[mi.item]`, its zero-based position with `[mi.index]`, and the count with `[mi.total]`. A json item arrives as its JSON text and a json array as a list; use JavaScript to read object properties.",
+          "Instance variables are frozen when the body starts; shared values, configuration and the clock when each item first runs.",
+          "Retrying evaluates the same expressions over the same inputs, so it rarely helps; attach an error boundary to this task."
+        ])
+    : node.scriptFormat === SCRIPT_FORMAT.JAVASCRIPT
     ? [
         "Runs in a sandboxed JavaScript engine (Jint) with a bound `execution` object and no filesystem, network, or CLR access.",
         "Available: `execution.getVariable(name)`, `execution.setVariable(name, value)`, `execution.getVariables()`, `execution.hasVariable(name)`, and, when FlowInfo is enabled, `execution.getFlowInfo(201).actions.last.userRoles`.",
@@ -7004,17 +7026,54 @@ function addErrorBoundary(hostNode) {
   render();
 }
 
+// An item of an automatic script body writes its own local outputs or writable
+// shared aliases other than the body's collection, aggregate, and error targets.
+function automaticItemAssignmentTargets(node) {
+  const multi = node.multiInstance;
+  const variables = (model.variables || []).filter(variable => variable && hasText(variable.name));
+  const byName = new Map(variables.map(variable => [variable.name.toLowerCase(), variable]));
+  const reservedNames = [multi.collectionVariable, multi.resultVariable,
+    ...errorBoundariesOf(node.id).map(boundary => boundary.errorVariable)]
+    .filter(name => typeof name === "string" && hasText(name)).map(name => name.toLowerCase());
+  const reservedKeys = new Set(reservedNames.map(name => byName.get(name))
+    .filter(variable => variable && isSharedProcessVariable(variable) && typeof variable.sharedKey === "string")
+    .map(variable => variable.sharedKey.toLowerCase()));
+  const describe = variable => (variable.dataType ?? "") + (variable.isArray ? "[]" : "");
+  const locals = (Array.isArray(multi.outputVariables) ? multi.outputVariables : [])
+    .filter(output => output && typeof output === "object" && typeof output.name === "string" && hasText(output.name))
+    .map(output => ({ value: output.name, label: output.name + " (" + describe(output) + " · item-local output)" }));
+  const shared = variables.filter(variable => isSharedProcessVariable(variable) && variable.access === "readWrite" &&
+      !reservedNames.includes(variable.name.toLowerCase()) &&
+      !(typeof variable.sharedKey === "string" && reservedKeys.has(variable.sharedKey.toLowerCase())))
+    .map(variable => ({ value: variable.name, label: variable.name + " (" + describe(variable) + " · shared readWrite)" }));
+  return [...locals, ...shared];
+}
+
+function isAutomaticScriptBody(node) {
+  return node && node.type === "scriptTask" && node.multiInstance != null &&
+    typeof node.multiInstance === "object" && !Array.isArray(node.multiInstance);
+}
+
 function renderAssignmentsSection(node) {
   node.assignments = normalizeAssignments(node.assignments);
+  const automatic = isAutomaticScriptBody(node);
 
   const allDeclared = (model.variables || []).filter(v => v.name && v.name.trim());
   const declared = allDeclared.filter(isWritableProcessVariable);
-  if (declared.length === 0) {
+  const targetOptions = () => automatic
+    ? automaticItemAssignmentTargets(node)
+    : declared.map(v => ({
+        value: v.name,
+        label: `${v.name} (${v.dataType}${v.isArray ? "[]" : ""}${isSharedProcessVariable(v) ? ` · shared ${v.access}` : ""})`
+      }));
+  if (automatic ? targetOptions().length === 0 : declared.length === 0) {
     const p = document.createElement("p");
     p.className = "empty-note";
-    p.textContent = allDeclared.length === 0
-      ? "No process variables declared. Deselect everything and add them under the Workflow panel first."
-      : "No writable process variables. Shared read-only bindings can be used in expressions but cannot be assignment targets.";
+    p.textContent = automatic
+      ? "No item targets yet. Add an item-local output under Automatic multi-instance, or declare a readWrite shared alias, then choose it here."
+      : allDeclared.length === 0
+        ? "No process variables declared. Deselect everything and add them under the Workflow panel first."
+        : "No writable process variables. Shared read-only bindings can be used in expressions but cannot be assignment targets.";
     inspector.appendChild(p);
   }
 
@@ -7026,13 +7085,25 @@ function renderAssignmentsSection(node) {
     varField.className = "field";
     varField.innerHTML = "<label>Variable</label>";
     const varSelect = document.createElement("select");
-    const opts = [{ value: "", label: "— select process variable —" }].concat(
-      declared.map(v => ({
-        value: v.name,
-        label: `${v.name} (${v.dataType}${v.isArray ? "[]" : ""}${isSharedProcessVariable(v) ? ` · shared ${v.access}` : ""})`
-      }))
-    );
-    varSelect.innerHTML = opts.map(o => `<option value="${o.value}" ${o.value === assignment.variable ? "selected" : ""}>${o.label}</option>`).join("");
+    // Rebuilt on focus, so a local output added below is offered without a redraw.
+    // A value the list cannot offer stays visible and unchanged until edited.
+    const fillOptions = () => {
+      const current = assignment.variable;
+      const options = [{ value: "", label: automatic ? "— select item-local output or shared alias —" : "— select process variable —" }]
+        .concat(targetOptions());
+      if (hasText(current) && !options.some(option => option.value === current)) {
+        options.push({ value: current, label: current + (automatic ? " (not an item target)" : " (not available)") });
+      }
+      varSelect.replaceChildren(...options.map(option => {
+        const element = document.createElement("option");
+        element.value = option.value;
+        element.textContent = option.label;
+        return element;
+      }));
+      varSelect.value = hasText(current) ? current : "";
+    };
+    fillOptions();
+    varSelect.addEventListener("focus", fillOptions);
     varSelect.onchange = () => { assignment.variable = varSelect.value; };
     varField.appendChild(varSelect);
     box.appendChild(varField);
@@ -7077,7 +7148,18 @@ function renderJavaScriptSection(node) {
     checked => { node.usesFlowInfo = checked; }));
 
   const declared = (model.variables || []).filter(v => v.name && v.name.trim());
-  if (declared.length === 0) {
+  const automatic = isAutomaticScriptBody(node);
+  if (automatic) {
+    // An item writes only its locals and writable shared aliases; process
+    // variables are frozen inputs it can read.
+    const targets = automaticItemAssignmentTargets(node).map(target => target.value);
+    const p = document.createElement("p");
+    p.className = "empty-note";
+    p.textContent = targets.length
+      ? "Item targets for execution.setVariable: " + targets.join(", ") + "."
+      : "No item targets yet. Add an item-local output under Automatic multi-instance, or declare a readWrite shared alias.";
+    inspector.appendChild(p);
+  } else if (declared.length === 0) {
     const p = document.createElement("p");
     p.className = "empty-note";
     p.textContent = "No process variables declared. Deselect everything and add them under the Workflow panel first.";
@@ -7094,9 +7176,13 @@ function renderJavaScriptSection(node) {
   exampleBtn.textContent = "Insert example";
   exampleBtn.style.marginBottom = "8px";
   exampleBtn.onclick = () => {
-    node.script = 'var orderAmount = execution.getVariable("orderAmount");\n\n' +
-      '// Perform logic\nvar tax = orderAmount * 0.15;\nvar total = orderAmount + tax;\n\n' +
-      '// Update/create variables\nexecution.setVariable("tax", tax);\nexecution.setVariable("total", total);';
+    const local = automatic ? automaticItemAssignmentTargets(node)[0]?.value || "itemResult" : null;
+    node.script = automatic
+      ? 'var item = execution.getVariable("mi.item");\nvar index = execution.getVariable("mi.index");\n\n' +
+        '// Each item writes its own local output\nexecution.setVariable(' + JSON.stringify(local) + ', item);'
+      : 'var orderAmount = execution.getVariable("orderAmount");\n\n' +
+        '// Perform logic\nvar tax = orderAmount * 0.15;\nvar total = orderAmount + tax;\n\n' +
+        '// Update/create variables\nexecution.setVariable("tax", tax);\nexecution.setVariable("total", total);';
     renderInspector();
   };
   inspector.appendChild(exampleBtn);
@@ -11138,6 +11224,11 @@ function validateFlowInfoUsage(ctx) {
         validateFlowInfoExpression(ctx, assignment && assignment.expression,
           label + " NCalc assignment", isNCalcScript);
       }
+      // Like other variable and output validations, a local output's rule cannot read flow evidence.
+      for (const output of automaticLocalOutputsForValidation(node)) {
+        validateFlowInfoExpression(ctx, output.validation,
+          label + " local output '" + String(output.name ?? "") + "' validation", false);
+      }
     }
 
     for (const flow of ctx.flows) {
@@ -11299,6 +11390,10 @@ function validateGatewayExpressionUsage(ctx) {
           ? node.assignments : []) {
         validateGatewayExpression(ctx, assignment && assignment.expression,
           label + " assignment", null, false);
+      }
+      for (const output of automaticLocalOutputsForValidation(node)) {
+        validateGatewayExpression(ctx, output.validation,
+          label + " local output '" + String(output.name ?? "") + "' validation", null, false);
       }
     }
 
@@ -13915,6 +14010,63 @@ function validateSaveEntryIdentity(ctx) {
   }
 }
 
+// The object entries of a node's multiInstance.outputVariables, for expression checks.
+function automaticLocalOutputsForValidation(node) {
+  const outputs = node && node.multiInstance && typeof node.multiInstance === "object"
+    ? node.multiInstance.outputVariables : null;
+  return (Array.isArray(outputs) ? outputs : [])
+    .filter(output => output && typeof output === "object" && !Array.isArray(output));
+}
+
+const AUTOMATIC_ITEM_CONTEXT_NAMES = new Set(["mi.item", "mi.index", "mi.total"]);
+
+// The first mi.* name, in text order, that is not item context. NCalc names a
+// parameter [mi.x] or {mi.x}; a template names one ${mi.x}.
+function automaticItemContextViolation(expression, template) {
+  if (typeof expression !== "string" || !hasText(expression)) return null;
+  const pattern = template ? /\$\{\s*([^}\s]+)\s*\}/g : /[\[{](mi\.[^\]}]*)[\]}]/gi;
+  let match;
+  while ((match = pattern.exec(expression)) !== null) {
+    if (!template && isInsideQuotedExpressionText(expression, match.index)) continue;
+    const name = match[1];
+    if (/^mi\./i.test(name) && !AUTOMATIC_ITEM_CONTEXT_NAMES.has(name.toLowerCase())) return name;
+  }
+  return null;
+}
+
+// Mirrors WorkflowDefinitionValidator.FindItemExpressionProblem: an item reads only
+// mi.item, mi.index, and mi.total, and a local validation cannot use outcome functions.
+function automaticItemExpressionProblem(node) {
+  const owner = "Automatic multi-instance activity #" + node.id;
+  const context = (expression, where, template) => {
+    const name = automaticItemContextViolation(expression, template);
+    return name === null ? null
+      : owner + " " + where + " can read only [mi.item], [mi.index], and [mi.total]; '" + name + "' is not item context.";
+  };
+  for (const output of automaticLocalOutputsForValidation(node)) {
+    const name = String(output.name ?? "");
+    const validation = context(output.validation, "local output '" + name + "' validation", false);
+    if (validation) return validation;
+    if (typeof output.validation === "string" && /\b(?:CountFlow|PercentFlow)\s*\(/i.test(output.validation))
+      return owner + " local output '" + name + "' validation cannot use CountFlow or PercentFlow.";
+    const templates = typeof output.defaultValue === "string" ? [output.defaultValue]
+      : Array.isArray(output.defaultValue) ? output.defaultValue.filter(item => typeof item === "string") : [];
+    for (const template of templates) {
+      const defaults = context(template, "local output '" + name + "' defaultValue", true);
+      if (defaults) return defaults;
+    }
+  }
+  if (node.type === "scriptTask" && node.scriptFormat !== "javascript") {
+    for (const assignment of Array.isArray(node.assignments) ? node.assignments : []) {
+      if (!assignment || typeof assignment !== "object") continue;
+      const problem = context(assignment.expression,
+        "assignment for '" + String(assignment.variable ?? "") + "'", false);
+      if (problem) return problem;
+    }
+  }
+  return null;
+}
+
 // Mirrors AutomaticMultiInstanceRules.FindAuthoredProblem/FindLocalProblem.
 // Adapter-specific checks remain in their existing service/script/call phases.
 function automaticMultiInstanceProblem(ctx, node) {
@@ -13990,7 +14142,7 @@ function automaticMultiInstanceProblem(ctx, node) {
   const outgoing = ctx.outgoingFor(node.id);
   if (outgoing.length !== 1 || outgoing.some(flow => hasUnsupportedPassThroughMetadata(flow)))
     return owner + " requires exactly one ordinary unconditional outgoing flow without outcome settings.";
-  return null;
+  return automaticItemExpressionProblem(node);
 }
 
 function validateSaveMultiInstance(ctx) {

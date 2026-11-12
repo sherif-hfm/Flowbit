@@ -708,8 +708,16 @@ One row per activation of a multi-instance user task. The parent token stays on 
 The `AddAutomaticMultiInstanceCore` and `ValidateAutomaticMultiInstanceConstraints`
 migrations install the storage foundation described below. Automatic execution remains
 inactive pending adapter integration; these objects do not enable service, script, or
-call multi-instance execution. Existing rows retain `ActivityKind = 'userTask'`,
+call multi-instance execution. Only Development API and Worker hosts with the TASK-05
+release switch open can already publish and run script bodies, whose items use these
+tables unchanged. Existing rows retain `ActivityKind = 'userTask'`,
 their human task/role/vote semantics, and their existing result format.
+
+Every size bound below is the byte length PostgreSQL prints for the stored `jsonb`
+(`octet_length(column::text)`): a space after each comma and colon and numbers in
+full, often larger than the compact JSON an API returns. The application counts the
+same text (`JsonbText.ByteCount`) for its own checks and for `ResultBytes`, so a value
+over a bound is refused before any write.
 
 ```mermaid
 erDiagram
@@ -774,7 +782,7 @@ an item stores its zero-based `ItemIndex`.
 | --- | --- |
 | `Id`, `InstanceId`, `MultiInstanceExecutionId`, `ItemIndex` | Stable identity and ownership; nonnegative index, unique per execution. |
 | `Status`, `Phase` | `pending`, `active`, `completed`, `failed`, or `cancelled`; `execution`, `publication`, or `settled`. Recoverable incidents keep admitted items active and keep their slot. |
-| `StagedInputJson`, `CandidateJson` | Frozen item inputs and accepted execution candidate. Combined JSONB text size is at most 1 MiB. Candidate survives publication conflicts. Both are cleared when the body settles, since nothing reads them afterwards. |
+| `StagedInputJson`, `CandidateJson` | Frozen item inputs and accepted execution candidate. Combined JSONB text size is at most 1 MiB. The application measures the same text (`JsonbText.ByteCount`) and refuses a larger candidate before writing it, so this check never decides first. Candidate survives publication conflicts. Both are cleared when the body settles, since nothing reads them afterwards. |
 | `ResultJson`, `SharedWriteCorrelationsJson` | Committed local result (at most 1 MiB) and value-free shared-write correlations. |
 | `ErrorCode`, `ErrorDescription` | Bounded diagnostics, 100 and 1,000 characters respectively. |
 | `CreatedAt`, `UpdatedAt`, `StartedAt`, `CompletedAt` | Lifecycle times; pending items are unstarted, active items have a start, terminal items have completion. |
@@ -931,7 +939,7 @@ Read-optimized projection of the latest value for each instance variable. Latest
 | Column | Meaning |
 | --- | --- |
 | `InstanceId`, `VariableName` | Composite primary key. |
-| `ValueJson` | Latest value. It has a GIN index plus expression indexes for case-insensitive root strings and root numbers. |
+| `ValueJson` | Latest value. It has a GIN index plus expression indexes for case-insensitive root strings and root numbers. The string index holds an MD5 of the lowercased value, not the value, so a string of any length can be stored; `$eqIgnoreCase` matches the hash and then compares the full value. |
 | `SourceVariableId` | The `instance_variables.Id` the value came from. The trigger replaces a row only when this ID is newer. There is no foreign key. |
 | `SetAt` | Time of the source write. |
 
@@ -1973,7 +1981,7 @@ Migrations also create these objects with raw SQL. They are part of the schema c
 | `TR_instance_variable_update_batch_jobs_validate_live_job` → `validate_instance_variable_update_batch_job_definition()` | Deferrable constraint trigger on `instance_variable_update_batch_jobs` | Ensures a linked job belongs to the same workflow definition. |
 | `tr_shared_variable_current_values_value_revision` → `sync_shared_variable_value_revision()` | `AFTER INSERT OR UPDATE OF "Revision"` trigger on `shared_variable_current_values` | Advances the catalog row's `CurrentRevision` and `ValueRevision`. |
 | `shared_variable_revision_seq`, `next_shared_variable_revision()` | Sequence and function | Allocate global shared-variable revisions through `nextval`; rollbacks may leave gaps. |
-| `IX_iv_current_name_root_string_ci_instance`, `IX_iv_current_name_root_number_instance` | Expression indexes on `instance_variable_current_values` | Case-insensitive root-string and numeric lookups for variable search. |
+| `IX_iv_current_name_root_string_ci_hash_instance`, `IX_iv_current_name_root_number_instance` | Expression indexes on `instance_variable_current_values` | Case-insensitive root-string (by MD5 of the lowercased value) and numeric lookups for variable search. `HashInstanceVariableStringIndex` replaced `IX_iv_current_name_root_string_ci_instance`, which indexed the whole value and rejected strings over one B-tree entry (2,704 bytes). |
 | `IX_user_tasks_AssigneeLower_Status_UpdatedAt_Id`, `IX_node_executions_*_Lower_*` | Expression indexes | Case-insensitive actor and external-ID lookups. |
 | `UX_multi_instance_executions_ActiveTokenNode` | Partial unique index | At most one active multi-instance execution per token and node. |
 | `TR_workflow_instances_lifecycle_insert`, `TR_workflow_instances_lifecycle_status` → `capture_workflow_instance_lifecycle()` | Deferred constraint triggers on `workflow_instances` (`AFTER INSERT`; `AFTER UPDATE OF "Status"` when it changes) | Record `instance.*` events at commit. |
