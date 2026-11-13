@@ -62,7 +62,7 @@ All four subtasks are required for the first release. Their detailed implementat
 | ID | Plan and owned scope | Effort | Depends on | Status |
 | --- | --- | --- | --- | --- |
 | TASK-05A | [Shared core](task-05a-multi-instance-core.md): JSON/local and shared outputs, snapshots, persistence, concurrency, coordinator, aggregate publication, body boundaries, item APIs and shared UI. | L | Existing runtime | In progress |
-| TASK-05B | [Service activities](task-05b-multi-instance-service-activities.md): REST staging, local/shared mappings and status, idempotency, retries and body-boundary integration. | M | TASK-05A | Planned |
+| TASK-05B | [Service activities](task-05b-multi-instance-service-activities.md): REST staging, local/shared mappings and status, idempotency, retries and body-boundary integration. | M | TASK-05A | In progress |
 | TASK-05C | [Script activities](task-05c-multi-instance-script-activities.md): NCalc/JavaScript local/shared evaluation, sandbox, context, body-boundary integration, and script authoring. | M | TASK-05A | In progress |
 | TASK-05D | [Call activities](task-05d-multi-instance-call-activities.md): version pinning, child invocation/local/shared mappings, message ownership, call failure/body boundaries/cancellation and child navigation. | L | TASK-05A; [TASK-01](task-01-call-activity.md) (Done) | Planned |
 
@@ -193,4 +193,4 @@ Before marking Done, satisfy every first-release criterion for **service, script
 
 ## Implementation evidence
 
-TASK-05A implementation is in progress behind the release boundary; see its implementation evidence. B/C/D and combined Worker/browser/migration/rollout gates remain required. No automatic runtime support is released.
+TASK-05A implementation is in progress behind the release boundary; see its implementation evidence. The script (TASK-05C) and REST service (TASK-05B) adapters are installed and run only on Development hosts with the release switch open; see their implementation records. TASK-05D and the combined Worker/browser/migration/rollout gates remain required. No automatic runtime support is released.

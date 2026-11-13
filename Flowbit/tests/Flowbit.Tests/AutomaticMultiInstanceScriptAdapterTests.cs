@@ -373,9 +373,8 @@ public sealed class AutomaticMultiInstanceScriptAdapterTests
         });
 
         Readiness(open).EnsureDurablePublicationAllowed(Body(BpmnFlowNodeTypes.ScriptTask), publish: true);
-        Assert.Equal("Automatic multi-instance serviceTask #2 cannot be published or run until its activity adapter is installed.",
-            Assert.Throws<WorkflowDomainException>(() =>
-                Readiness(open).EnsureDurablePublicationAllowed(Body(BpmnFlowNodeTypes.ServiceTask), publish: true)).Message);
+        // TASK-05B installed the service adapter; only call bodies stay refused.
+        Readiness(open).EnsureDurablePublicationAllowed(Body(BpmnFlowNodeTypes.ServiceTask), publish: true);
         Assert.Equal("Automatic multi-instance callActivity #2 cannot be published or run until its activity adapter is installed.",
             Assert.Throws<WorkflowDomainException>(() =>
                 Readiness(open).EnsureDurablePublicationAllowed(Body(BpmnFlowNodeTypes.CallActivity), publish: true)).Message);
@@ -393,11 +392,11 @@ public sealed class AutomaticMultiInstanceScriptAdapterTests
         };
 
         WorkflowEngineService.EnsureAutomaticMultiInstanceRuntimeAvailable(Body(BpmnFlowNodeTypes.ScriptTask), released: true);
-        Assert.Throws<WorkflowDomainException>(() =>
-            WorkflowEngineService.EnsureAutomaticMultiInstanceRuntimeAvailable(Body(BpmnFlowNodeTypes.ServiceTask), released: true));
+        WorkflowEngineService.EnsureAutomaticMultiInstanceRuntimeAvailable(Body(BpmnFlowNodeTypes.ServiceTask), released: true);
         Assert.Throws<WorkflowDomainException>(() =>
             WorkflowEngineService.EnsureAutomaticMultiInstanceRuntimeAvailable(Body(BpmnFlowNodeTypes.CallActivity), released: true));
-        Assert.Equal(new[] { BpmnFlowNodeTypes.ScriptTask }, AutomaticMultiInstanceRules.InstalledAdapterKinds);
+        Assert.True(AutomaticMultiInstanceRules.InstalledAdapterKinds.SetEquals(
+            [BpmnFlowNodeTypes.ServiceTask, BpmnFlowNodeTypes.ScriptTask]));
 
         // A host outside Development, or with the switch closed, refuses even the installed kind.
         Assert.Contains("runs only on a Development host with the release switch open",

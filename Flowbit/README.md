@@ -10,10 +10,16 @@ Start with the [developer documentation](../docs/index.md) for HTTP onboarding, 
 body/item persistence and publication operations. Publication, runtime entry, and
 item processing each require the release switch, which opens only on a Development
 host with `WorkflowAutomaticMultiInstance:AllowInDevelopment`, and an installed
-adapter. The API and the Worker each resolve the switch for themselves. Only the
-script adapter ([TASK-05C](../docs/enhancements/task-05c-multi-instance-script-activities.md))
-is installed, so open Development hosts publish and run script bodies, and every
-other host refuses all automatic bodies, including ones another host published.
+adapter. The API and the Worker each resolve the switch for themselves. The REST
+service ([TASK-05B](../docs/enhancements/task-05b-multi-instance-service-activities.md))
+and script ([TASK-05C](../docs/enhancements/task-05c-multi-instance-script-activities.md))
+adapters are installed, so open Development hosts publish and run service and script
+bodies; call bodies stay refused, and every other host refuses all automatic bodies,
+including ones another host published. Both adapters share one item protocol
+(`WorkflowEngineService.AutomaticMultiInstanceItems.cs`): stage, run the activity
+with no lock held, save the candidate, then publish it, each in its own transaction.
+A REST item maps its response in memory and saves only the candidate, so a recovered
+item never sends its request again once that candidate is saved.
 Every automatic size limit counts `JsonbText.ByteCount`, the text PostgreSQL prints
 for the stored `jsonb`, which is what the size check constraints measure.
 

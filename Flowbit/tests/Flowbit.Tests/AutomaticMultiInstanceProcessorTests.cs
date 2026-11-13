@@ -95,12 +95,13 @@ public sealed class AutomaticMultiInstanceProcessorTests(PostgresApiFixture fixt
         Assert.Equal("[]", (await LatestAsync(db, seed.InstanceId, "results")).GetRawText());
     }
 
-    // Only the script adapter is installed (TASK-05C). A service body that reached the
-    // database some other way still fails closed at entry and item processing.
+    // The script and service adapters are installed (TASK-05C, TASK-05B); the call adapter
+    // is not (TASK-05D). An item job naming a kind without an adapter fails closed at item
+    // processing whatever reached the database: it never runs as another kind's item.
     [Fact]
-    public async Task Service_entry_and_item_jobs_stay_refused_while_only_the_script_adapter_is_installed()
+    public async Task An_item_job_of_a_kind_without_an_adapter_stays_refused_at_item_processing()
     {
-        // The release switch is open, so only the missing adapter refuses these jobs.
+        // The release switch is open, so only the missing adapter refuses this job.
         await using var open = fixture.Factory.WithWebHostBuilder(builder => builder.ConfigureTestServices(services =>
         {
             var options = new AutomaticMultiInstanceOptions { AllowInDevelopment = true };
@@ -109,20 +110,11 @@ public sealed class AutomaticMultiInstanceProcessorTests(PostgresApiFixture fixt
             services.AddSingleton(options);
         }));
         var seed = await SeedAsync(count: 2, boundary: false);
-        var entry = await LeaseThroughRepositoryAsync(seed.EntryJobId, WorkflowJobClasses.Activity);
-        await using (var scope = open.Services.CreateAsyncScope())
-            await scope.ServiceProvider.GetRequiredService<IWorkflowJobProcessor>().ProcessAsync(entry, CancellationToken.None);
-        await using (var db = fixture.CreateDbContext())
-        {
-            var job = await db.WorkflowJobs.SingleAsync(row => row.Id == seed.EntryJobId);
-            Assert.Equal(WorkflowJobStatuses.Retry, job.Status);
-            Assert.Contains("cannot execute until its activity adapters", job.LastFailureDescription);
-            Assert.False(await db.MultiInstanceExecutions.AnyAsync(row => row.InstanceId == seed.InstanceId));
-        }
-
-        // An adapter-free body created through the coordinator: its item job is refused too.
         var body = await InitializeAsync(seed);
         var itemFence = await DispatchAndLeaseFirstItemAsync(body);
+        await using (var rename = fixture.CreateDbContext())
+            await rename.WorkflowJobs.Where(job => job.Id == itemFence.JobId).ExecuteUpdateAsync(setters =>
+                setters.SetProperty(job => job.NodeType, BpmnFlowNodeTypes.CallActivity));
         await using (var scope = open.Services.CreateAsyncScope())
         {
             var job = (await scope.ServiceProvider.GetRequiredService<IWorkflowJobRepository>().GetForUpdateAsync(itemFence.JobId, default))!;
@@ -133,24 +125,6 @@ public sealed class AutomaticMultiInstanceProcessorTests(PostgresApiFixture fixt
         var incident = await after.WorkflowIncidents.SingleAsync(row => row.JobId == itemFence.JobId && row.Status == "open");
         Assert.Equal("job_invariant_violation", incident.Type);
         Assert.Contains("item adapter is not installed", incident.Details);
-    }
-
-    private async Task<WorkflowJobLeaseRecord> LeaseThroughRepositoryAsync(long jobId, string queueClass)
-    {
-        await using (var promote = fixture.CreateDbContext())
-        {
-            await promote.WorkflowJobs.Where(job => job.Id == jobId).ExecuteUpdateAsync(setters => setters
-                .SetProperty(job => job.Priority, 1_000_000)
-                .SetProperty(job => job.DueAt, DateTimeOffset.UtcNow.AddMinutes(-1)));
-        }
-        await using var scope = fixture.Factory.Services.CreateAsyncScope();
-        var leases = await scope.ServiceProvider.GetRequiredService<IWorkflowJobRepository>().LeaseRunnableAsync(
-            new WorkflowJobLeaseRequest($"processor-test:{Guid.NewGuid():N}", MaxCount: 1,
-                MaxActivityCount: queueClass == WorkflowJobClasses.Activity ? 1 : 0, MaxPerInstance: 4,
-                LeaseDuration: TimeSpan.FromMinutes(1)), CancellationToken.None);
-        var lease = Assert.Single(leases);
-        Assert.Equal(jobId, lease.Job.Id);
-        return lease;
     }
 
     private sealed record Seed(long InstanceId, long TokenId, long DefinitionId, Guid ActivationId, string Key,

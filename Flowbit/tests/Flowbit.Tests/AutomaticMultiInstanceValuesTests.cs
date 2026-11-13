@@ -141,9 +141,9 @@ public sealed class AutomaticMultiInstanceValuesTests
     }
 
     // A kind without an installed adapter must never run as one ordinary activity.
-    // TASK-05C installed the script adapter, so only service and call bodies stay refused.
+    // TASK-05C and TASK-05B installed the script and service adapters, so only call
+    // bodies stay refused.
     [Theory]
-    [InlineData("serviceTask")]
     [InlineData("callActivity")]
     public void Development_authoring_does_not_execute_a_body_as_an_ordinary_activity(string type)
     {
@@ -152,11 +152,13 @@ public sealed class AutomaticMultiInstanceValuesTests
         WorkflowEngineService.EnsureAutomaticMultiInstanceRuntimeAvailable(new FlowNodeModel { Id = 2, Type = type }, released: true);
     }
 
-    [Fact]
-    public void An_installed_script_adapter_lets_its_bodies_enter_the_runtime_on_a_released_host()
+    [Theory]
+    [InlineData("scriptTask")]
+    [InlineData("serviceTask")]
+    public void An_installed_adapter_lets_its_bodies_enter_the_runtime_on_a_released_host(string type)
     {
         WorkflowEngineService.EnsureAutomaticMultiInstanceRuntimeAvailable(
-            new FlowNodeModel { Id = 2, Type = "scriptTask", MultiInstance = new() }, released: true);
+            new FlowNodeModel { Id = 2, Type = type, MultiInstance = new() }, released: true);
     }
 
     private static JsonElement Json<T>(T value) => JsonSerializer.SerializeToElement(value);

@@ -43,8 +43,10 @@ internal static class TypedOutputValueValidator
         var text = value.GetString();
         return dataType switch
         {
+            // Infinity and NaN have no JSON number, as the editor's check also says.
             WorkflowVariableTypes.Number =>
-                double.TryParse(text, NumberStyles.Any, CultureInfo.InvariantCulture, out _),
+                double.TryParse(text, NumberStyles.Any, CultureInfo.InvariantCulture, out var number)
+                && double.IsFinite(number),
             WorkflowVariableTypes.Boolean => bool.TryParse(text, out _),
             _ => false
         };

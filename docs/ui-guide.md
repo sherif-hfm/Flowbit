@@ -315,7 +315,7 @@ An early quorum, an interrupt, or another actor may cancel unfinished work. With
 The inactive [TASK-05A foundation](enhancements/task-05a-multi-instance-core.md)
 also has a separate **Automatic multi-instance work** panel. Automatic execution
 remains gated until B/C/D integration; only a Development API with the release
-switch open can already run script bodies. When automatic body data is available, the
+switch open can already run service and script bodies. When automatic body data is available, the
 panel shows item counts, concurrency and saved results. A current body control
 incident displays **Needs attention**, its type, control job ID and incident ID,
 including when all items have completed but aggregate publication is blocked.
@@ -323,9 +323,17 @@ These correlations grant no Operations or retry permission. Retrying an output
 version conflict accepts the saved publication against current versions; other
 retries preserve the original version checks. While a body is open, instance detail
 refreshes on its own, and the diagram marks the node with an **Automatic items**
-progress badge; the node's panel lists its items. The workflow editor shows the
+progress badge; the node's panel lists its items. A REST item whose call or mapping
+failed shows its error code and a description that names the HTTP status, or says
+that no response arrived; item detail never shows the request or the response. The
+workflow editor shows the
 multi-instance controls on service, script, and call nodes only when the API reports
-the Development-only capability as open.
+the Development-only capability as open. On a multi-instance service task, the
+response mapping **Variable** and **Status variable** fields suggest the body's
+item-local outputs and its readWrite shared aliases (number targets only for the
+status), and the REST, response-mapping, status, and error-boundary help describe
+item templates, frozen credentials, idempotency, and which failures only a catch-all
+boundary catches.
 
 ## Inspect instances and activity
 

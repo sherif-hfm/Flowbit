@@ -472,15 +472,30 @@ effective value from `GET /api/workflows/authoring-capabilities` and shows its
 controls only when that is true, so the UI host's own environment and settings
 never decide it; the standalone editor remains closed. On the Worker it opens a
 body's entry and item jobs. With the option in effect on both, a Development API
-can publish a multi-instance script task, and a Development Worker runs its items.
-A host where it is not in effect refuses a published body anyway: the API refuses
-to start an instance that reaches one, and the Worker's entry and item jobs fail,
-retry, and then wait in an incident that a retry on an open Worker resumes. Service
-and call bodies stay refused at publication, entry, and item processing until their
-adapters are installed. Do not use this option as a production feature switch. A
-script body needs a running Worker even for an empty collection, and each JavaScript
-item stores its own copy of every `config.*` and `setting.*` value within its 1 MiB
-staged-input limit.
+can publish a multi-instance REST service or script task, and a Development Worker
+runs its items. A host where it is not in effect refuses a published body anyway:
+the API refuses to start an instance that reaches one, and the Worker's entry and
+item jobs fail, retry, and then wait in an incident that a retry on an open Worker
+resumes. Call bodies stay refused at publication, entry, and item processing until
+their adapter is installed. Do not use this option as a production feature switch.
+A service or script body needs a running Worker even for an empty collection, and
+each JavaScript item stores its own copy of every `config.*` and `setting.*` value
+within its 1 MiB staged-input limit.
+
+A REST item reads the `config.*` and `setting.*` values its templates and
+expressions name when it first runs, and every retry of that item reuses them, as an
+ordinary durable service job reuses its snapshot. Rotating a credential therefore
+reaches only items that start afterwards: an item that failed with an expired token
+keeps failing until an error boundary, an interrupting boundary, or cancellation ends
+the body, because items cannot be skipped. The staged values stay in the item row
+until the body settles. REST effects are at least once: a request can reach the
+receiver again after a lost lease or a Worker restart before its result was saved,
+so receivers should deduplicate on a header such as
+`Idempotency-Key: flowbit-${sys.jobId}`, which stays the same for every retry of an
+item. Once an item's mapped result is saved, recovery never sends its request again.
+There is no receiver-specific throttling: a `429` or `Retry-After` response is an
+ordinary failed attempt under the node's retry delays, so limit the load on a
+receiver with the body's `maxConcurrency` or `Workflow.MultiInstance.MaxConcurrency`.
 
 Every automatic multi-instance size limit (the 1 MiB body snapshot, an item's staged
 input and candidate together, its result, and the aggregate) counts the bytes

@@ -120,7 +120,8 @@ public sealed partial class AutomaticMultiInstanceCoordinator
     /// </summary>
     public async Task<bool> CaptureItemFailureAsync(long executionId, long itemId, Guid activationId,
         AutomaticMultiInstanceItemFence fence, AutomaticMultiInstanceCompletionIntent intent, ActorContext actor,
-        WorkflowJobCreateRecord controlTemplate, IAutomaticMultiInstanceLifecycle lifecycle, CancellationToken ct)
+        WorkflowJobCreateRecord controlTemplate, IAutomaticMultiInstanceLifecycle lifecycle, CancellationToken ct,
+        string? failureDescription = null)
     {
         RequireLifecycleStores();
         var (body, _, _) = await RequireItemFenceAsync(executionId, itemId, activationId, fence, ct);
@@ -131,8 +132,12 @@ public sealed partial class AutomaticMultiInstanceCoordinator
         if (!await repository.SaveCompletionIntentAsync(body.Id, activationId, JsonSerializer.SerializeToElement(intent), ct))
             return false;
         await lifecycle.CloseHostSubscriptionsAsync(body, ct);
+        // An adapter may name what failed, such as a REST item's HTTP status. The text lands
+        // on the item and its node visit, so it never carries request data, response data,
+        // or values.
         if (!await repository.FailItemAsync(body.Id, itemId, activationId, intent.FailureCode,
-                intent.BoundaryNodeId is null ? "Automatic activity item result was refused." : "Automatic activity item failed.", ct,
+                failureDescription
+                ?? (intent.BoundaryNodeId is null ? "Automatic activity item result was refused." : "Automatic activity item failed."), ct,
                 intent.BoundaryNodeId is null ? "multiInstanceInterrupt" : "boundaryCaught"))
             throw new WorkflowConflictException("The automatic failure lost its item fence.");
         await repository.CancelUnfinishedItemsAsync(body.Id, activationId, "multiInstanceInterrupt", ct);

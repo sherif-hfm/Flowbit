@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Collections.Frozen;
 using Flowbit.Service.Abstractions;
 using Flowbit.Service.Models;
@@ -349,9 +350,15 @@ public sealed partial class AutomaticMultiInstanceCoordinator(
             publicationContext[value.Key] = value.Value;
         _ = WorkflowEngineService.ValidateAutomaticLocalResult(node.MultiInstance!.OutputVariables!,
             candidate.LocalVariables, publicationContext);
+        var producedNames = (candidate.MappedTargets ?? candidate.LocalVariables.Keys.Concat(candidate.SharedWrites.Keys))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
         foreach (var mapping in node.Service?.OutputMappings ?? [])
         {
-            if (string.IsNullOrWhiteSpace(mapping.Validation) || !publicationContext.TryGetValue(mapping.Variable, out var value))
+            // Only a value a mapping produced is checked again. A shared target the
+            // response did not fill holds another writer's current value, and a local
+            // one keeps its output default; this mapping accepted neither.
+            if (string.IsNullOrWhiteSpace(mapping.Validation) || !producedNames.Contains(mapping.Variable)
+                || !publicationContext.TryGetValue(mapping.Variable, out var value))
                 continue;
             var target = definition.Variables.SingleOrDefault(variable => variable.Name.Equals(mapping.Variable, StringComparison.OrdinalIgnoreCase))
                 ?? node.MultiInstance.OutputVariables!.Select(AutomaticMultiInstanceRules.ToVariable)
@@ -501,11 +508,19 @@ public sealed partial class AutomaticMultiInstanceCoordinator(
     }
 }
 
+/// <param name="MappedTargets">
+/// The targets a REST item's output mappings filled, from the response or a mapping
+/// default: publication repeats only their mapping validations. Null for a script item
+/// and for a candidate saved before it was recorded, which repeats every mapping whose
+/// target holds a local value or a shared write.
+/// </param>
 public sealed record AutomaticMultiInstanceCandidate(
     IReadOnlyDictionary<string, JsonElement> LocalVariables,
     IReadOnlyDictionary<string, JsonElement> SharedWrites,
     IReadOnlyDictionary<string, long> SharedOutputValueVersions,
-    IReadOnlyDictionary<string, JsonElement> ValidationContext);
+    IReadOnlyDictionary<string, JsonElement> ValidationContext,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    IReadOnlyCollection<string>? MappedTargets = null);
 
 public sealed record AutomaticMultiInstanceDispatchResult(string State, int AdmittedCount, TimeSpan? RetryAfter);
 

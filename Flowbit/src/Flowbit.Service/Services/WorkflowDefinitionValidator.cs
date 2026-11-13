@@ -122,6 +122,34 @@ public sealed class WorkflowDefinitionValidator(
             }
         }
 
+        if (BpmnFlowNodeTypes.IsServiceTask(node.Type) && node.Service is { } service)
+        {
+            if (Context(service.Url, "URL", true) is { } url) return url;
+            foreach (var header in service.Headers ?? [])
+                if (header is not null && Context(header.Value, $"header '{header.Name}'", true) is { } problem)
+                    return problem;
+            if (Context(service.Body, "body", true) is { } body) return body;
+            foreach (var mapping in service.OutputMappings ?? [])
+            {
+                if (mapping is null) continue;
+                if (mapping.DefaultValue is { } value)
+                {
+                    var templates = value.ValueKind switch
+                    {
+                        JsonValueKind.String => [value.GetString()],
+                        JsonValueKind.Array => value.EnumerateArray().Where(item => item.ValueKind == JsonValueKind.String)
+                            .Select(item => item.GetString()).ToArray(),
+                        _ => Array.Empty<string?>()
+                    };
+                    foreach (var template in templates)
+                        if (Context(template, $"output mapping '{mapping.Variable}' defaultValue", true) is { } defaults)
+                            return defaults;
+                }
+                if (Context(mapping.Validation, $"output mapping '{mapping.Variable}' validation", false) is { } validation)
+                    return validation;
+            }
+        }
+
         if (BpmnFlowNodeTypes.IsScriptTask(node.Type)
             && !string.Equals(node.ScriptFormat, ScriptFormats.JavaScript, StringComparison.Ordinal))
         {

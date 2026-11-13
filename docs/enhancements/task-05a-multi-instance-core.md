@@ -324,6 +324,12 @@ Worker resolves the option for its own environment, as the API does; its refused
 entry and item jobs retry and then wait in an incident, and a retry on an open Worker
 resumes them.
 
+TASK-05B added `serviceTask` to that list on 2026-11-12, so the list now holds the
+service and script kinds and only call bodies stay refused. The shared entry and item
+routing moved with it to `WorkflowEngineService.AutomaticMultiInstanceItems.cs`, one
+dispatch by node type that both adapters use; see the
+[TASK-05B implementation record](task-05b-multi-instance-service-activities.md#implementation-record-2026-11-12).
+
 **Size measure (corrected 2026-11-12).** The item and body size checks first counted
 compact JSON, while the tables' check constraints count `octet_length(column::text)`,
 the text PostgreSQL prints for stored `jsonb` (spaces after commas and colons, numbers
@@ -350,6 +356,33 @@ change shared contracts; each takes the proposal its plan recorded:
 5. TASK-05C owns the local-validation language rule: a local output's validation
    rejects `FlowInfo`, the gateway helpers, and `CountFlow`/`PercentFlow`, and an
    item's expressions read no `mi.*` name except `mi.item`, `mi.index`, and `mi.total`.
+
+**Service adapter decisions (agreed 2026-11-12).** A review of
+[TASK-05B](task-05b-multi-instance-service-activities.md) after the script adapter
+landed raised six questions that change or extend shared contracts. Each takes the
+proposal that plan recorded. The service adapter is not implemented; these bind its
+implementation:
+
+1. A successful REST response is mapped in memory and saved only as the item's
+   candidate. The job's result-ready row is not used for item jobs, so incident
+   retry keeps deciding publication-only recovery from the saved candidate alone.
+2. A caught REST failure writes a stable code to the boundary's error variable:
+   `service_task_failed` for a template, transport, timeout, or non-2xx failure, and
+   `multi_instance_result_invalid` for a mapping or output-contract failure. No HTTP
+   status reaches the handler path except through the boundary selected; a failed
+   item publishes no `statusVariable`.
+3. Entry failures, `RefuseItemResultAsync` refusals, and a validation that fails only
+   at publication carry no HTTP status, so only a catch-all boundary catches them. A
+   REST host with only status-matched boundaries waits in an incident or faults.
+4. A statically read shared alias with no current value stays an operational
+   incident at item staging, as `WorkflowVariableStore.MergeEffectiveValuesAsync`
+   behaves today. It is not a failure an error boundary catches.
+5. Script decision 2 applies to REST items unchanged: a validation that fails only
+   at publication is the saved candidate's authored failure, and the request is
+   never sent again.
+6. An item's staged `config.*`/`setting.*` values stay frozen for its retries, also
+   when the failure is an expired credential. Rotating the setting reaches only items
+   that stage later.
 
 For the first release, **block every workflow-version switch while an automatic MI entry/body/completion is open**, including incident-blocked work, an entry waiting for another body of its node, and its async-after continuation. Return a precise compatibility blocker identifying the node/execution. A target that adds, removes, or changes `multiInstance` on a node holding an open job is already blocked: `ValidateOpenJobs` compares the full `DurableNodeContract` before `JobDescriptorMatches`, and `CanonicalNode` includes `multiInstance`, so it reports `open_job_contract_changed`; open ordinary calls keep their unsettled-call blockers. Pin both with regression tests rather than adding a second mechanism. Do not implement partial rebinding of item jobs/snapshots. Completed executions remain immutable history and do not by themselves block switching at a later supported wait.
 

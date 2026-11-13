@@ -2401,7 +2401,7 @@ public sealed partial class WorkflowEngineService
             TimeSpan.FromMilliseconds(100));
     }
 
-    private StagedServiceInvocation BuildStagedServiceInvocation(
+    private static StagedServiceInvocation BuildStagedServiceInvocation(
         FlowNodeModel node,
         IReadOnlyDictionary<string, JsonElement> variables)
     {

@@ -453,8 +453,8 @@ Review findings (2026-11-12), confirmed by reading the code and not yet fixed:
 - **JavaScript lock scope wording.** A JavaScript stage locks every shared binding of the
   definition for update, read-only ones and the aggregate included, not only the
   `readWrite` bindings that the help, AGENTS.md, and this record describe.
-- **Smaller gaps.** Item-owner locks take the job before the item row (the instance lock
-  serializes them, but AGENTS.md orders items first); the server finds `mi.*` names
+- **Smaller gaps.** Item-owner locks took the job before the item row (fixed by
+  TASK-05B on 2026-11-12: the shared owner lock now takes the item first); the server finds `mi.*` names
   through the NCalc parser, so an unparseable expression or a name inside a string
   literal can give a different first error than the editor; an item that reads its own
   aggregate target passes save and then fails (NCalc) or reads nothing (JavaScript);

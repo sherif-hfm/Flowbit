@@ -64,7 +64,7 @@ public sealed class AutomaticMultiInstanceEditorBrowserTests : IAsyncLifetime
             await Assertions.Expect(page.GetByRole(AriaRole.Heading, new() { Name = "Automatic multi-instance" })).ToBeVisibleAsync();
             var help = page.GetByRole(AriaRole.Button, new() { Name = "Help for Automatic multi-instance", Exact = true });
             await help.ClickAsync();
-            await Assertions.Expect(page.GetByText("Development preview: these controls validate the shared contract.", new() { Exact = false })).ToBeVisibleAsync();
+            await Assertions.Expect(page.GetByText("Development preview: service and script bodies can be published and run on this Development host.", new() { Exact = false })).ToBeVisibleAsync();
             await help.ClickAsync();
             await page.GetByLabel("Maximum concurrency (optional)", new() { Exact = true }).FillAsync("2");
             await page.GetByRole(AriaRole.Button, new() { Name = "+ Add local output", Exact = true }).ClickAsync();

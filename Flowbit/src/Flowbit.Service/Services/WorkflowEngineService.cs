@@ -10199,6 +10199,8 @@ public sealed partial class WorkflowEngineService(
     {
         // Already-typed values pass through. Loosely typed number/boolean defaults
         // are accepted by the authoring contract and normalized to their JSON kind.
+        // Text that parses to infinity or NaN ("1e9999", "NaN") has no JSON number,
+        // so it stays text and the declared type check refuses it.
         if (raw.ValueKind is JsonValueKind.Array or JsonValueKind.Object)
         {
             return raw.Clone();
@@ -10210,7 +10212,8 @@ public sealed partial class WorkflowEngineService(
             switch (dataType)
             {
                 case WorkflowVariableTypes.Number
-                    when double.TryParse(text, NumberStyles.Any, CultureInfo.InvariantCulture, out var number):
+                    when double.TryParse(text, NumberStyles.Any, CultureInfo.InvariantCulture, out var number)
+                         && double.IsFinite(number):
                     return number % 1 == 0 && Math.Abs(number) < 9.2e18
                         ? JsonSerializer.SerializeToElement((long)number)
                         : JsonSerializer.SerializeToElement(number);

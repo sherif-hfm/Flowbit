@@ -4402,7 +4402,7 @@ function renderAutomaticMultiInstanceSection(node) {
   title.textContent = "Automatic multi-instance";
   inspector.appendChild(title);
   attachInspectorHelp(title, "automatic-multi-instance", [
-    "Development preview: script bodies can be published and run on this Development host. Service and call bodies are refused at publication until their adapters are installed.",
+    "Development preview: service and script bodies can be published and run on this Development host. Call bodies are refused at publication until their adapter is installed.",
     "Run one durable item per collection element. The Worker initializes a frozen collection and instance inputs; item-local outputs are collected in index order after every item succeeds.",
     "Other shared inputs, configuration and time are captured when each item starts. Shared outputs require readWrite access. Parallel shared writes may conflict; publication recovery accepts saved candidates against current values and can replace newer values without repeating the activity.",
     "Conditional boundaries observe the activity from entry. Timer boundaries start when the body initializes, after queue waits. Interrupting boundaries cancel unfinished items; committed shared writes remain.",
@@ -4633,6 +4633,7 @@ function renderJoinCancellationSection(node) {
 function renderServiceSection(node) {
   node.service = normalizeService(node.service, model.variables);
   const service = node.service;
+  const automatic = isAutomaticServiceBody(node);
 
   const connectorTitle = document.createElement("h2");
   connectorTitle.textContent = "Connector";
@@ -4656,12 +4657,18 @@ function renderServiceSection(node) {
   title.textContent = "REST call";
   title.style.marginTop = "16px";
   inspector.appendChild(title);
-  attachInspectorHelp(title, "service-rest",
-    "Calls a REST endpoint automatically. Use `${variableName}` in the URL, headers, and body.");
+  attachInspectorHelp(title, "service-rest", automatic
+    ? [
+        "Sends one request for each collection item. Read the item with `${mi.item}`, its zero-based position with `${mi.index}`, and the count with `${mi.total}`. In the body, `${mi.item}` inserts the whole item as JSON; there is no `${mi.item.field}` path.",
+        "Instance variables are frozen when the body starts. Shared values, configuration (including credentials) and the clock are read when each item first runs and kept for its retries, so a credential rotated later reaches only items that start later.",
+        "A request can reach the receiver more than once, for example after a Worker restart. Send a header the receiver deduplicates on, such as `Idempotency-Key: flowbit-${sys.jobId}`; `sys.jobId` stays the same for every retry of an item.",
+        "A Worker must be running. Every item, including a single one, runs as its own durable job."
+      ]
+    : "Calls a REST endpoint automatically. Use `${variableName}` in the URL, headers, and body.");
 
   selectField("Method", HTTP_METHODS, service.method, v => { service.method = v; });
   const urlInput = field("URL", "text", service.url, v => { service.url = v; });
-  urlInput.placeholder = "https://api.example.com/credit/${customerId}";
+  urlInput.placeholder = automatic ? "https://api.example.com/suppliers/${mi.item}" : "https://api.example.com/credit/${customerId}";
   field("Timeout (seconds)", "number", service.timeoutSeconds, v => {
     const n = Math.round(+v);
     service.timeoutSeconds = Number.isFinite(n) && n > 0 ? n : 1;
@@ -4669,11 +4676,20 @@ function renderServiceSection(node) {
   const statusVariableInput = field(
     "Status variable (optional)", "text", service.statusVariable,
     v => { service.statusVariable = v; });
-  attachWritableTargetSuggestions(
-    statusVariableInput,
-    match => { service.statusVariable = match.name; renderInspector(); },
-    false,
-    variable => variable.dataType === "number" && !variable.isArray);
+  if (automatic) {
+    attachAutomaticItemTargetSuggestions(
+      statusVariableInput, node,
+      match => { service.statusVariable = match.name; renderInspector(); },
+      variable => variable.dataType === "number" && !variable.isArray);
+    attachInspectorHelp(statusVariableInput, "service-item-status",
+      "An item-local number output or readWrite shared number alias that receives each successful response's HTTP status. A failed item writes no status: an error boundary chosen by the status still applies, and its error variable receives the code service_task_failed.");
+  } else {
+    attachWritableTargetSuggestions(
+      statusVariableInput,
+      match => { service.statusVariable = match.name; renderInspector(); },
+      false,
+      variable => variable.dataType === "number" && !variable.isArray);
+  }
 
   renderErrorBoundarySection(node);
 
@@ -4749,8 +4765,18 @@ function renderServiceSection(node) {
   outTitle.textContent = "Response mappings";
   outTitle.style.marginTop = "16px";
   inspector.appendChild(outTitle);
-  attachInspectorHelp(outTitle, "service-response-mappings",
-    "Each mapping creates or updates a typed instance variable, or a shared alias with read/write access. Read-only shared aliases are not offered as targets. The response path may be blank only when a default value is configured.");
+  attachInspectorHelp(outTitle, "service-response-mappings", automatic
+    ? [
+        "Each mapping writes this body's item-local output or a readWrite shared alias. A process variable cannot be written from an item; the item's local outputs reach the workflow through the aggregate result.",
+        "The mappings of one item are checked together; if one fails, nothing from that response is saved and the item fails with multi_instance_result_invalid. The response path may be blank only when a default value is configured."
+      ]
+    : "Each mapping creates or updates a typed instance variable, or a shared alias with read/write access. Read-only shared aliases are not offered as targets. The response path may be blank only when a default value is configured.");
+  if (automatic && service.outputMappings.length === 0 && automaticItemAssignmentTargets(node).length === 0) {
+    const p = document.createElement("p");
+    p.className = "empty-note";
+    p.textContent = "No item targets yet. Add an item-local output under Automatic multi-instance, or declare a readWrite shared alias, then map the response to it here.";
+    inspector.appendChild(p);
+  }
 
   service.outputMappings.forEach((mapping, index) => {
     const box = document.createElement("div");
@@ -4764,12 +4790,14 @@ function renderServiceSection(node) {
     varInput.value = mapping.variable;
     varInput.oninput = () => { mapping.variable = varInput.value; };
     varField.appendChild(varInput);
-    attachWritableTargetSuggestions(varInput, match => {
+    const applyTarget = match => {
       mapping.variable = match.name;
       mapping.dataType = match.dataType;
       mapping.isArray = !!match.isArray;
       renderInspector();
-    });
+    };
+    if (automatic) attachAutomaticItemTargetSuggestions(varInput, node, applyTarget);
+    else attachWritableTargetSuggestions(varInput, applyTarget);
     box.appendChild(varField);
 
     const pathField = document.createElement("div");
@@ -5426,7 +5454,10 @@ function renderErrorBoundarySection(hostNode) {
   attachInspectorHelp(title, "error-boundary", isRestHost
     ? [
         "When this task fails (HTTP error, timeout, or a failed output mapping), route the token out an error path instead of rolling back. Attach an error boundary event, then draw its single outgoing flow.",
-        "Several boundaries can match different HTTP statuses. An exact status wins over a range, and a range wins over the catch-all. A failure with no response status, such as a timeout, reaches only the catch-all."
+        "Several boundaries can match different HTTP statuses. An exact status wins over a range, and a range wins over the catch-all. A failure with no response status, such as a timeout, reaches only the catch-all.",
+        ...(isAutomaticServiceBody(hostNode) ? [
+          "On a multi-instance body, a caught item failure stops the whole body and publishes a partial result before the boundary continues. A collection that is invalid, unset or too large, a result over the size limit, and a validation that fails only when a saved result is published have no status, so only the catch-all takes them; without one the item waits in an incident or the workflow faults."
+        ] : [])
       ]
     : isCallActivityType(hostNode.type)
       ? [
@@ -7052,6 +7083,47 @@ function automaticItemAssignmentTargets(node) {
 function isAutomaticScriptBody(node) {
   return node && node.type === "scriptTask" && node.multiInstance != null &&
     typeof node.multiInstance === "object" && !Array.isArray(node.multiInstance);
+}
+
+function isAutomaticServiceBody(node) {
+  return node && node.type === "serviceTask" && node.multiInstance != null &&
+    typeof node.multiInstance === "object" && !Array.isArray(node.multiInstance);
+}
+
+// Suggests a service body's item targets for a mapping or status field: its local
+// outputs, then readWrite shared aliases outside its collection, aggregate, and error
+// targets. Rebuilt on focus, so a local output added under Automatic multi-instance is
+// offered without a redraw. A typed value the list does not offer stays as typed.
+function attachAutomaticItemTargetSuggestions(input, node, onMatch, predicate = null) {
+  const list = document.createElement("datalist");
+  list.id = `automatic-item-target-${++writableTargetSuggestionId}`;
+  const entries = () => {
+    const allowed = new Set(automaticItemAssignmentTargets(node).map(option => option.value.toLowerCase()));
+    const locals = saveAutomaticLocalOutputs(node)
+      .filter(output => typeof output.name === "string" && hasText(output.name))
+      .map(variable => ({ variable, local: true }));
+    const shared = (model.variables || [])
+      .filter(variable => variable && typeof variable.name === "string" && isSharedProcessVariable(variable) &&
+        allowed.has(variable.name.toLowerCase()))
+      .map(variable => ({ variable, local: false }));
+    return [...locals, ...shared].filter(entry => !predicate || predicate(entry.variable));
+  };
+  const fill = () => list.replaceChildren(...entries().map(entry => {
+    const option = document.createElement("option");
+    option.value = entry.variable.name;
+    option.label = `${entry.variable.dataType ?? ""}${entry.variable.isArray ? "[]" : ""}` +
+      (entry.local ? " · item-local output" : " · shared readWrite");
+    return option;
+  }));
+  fill();
+  input.setAttribute("list", list.id);
+  input.parentNode?.appendChild(list);
+  input.addEventListener("focus", fill);
+  input.addEventListener("change", () => {
+    const name = input.value.trim().toLowerCase();
+    const match = entries().find(entry => entry.variable.name.toLowerCase() === name);
+    if (match) onMatch?.(match.variable);
+  });
 }
 
 function renderAssignmentsSection(node) {
@@ -14054,6 +14126,31 @@ function automaticItemExpressionProblem(node) {
     for (const template of templates) {
       const defaults = context(template, "local output '" + name + "' defaultValue", true);
       if (defaults) return defaults;
+    }
+  }
+  const service = node.type === "serviceTask" && node.service && typeof node.service === "object" ? node.service : null;
+  if (service) {
+    const url = context(service.url, "URL", true);
+    if (url) return url;
+    for (const header of Array.isArray(service.headers) ? service.headers : []) {
+      if (!header || typeof header !== "object") continue;
+      // The server checks after normalization has trimmed the header name.
+      const problem = context(header.value, "header '" + trimAttributeKey(String(header.name ?? "")) + "'", true);
+      if (problem) return problem;
+    }
+    const body = context(service.body, "body", true);
+    if (body) return body;
+    for (const mapping of Array.isArray(service.outputMappings) ? service.outputMappings : []) {
+      if (!mapping || typeof mapping !== "object") continue;
+      const variable = String(mapping.variable ?? "");
+      const templates = typeof mapping.defaultValue === "string" ? [mapping.defaultValue]
+        : Array.isArray(mapping.defaultValue) ? mapping.defaultValue.filter(item => typeof item === "string") : [];
+      for (const template of templates) {
+        const defaults = context(template, "output mapping '" + variable + "' defaultValue", true);
+        if (defaults) return defaults;
+      }
+      const validation = context(mapping.validation, "output mapping '" + variable + "' validation", false);
+      if (validation) return validation;
     }
   }
   if (node.type === "scriptTask" && node.scriptFormat !== "javascript") {

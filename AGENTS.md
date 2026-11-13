@@ -294,15 +294,24 @@ and item processing each require the open switch and an installed activity kind:
 `AutomaticMultiInstanceRules.InstalledAdapterKinds` is the one list the three guards
 read (`WorkflowDefinitionReadinessChecker.EnsureDurablePublicationAllowed`,
 `EnsureAutomaticMultiInstanceRuntimeAvailable`, and the item-job dispatch in
-`WorkflowEngineService.AutomaticMultiInstanceScripts.cs`), so a body published on an
+`WorkflowEngineService.AutomaticMultiInstanceItems.cs`), so a body published on an
 open host neither starts nor runs on a closed one; its jobs retry, then wait in an
-incident. Only `scriptTask` is installed; service and call bodies stay refused at
+incident. `serviceTask` and `scriptTask` are installed; call bodies stay refused at
 all three. Add a kind only in the change that completes its entry, item, failure,
 and cancellation paths, and never let an automatic body run as one ordinary activity.
 
+**Shared item protocol.** `WorkflowEngineService.AutomaticMultiInstanceItems.cs` owns
+what the service and script adapters share: one dispatch by node type for a body's
+`asyncBefore` entry job and its `multiInstanceItem` jobs, body entry through
+`InitializeBodyAsync`, staging, candidate save, publication, and the authored-failure
+and refusal exits. The item-owner lock takes instance, token, body, item, then job.
+An adapter names the instance inputs its body freezes, supplies the staged
+environment, and produces an item's candidate; it never writes runtime variables or
+advances a token. An authored failure's `TaskExecutionOutcome` carries the HTTP
+status only when a REST response supplied one.
+
 **Script adapter (TASK-05C).** `WorkflowEngineService.AutomaticMultiInstanceScripts.cs`
-routes a script body's `asyncBefore` job to `InitializeBodyAsync` and runs each
-`multiInstanceItem` job as stage, evaluate, save, publish in separate transactions:
+runs each script item as stage, evaluate, save, publish in separate transactions:
 no runtime or shared lock is held while NCalc or Jint runs, and an item whose
 candidate is saved goes straight to publication on every later attempt. It freezes
 an NCalc body's referenced instance inputs and every stored name for JavaScript,
@@ -321,6 +330,30 @@ or retry, then an incident); size refusals go through `RefuseItemResultAsync`; a
 shared value conflict opens `output_version_conflict` over the saved candidate. A
 JavaScript stage's conservative shared reads are `OptionalReadAliases`, absent when
 unset, while statically named dependencies still fail closed.
+
+**REST adapter (TASK-05B).** `WorkflowEngineService.AutomaticMultiInstanceServices.cs`
+runs each REST item as stage, invoke, map, save, publish. A body freezes exactly the
+instance names its URL, header and body placeholders, mapping default templates and
+validations, and local outputs reference (`AutomaticServiceReferencedNames`, never a
+text match), and an item stages only the referenced `config.*`/`setting.*`/`sys.*`
+names. The request is rendered again from the saved context on every attempt, so
+`sys.jobId` stays stable and a rotated credential never reaches an item that already
+staged. No lock is held during HTTP. `MapAutomaticServiceItem` maps a 2xx in memory
+through `ResolveTypedOutputs`; the status target receives this response's status
+before any validation runs. The saved candidate is the only durable record of a
+success: never use the job's result-ready row for an item, because incident retry
+decides publication-only recovery from the candidate alone. Template, transport,
+timeout and non-2xx failures are `service_task_failed` with the response's selectable
+status; mapping and output-contract failures are `multi_instance_result_invalid`,
+selected by the 2xx status; a validation failing only at publication has no status,
+so only a catch-all catches it. A failed item publishes no status, and the error
+variable receives the code; a call or mapping failure records on the item and its
+node visit a description that names the HTTP status, or says no response arrived,
+and never holds request or response data. Publication repeats only the validations of mappings that filled
+their targets, from the response or a mapping default; the candidate records those targets, because a local
+output's default is in the candidate whether or not a mapping wrote it. A statically read shared alias with no value stops
+staging with a `job_conflict` incident, never a boundary. REST effects are at least
+once: a crash between the call and the candidate save resends with the same `sys.jobId`.
 
 `AutomaticMultiInstanceRules` owns the common authored contract, including dedicated
 local output declarations; the migrators preserve automatic settings and invalid
@@ -2503,7 +2536,10 @@ editor's `validateSaveVariablePresentation` phase apply the same rules. See
 `required` is checked). When a value is not supplied at start / flow-take, the
 default is coerced to the declared `dataType`/`isArray` and **persisted as an
 instance variable** exactly like a supplied value, so gateways, service tasks,
-history, and variable search all see it. Required variables still must be
+history, and variable search all see it. `CoerceDefaultScalar` turns numeric text
+into a number only when it is finite, and `IsValidAuthoredDefault` refuses
+non-finite numeric text at save (as the editor does): infinity and NaN have no JSON
+number, and serializing one throws. Required variables still must be
 supplied. Names beginning with the reserved `sys.` / `config.` prefixes are
 rejected by `ValidateDefinition` (see context sources below).
 

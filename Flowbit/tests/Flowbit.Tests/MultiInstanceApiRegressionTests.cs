@@ -679,6 +679,44 @@ public sealed class MultiInstanceApiRegressionTests(PostgresApiFixture fixture)
         await AssertCatchFailureLeftNoOutputsAsync(processValidationStart.Id);
     }
 
+    // A number default that renders text parsing to infinity or NaN has no JSON number:
+    // it is refused as a type error (400), never an unhandled serialization failure.
+    [Theory]
+    [InlineData("1e9999")]
+    [InlineData("NaN")]
+    public async Task A_number_default_rendering_a_non_finite_number_is_a_type_error(string label)
+    {
+        var key = "non-finite-default-" + Guid.NewGuid().ToString("N");
+        var model = new WorkflowModel
+        {
+            Id = key, Name = key, InitialEventId = 1,
+            FlowNodes =
+            [
+                new()
+                {
+                    Id = 1, Name = "Start", Type = BpmnFlowNodeTypes.StartEvent,
+                    Variables =
+                    [
+                        new() { Id = 1, Name = "label", DataType = "string", Required = true },
+                        new() { Id = 2, Name = "amount", DataType = "number", Required = false, DefaultValue = JsonSerializer.SerializeToElement("${label}") }
+                    ]
+                },
+                new() { Id = 2, Name = "End", Type = BpmnFlowNodeTypes.EndEvent }
+            ],
+            SequenceFlows = [new() { Id = 101, SourceRef = 1, TargetRef = 2 }]
+        };
+        var workflowId = await CreateWorkflowAsync(model);
+
+        using (var finite = await SendAsync(HttpMethod.Post, "/api/instances", new StartInstanceRequest(workflowId, null, null,
+                   new Dictionary<string, JsonElement> { ["label"] = JsonSerializer.SerializeToElement("12") })))
+            Assert.Equal(HttpStatusCode.Created, finite.StatusCode);
+
+        using var refused = await SendAsync(HttpMethod.Post, "/api/instances", new StartInstanceRequest(workflowId, null, null,
+            new Dictionary<string, JsonElement> { ["label"] = JsonSerializer.SerializeToElement(label) }));
+        Assert.Equal(HttpStatusCode.BadRequest, refused.StatusCode);
+        Assert.Contains("Variable 'amount' must be number.", await refused.Content.ReadAsStringAsync());
+    }
+
     [Fact]
     public async Task TypedServiceMappingsSucceedOrFailWithoutPartialWrites()
     {

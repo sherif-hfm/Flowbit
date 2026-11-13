@@ -542,22 +542,20 @@ public sealed class AutomaticMultiInstanceScriptRuntimeTests(PostgresApiFixture 
     }
 
     [Fact]
-    public async Task Service_and_call_bodies_stay_refused_at_publication_while_only_scripts_are_installed()
+    public async Task Call_bodies_stay_refused_at_publication_while_only_scripts_and_services_are_installed()
     {
         await using var host = OpenHost();
-        foreach (var type in new[] { BpmnFlowNodeTypes.ServiceTask, BpmnFlowNodeTypes.CallActivity })
+        var body = new FlowNodeModel
         {
-            var body = new FlowNodeModel
-            {
-                Id = 2, Name = "Body", Type = type, AsyncBefore = type == BpmnFlowNodeTypes.ServiceTask, X = 200, Y = 20,
-                MultiInstance = Multi("parallel", "items", "results"),
-                Service = type == BpmnFlowNodeTypes.ServiceTask ? new() { Method = "POST", Url = "https://example.test/items", TimeoutSeconds = 30 } : null,
-                CallActivity = type == BpmnFlowNodeTypes.CallActivity ? new() { WorkflowKey = "unused-child" } : null
-            };
-            using var response = await SendAsync(host, HttpMethod.Post, "/api/workflows",
-                new CreateWorkflowRequest(Workflow(Key(type), body, Items(1)), true));
+            Id = 2, Name = "Body", Type = BpmnFlowNodeTypes.CallActivity, X = 200, Y = 20,
+            MultiInstance = Multi("parallel", "items", "results"),
+            CallActivity = new() { WorkflowKey = "unused-child" }
+        };
+        using (var response = await SendAsync(host, HttpMethod.Post, "/api/workflows",
+                   new CreateWorkflowRequest(Workflow(Key("call"), body, Items(1)), true)))
+        {
             Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-            Assert.Contains($"Automatic multi-instance {type} #2 cannot be published or run until its activity adapter is installed.",
+            Assert.Contains("Automatic multi-instance callActivity #2 cannot be published or run until its activity adapter is installed.",
                 await response.Content.ReadAsStringAsync());
         }
 
