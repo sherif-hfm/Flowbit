@@ -3541,6 +3541,10 @@ function renderHint() {
 }
 
 let inspectorItemDeleteButtons = [];
+// Re-runs the automatic multi-instance body's status line. The body section sets it
+// on each render; edits anywhere else in the inspector (an assignment, a template, a
+// mapping) can change that status too.
+let automaticBodyStatusRefresh = null;
 
 function configureInspectorItemDeleteButton(button, panDisabledTitle) {
   button.dataset.panDisabledTitle = panDisabledTitle;
@@ -3577,6 +3581,7 @@ function linkInspectorLabels(scope = inspector) {
 
 function renderInspectorContent() {
   inspectorItemDeleteButtons = [];
+  automaticBodyStatusRefresh = null;
   inspector.innerHTML = "";
   // A viewer has no inspector; its host describes the selected node.
   if (viewerMode) return;
@@ -4229,7 +4234,8 @@ function renderNodeInspector() {
     const interruptToggle = inspector.appendChild(variableCheckbox(
       "Interrupt attached activity",
       node.cancelActivity === true,
-      checked => { node.cancelActivity = checked; renderInspector(); }));
+      // The canvas draws the ring solid or dashed from this setting, so redraw it too.
+      checked => { node.cancelActivity = checked; render(); }));
     const eventName = isConditionalBoundaryEventType(node.type) ? "condition" : "timer";
     attachInspectorHelp(interruptToggle, "boundary-interrupt", [
       `Checked: when the ${eventName} triggers, the attached activity and its open work are cancelled before the boundary path continues.`,
@@ -4454,15 +4460,24 @@ function renderAutomaticMultiInstanceSection(node) {
   status.setAttribute("role", "status");
   status.setAttribute("aria-live", "polite");
   const updateValidation = () => { status.textContent = automaticMultiInstanceProblem(createSaveValidationContext(model), node) || ""; };
+  automaticBodyStatusRefresh = updateValidation;
   const edited = callback => value => { callback(value); updateValidation(); renderNodes(); };
-  selectField("Execution mode", MULTI_INSTANCE_MODE_OPTIONS, multi.mode, edited(value => { multi.mode = value; }));
+  const modeField = selectField("Execution mode", MULTI_INSTANCE_MODE_OPTIONS, multi.mode, edited(value => { multi.mode = value; }));
+  attachInspectorHelp(modeField, "automatic-mode", [
+    "Parallel runs up to the maximum concurrency of items at once. Sequential runs one item at a time in collection order, and each item sees the shared values earlier items wrote.",
+    "Either way the aggregate lists the items in collection order, whatever order they finish in."
+  ]);
   const scopedLabel = variable => variable.name + (isSharedProcessVariable(variable) ? " · shared" : " · instance");
   const collections = (model.variables || []).filter(variable => variable.isArray &&
     (!isSharedProcessVariable(variable) || ["read", "readWrite"].includes(variable.access)));
   const choices = (variables, current) => [ { value: "", label: "Select a variable" },
     ...variables.map(variable => ({ value: variable.name, label: scopedLabel(variable) })),
     ...(current && !variables.some(variable => variable.name === current) ? [{ value: current, label: String(current) + " · invalid imported value" }] : []) ];
-  selectField("Collection variable", choices(collections, multi.collectionVariable), multi.collectionVariable || "", edited(value => { multi.collectionVariable = value; }));
+  const collectionField = selectField("Collection variable", choices(collections, multi.collectionVariable), multi.collectionVariable || "", edited(value => { multi.collectionVariable = value; }));
+  attachInspectorHelp(collectionField, "automatic-collection", [
+    "A declared array variable: an instance variable or a readable shared alias. The body copies it when it starts, so later changes do not reach running items.",
+    "An empty array completes at once with `[]`. The engine setting `Workflow.MultiInstance.MaxInstances` limits how many items one body may have."
+  ]);
   const concurrency = field("Maximum concurrency (optional)", "number", multi.maxConcurrency ?? "", edited(value => {
     if (value === "") delete multi.maxConcurrency; else multi.maxConcurrency = Number(value);
   }));
@@ -4471,12 +4486,20 @@ function renderAutomaticMultiInstanceSection(node) {
   concurrency.step = "1";
   attachInspectorHelp(concurrency, "automatic-concurrency", "Parallel mode uses the engine's default when omitted. The configured cap and item count further limit it; the effective value is fixed when the body initializes. Sequential mode accepts omission or 1. Worker limits also apply.");
   const results = (model.variables || []).filter(variable => variable.dataType === "json" && !variable.isArray && isWritableProcessVariable(variable));
-  selectField("Aggregate result variable", choices(results, multi.resultVariable), multi.resultVariable || "", edited(value => { multi.resultVariable = value; }));
+  const resultField = selectField("Aggregate result variable", choices(results, multi.resultVariable), multi.resultVariable || "", edited(value => { multi.resultVariable = value; }));
+  attachInspectorHelp(resultField, "automatic-result", [
+    "A scalar json process variable that receives one row per item, in collection order, when the body completes. An instance variable needs an array default value such as `[]`; a shared alias needs readWrite access.",
+    "When an error boundary catches an item failure, it receives the completed, failed, and cancelled rows before the boundary's path runs. Items never read this variable."
+  ]);
   const completion = field("Completion evaluation", "text", multi.completionEvaluation ?? "", edited(value => { multi.completionEvaluation = value; }));
   attachInspectorHelp(completion, "automatic-completion", "Automatic bodies require afterAll. Each aggregate row includes kind, index, item, status and declared local variables; empty collections complete with [].");
   const outputsTitle = document.createElement("h3");
   outputsTitle.textContent = "Item-local outputs";
   inspector.appendChild(outputsTitle);
+  attachInspectorHelp(outputsTitle, "automatic-locals", [
+    "Values each item produces, written by its mappings, assignments, or script and collected into its row of the aggregate. They are not process variables: later nodes read them only through the aggregate.",
+    "A local name cannot match a process variable. At most 100 can be declared."
+  ]);
   if (!Array.isArray(multi.outputVariables)) {
     const warning = document.createElement("p");
     warning.className = "empty-note";
@@ -4496,8 +4519,16 @@ function renderAutomaticMultiInstanceSection(node) {
       box.appendChild(selectField("Local data type", VARIABLE_DATA_TYPES.map(value => ({ value, label: value })), output.dataType, edited(value => { output.dataType = value; })));
       box.appendChild(variableCheckbox("Local array", output.isArray === true, edited(value => { output.isArray = value; })));
       box.appendChild(variableCheckbox("Local nullable", output.nullable === true, edited(value => { output.nullable = value; })));
-      addField("Local default value (optional)", "text", defaultValueToText(output.defaultValue), value => { output.defaultValue = parseDefaultValue(value, output); });
-      addField("Local validation (NCalc, optional)", "text", output.validation ?? "", value => { output.validation = value.trim() ? value : null; });
+      const defaultInput = field("Local default value (optional)", "text", defaultValueToText(output.defaultValue),
+        edited(value => { output.defaultValue = parseDefaultValue(value, output); }));
+      box.appendChild(defaultInput.parentNode);
+      attachInspectorHelp(defaultInput, "automatic-local-default-" + index,
+        "Used when the item does not write this output. Text may contain `${...}` placeholders, for example `${mi.index}`.");
+      const validationInput = field("Local validation (NCalc, optional)", "text", output.validation ?? "",
+        edited(value => { output.validation = value.trim() ? value : null; }));
+      box.appendChild(validationInput.parentNode);
+      attachInspectorHelp(validationInput, "automatic-local-validation-" + index,
+        "Checked against the item's final values before its result is saved; a false result fails the item. It can read `[mi.item]`, `[mi.index]`, and `[mi.total]`, but not progress or flow evidence.");
     } else {
       const warning = document.createElement("p");
       warning.textContent = "Invalid local declaration: " + JSON.stringify(output);
@@ -5469,6 +5500,20 @@ function renderScriptSection(node) {
   inspector.appendChild(title);
 
   const formatField = selectField("Format", SCRIPT_FORMAT_OPTIONS, node.scriptFormat, v => {
+    // Each format keeps only its own content. On a multi-instance body, whose items
+    // usually carry more authored logic, ask before discarding it.
+    if (isAutomaticScriptBody(node) && v !== node.scriptFormat) {
+      const assignments = Array.isArray(node.assignments) ? node.assignments.length : 0;
+      const discards = v === SCRIPT_FORMAT.JAVASCRIPT
+        ? (assignments > 0 ? "its " + assignments + " NCalc assignment" + (assignments === 1 ? "" : "s") : null)
+        : (hasText(node.script) ? "its JavaScript script" : null);
+      if (discards && !confirm("Switching this multi-instance body to " +
+          (v === SCRIPT_FORMAT.JAVASCRIPT ? "JavaScript" : "NCalc") + " removes " + discards +
+          ". Undo restores " + (v === SCRIPT_FORMAT.JAVASCRIPT && assignments > 1 ? "them" : "it") + ". Switch the format?")) {
+        renderInspector();
+        return;
+      }
+    }
     node.scriptFormat = v;
     applyTypeInvariants(node);
     renderInspector();
@@ -5478,15 +5523,17 @@ function renderScriptSection(node) {
       ? [
           "Runs once for each collection item in the sandboxed JavaScript engine, with the same limits as an ordinary script.",
           "`execution.setVariable(name, value)` writes this body's item-local outputs or readWrite shared aliases. Any other name, a process variable included, fails the item at runtime and names the rejected target.",
-          "`execution.getVariable('mi.item')`, `'mi.index'` (from 0) and `'mi.total'` read the item. Instance variables are frozen when the body starts; shared values, configuration and the clock when the item first runs. Returned objects are copies.",
-          "Every readWrite shared binding of this workflow is locked briefly while each item starts, so declare only the bindings this body needs, or use NCalc, which locks exactly what it names.",
+          "`execution.getVariable('mi.item')`, `'mi.index'` (from 0) and `'mi.total'` read the item. Instance variables are frozen when the body starts; shared values, configuration and the clock when the item first runs. Returned objects are copies. This body's own result variable is never available to an item.",
+          "In sequential mode an item sees the shared values earlier items wrote; parallel items run in any order and may not.",
+          "Every shared binding of this workflow except the body's collection, read-only ones included, is locked briefly while each item starts, so declare only the bindings this workflow needs, or use NCalc, which locks exactly what it names.",
           "Retrying runs the same script over the same inputs, so it rarely helps; attach an error boundary to this task."
         ]
       : [
           "Runs once for each collection item. Assignments run in order, and a later one reads an earlier one's value for the same item.",
           "Targets are this body's item-local outputs or readWrite shared aliases; a process variable cannot be written from an item.",
           "Read the item with `[mi.item]`, its zero-based position with `[mi.index]`, and the count with `[mi.total]`. A json item arrives as its JSON text and a json array as a list; use JavaScript to read object properties.",
-          "Instance variables are frozen when the body starts; shared values, configuration and the clock when each item first runs.",
+          "Instance variables are frozen when the body starts; shared values, configuration and the clock when each item first runs. This body's own result variable is never available to an item.",
+          "In sequential mode an item sees the shared values earlier items wrote; parallel items run in any order and may not.",
           "Retrying evaluates the same expressions over the same inputs, so it rarely helps; attach an error boundary to this task."
         ])
     : node.scriptFormat === SCRIPT_FORMAT.JAVASCRIPT
@@ -14209,14 +14256,43 @@ function automaticItemContextViolation(expression, template) {
   return null;
 }
 
+// Whether an NCalc expression or ${...} template names the given variable as a
+// parameter: [name], {name}, or a bare name that is neither part of a dotted name
+// nor a function call, outside quoted text.
+function automaticExpressionReadsName(expression, template, name) {
+  if (typeof expression !== "string" || !hasText(expression) || !hasText(name)) return false;
+  let match;
+  if (template) {
+    const placeholders = /\$\{\s*([^}\s]+)\s*\}/g;
+    while ((match = placeholders.exec(expression)) !== null) {
+      if (match[1].toLowerCase() === name.toLowerCase()) return true;
+    }
+    return false;
+  }
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // NCalc identifiers are ASCII letters, digits, '_' and '$'.
+  const parameter = new RegExp("(^|[^A-Za-z0-9_$.\\[{])(\\[" + escaped + "\\]|\\{" + escaped + "\\}|" + escaped +
+    "(?![A-Za-z0-9_$.]|\\s*\\())", "gi");
+  while ((match = parameter.exec(expression)) !== null) {
+    if (!isInsideQuotedExpressionText(expression, match.index + match[1].length)) return true;
+  }
+  return false;
+}
+
 // Mirrors WorkflowDefinitionValidator.FindItemExpressionProblem: an item reads only
-// mi.item, mi.index, and mi.total, and a local validation cannot use outcome functions.
+// mi.item, mi.index, and mi.total, never its body's own aggregate target, and a local
+// validation cannot use outcome functions. A JavaScript body is not checked.
 function automaticItemExpressionProblem(node) {
   const owner = "Automatic multi-instance activity #" + node.id;
+  const aggregate = node.multiInstance && typeof node.multiInstance.resultVariable === "string"
+    ? node.multiInstance.resultVariable : null;
   const context = (expression, where, template) => {
     const name = automaticItemContextViolation(expression, template);
-    return name === null ? null
-      : owner + " " + where + " can read only [mi.item], [mi.index], and [mi.total]; '" + name + "' is not item context.";
+    if (name !== null)
+      return owner + " " + where + " can read only [mi.item], [mi.index], and [mi.total]; '" + name + "' is not item context.";
+    return automaticExpressionReadsName(expression, template, aggregate)
+      ? owner + " " + where + " reads '" + aggregate + "', this body's aggregate target, which its items never receive."
+      : null;
   };
   for (const output of automaticLocalOutputsForValidation(node)) {
     const name = String(output.name ?? "");
@@ -14274,13 +14350,18 @@ function automaticMultiInstanceProblem(ctx, node) {
   const multi = node.multiInstance;
   const owner = "Automatic multi-instance activity #" + node.id;
   if (!multi || typeof multi !== "object" || Array.isArray(multi)) return owner + " multiInstance must be an object.";
+  // The server reports a maxConcurrency that is present but not an integer before
+  // every other body rule, and an integer out of range only after the mode.
+  const hasConcurrency = Object.prototype.hasOwnProperty.call(multi, "maxConcurrency");
+  if (hasConcurrency && !Number.isInteger(multi.maxConcurrency))
+    return owner + " maxConcurrency must be an integer from 1 to 1000.";
   if (multi.source !== "collection") return owner + " source must be 'collection'.";
   if (multi.cardinalityExpression != null) return owner + " cannot define cardinalityExpression.";
   if (multi.onePerActor !== undefined && typeof multi.onePerActor !== "boolean") return owner + " onePerActor must be true or false.";
   if (multi.onePerActor) return owner + " cannot set onePerActor=true.";
   if (multi.completionEvaluation !== "afterAll") return owner + " requires completionEvaluation='afterAll'.";
   if (!["parallel", "sequential"].includes(multi.mode)) return owner + " mode must be 'parallel' or 'sequential'.";
-  if (Object.prototype.hasOwnProperty.call(multi, "maxConcurrency") && (!Number.isInteger(multi.maxConcurrency) || multi.maxConcurrency < 1 || multi.maxConcurrency > 1000))
+  if (hasConcurrency && (multi.maxConcurrency < 1 || multi.maxConcurrency > 1000))
     return owner + " maxConcurrency must be an integer from 1 to 1000.";
   if (multi.mode === "sequential" && multi.maxConcurrency != null && multi.maxConcurrency !== 1)
     return owner + " sequential mode accepts only maxConcurrency=1 or omission.";
@@ -14321,7 +14402,6 @@ function automaticMultiInstanceProblem(ctx, node) {
       if (output[member] !== undefined && typeof output[member] !== "boolean") return owner + " local output '" + output.name + "' " + member + " must be true or false.";
     }
     if (output.validation != null && typeof output.validation !== "string") return owner + " local output '" + output.name + "' validation must be an NCalc string.";
-    if (output.defaultValue != null && !validTypedValue(output.defaultValue, output)) return owner + " local output '" + output.name + "' defaultValue does not match its declared type.";
   }
   const boundaries = ctx.nodes.filter(candidate => candidate && candidate.type === "errorBoundaryEvent" && candidate.attachedToRef === node.id);
   const reserved = [source, result, ...boundaries.map(boundary => find(boundary.errorVariable)).filter(Boolean)];
@@ -14342,6 +14422,11 @@ function automaticMultiInstanceProblem(ctx, node) {
   const outgoing = ctx.outgoingFor(node.id);
   if (outgoing.length !== 1 || outgoing.some(flow => hasUnsupportedPassThroughMetadata(flow)))
     return owner + " requires exactly one ordinary unconditional outgoing flow without outcome settings.";
+  // The server checks defaults only after every structural rule above.
+  for (const output of multi.outputVariables) {
+    if (output.defaultValue != null && !validTypedValue(output.defaultValue, output))
+      return owner + " local output '" + output.name + "' defaultValue must be " + output.dataType + (output.isArray ? "[]" : "") + ".";
+  }
   return automaticItemExpressionProblem(node);
 }
 
@@ -15510,11 +15595,16 @@ if (!viewerMode) {
   listen(root, "pointerdown", () => {
     if (historyCommitTimer !== null) commitHistory();
   }, true);
+  // Runs after the field's own handler has written the model.
+  const refreshAutomaticBodyStatus = event => {
+    if (automaticBodyStatusRefresh && inspector.contains(event.target)) automaticBodyStatusRefresh();
+  };
   listen(root, "input", event => {
     if (event.target === diagramSearchInput ||
         event.target === gridSizeInput ||
         event.target === traceOpacityInput ||
         event.target.id === "js-editor-textarea") return;
+    refreshAutomaticBodyStatus(event);
     scheduleHistoryCommit();
   });
   listen(root, "change", event => {
@@ -15522,6 +15612,7 @@ if (!viewerMode) {
         event.target === snapToGridInput ||
         event.target === gridSizeInput ||
         event.target === traceOpacityInput) return;
+    refreshAutomaticBodyStatus(event);
     commitHistory();
   });
   listen(root, "pointerup", () => queueMicrotask(commitHistory));

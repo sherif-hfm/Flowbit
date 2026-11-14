@@ -361,8 +361,12 @@ fails, and fences narrow to the aliases written. Failures take exactly one exit:
 authored script/output failures follow the node's job policy (`CaptureItemFailureAsync`
 or retry, then an incident); size refusals go through `RefuseItemResultAsync`; a
 shared value conflict opens `output_version_conflict` over the saved candidate. A
-JavaScript stage's conservative shared reads are `OptionalReadAliases`, absent when
-unset, while statically named dependencies still fail closed.
+JavaScript stage locks every shared binding of the definition except the body's
+collection key, read-only bindings and its own aggregate included: writable bindings
+as targets, the rest as conservative reads. Those reads are `OptionalReadAliases`,
+absent when unset, while statically named dependencies still fail closed. Save refuses
+an NCalc or REST expression or template, or any local output's, that names the body's
+own aggregate, which items never receive.
 
 **REST adapter (TASK-05B).** `WorkflowEngineService.AutomaticMultiInstanceServices.cs`
 runs each REST item as stage, invoke, map, save, publish. A body freezes exactly the
@@ -2751,8 +2755,9 @@ definition ID. It derives reads and producer targets from actual mappings,
 assignments, submitted variables, status variables, and error variables.
 Shared conditional dependencies are rejected before a plan is cached. A JavaScript node
 with dynamic `setVariable` conservatively includes that node's `readWrite`
-bindings. Never infer dependencies with substring matching and never lock every
-definition-level `readWrite` declaration merely because it exists.
+bindings; an automatic JavaScript body's item stage is the one wider scope, described
+under the script adapter above. Never infer dependencies with substring matching and
+never lock every definition-level `readWrite` declaration merely because it exists.
 
 For a transition, compute the exact aliases used by the current node/action.
 Acquire normal runtime locks first in the established order (instance; active

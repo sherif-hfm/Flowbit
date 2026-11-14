@@ -55,7 +55,14 @@ public sealed class EditorAutomaticMultiInstanceServiceTests
         { "service/outputMappings/0/defaultValue", "\"${mi.completed}\"",
             "Automatic multi-instance activity #20 output mapping 'notificationId' defaultValue can read only [mi.item], [mi.index], and [mi.total]; 'mi.completed' is not item context." },
         { "service/outputMappings/0/validation", "\"Len(notificationId) > [mi.remaining]\"",
-            "Automatic multi-instance activity #20 output mapping 'notificationId' validation can read only [mi.item], [mi.index], and [mi.total]; 'mi.remaining' is not item context." }
+            "Automatic multi-instance activity #20 output mapping 'notificationId' validation can read only [mi.item], [mi.index], and [mi.total]; 'mi.remaining' is not item context." },
+        // Staging leaves the body's aggregate out, so an item could never read it.
+        { "service/url", "\"https://notifications.example.test/${ notificationResults }\"",
+            "Automatic multi-instance activity #20 URL reads 'notificationResults', this body's aggregate target, which its items never receive." },
+        { "service/body", "\"{\\\"supplier\\\":${mi.item},\\\"previous\\\":${NotificationResults}}\"",
+            "Automatic multi-instance activity #20 body reads 'notificationResults', this body's aggregate target, which its items never receive." },
+        { "service/outputMappings/0/validation", "\"Len(notificationId) > 0 and {notificationResults} != null\"",
+            "Automatic multi-instance activity #20 output mapping 'notificationId' validation reads 'notificationResults', this body's aggregate target, which its items never receive." }
     };
 
     [Theory]

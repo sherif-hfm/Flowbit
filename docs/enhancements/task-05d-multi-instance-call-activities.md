@@ -555,8 +555,9 @@ sections and examples listed under [Still open](#still-open) are not complete.
 - A scale run with production log levels.
 - Outside this adapter, for TASK-05B and TASK-05C: a REST or script item job checks the
   release switch before its fence, so on a closed host a stale item job ends in an
-  incident instead of closing; and no rule refuses a service template or a script that
-  reads the body's own aggregate, which items never receive.
+  incident instead of closing. This goes away when the integration change removes the
+  switch. (A service template or NCalc script that reads the body's own aggregate is
+  refused at save since 2026-11-14.)
 - The prepared call sections of the behavior guides (node reference, BPMN support,
   developer guide), the AI authoring guide's call rules, and the paired examples, merged
   in the parent's integration change (§10). Until then the definitions live in the tests,

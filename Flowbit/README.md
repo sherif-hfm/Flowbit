@@ -446,7 +446,9 @@ Runtime locking is driven by an immutable access plan cached by workflow
 definition ID. It derives exact shared reads and targets a node can produce
 (mappings, assignments, submitted values, status and error variables).
 JavaScript with dynamic `setVariable` conservatively includes that node's
-`readWrite` bindings. The engine locks only those exact shared keys, in ordinal
+`readWrite` bindings. An automatic JavaScript body's item stage locks wider: every
+shared binding of the definition except the body's collection, read-only bindings
+and its aggregate included. The engine locks only those exact shared keys, in ordinal
 key order, after the instance/runtime locks. Conditional-event conditions are
 instance-only and cannot reference a shared alias. REST service tasks that read
 or write a shared binding must use

@@ -191,6 +191,30 @@ Rollback to legacy binaries is not safe with open automatic bodies or published 
 
 Before marking Done, satisfy every first-release criterion for **service, script, and call activities**, complete all four subtask checklists, record combined validation evidence here, synchronize parent/subtask/backlog statuses, and create follow-up items for retained later-release scope. Multi-instance calls cannot be moved to a follow-up item as a substitute for completing this release.
 
+## Release readiness
+
+Agreed on **2026-11-14**: the work that remains before the integration change turns the feature on everywhere, in order. It adds no scope; later-release items stay deferred. Each phase lands as its own change, and statuses change only in the last phase.
+
+| Phase | Work | Exit | State |
+| --- | --- | --- | --- |
+| 0 | Baseline runs of the full solution and both browser suites on master; let the Worker acceptance stack open the release switch on its Development hosts. | Results recorded; acceptance hosts can publish and run a body. | Done on `claude/youthful-kalam-d9a667`, not yet merged: smoke 125 of 128 at `0ce99e0` (only the 3 stale editor-help assertions); full solution 5,089 of 5,089 at the same commit, from the TASK-05D record |
+| 1 | Close the open review findings in TASK-05A and TASK-05C. | Each fixed or closed with a reason. | Done ([record](task-05a-multi-instance-core.md#release-readiness-review-findings-2026-11-14)) |
+| 2 | Write the tests the subtasks list as missing. | Each written or struck with a reason; full solution green. | Open |
+| 3 | Worker-enabled browser acceptance for service, script, and call bodies, plus the manual steps the adapters still list. | Both browser suites pass with evidence. | Done on `claude/youthful-kalam-d9a667`, not yet merged: acceptance 151 passed, 1 skipped for the boundary-ring bug that Phase 1 fixes; smoke 128 of 128 |
+| 4 | 1,000-item scale runs per activity kind with production log levels and several Workers. | Queries per item do not grow with items or bodies; no incidents; figures recorded. | Open |
+| 5 | The integration change: remove `AutomaticMultiInstanceOptions`, the installed-kind list, the capability route, and the editor gate; rewrite the tests that pin the closed switch; update the behavior guides, examples, and the AI authoring package. | All suites pass with default configuration. | Open |
+| 6 | Migration timing on populated data, then a rehearsed rollout and rollback. | Runbook and figures in [deployment](../deployment.md). | Open |
+| 7 | Rerun every gate on the final tree, record evidence, tick the criteria, synchronize statuses. | TASK-05 Done. | Open |
+
+Found by the Phase 3 browser run and still to settle before Phase 5, fixed or accepted with a reason:
+
+- An item waiting on an incident reads **Active · execution** in its row, while its body counts it as blocked.
+- The body's reset of its aggregate at initialization appears as a second `[]` variable row attributed to **start** and the starting user.
+- **Queued…** and **Waiting for automatic … items** appear only in the diagram's details panel, not in the execution-position list.
+- Browser checks not yet covered: an items-list loading error, call-body item paging, caller compatibility previews for call bodies, a child's own internal incident, a staged call item's retry keeping its snapshot, a non-interrupting boundary during an incident wait, copy/paste and type conversion in the editor, and the native file-picker paths.
+
+Outside TASK-05: a request the browser abandons is logged as `responded 500` at Error (`OperationCanceledException`), on every route.
+
 ## Implementation evidence
 
 TASK-05A implementation is in progress behind the release boundary; see its implementation evidence. The script (TASK-05C), REST service (TASK-05B), and call (TASK-05D) adapters are installed and run only on Development hosts with the release switch open; see their implementation records. Each adapter's remaining items and the combined Worker/browser/migration/rollout gates remain required. No automatic runtime support is released.

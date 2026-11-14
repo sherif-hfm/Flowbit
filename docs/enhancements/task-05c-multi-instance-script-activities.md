@@ -177,7 +177,7 @@ The coordinator's operations fix the rest of the adapter contract. Specify and t
 - **Staged environment.** `CaptureItemContextAsync` accepts only `config.*`, `setting.*`, and `sys.*` values and persists them on the item until the body settles. NCalc passes only the names its expressions reference. JavaScript needs all of them, so every item of up to 1,000 stores a copy that counts toward its 1 MiB limit. Measure that, test it, and document it; if it is too large, agree a body-level copy with TASK-05A instead of trimming what a script can read.
 - **Validation context.** The candidate's `ValidationContext` is saved with it and counts toward the same limit. Supply only the names the local `validation` expressions reference, never the whole evaluation context.
 - **Shared output fences.** Staging captures a fence for every possible producer; for JavaScript that is every `readWrite` binding. `SaveCandidateAsync` refuses a candidate whose fences are not exactly its written aliases, and one that writes the same shared key through two aliases. Narrow the fences to the aliases the script wrote, and reject the second alias as a script error at `setVariable`.
-- **JavaScript lock scope.** Each JavaScript item locks every `readWrite` binding of the definition when it stages. Parallel items and other instances using those keys therefore wait on each other for those short transactions. Test it with several Workers, and tell authors to declare only the bindings a body needs, or to use NCalc, whose plan is exact.
+- **JavaScript lock scope.** Each JavaScript item locks every shared binding of the definition when it stages, except the body's collection key: `readWrite` bindings as targets, and every other binding, read-only ones and the body's own aggregate included, as conservative reads (corrected 2026-11-14; this line first said only the `readWrite` bindings). Parallel items and other instances using those keys therefore wait on each other for those short transactions. Test it with several Workers, and tell authors to declare only the bindings the workflow needs, or to use NCalc, whose plan is exact.
 - **Shared binding without a value.** An automatic phase fails with a conflict when a binding it reads has no current value (`Unset_shared_validation_dependency_prevents_the_error_write` pins this). A JavaScript body's staging plan reads every binding, so by that rule it cannot stage while any binding of its definition was never set, including a `readWrite` target the script is about to set for the first time, while an NCalc body can make that first write. Confirm this with a PostgreSQL test, then agree a rule with TASK-05A before implementing: proposed, a binding in the conservative JavaScript scope that has no value is absent from the context (`hasVariable` is false), as in an ordinary script, while a statically named dependency keeps failing closed.
 - **Reads of a local without a value.** The context holds a declared local only once it has a default or a write. Define `getVariable`, `hasVariable`, and an NCalc reference for a local in neither state, and keep both formats consistent with an ordinary script's missing variable.
 - **Bulk and reserved reads.** State what `execution.getVariables()` returns (frozen instance inputs, staged shared values, `mi.*`, context values, and the item's own writes) and what an item reads from its own `resultVariable` and `collectionVariable` names.
@@ -448,19 +448,29 @@ JavaScript to read object properties.
 
 ### Still open
 
-Review findings (2026-11-12), confirmed by reading the code and not yet fixed:
+Review findings (2026-11-12), all closed on 2026-11-14 by the release-readiness review
+fixes ([TASK-05A record](task-05a-multi-instance-core.md#release-readiness-review-findings-2026-11-14)):
 
 - **JavaScript lock scope wording.** A JavaScript stage locks every shared binding of the
-  definition for update, read-only ones and the aggregate included, not only the
-  `readWrite` bindings that the help, AGENTS.md, and this record describe.
+  definition except the body's collection key, read-only ones and the aggregate
+  included, not only the `readWrite` bindings that the help, AGENTS.md, and this record
+  described. Closed: the code is unchanged and the wording now matches it (the inspector
+  help, AGENTS.md, the runtime reference, and §4 above). Narrowing it waits for the
+  multi-Worker scale run.
 - **Smaller gaps.** Item-owner locks took the job before the item row (fixed by
-  TASK-05B on 2026-11-12: the shared owner lock now takes the item first); the server finds `mi.*` names
-  through the NCalc parser, so an unparseable expression or a name inside a string
-  literal can give a different first error than the editor; an item that reads its own
-  aggregate target passes save and then fails (NCalc) or reads nothing (JavaScript);
-  switching script format on a body drops its assignments or script without a prompt;
-  the body section's live status does not update while an assignment is typed; the
-  help does not say that sequential items see earlier items' shared writes.
+  TASK-05B on 2026-11-12: the shared owner lock now takes the item first). The others
+  are closed:
+  - A name inside a string literal already gave the same result on both sides. An
+    unparseable expression is an accepted difference: both sides refuse it, the editor
+    with the item-context problem and the server with the parse problem.
+  - An NCalc assignment, a local output's default or validation, or a REST template or
+    mapping that reads the body's own aggregate is now refused at save on both sides.
+    A JavaScript body is not checked statically, and its items simply never see the
+    aggregate.
+  - Switching **Format** on a body now asks before it discards the assignments or the
+    script.
+  - The body's status line now updates while any inspector field is typed.
+  - The help now says that sequential items see earlier items' shared writes.
 
 Tests the plan lists that do not exist yet: a staged-input size refusal for a script
 item (a result over its limit is covered), FlowInfo and `usesFlowInfo` on a body, a shared collection's success path, conditional

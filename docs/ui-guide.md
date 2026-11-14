@@ -345,7 +345,15 @@ a mapping reads an item or a shared alias or writes a shared alias. An imported
 `multiInstance` that is not an object is not shown as enabled, draws no marker, offers
 no timer or conditional boundaries, and offers **Remove the invalid value**; saving
 reports it. The input source field never offers the body's own aggregate variable, and
-saving refuses a mapping from it, because items never read their aggregate. Instance
+saving refuses a mapping from it, because items never read their aggregate. For the
+same reason saving refuses a REST template, NCalc assignment, mapping or local-output
+expression that names the aggregate; a JavaScript body is not checked, and its items
+simply never see it. The body's status line under its local outputs updates while any
+field of the node is typed, an assignment included. On a multi-instance script task,
+switching **Format** asks before it discards the NCalc assignments or the JavaScript
+script, and **Undo** restores them; an ordinary script task switches without asking.
+Execution mode, collection, aggregate, item-local outputs and each local output's
+default and validation have their own help. Instance
 detail lists each item's call under **Call activities** with its item index and body;
 before the item's child starts, its version reads **Version N, pinned by the
 multi-instance body**, because the body fixed it when it started. The body's execution

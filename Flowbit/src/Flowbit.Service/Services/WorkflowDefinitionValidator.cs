@@ -78,13 +78,17 @@ public sealed class WorkflowDefinitionValidator(
 
     /// <summary>
     /// An item reads only <c>mi.item</c>, <c>mi.index</c>, and <c>mi.total</c>: progress
-    /// such as <c>mi.completed</c> depends on completion order. A local output validation
-    /// cannot use the multi-instance outcome functions either. Mirrored by the editor's
-    /// <c>automaticItemExpressionProblem</c>.
+    /// such as <c>mi.completed</c> depends on completion order. An item never receives its
+    /// body's own aggregate target either, because staging leaves it out, so an expression
+    /// or template that names it could only fail or read nothing. A local output validation
+    /// cannot use the multi-instance outcome functions. Mirrored by the editor's
+    /// <c>automaticItemExpressionProblem</c>. A JavaScript body is not checked: its reads
+    /// are dynamic, and the aggregate is simply absent from its item context.
     /// </summary>
     private static string? FindItemExpressionProblem(FlowNodeModel node)
     {
         var owner = $"Automatic multi-instance activity #{node.Id}";
+        var aggregate = node.MultiInstance!.ResultVariable;
         string? Context(string? expression, string where, bool template)
         {
             if (string.IsNullOrWhiteSpace(expression)) return null;
@@ -96,8 +100,11 @@ public sealed class WorkflowDefinitionValidator(
                     && !ItemContextNames.Contains(name, StringComparer.OrdinalIgnoreCase))
                 .OrderBy(name => expression.IndexOf(name, StringComparison.OrdinalIgnoreCase))
                 .FirstOrDefault();
-            return invalid is null ? null
-                : $"{owner} {where} can read only [mi.item], [mi.index], and [mi.total]; '{invalid}' is not item context.";
+            if (invalid is not null)
+                return $"{owner} {where} can read only [mi.item], [mi.index], and [mi.total]; '{invalid}' is not item context.";
+            return !string.IsNullOrWhiteSpace(aggregate) && names.Contains(aggregate, StringComparer.OrdinalIgnoreCase)
+                ? $"{owner} {where} reads '{aggregate}', this body's aggregate target, which its items never receive."
+                : null;
         }
 
         foreach (var output in node.MultiInstance!.OutputVariables!)
