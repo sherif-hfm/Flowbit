@@ -1,17 +1,23 @@
+using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using Flowbit.Infrastructure.Http;
 using Flowbit.Infrastructure.Repositories;
 using Flowbit.Service.Abstractions;
 using Flowbit.Service.Models;
 using Flowbit.Service.Services;
 using Flowbit.Shared.Dtos;
 using Flowbit.Shared.Models;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
 using Xunit;
 
 namespace Flowbit.Tests;
@@ -44,7 +50,9 @@ public sealed class AutomaticMultiInstanceServiceRuntimeTests(PostgresApiFixture
                 .SetProperty(job => job.LeaseExpiresAt, job => job.LeaseExpiresAt == null ? null : distant));
     }
 
-    private WebApplicationFactory<Program> OpenHost() =>
+    // A host with the release switch open whose REST invoker is the controlled receiver.
+    // A test may change further services after that, such as restoring the real invoker.
+    private WebApplicationFactory<Program> OpenHost(Action<IServiceCollection>? configure = null) =>
         fixture.Factory.WithWebHostBuilder(builder => builder.ConfigureTestServices(services =>
         {
             var open = new AutomaticMultiInstanceOptions { AllowInDevelopment = true };
@@ -53,6 +61,7 @@ public sealed class AutomaticMultiInstanceServiceRuntimeTests(PostgresApiFixture
             services.AddSingleton(open);
             services.RemoveAll<IServiceTaskInvoker>();
             services.AddSingleton<IServiceTaskInvoker>(receiver);
+            configure?.Invoke(services);
         }));
 
     private static JsonElement Json(object? value) => JsonSerializer.SerializeToElement(value);
@@ -832,6 +841,495 @@ public sealed class AutomaticMultiInstanceServiceRuntimeTests(PostgresApiFixture
             item => Assert.Null(item.StagedInputJson));
     }
 
+    // A conditional boundary on the body that an instance write of stop = true wakes.
+    private static void AddStopBoundary(WorkflowModel definition, bool cancelActivity, bool stopAtStart = false)
+    {
+        definition.Variables.Add(new() { Id = 90, Name = "stop", DataType = WorkflowVariableTypes.Boolean, DefaultValue = Json(stopAtStart) });
+        definition.FlowNodes.Add(new()
+        {
+            Id = 6, Name = "Stop requested", Type = BpmnFlowNodeTypes.ConditionalBoundaryEvent, AttachedToRef = 2,
+            CancelActivity = cancelActivity, Conditional = new ConditionalDefinitionModel { Condition = "stop == true" }
+        });
+        definition.FlowNodes.Add(new() { Id = 7, Name = "Stopped", Type = BpmnFlowNodeTypes.EndEvent, X = 500, Y = 300 });
+        definition.SequenceFlows.Add(new() { Id = 601, SourceRef = 6, TargetRef = 7 });
+    }
+
+    [Fact]
+    public async Task An_interrupting_conditional_boundary_during_the_call_cancels_the_body_once_and_fences_the_late_response()
+    {
+        await using var host = OpenHost();
+        receiver.Respond = request => Created("notice-" + Supplier(request));
+        var definition = Workflow(Key("condition-interrupt"), NotifyBody(), Suppliers("held", "queued"));
+        AddStopBoundary(definition, cancelActivity: true);
+        var published = await PublishAsync(host, definition);
+        var instanceId = await StartAsync(host, published.Id);
+        await ProcessNextAsync(host, instanceId, WorkflowJobKinds.AsyncBefore);
+        await ProcessNextAsync(host, instanceId, WorkflowJobKinds.MultiInstanceDispatch);
+        var itemJobs = await OpenJobIdsAsync(instanceId, WorkflowJobKinds.MultiInstanceItem);
+        Assert.Equal(2, itemJobs.Count);
+        // An administrative write makes the condition true while the first request is in
+        // flight; the item holds no lock, so the writer captures the boundary at once.
+        receiver.BeforeNext = () => SetInstanceVariableAsync(host, instanceId, "stop", true).GetAwaiter().GetResult();
+        await ProcessAsync(host, itemJobs[0]);
+
+        Assert.Equal(1, receiver.Count);
+        await using var db = fixture.CreateDbContext();
+        Assert.Equal(WorkflowInstanceStatuses.Completed, (await db.WorkflowInstances.SingleAsync(row => row.Id == instanceId)).Status);
+        var tokens = await db.ExecutionTokens.Where(row => row.InstanceId == instanceId).Select(row => row.NodeId).ToListAsync();
+        Assert.Single(tokens, nodeId => nodeId == 7);
+        Assert.DoesNotContain(3, tokens);
+        Assert.Equal(1, await db.InstanceHistory.CountAsync(row => row.InstanceId == instanceId
+            && row.Note == InstanceHistoryNotes.ConditionalTriggered));
+        var subscription = await db.ConditionalBoundarySubscriptions.SingleAsync(row => row.InstanceId == instanceId);
+        Assert.Equal(ConditionalBoundarySubscriptionStatuses.Completed, subscription.Status);
+        Assert.Equal(1, subscription.Occurrence);
+        // The late response saved nothing and published nothing; no item job is left to run.
+        var bodyRow = await db.MultiInstanceExecutions.SingleAsync(row => row.InstanceId == instanceId);
+        Assert.Equal(MultiInstanceRecordStatuses.Cancelled, bodyRow.Status);
+        var items = await db.MultiInstanceActivityItems.Where(row => row.MultiInstanceExecutionId == bodyRow.Id).ToListAsync();
+        Assert.All(items, item => Assert.Equal("cancelled", item.Status));
+        Assert.All(items, item => Assert.Null(item.CandidateJson));
+        Assert.Equal("[]", (await LatestAsync(instanceId, "notificationResults")).GetRawText());
+        Assert.All(await db.WorkflowJobs.Where(row => row.InstanceId == instanceId).Select(row => row.Status).ToListAsync(),
+            status => Assert.Contains(status, WorkflowJobStatuses.Terminal));
+    }
+
+    [Fact]
+    public async Task A_non_interrupting_conditional_boundary_runs_its_branch_while_the_body_keeps_running_and_publishes_everything()
+    {
+        await using var host = OpenHost();
+        receiver.Respond = request => Created("notice-" + Supplier(request));
+        var definition = Workflow(Key("condition-branch"), NotifyBody(), Suppliers("first", "second"));
+        AddStopBoundary(definition, cancelActivity: false);
+        var published = await PublishAsync(host, definition);
+        var instanceId = await StartAsync(host, published.Id);
+        await ProcessNextAsync(host, instanceId, WorkflowJobKinds.AsyncBefore);
+        await ProcessNextAsync(host, instanceId, WorkflowJobKinds.MultiInstanceDispatch);
+        var itemJobs = await OpenJobIdsAsync(instanceId, WorkflowJobKinds.MultiInstanceItem);
+        Assert.Equal(2, itemJobs.Count);
+        receiver.BeforeNext = () => SetInstanceVariableAsync(host, instanceId, "stop", true).GetAwaiter().GetResult();
+        await ProcessAsync(host, itemJobs[0]);
+
+        await using (var db = fixture.CreateDbContext())
+        {
+            // The branch ran to its end on a sibling token; the body kept the item that
+            // was in flight and still owns its second item.
+            Assert.Single(await db.ExecutionTokens.Where(row => row.InstanceId == instanceId && row.NodeId == 7
+                && row.Status == ExecutionTokenRecordStatuses.Completed).ToListAsync());
+            Assert.Equal(WorkflowInstanceStatuses.Running, (await db.WorkflowInstances.SingleAsync(row => row.Id == instanceId)).Status);
+            var bodyRow = await db.MultiInstanceExecutions.SingleAsync(row => row.InstanceId == instanceId);
+            Assert.Equal(MultiInstanceRecordStatuses.Active, bodyRow.Status);
+            Assert.Equal("completed", (await db.MultiInstanceActivityItems.SingleAsync(row =>
+                row.MultiInstanceExecutionId == bodyRow.Id && row.ItemIndex == 0)).Status);
+            Assert.Equal(new[] { itemJobs[1] }, await OpenJobIdsAsync(instanceId, WorkflowJobKinds.MultiInstanceItem));
+        }
+        await DrainAsync(host, instanceId);
+
+        Assert.Equal(new[] { "first", "second" }, receiver.Requests.Select(Supplier));
+        var results = await LatestAsync(instanceId, "notificationResults");
+        Assert.Equal(new[] { "completed", "completed" }, results.EnumerateArray().Select(row => row.GetProperty("status").GetString()));
+        Assert.Equal(new[] { "notice-first", "notice-second" },
+            results.EnumerateArray().Select(row => row.GetProperty("variables").GetProperty("notificationId").GetString()));
+        await using var after = fixture.CreateDbContext();
+        Assert.Equal(WorkflowInstanceStatuses.Completed, (await after.WorkflowInstances.SingleAsync(row => row.Id == instanceId)).Status);
+        var reached = await after.ExecutionTokens.Where(row => row.InstanceId == instanceId).Select(row => row.NodeId).ToListAsync();
+        Assert.Contains(3, reached);
+        Assert.Single(reached, nodeId => nodeId == 7);
+        Assert.Equal(1, await after.InstanceHistory.CountAsync(row => row.InstanceId == instanceId
+            && row.Note == InstanceHistoryNotes.ConditionalTriggered));
+    }
+
+    [Fact]
+    public async Task An_interrupting_condition_already_true_at_entry_wins_before_any_body_or_request_exists()
+    {
+        await using var host = OpenHost();
+        var definition = Workflow(Key("condition-entry"), NotifyBody(), Suppliers("never"));
+        AddStopBoundary(definition, cancelActivity: true, stopAtStart: true);
+        var published = await PublishAsync(host, definition);
+        var instanceId = await StartAsync(host, published.Id);
+        await DrainAsync(host, instanceId);
+
+        Assert.Equal(0, receiver.Count);
+        await using var db = fixture.CreateDbContext();
+        Assert.Equal(WorkflowInstanceStatuses.Completed, (await db.WorkflowInstances.SingleAsync(row => row.Id == instanceId)).Status);
+        Assert.Equal(new[] { 7 }, await db.ExecutionTokens.Where(row => row.InstanceId == instanceId).Select(row => row.NodeId).ToListAsync());
+        Assert.False(await db.MultiInstanceExecutions.AnyAsync(row => row.InstanceId == instanceId));
+        Assert.False(await db.WorkflowJobs.AnyAsync(row => row.InstanceId == instanceId));
+        Assert.Equal("[]", (await LatestAsync(instanceId, "notificationResults")).GetRawText());
+    }
+
+    [Fact]
+    public async Task A_shared_typed_collection_is_frozen_at_initialization_and_its_items_run_and_aggregate_in_order()
+    {
+        await using var host = OpenHost();
+        var sharedKey = $"tests.service.suppliers.{Guid.NewGuid():N}";
+        using (var created = await SendAsync(host, HttpMethod.Post, "/api/shared-variables",
+                   new CreateSharedVariableRequest(sharedKey, "string", IsArray: true, Nullable: false, HasValue: true,
+                       Json(new[] { "shared-a", "shared-b", "shared-c" }))))
+            Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        receiver.Respond = request => Created("notice-" + Supplier(request));
+        var body = NotifyBody();
+        body.MultiInstance!.CollectionVariable = "sharedSuppliers";
+        // The collection's alias in a template reads the body's frozen copy as well.
+        body.Service!.Body = "{\"supplier\":${mi.item},\"index\":${mi.index},\"total\":${mi.total},\"all\":${sharedSuppliers}}";
+        var variables = Suppliers();
+        variables.Add(new() { Id = 8, Name = "sharedSuppliers", DataType = "string", IsArray = true, Scope = "shared", SharedKey = sharedKey, Access = "read" });
+        var published = await PublishAsync(host, Workflow(Key("shared-collection"), body, variables));
+        var instanceId = await StartAsync(host, published.Id);
+
+        await ProcessNextAsync(host, instanceId, WorkflowJobKinds.AsyncBefore);
+        // Another writer replaces the catalog value after the body froze it.
+        await SetSharedJsonAsync(host, sharedKey, Json(new[] { "late" }));
+        await ProcessNextAsync(host, instanceId, WorkflowJobKinds.MultiInstanceDispatch);
+        var itemJobs = await OpenJobIdsAsync(instanceId, WorkflowJobKinds.MultiInstanceItem);
+        Assert.Equal(3, itemJobs.Count);
+        foreach (var jobId in itemJobs.AsEnumerable().Reverse()) await ProcessAsync(host, jobId);
+        await DrainAsync(host, instanceId);
+
+        Assert.Equal(new[] { "shared-a", "shared-b", "shared-c" }, receiver.Requests.Select(Supplier).Order());
+        foreach (var request in receiver.Requests)
+        {
+            using var sent = JsonDocument.Parse(request.Body!);
+            Assert.Equal(3, sent.RootElement.GetProperty("total").GetInt32());
+            Assert.Equal(new[] { "shared-a", "shared-b", "shared-c" },
+                sent.RootElement.GetProperty("all").EnumerateArray().Select(value => value.GetString()));
+        }
+        var results = await LatestAsync(instanceId, "notificationResults");
+        Assert.Equal(new[] { "shared-a", "shared-b", "shared-c" }, results.EnumerateArray().Select(row => row.GetProperty("item").GetString()));
+        Assert.Equal(new[] { "notice-shared-a", "notice-shared-b", "notice-shared-c" },
+            results.EnumerateArray().Select(row => row.GetProperty("variables").GetProperty("notificationId").GetString()));
+        await using var db = fixture.CreateDbContext();
+        Assert.Equal(WorkflowInstanceStatuses.Completed, (await db.WorkflowInstances.SingleAsync(row => row.Id == instanceId)).Status);
+        // The shared value stays the other writer's, and is never copied into the instance.
+        Assert.False(await db.InstanceVariables.AnyAsync(row => row.InstanceId == instanceId && row.VariableName == "sharedSuppliers"));
+        using var current = await SendAsync(host, HttpMethod.Get, $"/api/shared-variables/{sharedKey}/value");
+        using var document = JsonDocument.Parse(await current.Content.ReadAsStringAsync());
+        Assert.Equal(new[] { "late" }, document.RootElement.GetProperty("value").EnumerateArray().Select(entry => entry.GetString()));
+    }
+
+    [Fact]
+    public async Task Two_item_incidents_stay_open_together_and_each_retry_resends_and_publishes_only_its_own_item()
+    {
+        await using var host = OpenHost();
+        var refusing = new ConcurrentDictionary<string, bool> { ["flaky-1"] = true, ["flaky-2"] = true };
+        receiver.Respond = request => refusing.TryGetValue(Supplier(request), out var refuse) && refuse
+            ? new ServiceTaskResult(true, 503, null, null)
+            : Created("notice-" + Supplier(request));
+        var body = NotifyBody();
+        body.Job = new JobPolicyModel { RetryDelays = ["PT10S"] };
+        var published = await PublishAsync(host, Workflow(Key("incidents"), body, Suppliers("steady", "flaky-1", "flaky-2")));
+        var instanceId = await StartAsync(host, published.Id);
+        await ProcessNextAsync(host, instanceId, WorkflowJobKinds.AsyncBefore);
+        await ProcessNextAsync(host, instanceId, WorkflowJobKinds.MultiInstanceDispatch);
+        var itemJobs = await OpenJobIdsAsync(instanceId, WorkflowJobKinds.MultiInstanceItem);
+        Assert.Equal(3, itemJobs.Count);
+        foreach (var jobId in itemJobs) await ProcessAsync(host, jobId);
+        // Each item's key is its own job id, so the requests name each item's job.
+        var jobOf = new[] { "steady", "flaky-1", "flaky-2" }.ToDictionary(supplier => supplier, supplier =>
+            long.Parse(Assert.Single(receiver.Requests.Where(request => Supplier(request) == supplier)
+                .Select(request => Header(request, "Idempotency-Key")).Distinct())["flowbit-supplier-".Length..]));
+        Assert.Equal(itemJobs.Order(), jobOf.Values.Order());
+        Assert.Equal(WorkflowJobStatuses.Retry, await JobStatusAsync(jobOf["flaky-1"]));
+        Assert.Equal(WorkflowJobStatuses.Retry, await JobStatusAsync(jobOf["flaky-2"]));
+        await ProcessAsync(host, jobOf["flaky-1"]);
+        await ProcessAsync(host, jobOf["flaky-2"]);
+
+        long firstIncident, secondIncident;
+        await using (var db = fixture.CreateDbContext())
+        {
+            var open = await db.WorkflowIncidents.Where(row => row.InstanceId == instanceId
+                && row.Status == WorkflowIncidentStatuses.Open).OrderBy(row => row.Id).ToListAsync();
+            Assert.Equal(new long?[] { jobOf["flaky-1"], jobOf["flaky-2"] }, open.Select(row => row.JobId));
+            Assert.All(open, incident => Assert.Equal("job_execution_failed", incident.Type));
+            (firstIncident, secondIncident) = (open[0].Id, open[1].Id);
+            Assert.Equal(WorkflowInstanceStatuses.Running, (await db.WorkflowInstances.SingleAsync(row => row.Id == instanceId)).Status);
+            Assert.Equal(MultiInstanceRecordStatuses.Active,
+                (await db.MultiInstanceExecutions.SingleAsync(row => row.InstanceId == instanceId)).Status);
+        }
+        Assert.Equal("[]", (await LatestAsync(instanceId, "notificationResults")).GetRawText());
+
+        refusing["flaky-1"] = false;
+        await RetryIncidentAsync(host, firstIncident);
+        await DrainAsync(host, instanceId);
+
+        // Only the retried item was sent again and published; the body keeps waiting.
+        Assert.Equal(1, receiver.Requests.Count(request => Supplier(request) == "steady"));
+        Assert.Equal(3, receiver.Requests.Count(request => Supplier(request) == "flaky-1"));
+        Assert.Equal(2, receiver.Requests.Count(request => Supplier(request) == "flaky-2"));
+        await using (var db = fixture.CreateDbContext())
+        {
+            Assert.NotEqual(WorkflowIncidentStatuses.Open, (await db.WorkflowIncidents.SingleAsync(row => row.Id == firstIncident)).Status);
+            Assert.Equal(WorkflowIncidentStatuses.Open, (await db.WorkflowIncidents.SingleAsync(row => row.Id == secondIncident)).Status);
+            Assert.Equal(WorkflowInstanceStatuses.Running, (await db.WorkflowInstances.SingleAsync(row => row.Id == instanceId)).Status);
+            var bodyRow = await db.MultiInstanceExecutions.SingleAsync(row => row.InstanceId == instanceId);
+            Assert.Equal(MultiInstanceRecordStatuses.Active, bodyRow.Status);
+            var statuses = await db.MultiInstanceActivityItems.Where(row => row.MultiInstanceExecutionId == bodyRow.Id)
+                .OrderBy(row => row.ItemIndex).Select(row => row.Status).ToListAsync();
+            Assert.Equal("completed", statuses[0]);
+            Assert.Equal("completed", statuses[1]);
+            Assert.NotEqual("completed", statuses[2]);
+        }
+        Assert.Equal("[]", (await LatestAsync(instanceId, "notificationResults")).GetRawText());
+
+        refusing["flaky-2"] = false;
+        await RetryIncidentAsync(host, secondIncident);
+        await DrainAsync(host, instanceId);
+
+        Assert.Equal(1, receiver.Requests.Count(request => Supplier(request) == "steady"));
+        Assert.Equal(3, receiver.Requests.Count(request => Supplier(request) == "flaky-1"));
+        Assert.Equal(3, receiver.Requests.Count(request => Supplier(request) == "flaky-2"));
+        foreach (var (supplier, jobId) in jobOf)
+            Assert.Equal(new[] { "flowbit-supplier-" + jobId }, receiver.Requests.Where(request => Supplier(request) == supplier)
+                .Select(request => Header(request, "Idempotency-Key")).Distinct());
+        var results = await LatestAsync(instanceId, "notificationResults");
+        Assert.Equal(new[] { "steady", "flaky-1", "flaky-2" }, results.EnumerateArray().Select(row => row.GetProperty("item").GetString()));
+        Assert.All(results.EnumerateArray(), row => Assert.Equal("completed", row.GetProperty("status").GetString()));
+        await using var after = fixture.CreateDbContext();
+        Assert.Equal(WorkflowInstanceStatuses.Completed, (await after.WorkflowInstances.SingleAsync(row => row.Id == instanceId)).Status);
+        Assert.False(await after.WorkflowIncidents.AnyAsync(row => row.InstanceId == instanceId && row.Status == WorkflowIncidentStatuses.Open));
+    }
+
+    [Fact]
+    public async Task A_response_over_the_body_limit_fails_the_item_in_the_real_invoker_and_its_2xx_status_selects_the_boundary()
+    {
+        // Over the 256-byte limit this host sets, and holding text no item record may repeat.
+        var marker = "response-marker-" + Guid.NewGuid().ToString("N");
+        await using var remote = await LoopbackReceiver.StartAsync(200,
+            JsonSerializer.Serialize(new { id = "n-1", note = marker, pad = new string('x', 1024) }));
+        await using var host = OpenHost(services =>
+        {
+            // The deployment's own invoker and HTTP client, with a small response limit.
+            services.RemoveAll<IServiceTaskInvoker>();
+            services.AddHttpClient<IServiceTaskInvoker, HttpServiceTaskInvoker>(client => client.Timeout = Timeout.InfiniteTimeSpan);
+            services.RemoveAll<ServiceTaskOptions>();
+            services.AddSingleton(new ServiceTaskOptions { MaxResponseBodyBytes = 256 });
+        });
+        var definition = Workflow(Key("oversized"), NotifyBody(url: remote.Url("send")), Suppliers("only"));
+        AddBoundary(definition, 4, "successFailure", new() { HttpStatusRanges = [new() { From = 200, To = 299 }] });
+        AddBoundary(definition, 6, "anyFailure", null);
+        var published = await PublishAsync(host, definition);
+        var instanceId = await StartAsync(host, published.Id);
+        await DrainAsync(host, instanceId);
+
+        Assert.Equal(0, receiver.Count);
+        await using var db = fixture.CreateDbContext();
+        var itemJob = await db.WorkflowJobs.SingleAsync(row => row.InstanceId == instanceId && row.Kind == WorkflowJobKinds.MultiInstanceItem);
+        Assert.Equal(new[] { "flowbit-supplier-" + itemJob.Id }, remote.IdempotencyKeys);
+        // The status arrived before the body went over the limit, so the 2xx range wins.
+        Assert.Equal(WorkflowEngineService.AutomaticServiceFailureCode, (await LatestAsync(instanceId, "successFailure")).GetString());
+        Assert.Equal(JsonValueKind.Null, (await LatestAsync(instanceId, "anyFailure")).ValueKind);
+        var item = await db.MultiInstanceActivityItems.SingleAsync(row => row.InstanceId == instanceId);
+        Assert.Equal(WorkflowEngineService.AutomaticServiceFailureCode, item.ErrorCode);
+        Assert.Equal("The REST call failed with HTTP status 200.", item.ErrorDescription);
+        Assert.Null(item.CandidateJson);
+        var visit = await db.NodeExecutions.SingleAsync(row => row.AutomaticMultiInstanceItemId == item.Id);
+        Assert.Equal(item.ErrorDescription, visit.ErrorDescription);
+        var failedRow = (await LatestAsync(instanceId, "notificationResults")).EnumerateArray().Single();
+        Assert.Equal("failed", failedRow.GetProperty("status").GetString());
+        Assert.Equal("{}", failedRow.GetProperty("variables").GetRawText());
+        // Nothing the response carried reached the instance.
+        Assert.DoesNotContain((await db.InstanceVariables.Where(variable => variable.InstanceId == instanceId).ToListAsync())
+            .Select(variable => variable.ValueJson.RootElement.GetRawText()), text => text.Contains(marker));
+        Assert.Contains(await db.ExecutionTokens.Where(token => token.InstanceId == instanceId).Select(token => token.NodeId).ToListAsync(),
+            nodeId => nodeId == 5);
+        Assert.Equal(WorkflowInstanceStatuses.Completed, (await db.WorkflowInstances.SingleAsync(instance => instance.Id == instanceId)).Status);
+        Assert.False(await db.WorkflowIncidents.AnyAsync(incident => incident.InstanceId == instanceId));
+    }
+
+    [Fact]
+    public async Task A_crash_after_the_call_and_before_the_candidate_is_saved_resends_with_the_same_job_id_and_publishes_once()
+    {
+        await using var host = OpenHost();
+        var answered = 0;
+        receiver.Respond = _ => Created("notice-" + Interlocked.Increment(ref answered));
+        var published = await PublishAsync(host, Workflow(Key("crash"), NotifyBody(), Suppliers("only")));
+        var instanceId = await StartAsync(host, published.Id);
+        await ProcessNextAsync(host, instanceId, WorkflowJobKinds.AsyncBefore);
+        await ProcessNextAsync(host, instanceId, WorkflowJobKinds.MultiInstanceDispatch);
+        var itemJob = (await OpenJobIdsAsync(instanceId, WorkflowJobKinds.MultiInstanceItem)).Single();
+
+        // The Worker stops while the request is in flight: the receiver has it, and the
+        // call ends in the Worker's cancellation before any response reaches the item.
+        using var crash = new CancellationTokenSource();
+        var held = 0;
+        receiver.WhileHeld = (_, cancellationToken) =>
+        {
+            if (Interlocked.Increment(ref held) == 1)
+            {
+                crash.Cancel();
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+            return Task.CompletedTask;
+        };
+        var lease = await LeaseAsync(host, itemJob);
+        await using (var scope = host.Services.CreateAsyncScope())
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+                scope.ServiceProvider.GetRequiredService<IWorkflowJobProcessor>().ProcessAsync(lease, crash.Token));
+
+        Assert.Equal(1, receiver.Count);
+        Assert.Equal(0, Volatile.Read(ref answered));
+        await using (var db = fixture.CreateDbContext())
+        {
+            var job = await db.WorkflowJobs.AsNoTracking().SingleAsync(row => row.Id == itemJob);
+            Assert.Equal(WorkflowJobStatuses.Running, job.Status);
+            var item = await db.MultiInstanceActivityItems.AsNoTracking().SingleAsync(row => row.Id == job.AutomaticMultiInstanceItemId);
+            Assert.NotNull(item.StagedInputJson);
+            Assert.Null(item.CandidateJson);
+            // Nobody renews the stopped Worker's lease, so it runs out.
+            await db.WorkflowJobs.Where(row => row.Id == itemJob).ExecuteUpdateAsync(setters => setters
+                .SetProperty(row => row.LeaseExpiresAt, DateTimeOffset.UtcNow.AddMinutes(-1)));
+        }
+
+        // Another Worker recovers the expired lease and runs the item again.
+        await ProcessAsync(host, itemJob);
+        await DrainAsync(host, instanceId);
+
+        var requests = receiver.Requests;
+        Assert.Equal(2, requests.Count);
+        Assert.All(requests, request => Assert.Equal("flowbit-supplier-" + itemJob, Header(request, "Idempotency-Key")));
+        // Rendered again from the item's saved context: the same request both times.
+        Assert.Equal(requests[0].Url, requests[1].Url);
+        Assert.Equal(requests[0].Body, requests[1].Body);
+        Assert.Equal(1, Volatile.Read(ref answered));
+        var results = await LatestAsync(instanceId, "notificationResults");
+        var only = Assert.Single(results.EnumerateArray());
+        Assert.Equal("completed", only.GetProperty("status").GetString());
+        Assert.Equal("notice-1", only.GetProperty("variables").GetProperty("notificationId").GetString());
+        await using var after = fixture.CreateDbContext();
+        var recovered = await after.WorkflowJobs.SingleAsync(row => row.Id == itemJob);
+        Assert.Equal(WorkflowJobStatuses.Completed, recovered.Status);
+        Assert.Equal(2, recovered.AttemptCount);
+        var attempts = await after.WorkflowJobAttempts.Where(row => row.JobId == itemJob).OrderBy(row => row.AttemptNumber).ToListAsync();
+        Assert.Equal(2, attempts.Count);
+        Assert.Equal(("leaseLost", "leaseExpired"), (attempts[0].Status, attempts[0].FailureCode));
+        var settled = await after.MultiInstanceActivityItems.SingleAsync(row => row.Id == recovered.AutomaticMultiInstanceItemId);
+        Assert.Equal("completed", settled.Status);
+        Assert.Single(await after.NodeExecutions.Where(row => row.AutomaticMultiInstanceItemId == settled.Id).ToListAsync());
+        Assert.Equal(WorkflowInstanceStatuses.Completed, (await after.WorkflowInstances.SingleAsync(row => row.Id == instanceId)).Status);
+        Assert.False(await after.WorkflowIncidents.AnyAsync(row => row.InstanceId == instanceId));
+    }
+
+    [Fact]
+    public async Task Two_Workers_under_queue_pressure_invoke_each_item_once_and_keep_each_bodys_admission()
+    {
+        await using var first = OpenHost();
+        await using var second = OpenHost();
+        receiver.Respond = request => Created("notice-" + Supplier(request));
+        // The first two requests wait for each other. Each Worker below runs one job at a
+        // time, so only two Workers each holding a request can meet.
+        var rendezvous = new Rendezvous(2, TimeSpan.FromSeconds(30));
+        receiver.WhileHeld = (_, _) => rendezvous.ArriveAsync();
+        var parallel = await PublishAsync(first, Workflow(Key("workers-parallel"), NotifyBody(),
+            Suppliers("a-0", "a-1", "a-2", "a-3", "a-4", "a-5")));
+        var sequential = await PublishAsync(first, Workflow(Key("workers-sequential"), NotifyBody("sequential"),
+            Suppliers("b-0", "b-1", "b-2")));
+        long[] instances = [await StartAsync(first, parallel.Id), await StartAsync(first, sequential.Id)];
+
+        var processed = new ConcurrentQueue<(string Worker, string Kind)>();
+        using var failed = new CancellationTokenSource();
+        using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        await Task.WhenAll(Task.Run(() => WorkAsync(first, "worker-1")), Task.Run(() => WorkAsync(second, "worker-2")));
+
+        Assert.False(rendezvous.TimedOut, "The two Workers never had a request in flight at the same time.");
+        Assert.All(new[] { "worker-1", "worker-2" }, worker =>
+            Assert.Contains(processed, entry => entry.Worker == worker && entry.Kind == WorkflowJobKinds.MultiInstanceItem));
+        var requests = receiver.Requests;
+        Assert.Equal(new[] { "a-0", "a-1", "a-2", "a-3", "a-4", "a-5", "b-0", "b-1", "b-2" }, requests.Select(Supplier).Order());
+        await using var db = fixture.CreateDbContext();
+        var itemJobs = await db.WorkflowJobs.AsNoTracking().Where(job => job.InstanceId != null
+            && instances.Contains(job.InstanceId.Value) && job.Kind == WorkflowJobKinds.MultiInstanceItem).ToListAsync();
+        Assert.Equal(9, itemJobs.Count);
+        // Each item was leased once and sent once, under its own job id.
+        Assert.All(itemJobs, job => Assert.Equal((WorkflowJobStatuses.Completed, 1), (job.Status, job.AttemptCount)));
+        Assert.Equal(itemJobs.Select(job => "flowbit-supplier-" + job.Id).Order(),
+            requests.Select(request => Header(request, "Idempotency-Key")).Order());
+        Assert.Equal(new[] { "a-0", "a-1", "a-2", "a-3", "a-4", "a-5" }, (await LatestAsync(instances[0], "notificationResults"))
+            .EnumerateArray().Select(row => row.GetProperty("item").GetString()));
+        Assert.Equal(new[] { "b-0", "b-1", "b-2" }, (await LatestAsync(instances[1], "notificationResults"))
+            .EnumerateArray().Select(row => row.GetProperty("item").GetString()));
+        foreach (var instanceId in instances)
+            Assert.All((await LatestAsync(instanceId, "notificationResults")).EnumerateArray(),
+                row => Assert.Equal("completed", row.GetProperty("status").GetString()));
+        var items = await db.MultiInstanceActivityItems.AsNoTracking().Where(row => instances.Contains(row.InstanceId)).ToListAsync();
+        // The parallel body never had more than its four items active at once.
+        var parallelItems = items.Where(row => row.InstanceId == instances[0]).ToList();
+        Assert.Equal(4, parallelItems.Max(item => parallelItems.Count(other =>
+            other.StartedAt <= item.StartedAt && item.StartedAt < other.CompletedAt)));
+        // The sequential body admitted each item only after the previous one completed.
+        var sequentialItems = items.Where(row => row.InstanceId == instances[1]).OrderBy(row => row.ItemIndex).ToList();
+        for (var index = 1; index < sequentialItems.Count; index++)
+            Assert.True(sequentialItems[index].StartedAt >= sequentialItems[index - 1].CompletedAt,
+                $"Sequential item {index} started before item {index - 1} completed.");
+        Assert.False(await db.WorkflowIncidents.AnyAsync(row => row.InstanceId != null && instances.Contains(row.InstanceId.Value)));
+        Assert.Equal(2, await db.WorkflowInstances.CountAsync(row => instances.Contains(row.Id)
+            && row.Status == WorkflowInstanceStatuses.Completed));
+
+        // One Worker: lease one job, run it, repeat, until both instances finish. It runs
+        // only this test's jobs and fails on any other, as ProcessAsync does.
+        async Task WorkAsync(WebApplicationFactory<Program> worker, string name)
+        {
+            try
+            {
+                while (!failed.IsCancellationRequested && !await BothFinishedAsync())
+                {
+                    if (deadline.IsCancellationRequested)
+                        throw new TimeoutException($"{name} still had work after two minutes.");
+                    IReadOnlyList<WorkflowJobLeaseRecord> leases;
+                    await using (var scope = worker.Services.CreateAsyncScope())
+                        leases = await scope.ServiceProvider.GetRequiredService<IWorkflowJobRepository>().LeaseRunnableAsync(
+                            new WorkflowJobLeaseRequest($"{name}:{Guid.NewGuid():N}", MaxCount: 1, MaxActivityCount: 1,
+                                MaxPerInstance: 4, LeaseDuration: TimeSpan.FromMinutes(1)), CancellationToken.None);
+                    if (leases.Count == 0)
+                    {
+                        // New work is due by this machine's clock, which can run ahead of the database's.
+                        await Task.Delay(20);
+                        continue;
+                    }
+                    var lease = Assert.Single(leases);
+                    Assert.True(lease.Job.InstanceId is long owner && instances.Contains(owner),
+                        $"{name} leased #{lease.Job.Id} ({lease.Job.Kind}) of another test.");
+                    processed.Enqueue((name, lease.Job.Kind));
+                    await using var run = worker.Services.CreateAsyncScope();
+                    await run.ServiceProvider.GetRequiredService<IWorkflowJobProcessor>().ProcessAsync(lease, CancellationToken.None);
+                }
+            }
+            catch
+            {
+                await failed.CancelAsync();
+                throw;
+            }
+        }
+
+        // Both instances completed. An open incident stops the Workers at once.
+        async Task<bool> BothFinishedAsync()
+        {
+            await using var check = fixture.CreateDbContext();
+            var incident = await check.WorkflowIncidents.AsNoTracking().FirstOrDefaultAsync(row => row.InstanceId != null
+                && instances.Contains(row.InstanceId.Value) && row.Status == WorkflowIncidentStatuses.Open);
+            if (incident is not null)
+                throw new InvalidOperationException($"Incident {incident.Type} on job #{incident.JobId}: {incident.Details}");
+            return await check.WorkflowInstances.CountAsync(row => instances.Contains(row.Id)
+                && row.Status == WorkflowInstanceStatuses.Completed) == instances.Length;
+        }
+    }
+
+    private async Task SetInstanceVariableAsync(WebApplicationFactory<Program> host, long instanceId, string name, object value)
+    {
+        using var response = await SendAsync(host, HttpMethod.Patch, $"/api/instances/{instanceId}/variables",
+            new UpdateInstanceVariablesRequest([new InstanceVariableWriteDto(name, Json(value))],
+                "service body runtime test", $"service-mi-update-{Guid.NewGuid():N}"));
+        Assert.True(response.IsSuccessStatusCode, await response.Content.ReadAsStringAsync());
+    }
+
+    private async Task SetSharedJsonAsync(WebApplicationFactory<Program> host, string key, JsonElement value)
+    {
+        using var metadata = await SendAsync(host, HttpMethod.Get, $"/api/shared-variables/{key}");
+        var revision = (await metadata.Content.ReadFromJsonAsync<SharedVariableMetadataDto>())!.Revision;
+        using var updated = await SendAsync(host, HttpMethod.Put, $"/api/shared-variables/{key}/value",
+            new UpdateSharedVariableValueRequest(value, revision));
+        Assert.True(updated.IsSuccessStatusCode, await updated.Content.ReadAsStringAsync());
+    }
+
     private async Task<HttpResponseMessage> SendAsync(WebApplicationFactory<Program>? host, HttpMethod method, string path, object? body = null)
     {
         var request = new HttpRequestMessage(method, path);
@@ -924,6 +1422,15 @@ public sealed class AutomaticMultiInstanceServiceRuntimeTests(PostgresApiFixture
     // completion wake of the same instance runs first, as a Worker would run it.
     private async Task ProcessAsync(WebApplicationFactory<Program> host, long jobId)
     {
+        var lease = await LeaseAsync(host, jobId);
+        await using var scope = host.Services.CreateAsyncScope();
+        await scope.ServiceProvider.GetRequiredService<IWorkflowJobProcessor>().ProcessAsync(lease, CancellationToken.None);
+    }
+
+    // Leases one job without running it, after running any due control job of the same
+    // instance that a Worker would lease first.
+    private async Task<WorkflowJobLeaseRecord> LeaseAsync(WebApplicationFactory<Program> host, long jobId)
+    {
         for (var attempt = 0; attempt < 8; attempt++)
         {
             await using (var promote = fixture.CreateDbContext())
@@ -945,10 +1452,11 @@ public sealed class AutomaticMultiInstanceServiceRuntimeTests(PostgresApiFixture
                     || lease.Job.InstanceId == target.InstanceId && lease.Job.QueueClass == WorkflowJobClasses.Control,
                     $"Leased #{lease.Job.Id} ({lease.Job.Kind}) instead of #{jobId}.");
             }
+            if (lease.Job.Id == jobId) return lease;
             await scope.ServiceProvider.GetRequiredService<IWorkflowJobProcessor>().ProcessAsync(lease, CancellationToken.None);
-            if (lease.Job.Id == jobId) return;
         }
         Assert.Fail($"Job #{jobId} was not leased.");
+        return null!;
     }
 
     // Runs runnable jobs of the instance until none remains, the way Workers eventually would.
@@ -984,12 +1492,24 @@ public sealed class AutomaticMultiInstanceServiceRuntimeTests(PostgresApiFixture
         private readonly object gate = new();
         private readonly List<ServiceTaskRequest> requests = [];
         private Action? beforeNext;
+        private Func<ServiceTaskRequest, CancellationToken, Task>? whileHeld;
 
         public Func<ServiceTaskRequest, ServiceTaskResult> Respond { get; set; } = _ => new(true, 200, "{}", null);
 
         public Action? BeforeNext
         {
             set => Volatile.Write(ref beforeNext, value);
+        }
+
+        /// <summary>
+        /// Runs for every request after it is recorded and before it is answered, with the
+        /// caller's cancellation token: the request has reached the receiver and its
+        /// response has not yet been sent. It can hold the request or throw as the caller's
+        /// transport would.
+        /// </summary>
+        public Func<ServiceTaskRequest, CancellationToken, Task>? WhileHeld
+        {
+            set => Volatile.Write(ref whileHeld, value);
         }
 
         public int Count
@@ -1002,11 +1522,83 @@ public sealed class AutomaticMultiInstanceServiceRuntimeTests(PostgresApiFixture
             get { lock (gate) return requests.ToArray(); }
         }
 
-        public Task<ServiceTaskResult> InvokeAsync(ServiceTaskRequest request, CancellationToken cancellationToken)
+        public async Task<ServiceTaskResult> InvokeAsync(ServiceTaskRequest request, CancellationToken cancellationToken)
         {
             lock (gate) requests.Add(request);
             Interlocked.Exchange(ref beforeNext, null)?.Invoke();
-            return Task.FromResult(Respond(request));
+            if (Volatile.Read(ref whileHeld) is { } held) await held(request, cancellationToken);
+            return Respond(request);
+        }
+    }
+
+    /// <summary>
+    /// Holds the first <c>parties</c> requests until all of them have arrived. A Worker
+    /// loop here runs one job at a time, so two requests held together prove that two
+    /// Workers had a request in flight at once. A rendezvous that never completes lets the
+    /// held requests go after the timeout and records it, so the test fails on that
+    /// rather than waiting forever.
+    /// </summary>
+    private sealed class Rendezvous(int parties, TimeSpan timeout)
+    {
+        private readonly TaskCompletionSource met = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int arrived;
+        private int timedOut;
+
+        public bool TimedOut => Volatile.Read(ref timedOut) == 1;
+
+        public async Task ArriveAsync()
+        {
+            var position = Interlocked.Increment(ref arrived);
+            if (position > parties) return;
+            if (position == parties) met.TrySetResult();
+            try
+            {
+                await met.Task.WaitAsync(timeout);
+            }
+            catch (TimeoutException)
+            {
+                Interlocked.Exchange(ref timedOut, 1);
+            }
+        }
+    }
+
+    /// <summary>
+    /// A real HTTP endpoint on loopback with an ephemeral port: it records each request's
+    /// idempotency key and answers every request with one fixed status and body.
+    /// </summary>
+    private sealed class LoopbackReceiver : IAsyncDisposable
+    {
+        private readonly WebApplication app;
+        private readonly ConcurrentQueue<string> keys = new();
+
+        private LoopbackReceiver(WebApplication app) => this.app = app;
+
+        public IReadOnlyList<string> IdempotencyKeys => keys.ToArray();
+
+        public string Url(string path) => $"{app.Urls.Single()}/{path}";
+
+        public static async Task<LoopbackReceiver> StartAsync(int status, string body)
+        {
+            var builder = WebApplication.CreateSlimBuilder();
+            builder.Logging.ClearProviders();
+            builder.WebHost.UseUrls("http://127.0.0.1:0");
+            var receiver = new LoopbackReceiver(builder.Build());
+            receiver.app.Run(async context =>
+            {
+                using (var drain = new MemoryStream()) await context.Request.Body.CopyToAsync(drain);
+                receiver.keys.Enqueue(context.Request.Headers["Idempotency-Key"].ToString());
+                context.Response.StatusCode = status;
+                context.Response.ContentType = "application/json";
+                await context.Response.WriteAsync(body);
+            });
+            await receiver.app.StartAsync();
+            return receiver;
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            await app.StopAsync();
+            await app.DisposeAsync();
         }
     }
 }
