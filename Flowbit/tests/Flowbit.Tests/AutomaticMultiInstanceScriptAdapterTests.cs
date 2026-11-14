@@ -358,56 +358,6 @@ public sealed class AutomaticMultiInstanceScriptAdapterTests
     }
 
     [Fact]
-    public void Publication_opens_only_installed_kinds_on_a_development_host_with_the_switch()
-    {
-        var open = new AutomaticMultiInstanceOptions { AllowInDevelopment = true };
-        open.ResolveForEnvironment(isDevelopment: true);
-        var production = new AutomaticMultiInstanceOptions { AllowInDevelopment = true };
-        production.ResolveForEnvironment(isDevelopment: false);
-        WorkflowDefinitionReadinessChecker Readiness(AutomaticMultiInstanceOptions options) =>
-            new(durableProcessingOptions: new() { PublicationEnabled = true }, automaticMultiInstanceOptions: options);
-        WorkflowModel Body(string type) => Definition(new FlowNodeModel
-        {
-            Id = 2, Name = "Body", Type = type, AsyncBefore = type != BpmnFlowNodeTypes.CallActivity,
-            MultiInstance = new() { CollectionVariable = "items", ResultVariable = "results", CompletionEvaluation = "afterAll", OutputVariables = [] }
-        });
-
-        // TASK-05B and TASK-05D installed the service and call adapters.
-        foreach (var kind in new[] { BpmnFlowNodeTypes.ScriptTask, BpmnFlowNodeTypes.ServiceTask, BpmnFlowNodeTypes.CallActivity })
-        {
-            Readiness(open).EnsureDurablePublicationAllowed(Body(kind), publish: true);
-            // A host outside Development refuses every kind, a call body included.
-            Assert.Contains("integration release gates", Assert.Throws<WorkflowDomainException>(() =>
-                Readiness(production).EnsureDurablePublicationAllowed(Body(kind), publish: true)).Message);
-            Readiness(production).EnsureDurablePublicationAllowed(Body(kind), publish: false);
-        }
-    }
-
-    [Fact]
-    public void Runtime_entry_proceeds_only_for_an_installed_kind_on_a_released_host()
-    {
-        FlowNodeModel Body(string type) => new()
-        {
-            Id = 2, Type = type, MultiInstance = new() { CollectionVariable = "items", ResultVariable = "results" }
-        };
-
-        WorkflowEngineService.EnsureAutomaticMultiInstanceRuntimeAvailable(Body(BpmnFlowNodeTypes.ScriptTask), released: true);
-        WorkflowEngineService.EnsureAutomaticMultiInstanceRuntimeAvailable(Body(BpmnFlowNodeTypes.ServiceTask), released: true);
-        WorkflowEngineService.EnsureAutomaticMultiInstanceRuntimeAvailable(Body(BpmnFlowNodeTypes.CallActivity), released: true);
-        Assert.True(AutomaticMultiInstanceRules.InstalledAdapterKinds.SetEquals(
-            [BpmnFlowNodeTypes.ServiceTask, BpmnFlowNodeTypes.ScriptTask, BpmnFlowNodeTypes.CallActivity]));
-
-        // A host outside Development, or with the switch closed, refuses every installed kind.
-        foreach (var kind in new[] { BpmnFlowNodeTypes.ScriptTask, BpmnFlowNodeTypes.CallActivity })
-            Assert.Contains("runs only on a Development host with the release switch open",
-                Assert.Throws<WorkflowDomainException>(() => WorkflowEngineService.EnsureAutomaticMultiInstanceRuntimeAvailable(
-                    Body(kind), released: false)).Message);
-        // An ordinary activity never depends on the switch.
-        WorkflowEngineService.EnsureAutomaticMultiInstanceRuntimeAvailable(
-            new FlowNodeModel { Id = 2, Type = BpmnFlowNodeTypes.ScriptTask }, released: false);
-    }
-
-    [Fact]
     public void JavaScript_conservative_reads_are_optional_while_statically_named_dependencies_stay_required()
     {
         var limit = new VariableModel { Id = 4, Name = "limit", DataType = "number", Scope = "shared", SharedKey = "tests.limit", Access = "read" };

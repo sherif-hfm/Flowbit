@@ -19,8 +19,7 @@ namespace Flowbit.Service.Services;
 public sealed class WorkflowDefinitionValidator(
     IScriptEvaluator scriptEvaluator,
     ServiceTaskOptions serviceTaskOptions,
-    IConditionalEventDefinitionAnalyzer? conditionalEventAnalyzer = null,
-    AutomaticMultiInstanceOptions? automaticMultiInstanceOptions = null)
+    IConditionalEventDefinitionAnalyzer? conditionalEventAnalyzer = null)
     : IWorkflowDefinitionValidator
 {
     private readonly IConditionalEventDefinitionAnalyzer conditionalAnalyzer =
@@ -49,7 +48,7 @@ public sealed class WorkflowDefinitionValidator(
     {
         foreach (var node in definition.FlowNodes ?? [])
         {
-            if (AutomaticMultiInstanceRules.FindAuthoredProblem(node, automaticMultiInstanceOptions?.Enabled == true) is { } problem)
+            if (AutomaticMultiInstanceRules.FindAuthoredProblem(node) is { } problem)
                 throw new WorkflowDomainException(problem);
         }
     }

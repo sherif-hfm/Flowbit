@@ -56,25 +56,6 @@ public sealed class AutomaticMultiInstanceApiTests(PostgresApiFixture fixture)
         Assert.Equal(2, empty.TotalCount);
     }
 
-    [Fact]
-    public async Task Authoring_capabilities_report_the_api_release_switch_to_workflow_authors()
-    {
-        using var anonymous = await fixture.Client.GetAsync("/api/workflows/authoring-capabilities");
-        Assert.Equal(HttpStatusCode.Unauthorized, anonymous.StatusCode);
-        using var forbidden = await GetAsync("/api/workflows/authoring-capabilities");
-        Assert.Equal(HttpStatusCode.Forbidden, forbidden.StatusCode);
-        // The test host is not Development, so the switch stays closed whatever its option says.
-        using var closed = await GetAsync("/api/workflows/authoring-capabilities", "admin");
-        Assert.Equal(HttpStatusCode.OK, closed.StatusCode);
-        Assert.False((await closed.Content.ReadFromJsonAsync<WorkflowAuthoringCapabilitiesDto>())!.AutomaticMultiInstance);
-
-        var open = new Flowbit.Service.Services.AutomaticMultiInstanceOptions { AllowInDevelopment = true };
-        open.ResolveForEnvironment(isDevelopment: true);
-        var result = Assert.IsType<Microsoft.AspNetCore.Http.HttpResults.Ok<WorkflowAuthoringCapabilitiesDto>>(
-            Flowbit.Api.Endpoints.WorkflowDefinitionEndpoints.GetAuthoringCapabilities(open));
-        Assert.True(result.Value!.AutomaticMultiInstance);
-    }
-
     private async Task<(long ExecutionId, long ItemId)> SeedAsync()
     {
         // Repository/API contract test only. Browser acceptance must initialize

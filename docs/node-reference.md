@@ -13,6 +13,7 @@ JSON blocks below are **fragments**, not standalone workflows, unless stated oth
 - [Node catalog](#node-catalog)
 - [Common node properties](#common-node-properties)
 - [Tasks](#tasks)
+  - [Automatic multi-instance properties](#automatic-multi-instance-properties)
 - [Events](#events)
 - [Gateways](#gateways)
 - [Message configuration](#message-configuration)
@@ -43,7 +44,7 @@ JSON blocks below are **fragments**, not standalone workflows, unless stated oth
 | Catch | [intermediateMessageCatchEvent](#intermediatemessagecatchevent) | Wait for an inbound message. |
 | Catch | [intermediateTimerCatchEvent](#intermediatetimercatchevent) | Wait for a scheduled trigger. |
 | Catch | [intermediateConditionalCatchEvent](#intermediateconditionalcatchevent) | Wait for a persisted-variable condition. |
-| Boundary | [errorBoundaryEvent](#errorboundaryevent) | Handle an attached service/script failure. |
+| Boundary | [errorBoundaryEvent](#errorboundaryevent) | Handle an attached service, script, or call failure. |
 | Boundary | [timerBoundaryEvent](#timerboundaryevent) | Deadline or reminder while a host is active. |
 | Boundary | [conditionalBoundaryEvent](#conditionalboundaryevent) | Interrupt or branch when a host's observed condition becomes true. |
 | Interrupt | [scopedInterruptEvent](#scopedinterruptevent) | Interrupt a particular active gateway scope. |
@@ -55,7 +56,7 @@ JSON blocks below are **fragments**, not standalone workflows, unless stated oth
 | Gateway | [inclusiveGateway](#inclusivegateway) | Start matching branches or merge using reachability. |
 | Gateway | [complexGateway](#complexgateway) | Stateful activation and reset conditions. |
 
-Timers, conditional `durableAsync` delivery, call activities, and call-only starts require a running Worker. Task async flags also require a Worker. The [BPMN catalog](bpmn-support.md#supported-node-types) gives the prerequisites for each type; [deployment](deployment.md#worker-operation) explains setup.
+Timers, conditional `durableAsync` delivery, call activities, call-only starts, and multi-instance service, script, and call activities require a running Worker. Task async flags also require a Worker. The [BPMN catalog](bpmn-support.md#supported-node-types) gives the prerequisites for each type; [deployment](deployment.md#worker-operation) explains setup.
 
 ## Common node properties
 
@@ -201,7 +202,7 @@ The APIs return the saved values as `dueAt` and `priority`, with a `dueStatus` o
 
 #### Multi-instance properties
 
-These are properties of the `userTask.multiInstance` object; multi-instance behavior is supported only for user tasks. Saving refuses `multiInstance` on any other node type (apart from an unpublishable Development-only preview); earlier Flowbit versions silently dropped it, so remove it from such imported definitions.
+These are properties of the `userTask.multiInstance` object, which creates human work items. A `serviceTask`, `scriptTask`, or `callActivity` uses the different automatic contract in [automatic multi-instance properties](#automatic-multi-instance-properties), and a user task refuses its `maxConcurrency` and `outputVariables`. Saving refuses `multiInstance` on every other node type; earlier Flowbit versions silently dropped it there, so remove it from such imported definitions.
 
 | Property | Type | Required / default | Meaning and constraints |
 | --- | --- | --- | --- |
@@ -270,7 +271,8 @@ Calls an external HTTP endpoint, then continues down one unconditional outgoing 
 | --- | --- | --- | --- |
 | `type` | string | Set to `"serviceTask"` | Automatic connector activity. |
 | `service` | object | Required usable configuration | REST properties below. A missing object normalizes to an empty configuration and fails URL validation. |
-| `asyncBefore`, `asyncAfter`, `job` | Boolean / object | Optional; flags `false` | Shared [durable job policy](#durable-job-policy). REST tasks accessing shared-variable bindings require `asyncBefore: true`. |
+| `asyncBefore`, `asyncAfter`, `job` | Boolean / object | Optional; flags `false` | Shared [durable job policy](#durable-job-policy). REST tasks accessing shared-variable bindings, and multi-instance REST tasks, require `asyncBefore: true`. |
+| `multiInstance` | object | Optional; absent | Calls the endpoint once per collection item; see [automatic multi-instance properties](#automatic-multi-instance-properties) and [multi-instance REST](#multi-instance-rest). |
 
 Properties of `service`:
 
@@ -326,6 +328,18 @@ Mappings are staged and validated before writes; a failed mapping does not leave
 
 This fragment needs an available `amount` value and configured `config.OrderApiToken`; the example URL is a placeholder. See [REST examples](../examples/service-tasks/README.md) for runnable prerequisites, typed mappings, shared outputs, and error handling.
 
+#### Multi-instance REST
+
+With `multiInstance`, the task sends one request per collection item. Templates read `${mi.item}`, `${mi.index}`, and `${mi.total}` as well as the body's frozen instance inputs; in a body, `${mi.item}` in a bare position inserts the whole element as JSON, which is the way to send an object item. There is no `${mi.item.field}` path syntax. Each item reads the `config.*`, `setting.*`, and `sys.*` values its templates and expressions name when it first runs, and renders its request again from those saved values on every attempt, so `sys.jobId` stays the same for every retry of that item.
+
+- `outputMappings[].variable` and `statusVariable` must name the body's local outputs or `readWrite` shared aliases; an ordinary instance variable, a read-only alias, or the body's collection, result, or error target is refused. A status target must be a scalar `number`.
+- A successful response is mapped and validated in memory, then saved as the item's result before it is published, so a retry after that point never sends the request again. A failed item writes no status and no outputs.
+- A template that cannot render, a non-2xx response, a timeout, a transport failure, or a response over the size limit fails with code `service_task_failed`, and status-matched boundaries select on the response's status. A mapping or output-contract failure of a 2xx response fails with `multi_instance_result_invalid`, selected by that 2xx status.
+- An entry failure, a result too large for the item or the body, and a local validation that fails only when the result is published carry no HTTP status, so only a catch-all boundary catches them.
+- A shared alias the request reads that has never been set stops the item in an incident rather than taking a boundary.
+
+REST effects are at least once: a request can reach the receiver again after a lost lease or a Worker restart before its result was saved. Send an idempotency header the receiver deduplicates on, such as `{ "name": "Idempotency-Key", "value": "flowbit-${sys.jobId}" }`. See the [parallel](../examples/multi-instance/08-rest-parallel-notifications.json) and [sequential](../examples/multi-instance/09-rest-sequential-reservations.json) REST examples.
+
 ### scriptTask
 
 Executes authored logic and follows exactly one unconditional outgoing flow without action or multi-instance metadata. Scripts write declared process variables; they do not create input forms. Writes are staged together, coerced to each target's type, validated, and committed only when the whole script succeeds. An attached error boundary can catch a failure without retaining partial script outputs.
@@ -337,7 +351,8 @@ Executes authored logic and follows exactly one unconditional outgoing flow with
 | `assignments` | assignment[] | Optional; `[]` in NCalc mode | Ordered NCalc assignments; empty means no-op. Must not contain null entries. JavaScript mode cannot carry a nonempty list. |
 | `script` | string | Required nonblank in JavaScript mode; otherwise absent | JavaScript body, parsed at definition save. NCalc mode cannot include a nonblank body. |
 | `usesFlowInfo` | Boolean | Optional; see compatibility note | JavaScript opt-in for `execution.getFlowInfo`. Author explicit `true` when using it and `false` otherwise. NCalc cannot set it true. For older JavaScript definitions, omission infers a direct `execution.getFlowInfo(...)` call; normalization stores the Boolean. Aliased/computed access requires explicit true. |
-| `asyncBefore`, `asyncAfter`, `job` | Boolean / object | Optional; flags `false` | Shared [durable job policy](#durable-job-policy). |
+| `asyncBefore`, `asyncAfter`, `job` | Boolean / object | Optional; flags `false` | Shared [durable job policy](#durable-job-policy). A multi-instance script task requires `asyncBefore: true`. |
+| `multiInstance` | object | Optional; absent | Runs the script once per collection item; see [automatic multi-instance properties](#automatic-multi-instance-properties) and [multi-instance scripts](#multi-instance-scripts). |
 
 Each NCalc `assignments` entry has:
 
@@ -386,11 +401,23 @@ Scripts have no CLR, filesystem, or network access. `eval`/string compilation is
 
 Declare `normalizedOwner` as a process string and provide `requestOwner` in the current context. See [script examples](../examples/scripts/README.md) for NCalc helpers, JavaScript type conversions, flow evidence, and caught errors.
 
+#### Multi-instance scripts
+
+With `multiInstance`, the script runs once per collection item, each with its own buffer. Both formats write only the body's local outputs or `readWrite` shared aliases; a write to an ordinary instance variable, a read-only alias, an `mi.*` name, or the body's collection, result, or error target fails. NCalc targets are checked when saving; JavaScript targets are checked when `setVariable` runs, and writing one shared key through two aliases fails at the second write.
+
+- **Reading the item.** NCalc reads `[mi.item]`, `[mi.index]`, and `[mi.total]`; JavaScript uses `execution.getVariable('mi.item')`. In NCalc, `string`, `number`, and `boolean` items arrive as their values, `date` and `datetime` items as their text, a `json` object as its JSON text, and a `json` array as a list, so read object properties with JavaScript. Getters return copies: changing a returned object changes neither the snapshot nor another item.
+- **Ordered writes.** Later assignments and statements read the item's own earlier writes, never another item's locals.
+- **What an item sees.** Frozen instance inputs, its saved `config.*`, `setting.*`, and `sys.*` values, shared values read when it first ran, and FlowInfo captured once for the body. A shared binding that a JavaScript body reads only because its reads cannot be predicted, and that has never been set, is absent (`hasVariable` returns false).
+- **Failures.** A script error, sandbox limit, NCalc evaluation error, or rejected write fails with `script_task_failed`; an unset non-nullable local, a false local validation, or a shared write failing its catalog contract fails with `multi_instance_result_invalid`. Both follow the node's `job` policy. Inputs are frozen, so a retry usually fails the same way; attach an error boundary to a script body.
+- **Shared locks.** A JavaScript item locks every shared binding of the definition except the body's collection while it stages, because its reads and writes are dynamic. Declare only the bindings the workflow needs, or use NCalc, whose access is exact.
+
+See the [NCalc](../examples/multi-instance/10-ncalc-script-per-item.json) and [JavaScript](../examples/multi-instance/11-javascript-script-per-item.json) examples.
+
 ### callActivity
 
 Starts a child instance of another workflow family and rests until that child finishes. The child is an ordinary instance with its own variables, history, tasks, version, and operations. Inputs are copies taken when the token reaches the call, and results are copies taken when the child ends; nothing else is shared, and later changes on either side do not affect those copies.
 
-**Topology:** at least one incoming flow; exactly one unconditional outgoing flow without submitted variables, action roles, or gateway flags. **Worker:** always required, even when both workflows are otherwise synchronous, because a Worker creates the child and delivers its result. Durability is built in, so `asyncBefore`, `asyncAfter`, `job`, and `multiInstance` are invalid on a call.
+**Topology:** at least one incoming flow; exactly one unconditional outgoing flow without submitted variables, action roles, or gateway flags. **Worker:** always required, even when both workflows are otherwise synchronous, because a Worker creates the child and delivers its result. Durability is built in, so `asyncBefore`, `asyncAfter`, and `job` are invalid on a call. With [`multiInstance`](#multi-instance-calls), a call starts one child per collection item.
 
 | Property | Type | Required / default | Meaning and constraints |
 | --- | --- | --- | --- |
@@ -398,14 +425,15 @@ Starts a child instance of another workflow family and rests until that child fi
 | `callActivity.workflowKey` | string | Required | Stable key of the family to call, written exactly. At most 300 Unicode scalar values and no surrounding whitespace. It cannot be this definition's own `id`, and `${...}` is not replaced. |
 | `callActivity.versionBinding` | string | Optional; omitted | Only `publishedDefault` is accepted, and the editor omits it. A resolved version belongs to a visit, so it is never saved in the workflow. |
 | `callActivity.inputMappings` | mapping array | Optional; `[]` | At most 100. Copies this workflow's variables into declared inputs of the target's default plain start. `null` is invalid; omit the property instead. |
-| `callActivity.outputMappings` | mapping array | Optional; `[]` | At most 100. Copies child variables into this workflow's declared process variables after the child completes. `null` is invalid; omit the property instead. |
+| `callActivity.outputMappings` | mapping array | Optional; `[]` | At most 100. Copies child variables into this workflow's declared process variables after the child completes, or, in a multi-instance call, into item locals or `readWrite` shared aliases. `null` is invalid; omit the property instead. |
+| `multiInstance` | object | Optional; absent | Starts one child per collection item; see [multi-instance calls](#multi-instance-calls). |
 
 Each mapping copies one whole variable, so it has no path, expression, default, or validation of its own:
 
 | Property | Type | Required / default | Meaning and constraints |
 | --- | --- | --- | --- |
-| `sourceVariable` | string | Required | Variable stored on the source instance: a process variable, entry variable, user-task flow variable, or REST or message output target. It must be declared or produced by the source workflow, and cannot be a shared alias or use a reserved prefix (`sys.`, `config.`, `setting.`, `mi.`, `gateway.`). Saved in its declared spelling. |
-| `variable` | string | Required | Destination: a declared input of the target's start, or an instance-scoped process variable of this workflow. Unique within its list ignoring case. Shared aliases, reserved prefixes, and the target start's idempotency variable are rejected. |
+| `sourceVariable` | string | Required | Variable stored on the source instance: a process variable, entry variable, user-task flow variable, or REST or message output target. It must be declared or produced by the source workflow, and cannot be a shared alias or use a reserved prefix (`sys.`, `config.`, `setting.`, `mi.`, `gateway.`). An input mapping of a multi-instance call may also read a readable shared alias and exactly `mi.item`, `mi.index`, or `mi.total`, but never the body's own `resultVariable`. Saved in its declared spelling. |
+| `variable` | string | Required | Destination: a declared input of the target's start, or an instance-scoped process variable of this workflow; in a multi-instance call, an item local or a `readWrite` shared alias instead. Unique within its list ignoring case. Other shared aliases, reserved prefixes, and the target start's idempotency variable are rejected. |
 | `dataType` | string | Required | `string`, `number`, `boolean`, `date`, `datetime`, or `json`. It must agree with the destination and with a declaration of the source; nothing is converted. |
 | `isArray` | Boolean | Optional; `false` | Whether the value is an array. |
 | `required` | Boolean | Optional; `false` | When `true`, a missing source or JSON null fails the call. When `false`, a missing source omits that input or leaves that output target unchanged, and a present null is passed on. It never weakens a child's required input. |
@@ -435,7 +463,7 @@ Each mapping copies one whole variable, so it has no path, expression, default, 
 
 **Identity.** The child starts as the fixed system actor `callActivity`, with no roles, claims, or delegation, and this workflow continues as the same actor after delivery. In the child, `sys.user` is therefore `callActivity`, so an `assignee` expression or `${sys.user}` default that relies on the starter produces a value no real user owns. Pass a requester or approver as an ordinary mapped input instead. The child's own tasks keep their roles, assignment, and action checks.
 
-**Boundaries and failures.** A call may have one catch-all [errorBoundaryEvent](#errorboundaryevent). Timer and conditional boundaries and `errorMatch` are invalid on a call. The boundary's `errorVariable` receives `code: description`.
+**Boundaries and failures.** A call may have one catch-all [errorBoundaryEvent](#errorboundaryevent). `errorMatch` is invalid on a call, and so are timer and conditional boundaries unless the call is multi-instance. The boundary's `errorVariable` receives `code: description` on a single call and the code alone on a multi-instance call.
 
 | What happened | With a boundary | Without a boundary |
 | --- | --- | --- |
@@ -446,7 +474,109 @@ Each mapping copies one whole variable, so it has no path, expression, default, 
 
 A `terminateEndEvent` in the child is a successful completion of that child only. Calls may appear in loops, in parallel branches, and inside other calls. Each visit gets its own child, each call entry counts against `Workflow.Async.MaxConsecutiveAutomaticActivations`, including one that its error boundary catches before a child exists, and nesting is limited by [`WorkflowCallActivities`](deployment.md#configuration). External effects a child has already performed are not undone when a call is cancelled.
 
+#### Multi-instance calls
+
+With [`multiInstance`](#automatic-multi-instance-properties), the call starts one child per collection item, each with its own invocation. Input mappings can read `mi.item` (typed like the collection's elements), `mi.index`, `mi.total`, frozen instance inputs, and readable shared aliases; output mappings write the body's local outputs or `readWrite` shared aliases. Each item reads its shared inputs once, when its `callStart` first stages, and every retry of that item reuses them.
+
+- **Version pin.** When the body initializes, a Worker resolves the family's published default and its default plain start once, checks the mappings against it, and pins it. Every item and retry starts that version, even after the family's default changes. The pinned version cannot be unpublished or deleted until the body settles or is cancelled. An empty collection completes with `[]` and needs no usable target.
+- **Entry failures.** An invalid or oversized collection, a result that cannot fit, `call_target_unavailable`, `call_target_incompatible`, or `call_depth_exceeded` takes the catch-all boundary at once with no partial result; without one, the body's `multiInstanceStart` job retries after 10 seconds, 1 minute, and 5 minutes, then opens an incident. The depth limit is checked once, here.
+- **Open-call limit.** Items count against `WorkflowCallActivities:MaxOpenInvocationsPerRoot`. A full root is back-pressure: items stay pending, take no boundary, and the dispatch job retries, opening a `call_capacity_exceeded` incident only when the body has nothing in flight and its retry delay has reached its maximum. Calls made inside the children count against the same root and are refused as ordinary calls are, so keep `maxConcurrency` times the calls each child holds open below the limit.
+- **Slots.** An item keeps its slot until its child's result is delivered, including while the child waits for people, messages, timers, or its own incidents.
+
+| What happened to an item | With the catch-all boundary | Without it |
+| --- | --- | --- |
+| Its child faulted (`call_child_faulted`) or was cancelled on its own (`call_child_cancelled`) | Stops the body, cancels unfinished children, publishes the partial result, and takes the boundary. | Stops the body and faults this workflow with that code. |
+| Its start failed (`call_start_failed`, `call_business_key_conflict`) or its mapped inputs were invalid (`call_input_invalid`) | Takes the boundary. | Opens an incident on its `callStart`; the retry reuses the saved inputs and the pin. |
+| Its result is invalid (`call_output_invalid`) | Takes the boundary. | Opens an incident on the child's `callResume`; the child stays completed and never runs again. |
+| Its result does not fit the item or the body result | Takes the boundary with `multi_instance_result_too_large`. | Faults this workflow; this is never an incident. |
+| A shared output changed since the item staged | Not a business failure: opens `output_version_conflict` on the `callResume`. | The same. |
+| A shared binding is missing, archived, or denied while the item stages | Not a business failure: opens an incident on its `callStart`. | The same. |
+
+A pinned version that a newer family version made unstartable, for example by enabling business keys, fails every remaining item with `call_start_failed`. See the [multi-instance call example](../examples/call-activities/04-multi-instance-approval-call.json).
+
 See the [call activity examples](../examples/call-activities/README.md).
+
+### Automatic multi-instance properties
+
+A `multiInstance` object on a `serviceTask`, `scriptTask`, or `callActivity` makes the node a **body** that runs its activity once per element of a typed collection and publishes an ordered result. Items are durable work owned by one parent token, never human tasks. See [BPMN semantics](bpmn-support.md#multi-instance-service-script-and-call-activities) for the lifecycle and the [user-task properties](#multi-instance-properties) for human multi-instance work.
+
+| Property | Type | Required / default | Meaning and constraints |
+| --- | --- | --- | --- |
+| `mode` | string | Optional; `"parallel"` | `parallel` admits up to the effective concurrency at once; `sequential` admits one item and starts the next only after the previous one has committed. Recognized casing is canonicalized; null or unknown values are invalid. |
+| `source` | string | Optional; `"collection"` | Only `collection`. `cardinalityExpression` and `onePerActor: true` are refused. |
+| `collectionVariable` | string | Required | Declared process variable with `isArray: true` and `dataType` `string`, `number`, `boolean`, `date`, `datetime`, or `json`: an instance variable, or a shared alias with `read` or `readWrite` access. A scalar `json` holding an array is not a collection. Elements keep their order, duplicates, casing, and whitespace; they are not usernames. |
+| `completionEvaluation` | string | Required; `"afterAll"` | Write `afterAll` explicitly. An omitted value or `afterEach` is refused, because an omitted value reads as `afterEach`. |
+| `maxConcurrency` | integer | Optional | 1 to 1,000. In parallel mode an omitted value uses the `Workflow.MultiInstance.DefaultConcurrency` setting; the effective window is the smallest of this value, the `Workflow.MultiInstance.MaxConcurrency` setting, and the item count. Sequential mode accepts only `1` or omission. Explicit `null`, fractions, zero, and negative values are refused. |
+| `outputVariables` | array | Required; may be `[]` | Up to 100 local output declarations, below. An empty list suits an activity run only for its effect. |
+| `resultVariable` | string | Required | Declared scalar `json` process variable (`isArray: false`): an instance variable with an array `defaultValue` (author `[]`), or a `readWrite` shared alias whose catalog contract accepts `[]`. It must differ from the collection, every item output and status target, the body's error targets, and every other multi-instance node's result, compared by name and by shared key. |
+
+Each `outputVariables` entry declares an item-local value. Other fields are refused.
+
+| Property | Type | Required / default | Meaning and constraints |
+| --- | --- | --- | --- |
+| `name` | string | Required | 1 to 300 Unicode scalar values, without surrounding whitespace or a reserved prefix (`sys.`, `config.`, `setting.`, `mi.`, `gateway.`). Unique ignoring case within the body, and must not collide with a process variable, an entry, task, or action input, or a REST, message, status, or error target that writes the instance. |
+| `dataType` | string | Required | `string`, `number`, `boolean`, `date`, `datetime`, or `json`. |
+| `isArray` | Boolean | Optional; `false` | Whether the local holds an array. |
+| `nullable` | Boolean | Optional; `false` | A nullable local left unset becomes JSON `null`. A non-nullable local must have a value when the item succeeds. |
+| `defaultValue` | JSON | Optional | Applied to a fresh buffer on every attempt and type-checked when saving. A string default can contain `${...}` placeholders over the item context. |
+| `validation` | string | Optional | NCalc rule checked against the item's completed locals. It cannot use `FlowInfo`, gateway helpers, `CountFlow`, `PercentFlow`, or an `mi.*` name other than the three below. |
+
+**Item context.** Each item reads these read-only names; they are never variables and cannot be written:
+
+| Name | Value | How to read it |
+| --- | --- | --- |
+| `mi.item` | The copied element, with its declared type and JSON value. | `[mi.item]` in NCalc, `${mi.item}` in a REST template, `execution.getVariable('mi.item')` in JavaScript, `"sourceVariable": "mi.item"` in a call input mapping. |
+| `mi.index` | Zero-based position, from 0 to the item count minus one. | The same forms with `mi.index`. |
+| `mi.total` | The frozen item count. | The same forms with `mi.total`. |
+
+Progress names such as `mi.completed` and `mi.remaining` are refused in item expressions, because they depend on completion order. Items never read the body's own `resultVariable`: saving refuses a REST template, NCalc assignment, mapping or local-output default or validation, or call input mapping that names it. A JavaScript body is not checked; the result is simply absent from its items.
+
+**Result.** The body resets `resultVariable` to `[]` when it initializes. Once every item has succeeded, it publishes one index-ordered row per item and continues on its outgoing flow; an empty collection publishes `[]`.
+
+```json
+[
+  { "kind": "item", "index": 0, "item": "supplier-a", "status": "completed", "variables": { "receiptId": "notice-001", "httpStatus": 201 } },
+  { "kind": "item", "index": 1, "item": "supplier-b", "status": "completed", "variables": { "receiptId": "notice-002", "httpStatus": 201 } }
+]
+```
+
+`variables` holds the item's local outputs only, or `{}` with no declarations; shared writes are never copied into it. When an error boundary catches an item failure, the partial result also has `failed` rows for the failure and any already failed items and `cancelled` rows for unfinished and unstarted items, each with `"variables": {}`. A timer or conditional interruption and cancellation publish no result.
+
+**Topology and durability.** A body has exactly one ordinary unconditional outgoing flow, without a condition, default, `isSelectable: false`, or completion settings. A service or script body requires `asyncBefore: true`; its `job` policy applies to its entry and to each item, and an optional `asyncAfter` runs once, after the result is published. A call body refuses `asyncBefore`, `asyncAfter`, and `job`. Error boundaries keep their host's rules; timer and conditional boundaries attach to all three kinds, as [boundary host rules](#boundary-host-rules) describe. A boundary's `errorVariable` receives a stable failure code, never request or response data; declare it as a process variable, an instance `string` or a `readWrite` shared alias.
+
+**Limits.** At most `Workflow.MultiInstance.MaxInstances` items (default 1,000; an empty collection is valid), a 1 MiB input snapshot, a 1 MiB result, and 1 MiB per item for its frozen inputs and saved result together. Sizes count the text PostgreSQL stores for the JSON, which can be larger than compact JSON. A result whose rows cannot fit even before any output is refused at entry, before any item runs.
+
+```json
+{
+  "id": 2,
+  "name": "Notify each supplier",
+  "type": "serviceTask",
+  "asyncBefore": true,
+  "multiInstance": {
+    "mode": "parallel",
+    "source": "collection",
+    "collectionVariable": "supplierIds",
+    "completionEvaluation": "afterAll",
+    "maxConcurrency": 4,
+    "outputVariables": [
+      { "name": "receiptId", "dataType": "string", "isArray": false, "nullable": false }
+    ],
+    "resultVariable": "notificationResults"
+  },
+  "service": {
+    "type": "rest",
+    "method": "POST",
+    "url": "${config.exampleApiBaseUrl}/suppliers/${mi.item}/notifications",
+    "headers": [{ "name": "Idempotency-Key", "value": "flowbit-${sys.jobId}" }],
+    "body": "{\"supplierId\":${mi.item},\"index\":${mi.index}}",
+    "outputMappings": [
+      { "variable": "receiptId", "path": "id", "dataType": "string", "isArray": false, "required": true }
+    ]
+  }
+}
+```
+
+Declare `supplierIds` as a process `string[]` and `notificationResults` as a process `json` with `defaultValue: []`, and connect one outgoing flow. See the [automatic multi-instance examples](../examples/multi-instance/README.md#automatic-multi-instance-activities).
 
 ## Events
 
@@ -644,8 +774,8 @@ Catches a failure of its attached service task, script task, or [call activity](
 
 | Property | Type | Required / default | Meaning and constraints |
 | --- | --- | --- | --- |
-| `attachedToRef` | integer | Required | ID of an existing `serviceTask`, `scriptTask`, or `callActivity`. A call has one catch-all. A REST service task may have up to eight error boundaries, including at most one catch-all. A script task has at most one, which is always a catch-all. |
-| `errorVariable` | string | Optional; absent | Captures the failure reason. Must be a nonblank name of at most 300 Unicode scalar values when configured, without `sys.`, `config.`, `setting.`, or `mi.` prefix. It can be an implicit runtime output; if a same-name process variable exists, it must be scalar `string`. It must not collide case-insensitively with the host service's status/output targets. Several boundaries on one host may share a variable; only the selected boundary writes it. |
+| `attachedToRef` | integer | Required | ID of an existing `serviceTask`, `scriptTask`, or `callActivity`. A call has one catch-all. A REST service task may have up to eight error boundaries, including at most one catch-all. A script task has at most one, which is always a catch-all. The same rules apply to [multi-instance bodies](#automatic-multi-instance-properties), where the boundary catches a failure of the whole body. |
+| `errorVariable` | string | Optional; absent | Captures the failure reason. Must be a nonblank name of at most 300 Unicode scalar values when configured, without `sys.`, `config.`, `setting.`, or `mi.` prefix. It can be an implicit runtime output; if a same-name process variable exists, it must be scalar `string`. It must not collide case-insensitively with the host service's status/output targets. Several boundaries on one host may share a variable; only the selected boundary writes it. On a multi-instance body it receives the stable failure code, such as `service_task_failed` or `call_child_faulted`; declare it there as a process variable, because the body's error route writes only declared targets. |
 | `errorMatch` | object | Optional; absent | REST service host only. The HTTP statuses this boundary catches. Absent or `null` means catch-all. An empty matcher is invalid; it never becomes a catch-all. |
 | `errorMatch.httpStatusCodes` | integer array | Optional | Exact statuses from `100` through `599`. `null` means omitted. |
 | `errorMatch.httpStatusRanges` | object array | Optional | Inclusive `{ "from", "to" }` ranges, both required integers from `100` through `599` with `from` below `to`. `null` means omitted. Use an exact status for a single value. |
@@ -1047,7 +1177,9 @@ Conditions support NCalc built-ins plus the pure string helpers `Length`, `Len`,
 
 ## Boundary host rules
 
-A `callActivity` hosts only one catch-all `errorBoundaryEvent`; timer and conditional boundaries cannot attach to it. Timer/conditional boundaries attach to a normal or multi-instance `userTask`, an `intermediateMessageCatchEvent`, an `intermediateTimerCatchEvent`, or a `task`/`serviceTask`/`scriptTask` with `asyncBefore: true`. A conditional catch, gateway, start, end, or another boundary is not an eligible host. A host may have at most **eight timer and conditional boundaries combined**, plus its separate one-error-boundary allowance when it is a service/script task.
+A `callActivity` hosts only one catch-all `errorBoundaryEvent`; timer and conditional boundaries attach to it only when it is multi-instance. Timer/conditional boundaries attach to a normal or multi-instance `userTask`, an `intermediateMessageCatchEvent`, an `intermediateTimerCatchEvent`, a `task`/`serviceTask`/`scriptTask` with `asyncBefore: true` (which every multi-instance service or script task has), or a multi-instance `callActivity`. A conditional catch, gateway, start, end, or another boundary is not an eligible host. A host may have at most **eight timer and conditional boundaries combined**, plus its separate error-boundary allowance when it is a service, script, or call activity.
+
+On a [multi-instance body](#automatic-multi-instance-properties), a boundary belongs to the whole body, never one item. A conditional subscription starts when the token enters the node, even while it waits behind another body of the same node, and can interrupt that waiting entry without touching the other body. A timer starts when the body initializes, not while it is queued. An interrupting occurrence stops unfinished items, cancels their call children, publishes no result, and routes once; writes that items had already committed stay. A non-interrupting occurrence creates a sibling branch while the body keeps running, and an occurrence already captured survives the body's normal completion. Conditions still read only declared, persisted instance variables, never item locals, `mi.*`, or shared aliases.
 
 An interrupting boundary cancels the host's open work, waits, attached subscriptions, and durable jobs before continuing on the boundary route. A non-interrupting boundary creates sibling work and retains the host. The engine fences cancellation against late jobs/results. It cannot undo an external REST side effect that already occurred. See [boundary semantics](bpmn-support.md#conditional-boundaries) and [Worker operations](deployment.md).
 
@@ -1258,7 +1390,7 @@ Only `task`, `userTask`, `serviceTask`, and `scriptTask` support these node prop
 | `job.failureHandling` | string | Optional; `"boundaryFirst"`. | `boundaryFirst` uses a matching error boundary before retries, and retries a failure with no match; `retryFirst` retries first, then considers the error boundary after exhaustion, using the final attempt's result. An unresolved failure becomes an incident. See [HTTP status matching](#http-status-matching). |
 | `job.retryDelays` | array of strings | Optional/null; `["PT10S", "PT1M", "PT5M"]`. | Delay before each retry, up to 10 positive fixed-unit ISO-8601 durations, each at most 128 characters. `[]` explicitly disables automatic retries. The initial attempt is additional to the retries. Calendar months/years and nonpositive delays are invalid. |
 
-For multi-instance tasks the async flags apply to the parent execution, not independently to each child. Workers must be deployed for jobs to advance. A durable REST call may be repeated after a failure; remote side effects need their own idempotency contract. See [durable execution](bpmn-support.md#synchronous-and-durable-execution).
+For multi-instance tasks the async flags apply to the parent execution, not independently to each child. On a [multi-instance service or script task](#automatic-multi-instance-properties), `asyncBefore` is required, the `job` policy also governs each item's own job, and `asyncAfter` runs once after the result is published. Workers must be deployed for jobs to advance. A durable REST call may be repeated after a failure; remote side effects need their own idempotency contract. See [durable execution](bpmn-support.md#synchronous-and-durable-execution).
 
 The [durable-job examples](../examples/durable-jobs/README.md) contrast the two
 failure policies and include a local REST retry/incident recovery walkthrough.

@@ -16,35 +16,18 @@ public static class AutomaticMultiInstanceRules
         || BpmnFlowNodeTypes.IsScriptTask(node.Type)
         || BpmnFlowNodeTypes.IsCallActivity(node.Type);
 
-    public static bool IsAutomaticBody(FlowNodeModel node) => IsAutomaticNode(node) && node.MultiInstance is not null;
-
     /// <summary>
-    /// The activity kinds whose adapter is installed. Publication, runtime entry, and
-    /// item processing read nothing else, so a kind stays refused until its adapter's
-    /// entry, item, failure, and cancellation paths are complete. The integration change
-    /// removes this list together with the Development-only release switch.
+    /// A service, script, or call node with <c>multiInstance</c>: one body whose items run
+    /// as durable work through that activity kind's adapter, never as one ordinary activity.
     /// </summary>
-    public static IReadOnlySet<string> InstalledAdapterKinds { get; } =
-        new HashSet<string>(StringComparer.Ordinal)
-        {
-            BpmnFlowNodeTypes.ServiceTask, BpmnFlowNodeTypes.ScriptTask, BpmnFlowNodeTypes.CallActivity
-        };
-
-    /// <summary>Whether an automatic body of this node type has an installed activity adapter.</summary>
-    public static bool IsAdapterInstalled(string? nodeType) =>
-        nodeType is not null && InstalledAdapterKinds.Contains(nodeType);
-
-    public static string AdapterUnavailableMessage(FlowNodeModel node) =>
-        $"Automatic multi-instance {node.Type} #{node.Id} cannot be published or run until its activity adapter is installed.";
+    public static bool IsAutomaticBody(FlowNodeModel node) => IsAutomaticNode(node) && node.MultiInstance is not null;
 
     public static bool IsLocalOutput(FlowNodeModel node, string? name) =>
         IsAutomaticBody(node) && (node.MultiInstance!.OutputVariables ?? []).Any(output =>
             output is not null && string.Equals(output.Name, name, StringComparison.OrdinalIgnoreCase));
 
-    public static string DisabledMessage(int nodeId) => $"Flow node #{nodeId} automatic multiInstance is not enabled.";
-
     /// <summary>Checks raw metadata before normalization, without changing any authored value.</summary>
-    public static string? FindAuthoredProblem(FlowNodeModel node, bool enabled)
+    public static string? FindAuthoredProblem(FlowNodeModel node)
     {
         if (node.MultiInstance is not { } multi) return null;
         if (BpmnFlowNodeTypes.IsUserTask(node.Type))
@@ -52,7 +35,6 @@ public static class AutomaticMultiInstanceRules
                 ? $"User task #{node.Id} cannot define automatic multi-instance maxConcurrency or outputVariables."
                 : null;
         if (!IsAutomaticNode(node)) return $"Flow node #{node.Id} cannot define multiInstance.";
-        if (!enabled) return DisabledMessage(node.Id);
         var owner = $"Automatic multi-instance activity #{node.Id}";
         if (multi.HasMaxConcurrency && multi.MaxConcurrency is null)
             return $"{owner} maxConcurrency must be an integer from 1 to 1000.";
@@ -70,7 +52,7 @@ public static class AutomaticMultiInstanceRules
     public static string? FindLocalProblem(WorkflowModel definition, FlowNodeModel node)
     {
         if (!IsAutomaticBody(node)) return null;
-        if (FindAuthoredProblem(node, enabled: true) is { } authored) return authored;
+        if (FindAuthoredProblem(node) is { } authored) return authored;
         var multi = node.MultiInstance!;
         var owner = $"Automatic multi-instance activity #{node.Id}";
         if (multi.Mode is not (MultiInstanceModes.Parallel or MultiInstanceModes.Sequential))
@@ -128,6 +110,10 @@ public static class AutomaticMultiInstanceRules
         foreach (var boundary in (definition.FlowNodes ?? []).Where(candidate => candidate.AttachedToRef == node.Id && BpmnFlowNodeTypes.IsErrorBoundary(candidate.Type)))
         {
             var error = Find(variables, boundary.ErrorVariable);
+            // A body writes its error code through its catalog contract, so the target must
+            // be declared; an ordinary host may still create an undeclared one.
+            if (!string.IsNullOrWhiteSpace(boundary.ErrorVariable) && error is null)
+                return $"{owner} boundary error target '{boundary.ErrorVariable}' must be a declared process variable.";
             if (error is not null && (SameTarget(error, source) || SameTarget(error, result)))
                 return $"{owner} boundary error target must differ from its collection and aggregate targets.";
         }

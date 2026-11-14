@@ -1947,7 +1947,6 @@ public sealed partial class WorkflowEngineService
         ActorContext actor,
         CancellationToken cancellationToken)
     {
-        EnsureAutomaticMultiInstanceRuntimeAvailable(node);
         // A body's entry job initializes the body through its adapter. It must never
         // run the activity once as an ordinary continuation.
         if (AutomaticMultiInstanceRules.IsAutomaticBody(node) && job.Kind == WorkflowJobKinds.AsyncBefore)

@@ -1242,7 +1242,7 @@ public sealed class DefinitionValidationTests
         Assert.Null(terminal.AssigneeExpression);
         Assert.NotNull(terminal.MultiInstance);
         Assert.Equal($"Flow node #{terminal.Id} cannot define multiInstance.",
-            AutomaticMultiInstanceRules.FindAuthoredProblem(terminal, enabled: true));
+            AutomaticMultiInstanceRules.FindAuthoredProblem(terminal));
         Assert.Null(terminal.AttachedToRef);
         Assert.Null(terminal.ErrorVariable);
         Assert.Null(terminal.BusinessKey);

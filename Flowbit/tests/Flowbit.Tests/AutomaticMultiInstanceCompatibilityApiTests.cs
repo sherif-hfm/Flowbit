@@ -17,7 +17,7 @@ namespace Flowbit.Tests;
 
 /// <summary>
 /// TASK-05A compatibility through the HTTP API against PostgreSQL, with real automatic
-/// bodies opened by the registered job processor on a host whose release switch is open:
+/// bodies opened by the registered job processor:
 /// administrative discovery, candidate search, and batches never reach a body; an open body
 /// blocks a version change and a settled one does not block reactivation; and the diagram
 /// history counts a body's activation once, whether it has items or none.
@@ -50,10 +50,6 @@ public sealed class AutomaticMultiInstanceCompatibilityApiTests(PostgresApiFixtu
     private WebApplicationFactory<Program> OpenHost() =>
         fixture.Factory.WithWebHostBuilder(builder => builder.ConfigureTestServices(services =>
         {
-            var open = new AutomaticMultiInstanceOptions { AllowInDevelopment = true };
-            open.ResolveForEnvironment(isDevelopment: true);
-            services.RemoveAll<AutomaticMultiInstanceOptions>();
-            services.AddSingleton(open);
         }));
 
     private static JsonElement Json(object? value) => JsonSerializer.SerializeToElement(value);

@@ -11,8 +11,7 @@ public sealed class WorkflowDefinitionReadinessChecker(
     IConditionalEventDefinitionAnalyzer? conditionalEventAnalyzer = null,
     DurableProcessingOptions? durableProcessingOptions = null,
     IBusinessCalendarRepository? businessCalendars = null,
-    IWorkflowDefinitionRepository? definitions = null,
-    AutomaticMultiInstanceOptions? automaticMultiInstanceOptions = null)
+    IWorkflowDefinitionRepository? definitions = null)
 {
     private readonly IConditionalEventDefinitionAnalyzer conditionalAnalyzer =
         conditionalEventAnalyzer ?? new ConditionalEventDefinitionAnalyzer();
@@ -40,26 +39,9 @@ public sealed class WorkflowDefinitionReadinessChecker(
         WorkflowModel definition,
         bool publish)
     {
-        // Until the integration step, only a Development host with the release switch
-        // open may publish an automatic body, and only of a kind whose adapter is
-        // installed. A body of any other kind would otherwise run as one activity.
-        if (publish && definition.FlowNodes.Any(AutomaticMultiInstanceRules.IsAutomaticBody))
-        {
-            if (automaticMultiInstanceOptions?.Enabled != true)
-            {
-                throw new WorkflowDomainException(
-                    "Automatic multi-instance publication is unavailable until the service, script, and call adapters pass the integration release gates.");
-            }
-
-            var unavailable = definition.FlowNodes.FirstOrDefault(node =>
-                AutomaticMultiInstanceRules.IsAutomaticBody(node)
-                && !AutomaticMultiInstanceRules.IsAdapterInstalled(node.Type));
-            if (unavailable is not null)
-            {
-                throw new WorkflowDomainException(AutomaticMultiInstanceRules.AdapterUnavailableMessage(unavailable));
-            }
-        }
-
+        // Automatic bodies are durable (service and script bodies require asyncBefore,
+        // and calls are always durable), so they publish under the same gate as every
+        // other definition that needs the Worker.
         if (!publish
             || durableProcessing.PublicationEnabled
             || !RequiresDurableProcessing(definition))

@@ -12,9 +12,9 @@ namespace Flowbit.BrowserAcceptanceTests;
 
 /// <summary>
 /// TASK-05D call bodies through real API, UI and Worker processes. These belong with the
-/// call-activity scenarios, but they need the stack whose Development release switch is
-/// open, and an xUnit class binds to exactly one collection fixture, so they live in their
-/// own class in that collection. Children are real instances of real published workflows,
+/// call-activity scenarios, but they run on the automatic multi-instance stack, and an
+/// xUnit class binds to exactly one collection fixture, so they live in their own class in
+/// that collection. Children are real instances of real published workflows,
 /// and every child action is a real task action.
 /// </summary>
 [Collection(AutomaticMultiInstanceAcceptanceCollection.Name)]

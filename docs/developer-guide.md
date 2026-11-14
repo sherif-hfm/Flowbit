@@ -24,6 +24,7 @@ Start with the [runnable getting-started guide](getting-started.md). This guide 
 - [Separate retries from business identity](#separate-retries-from-business-identity)
 - [Integrate automatic work and durable jobs](#integrate-automatic-work-and-durable-jobs)
 - [Call another workflow](#call-another-workflow)
+- [Process a collection with automatic multi-instance](#process-a-collection-with-automatic-multi-instance)
 - [Read progress, search, and audit](#read-progress-search-and-audit)
 - [Lifecycle webhooks](#lifecycle-webhooks)
 - [Handle errors and concurrent changes](#handle-errors-and-concurrent-changes)
@@ -158,7 +159,8 @@ Node IDs must be unique within the node collection; flow IDs must be unique with
 | `externalId` | `FLOW_APPROVE_AFTER_CLAIM` | Optional authored integration label; useful for mapping a discovered action to an application command. It is not the runtime task ID. |
 | `userTaskId` / task `id` | A returned integer | Exact work item to claim or complete, including one multi-instance child. |
 | `tokenId` | A returned integer | One persisted execution position; an instance may own several. |
-| `multiInstanceExecutionId` | A returned integer | One repeated-task execution and its aggregate state; used for parent interrupts and role management. |
+| `multiInstanceExecutionId` | A returned integer | One repeated-task execution and its aggregate state; used for parent interrupts and role management, or, for a service, script, or call body, for paging its automatic items. |
+| `automaticMultiInstanceItemId` / item `id` | A returned integer | One item of an automatic body, with a stable job or call invocation across retries. It is never a user task. |
 | Node-execution `id` | A returned integer | One committed node visit or multi-instance child lifecycle in the activity ledger. |
 | `rolePolicyId` | A returned integer | Immutable role snapshot used as the concurrency token for role edits. |
 | Job ID / activation ID | Returned integer / UUID | Durable work and the activation it belongs to; used for operations and stale-result fencing. |
@@ -321,6 +323,8 @@ Authorization: Bearer <token>
 An authorized parent interrupt requires task and flow roles, but not an active assigned child or a claim. It can finish the parent and cancel unfinished children immediately, including under `afterAll`. Use its returned instance state to refresh the worklist. See the [multi-instance examples](../examples/multi-instance/README.md) for complete configurations.
 
 The legacy instance-addressed claim/unclaim/flow routes return `409` when more than one active task makes the target ambiguous. Build new clients on task-addressed routes.
+
+Multi-instance service tasks, script tasks, and call activities are automatic: their items never appear as tasks, and the `/flows` and `/roles` routes return `404` for their execution IDs. See [process a collection with automatic multi-instance](#process-a-collection-with-automatic-multi-instance).
 
 ## Perform explicit administrative actions
 
@@ -591,6 +595,108 @@ Content-Type: application/json
 **Reading relationships.** Instance detail adds `parentCall` for a child and bounded `calls` counts, and a position waiting at a call has `call`. `parentCall.cancellationInProgress` is true while a running instance is being stopped because its own call or a call above it was cancelled, whereas `parentCall.state` describes only its own call. An incident on a `callResume` or `callCancel` job belongs to the instance that sent the message, which may have ended, so its `callTargetInstanceId` names the instance the message acts on. [`GET /api/instances/{id}/calls`](api-guide.md#get-apiinstancesidcalls) pages through direct outgoing calls, newest first, including visits with no child yet. General instance search treats parents and children as independent instances. These reads follow the instance-detail boundary: any authenticated actor can read them, and they grant no task, claim, or cancellation permission. Captured values are never returned.
 
 **Other operations.** A parent with an unsettled outgoing call, or a child with an unsettled incoming call, cannot change version; this includes queued calls and results awaiting delivery. A linked child cannot be reactivated, and a root can be reactivated only after all its calls settle and every descendant has stopped, with fresh visits for future calls.
+
+A call with `multiInstance` starts one child per collection item; see [the next section](#call-a-workflow-for-every-item).
+
+## Process a collection with automatic multi-instance
+
+A `serviceTask`, `scriptTask`, or `callActivity` with `multiInstance` runs its activity once for every element of a typed collection and publishes one ordered result. Workers run everything: there is no HTTP operation that starts, completes, skips, or retries an individual item outside the incident API. Your application starts the instance, reads progress, and reads the result. The [node reference](node-reference.md#automatic-multi-instance-properties) defines the JSON, and [BPMN support](bpmn-support.md#multi-instance-service-script-and-call-activities) summarizes the semantics.
+
+**Publish and start.** A body is durable work, so publishing it needs `WorkflowDurableProcessing:PublicationEnabled` and a running Worker, as for any other durable definition. Then start the instance as usual. With the [parallel REST example](../examples/multi-instance/08-rest-parallel-notifications.json):
+
+```http
+POST /api/instances HTTP/1.1
+Host: localhost:5017
+Authorization: Bearer TOKEN
+Content-Type: application/json
+
+{"workflowKey":"example-multi-instance-rest-parallel","startEventId":1,"variables":{"batchId":"batch-2026-11-14"}}
+```
+
+The response shows the token waiting at the body before a Worker has initialized it. **Read progress** from instance detail, `GET /api/instances/{id}`. Its `automaticMultiInstances` array has one payload-free entry per body (excerpt):
+
+```json
+{
+  "executionId": 41,
+  "nodeId": 2,
+  "activityKind": "serviceTask",
+  "mode": "parallel",
+  "status": "active",
+  "phase": "running",
+  "totalCount": 4,
+  "completedCount": 1,
+  "activeCount": 2,
+  "pendingCount": 1,
+  "failedCount": 0,
+  "cancelledCount": 0,
+  "effectiveConcurrency": 2,
+  "admissionBlocked": false,
+  "admissionBlockedReason": null,
+  "controlIncidentId": null
+}
+```
+
+`admissionBlockedReason` is `itemIncident`, `queueCapacity`, or `callCapacity` while new items are held back. Page through the items with `GET /api/multi-instance-executions/41/items?page=1&pageSize=50`; each summary has its index, status, and job, incident, or call correlation, but no values. `GET /api/multi-instance-executions/41/items/{itemId}` returns the copied element, the committed local outputs, and a bounded diagnostic to callers with node-activity read permission. When the body completes, the instance's `variables` list holds the published `resultVariable`, and the token moves on. See the [API reference](api-guide.md#multi-instance-executions).
+
+### What each item sees
+
+| Value | Captured | Kept for |
+| --- | --- | --- |
+| The collection, `mi.item`, `mi.index`, `mi.total` | Once, when the body initializes | The whole body. Later changes, including to a shared collection, never change its items. |
+| Instance variables an item reads | Once, when the body initializes: the names its templates, expressions, and mappings reference, or every stored instance variable for a JavaScript body | The whole body. Edits after initialization are invisible to its items. |
+| Other shared aliases, `config.*`, `setting.*`, `sys.now`, `sys.today` | When each item first runs (for a call item, when its `callStart` first stages) | That item's retries. A later item can see a newer value, and a sequential item can see an earlier item's committed shared write. |
+| `sys.jobId` | With the item's job | Every retry of that item. `sys.jobAttempt` changes per attempt. Calls receive neither. |
+| Local output defaults | Rebuilt for each attempt | One attempt. |
+
+To give every item the same shared or setting value, copy it into an instance variable before the body. A credential staged by an item stays with that item: rotating it reaches only items that start afterwards, so an item that failed with an expired token cannot recover by retrying.
+
+### Where item writes go
+
+Items write only their declared local outputs and `readWrite` shared aliases. Locals appear only in the published result's `variables`, never as instance variables or in instance history. A shared write is an ordinary catalog write, audited per item and committed once with the item's success; it is not copied into `variables`. Writes from parallel items commit in the order items finish, not in index order, and are not combined: a read-modify-write such as "add this item's amount to a shared total" computed from a value read when the item staged can conflict with another item's write. A child workflow started by a call item writes its own variables normally, and only its mapped results return.
+
+The `resultVariable` itself is reset to `[]` when the body initializes and written once more, with every row, when the last item succeeds:
+
+```json
+[
+  { "kind": "item", "index": 0, "item": "supplier-a", "status": "completed", "variables": { "receiptId": "notice-001", "httpStatus": 201 } },
+  { "kind": "item", "index": 1, "item": "supplier-b", "status": "completed", "variables": { "receiptId": "notice-002", "httpStatus": 201 } }
+]
+```
+
+### Make REST receivers idempotent
+
+REST items are **at least once**. A request can reach the receiver again when a Worker stops or loses its lease after the receiver acted but before Flowbit saved the mapped result. Once that result is saved, no recovery path sends the request again. Give the body a header the receiver deduplicates on:
+
+```json
+{ "name": "Idempotency-Key", "value": "flowbit-${sys.jobId}" }
+```
+
+The key stays the same for every attempt of one item and differs between items and between visits of the node. There is no receiver-specific throttling: a `429` response is an ordinary failed attempt under the node's retry delays, so limit the load with `maxConcurrency` or the `Workflow.MultiInstance.MaxConcurrency` setting.
+
+### Call a workflow for every item
+
+A multi-instance call starts one child per item. Its input mappings can read `mi.item`, `mi.index`, `mi.total`, frozen instance variables, and readable shared aliases; its output mappings write item locals or `readWrite` shared aliases. The body resolves the family's published default once, when it initializes, and pins it: every item and retry starts that version, so publishing a new default affects only bodies that start afterwards, and the pinned version cannot be unpublished or deleted until the body settles. Children run as the system actor `callActivity`; their own human tasks appear in the usual inboxes.
+
+[`GET /api/instances/{id}/calls`](api-guide.md#get-apiinstancesidcalls) lists every item's call with `multiInstanceExecutionId`, `automaticMultiInstanceItemId`, `itemIndex`, and the pinned version, before and after its child exists. Items count against the root's open-call limit: a full root holds items pending rather than failing them. Publish the child first, then the parent; see the [multi-instance call example](../examples/call-activities/04-multi-instance-approval-call.json).
+
+Call failures follow the call contract rather than REST and script retry policies. A child that faults or is cancelled on its own takes the body's catch-all boundary, or faults the parent with `call_child_faulted` or `call_child_cancelled`. A failed start or an invalid result takes the catch-all or waits in an incident whose retry never starts a second child for that item.
+
+### Failures, boundaries, and recovery
+
+| Situation | What happens | What to do |
+| --- | --- | --- |
+| An item fails and an error boundary catches it | The body stops: unfinished items are cancelled, call children stopped, and timer and conditional boundaries closed. The result is published with a row per item (`completed`, `failed`, or `cancelled`, the last two with empty `variables`), the boundary's error variable receives a stable code such as `service_task_failed`, `script_task_failed`, `multi_instance_result_invalid`, or `call_child_faulted`, and the error path continues. | Inspect the partial result on the handler path. Completed items and their shared writes stay. |
+| An item fails with no applicable boundary | REST and script items retry under the node's `job` policy, then open an item incident. The body admits no further items while it is open; items already running finish. | Fix the cause and retry the incident with `POST /api/incidents/{incidentId}/retry`, which needs the job operator role. Only that item runs again. |
+| An item fails the same way on every attempt | Items cannot be skipped, so the body waits until the instance is cancelled or an interrupting timer or conditional boundary fires. A non-interrupting reminder does not end it. | Model a catch-all error boundary, `retryFirst` with delays where failures are transient, or an interrupting deadline for batches that must finish. |
+| A shared output changed after the item read it | `output_version_conflict` incident over the saved result; nothing is published for that item. | Retrying it publishes the saved result over the newer value without repeating the HTTP call, script, or child. It does not recalculate a read-modify-write value, so check the newer value first. Retrying any other incident keeps the original version checks. |
+| The published result changed concurrently, or a call body fills the root's open calls with nothing in flight | An incident on the body's completion or dispatch job, shown as `controlIncidentId` and `controlIncidentType` even when every item has completed. | Retry it. A completion retry publishes the saved results without running items again; a dispatch retry repeats admission once other calls under the root have finished. |
+| A result that cannot fit, or fails the result variable's validation | The catch-all boundary, or the instance faults with that code (`multi_instance_result_too_large`, `multi_instance_result_invalid`); never an incident. | Reduce the collection or the declared outputs. |
+
+**Timer and conditional boundaries.** An interrupting deadline or condition stops unfinished items, cancels call children, publishes no result, and routes once; a late HTTP response or child result is discarded. Committed item writes and remote effects stay. A non-interrupting reminder creates a sibling branch and the body keeps running. A timer starts when the body initializes, so time spent waiting for a Worker before that does not count. Conditions read only persisted instance variables, so item locals and shared writes never trigger them.
+
+**Cancellation.** `POST /api/instances/{id}/cancel` settles the body and its items at once and discards later results. Call children stop through durable `callCancel` jobs, one level at a time. Cancellation never undoes a remote effect or a committed shared write.
+
+**Versions.** An instance with an open body, including one queued at entry, cannot change workflow version; the preview reports `automatic_multi_instance_open`. A second token that reaches the same node waits until the open body settles.
 
 ## Read progress, search, and audit
 

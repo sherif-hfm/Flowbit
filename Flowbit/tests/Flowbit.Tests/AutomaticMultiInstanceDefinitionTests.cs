@@ -11,17 +11,13 @@ namespace Flowbit.Tests;
 
 public sealed class AutomaticMultiInstanceDefinitionTests
 {
-    private static WorkflowDefinitionValidator Validator(bool enabled = true)
-    {
-        var options = new AutomaticMultiInstanceOptions { AllowInDevelopment = enabled };
-        options.ResolveForEnvironment(isDevelopment: true);
-        return new(new JintScriptEvaluator(new ScriptOptions(), NullLogger<JintScriptEvaluator>.Instance),
-            new ServiceTaskOptions(), automaticMultiInstanceOptions: options);
-    }
+    private static WorkflowDefinitionValidator Validator() =>
+        new(new JintScriptEvaluator(new ScriptOptions(), NullLogger<JintScriptEvaluator>.Instance),
+            new ServiceTaskOptions());
 
-    private static void Validate(WorkflowModel definition, bool enabled = true)
+    private static void Validate(WorkflowModel definition)
     {
-        var validator = Validator(enabled);
+        var validator = Validator();
         validator.ValidateAuthored(definition);
         WorkflowModelMigrator.Normalize(definition);
         validator.ValidateNormalized(definition);
@@ -54,23 +50,7 @@ public sealed class AutomaticMultiInstanceDefinitionTests
     [InlineData("serviceTask")]
     [InlineData("scriptTask")]
     [InlineData("callActivity")]
-    public void Development_contract_allows_all_automatic_kinds_but_default_gate_rejects_them(string kind)
-    {
-        Validate(Definition(kind));
-        var error = Assert.Throws<WorkflowDomainException>(() => Validate(Definition(kind), enabled: false));
-        Assert.Equal("Flow node #2 automatic multiInstance is not enabled.", error.Message);
-    }
-
-    [Fact]
-    public void Option_binding_alone_and_every_non_development_host_keep_gate_closed()
-    {
-        var options = new AutomaticMultiInstanceOptions { AllowInDevelopment = true };
-        Assert.False(options.Enabled);
-        options.ResolveForEnvironment(true);
-        Assert.True(options.Enabled);
-        options.ResolveForEnvironment(false);
-        Assert.False(options.Enabled);
-    }
+    public void Every_automatic_kind_validates_on_every_host(string kind) => Validate(Definition(kind));
 
     [Theory]
     [InlineData("string")]
@@ -221,9 +201,9 @@ public sealed class AutomaticMultiInstanceDefinitionTests
     public void Human_mi_rejects_automatic_settings_and_retains_its_default_evaluation()
     {
         var node = new FlowNodeModel { Id = 7, Type = "userTask", MultiInstance = new() { OutputVariables = [] } };
-        Assert.Contains("cannot define automatic", AutomaticMultiInstanceRules.FindAuthoredProblem(node, true));
+        Assert.Contains("cannot define automatic", AutomaticMultiInstanceRules.FindAuthoredProblem(node));
         node.MultiInstance = new();
-        Assert.Null(AutomaticMultiInstanceRules.FindAuthoredProblem(node, true));
+        Assert.Null(AutomaticMultiInstanceRules.FindAuthoredProblem(node));
         Assert.Equal("afterEach", node.MultiInstance.CompletionEvaluation);
     }
 
@@ -243,13 +223,18 @@ public sealed class AutomaticMultiInstanceDefinitionTests
         Assert.Contains("writable", Assert.Throws<WorkflowDomainException>(() => Validate(definition)).Message);
     }
 
-    [Fact]
-    public void Development_authoring_does_not_allow_publication_before_adapter_integration()
+    [Theory]
+    [InlineData("serviceTask")]
+    [InlineData("scriptTask")]
+    [InlineData("callActivity")]
+    public void Automatic_bodies_publish_under_the_durable_publication_gate(string kind)
     {
-        var readiness = new WorkflowDefinitionReadinessChecker(durableProcessingOptions: new() { PublicationEnabled = true });
-        readiness.EnsureDurablePublicationAllowed(Definition(), publish: false);
-        Assert.Contains("integration release gates", Assert.Throws<WorkflowDomainException>(() =>
-            readiness.EnsureDurablePublicationAllowed(Definition(), publish: true)).Message);
+        new WorkflowDefinitionReadinessChecker(durableProcessingOptions: new() { PublicationEnabled = true })
+            .EnsureDurablePublicationAllowed(Definition(kind), publish: true);
+        var closed = new WorkflowDefinitionReadinessChecker(durableProcessingOptions: new() { PublicationEnabled = false });
+        closed.EnsureDurablePublicationAllowed(Definition(kind), publish: false);
+        Assert.Contains("PublicationEnabled is false", Assert.Throws<WorkflowDomainException>(() =>
+            closed.EnsureDurablePublicationAllowed(Definition(kind), publish: true)).Message);
     }
 
     [Theory]

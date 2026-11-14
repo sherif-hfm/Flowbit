@@ -27,10 +27,6 @@ public sealed partial class WorkflowEngineService
         EnsureJobFence(currentJob, fence);
         var workflow = await GetWorkflowAsync(body.WorkflowDefinitionId, cancellationToken);
         var node = GetFlowNode(workflow.Definition, body.NodeId);
-        // Admission and completion run the body too, so a closed host refuses them like its
-        // entry and items: the job retries, then waits in an incident until an open host
-        // takes it. A job that no longer owns its body was refused above and closes quietly.
-        EnsureAutomaticMultiInstanceRuntimeAvailable(node);
         var actor = ReadJobActor(currentJob);
         if (currentJob.Kind == WorkflowJobKinds.MultiInstanceDispatch)
         {
@@ -50,25 +46,6 @@ public sealed partial class WorkflowEngineService
         }
         await unitOfWork.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
-    }
-
-    private void EnsureAutomaticMultiInstanceRuntimeAvailable(FlowNodeModel node) =>
-        EnsureAutomaticMultiInstanceRuntimeAvailable(node, automaticMultiInstanceOptions?.Enabled == true);
-
-    // A body runs only on a host whose release switch is open (Development with
-    // WorkflowAutomaticMultiInstance:AllowInDevelopment) and only through its kind's
-    // installed adapter. Otherwise it fails closed at every entry path, so a body
-    // published elsewhere cannot run here and can never fall through to one
-    // ordinary activity.
-    internal static void EnsureAutomaticMultiInstanceRuntimeAvailable(FlowNodeModel node, bool released)
-    {
-        if (!AutomaticMultiInstanceRules.IsAutomaticBody(node)) return;
-        if (!released)
-            throw new WorkflowDomainException(
-                $"Automatic multi-instance node #{node.Id} cannot run on this host: automatic multi-instance runs only on a Development host with the release switch open.");
-        if (!AutomaticMultiInstanceRules.IsAdapterInstalled(node.Type))
-            throw new WorkflowDomainException(
-                $"Automatic multi-instance node #{node.Id} cannot execute until its activity adapters and runtime integration are installed.");
     }
 
     internal static Dictionary<string, JsonElement> CreateAutomaticLocalBuffer(

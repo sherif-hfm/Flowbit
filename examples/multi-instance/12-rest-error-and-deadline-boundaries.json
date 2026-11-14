@@ -1,0 +1,293 @@
+{
+  "id": "example-multi-instance-rest-boundaries",
+  "name": "Multi-Instance Example 12 - REST Body with Error and Deadline Boundaries",
+  "initialEventId": 1,
+  "variables": [
+    {
+      "id": 1,
+      "name": "invoiceIds",
+      "dataType": "string",
+      "isArray": true,
+      "nullable": false,
+      "required": false,
+      "defaultValue": [
+        "INV-1001",
+        "INV-1002",
+        "INV-1003"
+      ],
+      "validation": null
+    },
+    {
+      "id": 2,
+      "name": "postingResults",
+      "dataType": "json",
+      "isArray": false,
+      "nullable": false,
+      "required": false,
+      "defaultValue": [],
+      "validation": null
+    },
+    {
+      "id": 3,
+      "name": "postingFailure",
+      "dataType": "string",
+      "isArray": false,
+      "nullable": true,
+      "required": false,
+      "defaultValue": null,
+      "validation": null
+    }
+  ],
+  "lanes": [],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Invoices Approved",
+      "externalId": "START_INVOICES_APPROVED",
+      "type": "startEvent",
+      "laneId": null,
+      "x": 60,
+      "y": 140,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 2,
+      "name": "Post Each Invoice",
+      "externalId": "SERVICE_POST_EACH_INVOICE",
+      "type": "serviceTask",
+      "laneId": null,
+      "x": 220,
+      "y": 128,
+      "roles": [],
+      "variables": [],
+      "asyncBefore": true,
+      "asyncAfter": false,
+      "multiInstance": {
+        "mode": "parallel",
+        "source": "collection",
+        "collectionVariable": "invoiceIds",
+        "completionEvaluation": "afterAll",
+        "maxConcurrency": 3,
+        "outputVariables": [
+          {
+            "name": "postingId",
+            "dataType": "string",
+            "isArray": false,
+            "nullable": false
+          }
+        ],
+        "resultVariable": "postingResults"
+      },
+      "service": {
+        "type": "rest",
+        "method": "POST",
+        "url": "${config.exampleApiBaseUrl}/invoices/${mi.item}/postings",
+        "headers": [
+          {
+            "name": "Authorization",
+            "value": "Bearer ${config.exampleApiToken}"
+          },
+          {
+            "name": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "name": "Idempotency-Key",
+            "value": "flowbit-${sys.jobId}"
+          }
+        ],
+        "body": "{\"invoiceId\":${mi.item}}",
+        "timeoutSeconds": 60,
+        "statusVariable": null,
+        "outputMappings": [
+          {
+            "variable": "postingId",
+            "path": "postingId",
+            "dataType": "string",
+            "isArray": false,
+            "required": true
+          }
+        ]
+      }
+    },
+    {
+      "id": 3,
+      "name": "Posting Failed",
+      "externalId": "BOUNDARY_POSTING_FAILED",
+      "type": "errorBoundaryEvent",
+      "laneId": null,
+      "x": 250,
+      "y": 196,
+      "roles": [],
+      "variables": [],
+      "attachedToRef": 2,
+      "errorVariable": "postingFailure"
+    },
+    {
+      "id": 4,
+      "name": "Posting Too Slow",
+      "externalId": "BOUNDARY_POSTING_TOO_SLOW",
+      "type": "timerBoundaryEvent",
+      "laneId": null,
+      "x": 340,
+      "y": 196,
+      "roles": [],
+      "variables": [],
+      "attachedToRef": 2,
+      "cancelActivity": true,
+      "timer": {
+        "timeDate": null,
+        "timeDuration": "PT30S",
+        "timeCycle": null
+      }
+    },
+    {
+      "id": 5,
+      "name": "Confirm Postings",
+      "externalId": "TASK_CONFIRM_POSTINGS",
+      "type": "userTask",
+      "laneId": null,
+      "x": 520,
+      "y": 128,
+      "roles": [
+        "ExampleReviewer"
+      ],
+      "variables": [],
+      "requiresClaim": false,
+      "claimMode": "fresh"
+    },
+    {
+      "id": 6,
+      "name": "Invoices Posted",
+      "externalId": "END_INVOICES_POSTED",
+      "type": "endEvent",
+      "laneId": null,
+      "x": 800,
+      "y": 140,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 7,
+      "name": "Review Failed Posting",
+      "externalId": "TASK_REVIEW_FAILED_POSTING",
+      "type": "userTask",
+      "laneId": null,
+      "x": 520,
+      "y": 290,
+      "roles": [
+        "ExampleOperator"
+      ],
+      "variables": [],
+      "requiresClaim": false,
+      "claimMode": "fresh"
+    },
+    {
+      "id": 8,
+      "name": "Failed Posting Reviewed",
+      "externalId": "END_FAILED_POSTING_REVIEWED",
+      "type": "endEvent",
+      "laneId": null,
+      "x": 800,
+      "y": 302,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 9,
+      "name": "Investigate Slow Posting",
+      "externalId": "TASK_INVESTIGATE_SLOW_POSTING",
+      "type": "userTask",
+      "laneId": null,
+      "x": 520,
+      "y": 450,
+      "roles": [
+        "ExampleOperator"
+      ],
+      "variables": [],
+      "requiresClaim": false,
+      "claimMode": "fresh"
+    },
+    {
+      "id": 10,
+      "name": "Slow Posting Investigated",
+      "externalId": "END_SLOW_POSTING_INVESTIGATED",
+      "type": "endEvent",
+      "laneId": null,
+      "x": 800,
+      "y": 462,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "Queue the postings",
+      "externalId": "FLOW_START_TO_POST",
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 201,
+      "name": "Every invoice posted",
+      "externalId": "FLOW_POST_TO_CONFIRM",
+      "sourceRef": 2,
+      "targetRef": 5,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 301,
+      "name": "Review the failure",
+      "externalId": "FLOW_FAILURE_TO_REVIEW",
+      "sourceRef": 3,
+      "targetRef": 7,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 401,
+      "name": "Investigate the delay",
+      "externalId": "FLOW_DEADLINE_TO_INVESTIGATE",
+      "sourceRef": 4,
+      "targetRef": 9,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 501,
+      "name": "Confirm",
+      "externalId": "FLOW_CONFIRM_POSTINGS",
+      "sourceRef": 5,
+      "targetRef": 6,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 701,
+      "name": "Close",
+      "externalId": "FLOW_CLOSE_FAILED_POSTING",
+      "sourceRef": 7,
+      "targetRef": 8,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 901,
+      "name": "Close",
+      "externalId": "FLOW_CLOSE_SLOW_POSTING",
+      "sourceRef": 9,
+      "targetRef": 10,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "cancelRoles": [],
+  "unclaimRoles": [],
+  "taskAssignmentRoles": [],
+  "taskDistribution": null
+}

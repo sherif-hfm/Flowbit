@@ -10,7 +10,7 @@ namespace Flowbit.BrowserAcceptanceTests;
 
 /// <summary>
 /// TASK-05B and TASK-05C service and script bodies through real API, UI and Worker
-/// processes, with the Development release switch opened for this collection only. The
+/// processes, on a stack of their own. The
 /// controlled service holds, orders and fails real HTTP answers per item; every other state
 /// comes from authenticated HTTP commands, Worker runs and restarts.
 /// </summary>

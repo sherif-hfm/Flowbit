@@ -75,7 +75,7 @@ User tasks support role-based access at both the task and action level, claim ow
 
 Task and action roles can come from declared `string[]` variables. Their effective permissions are captured when work is created; separately authorized managers can update the saved role policy of waiting work. An optional inbox visibility condition filters work against persisted variables and allowed actor context before database counting and paging.
 
-Multi-instance tasks support collection-based assignees or expression-based cardinality, parallel or sequential execution, one-per-actor participation, early quorum or after-all evaluation, and parent-level interruption. Results retain the selected actions, submitted values, and actor evidence.
+Multi-instance tasks support collection-based assignees or expression-based cardinality, parallel or sequential execution, one-per-actor participation, early quorum or after-all evaluation, and parent-level interruption. Results retain the selected actions, submitted values, and actor evidence. REST service tasks, script tasks, and call activities can also run once per item of a typed collection, in parallel up to a set concurrency or in sequence, with an ordered result collection.
 
 Start and action forms choose controls from each value's type: number boxes, date and date-time pickers that send the browser's UTC offset, true/false lists, and text areas for arrays and JSON. Input declarations can add a form label, help text, and fixed options that the API returns to any client.
 
@@ -90,7 +90,7 @@ Start and action forms choose controls from each value's type: number boxes, dat
 | Complex gateways | Evaluate activation conditions with incoming-count helpers and persisted start/reset cycles. |
 | Starts and waits | Manual, message, and timer starts, including cron schedules in a named time zone; intermediate message, timer, and conditional catches. |
 | Boundary events | Error handling plus interrupting or non-interrupting timer and conditional paths. |
-| Call activities | Start a child instance of another workflow's published default, with typed inputs and results, durable delivery, and cascading cancellation. |
+| Call activities | Start a child instance of another workflow's published default, with typed inputs and results, durable delivery, and cascading cancellation; a multi-instance call starts one child per collection item. |
 | Scope and completion | Scoped interrupts, cancelling joins, normal ends, terminate ends, and explicit error ends. |
 
 Conditional events observe declared, persisted instance variables. They evaluate on entry and relevant variable-write batches, with either atomic continuation or a durable, latched wake processed by the Worker. Non-interrupting conditional boundaries can create new work on each false-to-true transition.
@@ -235,7 +235,7 @@ See the [verification guide](Flowbit/README.md#verification) for the multi-insta
 
 - [Example catalog](examples/README.md): discover complete workflows and their expected behavior.
 - [Human tasks](examples/user-tasks/README.md): roles, claims, and assignments; see the [catalog](examples/README.md#user-tasks) for waiting-task role management.
-- [Multi-instance workflows](examples/multi-instance/README.md): reviewers, voting, aggregate outcomes, and interrupts.
+- [Multi-instance workflows](examples/multi-instance/README.md): reviewers, voting, aggregate outcomes, interrupts, and REST and script work for every item of a collection.
 - [Gateways](examples/gateways/README.md): splits, merges, activation conditions, and scope cancellation.
 - [Scripts](examples/scripts/README.md): NCalc, JavaScript, variable access, and flow evidence.
 - [REST integrations](examples/service-tasks/README.md) and [messages](examples/messages/README.md): request contracts, outputs, and failure paths.

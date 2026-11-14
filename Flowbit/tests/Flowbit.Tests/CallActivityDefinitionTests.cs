@@ -209,7 +209,7 @@ public sealed class CallActivityDefinitionTests
         {
             "multi instance",
             model => CallNode(model).MultiInstance = new MultiInstanceModel(),
-            "multiInstance"
+            "Automatic multi-instance activity #"
         },
         {
             "user task settings",

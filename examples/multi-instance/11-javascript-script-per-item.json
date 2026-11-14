@@ -1,0 +1,141 @@
+{
+  "id": "example-multi-instance-javascript-script",
+  "name": "Multi-Instance Example 11 - JavaScript Script per Item",
+  "initialEventId": 1,
+  "variables": [
+    {
+      "id": 1,
+      "name": "orderLines",
+      "dataType": "json",
+      "isArray": true,
+      "nullable": false,
+      "required": false,
+      "defaultValue": [
+        {
+          "sku": "A",
+          "quantity": 2,
+          "unitPrice": 5
+        },
+        {
+          "sku": "B",
+          "quantity": 1,
+          "unitPrice": 7
+        },
+        {
+          "sku": "C",
+          "quantity": 3,
+          "unitPrice": 1
+        }
+      ],
+      "validation": null
+    },
+    {
+      "id": 2,
+      "name": "multiplier",
+      "dataType": "number",
+      "isArray": false,
+      "nullable": false,
+      "required": false,
+      "defaultValue": 3,
+      "validation": null
+    },
+    {
+      "id": 3,
+      "name": "lineResults",
+      "dataType": "json",
+      "isArray": false,
+      "nullable": false,
+      "required": false,
+      "defaultValue": [],
+      "validation": null
+    }
+  ],
+  "lanes": [],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Order Lines Ready",
+      "externalId": "START_ORDER_LINES_READY",
+      "type": "startEvent",
+      "laneId": null,
+      "x": 60,
+      "y": 140,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 2,
+      "name": "Price Each Order Line",
+      "externalId": "SCRIPT_PRICE_EACH_ORDER_LINE",
+      "type": "scriptTask",
+      "laneId": null,
+      "x": 220,
+      "y": 128,
+      "roles": [],
+      "variables": [],
+      "asyncBefore": true,
+      "asyncAfter": false,
+      "multiInstance": {
+        "mode": "parallel",
+        "source": "collection",
+        "collectionVariable": "orderLines",
+        "completionEvaluation": "afterAll",
+        "maxConcurrency": 3,
+        "outputVariables": [
+          {
+            "name": "lineAmount",
+            "dataType": "number",
+            "isArray": false,
+            "nullable": false
+          },
+          {
+            "name": "lineSummary",
+            "dataType": "json",
+            "isArray": false,
+            "nullable": false
+          }
+        ],
+        "resultVariable": "lineResults"
+      },
+      "scriptFormat": "javascript",
+      "assignments": [],
+      "script": "const item = execution.getVariable('mi.item');\nconst index = execution.getVariable('mi.index');\nconst total = execution.getVariable('mi.total');\nconst multiplier = execution.getVariable('multiplier');\nif (typeof item.quantity !== 'number' || typeof item.unitPrice !== 'number') {\n  throw new Error('Order line ' + (index + 1) + ' needs a numeric quantity and unitPrice.');\n}\nconst amount = item.quantity * item.unitPrice * multiplier;\nexecution.setVariable('lineAmount', amount);\nexecution.setVariable('lineSummary', { line: index + 1, lineCount: total, sku: item.sku, amount: amount });",
+      "usesFlowInfo": false
+    },
+    {
+      "id": 3,
+      "name": "Order Lines Priced",
+      "externalId": "END_ORDER_LINES_PRICED",
+      "type": "endEvent",
+      "laneId": null,
+      "x": 520,
+      "y": 140,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "Queue the pricing",
+      "externalId": "FLOW_START_TO_PRICE",
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 201,
+      "name": "Every line priced",
+      "externalId": "FLOW_PRICE_TO_END",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "cancelRoles": [],
+  "unclaimRoles": [],
+  "taskAssignmentRoles": [],
+  "taskDistribution": null
+}

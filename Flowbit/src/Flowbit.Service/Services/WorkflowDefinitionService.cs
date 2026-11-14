@@ -16,13 +16,11 @@ public sealed class WorkflowDefinitionService(
     ISharedVariableRepository? sharedVariables = null,
     ISharedVariableAccessPlanCache? sharedVariableAccessPlanCache = null,
     IBusinessCalendarRepository? businessCalendars = null,
-    ICallActivityRepository? callActivities = null,
-    AutomaticMultiInstanceOptions? automaticMultiInstanceOptions = null)
+    ICallActivityRepository? callActivities = null)
     : IWorkflowDefinitionService
 {
     private readonly WorkflowDefinitionReadinessChecker readiness =
-        new(sharedVariables, conditionalEventAnalyzer, durableProcessingOptions, businessCalendars, definitions,
-            automaticMultiInstanceOptions);
+        new(sharedVariables, conditionalEventAnalyzer, durableProcessingOptions, businessCalendars, definitions);
     private readonly IConditionalEventDefinitionAnalyzer conditionalAnalyzer =
         conditionalEventAnalyzer ?? new ConditionalEventDefinitionAnalyzer();
 

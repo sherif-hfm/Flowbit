@@ -19,7 +19,7 @@ namespace Flowbit.Tests;
 
 /// <summary>
 /// TASK-05D end to end against PostgreSQL: call bodies are published over HTTP through a
-/// host with the Development release switch open, and every entry, dispatch, callStart,
+/// test host, and every entry, dispatch, callStart,
 /// callResume, and completion job runs through the registered job processor, as Workers
 /// run them. Children are real instances of real published workflows.
 /// </summary>
@@ -48,14 +48,10 @@ public sealed class AutomaticMultiInstanceCallRuntimeTests(PostgresApiFixture fi
                 .SetProperty(job => job.LeaseExpiresAt, job => job.LeaseExpiresAt == null ? null : distant));
     }
 
-    private WebApplicationFactory<Program> OpenHost(Action<CallActivityOptions>? limits = null, bool released = true,
+    private WebApplicationFactory<Program> OpenHost(Action<CallActivityOptions>? limits = null,
         Action<IServiceCollection>? configure = null) =>
         fixture.Factory.WithWebHostBuilder(builder => builder.ConfigureTestServices(services =>
         {
-            var options = new AutomaticMultiInstanceOptions { AllowInDevelopment = released };
-            options.ResolveForEnvironment(isDevelopment: released);
-            services.RemoveAll<AutomaticMultiInstanceOptions>();
-            services.AddSingleton(options);
             if (limits is not null)
             {
                 var callOptions = new CallActivityOptions();
@@ -474,52 +470,17 @@ public sealed class AutomaticMultiInstanceCallRuntimeTests(PostgresApiFixture fi
     }
 
     [Fact]
-    public async Task A_closed_host_refuses_a_call_bodys_callStart_and_the_item_waits_in_its_incident()
-    {
-        await using var open = OpenHost();
-        var childKey = NewKey("closed");
-        await PublishAsync(open, ImmediateChild(childKey, ChildInputs));
-        var parent = await PublishAsync(open, Parent(NewKey("closed-parent"), childKey, "parallel", Orders("a")));
-        var root = await StartAsync(open, parent.Id);
-        await ProcessNextAsync(open, root, WorkflowJobKinds.MultiInstanceStart);
-        await ProcessNextAsync(open, root, WorkflowJobKinds.MultiInstanceDispatch);
-        var start = (await OpenJobIdsAsync(root, WorkflowJobKinds.CallStart)).Single();
-
-        // A host outside Development refuses a body another host published, whatever it says.
-        await using var closed = OpenHost(released: false);
-        await using (var exhaust = fixture.CreateDbContext())
-            await exhaust.WorkflowJobs.Where(row => row.Id == start)
-                .ExecuteUpdateAsync(setters => setters.SetProperty(row => row.MaxAttempts, 1));
-        await ProcessAsync(closed, start);
-
-        await using var db = fixture.CreateDbContext();
-        Assert.Equal(WorkflowJobStatuses.Incident, (await db.WorkflowJobs.SingleAsync(row => row.Id == start)).Status);
-        Assert.False(await db.WorkflowInstances.AnyAsync(row => row.CallRootInstanceId == root));
-        var invocation = await db.CallActivityExecutions.SingleAsync(row => row.ParentInstanceId == root);
-        Assert.Equal(CallInvocationStates.Queued, invocation.State);
-        Assert.Null(invocation.InputValuesJson);
-        // The incident blocks its item, which keeps its slot and its queued invocation.
-        Assert.Equal("active", (await db.MultiInstanceActivityItems.SingleAsync(row => row.InstanceId == root)).Status);
-        await using var scope = open.Services.CreateAsyncScope();
-        var progress = Assert.Single(await scope.ServiceProvider.GetRequiredService<IAutomaticMultiInstanceRepository>()
-            .GetProgressAsync(root, CancellationToken.None));
-        Assert.Equal(0, progress.ActiveCount);
-        Assert.Equal("itemIncident", progress.Execution.AdmissionBlockedReason);
-    }
-
-    [Fact]
-    public async Task Call_bodies_publish_only_on_a_released_host_and_validate_item_sources()
+    public async Task Call_bodies_publish_on_every_host_and_validate_item_sources()
     {
         await using var open = OpenHost();
         var childKey = NewKey("publish");
         await PublishAsync(open, ImmediateChild(childKey, ChildInputs));
-        var model = Parent(NewKey("closed-publish"), childKey, "parallel", Orders("a"));
+        var model = Parent(NewKey("plain-publish"), childKey, "parallel", Orders("a"));
 
-        // The ordinary test host is not Development.
-        using (var refused = await SendAsync(null, HttpMethod.Post, "/api/workflows", new CreateWorkflowRequest(model, true)))
+        // The ordinary test host, with no overrides, publishes a call body.
+        using (var published = await SendAsync(null, HttpMethod.Post, "/api/workflows", new CreateWorkflowRequest(model, true)))
         {
-            Assert.Equal(HttpStatusCode.BadRequest, refused.StatusCode);
-            Assert.Contains("automatic multiInstance is not enabled", await refused.Content.ReadAsStringAsync());
+            Assert.True(published.StatusCode == HttpStatusCode.Created, await published.Content.ReadAsStringAsync());
         }
 
         // An item source must be spelled exactly and typed like the item.
@@ -844,64 +805,6 @@ public sealed class AutomaticMultiInstanceCallRuntimeTests(PostgresApiFixture fi
     }
 
     [Fact]
-    public async Task A_closed_host_refuses_a_call_body_at_entry_and_its_item_results_but_closes_stale_work_quietly()
-    {
-        await using var open = OpenHost();
-        await using var closed = OpenHost(released: false);
-        var childKey = NewKey("closed-entry");
-        await PublishAsync(open, WaitingChild(childKey, ChildInputs));
-        var parent = await PublishAsync(open, Parent(NewKey("closed-entry-parent"), childKey, "parallel", Orders("a", "b")));
-
-        // Routing on a closed host refuses the body, so the start rolls back.
-        await Assert.ThrowsAsync<WorkflowDomainException>(() => StartAsync(closed, parent.Id));
-        await using (var db = fixture.CreateDbContext())
-            Assert.False(await db.WorkflowInstances.AnyAsync(row => row.WorkflowDefinitionId == parent.Id));
-
-        // An entry queued on an open host is retried on a closed one, before any body exists.
-        var root = await StartAsync(open, parent.Id);
-        var entry = (await OpenJobIdsAsync(root, WorkflowJobKinds.MultiInstanceStart)).Single();
-        await ProcessAsync(closed, entry);
-        await using (var db = fixture.CreateDbContext())
-        {
-            Assert.Equal(WorkflowJobStatuses.Retry, (await db.WorkflowJobs.SingleAsync(row => row.Id == entry)).Status);
-            Assert.False(await db.MultiInstanceExecutions.AnyAsync(row => row.InstanceId == root));
-        }
-        await ProcessAsync(open, entry);
-        await DrainAsync(open, root);
-        var children = await ChildrenAsync(root);
-        Assert.Equal(2, children.Count);
-
-        // A closed host does not publish an item's result: its callResume retries, and the
-        // item keeps its slot with nothing saved. An open host then publishes it.
-        await TakeChildActionAsync(open, children[0]);
-        var resume = (await OpenJobIdsAsync(children[0], WorkflowJobKinds.CallResume)).Single();
-        await ProcessAsync(closed, resume);
-        await using (var db = fixture.CreateDbContext())
-        {
-            Assert.Equal(WorkflowJobStatuses.Retry, (await db.WorkflowJobs.SingleAsync(row => row.Id == resume)).Status);
-            var item = await db.MultiInstanceActivityItems.SingleAsync(row => row.InstanceId == root && row.ItemIndex == 0);
-            Assert.Equal("active", item.Status);
-            Assert.Null(item.CandidateJson);
-        }
-        await ProcessAsync(open, resume);
-        await using (var db = fixture.CreateDbContext())
-            Assert.Equal("completed", (await db.MultiInstanceActivityItems.SingleAsync(row => row.InstanceId == root && row.ItemIndex == 0)).Status);
-
-        // A result that arrives after its parent was cancelled is stale: a closed host
-        // acknowledges it without an incident.
-        await TakeChildActionAsync(open, children[1]);
-        using (var cancelled = await SendAsync(open, HttpMethod.Post, $"/api/instances/{root}/cancel", new { }))
-            Assert.True(cancelled.IsSuccessStatusCode, await cancelled.Content.ReadAsStringAsync());
-        var lateResume = (await OpenJobIdsAsync(children[1], WorkflowJobKinds.CallResume)).Single();
-        await ProcessAsync(closed, lateResume);
-        await using var after = fixture.CreateDbContext();
-        Assert.Equal(WorkflowJobStatuses.Completed, (await after.WorkflowJobs.SingleAsync(row => row.Id == lateResume)).Status);
-        Assert.False(await after.WorkflowIncidents.AnyAsync(row => row.JobId == lateResume));
-        Assert.Equal(WorkflowInstanceStatuses.Cancelled, (await after.WorkflowInstances.SingleAsync(row => row.Id == root)).Status);
-        Assert.Equal("cancelled", (await after.MultiInstanceActivityItems.SingleAsync(row => row.InstanceId == root && row.ItemIndex == 1)).Status);
-    }
-
-    [Fact]
     public async Task A_start_failure_after_the_stage_is_saved_waits_in_its_incident_and_its_retry_reuses_the_stage()
     {
         await using var host = OpenHost();
@@ -1105,43 +1008,6 @@ public sealed class AutomaticMultiInstanceCallRuntimeTests(PostgresApiFixture fi
         Assert.Equal(WorkflowInstanceStatuses.Completed, (await after.WorkflowInstances.SingleAsync(row => row.Id == root)).Status);
         Assert.Equal(2, await after.MultiInstanceExecutions.CountAsync(row => row.InstanceId == root
             && row.Status == MultiInstanceRecordStatuses.Completed));
-    }
-
-    [Fact]
-    public async Task A_closed_host_refuses_a_call_bodys_dispatch_and_completion()
-    {
-        await using var open = OpenHost();
-        await using var closed = OpenHost(released: false);
-        var childKey = NewKey("closed-control");
-        await PublishAsync(open, ImmediateChild(childKey, ChildInputs));
-        var parent = await PublishAsync(open, Parent(NewKey("closed-control-parent"), childKey, "parallel", Orders("a")));
-        var root = await StartAsync(open, parent.Id);
-        await ProcessNextAsync(open, root, WorkflowJobKinds.MultiInstanceStart);
-
-        // Admission is body work: a closed host retries it and admits nothing.
-        var dispatch = (await OpenJobIdsAsync(root, WorkflowJobKinds.MultiInstanceDispatch)).Single();
-        await ProcessAsync(closed, dispatch);
-        await using (var db = fixture.CreateDbContext())
-        {
-            Assert.Equal(WorkflowJobStatuses.Retry, (await db.WorkflowJobs.SingleAsync(row => row.Id == dispatch)).Status);
-            Assert.False(await db.CallActivityExecutions.AnyAsync(row => row.ParentInstanceId == root));
-        }
-        await ProcessAsync(open, dispatch);
-        await DrainAsync(open, root, skipKind: WorkflowJobKinds.MultiInstanceComplete);
-
-        // So is completion: a closed host neither publishes the aggregate nor continues.
-        var complete = (await OpenJobIdsAsync(root, WorkflowJobKinds.MultiInstanceComplete)).Single();
-        await ProcessAsync(closed, complete);
-        await using (var db = fixture.CreateDbContext())
-        {
-            Assert.Equal(WorkflowJobStatuses.Retry, (await db.WorkflowJobs.SingleAsync(row => row.Id == complete)).Status);
-            Assert.Equal(WorkflowInstanceStatuses.Running, (await db.WorkflowInstances.SingleAsync(row => row.Id == root)).Status);
-            Assert.Equal("[]", (await LatestAsync(root, "orderResults")).GetRawText());
-        }
-        await ProcessAsync(open, complete);
-        await using var after = fixture.CreateDbContext();
-        Assert.Equal(WorkflowInstanceStatuses.Completed, (await after.WorkflowInstances.SingleAsync(row => row.Id == root)).Status);
-        Assert.Equal(1, (await LatestAsync(root, "orderResults")).GetArrayLength());
     }
 
     [Fact]

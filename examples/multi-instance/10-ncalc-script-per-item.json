@@ -1,0 +1,138 @@
+{
+  "id": "example-multi-instance-ncalc-script",
+  "name": "Multi-Instance Example 10 - NCalc Script per Item",
+  "initialEventId": 1,
+  "variables": [
+    {
+      "id": 1,
+      "name": "amounts",
+      "dataType": "number",
+      "isArray": true,
+      "nullable": false,
+      "required": false,
+      "defaultValue": [
+        10,
+        20,
+        30
+      ],
+      "validation": null
+    },
+    {
+      "id": 2,
+      "name": "multiplier",
+      "dataType": "number",
+      "isArray": false,
+      "nullable": false,
+      "required": false,
+      "defaultValue": 2,
+      "validation": null
+    },
+    {
+      "id": 3,
+      "name": "calculationResults",
+      "dataType": "json",
+      "isArray": false,
+      "nullable": false,
+      "required": false,
+      "defaultValue": [],
+      "validation": null
+    }
+  ],
+  "lanes": [],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Amounts Ready",
+      "externalId": "START_AMOUNTS_READY",
+      "type": "startEvent",
+      "laneId": null,
+      "x": 60,
+      "y": 140,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 2,
+      "name": "Scale Each Amount",
+      "externalId": "SCRIPT_SCALE_EACH_AMOUNT",
+      "type": "scriptTask",
+      "laneId": null,
+      "x": 220,
+      "y": 128,
+      "roles": [],
+      "variables": [],
+      "asyncBefore": true,
+      "asyncAfter": false,
+      "multiInstance": {
+        "mode": "parallel",
+        "source": "collection",
+        "collectionVariable": "amounts",
+        "completionEvaluation": "afterAll",
+        "outputVariables": [
+          {
+            "name": "scaledAmount",
+            "dataType": "number",
+            "isArray": false,
+            "nullable": false
+          },
+          {
+            "name": "adjustedAmount",
+            "dataType": "number",
+            "isArray": false,
+            "nullable": false,
+            "validation": "adjustedAmount >= scaledAmount"
+          }
+        ],
+        "resultVariable": "calculationResults"
+      },
+      "scriptFormat": "ncalc",
+      "assignments": [
+        {
+          "variable": "scaledAmount",
+          "expression": "[mi.item] * multiplier"
+        },
+        {
+          "variable": "adjustedAmount",
+          "expression": "scaledAmount + [mi.index]"
+        }
+      ],
+      "script": null,
+      "usesFlowInfo": false
+    },
+    {
+      "id": 3,
+      "name": "Amounts Scaled",
+      "externalId": "END_AMOUNTS_SCALED",
+      "type": "endEvent",
+      "laneId": null,
+      "x": 520,
+      "y": 140,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "Queue the calculation",
+      "externalId": "FLOW_START_TO_SCALE",
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 201,
+      "name": "Every amount scaled",
+      "externalId": "FLOW_SCALE_TO_END",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "cancelRoles": [],
+  "unclaimRoles": [],
+  "taskAssignmentRoles": [],
+  "taskDistribution": null
+}

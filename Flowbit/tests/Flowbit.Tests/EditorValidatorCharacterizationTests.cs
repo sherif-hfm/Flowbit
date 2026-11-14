@@ -193,10 +193,9 @@ public sealed class EditorValidatorCharacterizationTests
         """;
 
     [Fact]
-    public void Validator_PreservesAutomaticBodyErrorOrderWithTheCapabilityOpen()
+    public void Validator_PreservesAutomaticBodyErrorOrder()
     {
-        var errors = ValidateJson(AutomaticBodiesModelJson,
-            "var options = { mode: 'hosted', automaticMultiInstanceEnabled: true };");
+        var errors = ValidateJson(AutomaticBodiesModelJson);
 
         var expected = new[]
         {
@@ -208,11 +207,9 @@ public sealed class EditorValidatorCharacterizationTests
         // The server stops at the first problem it meets. Body #20's rule runs while the
         // authored definition is read, before body #10's default is checked, so the server
         // names #20; the editor lists both, and so contains that message too.
-        var options = new AutomaticMultiInstanceOptions { AllowInDevelopment = true };
-        options.ResolveForEnvironment(isDevelopment: true);
         var validator = new WorkflowDefinitionValidator(
             new JintScriptEvaluator(new ScriptOptions(), NullLogger<JintScriptEvaluator>.Instance),
-            new ServiceTaskOptions(), automaticMultiInstanceOptions: options);
+            new ServiceTaskOptions());
         var definition = JsonSerializer.Deserialize<WorkflowModel>(AutomaticBodiesModelJson,
             new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
         var server = Assert.Throws<WorkflowDomainException>(() =>
@@ -280,10 +277,9 @@ public sealed class EditorValidatorCharacterizationTests
                 .ToArray());
     }
 
-    private static IReadOnlyList<string> ValidateJson(string json, string? setup = null)
+    private static IReadOnlyList<string> ValidateJson(string json)
     {
         var engine = CreateValidatorEngine();
-        if (setup is not null) engine.Execute(setup);
         engine.SetValue("candidateJson", json);
         var resultJson = engine.Evaluate(
             "JSON.stringify(validateModelForSave(JSON.parse(candidateJson)))").AsString();

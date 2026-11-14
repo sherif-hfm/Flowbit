@@ -873,11 +873,3 @@ public sealed record InboxItemDto(
 
     public IReadOnlyList<WorkflowAttributeModel> Attributes { get; init; } = [];
 }
-
-/// <summary>
-/// Authoring features this API accepts, so a hosted editor offers exactly what the
-/// server will save. <c>AutomaticMultiInstance</c> is the server's effective release
-/// switch for multi-instance service, script, and call activities; it is false on every
-/// host except a Development API that opted in.
-/// </summary>
-public sealed record WorkflowAuthoringCapabilitiesDto(bool AutomaticMultiInstance);

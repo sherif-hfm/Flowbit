@@ -235,8 +235,9 @@ Set a node's **Type** to **Call Activity** to call another workflow family; it d
 - **Version**: always **Published default**. The version each visit uses is shown on instance detail, not saved in the workflow.
 - **Inputs** and **Results**: typed mapping rows with **Delete mapping** and **+ Add mapping**. Source names suggest what this workflow declares or produces, and results suggest its process variables; the called workflow's names are typed. **Required** fails the call when a value is missing or null. Rows have no order, because a batch is written together.
 - **Error boundary**: one catch-all. Without it, a child that faults or is cancelled faults this workflow, and any other failure opens an incident while this workflow keeps waiting.
+- **Multi-instance**: starts one child per item of a collection; the multi-instance controls described under [concurrent and multi-instance work](#concurrent-and-multi-instance-work) then apply, and the call can also host timer and conditional boundaries.
 
-A call needs a running Worker, and its inputs and results are copies. Changing **Type** to a call clears the settings a call does not support, on the node and its outgoing flow, and keeps one outgoing flow. Changing **Type** away from a call clears its settings, on the node and its outgoing flow, and removes its error boundary; undo restores them. Selecting a node never changes it, so an imported call keeps any option a call does not support, such as async, job, multi-instance, or task settings, and shows a warning with **Remove these options**. Its outgoing flow does the same for a condition, roles, or variables. A value of the wrong type stays too, such as `requiresClaim: 0` or `completionPriority: 1.5`, and the save message names it. All of these block saving until you act, as does a second outgoing flow until you delete it. If `variables` on a call or its outgoing flow is not a list, the import stops with a message and your current document stays. An imported `callOnly` that is not true or false, or one on any node except a start event, also blocks saving and offers **Remove this value**.
+A call needs a running Worker, and its inputs and results are copies. Changing **Type** to a call clears the settings a call does not support, on the node and its outgoing flow, and keeps one outgoing flow. Changing **Type** away from a call clears its settings, on the node and its outgoing flow, and removes its error boundary; undo restores them. Selecting a node never changes it, so an imported call keeps any option a call does not support, such as async, job, or task settings, and shows a warning with **Remove these options**. Its outgoing flow does the same for a condition, roles, or variables. A value of the wrong type stays too, such as `requiresClaim: 0` or `completionPriority: 1.5`, and the save message names it. All of these block saving until you act, as does a second outgoing flow until you delete it. If `variables` on a call or its outgoing flow is not a list, the import stops with a message and your current document stays. An imported `callOnly` that is not true or false, or one on any node except a start event, also blocks saving and offers **Remove this value**.
 
 A plain start event has a **Call only** checkbox for fragments that rely on checks made in the parent. It hides the start from people and API callers, and is valid only on the default start with no roles and no idempotency. Changing the workflow's default start keeps the old start's flag and blocks saving until you clear it.
 
@@ -312,11 +313,11 @@ Parallel branches can create several work items for one instance. Multi-instance
 
 An early quorum, an interrupt, or another actor may cancel unfinished work. With one-per-actor voting, several actors can initially see the same representative item; the first completion wins. A successful child action also does not necessarily complete the parent execution. Inspect **Execution positions**, **Multi-instance results**, and any available parent interrupt controls on instance detail. Engine-only aggregate/default flows are not ordinary action buttons. See [multi-instance semantics](bpmn-support.md#human-work-and-multi-instance-tasks).
 
-The inactive [TASK-05A foundation](enhancements/task-05a-multi-instance-core.md)
-also has a separate **Automatic multi-instance work** panel. Automatic execution
-remains gated until the TASK-05 integration step; only a Development API with the release
-switch open can already run service, script, and call bodies. When automatic body data is available, the
-panel shows item counts, concurrency and saved results. A current body control
+Multi-instance service tasks, script tasks, and call activities run automatically,
+once per collection item, and never appear in **My work**; see
+[automatic multi-instance semantics](bpmn-support.md#multi-instance-service-script-and-call-activities).
+Instance detail shows them in a separate **Automatic multi-instance work** panel,
+with item counts, concurrency and saved results. A current body control
 incident displays **Needs attention**, its type, control job ID and incident ID,
 including when all items have completed but aggregate publication is blocked.
 These correlations grant no Operations or retry permission. Retrying an output
@@ -326,9 +327,11 @@ refreshes on its own, and the diagram marks the node with an **Automatic items**
 progress badge; the node's panel lists its items. A REST item whose call or mapping
 failed shows its error code and a description that names the HTTP status, or says
 that no response arrived; item detail never shows the request or the response. The
-workflow editor shows the
-multi-instance controls on service, script, and call nodes only when the API reports
-the Development-only capability as open. On a multi-instance service task, the
+workflow editor, standalone and hosted alike, shows the multi-instance controls on
+service, script, and call nodes. Enabling **Multi-instance** writes a parallel
+collection body with `completionEvaluation: "afterAll"` and, on a service or script
+task, turns on `asyncBefore`; choose the collection, the aggregate variable and the
+item-local outputs before saving. On a multi-instance service task, the
 response mapping **Variable** and **Status variable** fields suggest the body's
 item-local outputs and its readWrite shared aliases (number targets only for the
 status), and the REST, response-mapping, status, and error-boundary help describe

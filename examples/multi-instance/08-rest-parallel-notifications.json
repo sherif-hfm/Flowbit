@@ -1,0 +1,182 @@
+{
+  "id": "example-multi-instance-rest-parallel",
+  "name": "Multi-Instance Example 08 - Parallel REST Notifications",
+  "initialEventId": 1,
+  "variables": [
+    {
+      "id": 1,
+      "name": "supplierIds",
+      "dataType": "string",
+      "isArray": true,
+      "nullable": false,
+      "required": false,
+      "defaultValue": [
+        "supplier-a",
+        "supplier-b",
+        "supplier-c",
+        "supplier-d"
+      ],
+      "validation": null
+    },
+    {
+      "id": 2,
+      "name": "notificationResults",
+      "dataType": "json",
+      "isArray": false,
+      "nullable": false,
+      "required": false,
+      "defaultValue": [],
+      "validation": null
+    }
+  ],
+  "lanes": [],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Batch Ready",
+      "externalId": "START_BATCH_READY",
+      "type": "startEvent",
+      "laneId": null,
+      "x": 60,
+      "y": 140,
+      "roles": [],
+      "variables": [
+        {
+          "id": 1,
+          "name": "batchId",
+          "dataType": "string",
+          "isArray": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": "Len(batchId) > 0"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "Notify Each Supplier",
+      "externalId": "SERVICE_NOTIFY_EACH_SUPPLIER",
+      "type": "serviceTask",
+      "laneId": null,
+      "x": 220,
+      "y": 128,
+      "roles": [],
+      "variables": [],
+      "asyncBefore": true,
+      "asyncAfter": false,
+      "multiInstance": {
+        "mode": "parallel",
+        "source": "collection",
+        "collectionVariable": "supplierIds",
+        "completionEvaluation": "afterAll",
+        "maxConcurrency": 2,
+        "outputVariables": [
+          {
+            "name": "receiptId",
+            "dataType": "string",
+            "isArray": false,
+            "nullable": false
+          },
+          {
+            "name": "httpStatus",
+            "dataType": "number",
+            "isArray": false,
+            "nullable": false
+          }
+        ],
+        "resultVariable": "notificationResults"
+      },
+      "service": {
+        "type": "rest",
+        "method": "POST",
+        "url": "${config.exampleApiBaseUrl}/suppliers/${mi.item}/notifications",
+        "headers": [
+          {
+            "name": "Authorization",
+            "value": "Bearer ${config.exampleApiToken}"
+          },
+          {
+            "name": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "name": "Idempotency-Key",
+            "value": "flowbit-${sys.jobId}"
+          }
+        ],
+        "body": "{\"batchId\":\"${batchId}\",\"supplierId\":${mi.item},\"index\":${mi.index},\"total\":${mi.total}}",
+        "timeoutSeconds": 10,
+        "statusVariable": "httpStatus",
+        "outputMappings": [
+          {
+            "variable": "receiptId",
+            "path": "id",
+            "dataType": "string",
+            "isArray": false,
+            "required": true,
+            "validation": "Len(receiptId) > 0"
+          }
+        ]
+      }
+    },
+    {
+      "id": 3,
+      "name": "Review Notifications",
+      "externalId": "TASK_REVIEW_NOTIFICATIONS",
+      "type": "userTask",
+      "laneId": null,
+      "x": 520,
+      "y": 128,
+      "roles": [
+        "ExampleReviewer"
+      ],
+      "variables": [],
+      "requiresClaim": false,
+      "claimMode": "fresh"
+    },
+    {
+      "id": 4,
+      "name": "Suppliers Notified",
+      "externalId": "END_SUPPLIERS_NOTIFIED",
+      "type": "endEvent",
+      "laneId": null,
+      "x": 800,
+      "y": 140,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "Queue the notification batch",
+      "externalId": "FLOW_START_TO_NOTIFY",
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 201,
+      "name": "All suppliers answered",
+      "externalId": "FLOW_NOTIFY_TO_REVIEW",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 301,
+      "name": "Finish review",
+      "externalId": "FLOW_FINISH_REVIEW",
+      "sourceRef": 3,
+      "targetRef": 4,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "cancelRoles": [],
+  "unclaimRoles": [],
+  "taskAssignmentRoles": [],
+  "taskDistribution": null
+}

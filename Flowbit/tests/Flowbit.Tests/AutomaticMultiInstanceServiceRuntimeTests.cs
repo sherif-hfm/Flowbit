@@ -24,7 +24,7 @@ namespace Flowbit.Tests;
 
 /// <summary>
 /// TASK-05B end to end against PostgreSQL: REST service bodies are published over HTTP
-/// through a host with the Development release switch open, and every entry, dispatch,
+/// through the test host, and every entry, dispatch,
 /// item, and completion job runs through the registered job processor, as Workers run
 /// them. A controlled in-process receiver stands in for the remote endpoint and records
 /// every request, so the tests can count invocations and read the rendered requests.
@@ -50,15 +50,11 @@ public sealed class AutomaticMultiInstanceServiceRuntimeTests(PostgresApiFixture
                 .SetProperty(job => job.LeaseExpiresAt, job => job.LeaseExpiresAt == null ? null : distant));
     }
 
-    // A host with the release switch open whose REST invoker is the controlled receiver.
+    // A test host whose REST invoker is the controlled receiver.
     // A test may change further services after that, such as restoring the real invoker.
     private WebApplicationFactory<Program> OpenHost(Action<IServiceCollection>? configure = null) =>
         fixture.Factory.WithWebHostBuilder(builder => builder.ConfigureTestServices(services =>
         {
-            var open = new AutomaticMultiInstanceOptions { AllowInDevelopment = true };
-            open.ResolveForEnvironment(isDevelopment: true);
-            services.RemoveAll<AutomaticMultiInstanceOptions>();
-            services.AddSingleton(open);
             services.RemoveAll<IServiceTaskInvoker>();
             services.AddSingleton<IServiceTaskInvoker>(receiver);
             configure?.Invoke(services);
@@ -596,35 +592,6 @@ public sealed class AutomaticMultiInstanceServiceRuntimeTests(PostgresApiFixture
         await using var db = fixture.CreateDbContext();
         Assert.Equal(WorkflowInstanceStatuses.Completed, (await db.WorkflowInstances.SingleAsync(row => row.Id == instanceId)).Status);
         Assert.False(await db.WorkflowIncidents.AnyAsync(row => row.InstanceId == instanceId));
-    }
-
-    [Fact]
-    public async Task A_host_outside_Development_neither_starts_nor_runs_a_published_service_body()
-    {
-        await using var host = OpenHost();
-        receiver.Respond = request => Created("notice-" + Supplier(request));
-        var body = NotifyBody();
-        body.Job = new JobPolicyModel { RetryDelays = ["PT1S", "PT1S"] };
-        var published = await PublishAsync(host, Workflow(Key("closed-run"), body, Suppliers("first")));
-
-        var refused = await Assert.ThrowsAsync<WorkflowDomainException>(() => StartAsync(fixture.Factory, published.Id));
-        Assert.Contains("runs only on a Development host with the release switch open", refused.Message);
-
-        var instanceId = await StartAsync(host, published.Id);
-        var entry = (await OpenJobIdsAsync(instanceId, WorkflowJobKinds.AsyncBefore)).Single();
-        await ProcessAsync(fixture.Factory, entry);
-        Assert.Equal(WorkflowJobStatuses.Retry, await JobStatusAsync(entry));
-        await ProcessAsync(host, entry);
-        await ProcessNextAsync(host, instanceId, WorkflowJobKinds.MultiInstanceDispatch);
-        var item = (await OpenJobIdsAsync(instanceId, WorkflowJobKinds.MultiInstanceItem)).Single();
-        await ProcessAsync(fixture.Factory, item);
-        Assert.Equal(WorkflowJobStatuses.Retry, await JobStatusAsync(item));
-        Assert.Equal(0, receiver.Count);
-
-        await DrainAsync(host, instanceId);
-        Assert.Equal(1, receiver.Count);
-        await using var db = fixture.CreateDbContext();
-        Assert.Equal(WorkflowInstanceStatuses.Completed, (await db.WorkflowInstances.SingleAsync(row => row.Id == instanceId)).Status);
     }
 
     [Fact]

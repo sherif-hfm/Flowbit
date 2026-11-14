@@ -23,20 +23,6 @@ public sealed class AcceptanceHarnessTests
     }
 
     [Fact]
-    public void HostedProcessesDropAnAmbientAutomaticMultiInstanceSwitch()
-    {
-        // Only a collection's explicit HostSettings may open the Development release switch.
-        var environment = new Dictionary<string, string?>(StringComparer.Ordinal)
-        {
-            ["WorkflowAutomaticMultiInstance__AllowInDevelopment"] = "true",
-            ["WORKFLOWAUTOMATICMULTIINSTANCE__ALLOWINDEVELOPMENT"] = "true",
-            ["PATH"] = "kept",
-        };
-        HostedProcess.SanitizeEnvironment(environment);
-        Assert.Equal(["PATH"], environment.Keys);
-    }
-
-    [Fact]
     public async Task ProxyIgnoresAmbientKestrelEndpoints()
     {
         await using var host = await StartEchoAsync();

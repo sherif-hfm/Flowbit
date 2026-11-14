@@ -4,20 +4,25 @@
 
 Start with the [developer documentation](../docs/index.md) for HTTP onboarding, the complete API reference, BPMN support, and deployment. This README retains the detailed runtime implementation reference.
 
-## Automatic multi-instance foundation
+## Automatic multi-instance activities
 
+A `serviceTask`, `scriptTask`, or `callActivity` with `multiInstance` is an automatic
+body: one parent token runs one durable item per element of a frozen collection and
+publishes one index-ordered result. Authoring is in the
+[node reference](../docs/node-reference.md#automatic-multi-instance-properties),
+semantics in [BPMN support](../docs/bpmn-support.md#multi-instance-service-script-and-call-activities),
+integration in the [developer guide](../docs/developer-guide.md#process-a-collection-with-automatic-multi-instance),
+and rollout in [deployment](../docs/deployment.md#automatic-multi-instance-activities).
+Every host publishes and runs bodies; publication is gated only by
+`WorkflowDurableProcessing:PublicationEnabled`, like other durable definitions.
 [TASK-05A](../docs/enhancements/task-05a-multi-instance-core.md) supplies common
-body/item persistence and publication operations. Publication, runtime entry, item
-processing, and a body's dispatch and completion jobs each require the release switch,
-so a closed host never admits items or publishes an aggregate. The switch opens only on a Development
-host with `WorkflowAutomaticMultiInstance:AllowInDevelopment`, and an installed
-adapter. The API and the Worker each resolve the switch for themselves. The REST
-service ([TASK-05B](../docs/enhancements/task-05b-multi-instance-service-activities.md)),
+body/item persistence and publication operations, and the REST service
+([TASK-05B](../docs/enhancements/task-05b-multi-instance-service-activities.md)),
 script ([TASK-05C](../docs/enhancements/task-05c-multi-instance-script-activities.md)),
 and call ([TASK-05D](../docs/enhancements/task-05d-multi-instance-call-activities.md))
-adapters are installed, so open Development hosts publish and run all three kinds of
-body; every other host refuses all automatic bodies, including ones another host
-published. The service and script adapters share one item protocol
+adapters run the items. A body never runs as one ordinary activity: service and script
+bodies enter through their `asyncBefore` job and call bodies through a
+`multiInstanceStart` job. The service and script adapters share one item protocol
 (`WorkflowEngineService.AutomaticMultiInstanceItems.cs`): stage, run the activity
 with no lock held, save the candidate, then publish it, each in its own transaction.
 A REST item maps its response in memory and saves only the candidate, so a recovered
@@ -67,8 +72,8 @@ Item visits retain incoming-flow and completion audit evidence. Shared writes
 reference the retained visit; audit pruning does not erase durable item state.
 Progress correlates execution positions to the exact activation and batch-loads
 current control incidents separately from item counts. See the
-[schema reference](../docs/database-schema.md#automatic-multi-instance-foundation)
-and [recovery contract](../docs/deployment.md#automatic-multi-instance-foundation).
+[schema reference](../docs/database-schema.md#automatic-multi-instance-storage)
+and [recovery contract](../docs/deployment.md#automatic-multi-instance-activities).
 
 ## Projects
 
@@ -631,8 +636,11 @@ to a durable activity:
 Omitting `cancelActivity` makes the boundary interrupting; omitting
 `deliveryMode` selects `atomic`. A boundary has no incoming flow and exactly one
 unconditional outgoing flow. It may attach to a normal or multi-instance user
-task, an intermediate message/timer wait, or a `task`, `serviceTask`, or
-`scriptTask` with `asyncBefore: true`. A host may own at most eight timer and
+task, an intermediate message/timer wait, a `task`, `serviceTask`, or
+`scriptTask` with `asyncBefore: true`, or a multi-instance `callActivity`. On an
+automatic multi-instance body the subscription belongs to the parent token
+activation, starts at token entry (also while it waits behind another body of the
+node), and never exists per item. A host may own at most eight timer and
 conditional boundaries combined; its optional error boundaries are counted
 separately. No HTTP endpoint manually triggers a conditional boundary.
 
@@ -871,7 +879,11 @@ Outbound lifecycle webhooks (INT-01) deliver committed transitions to external r
 
 `task`, `serviceTask`, `scriptTask`, and `userTask` support `asyncBefore` and
 `asyncAfter`. A multi-instance user task applies those flags to its parent
-execution, not to every child item. Conditional catches may use
+execution, not to every child item. A multi-instance service or script task
+requires `asyncBefore`, whose job initializes the body; each item then runs as its
+own `multiInstanceItem` job, and `asyncAfter` runs once after the result is
+published (see [automatic multi-instance activities](#automatic-multi-instance-activities)).
+Conditional catches may use
 `conditional.deliveryMode: "durableAsync"` to enqueue control work. Definitions
 may also use
 `timerStartEvent`, `intermediateTimerCatchEvent`, and `timerBoundaryEvent` with

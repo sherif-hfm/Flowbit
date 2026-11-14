@@ -61,8 +61,9 @@ coordinates separate plans for the [shared core](enhancements/task-05a-multi-ins
 [service activities](enhancements/task-05b-multi-instance-service-activities.md),
 [script activities](enhancements/task-05c-multi-instance-script-activities.md), and
 [call activities](enhancements/task-05d-multi-instance-call-activities.md).
-All four are planned work required for its first release, not currently supported
-automatic multi-instance behavior.
+Their first release is implemented; the [node reference](node-reference.md#automatic-multi-instance-properties)
+and [developer guide](developer-guide.md#process-a-collection-with-automatic-multi-instance)
+describe how to use it, and the plans record its evidence and the items left for later releases.
 
 ## Refactoring history
 

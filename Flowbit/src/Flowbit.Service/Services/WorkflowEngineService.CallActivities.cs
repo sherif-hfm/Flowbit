@@ -60,7 +60,6 @@ public sealed partial class WorkflowEngineService
         }
 
         // Routing can visit a token that already rests here; a visit owns one invocation.
-        EnsureAutomaticMultiInstanceRuntimeAvailable(node);
         if (token.WaitState is not null
             || await CallActivities.GetForActivationAsync(token.Id, token.ActivationId, cancellationToken) is not null)
         {

@@ -64,7 +64,7 @@ Table names below omit the `flowbit.` qualifier. The page reflects the current m
 | [`user_tasks`](#user_tasks) | [User tasks and multi-instance work](#user-tasks-and-multi-instance-work) | Human work items: one per user-task visit, or one per multi-instance child. |
 | [`user_task_role_policies`](#user_task_role_policies) | [User tasks and multi-instance work](#user-tasks-and-multi-instance-work) | Immutable role snapshot captured when a task or multi-instance approval is entered. |
 | [`multi_instance_executions`](#multi_instance_executions) | [User tasks and multi-instance work](#user-tasks-and-multi-instance-work) | Parent execution of human work or an automatic body. |
-| [`multi_instance_activity_items`](#multi_instance_activity_items) | [User tasks and multi-instance work](#user-tasks-and-multi-instance-work) | Durable automatic-item identity, candidate publication, and local result storage; currently inactive. |
+| [`multi_instance_activity_items`](#multi_instance_activity_items) | [User tasks and multi-instance work](#user-tasks-and-multi-instance-work) | Durable automatic-item identity, candidate publication, and local result storage for multi-instance service, script, and call bodies. |
 | [`multi_instance_flow_counts`](#multi_instance_flow_counts) | [User tasks and multi-instance work](#user-tasks-and-multi-instance-work) | Per-flow completed-item counts for one multi-instance execution. |
 | [`instance_variables`](#instance_variables) | [Variables, history, and flow evidence](#variables-history-and-flow-evidence) | Append-only history of every instance-variable write. |
 | [`instance_variable_current_values`](#instance_variable_current_values) | [Variables, history, and flow evidence](#variables-history-and-flow-evidence) | Trigger-maintained latest value per instance variable, used for search. |
@@ -322,7 +322,7 @@ One durable visit to a call activity. One invocation owns at most one child, and
 | `CausedBy` | The actor whose transition reached the call, for audit only. It grants nothing. |
 | `CreatedAt`, `UpdatedAt`, `StartedAt`, `SettledAt` | Lifecycle times. |
 | `SnapshotsPrunedAt` | When retention cleared the captured values. |
-| `MultiInstanceExecutionId`, `AutomaticMultiInstanceItemId` | Inactive until automatic multi-instance is enabled: the automatic body and item an item invocation belongs to. Both are set or both are null; an ordinary call has neither. |
+| `MultiInstanceExecutionId`, `AutomaticMultiInstanceItemId` | The automatic body and item an item invocation of a multi-instance call belongs to. Both are set or both are null; an ordinary call has neither. |
 
 - **Primary key:** `Id`
 - **References:** `ParentInstanceId`, `ChildInstanceId` → [`workflow_instances`](#workflow_instances) (`RESTRICT`); `ParentTokenId` → [`execution_tokens`](#execution_tokens) (`RESTRICT`); `ParentNodeExecutionId` → [`node_executions`](#node_executions) (optional, `SET NULL`); `ParentDefinitionId`, `ChildDefinitionId` → [`workflow_definitions`](#workflow_definitions) (`RESTRICT`); (`AutomaticMultiInstanceItemId`, `MultiInstanceExecutionId`, `ParentInstanceId`) → [`multi_instance_activity_items`](#multi_instance_activity_items) (optional, `RESTRICT`)
@@ -531,13 +531,13 @@ An instance may have several active tokens, for example one per parallel branch.
 | `Status` | `active`, `completed`, `faulted`, `cancelled`, or `merged`. |
 | `ActivationId` | Fence regenerated on each node activation. Jobs, timers, conditional subscriptions, and administrative items must present the matching value. |
 | `WaitState`, `WaitingJobId`, `WaitingTimerSubscriptionId` | Durable wait kind (`asyncBefore`, `asyncAfter`, `timerCatch`, `timerBoundary`, `conditionalWake`, `callStart`) and the job or timer the token waits for. While a call's child runs, the token has no wait state: it rests as a user task does, and the invocation records what it waits for. These two id columns have no foreign keys. |
-| `WaitingMultiInstanceExecutionId` | Inactive until automatic multi-instance is enabled: the automatic body the token waits on, with wait state `automaticMultiInstance` and no single waiting job. `CK_execution_tokens_wait_shape` requires a waiting job, timer, or (for this wait state) body whenever a wait state is set. |
+| `WaitingMultiInstanceExecutionId` | The automatic body the token waits on, with wait state `automaticMultiInstance` and no single waiting job. `CK_execution_tokens_wait_shape` requires a waiting job, timer, or (for this wait state) body whenever a wait state is set. |
 | `ArrivedViaFlowId` | The sequence flow that brought the token here. |
 | `CurrentNodeExecutionId` | The current visit in `node_executions` (unique). It is null at a multi-instance parent. |
 | `GatewayBranchId` | The gateway branch the token belongs to, which places it in the gateway scope tree. |
 | `ComplexGatewayStateId`, `ComplexGatewayCycle`, `ComplexDrainStateIds`, `AutomaticActivationStateIds` | Complex-gateway bookkeeping (GIN-indexed arrays). |
 | `AutomaticActivationCount` | Consecutive automatic activations, checked against `Workflow.Async.MaxConsecutiveAutomaticActivations`. |
-| `FaultCode`, `FaultDescription`, `TerminationReason` | Fault snapshot and why the token ended. The inactive automatic-MI foundation uses `multiInstanceFailed` for an uncaught body failure, with a stable source/result fault code. |
+| `FaultCode`, `FaultDescription`, `TerminationReason` | Fault snapshot and why the token ended. An uncaught automatic multi-instance body failure uses `multiInstanceFailed`, with a stable failure code such as `multi_instance_result_too_large` or `call_child_faulted`. |
 
 - **Primary key:** `Id`
 - **References:** `ComplexGatewayStateId` → [`complex_gateway_states`](#complex_gateway_states) (optional, `NO ACTION`); `CurrentNodeExecutionId` → [`node_executions`](#node_executions) (optional, `NO ACTION`); `GatewayBranchId` → [`gateway_branches`](#gateway_branches) (optional, `NO ACTION`); `InstanceId` → [`workflow_instances`](#workflow_instances) (required, `CASCADE`); `WaitingMultiInstanceExecutionId` → [`multi_instance_executions`](#multi_instance_executions) (optional, `NO ACTION`)
@@ -683,7 +683,7 @@ Captures task roles and per-flow action roles together on entry, so later variab
 
 ### `multi_instance_executions`
 
-One row per activation of a multi-instance user task. The parent token stays on the node while children run as `user_tasks` rows, and this row aggregates their outcomes. `ActivityKind` is `userTask` for these rows. The same table also holds automatic bodies of service, script, and call activities, which stay inactive until automatic multi-instance is enabled; their extra columns and rules are under [Automatic multi-instance foundation](#automatic-multi-instance-foundation). Readers of human work filter `ActivityKind = 'userTask'`.
+One row per activation of a multi-instance user task. The parent token stays on the node while children run as `user_tasks` rows, and this row aggregates their outcomes. `ActivityKind` is `userTask` for these rows. The same table also holds the automatic bodies of multi-instance service tasks, script tasks, and call activities; their extra columns and rules are under [Automatic multi-instance storage](#automatic-multi-instance-storage). Readers of human work filter `ActivityKind = 'userTask'`.
 
 | Column | Meaning |
 | --- | --- |
@@ -703,15 +703,20 @@ One row per activation of a multi-instance user task. The parent token stays on 
 - **Unique:** (`TokenId`, `NodeId`) where `Status = 'active'`; (`InstanceId`, `NodeId`) where `ActivityKind <> 'userTask' AND Status = 'active'`; (`TokenId`, `ActivationId`) where `ActivityKind <> 'userTask'`
 - **Checks:** `CK_multi_instance_executions_activity_kind`, `_automatic_shape`, `_automatic_counts`, `_completion_size`, and `_call_pin_shape`
 
-### Automatic multi-instance foundation
+<a id="automatic-multi-instance-foundation"></a>
 
-The `AddAutomaticMultiInstanceCore` and `ValidateAutomaticMultiInstanceConstraints`
-migrations install the storage foundation described below. Automatic execution remains
-inactive pending the TASK-05 integration step; these objects do not by themselves enable
-service, script, or call multi-instance execution. Only Development API and Worker hosts
-with the TASK-05 release switch open can already publish and run service, script, and
-call bodies, whose items use these tables unchanged. Existing rows retain `ActivityKind = 'userTask'`,
-their human task/role/vote semantics, and their existing result format.
+### Automatic multi-instance storage
+
+Multi-instance service tasks, script tasks, and call activities store their bodies and
+items in the objects described below. `AddAutomaticMultiInstanceCore` installs them,
+`ValidateAutomaticMultiInstanceConstraints` validates the widened checks on the large
+tables, `HardenAutomaticMultiInstanceCore` adds the call-pin and invocation item-pair
+checks, and the TASK-05D migrations `AddMultiInstanceStartJobShape` and
+`ValidateMultiInstanceStartJobShape` add and validate
+`CK_workflow_jobs_multi_instance_start_shape` for a call body's `multiInstanceStart`
+entry job. Existing rows retain `ActivityKind = 'userTask'`, their human
+task/role/vote semantics, and their existing result format. See
+[deployment](deployment.md#automatic-multi-instance-activities) for the rollout.
 
 Every size bound below is the byte length PostgreSQL prints for the stored `jsonb`
 (`octet_length(column::text)`): a space after each comma and colon and numbers in
@@ -799,7 +804,7 @@ element; item `ResultJson` stays. Removing an instance requires deleting
 its retained jobs, call references, ledger references, and token body-wait references
 before deleting the body/items; the application does not delete instances.
 
-The foundation also extends these tables:
+Automatic bodies also extend these tables:
 
 - `execution_tokens.WaitingMultiInstanceExecutionId` is an optional `NO ACTION` FK to
   the body. The wait-shape check accepts an `automaticMultiInstance` wait with this
@@ -976,7 +981,7 @@ The [instance diagram history](ui-guide.md#read-the-instance-diagram) aggregates
 | --- | --- |
 | `InstanceId`, `WorkflowDefinitionId`, `ExecutionTokenId` | Owning instance, version, and token. |
 | `NodeId`, `NodeName`, `NodeType`, `NodeExternalId`, `NodeRolesJson` | Immutable node snapshot. |
-| `ExecutionKind` | `node`, `userTaskItem`, or `automaticActivityItem` (one per automatic item, inactive until automatic multi-instance is enabled). |
+| `ExecutionKind` | `node`, `userTaskItem`, or `automaticActivityItem` (one per item of an automatic multi-instance body). |
 | `Status` | `pending`, `active`, `completed`, `cancelled`, `faulted`, or `merged`. |
 | `CompletionReason` | Why the visit ended, for example `userAction`, `boundaryCaught`, or `parallelJoin`. It is required exactly when the visit is terminal. |
 | `UserTaskId` | The work item sharing this visit (unique). |
@@ -1100,7 +1105,7 @@ Each row is one unit of durable work, leased by `Flowbit.Worker` with `FOR UPDAT
 
 | Column | Meaning |
 | --- | --- |
-| `Kind` | `asyncBefore`, `asyncAfter`, `timer`, `timerStart`, `timerBoundary`, `conditionalWake`, `callStart`, `callResume`, `callCancel`, `administrativeBatchPrepare`, `administrativeBatchExecute`, `instanceVersionChangeBatchPrepare`, `instanceVersionChangeBatchExecute`, `instanceVariableUpdateBatchPrepare`, or `instanceVariableUpdateBatchExecute`; inactive until automatic multi-instance is enabled, also `multiInstanceStart`, `multiInstanceItem`, `multiInstanceDispatch`, and `multiInstanceComplete`. |
+| `Kind` | `asyncBefore`, `asyncAfter`, `timer`, `timerStart`, `timerBoundary`, `conditionalWake`, `callStart`, `callResume`, `callCancel`, `administrativeBatchPrepare`, `administrativeBatchExecute`, `instanceVersionChangeBatchPrepare`, `instanceVersionChangeBatchExecute`, `instanceVariableUpdateBatchPrepare`, `instanceVariableUpdateBatchExecute`, `multiInstanceStart`, `multiInstanceItem`, `multiInstanceDispatch`, or `multiInstanceComplete`. The last four belong to automatic multi-instance bodies. |
 | `QueueClass`, `Priority`, `DueAt` | `control` or `activity` queue, priority, and earliest run time. |
 | `Status` | `queued`, `running`, `resultReady`, `retry`, `completed`, `incident`, `cancelled`, or `skipped`. |
 | `Phase`, `PayloadJson`, `ResultJson`, `ErrorJson` | Job-specific progress, input, staged result, and last error. |

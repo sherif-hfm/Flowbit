@@ -19,9 +19,9 @@ A **runtime default** is what a consumer uses without a usable setting. A **seed
 | [SharedVariables.RequiredRole](#sharedvariablesrequiredrole) | JWT access to shared variables and client administration. | `admin` |
 | [Delegation.AdminRoles](#delegationadminroles) | Delegation and acceptance-policy administration. | `admin` |
 | [Workflow.Gateway.MaxActiveTokens](#workflowgatewaymaxactivetokens) | Active-token bound at gateway splits. | `1000` |
-| [Workflow.MultiInstance.MaxInstances](#workflowmultiinstancemaxinstances) | Multi-instance child count and durable-job capacity. | `1000`; job capacity `2000` |
-| [Workflow.MultiInstance.DefaultConcurrency](#automatic-multi-instance-concurrency-foundation) | Inactive automatic-body default window. | `4` |
-| [Workflow.MultiInstance.MaxConcurrency](#automatic-multi-instance-concurrency-foundation) | Inactive automatic-body window cap. | `1000` |
+| [Workflow.MultiInstance.MaxInstances](#workflowmultiinstancemaxinstances) | Multi-instance item count, for user tasks and automatic bodies, and durable-job capacity. | `1000`; job capacity `2000` |
+| [Workflow.MultiInstance.DefaultConcurrency](#automatic-multi-instance-concurrency) | Default window of a parallel service, script, or call body. | `4` |
+| [Workflow.MultiInstance.MaxConcurrency](#automatic-multi-instance-concurrency) | Cap on the window of every service, script, or call body. | `1000` |
 | [Workflow.Async.MaxConsecutiveAutomaticActivations](#workflowasyncmaxconsecutiveautomaticactivations) | Consecutive durable automatic activity activations. | `1000` |
 | [WorkflowBatchActions.MaxAffectedTasks](#workflowbatchactionsmaxaffectedtasks) | Tasks affected by one administrative action batch. | `10000` |
 | [WorkflowVersionChanges.MaxBatchInstances](#workflowversionchangesmaxbatchinstances) | Instances frozen into one version-change batch. | `10000` |
@@ -224,20 +224,31 @@ See [gateway semantics](../Flowbit/README.md#gateways-and-scoped-interruption) a
 - **Namespace / key:** `Workflow.MultiInstance` / `MaxInstances`.
 - **Value / fallback:** positive-integer format above; default `1000`; example `2000` permits up to 2,000 child items and sets open-job capacity to 4,000.
 - **Seed:** `1000` in `SeedDefaultSettings`.
-- **Takes effect:** initialization of a new multi-instance execution and capacity checks when instance-owned durable jobs are enqueued. No restart; existing multi-instance children are not resized or cancelled.
+- **Takes effect:** initialization of a new multi-instance execution or automatic body, and capacity checks when instance-owned durable jobs are enqueued. No restart; existing multi-instance children and automatic items are not resized or cancelled.
 
 Bounds the collection size or evaluated cardinality of a multi-instance user task, including sequential and parallel modes. Zero items, a nonintegral cardinality, or a count above the current limit is rejected. Once the parent execution exists, its child set is retained even if this setting changes.
+
+The same limit bounds the item count of a [multi-instance service task, script task, or call activity](node-reference.md#automatic-multi-instance-properties). Unlike a user task, such a body accepts an empty collection, which completes with `[]`. A collection longer than the limit fails the body's entry with `multi_instance_source_invalid` before any item runs. The body records the limit in force when it initializes, and each open body reserves one slot in the instance's open-job count for its dispatch and completion jobs.
 
 The same value also sets the **per-instance open durable-job bound to twice the limit**, computed with 64-bit arithmetic (default `2000`). Capacity checking covers individual enqueues and complete conditional-wake waves under the instance lock, credits the job currently completing when applicable, and rejects additional work that would exceed the bound. Lowering it can prevent new jobs for an existing instance until capacity is available. It is separate from Worker execution slots and does not delete, cancel, or throttle already-enqueued jobs by itself.
 
 See [multi-instance authoring](node-reference.md#multi-instance-properties) and [durable work](../Flowbit/README.md#durable-async-work-and-timers). Implementation: [multi-instance initialization](../Flowbit/src/Flowbit.Service/Services/WorkflowEngineService.cs), [enqueue checks](../Flowbit/src/Flowbit.Service/Services/WorkflowEngineService.Jobs.cs), and [capacity calculation](../Flowbit/src/Flowbit.Service/Services/WorkflowJobCapacity.cs).
 
-### Automatic multi-instance concurrency foundation
+<a id="automatic-multi-instance-concurrency-foundation"></a>
+
+### Automatic multi-instance concurrency
 
 `Workflow.MultiInstance.DefaultConcurrency` and `Workflow.MultiInstance.MaxConcurrency`
 are seeded by `AddAutomaticMultiInstanceCore` with values `4` and `1000` respectively.
-They are **inactive until automatic activity adapters and runtime integration are
-enabled**. They do not change human multi-instance tasks or ordinary durable jobs.
+They set how many items of a [multi-instance service task, script task, or call
+activity](node-reference.md#automatic-multi-instance-properties) are admitted at once:
+`DefaultConcurrency` applies when a parallel body omits `maxConcurrency`, and
+`MaxConcurrency` caps both authored and default values, so lowering it protects
+downstream systems. They do not change human multi-instance tasks or ordinary durable
+jobs.
+
+- **Takes effect:** when a body initializes. No restart; an open body keeps the window
+  it started with, and a change neither cancels nor admits its items.
 
 Both use positive signed 32-bit integer strings, allowing surrounding whitespace
 and a leading `+`. A parseable value above `1000` is capped at `1000`; missing,
@@ -250,11 +261,14 @@ the default setting), the cap, and the frozen item count. Sequential bodies use
 one slot; an empty body uses zero. The body persists that effective value and its
 item limit, so setting changes apply to new bodies. This is independent of Worker
 `MaxConcurrency`, `ActivityConcurrency`, and `MaxPerInstance`; their existing
-execution limits still apply. Open automatic bodies reserve one control-job slot
-in per-instance capacity accounting, while their dispatch/completion jobs do not
-consume a second slot.
+execution limits still apply: each Worker leases at most `MaxPerInstance` jobs of one
+instance, so a REST or script window wider than that times the number of Workers runs
+no more items at once. A call body's items also count against
+`WorkflowCallActivities:MaxOpenInvocationsPerRoot`. Open automatic bodies reserve one
+control-job slot in per-instance capacity accounting, while their dispatch/completion
+jobs do not consume a second slot.
 
-See [deployment status](deployment.md#automatic-multi-instance-foundation) and
+See [automatic multi-instance operations](deployment.md#automatic-multi-instance-activities) and
 the [shared resolver](../Flowbit/src/Flowbit.Service/Services/AutomaticMultiInstanceLimits.cs).
 
 ### Workflow.Async.MaxConsecutiveAutomaticActivations
@@ -395,6 +409,7 @@ Migration names below link to their actual seed implementation. Seeds are applie
 | [AddLocalIdentity](../Flowbit/src/Flowbit.Infrastructure/Data/Migrations/20261021153025_AddLocalIdentity.cs) | `Users.RequiredRole` = `admin`. |
 | [AddUserTaskDueDateAndPriority](../Flowbit/src/Flowbit.Infrastructure/Data/Migrations/20261027075021_AddUserTaskDueDateAndPriority.cs) | `UserTasks.DueSoonThreshold` = `P1D`. Down removes the row only if it is unchanged. |
 | [ConsolidateLifecycleCaptureSettings](../Flowbit/src/Flowbit.Infrastructure/Data/Migrations/20261108120000_ConsolidateLifecycleCaptureSettings.cs) | `Webhooks.CaptureEnabled` from the previous database capture switch; fresh installs retain `false`. Adds nullable actor columns for all engine settings. |
+| [AddAutomaticMultiInstanceCore](../Flowbit/src/Flowbit.Infrastructure/Data/Migrations/20261111144523_AddAutomaticMultiInstanceCore.cs) | `Workflow.MultiInstance.DefaultConcurrency` = `4` and `Workflow.MultiInstance.MaxConcurrency` = `1000`, with descriptions. |
 
 Capture consolidation requires a coordinated upgrade of API/UI/Worker versions; stop API and Worker writers before migration. It removes the old capture table without a compatibility view and refuses any existing canonical or equivalent capture key rather than overwrite it. The imported setting uses the old `ChangedAt` for both initial timestamps (its original creation time is unknown), copies `ChangedBy` to `UpdatedBy`, and leaves `CreatedBy` null. Other existing rows retain null actors. Down restores the current capture state and original functions but removes the new actor columns. See [rollout](deployment.md#rollout).
 

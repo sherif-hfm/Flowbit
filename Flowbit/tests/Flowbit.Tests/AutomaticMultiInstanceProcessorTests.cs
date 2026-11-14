@@ -25,24 +25,12 @@ public sealed class AutomaticMultiInstanceProcessorTests(PostgresApiFixture fixt
 {
     private readonly List<long> ownedInstanceIds = [];
     private static readonly ActorContext Actor = new("causal", ["User"], new Dictionary<string, string>());
-    private WebApplicationFactory<Program>? releasedHost;
-
-    // Dispatch and completion jobs run the body, so only a host with the release switch open
-    // processes them; the ordinary test host refuses them.
-    private WebApplicationFactory<Program> ReleasedHost => releasedHost ??=
-        fixture.Factory.WithWebHostBuilder(builder => builder.ConfigureTestServices(services =>
-        {
-            var options = new AutomaticMultiInstanceOptions { AllowInDevelopment = true };
-            options.ResolveForEnvironment(isDevelopment: true);
-            services.RemoveAll<AutomaticMultiInstanceOptions>();
-            services.AddSingleton(options);
-        }));
+    private WebApplicationFactory<Program> ReleasedHost => fixture.Factory;
 
     public Task InitializeAsync() => Task.CompletedTask;
 
     public async Task DisposeAsync()
     {
-        if (releasedHost is not null) await releasedHost.DisposeAsync();
         // The shared database also hosts worker lease tests.
         await using var db = fixture.CreateDbContext();
         var jobs = new WorkflowJobRepository(db, fixture.DataSource);
@@ -116,14 +104,7 @@ public sealed class AutomaticMultiInstanceProcessorTests(PostgresApiFixture fixt
     [Fact]
     public async Task An_item_job_of_a_kind_without_an_adapter_stays_refused_at_item_processing()
     {
-        // The release switch is open, so only the missing adapter refuses this job.
-        await using var open = fixture.Factory.WithWebHostBuilder(builder => builder.ConfigureTestServices(services =>
-        {
-            var options = new AutomaticMultiInstanceOptions { AllowInDevelopment = true };
-            options.ResolveForEnvironment(isDevelopment: true);
-            services.RemoveAll<AutomaticMultiInstanceOptions>();
-            services.AddSingleton(options);
-        }));
+        var open = fixture.Factory;
         var seed = await SeedAsync(count: 2, boundary: false);
         var body = await InitializeAsync(seed);
         var itemFence = await DispatchAndLeaseFirstItemAsync(body);

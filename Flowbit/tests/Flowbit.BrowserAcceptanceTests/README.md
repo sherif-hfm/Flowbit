@@ -82,12 +82,10 @@ graphs, database rows, clocks, or real API responses to force an outcome.
 
 `BrowserAcceptanceOptions.HostSettings` adds test-owned host configuration
 (`Section__Key` environment names) to API and Worker; it cannot replace a value the
-fixture already sets. Only `AutomaticMultiInstanceAcceptanceFixture`, the
-`automatic-multi-instance-worker-stack` collection, uses it: it opens the TASK-05A
-Development release switch (`WorkflowAutomaticMultiInstance__AllowInDevelopment=true`)
-on its own stack. Every other collection, and the smoke stack, keeps the switch closed,
-and `HostedProcess` strips any inherited `WORKFLOWAUTOMATICMULTIINSTANCE__` value. When
-the integration change removes the switch, delete that one line of the fixture.
+fixture already sets. No collection needs it at present. The
+`automatic-multi-instance-worker-stack` collection (`AutomaticMultiInstanceAcceptanceFixture`)
+runs the automatic multi-instance scenarios on a stack of its own, with default host
+configuration, so their Worker load and held responses never reach other collections.
 
 The proxy receives the UI's server-side HTTP calls, forwards real request and
 response content unchanged, and can hold one matching response for a bounded

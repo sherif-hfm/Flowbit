@@ -4280,18 +4280,13 @@ function renderNodeInspector() {
     renderMisplacedCallOnly(node);
   }
   renderMisplacedTimer(node);
-  // Calls offer the same removal through "Remove these options". A service or
-  // script body imported while automatic multi-instance is unavailable has no
-  // visible section, so it needs this explicit way out as well.
-  const unavailableAutomaticBody = (isServiceTaskType(node.type) || isScriptTaskType(node.type)) &&
-    !saveAutomaticMultiInstanceEnabled();
+  // Service, script, and call nodes edit multi-instance in their own section; any
+  // other imported node needs this explicit way to remove it.
   if (!isUserTaskType(node.type) && node.multiInstance != null &&
-      (!saveIsAutomaticMultiInstanceType(node.type) || unavailableAutomaticBody)) {
+      !saveIsAutomaticMultiInstanceType(node.type)) {
     const warning = document.createElement("p");
     warning.className = "empty-note";
-    warning.textContent = unavailableAutomaticBody
-      ? "Automatic multi-instance is not available in this editor yet. Remove this imported configuration before saving."
-      : "This imported node cannot use multi-instance. Remove its unsupported configuration before saving.";
+    warning.textContent = "This imported node cannot use multi-instance. Remove its unsupported configuration before saving.";
     inspector.appendChild(warning);
     const remove = document.createElement("button");
     remove.type = "button";
@@ -4303,7 +4298,7 @@ function renderNodeInspector() {
   if (isUserTaskType(node.type) || isMessageCatchEventType(node.type) ||
       isTimerCatchEventType(node.type) || isAutomaticType(node.type) ||
       isServiceTaskType(node.type) || isScriptTaskType(node.type) ||
-      (isCallBodyNode(node) && saveAutomaticMultiInstanceEnabled())) {
+      isCallBodyNode(node)) {
     renderBoundaryHostSection(node);
   }
 
@@ -4421,12 +4416,10 @@ function setAutomaticMultiInstance(node, enabled) {
 }
 
 function renderAutomaticMultiInstanceSection(node) {
-  if (!saveAutomaticMultiInstanceEnabled()) return;
   const title = document.createElement("h2");
   title.textContent = "Automatic multi-instance";
   inspector.appendChild(title);
   attachInspectorHelp(title, "automatic-multi-instance", [
-    "Development preview: service, script, and call bodies can be published and run on this Development host.",
     "Run one durable item per collection element. The Worker initializes a frozen collection and instance inputs; item-local outputs are collected in index order after every item succeeds.",
     "Other shared inputs, configuration and time are captured when each item starts. Shared outputs require readWrite access. Parallel shared writes may conflict; publication recovery accepts saved candidates against current values and can replace newer values without repeating the activity.",
     "Conditional boundaries observe the activity from entry. Timer boundaries start when the body initializes, after queue waits. Interrupting boundaries cancel unfinished items; committed shared writes remain.",
@@ -5431,7 +5424,7 @@ function renderCallActivitySection(node) {
 
   // A valid call body is part of the call on a host that can run it, so it is never one of
   // the options to remove; only an unusable one is.
-  const keepsBody = isCallBodyNode(node) && saveAutomaticMultiInstanceEnabled();
+  const keepsBody = isCallBodyNode(node);
   if (hasCallAsyncSettings(node) || (node.multiInstance != null && !keepsBody) || hasOtherCallRuntimeSettings(node)) {
     const warning = document.createElement("p");
     warning.className = "empty-note";
@@ -10961,11 +10954,6 @@ function saveIsWritableProcessVariable(variable) {
 function saveIsAutomaticMultiInstanceType(type) {
   return ["serviceTask", "scriptTask", "callActivity"].includes(type);
 }
-function saveAutomaticMultiInstanceEnabled() {
-  // The host sends its effective Development-only capability. Standalone never
-  // opens this release gate, even when an arbitrary mount option is supplied.
-  return typeof options !== "undefined" && options.mode === "hosted" && options.automaticMultiInstanceEnabled === true;
-}
 function saveAutomaticLocalOutputs(node) {
   return node && saveIsAutomaticMultiInstanceType(node.type) && Array.isArray(node.multiInstance?.outputVariables)
     ? node.multiInstance.outputVariables.filter(output => output && typeof output === "object" && !Array.isArray(output)) : [];
@@ -13170,7 +13158,7 @@ function validateSaveWaitBoundaries(ctx) {
       "intermediateTimerCatchEvent"].includes(host.type);
     const asyncAutomatic = host && ["task", "serviceTask", "scriptTask"].includes(host.type) &&
       host.asyncBefore === true;
-    const automaticCall = host && host.type === "callActivity" && host.multiInstance != null && saveAutomaticMultiInstanceEnabled();
+    const automaticCall = host && host.type === "callActivity" && host.multiInstance != null;
     if (!durableWait && !asyncAutomatic && !automaticCall) {
       errors.push(label +
         " attachedToRef must reference a durable wait or an automatic task with asyncBefore enabled.");
@@ -14346,7 +14334,6 @@ function automaticItemExpressionProblem(node) {
 // Mirrors AutomaticMultiInstanceRules.FindAuthoredProblem/FindLocalProblem.
 // Adapter-specific checks remain in their existing service/script/call phases.
 function automaticMultiInstanceProblem(ctx, node) {
-  if (!saveAutomaticMultiInstanceEnabled()) return "Flow node #" + node.id + " automatic multiInstance is not enabled.";
   const multi = node.multiInstance;
   const owner = "Automatic multi-instance activity #" + node.id;
   if (!multi || typeof multi !== "object" || Array.isArray(multi)) return owner + " multiInstance must be an object.";
@@ -14415,8 +14402,14 @@ function automaticMultiInstanceProblem(ctx, node) {
     if (!names.has(name.toLowerCase()) && (!target || !saveIsSharedProcessVariable(target) || target.access !== "readWrite"))
       return owner + " item target '" + name + "' must be a declared local output or readWrite shared alias.";
   }
-  if (boundaries.some(boundary => same(find(boundary.errorVariable), source) || same(find(boundary.errorVariable), result)))
-    return owner + " boundary error target must differ from its collection and aggregate targets.";
+  for (const boundary of boundaries) {
+    const error = find(boundary.errorVariable);
+    // A body writes its error code through a declared contract; mirrors the server.
+    if (hasText(boundary.errorVariable) && !error)
+      return owner + " boundary error target '" + boundary.errorVariable + "' must be a declared process variable.";
+    if (same(error, source) || same(error, result))
+      return owner + " boundary error target must differ from its collection and aggregate targets.";
+  }
   if (ctx.nodes.some(other => other && other.id !== node.id && other.multiInstance && same(result, find(other.multiInstance.resultVariable))))
     return owner + " resultVariable must not be another multi-instance node's aggregate target.";
   const outgoing = ctx.outgoingFor(node.id);
@@ -14443,7 +14436,7 @@ function validateSaveMultiInstance(ctx) {
     if (saveIsAutomaticMultiInstanceType(node.type)) {
       const problem = automaticMultiInstanceProblem(ctx, node);
       if (problem) errors.push(problem);
-      if (saveAutomaticMultiInstanceEnabled()) for (const flow of ctx.outgoingFor(node.id)) {
+      for (const flow of ctx.outgoingFor(node.id)) {
         validateSaveCallSettingTypes(errors, saveFlowLabel(flow), flow, CALL_FLOW_SETTING_TYPES);
       }
       continue;

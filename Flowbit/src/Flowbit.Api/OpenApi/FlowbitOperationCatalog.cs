@@ -36,7 +36,6 @@ internal static partial class FlowbitOperationCatalog
             ["POST /api/workflows/validate"] = "Validate canonical workflow JSON and report save and publication prerequisites without changing application state or calling an AI provider.",
             ["POST /api/workflows/timer-schedules/preview"] = "Preview up to 10 upcoming occurrences of a timer start's cron schedule in its time zone and UTC, using the Worker's calculator. Saves, schedules, and activates nothing.",
             ["GET /api/workflows/timer-schedules/time-zones"] = "List the IANA time-zone ids this server knows, for suggesting a cron schedule's time zone. The list can be incomplete on Windows hosts.",
-            ["GET /api/workflows/authoring-capabilities"] = "Report which optional authoring features this server's definition validation accepts, so a hosted editor offers only what saving allows.",
             ["POST /api/workflows"] = "Create the next immutable version in a workflow-key family.",
             ["GET /api/workflows/{workflowKey}/versions"] = "List every version of the workflow identified by its stable workflow key.",
             ["GET /api/workflows/{id}"] = "Retrieve one exact workflow-definition version by its database identifier.",

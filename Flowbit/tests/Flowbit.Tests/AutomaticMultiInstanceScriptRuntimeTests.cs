@@ -20,7 +20,7 @@ namespace Flowbit.Tests;
 
 /// <summary>
 /// TASK-05C end to end against PostgreSQL: definitions are published over HTTP through
-/// a host with the Development release switch open, instances start through the
+/// the test host, instances start through the
 /// engine, and every entry, dispatch, item, and completion job runs through the
 /// registered job processor, as Workers run them.
 /// </summary>
@@ -48,10 +48,6 @@ public sealed class AutomaticMultiInstanceScriptRuntimeTests(PostgresApiFixture 
     private WebApplicationFactory<Program> OpenHost() =>
         fixture.Factory.WithWebHostBuilder(builder => builder.ConfigureTestServices(services =>
         {
-            var open = new AutomaticMultiInstanceOptions { AllowInDevelopment = true };
-            open.ResolveForEnvironment(isDevelopment: true);
-            services.RemoveAll<AutomaticMultiInstanceOptions>();
-            services.AddSingleton(open);
             services.RemoveAll<IScriptEvaluator>();
             services.AddSingleton<IScriptEvaluator>(evaluator);
         }));
@@ -542,31 +538,6 @@ public sealed class AutomaticMultiInstanceScriptRuntimeTests(PostgresApiFixture 
         Assert.False(await db.MultiInstanceExecutions.AnyAsync(row => row.InstanceId == instanceId));
     }
 
-    [Fact]
-    public async Task A_host_outside_development_refuses_call_and_script_bodies_at_publication()
-    {
-        var body = new FlowNodeModel
-        {
-            Id = 2, Name = "Body", Type = BpmnFlowNodeTypes.CallActivity, X = 200, Y = 20,
-            MultiInstance = Multi("parallel", "items", "results"),
-            CallActivity = new() { WorkflowKey = "unused-child" }
-        };
-        // The ordinary test host is not Development: it refuses a call body, whatever its
-        // target, and script bodies too.
-        using (var response = await SendAsync(null, HttpMethod.Post, "/api/workflows",
-                   new CreateWorkflowRequest(Workflow(Key("call"), body, Items(1)), true)))
-        {
-            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-            Assert.Contains("automatic multiInstance is not enabled", await response.Content.ReadAsStringAsync());
-        }
-
-        var script = ThrowingBody("execution.setVariable('value', 1);");
-        using var closed = await SendAsync(null, HttpMethod.Post, "/api/workflows",
-            new CreateWorkflowRequest(Workflow(Key("closed"), script, Items(1)), true));
-        Assert.Equal(HttpStatusCode.BadRequest, closed.StatusCode);
-        Assert.Contains("automatic multiInstance is not enabled", await closed.Content.ReadAsStringAsync());
-    }
-
     // Review P1. An entry failure used to resume ordinary pass-through, which locks the
     // node's ordinary plan: for JavaScript, every readWrite binding. Holding one of those
     // rows now does not block it, because the route takes only the Error-phase locks.
@@ -694,41 +665,6 @@ public sealed class AutomaticMultiInstanceScriptRuntimeTests(PostgresApiFixture 
         var results = await LatestAsync(instanceId, "results");
         Assert.Equal(6, results.GetArrayLength());
         Assert.All(results.EnumerateArray(), row => Assert.Equal(100000, row.GetProperty("variables").GetProperty("value").GetInt32()));
-    }
-
-    // Review P5. Publication alone used to need the switch: a definition published on an
-    // open host then started and ran anywhere. Start, entry, and item jobs now refuse it
-    // on a host outside Development, and the work resumes on an open host.
-    [Fact]
-    public async Task A_host_outside_Development_neither_starts_nor_runs_a_published_script_body()
-    {
-        await using var host = OpenHost();
-        var body = ThrowingBody("execution.setVariable('value', execution.getVariable('mi.item'));");
-        body.Job = new JobPolicyModel { RetryDelays = ["PT1S", "PT1S"] };
-        var published = await PublishAsync(host, Workflow(Key("closed-run"), body, Items(2)));
-
-        var refused = await Assert.ThrowsAsync<WorkflowDomainException>(() => StartAsync(fixture.Factory, published.Id));
-        Assert.Contains("runs only on a Development host with the release switch open", refused.Message);
-
-        var instanceId = await StartAsync(host, published.Id);
-        var entry = (await OpenJobIdsAsync(instanceId, WorkflowJobKinds.AsyncBefore)).Single();
-        await ProcessAsync(fixture.Factory, entry);
-        Assert.Equal(WorkflowJobStatuses.Retry, await JobStatusAsync(entry));
-        await using (var db = fixture.CreateDbContext())
-            Assert.False(await db.MultiInstanceExecutions.AnyAsync(row => row.InstanceId == instanceId));
-
-        await ProcessAsync(host, entry);
-        await ProcessNextAsync(host, instanceId, WorkflowJobKinds.MultiInstanceDispatch);
-        var item = (await OpenJobIdsAsync(instanceId, WorkflowJobKinds.MultiInstanceItem))[0];
-        var before = evaluator.Count;
-        await ProcessAsync(fixture.Factory, item);
-        Assert.Equal(WorkflowJobStatuses.Retry, await JobStatusAsync(item));
-        Assert.Equal(before, evaluator.Count);
-
-        await DrainAsync(host, instanceId);
-        await using var final = fixture.CreateDbContext();
-        Assert.Equal(WorkflowInstanceStatuses.Completed, (await final.WorkflowInstances.SingleAsync(row => row.Id == instanceId)).Status);
-        Assert.Equal(2, (await LatestAsync(instanceId, "results")).GetArrayLength());
     }
 
     // An interrupting conditional boundary on the body, woken by an administrative write

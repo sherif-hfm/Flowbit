@@ -115,10 +115,6 @@ public sealed class AutomaticMultiInstanceDispatchWakeTests(PostgresApiFixture f
     private WebApplicationFactory<Program> OpenHost() =>
         fixture.Factory.WithWebHostBuilder(builder => builder.ConfigureTestServices(services =>
         {
-            var open = new AutomaticMultiInstanceOptions { AllowInDevelopment = true };
-            open.ResolveForEnvironment(isDevelopment: true);
-            services.RemoveAll<AutomaticMultiInstanceOptions>();
-            services.AddSingleton(open);
         }));
 
     private static JsonElement Json(object? value) => JsonSerializer.SerializeToElement(value);

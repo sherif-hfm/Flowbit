@@ -26,21 +26,6 @@ public sealed class EditorAutomaticMultiInstanceTests
         """;
 
     [Theory]
-    [InlineData("standalone", false)]
-    [InlineData("standalone", true)]
-    [InlineData("hosted", false)]
-    public void ClosedGatePreservesImportAndReportsExplicitDiagnostic(string mode, bool enabled)
-    {
-        using var engine = EditorRuntimeSmokeTests.CreateEditorEngine(mode: mode);
-        engine.SetValue("enabled", enabled);
-        engine.SetValue("definition", Definition);
-        engine.Execute("options.automaticMultiInstanceEnabled = enabled; loadFromObject(JSON.parse(definition)); render();");
-        Assert.Equal("items", engine.Evaluate("model.flowNodes.find(node => node.id === 2).multiInstance.collectionVariable").AsString());
-        Assert.Contains("Flow node #2 automatic multiInstance is not enabled.", Errors(engine));
-        Assert.False(engine.Evaluate("saveAutomaticMultiInstanceEnabled()").AsBoolean());
-    }
-
-    [Theory]
     [InlineData("mode", "null", "mode must be")]
     [InlineData("source", "\"cardinality\"", "source must be")]
     [InlineData("cardinalityExpression", "\"1\"", "cannot define cardinalityExpression")]
@@ -156,18 +141,16 @@ public sealed class EditorAutomaticMultiInstanceTests
         """;
 
     [Theory]
-    [InlineData("serviceTask", false)]
-    [InlineData("scriptTask", false)]
-    [InlineData("serviceTask", true)]
-    [InlineData("callActivity", true)]
-    public void TypeChangeNeverTurnsHumanMultiInstanceIntoAnAutomaticBody(string nextType, bool enabled)
+    [InlineData("serviceTask", "hosted")]
+    [InlineData("scriptTask", "hosted")]
+    [InlineData("callActivity", "hosted")]
+    [InlineData("serviceTask", "standalone")]
+    public void TypeChangeNeverTurnsHumanMultiInstanceIntoAnAutomaticBody(string nextType, string mode)
     {
-        using var engine = EditorRuntimeSmokeTests.CreateEditorEngine(mode: "hosted");
-        engine.SetValue("enabled", enabled);
+        using var engine = EditorRuntimeSmokeTests.CreateEditorEngine(mode: mode);
         engine.SetValue("definition", HumanDefinition);
         engine.SetValue("nextType", nextType);
         engine.Execute("""
-            options.automaticMultiInstanceEnabled = enabled;
             loadFromObject(JSON.parse(definition));
             const node = model.flowNodes.find(candidate => candidate.id === 2);
             selected = { kind: 'node', nodeId: 2 };
@@ -180,34 +163,13 @@ public sealed class EditorAutomaticMultiInstanceTests
         Assert.DoesNotContain(Errors(engine), error => error.Contains("multiInstance", StringComparison.Ordinal));
     }
 
+    // Both editors offer automatic multi-instance: no host capability decides it.
     [Theory]
-    [InlineData("standalone", false)]
-    [InlineData("hosted", false)]
-    public void ClosedGateOffersExplicitRemovalOfAnImportedServiceBody(string mode, bool enabled)
+    [InlineData("standalone")]
+    [InlineData("hosted")]
+    public void EveryEditorShowsTheAutomaticSectionAndSavesAValidBody(string mode)
     {
         using var engine = EditorRuntimeSmokeTests.CreateEditorEngine(mode: mode);
-        engine.SetValue("enabled", enabled);
-        engine.SetValue("definition", Definition);
-        engine.Execute("""
-            options.automaticMultiInstanceEnabled = enabled;
-            loadFromObject(JSON.parse(definition));
-            var descendants = root => [root, ...(root.children || []).flatMap(child => descendants(child))];
-            var removal = () => descendants(inspector).filter(element => element.textContent === 'Remove unsupported multi-instance');
-            selected = { kind: 'node', nodeId: 2 };
-            renderInspector();
-            """);
-        Assert.Equal(1, (int)engine.Evaluate("removal().length").AsNumber());
-        // Selecting and redrawing keep the imported configuration for diagnostics.
-        Assert.Contains("Flow node #2 automatic multiInstance is not enabled.", Errors(engine));
-        engine.Execute("removal()[0].onclick();");
-        Assert.True(engine.Evaluate("model.flowNodes.find(node => node.id === 2).multiInstance == null").AsBoolean());
-        Assert.DoesNotContain(Errors(engine), error => error.Contains("multiInstance", StringComparison.Ordinal));
-    }
-
-    [Fact]
-    public void OpenGateKeepsTheAutomaticSectionInsteadOfTheRemovalButton()
-    {
-        using var engine = DevelopmentEngine();
         engine.SetValue("definition", Definition);
         engine.Execute("""
             loadFromObject(JSON.parse(definition));
@@ -219,14 +181,10 @@ public sealed class EditorAutomaticMultiInstanceTests
             "descendants(inspector).filter(element => element.textContent === 'Remove unsupported multi-instance').length").AsNumber());
         Assert.Equal(1, (int)engine.Evaluate(
             "descendants(inspector).filter(element => element.tagName === 'H2' && element.textContent === 'Automatic multi-instance').length").AsNumber());
+        Assert.Empty(Errors(engine));
     }
 
-    private static Engine DevelopmentEngine()
-    {
-        var engine = EditorRuntimeSmokeTests.CreateEditorEngine(mode: "hosted");
-        engine.Execute("options.automaticMultiInstanceEnabled = true;");
-        return engine;
-    }
+    private static Engine DevelopmentEngine() => EditorRuntimeSmokeTests.CreateEditorEngine(mode: "hosted");
 
     private static string[] Errors(Engine engine) => JsonSerializer.Deserialize<string[]>(
         engine.Evaluate("JSON.stringify(prepareWorkflowExport().errors || [])").AsString())!;

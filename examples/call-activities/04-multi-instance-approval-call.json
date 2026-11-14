@@ -1,0 +1,290 @@
+{
+  "id": "example-call-multi-instance-approvals",
+  "name": "Call Example 04 - Approval Call per Order Line",
+  "initialEventId": 1,
+  "variables": [
+    {
+      "id": 1,
+      "name": "lineAmounts",
+      "dataType": "number",
+      "isArray": true,
+      "nullable": false,
+      "required": false,
+      "defaultValue": [
+        250,
+        1200,
+        75
+      ],
+      "validation": null
+    },
+    {
+      "id": 2,
+      "name": "approvalResults",
+      "dataType": "json",
+      "isArray": false,
+      "nullable": false,
+      "required": false,
+      "defaultValue": [],
+      "validation": null
+    },
+    {
+      "id": 3,
+      "name": "approvalFailure",
+      "dataType": "string",
+      "isArray": false,
+      "nullable": true,
+      "required": false,
+      "defaultValue": null,
+      "validation": null
+    }
+  ],
+  "lanes": [],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Purchase Requested",
+      "externalId": "START_PURCHASE_REQUESTED",
+      "type": "startEvent",
+      "laneId": null,
+      "x": 60,
+      "y": 140,
+      "roles": [],
+      "variables": [
+        {
+          "id": 1,
+          "name": "requestId",
+          "dataType": "string",
+          "isArray": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": null
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "Approve Each Line",
+      "externalId": "CALL_APPROVE_EACH_LINE",
+      "type": "callActivity",
+      "laneId": null,
+      "x": 220,
+      "y": 128,
+      "multiInstance": {
+        "mode": "parallel",
+        "source": "collection",
+        "collectionVariable": "lineAmounts",
+        "completionEvaluation": "afterAll",
+        "maxConcurrency": 2,
+        "outputVariables": [
+          {
+            "name": "lineApproved",
+            "dataType": "boolean",
+            "isArray": false,
+            "nullable": false
+          }
+        ],
+        "resultVariable": "approvalResults"
+      },
+      "callActivity": {
+        "workflowKey": "example-call-manager-approval",
+        "inputMappings": [
+          {
+            "sourceVariable": "mi.item",
+            "variable": "amount",
+            "dataType": "number",
+            "required": true
+          },
+          {
+            "sourceVariable": "requestId",
+            "variable": "requestId",
+            "dataType": "string",
+            "required": true
+          }
+        ],
+        "outputMappings": [
+          {
+            "sourceVariable": "approved",
+            "variable": "lineApproved",
+            "dataType": "boolean",
+            "required": true
+          }
+        ]
+      }
+    },
+    {
+      "id": 3,
+      "name": "Line Rejected",
+      "externalId": "BOUNDARY_LINE_REJECTED",
+      "type": "errorBoundaryEvent",
+      "laneId": null,
+      "x": 250,
+      "y": 196,
+      "roles": [],
+      "variables": [],
+      "attachedToRef": 2,
+      "errorVariable": "approvalFailure"
+    },
+    {
+      "id": 4,
+      "name": "Approvals Overdue",
+      "externalId": "BOUNDARY_APPROVALS_OVERDUE",
+      "type": "timerBoundaryEvent",
+      "laneId": null,
+      "x": 340,
+      "y": 196,
+      "roles": [],
+      "variables": [],
+      "attachedToRef": 2,
+      "cancelActivity": false,
+      "timer": {
+        "timeDate": null,
+        "timeDuration": "PT30M",
+        "timeCycle": null
+      }
+    },
+    {
+      "id": 5,
+      "name": "Place Order",
+      "externalId": "TASK_PLACE_ORDER",
+      "type": "userTask",
+      "laneId": null,
+      "x": 520,
+      "y": 128,
+      "roles": [
+        "Purchasing"
+      ],
+      "variables": []
+    },
+    {
+      "id": 6,
+      "name": "Ordered",
+      "externalId": "END_ORDERED",
+      "type": "endEvent",
+      "laneId": null,
+      "x": 800,
+      "y": 140,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 7,
+      "name": "Review Rejected Lines",
+      "externalId": "TASK_REVIEW_REJECTED_LINES",
+      "type": "userTask",
+      "laneId": null,
+      "x": 520,
+      "y": 290,
+      "roles": [
+        "Purchasing"
+      ],
+      "variables": []
+    },
+    {
+      "id": 8,
+      "name": "Closed Without Order",
+      "externalId": "END_CLOSED_WITHOUT_ORDER",
+      "type": "endEvent",
+      "laneId": null,
+      "x": 800,
+      "y": 302,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 9,
+      "name": "Chase Approvers",
+      "externalId": "TASK_CHASE_APPROVERS",
+      "type": "userTask",
+      "laneId": null,
+      "x": 520,
+      "y": 450,
+      "roles": [
+        "Purchasing"
+      ],
+      "variables": []
+    },
+    {
+      "id": 10,
+      "name": "Approvers Chased",
+      "externalId": "END_APPROVERS_CHASED",
+      "type": "endEvent",
+      "laneId": null,
+      "x": 800,
+      "y": 462,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "",
+      "externalId": null,
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": [],
+      "condition": null
+    },
+    {
+      "id": 201,
+      "name": "",
+      "externalId": null,
+      "sourceRef": 2,
+      "targetRef": 5,
+      "roles": [],
+      "variables": [],
+      "condition": null
+    },
+    {
+      "id": 301,
+      "name": "",
+      "externalId": null,
+      "sourceRef": 3,
+      "targetRef": 7,
+      "roles": [],
+      "variables": [],
+      "condition": null
+    },
+    {
+      "id": 401,
+      "name": "",
+      "externalId": null,
+      "sourceRef": 4,
+      "targetRef": 9,
+      "roles": [],
+      "variables": [],
+      "condition": null
+    },
+    {
+      "id": 501,
+      "name": "Order Placed",
+      "externalId": "FLOW_ORDER_PLACED",
+      "sourceRef": 5,
+      "targetRef": 6,
+      "roles": [],
+      "variables": [],
+      "condition": null
+    },
+    {
+      "id": 701,
+      "name": "Close",
+      "externalId": "FLOW_CLOSE",
+      "sourceRef": 7,
+      "targetRef": 8,
+      "roles": [],
+      "variables": [],
+      "condition": null
+    },
+    {
+      "id": 901,
+      "name": "Done",
+      "externalId": "FLOW_APPROVERS_CHASED",
+      "sourceRef": 9,
+      "targetRef": 10,
+      "roles": [],
+      "variables": [],
+      "condition": null
+    }
+  ]
+}

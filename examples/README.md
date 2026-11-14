@@ -7,7 +7,7 @@ legacy properties. Most ids use `example-*`; the administrative-action sample
 retains its authored `admin-action` id. The examples are intentionally focused: combine their
 patterns when building a production workflow.
 
-The catalog contains 60 workflows. Automated tests recursively discover every
+The catalog contains 66 workflows. Automated tests recursively discover every
 JSON file, deserialize it, validate it with the runtime's strict JavaScript
 parser, load and render it in the editor, and verify that this page links it.
 Those definition/editor tests do not execute integrations. The separate
@@ -148,6 +148,20 @@ result shapes, aggregate evidence, and completion paths.
 | [Multi-instance reminder](multi-instance/06-multi-instance-reminder.json) | No values; cardinality is three. | Complete three approvals while the non-interrupting reminder remains observable. | `afterAll` aggregate completion, a parent boundary timer, and durable execution record reminders without cancelling the parent. | API, database, and `Flowbit.Worker`; no external configuration. |
 | [Role management across active and pending items](multi-instance/07-role-management-active-and-pending.json) | `ReviewCoordinator` starts with no input; defaults assign `analyst`, `manager`, then `director`. | `analyst` initially needs `Reviewer` and `Approver`; after the first completion, `RoleManager` replaces task/action roles for unfinished items. | The active/pending children receive the replacement policy together; assignees and completed history remain intact. Identical stale retries are unchanged success; conflicting stale edits return `409`. | API and database with the role-policy migration; no Worker or configuration. |
 
+## Multi-instance service and script tasks
+
+See [automatic multi-instance activities](multi-instance/README.md#automatic-multi-instance-activities)
+for mock contracts, result shapes, and a PowerShell/Bash walkthrough. Every item runs
+on a Worker, and none of them is a user task.
+
+| Workflow | Start values | Actors and actions | Expected result | Requirements |
+| --- | --- | --- | --- | --- |
+| [Parallel REST notifications](multi-instance/08-rest-parallel-notifications.json) | Supply `batchId`; `supplierIds` defaults to four suppliers. | `ExampleReviewer` finishes the review after the body completes. | Four requests, at most two at a time, each with a stable `Idempotency-Key`; `notificationResults` lists the four receipts and statuses in supplier order. | API, database, Worker, controlled mock, and `config.exampleApiBaseUrl`/`config.exampleApiToken` on the Worker. |
+| [Sequential REST reservations](multi-instance/09-rest-sequential-reservations.json) | Supply `orderId`; `orderLines` defaults to three objects. | `ExampleReviewer` confirms the reservations. | One request at a time, in line order, each sending its whole line object; `reservationResults` lists each reservation, with `warehouse` `null` when omitted. | The same as the parallel REST example. |
+| [NCalc script per item](multi-instance/10-ncalc-script-per-item.json) | No values. | None; the instance completes. | `calculationResults` rows hold `scaledAmount`/`adjustedAmount` of `20`/`20`, `40`/`41`, and `60`/`62`; the window comes from `Workflow.MultiInstance.DefaultConcurrency`. | API, database, and Worker; no configuration. |
+| [JavaScript script per item](multi-instance/11-javascript-script-per-item.json) | No values. | None; the instance completes. | `lineResults` rows hold `lineAmount` `30`, `21`, and `9` with a JSON `lineSummary`, in line order whatever order items finish. | API, database, and Worker; no configuration. |
+| [REST body with error and deadline boundaries](multi-instance/12-rest-error-and-deadline-boundaries.json) | No values. | `ExampleReviewer` confirms normal postings; `ExampleOperator` handles a failed or slow batch. | Success confirms three postings. A non-2xx response takes the catch-all boundary with `postingFailure` `service_task_failed` and a partial result; responses slower than 30 seconds take the interrupting timer, with no result written. | The same as the parallel REST example. |
+
 ## Durable jobs and timers
 
 See the [durable-job guide](durable-jobs/README.md) for a controlled REST mock,
@@ -179,6 +193,7 @@ See the [call activity guide](call-activities/README.md) for publishing order, e
 | [Manager approval child](call-activities/01-manager-approval-child.json) | Supply `amount` above zero and `requestId`; a call supplies them. | A `Manager` takes **Approve** or **Reject**. | Approval sets `approved` and completes; rejection faults with `approval.rejected`. | API and database when started alone; a Worker when called. Its plain start is unrestricted. |
 | [Purchase request calling an approval](call-activities/02-purchase-request-call.json) | Supply `requestedAmount` above zero and `requestId`. | The child's `Manager` acts; `Purchasing` then takes **Order Placed**. | The parent rests at the call, receives `managerApproved`, and completes at **Ordered**. A rejection faults it with `call_child_faulted`. | API, database, and Worker, with the child published first. |
 | [Purchase request handling a failed approval](call-activities/03-purchase-request-call-failure.json) | The same values. | After a rejection, `Purchasing` takes **Close**. | The boundary writes the failure to `callFailure`, and the parent completes at **Closed Without Order**. | API, database, and Worker, with the child published first. |
+| [Approval call per order line](call-activities/04-multi-instance-approval-call.json) | Supply `requestId`; `lineAmounts` defaults to `[250, 1200, 75]`. | A `Manager` approves or rejects each child, at most two at a time; `Purchasing` then places the order, closes a rejected request, or chases approvers after 30 minutes. | One child per amount, all on the version pinned when the body starts; `approvalResults` holds one `lineApproved` row per line. A rejection takes the catch-all boundary with `call_child_faulted` and a partial result. | API, database, and Worker, with the child published first. |
 
 ## Trusted configuration placeholders
 
@@ -205,7 +220,7 @@ actions, and records the outcome of each test run separately.
 | Coverage layer | Included | Verification boundary |
 | --- | --- | --- |
 | Authored node and event types | All 22: five tasks, four gateways, three starts, three intermediate catches, three boundaries, three ends, and the scoped-interrupt extension. | Recursive runtime/editor validation and the explicit 22-type assertion; editor execution here uses Jint rather than a real browser. |
-| Demonstrated catalog scenarios | Claims, assignment/distribution, captured roles, task due dates and priorities, working-time durations in a business calendar, scripts, typed REST/messages, idempotency, multi-instance aggregation, timers including cron schedules for timer starts, conditional events, retries/recovery, and scope cancellation. | The 60 definitions and category walkthroughs explain actors, inputs, prerequisites, and expected outcomes. |
+| Demonstrated catalog scenarios | Claims, assignment/distribution, captured roles, task due dates and priorities, working-time durations in a business calendar, scripts, typed REST/messages, idempotency, multi-instance aggregation for user tasks and for REST, script, and call bodies, timers including cron schedules for timer starts, conditional events, retries/recovery, and scope cancellation. | The 66 definitions and category walkthroughs explain actors, inputs, prerequisites, and expected outcomes. |
 | Focused runtime acceptance | Call activity completion, rejection, cancellation, and incident recovery; both REST recovery paths and boundary-order policies; HTTP status routing and its retry policy; both receipt/deadline paths; nested cancellation; MI role replacement/stale edits; normal versus terminate end; approval timer return; quorum cancellation before finalization. | `ExampleWorkflowAcceptanceTests`, and `CallActivityAcceptanceTests` for call activities, use real HTTP and Worker processing with controlled local services. They are explicitly run outside the solution and CI; inspect their results before claiming a verified run. |
 | Browser and manual checks | New diagrams at desktop/tablet widths; incident recovery and role management at desktop, tablet, and mobile widths. | Real Chromium input, screenshots, and browser diagnostics supplement API assertions; native picker and visual-review limitations are reported separately. |
 

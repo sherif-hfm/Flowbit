@@ -35,7 +35,6 @@ public sealed partial class WorkflowEngineService
         FlowNodeModel node,
         CancellationToken cancellationToken)
     {
-        EnsureAutomaticMultiInstanceRuntimeAvailable(node);
         if (token.WaitState is not null || token.WaitingMultiInstanceExecutionId is not null)
         {
             return;
@@ -89,7 +88,6 @@ public sealed partial class WorkflowEngineService
             throw new WorkflowJobInvariantException("The multiInstanceStart job no longer names a call body.");
         }
 
-        EnsureAutomaticMultiInstanceRuntimeAvailable(seedNode);
         var targetKey = seedNode.CallActivity.WorkflowKey;
         string? failureCode = null;
         string? failureDescription = null;
@@ -105,7 +103,7 @@ public sealed partial class WorkflowEngineService
             token = RequireFencedToken(instance, job, token);
             var definition = (await GetWorkflowAsync(instance.WorkflowDefinitionId, cancellationToken)).Definition;
             var node = GetFlowNode(definition, token.NodeId);
-            if (!IsInstalledAutomaticBodyOfKind(node, lease.Job.NodeType) || !CallActivityRules.IsCallBody(node)
+            if (!IsAutomaticBodyOfKind(node, lease.Job.NodeType) || !CallActivityRules.IsCallBody(node)
                 || !string.Equals(node.CallActivity?.WorkflowKey, targetKey, StringComparison.Ordinal))
             {
                 throw new WorkflowJobInvariantException("The call body entry no longer names its call body.");
@@ -271,18 +269,6 @@ public sealed partial class WorkflowEngineService
             .ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase);
     }
 
-    // A closed switch is a host setting, not a broken job: the item keeps its slot and resumes
-    // from its incident on an open host. It is checked once the job is known to own live work,
-    // so stale work closes quietly on any host.
-    private void EnsureAutomaticCallItemHostOpen(int nodeId)
-    {
-        if (automaticMultiInstanceOptions?.Enabled != true)
-        {
-            throw new WorkflowDomainException(
-                $"Automatic multi-instance node #{nodeId} cannot run on this host: automatic multi-instance runs only on a Development host with the release switch open.");
-        }
-    }
-
     private async Task<AutomaticCallItemOwner> LockAutomaticCallItemOwnerAsync(
         WorkflowJobLeaseRecord lease,
         WorkflowJobFence fence,
@@ -317,7 +303,7 @@ public sealed partial class WorkflowEngineService
         var definition = (await GetWorkflowAsync(body.WorkflowDefinitionId, cancellationToken)).Definition;
         var node = GetFlowNode(definition, body.NodeId);
         if (!CallActivityRules.IsCallBody(node)
-            || !IsInstalledAutomaticBodyOfKind(node, BpmnFlowNodeTypes.CallActivity))
+            || !IsAutomaticBodyOfKind(node, BpmnFlowNodeTypes.CallActivity))
         {
             throw new WorkflowJobInvariantException("The call item no longer names a call body.");
         }
@@ -345,11 +331,6 @@ public sealed partial class WorkflowEngineService
         CallInvocationRecord seed,
         CancellationToken cancellationToken)
     {
-        if (!AutomaticMultiInstanceRules.IsAdapterInstalled(lease.Job.NodeType))
-        {
-            throw new WorkflowJobInvariantException("The automatic call item adapter is not installed.");
-        }
-
         var coordinator = automaticMultiInstanceCoordinator!;
         CallFailure? failure = null;
         string? refusal = null;
@@ -358,7 +339,6 @@ public sealed partial class WorkflowEngineService
             var owner = await LockAutomaticCallItemOwnerAsync(lease, fence, seed, cancellationToken);
             _ = await coordinator.RequireCallItemAsync(owner.Body.Id, owner.Item.Id, owner.Body.ActivationId,
                 owner.Fence, requireDelivery: false, cancellationToken);
-            EnsureAutomaticCallItemHostOpen(owner.Node.Id);
             var invocation = await CallActivities.GetInvocationAsync(seed.Id, cancellationToken)
                 ?? throw new WorkflowJobInvariantException($"Call invocation #{seed.Id} no longer exists.");
             if (invocation.Inputs is null)
@@ -554,7 +534,6 @@ public sealed partial class WorkflowEngineService
             var owner = await LockAutomaticCallItemOwnerAsync(lease, fence, seed, cancellationToken);
             var (_, item) = await coordinator.RequireCallItemAsync(owner.Body.Id, owner.Item.Id,
                 owner.Body.ActivationId, owner.Fence, requireDelivery: true, cancellationToken);
-            EnsureAutomaticCallItemHostOpen(owner.Node.Id);
             var result = await CallActivities.GetResultAsync(current.ChildInstanceId!.Value, cancellationToken)
                 ?? throw new WorkflowJobInvariantException($"Call invocation #{seed.Id} has a result job but no result.");
             if (result.Outcome != CallResultOutcomes.Completed)

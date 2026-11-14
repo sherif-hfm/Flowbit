@@ -460,26 +460,56 @@ Legacy instances without sufficient surviving evidence retain unknown coverage. 
 
 The repository's EF Core packages are **10.0.9**. These commands pin `dotnet-ef` to that version in an OS-temporary directory and use the Infrastructure project's `DesignTimeAppDbContextFactory`. Run them from the repository root, independently of the publish-directory examples above. The factory reads `ConnectionStrings__Flowbit` directly; it does not load your API appsettings file.
 
-### Automatic multi-instance foundation
+<a id="automatic-multi-instance-foundation"></a>
 
-The automatic multi-instance schema and shared contract are staged behind the
-TASK-05 release boundary. `WorkflowAutomaticMultiInstance:AllowInDevelopment`
-opens automatic multi-instance only on a host whose environment is `Development`;
-other environments ignore it. Set it on both the API and the Worker: each host
-decides for itself. On the API it opens authoring validation, publication, and
-starting an instance that reaches a body. The hosted editor reads the API's
-effective value from `GET /api/workflows/authoring-capabilities` and shows its
-controls only when that is true, so the UI host's own environment and settings
-never decide it; the standalone editor remains closed. On the Worker it opens a
-body's entry and item jobs. With the option in effect on both, a Development API
-can publish a multi-instance REST service task, script task, or call activity, and a
-Development Worker runs its items. A host where it is not in effect refuses a
-published body anyway: the API refuses to start an instance that reaches one, and
-the Worker's entry and item jobs (a call item's `callStart` included) fail, retry,
-and then wait in an incident that a retry on an open Worker resumes. Do not use this
-option as a production feature switch. Every automatic body needs a running Worker
-even for an empty collection, and each JavaScript item stores its own copy of every
-`config.*` and `setting.*` value within its 1 MiB staged-input limit.
+### Automatic multi-instance activities
+
+Multi-instance REST service tasks, script tasks, and call activities run one item
+per collection element on Workers; see
+[BPMN semantics](bpmn-support.md#multi-instance-service-script-and-call-activities)
+and the [node reference](node-reference.md#automatic-multi-instance-properties). Once
+the migrations below are applied and every replica runs this release, every host
+saves, publishes, and runs them; there is no separate feature switch. Publishing a
+definition with a body needs `WorkflowDurableProcessing:PublicationEnabled`, like any
+other durable definition, and every body needs a running Worker, even for an empty
+collection. Each JavaScript item stores its own copy of every `config.*` and
+`setting.*` value within its 1 MiB staged-input limit.
+
+**Rollout.** Mixed versions are unsupported: an earlier API or Worker does not
+understand the new job kinds, waits, items, and invocations.
+
+1. Back up the database.
+2. Stop every API and Worker replica, and every other client of the database.
+3. Apply the migrations listed below with `database update`.
+4. Deploy the API, Worker, and UI of this release together, with the editor assets.
+   Refresh open authoring tabs so an earlier editor cannot drop the new fields.
+5. Start the replicas, check `/health/ready`, and confirm a Worker is processing jobs.
+6. With `WorkflowDurableProcessing:PublicationEnabled=true` on the API, publish
+   definitions with automatic bodies. Start with a small collection and watch the
+   body's progress on instance detail before relying on large batches.
+
+**Rollback.** Earlier binaries are not safe with an open automatic body or with a
+published definition that contains one: an earlier Worker cannot run their jobs, and
+an earlier API refuses such definitions or, before the multi-instance foundation,
+drops `multiInstance` from service, script, and call nodes. Before reverting,
+unpublish or replace those definitions so no new bodies start, then let open bodies
+finish, or cancel their instances; list them with
+`SELECT "InstanceId", "NodeId", "ActivityKind" FROM flowbit.multi_instance_executions WHERE "ActivityKind" <> 'userTask' AND "Status" = 'active';`.
+Keep the additive schema and its evidence: do not run the down migrations as a
+recovery step.
+
+**Monitoring.** Watch two kinds of incident. An item incident is on a
+`multiInstanceItem` job, which Operations labels **Automatic item #N**, or on a call
+item's `callStart` or its child's `callResume`; while it is open the body admits no
+further items. A body control incident is on the body's
+`multiInstanceDispatch` or `multiInstanceComplete` job: `job_capacity_exceeded` or
+`call_capacity_exceeded` when admission cannot proceed with nothing in flight, and
+`output_version_conflict` when the published result changed concurrently. Instance
+detail reports it as **Needs attention** with `controlIncidentId`, even when every
+item has completed. A call body's entry failures wait on its `multiInstanceStart`
+job; a service or script body's on its `asyncBefore` job. Filter
+[`GET /api/jobs`](api-guide.md#get-apijobs) by these kinds to find queued or stuck
+bodies.
 
 A multi-instance call body counts its children against
 `WorkflowCallActivities:MaxOpenInvocationsPerRoot` like any other call under the same
@@ -547,17 +577,17 @@ Apply `20261111144523_AddAutomaticMultiInstanceCore`, then
 them in this order. The second migration validates widened constraints outside a
 transaction. The third restores the general job index on the body column and adds
 the call-pin and invocation item-pair checks; it fails if a database already holds
-a nonempty call body without a pin, which no released build can create. The fifth
+a nonempty call body without a pin, which no earlier release can create. The fifth
 adds the shape check of a call body's `multiInstanceStart` entry job without
 scanning `workflow_jobs`, and the sixth validates it outside a transaction. No
-released build creates `multiInstanceStart` jobs, so validation finds no rows to
+earlier release creates `multiInstanceStart` jobs, so validation finds no rows to
 refuse. Existing human execution
 rows keep activity kind `userTask`; ordinary call activation uniqueness excludes
 only rows with an automatic item identity. The additions include body-owned
 snapshots, persisted item candidates/results, activation and control-generation
-fences, reserved control capacity, and call-item/pin fields for adapter integration.
-See the [database schema](database-schema.md) and the inactive
-[concurrency settings](engine-settings.md#automatic-multi-instance-concurrency-foundation).
+fences, reserved control capacity, and call-item/pin fields.
+See the [database schema](database-schema.md#automatic-multi-instance-storage) and the
+[concurrency settings](engine-settings.md#automatic-multi-instance-concurrency).
 
 **Measured cost.** These six migrations were measured with every API and Worker
 replica stopped, on PostgreSQL 17.5 with default settings and four logical CPUs,
@@ -657,11 +687,14 @@ job (or a call item's `callStart`) has an open incident, that item counts as
 needing attention and the body admits no further items; retrying the incident
 resumes admission.
 
-The release integration must upgrade every API/Worker/UI replica before enabling
-automatic execution. Legacy processors do not understand the new wait/job/item
-shapes. Once automatic bodies exist, reverting binaries requires draining or
-explicitly cancelling/reconciling that work; retain the additive schema and audit
-evidence. The current foundation does not claim Worker or adapter acceptance.
+Items cannot be skipped. An item that fails on every attempt, such as one the
+receiving API always rejects or one that staged a credential that has since expired,
+keeps a body without an applicable error boundary waiting until its instance is
+cancelled or an interrupting timer or conditional boundary fires. Cancelling the
+instance settles the body at once, discards late HTTP and child results, and stops
+call children through `callCancel` jobs; it does not undo remote effects or
+committed shared writes. Recommend a catch-all error boundary or an interrupting
+deadline on batches that must finish.
 
 ### Instance diagram history deployment checks
 
@@ -771,6 +804,7 @@ Classify the **actual source database and release path** before deployment. The 
 | Error-boundary HTTP status matching | No migration. Upgrade every API, UI, and Worker replica before saving or publishing a definition with `errorMatch` or several boundaries on one host. An older runtime can ignore the matcher or use the first boundary, and a stale Flowbit.Ui replica drops `errorMatch` when it saves, which turns a filtered boundary into a catch-all. Before rolling back, inventory definitions and live work that use matchers or several boundaries, and replace, drain, or cancel them through supported operations; never edit stored JSON or job rows. This release also changes existing definitions in one way: a connection lost while reading a REST response is now a task failure that keeps the received status. A synchronous task with a boundary routes through it, one without rolls back with `400` instead of failing with `500`, and a durable job records the received status instead of `0` and the raw exception message. A durable service job fences the error variable of every boundary on its host, so a concurrent write to any of them opens `output_version_conflict` even if another boundary would have been selected. A durable script job fences its boundary's error variable the same way when the script fails, or when a write is refused at finalization; retrying the incident works from a new snapshot. A corrupt, ambiguous matcher opens `job_invariant_violation` without a retry. |
 | Variable form presentation | No migration. Upgrade every API, UI, and Worker replica before authoring variable `label`, `helpText`, or `options`: an older API drops these properties when it saves a definition, and its strict validation and AI authoring reject them as unknown properties. Definitions saved without them are unchanged. The instance-detail action and interrupt forms now parse entries like the start and task forms, so their `json` and array inputs are submitted as typed JSON instead of text. |
 | Call activities | `AddCallActivityExecution` adds the `call_activity_executions`, `call_activity_results`, and `workflow_definition_call_targets` tables, `workflow_instances."CallRootInstanceId"` and `"CallDepth"`, and `workflow_jobs."CallInvocationId"`. Existing instances get root defaults and no history. Follow [call activity rollout](#call-activity-rollout). Its down migration refuses while call instances, invocations, or call jobs remain. |
+| Automatic multi-instance activities | Six migrations from `AddAutomaticMultiInstanceCore` to `ValidateMultiInstanceStartJobShape` add body, item, and invocation storage and widen existing checks without backfill. Follow the [automatic multi-instance rollout](#automatic-multi-instance-activities): stop every replica, apply them, deploy API, Worker, and UI together, then publish definitions with automatic bodies. Mixed versions are unsupported, and reverting binaries needs open bodies drained or cancelled first. |
 | Cron timer starts | `AddCronTimerSchedules` adds the nullable `timer_subscriptions."ScheduleTimeZone"` column, allows schedule kind `cron`, and adds two constraints: a cron subscription has a nonblank zone, no calendar, and a timer-start shape, and is never `completed`. `ValidateCronTimerScheduleConstraints` then validates the constraints outside a transaction; if that run stops, apply the migrations again. Neither backfills anything or activates a schedule. Follow [cron timer starts](#cron-timer-starts): apply both, upgrade every API, UI, and Worker replica, and only then save or publish a cron definition. The down migration of `AddCronTimerSchedules` refuses while any cron subscription row remains. |
 | API request log status | No migration. The API's request log now records the status a mapped error returns, such as `400` or `409`, at Information, and the `503` of an unavailable webhook key ring at Error. Before, it recorded each of these as `500` at Error with a stack trace, while the client received the mapped status. Review log alerts and dashboards that counted those entries as server failures. See [signals and actions](#signals-and-actions). |
 | Browser time zones in Flowbit.Ui | No migration, and stored times do not change. Flowbit.Ui now shows times, and reads the date filters on **Activity** and **Webhooks** and the shared-variable client expiry, in each browser's time zone instead of the UI server's, so users in another zone see and enter different wall-clock times than before. Delegation windows stay in UTC. The UI host needs IANA time-zone data, as the [deployment layout](#deployment-layout) describes; without it every time falls back to UTC and says so. See [Times and time zones](ui-guide.md#times-and-time-zones). |
@@ -800,7 +834,7 @@ audit data.
 3. Check `/health/ready`, verify queue/incident metrics, and run a controlled durable workflow.
 4. Set the API publication gate to true and restart/redeploy APIs with that configuration; publish or select durable definitions as default only after this check.
 
-The gate rejects publication/default selection for async tasks, timers, durable conditionals, call activities, and call-only starts, including an otherwise synchronous call-only target. Deleting a default is refused when its successor would need the closed gate, rather than promoting a different version. Draft saves remain possible. It does not stop already-published instances or queued work, so it is not a maintenance lock or substitute for stopping writers during an incompatible migration.
+The gate rejects publication/default selection for async tasks, timers, durable conditionals, call activities, multi-instance service and script tasks, and call-only starts, including an otherwise synchronous call-only target. Deleting a default is refused when its successor would need the closed gate, rather than promoting a different version. Draft saves remain possible. It does not stop already-published instances or queued work, so it is not a maintenance lock or substitute for stopping writers during an incompatible migration.
 
 ## Call activity rollout
 
@@ -1050,6 +1084,8 @@ complete.
 | Parent waits with **Result ready** and an incident | Delivery failed and the frozen result is kept. Correct the parent's state, then retry; if the result itself is invalid, a retry cannot succeed, so cancel the parent. **Cancel instance #N** on that incident does so, and the incident closes because nothing is left to deliver. |
 | Descendant stays `running` after a parent's cancel | Check Workers and the `callCancel` query above. Retry an incident on that job; its owner may already be terminal, which is allowed. **Cancel instance #N** on that incident cancels the child directly instead, which also closes the incident. |
 | `job_invariant_violation` naming a call chain | An instance's persisted call ancestry is inconsistent, so nothing transitions on it. Investigate the rows; do not edit them to force progress. |
+| Automatic multi-instance item incident (`multiInstanceItem`, or a call item's `callStart` or `callResume`) | The body admits no further items until it is retried; items already running finish. Correct the cause, then retry: only that item runs again, and an item whose result was already saved publishes it without repeating its HTTP call, script, or child. An `output_version_conflict` retry publishes the saved result over the newer value, so check that value first. See [automatic multi-instance activities](#automatic-multi-instance-activities). |
+| Automatic body shows **Needs attention** with every item done | Its `multiInstanceComplete` job could not publish the result, usually an `output_version_conflict` on the result variable. Retry the incident; saved item results are published without running items again. |
 | `automatic_loop_limit` incident | Fix or review the automatic loop. A manual retry grants a fresh bounded allowance to the same stable job; it is not an unlimited retry exemption. |
 | `timer_schedule_failed` incident | A timer start's first due time could not be computed: its business calendar is missing, the Worker host does not know the calendar's or the cron schedule's time zone, the calendar cannot count the duration within 36,525 days, or the cron schedule has no occurrence within 36,525 days. The timer start stays paused. Fix the calendar or the host's time-zone data, then retry the incident; the next timer-start reconciliation schedules it again or opens a new incident. |
 | A cron timer start's job fails with `... has no occurrence within 36,525 days ...` or `... cannot be scheduled: timeZone ...` | Calculating the next occurrence failed while the job fired, so the instance it started was rolled back with it. The job retries and then opens a `job_execution_failed` incident. Fix the Worker host's time-zone data, then retry; the retry checks lateness again and may skip that occurrence. See [cron timer starts](#cron-timer-starts). |

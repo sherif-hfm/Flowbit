@@ -38,8 +38,7 @@ public sealed partial class WorkflowEngineService(
     ICallActivityRepository? callActivities = null,
     CallActivityOptions? callActivityOptions = null,
     IAutomaticMultiInstanceRepository? automaticMultiInstances = null,
-    AutomaticMultiInstanceCoordinator? automaticMultiInstanceCoordinator = null,
-    AutomaticMultiInstanceOptions? automaticMultiInstanceOptions = null)
+    AutomaticMultiInstanceCoordinator? automaticMultiInstanceCoordinator = null)
     : IWorkflowEngineService, IWorkflowJobProcessor,
       IInstanceVersionChangeBatchExecutor, IConditionalEventRuntimeCoordinator,
       IAdministrativeActionExecutor
@@ -5388,7 +5387,6 @@ public sealed partial class WorkflowEngineService(
                 var isExternalOrCpuActivity =
                     BpmnFlowNodeTypes.IsServiceTask(currentNode.Type)
                     || BpmnFlowNodeTypes.IsScriptTask(currentNode.Type);
-                EnsureAutomaticMultiInstanceRuntimeAvailable(currentNode);
                 var requiresSharedServiceIsolation =
                     BpmnFlowNodeTypes.IsServiceTask(currentNode.Type)
                     && string.Equals(

@@ -9,7 +9,7 @@ using Xunit;
 
 namespace Flowbit.BrowserTests;
 
-/// <summary>Development authoring capability and standalone release guard on the real shared editor.</summary>
+/// <summary>Automatic multi-instance authoring in the real shared editor, hosted and standalone.</summary>
 public sealed class AutomaticMultiInstanceEditorBrowserTests : IAsyncLifetime
 {
     private WebApplication? host;
@@ -47,7 +47,7 @@ public sealed class AutomaticMultiInstanceEditorBrowserTests : IAsyncLifetime
     [InlineData(1440, 900)]
     [InlineData(1024, 768)]
     [InlineData(390, 844)]
-    public async Task DevelopmentControlsPreserveContractsAndStandaloneStaysClosed(int width, int height)
+    public async Task AutomaticControlsPreserveContractsInHostedAndStandaloneEditors(int width, int height)
     {
         var diagnostics = new List<string>();
         await using var context = await browser!.NewContextAsync(new() { ViewportSize = new() { Width = width, Height = height } });
@@ -154,11 +154,9 @@ public sealed class AutomaticMultiInstanceEditorBrowserTests : IAsyncLifetime
             await page.GotoAsync(address + "/?mode=standalone");
             await page.WaitForFunctionAsync("window.editorReady === true");
             await SelectBySearchAsync(page, 2);
-            await Assertions.Expect(page.GetByRole(AriaRole.Heading, new() { Name = "Automatic multi-instance" })).ToHaveCountAsync(0);
-            Assert.True(await page.EvaluateAsync<bool>("() => { try { window.editor.prepareExport(); return false; } catch { return true; } }"));
-            // Every imported body is refused where the capability is closed.
-            foreach (var id in new[] { 2, 4, 5 })
-                await Assertions.Expect(page.Locator("#validation-errors")).ToContainTextAsync($"Flow node #{id} automatic multiInstance");
+            // The standalone editor offers the same controls and saves the same bodies.
+            await Assertions.Expect(page.GetByRole(AriaRole.Heading, new() { Name = "Automatic multi-instance" })).ToHaveCountAsync(1);
+            Assert.False(await page.EvaluateAsync<bool>("() => { try { window.editor.prepareExport(); return false; } catch { return true; } }"));
             await page.ScreenshotAsync(new() { Path = Path.Combine(artifacts, $"standalone-{width}.png") });
             Assert.Empty(diagnostics);
         }
@@ -172,7 +170,7 @@ public sealed class AutomaticMultiInstanceEditorBrowserTests : IAsyncLifetime
             await File.WriteAllTextAsync(Path.Combine(artifacts, $"evidence-{width}.json"), JsonSerializer.Serialize(new
             {
                 browser = browser.Version, address, viewport = new { width, height }, diagnostics,
-                scope = "Shared editor public Development mount and standalone; no API, Worker or adapter execution."
+                scope = "Shared editor hosted and standalone mounts; no API, Worker or adapter execution."
             }, new JsonSerializerOptions { WriteIndented = true }));
         }
     }
@@ -202,7 +200,7 @@ public sealed class AutomaticMultiInstanceEditorBrowserTests : IAsyncLifetime
         <style>body{margin:0}#editor{height:100vh;width:100vw}</style></head><body><div id="editor"></div>
         <script src="/editor-template.js"></script><script src="/flowbit-editor.js"></script><script>
         fetch('/workflow').then(response=>response.json()).then(model=>{
-          window.editor=FlowbitEditor.mount(document.querySelector('#editor'),{mode:'{{mode}}',automaticMultiInstanceEnabled:true});
+          window.editor=FlowbitEditor.mount(document.querySelector('#editor'),{mode:'{{mode}}'});
           window.editor.load(model);window.editor.setHostState({loaded:true,saving:false,canSave:true,version:'Development fixture'});window.editorReady=true;
         });</script></body></html>
         """;

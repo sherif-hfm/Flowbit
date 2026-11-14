@@ -368,7 +368,6 @@ public sealed partial class HostedProcess : IAsyncDisposable
             "WORKFLOWAUDIT__",
             "WORKFLOWAI__",
             "WORKFLOWAIDOCUMENTS__",
-            "WORKFLOWAUTOMATICMULTIINSTANCE__",
             "FLOWBITWORKER__",
         ];
         string[] stripExact =

@@ -282,26 +282,20 @@ not inject application state or edit database rows to manufacture acceptance.
 
 ## Runtime engine (`Flowbit/`)
 
-### Automatic multi-instance foundation (TASK-05A)
+### Automatic multi-instance activities (TASK-05)
 
-Automatic service/script/call MI is under development until the TASK-05 integration
-step. The temporary `WorkflowAutomaticMultiInstance:AllowInDevelopment` option opens
-common validation only in Development; the API and the Worker each resolve it for
-their own environment. The hosted editor takes the API's effective value from
-`GET /api/workflows/authoring-capabilities`, never from the UI host's configuration;
-standalone and other environments keep the gate closed. Publication, runtime entry,
-and item processing each require the open switch and an installed activity kind:
-`AutomaticMultiInstanceRules.InstalledAdapterKinds` is the one list the three guards
-read (`WorkflowDefinitionReadinessChecker.EnsureDurablePublicationAllowed`,
-`EnsureAutomaticMultiInstanceRuntimeAvailable`, the item-job dispatch in
-`WorkflowEngineService.AutomaticMultiInstanceItems.cs`, a call item's `callStart`
-and `callResume`, and every body's dispatch and completion jobs, the last three checked
-once the job is known to own live work so stale work still closes quietly), so a body
-published on an
-open host neither starts nor runs on a closed one; its jobs retry, then wait in an
-incident. `serviceTask`, `scriptTask`, and `callActivity` are installed. Add a kind only
-in the change that completes its entry, item, failure, and cancellation paths, and never
-let an automatic body run as one ordinary activity.
+`multiInstance` on a `serviceTask`, `scriptTask`, or `callActivity` makes an automatic
+body (`AutomaticMultiInstanceRules.IsAutomaticBody`) that saves, publishes, and runs on
+every host; there is no feature switch. Publication goes through the ordinary durable
+gate (`WorkflowDurableProcessing:PublicationEnabled`,
+`WorkflowDefinitionReadinessChecker.EnsureDurablePublicationAllowed`), and the editor,
+standalone and hosted alike, always shows the controls. Every node type with a body has
+an adapter: service and script bodies enter through their `asyncBefore` job and run
+`multiInstanceItem` jobs dispatched by node type in
+`WorkflowEngineService.AutomaticMultiInstanceItems.cs`; call bodies enter through
+`multiInstanceStart` and run their items as call invocations. Never let an automatic
+body run as one ordinary activity, and add `multiInstance` to another node type only in
+a change that completes its entry, item, failure, and cancellation paths.
 
 **Call adapter (TASK-05D).** `WorkflowEngineService.AutomaticMultiInstanceCalls.cs` owns
 call bodies; they never use the service/script `asyncBefore` entry or `multiInstanceItem`
@@ -1007,8 +1001,9 @@ Storage follows the hybrid design:
   Mixed conditional-aware and legacy replicas are unsupported.
 - **Conditional boundary events.** A `conditionalBoundaryEvent` has no incoming
   flow, one unconditional outgoing flow, and an `attachedToRef` pointing to a
-  normal or multi-instance user task, an intermediate message/timer wait, or an
-  automatic task with `asyncBefore: true`. Missing `cancelActivity` means
+  normal or multi-instance user task, an intermediate message/timer wait, an
+  automatic task with `asyncBefore: true`, or a multi-instance call activity.
+  Missing `cancelActivity` means
   interrupting and missing `conditional.deliveryMode` means `atomic`. A host may
   have eight timer and conditional boundaries combined; its error boundary is
   separate. Conditions use the same limits and instance-only dependency rules as
@@ -3100,7 +3095,7 @@ when extending the model so new features stay close to BPMN terminology.
 | `type: "task"` | Abstract/automatic Task | Pass-through activity completed with no user action; closest to a BPMN Task without an implementation. |
 | `type: "serviceTask"` | Service Task | Automatic REST call (SVC marker); templated request from variables, response mapped back into variables. REST only; supports synchronous execution or durable asynchronous execution with Worker retries/incidents. |
 | `type: "scriptTask"` | Script Task | Automatic variable mutation (SCRIPT marker); either NCalc assignments or a Jint-run JavaScript body (`scriptFormat`) writes process variables during the pass-through hop. Simplified: both run in-process (Jint, sandboxed, no CLR) rather than spawning an external script engine/process. |
-| `type: "callActivity"` | Call Activity | Invokes a reusable workflow family's published default through durable jobs, with typed whole-variable mappings. Simplified: no version selection, no boundary besides one catch-all error, and a fixed system actor. |
+| `type: "callActivity"` | Call Activity | Invokes a reusable workflow family's published default through durable jobs, with typed whole-variable mappings. With `multiInstance`, starts one child per collection item from one pinned version. Simplified: no version selection, no boundary besides one catch-all error (a multi-instance call also takes timer and conditional boundaries), and a fixed system actor. |
 | `type: "exclusiveGateway"` | Exclusive Gateway (XOR) | X-marked diamond. Split form routes by ascending condition priority, else the required default; merge form passes every arriving token without synchronization. |
 | `type: "parallelGateway"` | Parallel Gateway (AND) | Plus-marked diamond. Two or more outgoing flows fork durable tokens; two or more incoming and exactly one outgoing form an all-static-incoming join. Fork and join pairing is inferred from runtime scope ancestry rather than authored references. |
 | `type: "inclusiveGateway"` | Inclusive Gateway (OR) | Circle-marked diamond. Split form selects every matching condition or its required default; merge form synchronizes only inputs that can still receive a token according to cached topology and active positions. |

@@ -12,7 +12,7 @@ namespace Flowbit.BrowserAcceptanceTests;
 
 /// <summary>
 /// Hosted authoring of service, NCalc, JavaScript and call bodies in the real Flowbit.Ui
-/// editor, whose capability comes from the API with the release switch open. Saves go
+/// editor. Saves go
 /// through the real API; read-back is authenticated HTTP. Assertions use labels and
 /// behaviour, not the inspector's help wording.
 /// </summary>

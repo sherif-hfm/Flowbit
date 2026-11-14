@@ -229,11 +229,9 @@ public sealed class EditorAutomaticMultiInstanceCallTests
 
     private static string? ServerError(string json)
     {
-        var options = new AutomaticMultiInstanceOptions { AllowInDevelopment = true };
-        options.ResolveForEnvironment(isDevelopment: true);
         var validator = new WorkflowDefinitionValidator(
             new JintScriptEvaluator(new ScriptOptions(), NullLogger<JintScriptEvaluator>.Instance),
-            new ServiceTaskOptions(), automaticMultiInstanceOptions: options);
+            new ServiceTaskOptions());
         var definition = JsonSerializer.Deserialize<WorkflowModel>(json, new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
         try
         {
@@ -251,7 +249,6 @@ public sealed class EditorAutomaticMultiInstanceCallTests
     private static Engine Engine()
     {
         var engine = EditorRuntimeSmokeTests.CreateEditorEngine(mode: "hosted");
-        engine.Execute("options.automaticMultiInstanceEnabled = true;");
         return engine;
     }
 

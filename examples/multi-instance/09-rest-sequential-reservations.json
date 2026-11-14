@@ -1,0 +1,210 @@
+{
+  "id": "example-multi-instance-rest-sequential",
+  "name": "Multi-Instance Example 09 - Sequential REST Reservations",
+  "initialEventId": 1,
+  "variables": [
+    {
+      "id": 1,
+      "name": "orderLines",
+      "dataType": "json",
+      "isArray": true,
+      "nullable": false,
+      "required": false,
+      "defaultValue": [
+        {
+          "sku": "A-100",
+          "quantity": 2
+        },
+        {
+          "sku": "B-200",
+          "quantity": 1
+        },
+        {
+          "sku": "C-300",
+          "quantity": 5
+        }
+      ],
+      "validation": null
+    },
+    {
+      "id": 2,
+      "name": "reservationResults",
+      "dataType": "json",
+      "isArray": false,
+      "nullable": false,
+      "required": false,
+      "defaultValue": [],
+      "validation": null
+    }
+  ],
+  "lanes": [],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Order Received",
+      "externalId": "START_ORDER_RECEIVED",
+      "type": "startEvent",
+      "laneId": null,
+      "x": 60,
+      "y": 140,
+      "roles": [],
+      "variables": [
+        {
+          "id": 1,
+          "name": "orderId",
+          "dataType": "string",
+          "isArray": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": "Len(orderId) > 0"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "Reserve Stock Line by Line",
+      "externalId": "SERVICE_RESERVE_STOCK_LINES",
+      "type": "serviceTask",
+      "laneId": null,
+      "x": 220,
+      "y": 128,
+      "roles": [],
+      "variables": [],
+      "asyncBefore": true,
+      "asyncAfter": false,
+      "multiInstance": {
+        "mode": "sequential",
+        "source": "collection",
+        "collectionVariable": "orderLines",
+        "completionEvaluation": "afterAll",
+        "maxConcurrency": 1,
+        "outputVariables": [
+          {
+            "name": "reservationId",
+            "dataType": "string",
+            "isArray": false,
+            "nullable": false
+          },
+          {
+            "name": "reservedQuantity",
+            "dataType": "number",
+            "isArray": false,
+            "nullable": false,
+            "validation": "reservedQuantity > 0"
+          },
+          {
+            "name": "warehouse",
+            "dataType": "string",
+            "isArray": false,
+            "nullable": true
+          }
+        ],
+        "resultVariable": "reservationResults"
+      },
+      "service": {
+        "type": "rest",
+        "method": "POST",
+        "url": "${config.exampleApiBaseUrl}/orders/${orderId}/reservations",
+        "headers": [
+          {
+            "name": "Authorization",
+            "value": "Bearer ${config.exampleApiToken}"
+          },
+          {
+            "name": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "name": "Idempotency-Key",
+            "value": "flowbit-${sys.jobId}"
+          }
+        ],
+        "body": "{\"orderId\":\"${orderId}\",\"lineNumber\":${mi.index},\"line\":${mi.item}}",
+        "timeoutSeconds": 10,
+        "statusVariable": null,
+        "outputMappings": [
+          {
+            "variable": "reservationId",
+            "path": "reservationId",
+            "dataType": "string",
+            "isArray": false,
+            "required": true
+          },
+          {
+            "variable": "reservedQuantity",
+            "path": "quantity",
+            "dataType": "number",
+            "isArray": false,
+            "required": true
+          },
+          {
+            "variable": "warehouse",
+            "path": "warehouse",
+            "dataType": "string",
+            "isArray": false,
+            "required": false
+          }
+        ]
+      }
+    },
+    {
+      "id": 3,
+      "name": "Confirm Reservations",
+      "externalId": "TASK_CONFIRM_RESERVATIONS",
+      "type": "userTask",
+      "laneId": null,
+      "x": 520,
+      "y": 128,
+      "roles": [
+        "ExampleReviewer"
+      ],
+      "variables": [],
+      "requiresClaim": false,
+      "claimMode": "fresh"
+    },
+    {
+      "id": 4,
+      "name": "Stock Reserved",
+      "externalId": "END_STOCK_RESERVED",
+      "type": "endEvent",
+      "laneId": null,
+      "x": 800,
+      "y": 140,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "Queue the reservations",
+      "externalId": "FLOW_START_TO_RESERVE",
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 201,
+      "name": "Every line reserved",
+      "externalId": "FLOW_RESERVE_TO_CONFIRM",
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 301,
+      "name": "Confirm",
+      "externalId": "FLOW_CONFIRM_RESERVATIONS",
+      "sourceRef": 3,
+      "targetRef": 4,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "cancelRoles": [],
+  "unclaimRoles": [],
+  "taskAssignmentRoles": [],
+  "taskDistribution": null
+}

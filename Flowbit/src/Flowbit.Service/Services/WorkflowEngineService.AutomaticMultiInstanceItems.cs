@@ -17,12 +17,11 @@ public sealed partial class WorkflowEngineService
 {
     private const string AutomaticItemFailureIncident = "job_execution_failed";
 
-    // Entry and item jobs of service and script bodies arrive here. Each installed
-    // adapter adds one case; every other kind keeps failing closed exactly as before.
+    // Entry and item jobs of service and script bodies arrive here, one case per adapter.
+    // Calls enter through multiInstanceStart and their own call messages instead.
     private Task ProcessAutomaticMultiInstanceEntryJobAsync(WorkflowJobLeaseRecord lease,
         WorkflowJobFence fence, FlowNodeModel node, CancellationToken cancellationToken)
     {
-        EnsureAutomaticMultiInstanceRuntimeAvailable(node);
         if (BpmnFlowNodeTypes.IsScriptTask(node.Type))
             return ProcessAutomaticBodyEntryAsync(lease, fence, AutomaticScriptInstanceInputNames, cancellationToken);
         if (BpmnFlowNodeTypes.IsServiceTask(node.Type))
@@ -33,13 +32,6 @@ public sealed partial class WorkflowEngineService
     private Task ProcessAutomaticMultiInstanceItemJobAsync(WorkflowJobLeaseRecord lease,
         WorkflowJobFence fence, CancellationToken cancellationToken)
     {
-        // A closed switch is a host setting, not a broken job: the item fails like any
-        // refused work, keeps its slot, and resumes from its incident on an open host.
-        if (automaticMultiInstanceOptions?.Enabled != true)
-            throw new WorkflowDomainException(
-                $"Automatic multi-instance node #{lease.Job.NodeId} cannot run on this host: automatic multi-instance runs only on a Development host with the release switch open.");
-        if (!AutomaticMultiInstanceRules.IsAdapterInstalled(lease.Job.NodeType))
-            throw new WorkflowJobInvariantException("The automatic activity item adapter is not installed.");
         if (BpmnFlowNodeTypes.IsScriptTask(lease.Job.NodeType))
             return ProcessAutomaticScriptItemAsync(lease, fence, cancellationToken);
         if (BpmnFlowNodeTypes.IsServiceTask(lease.Job.NodeType))
@@ -48,10 +40,9 @@ public sealed partial class WorkflowEngineService
     }
 
     // The node a body's jobs name must still be an automatic body of that same kind.
-    private static bool IsInstalledAutomaticBodyOfKind(FlowNodeModel node, string? jobNodeType) =>
+    private static bool IsAutomaticBodyOfKind(FlowNodeModel node, string? jobNodeType) =>
         AutomaticMultiInstanceRules.IsAutomaticBody(node)
-        && string.Equals(node.Type, jobNodeType, StringComparison.Ordinal)
-        && AutomaticMultiInstanceRules.IsAdapterInstalled(node.Type);
+        && string.Equals(node.Type, jobNodeType, StringComparison.Ordinal);
 
     private static string AutomaticActivityLabel(string? nodeType) =>
         nodeType is not null && BpmnFlowNodeTypes.IsServiceTask(nodeType) ? "Service task" : "Script task";
@@ -74,7 +65,7 @@ public sealed partial class WorkflowEngineService
             token = RequireFencedToken(instance, job, token);
             var definition = (await GetWorkflowAsync(instance.WorkflowDefinitionId, cancellationToken)).Definition;
             var node = GetFlowNode(definition, token.NodeId);
-            if (!IsInstalledAutomaticBodyOfKind(node, lease.Job.NodeType))
+            if (!IsAutomaticBodyOfKind(node, lease.Job.NodeType))
                 throw new WorkflowJobInvariantException("The automatic entry no longer names a body of its activity kind.");
             var actor = ReadJobActor(job);
             var stored = await runtime.LoadLatestVariableVersionsAsync(instance.Id, cancellationToken);
@@ -250,7 +241,7 @@ public sealed partial class WorkflowEngineService
         EnsureJobFence(job, fence);
         var definition = (await GetWorkflowAsync(body.WorkflowDefinitionId, cancellationToken)).Definition;
         var node = GetFlowNode(definition, body.NodeId);
-        if (!IsInstalledAutomaticBodyOfKind(node, lease.Job.NodeType))
+        if (!IsAutomaticBodyOfKind(node, lease.Job.NodeType))
             throw new WorkflowJobInvariantException("The automatic item no longer names a body of its activity kind.");
         var actor = ReadJobActor(job);
         return new(instance, token, body, job, definition, node, actor, itemId)

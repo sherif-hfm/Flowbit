@@ -235,6 +235,25 @@ public sealed class EditorAutomaticMultiInstanceScriptTests
         Assert.True(engine.Evaluate("nodeRedraws").AsNumber() > 0);
     }
 
+    // A body writes its error code through a declared contract, so save refuses an
+    // undeclared error target rather than letting the route fail at runtime.
+    [Fact]
+    public void A_bodys_error_boundary_target_must_be_declared_on_both_sides()
+    {
+        var json = SetIn(Definition, "flowNodes", """
+            {"id":41,"type":"errorBoundaryEvent","name":"Failed","attachedToRef":40,"errorVariable":"failure","x":300,"y":250}
+            """);
+        json = SetIn(json, "flowNodes", """{"id":6,"type":"endEvent","name":"Handled","x":450,"y":320}""");
+        json = SetIn(json, "sequenceFlows", """{"id":4101,"sourceRef":41,"targetRef":6}""");
+        const string expected = "Automatic multi-instance activity #40 boundary error target 'failure' must be a declared process variable.";
+        Assert.Equal(expected, ServerError(json));
+        Assert.Contains(expected, EditorErrors(json));
+
+        json = SetIn(json, "variables", """{"id":9,"name":"failure","dataType":"string","isArray":false,"nullable":true}""");
+        Assert.Null(ServerError(json));
+        Assert.Empty(EditorErrors(json));
+    }
+
     [Fact]
     public void A_JavaScript_body_is_not_checked_for_aggregate_reads()
     {
@@ -306,11 +325,9 @@ public sealed class EditorAutomaticMultiInstanceScriptTests
 
     private static string? ServerError(string json)
     {
-        var options = new AutomaticMultiInstanceOptions { AllowInDevelopment = true };
-        options.ResolveForEnvironment(isDevelopment: true);
         var validator = new WorkflowDefinitionValidator(
             new JintScriptEvaluator(new ScriptOptions(), NullLogger<JintScriptEvaluator>.Instance),
-            new ServiceTaskOptions(), automaticMultiInstanceOptions: options);
+            new ServiceTaskOptions());
         var definition = JsonSerializer.Deserialize<WorkflowModel>(json, new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
         try
         {
@@ -328,7 +345,6 @@ public sealed class EditorAutomaticMultiInstanceScriptTests
     private static Engine Engine()
     {
         var engine = EditorRuntimeSmokeTests.CreateEditorEngine(mode: "hosted");
-        engine.Execute("options.automaticMultiInstanceEnabled = true;");
         return engine;
     }
 

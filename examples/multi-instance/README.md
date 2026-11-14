@@ -1,8 +1,15 @@
-# Multi-instance user-task examples
+# Multi-instance examples
 
-The numbered sequence isolates each multi-instance behavior, then combines it
-with aggregate routing, parent interruption, timers, and durable jobs. All
-examples keep the required engine-only default outcome visible in the diagram.
+Examples 01 to 07 are multi-instance **user tasks**: the numbered sequence isolates
+each behavior, then combines it with aggregate routing, parent interruption, timers,
+and durable jobs. All of them keep the required engine-only default outcome visible
+in the diagram. Examples 08 to 12 are
+[automatic multi-instance activities](#automatic-multi-instance-activities): REST
+service tasks and script tasks that run once per collection item. The
+[multi-instance call example](../call-activities/04-multi-instance-approval-call.json)
+is with the call activity examples.
+
+## Multi-instance user tasks
 
 | Example | Start values | Actors and actions | Expected result | API, Worker, and configuration |
 | --- | --- | --- | --- | --- |
@@ -163,3 +170,124 @@ and PostgreSQL. Example
 06 authors `asyncBefore`, `asyncAfter`, and a recurring non-interrupting timer
 boundary, so run `Flowbit.Worker` as well. Its 15-second local timings are for
 demonstration; increase them before adapting the definition for production.
+Examples 08 through 12 always need the Worker, which runs every item.
+
+## Automatic multi-instance activities
+
+A `serviceTask`, `scriptTask`, or `callActivity` with `multiInstance` runs its
+activity once per element of a typed collection, as durable Worker jobs, and
+publishes one index-ordered result. Items are never user tasks: nothing appears in
+an inbox until the body completes. See the
+[node reference](../../docs/node-reference.md#automatic-multi-instance-properties)
+for the JSON and the
+[developer guide](../../docs/developer-guide.md#process-a-collection-with-automatic-multi-instance)
+for snapshots, idempotency, and recovery.
+
+| Example | Start values | Actors and actions | Expected result | API, Worker, and configuration |
+| --- | --- | --- | --- | --- |
+| [`08-rest-parallel-notifications.json`](08-rest-parallel-notifications.json) | Required `batchId`, such as `batch-2026-11-14`. `supplierIds` defaults to four suppliers. Any authenticated actor can start it. | None until `ExampleReviewer` takes **Finish review** on **Review Notifications**. | Four `POST` requests, at most two at a time, each with `Idempotency-Key: flowbit-<job id>`. `notificationResults` holds four `completed` rows in supplier order, each with `receiptId` and `httpStatus`, whatever order the responses arrive in. | API, PostgreSQL, Worker, the [notification mock](#rest-mock-contracts), and `${config.exampleApiBaseUrl}` and `${config.exampleApiToken}` on the Worker. |
+| [`09-rest-sequential-reservations.json`](09-rest-sequential-reservations.json) | Required `orderId`, such as `ORD-1001`. `orderLines` defaults to three `json` objects. | `ExampleReviewer` takes **Confirm** on **Confirm Reservations**. | One reservation request at a time, in line order; each sends its whole line object. `reservationResults` holds three rows with `reservationId`, `reservedQuantity`, and `warehouse`, which is `null` when the response omits it. | As example 08, with the [reservation mock](#rest-mock-contracts). |
+| [`10-ncalc-script-per-item.json`](10-ncalc-script-per-item.json) | None. `amounts` defaults to `[10, 20, 30]` and `multiplier` to `2`. | None; the instance completes. | `calculationResults` rows have `scaledAmount` and `adjustedAmount` of `20`/`20`, `40`/`41`, and `60`/`62`. `maxConcurrency` is omitted, so `Workflow.MultiInstance.DefaultConcurrency` (default `4`) sets the window. | API, PostgreSQL, and Worker; no configuration. See the [walkthrough](#walkthrough-ncalc-body). |
+| [`11-javascript-script-per-item.json`](11-javascript-script-per-item.json) | None. `orderLines` defaults to three `json` objects and `multiplier` to `3`. | None; the instance completes. | `lineResults` rows have `lineAmount` `30`, `21`, and `9`, and `lineSummary` such as `{ "line": 1, "lineCount": 3, "sku": "A", "amount": 30 }`. A line without numeric `quantity` and `unitPrice` fails with `script_task_failed` and, with no boundary, waits in an incident after its retries. | API, PostgreSQL, and Worker; no configuration. |
+| [`12-rest-error-and-deadline-boundaries.json`](12-rest-error-and-deadline-boundaries.json) | None. `invoiceIds` defaults to three invoices. | `ExampleReviewer` confirms normal postings; `ExampleOperator` handles **Review Failed Posting** or **Investigate Slow Posting**. | All three succeed within 30 seconds: **Confirm Postings** with three rows. One returns a non-2xx status: the catch-all boundary stops the body at once, `postingFailure` is `service_task_failed`, and `postingResults` holds `completed`, `failed`, and `cancelled` rows. Responses held for more than 30 seconds: the interrupting timer cancels unfinished items, `postingResults` stays `[]`, and late responses are discarded. | As example 08, with the [posting mock](#rest-mock-contracts). |
+
+### Shared contract of automatic bodies
+
+- `multiInstance.collectionVariable` names a declared typed array. The body copies it
+  once, when its Worker job initializes the body, so later changes do not affect the
+  running body. An empty array completes at once with `[]`.
+- Items read `mi.item`, zero-based `mi.index`, and `mi.total`, and the instance
+  variables frozen with the collection. They write only the declared local
+  `outputVariables` (or `readWrite` shared aliases), never ordinary instance variables.
+- `completionEvaluation: "afterAll"` is required, and the body has exactly one
+  unconditional outgoing flow: there are no votes, outcomes, or engine-only default.
+- Every row of `resultVariable` has `kind: "item"`, `index`, the copied `item`,
+  `status`, and the item's local `variables`:
+
+```json
+{ "kind": "item", "index": 0, "item": 10, "status": "completed", "variables": { "scaledAmount": 20, "adjustedAmount": 20 } }
+```
+
+- A service or script body requires `asyncBefore: true`. With no applicable error
+  boundary, a failed item retries under the node's `job` policy (10 seconds, 1 minute,
+  and 5 minutes by default) and then waits in an incident; the body admits no further
+  items until an operator retries it. Items cannot be skipped, so model a catch-all
+  boundary or an interrupting deadline, as example 12 does, when a batch must finish.
+
+### REST mock contracts
+
+These definitions contain no public URL or secret. Point
+`${config.exampleApiBaseUrl}` at a mock you control, as described in the
+[service-task guide](../service-tasks/README.md#required-trusted-configuration), and
+configure both values on every Worker, which sends the requests. Every request carries
+`Authorization: Bearer <token>`, `Content-Type: application/json`, and an
+`Idempotency-Key` that stays the same for every retry of one item: deduplicate on it,
+because a request can be sent again after a Worker restart.
+
+| Example | Request | Successful response |
+| --- | --- | --- |
+| 08 | `POST /suppliers/supplier-a/notifications` with `{"batchId":"batch-2026-11-14","supplierId":"supplier-a","index":0,"total":4}` | Any 2xx with `{ "id": "notice-supplier-a" }`. The status is saved as the item's `httpStatus`. |
+| 09 | `POST /orders/ORD-1001/reservations` with `{"orderId":"ORD-1001","lineNumber":0,"line":{"sku":"A-100","quantity":2}}` | 2xx with `{ "reservationId": "R-1", "quantity": 2, "warehouse": "north" }`. `warehouse` is optional; a `quantity` of `0` fails the item's local validation with `multi_instance_result_invalid`. |
+| 12 | `POST /invoices/INV-1001/postings` with `{"invoiceId":"INV-1001"}` | 2xx with `{ "postingId": "P-INV-1001" }`. Return `422` for one invoice to take the error path, or hold every response for 35 seconds, under the 60-second request timeout, to take the deadline path. |
+
+### Walkthrough: NCalc body
+
+These commands import and publish example 10, start it, wait for the Worker to finish
+the body, and print its progress and result. `jq` and cURL are required for Bash.
+Change `$api`/`api` to your local API URL, and use a development JWT holding the
+`admin` role. The API must allow durable publication and a Worker must be running.
+
+#### PowerShell 7
+
+```powershell
+$api = 'http://127.0.0.1:15017'
+$token = Read-Host 'Paste the development JWT' -MaskInput
+$headers = @{ Authorization = "Bearer $token" }
+$definition = Get-Content -Raw 'examples/multi-instance/10-ncalc-script-per-item.json' | ConvertFrom-Json
+$body = @{ definition = $definition; publish = $true } | ConvertTo-Json -Depth 100
+$workflow = Invoke-RestMethod "$api/api/workflows" -Method Post -Headers $headers -ContentType 'application/json' -Body $body
+$body = @{ workflowId = $workflow.id; startEventId = 1; variables = @{} } | ConvertTo-Json
+$instance = Invoke-RestMethod "$api/api/instances" -Method Post -Headers $headers -ContentType 'application/json' -Body $body
+$deadline = [DateTime]::UtcNow.AddMinutes(2)
+do {
+  Start-Sleep -Seconds 1
+  $detail = Invoke-RestMethod "$api/api/instances/$($instance.id)" -Headers $headers
+} while ($detail.status -eq 'running' -and [DateTime]::UtcNow -lt $deadline)
+$detail.automaticMultiInstances | Format-List executionId, status, totalCount, completedCount, effectiveConcurrency
+$result = @($detail.variables | Where-Object variableName -eq 'calculationResults' | Sort-Object id)[-1]
+$result.value | ConvertTo-Json -Depth 10
+```
+
+#### Bash
+
+```bash
+set -euo pipefail
+api='http://127.0.0.1:15017'
+read -r -s -p 'Paste the development JWT: ' token
+printf '\n'
+http() {
+  local method="$1" path="$2"
+  shift 2
+  curl --fail-with-body --silent --show-error --request "$method" \
+    --header "Authorization: Bearer $token" "$api$path" "$@"
+}
+body=$(jq -n --slurpfile definition examples/multi-instance/10-ncalc-script-per-item.json '{definition: $definition[0], publish: true}')
+workflow_id=$(http POST /api/workflows --header 'Content-Type: application/json' --data-binary "$body" | jq -er '.id')
+body=$(jq -n --argjson id "$workflow_id" '{workflowId: $id, startEventId: 1, variables: {}}')
+instance_id=$(http POST /api/instances --header 'Content-Type: application/json' --data-binary "$body" | jq -er '.id')
+deadline=$((SECONDS + 120))
+while :; do
+  sleep 1
+  detail=$(http GET "/api/instances/$instance_id")
+  status=$(jq -er '.status' <<<"$detail")
+  [[ "$status" != 'running' || "$SECONDS" -ge "$deadline" ]] && break
+done
+jq '.automaticMultiInstances[] | {executionId, status, totalCount, completedCount, effectiveConcurrency}' <<<"$detail"
+jq '[.variables[] | select(.variableName == "calculationResults")] | max_by(.id) | .value' <<<"$detail"
+```
+
+The instance status is `completed`, the body reports `totalCount` and
+`completedCount` of `3`, and the result has the three rows in the table above. To
+see the items themselves, read
+`GET /api/multi-instance-executions/{executionId}/items` with the printed execution
+ID.
