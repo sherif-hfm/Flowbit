@@ -462,6 +462,16 @@ public sealed class BrowserStackFixture : IAsyncLifetime
                     throw new ArgumentException("Acceptance workflow context keys must be alphanumeric.");
                 environment[$"WorkflowContext__Config__{key}"] = value;
             }
+            foreach (var (key, value) in acceptance.HostSettings)
+            {
+                var segments = key.Split("__");
+                if (segments.Length < 2 || segments.Any(segment => segment.Length == 0
+                        || segment.Any(character => !char.IsAsciiLetterOrDigit(character))))
+                    throw new ArgumentException($"Acceptance host setting '{key}' must be Section__Key with alphanumeric segments.");
+                if (environment.Keys.Any(existing => string.Equals(existing, key, StringComparison.OrdinalIgnoreCase)))
+                    throw new ArgumentException($"Acceptance host setting '{key}' would replace a value the fixture owns.");
+                environment[key] = value;
+            }
         }
         return environment;
     }
@@ -562,6 +572,7 @@ public sealed class BrowserStackFixture : IAsyncLifetime
             apiHostDirectory = acceptance?.ApiHostDirectory,
             uiHostDirectory = acceptance?.UiHostDirectory,
             workerHostDirectory = acceptance?.WorkerHostDirectory,
+            hostSettings = acceptance?.HostSettings,
             scenarios,
         };
         try

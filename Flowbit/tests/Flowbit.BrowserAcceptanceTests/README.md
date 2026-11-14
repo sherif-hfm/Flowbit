@@ -35,7 +35,9 @@ coverage, `--filter FullyQualifiedName~ExpressionTimerAcceptanceTests` for
 the expression-timer scenarios,
 `--filter FullyQualifiedName~CronScheduleAcceptanceTests` for cron timer
 starts, and
-`--filter FullyQualifiedName~CallActivityAcceptanceTests` for call activities.
+`--filter FullyQualifiedName~CallActivityAcceptanceTests` for call activities, and
+`--filter FullyQualifiedName~AutomaticMultiInstance` for automatic multi-instance
+service, script and call bodies (TASK-05).
 Use `--filter FullyQualifiedName~InstanceDiagramHistoryAcceptanceTests` for
 UI-14's durable, delayed-response, keyboard-paging, reactivation, missing-instance,
 API-failure recovery, and expired-token retry scenarios.
@@ -77,6 +79,15 @@ same narrowly scoped example configuration to API and Worker: the loopback
 secret. The
 ordinary smoke fixture remains unable to start a Worker. Example tests do not rewrite
 graphs, database rows, clocks, or real API responses to force an outcome.
+
+`BrowserAcceptanceOptions.HostSettings` adds test-owned host configuration
+(`Section__Key` environment names) to API and Worker; it cannot replace a value the
+fixture already sets. Only `AutomaticMultiInstanceAcceptanceFixture`, the
+`automatic-multi-instance-worker-stack` collection, uses it: it opens the TASK-05A
+Development release switch (`WorkflowAutomaticMultiInstance__AllowInDevelopment=true`)
+on its own stack. Every other collection, and the smoke stack, keeps the switch closed,
+and `HostedProcess` strips any inherited `WORKFLOWAUTOMATICMULTIINSTANCE__` value. When
+the integration change removes the switch, delete that one line of the fixture.
 
 The proxy receives the UI's server-side HTTP calls, forwards real request and
 response content unchanged, and can hold one matching response for a bounded
@@ -128,7 +139,7 @@ and timestamps. Native save dialogs and visual review remain manual gates.
 | A6 | Real cancelled batch with null completion, continued polling, Worker lease recovery, preserved completed work, no duplicate committed actions, terminal polling cessation. |
 | A7 | Identity replacement and clearing hide restricted data; permission-denied and cleared-identity captures; authorized deep-link recovery. |
 | A8, three viewports | Held genuine history/items responses reveal loading branches; release restores the exact real instance row/link and pager; one history and one items request, with no duplicate request after recovery. |
-| Harness, four cases | Smoke rejects Worker activation; proxy transport/gating preserves real content; cleanup releases/disarms gates; ambient endpoint configuration is ignored. |
+| Harness, five cases | Smoke rejects Worker activation; proxy transport/gating preserves real content; cleanup releases/disarms gates; ambient endpoint configuration is ignored; an inherited automatic multi-instance switch is stripped from hosted processes. |
 | Diagram history durable MI, 1440×900 and 390×844 | A real async-after source enters an async-before sequential MI task. Before the Worker runs there is no target entry count; after fan-out, Refresh shows one traversal and two execution records, including the pending child. The real version-change form, compatibility preview and confirmation preserve the toggle and refresh the new exact version's rebound target evidence; two real votes produce one outgoing traversal. |
 | Diagram history identity, 1024×768 | The proxy holds genuine successful summary and version-filtered execution responses while a second tab changes identity. History resets and released old responses cannot restore counts/links. An ordinary reviewer can turn history on again but sees no restricted execution links. |
 | Diagram history durable boundary, 1440×900 | An initially true interrupting conditional boundary queues its real durable continuation. Worker execution adds exactly the ordinary incoming flow and the boundary's outgoing flow; keyboard list selection opens the boundary details. |
@@ -143,6 +154,13 @@ and timestamps. Native save dialogs and visual review remain manual gates.
 | Existing example corrections | Two-step approval's actual one-minute timer return; quorum `joinCancellation` cancels the third review before finalization. |
 | Expression timers (EVENT-01), 1440×900 and 390×844 | The canonical contract-end wait's `${contractEnd}` job is due exactly at the supplied time, on instance detail and in the **Operations** due-time title; an administrative variable update moves the input a day later and the fixture restarts the Worker, yet the saved time fires and **Renew or Close Contract** opens. **Administrative actions** lists the waiting review with both boundaries and their saved due times; a non-interrupting `${reminderAfter}` boundary then adds **Send Reminder** beside the open review, the raw `deadline` boundary then interrupts it, and after completion the reactivation preview warns `timer_boundary_already_due` for that boundary on instance detail. A staged script's boundary that reads a missing `slaDuration` fails both Worker attempts with the job's value-free failure description, and **Operations** lists the open `job_execution_failed` incident; after the value is repaired through the API, keyboard Retry schedules the boundary an hour ahead and the intake continues. |
 | Cron timer starts (EVENT-09), 1440×900, then a 390×844 capture | A published `* * * * *` start in `Etc/UTC` queues its first whole minute after default activation, shown in **Operations** by its due-time tooltip. Each real minute starts one instance at **Review scheduled run** and queues the next minute from the nominal time. With the Worker stopped for 75 seconds past an occurrence, the job stays queued; after the fixture restarts the Worker it completes without a start and the schedule resumes at the first minute after the restart, then fires there. A second version with `0 9 1 1 *` in `Asia/Tokyo`, made the default over HTTP, retires the old schedule, queues midnight UTC on 1 January, and no further minute starts an instance. |
+| Automatic service bodies (TASK-05B), queued/running/completed captures at three viewports | With the Worker stopped the entry is queued and no body exists; once it runs, three held items are active, nobody can act on them, and the diagram details say the body waits for its items. Answers released in reverse order complete out of order, the page's polling shows the count move, and the aggregate keeps index order. Each item sent one request keyed `item-<its job id>`. A sequential body sends nothing for item 1 until item 0 has answered, and an empty collection completes with `[]` and no request. |
+| Service failures and recovery | A transient `503` recovers on its automatic retry while a twice-failing item opens an item incident; the blocked screen, a reviewer's `403` retry, and keyboard **Retry** on Operations follow, and only the failed item calls again with the same key. A caught `409` takes the catch-all boundary with the partial result, and a held item's late answer changes nothing. An answer above 1 MiB fails only its item with `service_task_failed`, never truncated. A shared target changed while an item's request is open, and a shared aggregate changed while the body runs, each open `output_version_conflict`; Operations retry publishes the saved candidate with no new request. |
+| Service boundaries | An interrupting timer starts when the body initializes, not at the queued entry, cancels running items, and late answers commit nothing; a non-interrupting one adds its handler while items keep running. A condition interrupts a queued entry before any item exists. With two parallel bodies, an interrupting condition on one leaves the other running, and a non-interrupting condition adds a handler beside it. An interrupting timer ends a body waiting on an item incident. |
+| Script bodies (TASK-05C) | NCalc sequential assignments see earlier writes; a 60-item JavaScript body pages 50 + 10 items with payload detail. A held items response shows its loading state, an identity change in another tab resets the list and the released stale answer never appears, and a reviewer sees progress but no payload (`403`/`404` detail). A JavaScript item failure waits in an incident until an interrupting condition ends the body. |
+| Version blocker and human MI | An open body blocks **Preview compatibility** with `automatic_multi_instance_open`; after it settles the same preview has no such blocker. A human multi-instance task keeps its own section and has no automatic section. |
+| Automatic call bodies (TASK-05D) | Queued `multiInstanceStart` entry with the Worker stopped; one child per item pinned to version 1; item → child → parent links, a person completing a child from its page, out-of-order completion and ordered results. A sequential body keeps its pin after a new default, refuses deleting the pinned version (`409`), and the next item reads a changed shared input. Parent cancellation fences waiting children at once and keeps a completed child; interrupting and non-interrupting timers while children wait; a condition interrupting a queued entry; a missing target's entry incident (after the control retries, about six minutes) whose Operations retry starts each child once; a shared output conflict on delivery whose retry keeps the same child and invocation; a faulted or directly cancelled child taking the boundary with the partial result. |
+| Hosted authoring, 1440×900 and 1024×768 (390×844 captures) | Service, NCalc, JavaScript and call bodies show their section, mode, collection and canvas marker; concurrency undo/redo; sequential call validation; a non-interrupting conditional boundary connected on the canvas; save, reopen and API read-back; an import with a non-object `multiInstance` and an unknown mode is reported on save, repaired, and saved. A skipped test records the canvas ring that stays solid after **Interrupt attached activity** is unchecked. |
 | Stale cron preview, 1440×900 and 1024×768 | With no Worker, the proxy holds the API's real `200` answer to **Preview next 5** while the button reads as busy, keeps focus, and the status says it is calculating. Editing the expression, or selecting another node and coming back, returns the preview to idle, and the released answer is discarded: no table appears for two seconds. A fresh request then lists both offsets of the 25 October repeated hour for the edited expression. |
 
 Runtime viewports are 1440×900, 1024×768 and 390×844. Administrative cases that
@@ -210,6 +228,16 @@ keeps failing until the fixture releases that specific job. Success returns
 `{"ok":true}`. Tests correlate its observations with real job-attempt records
 and use bounded state polling, not exact timing assertions. See the
 [manual HTTP walkthrough](../../../examples/durable-jobs/README.md).
+
+The automatic multi-instance scenarios use the same service's per-item route,
+`POST /items/{group}/{index}` with `Authorization: Bearer <exampleApiToken>`. Each
+scenario owns a group (`ExampleItemGroup`): by default an item answers 200 with
+`{"id":"receipt-<index>","index":<index>,"amount":<index × 10>}`; a held index waits
+until the test releases it (out-of-order completion, late answers after an
+interruption); a status sequence answers each call of an index in turn; an oversized
+index answers a body above 1 MiB. Every call records its arrival, `Idempotency-Key`,
+status and answer time, and a caller that goes away is recorded as abandoned. Gates
+only delay genuine answers; they never change Flowbit's requests or responses.
 
 For the six new diagrams, inspect load, representative node/boundary selection,
 save/reload, clipping, and overlaps at 1440×900 and 1024×768. Exercise incident

@@ -350,7 +350,8 @@ public sealed partial class HostedProcess : IAsyncDisposable
         }
     }
 
-    private static void SanitizeEnvironment(IDictionary<string, string?> environment)
+    /// <summary>Removes inherited configuration that could redirect or reconfigure a hosted process.</summary>
+    public static void SanitizeEnvironment(IDictionary<string, string?> environment)
     {
         string[] stripPrefixes =
         [
@@ -367,6 +368,7 @@ public sealed partial class HostedProcess : IAsyncDisposable
             "WORKFLOWAUDIT__",
             "WORKFLOWAI__",
             "WORKFLOWAIDOCUMENTS__",
+            "WORKFLOWAUTOMATICMULTIINSTANCE__",
             "FLOWBITWORKER__",
         ];
         string[] stripExact =

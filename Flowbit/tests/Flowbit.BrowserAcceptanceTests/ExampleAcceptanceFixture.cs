@@ -17,12 +17,15 @@ public sealed class ExampleAcceptanceCollection : ICollectionFixture<ExampleAcce
 }
 
 /// <summary>The service is started first so API and Worker share the same real endpoint.</summary>
-public sealed class ExampleAcceptanceFixture : IAsyncLifetime
+public class ExampleAcceptanceFixture : IAsyncLifetime
 {
     public BrowserStackFixture Stack { get; private set; } = null!;
     public ExampleRetryService Service { get; } = new();
     public const string MessageClientId = "example-message-client";
     public const string MessageClientSecret = "example-message-secret";
+
+    /// <summary>Host configuration this collection adds to API and Worker; the example stack adds none.</summary>
+    protected virtual IReadOnlyDictionary<string, string> HostSettings { get; } = new Dictionary<string, string>();
 
     public async Task InitializeAsync()
     {
@@ -40,6 +43,7 @@ public sealed class ExampleAcceptanceFixture : IAsyncLifetime
                 ["exampleApiToken"] = ExampleRetryService.Credential,
                 ["exampleMessageClientSecret"] = MessageClientSecret,
             },
+            HostSettings = HostSettings,
         });
         try { await Stack.InitializeAsync(); }
         catch { await Service.DisposeAsync(); throw; }
@@ -62,7 +66,11 @@ public sealed class ExampleRetryService : IAsyncDisposable
     private readonly ConcurrentDictionary<long, byte> recovered = new();
     private readonly ConcurrentQueue<ExampleRetryRequest> requests = new();
     private readonly ConcurrentDictionary<string, int> stockAttempts = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, ExampleItemGroup> itemGroups = new(StringComparer.Ordinal);
     private WebApplication? app;
+
+    /// <summary>The per-item routes of one scenario: <c>POST /items/{group}/{index}</c>.</summary>
+    public ExampleItemGroup Items(string group) => itemGroups.GetOrAdd(group, name => new ExampleItemGroup(name));
     public string BaseAddress { get; private set; } = string.Empty;
     public IReadOnlyList<ExampleRetryRequest> Requests => requests.ToArray();
     public void Recover(long jobId) => recovered.TryAdd(jobId, 0);
@@ -101,6 +109,17 @@ public sealed class ExampleRetryService : IAsyncDisposable
             var scenario = (string)context.Request.RouteValues["scenario"]!;
             var attempt = stockAttempts.AddOrUpdate(scenario, 0, (_, previous) => previous + 1);
             return RespondAsync(context, scenario, attempt);
+        });
+        app.MapPost("/items/{group}/{index:int}", context =>
+        {
+            if (context.Request.Headers.Authorization != $"Bearer {Credential}")
+            {
+                context.Response.StatusCode = 401;
+                return Task.CompletedTask;
+            }
+            var group = (string)context.Request.RouteValues["group"]!;
+            var index = int.Parse((string)context.Request.RouteValues["index"]!, CultureInfo.InvariantCulture);
+            return Items(group).RespondAsync(context, index);
         });
         await app.StartAsync();
         BaseAddress = app.Urls.Single();
@@ -161,8 +180,128 @@ public sealed class ExampleRetryService : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         if (app is null) return;
+        foreach (var group in itemGroups.Values) group.ReleaseAll();
         await app.StopAsync();
         await app.DisposeAsync();
         app = null;
+    }
+}
+
+/// <summary>One call to an item route, recorded when it arrives and completed when it is answered.</summary>
+public sealed class ExampleItemCall
+{
+    public required string Group { get; init; }
+    public required int Index { get; init; }
+    /// <summary>The call's position among this index's calls, from 1.</summary>
+    public required int Occurrence { get; init; }
+    public string? IdempotencyKey { get; init; }
+    public required string Body { get; init; }
+    public required DateTimeOffset ArrivedAt { get; init; }
+    public int? StatusCode { get; set; }
+    public DateTimeOffset? AnsweredAt { get; set; }
+    /// <summary>The caller went away before this call was answered.</summary>
+    public bool Abandoned { get; set; }
+}
+
+/// <summary>
+/// Controlled per-item behavior for one scenario's automatic multi-instance body. By default
+/// each call answers 200 with <c>{"id":"receipt-{index}","index":index,"amount":index*10}</c>.
+/// A held index waits until released, a status sequence answers each call of an index in
+/// turn (repeating the last), and an oversized index answers a body above 1 MiB. Every call
+/// records its arrival, idempotency key and answer; nothing about the caller is changed.
+/// </summary>
+public sealed class ExampleItemGroup(string name)
+{
+    private readonly ConcurrentDictionary<int, TaskCompletionSource> gates = new();
+    private readonly ConcurrentDictionary<int, int[]> sequences = new();
+    private readonly ConcurrentDictionary<int, byte> oversized = new();
+    private readonly ConcurrentDictionary<int, int> occurrences = new();
+    private readonly ConcurrentQueue<ExampleItemCall> calls = new();
+
+    public string Name { get; } = name;
+    public IReadOnlyList<ExampleItemCall> Calls => calls.ToArray();
+    public int CallCount(int index) => calls.Count(call => call.Index == index);
+
+    /// <summary>Holds every call of these indexes until <see cref="Release"/>.</summary>
+    public ExampleItemGroup Hold(params int[] indexes)
+    {
+        foreach (var index in indexes) gates.TryAdd(index, new(TaskCreationOptions.RunContinuationsAsynchronously));
+        return this;
+    }
+
+    public void Release(int index)
+    {
+        if (gates.TryGetValue(index, out var gate)) gate.TrySetResult();
+    }
+
+    public void ReleaseAll()
+    {
+        foreach (var gate in gates.Values) gate.TrySetResult();
+    }
+
+    /// <summary>Answers this index's calls with these statuses in turn; the last one repeats.</summary>
+    public ExampleItemGroup Answer(int index, params int[] statuses)
+    {
+        sequences[index] = statuses;
+        return this;
+    }
+
+    public ExampleItemGroup Oversize(int index)
+    {
+        oversized.TryAdd(index, 0);
+        return this;
+    }
+
+    /// <summary>Waits until this index has received at least <paramref name="count"/> calls.</summary>
+    public async Task<ExampleItemCall> ArrivedAsync(int index, int count = 1, TimeSpan? timeout = null)
+    {
+        var deadline = DateTimeOffset.UtcNow + (timeout ?? TimeSpan.FromSeconds(90));
+        while (true)
+        {
+            var arrived = calls.Where(call => call.Index == index).ToArray();
+            if (arrived.Length >= count) return arrived[count - 1];
+            if (DateTimeOffset.UtcNow > deadline)
+                throw new TimeoutException($"Item {index} of '{Name}' received {arrived.Length} of {count} calls.");
+            await Task.Delay(100, ScenarioCancellation.Token);
+        }
+    }
+
+    internal async Task RespondAsync(HttpContext context, int index)
+    {
+        using var reader = new StreamReader(context.Request.Body);
+        var call = new ExampleItemCall
+        {
+            Group = Name,
+            Index = index,
+            Occurrence = occurrences.AddOrUpdate(index, 1, (_, previous) => previous + 1),
+            IdempotencyKey = context.Request.Headers["Idempotency-Key"].FirstOrDefault(),
+            Body = await reader.ReadToEndAsync(context.RequestAborted),
+            ArrivedAt = DateTimeOffset.UtcNow,
+        };
+        calls.Enqueue(call);
+        if (gates.TryGetValue(index, out var gate))
+        {
+            try { await gate.Task.WaitAsync(context.RequestAborted); }
+            catch (OperationCanceledException)
+            {
+                call.Abandoned = true;
+                return;
+            }
+        }
+        var status = sequences.TryGetValue(index, out var statuses)
+            ? statuses[Math.Min(call.Occurrence - 1, statuses.Length - 1)]
+            : 200;
+        context.Response.StatusCode = status;
+        call.StatusCode = status;
+        if (oversized.ContainsKey(index))
+        {
+            context.Response.ContentType = "application/json";
+            await context.Response.WriteAsync($"{{\"id\":\"receipt-{index}\",\"padding\":\"{new string('x', 1_100_000)}\"}}");
+        }
+        else
+        {
+            await context.Response.WriteAsJsonAsync(new { id = $"receipt-{index}", index, amount = index * 10 });
+        }
+        call.AnsweredAt = DateTimeOffset.UtcNow;
     }
 }
