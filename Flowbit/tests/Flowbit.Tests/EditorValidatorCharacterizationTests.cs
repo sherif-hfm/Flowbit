@@ -1,6 +1,11 @@
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using Flowbit.Infrastructure.Scripting;
+using Flowbit.Service.Abstractions;
+using Flowbit.Service.Services;
+using Flowbit.Shared.Models;
 using Jint;
+using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
 namespace Flowbit.Tests;
@@ -159,6 +164,66 @@ public sealed class EditorValidatorCharacterizationTests
         Assert.Equal(expected, errors);
     }
 
+    // Two automatic bodies, each with two problems: a body reports only the one the
+    // server would report first, in the phase order of the whole array.
+    private const string AutomaticBodiesModelJson = """
+        {
+          "id":"automatic-bodies", "name":"Automatic bodies", "initialEventId":1, "lanes":[],
+          "variables":[
+            {"id":1,"name":"amounts","dataType":"number","isArray":true,"defaultValue":[1,2]},
+            {"id":2,"name":"scriptResults","dataType":"json","isArray":false,"defaultValue":[]},
+            {"id":3,"name":"serviceResults","dataType":"json","isArray":false,"defaultValue":[]}
+          ],
+          "flowNodes":[
+            {"id":1,"type":"startEvent","name":"Start","x":80,"y":200},
+            {"id":10,"type":"scriptTask","name":"Scale","x":250,"y":180,"asyncBefore":true,"scriptFormat":"ncalc",
+             "multiInstance":{"mode":"parallel","source":"collection","collectionVariable":"amounts","completionEvaluation":"afterAll",
+               "resultVariable":"scriptResults",
+               "outputVariables":[{"name":"scaled","dataType":"number","nullable":false,"defaultValue":"abc"}]},
+             "assignments":[{"variable":"scaled","expression":"[mi.item] + Len(scriptResults)"}]},
+            {"id":20,"type":"serviceTask","name":"Notify","x":500,"y":180,"asyncBefore":true,
+             "multiInstance":{"mode":"parallel","source":"cardinality","collectionVariable":"amounts","completionEvaluation":"afterAll",
+               "maxConcurrency":null,"resultVariable":"serviceResults","outputVariables":[]},
+             "service":{"type":"rest","method":"POST","url":"https://example.test/${serviceResults}","headers":[],"body":null,
+               "timeoutSeconds":30,"outputMappings":[]}},
+            {"id":3,"type":"endEvent","name":"End","x":750,"y":200}
+          ],
+          "sequenceFlows":[{"id":101,"sourceRef":1,"targetRef":10},{"id":1001,"sourceRef":10,"targetRef":20},{"id":2001,"sourceRef":20,"targetRef":3}]
+        }
+        """;
+
+    [Fact]
+    public void Validator_PreservesAutomaticBodyErrorOrderWithTheCapabilityOpen()
+    {
+        var errors = ValidateJson(AutomaticBodiesModelJson,
+            "var options = { mode: 'hosted', automaticMultiInstanceEnabled: true };");
+
+        var expected = new[]
+        {
+            "Automatic multi-instance activity #10 local output 'scaled' defaultValue must be number.",
+            "Automatic multi-instance activity #20 maxConcurrency must be an integer from 1 to 1000."
+        };
+        Assert.Equal(expected, errors);
+
+        // The server stops at the first problem it meets. Body #20's rule runs while the
+        // authored definition is read, before body #10's default is checked, so the server
+        // names #20; the editor lists both, and so contains that message too.
+        var options = new AutomaticMultiInstanceOptions { AllowInDevelopment = true };
+        options.ResolveForEnvironment(isDevelopment: true);
+        var validator = new WorkflowDefinitionValidator(
+            new JintScriptEvaluator(new ScriptOptions(), NullLogger<JintScriptEvaluator>.Instance),
+            new ServiceTaskOptions(), automaticMultiInstanceOptions: options);
+        var definition = JsonSerializer.Deserialize<WorkflowModel>(AutomaticBodiesModelJson,
+            new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+        var server = Assert.Throws<WorkflowDomainException>(() =>
+        {
+            validator.ValidateAuthored(definition);
+            WorkflowModelMigrator.Normalize(definition);
+            validator.ValidateNormalized(definition);
+        });
+        Assert.Equal(expected[1], server.Message);
+    }
+
     [Fact]
     public void Validator_LeavesTheSuppliedCandidateUnchanged()
     {
@@ -215,9 +280,10 @@ public sealed class EditorValidatorCharacterizationTests
                 .ToArray());
     }
 
-    private static IReadOnlyList<string> ValidateJson(string json)
+    private static IReadOnlyList<string> ValidateJson(string json, string? setup = null)
     {
         var engine = CreateValidatorEngine();
+        if (setup is not null) engine.Execute(setup);
         engine.SetValue("candidateJson", json);
         var resultJson = engine.Evaluate(
             "JSON.stringify(validateModelForSave(JSON.parse(candidateJson)))").AsString();
