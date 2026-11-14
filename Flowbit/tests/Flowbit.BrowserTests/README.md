@@ -58,12 +58,15 @@ logout, and protocol failures through a fixture-owned identity provider.
 `AutomaticMultiInstanceEditorBrowserTests` runs the canonical shared editor through a
 standalone localhost host, without PostgreSQL or a Worker. It checks the closed
 standalone gate and the explicit Development mount capability at 1440×900,
-1024×768 and 390×844, including local declarations, concurrency validation,
-timer attachment and undo. Run it with
+1024×768 and 390×844 for service, NCalc script and call bodies: the section's help
+opening and closing (its wording is not pinned), local declarations, concurrency
+validation, sequential call bodies, canvas markers, timer attachment, undo/redo and
+export, and that the standalone editor refuses every imported body. Run it with
 `dotnet test Flowbit/tests/Flowbit.BrowserTests/Flowbit.BrowserTests.csproj --filter FullyQualifiedName~AutomaticMultiInstanceEditorBrowserTests`.
-Screenshots and console evidence are saved under `artifacts/browser/automatic-mi-editor/`.
-This is authoring verification only; it does not satisfy the automatic-MI adapter
-or durable runtime acceptance gates.
+Screenshots and console evidence are saved under `artifacts/browser/automatic-mi-editor/`,
+which CI uploads with the smoke evidence. This is authoring verification only; the
+durable runtime scenarios are in the
+[Worker acceptance suite](../Flowbit.BrowserAcceptanceTests/README.md).
 
 `EngineSettingsSmokeTests` (S1) runs at 1440x900, 1024x768 and 390x844. It creates a setting as one administrator and updates it as another, verifies creator/updater metadata through the UI and real API, edits the protected lifecycle capture setting with its Boolean selector, exercises a real concurrent edit and reload, toggles capture, and follows the webhook capture-off link back to Engine settings. It retains `setting-attribution.png`, `capture-edit.png`, `engine-settings.png`, `capture-off.png`, and console diagnostics. After publishing/building with the commands below, run only these cases with `dotnet test Flowbit/tests/Flowbit.BrowserTests/Flowbit.BrowserTests.csproj -c Release --no-build --no-restore --filter FullyQualifiedName~EngineSettingsSmokeTests`.
 

@@ -15,5 +15,12 @@ public sealed record BrowserAcceptanceOptions
     /// <summary>Test-owned config.* values supplied identically to API and Worker.</summary>
     public IReadOnlyDictionary<string, string> WorkflowContextConfig { get; init; } =
         new Dictionary<string, string>();
+    /// <summary>
+    /// Test-owned host configuration supplied identically to API and Worker, keyed as
+    /// environment variables (<c>Section__Key</c>). A collection opts in explicitly; a key
+    /// the fixture already sets cannot be overridden, and the smoke stack has none.
+    /// </summary>
+    public IReadOnlyDictionary<string, string> HostSettings { get; init; } =
+        new Dictionary<string, string>();
     public TimeSpan ScenarioTimeout { get; init; } = TimeSpan.FromMinutes(5);
 }

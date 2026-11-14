@@ -53,5 +53,6 @@ jobs:
           path: |
             artifacts/browser/runs/
             artifacts/browser/test-results/
+            artifacts/browser/automatic-mi-editor/
           retention-days: 14
           if-no-files-found: warn
