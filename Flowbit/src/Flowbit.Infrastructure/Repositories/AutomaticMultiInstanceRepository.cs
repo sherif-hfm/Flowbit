@@ -371,6 +371,14 @@ public sealed class AutomaticMultiInstanceRepository(AppDbContext db) : IAutomat
         return jobs.Count;
     }
 
+    public Task<bool> HasOpenControlJobAsync(long id, Guid activation, long generation, string kind,
+        bool notStartedOnly, CancellationToken ct) =>
+        db.WorkflowJobs.AsNoTracking().AnyAsync(job => job.MultiInstanceExecutionId == id && job.ActivationId == activation
+            && job.MultiInstanceControlGeneration == generation && job.Kind == kind
+            && (notStartedOnly
+                ? job.Status == "queued" || job.Status == "running"
+                : job.Status != "completed" && job.Status != "cancelled" && job.Status != "skipped"), ct);
+
     public async Task<long> SetControlStateAsync(long id, Guid activation, string phase, string? blockedReason, CancellationToken ct)
     {
         var body = await LockEligibleBodyAsync(id, activation, ct);

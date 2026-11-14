@@ -511,6 +511,24 @@ There is no receiver-specific throttling: a `429` or `Retry-After` response is a
 ordinary failed attempt under the node's retry delays, so limit the load on a
 receiver with the body's `maxConcurrency` or `Workflow.MultiInstance.MaxConcurrency`.
 
+One instance's automatic items run one database transaction at a time. Each item
+stages, saves, and publishes in its own short transaction, and admitting items takes
+another. Every one of them locks the instance row. A body's `maxConcurrency` therefore
+bounds how many items wait on their external work at once, not how fast one instance
+commits them. Different instances run in parallel. In the release-readiness scale run
+of 2026-11-14 (one Worker with default settings, PostgreSQL 17 in Docker Desktop on
+the same Windows machine with about 0.75 ms per database round trip), a parallel
+1,000-item body ran at about 4.3 items per second whether it called REST, NCalc, or
+JavaScript. A sequential REST body ran at about 3 items per second and a parallel call
+body at about 2.3. A second Worker did not make one instance faster. The engine issued
+about 264 statements per item. That figure stayed the same at 250 and 1,000 items and
+with two bodies in one instance, and no run opened an incident. Since then, parallel
+items that finish together share one pending admission wake instead of each queueing
+its own. Rerunning the 1,000-item REST and NCalc bodies on the same machine then gave
+4.3 to 5.1 items per second, varying from run to run, with 202 to 218 statements and
+about 3.3 instance-row locks per item. Most of each transaction's time is database
+round trips, so a database with lower latency raises the per-instance rate.
+
 Every automatic multi-instance size limit (the 1 MiB body snapshot, an item's staged
 input and candidate together, its result, and the aggregate) counts the bytes
 PostgreSQL prints for the stored JSON, which is what the tables' size checks

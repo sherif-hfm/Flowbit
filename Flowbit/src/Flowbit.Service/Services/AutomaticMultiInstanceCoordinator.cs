@@ -340,7 +340,12 @@ public sealed partial class AutomaticMultiInstanceCoordinator(
         var plan = accessPlans.GetOrAdd(body.WorkflowDefinitionId, definition);
         // Replace a dispatch wake before shared locks. The whole replacement rolls
         // back on conflict, and the accepted result always installs its next wake.
-        await repository.SupersedeControlJobsAsync(body.Id, body.ActivationId, null, cancellationToken);
+        // A dispatch wake of the current generation that has not run yet is kept when
+        // this publication leaves the control state as it is: it cannot run until this
+        // transaction releases the instance, so it admits against the published state.
+        // Replacing it with an identical wake only queued another locked transaction.
+        if (!await KeepsPendingDispatchWakeAsync(body, cancellationToken))
+            await repository.SupersedeControlJobsAsync(body.Id, body.ActivationId, null, cancellationToken);
         // Publication never reacquires the source, aggregate, or later admission
         // dependencies. Each durable phase has its own ordinal lock set.
         var scope = plan.SelectAutomaticPhase(node.Id, AutomaticMultiInstanceAccessPhases.PublishItem);
@@ -425,12 +430,22 @@ public sealed partial class AutomaticMultiInstanceCoordinator(
         return AutomaticMultiInstanceValues.BuildAggregate(snapshot.GetProperty("collection").EnumerateArray().ToArray(), rows, partial);
     }
 
+    // The caller holds the instance lock, so a dispatch job that is queued, or leased but
+    // not yet past that lock, runs only after this publication commits. The wake is kept
+    // only when publishing would leave the control state unchanged: the body stays
+    // running with nothing blocking admission, and this item is not its last.
+    private async Task<bool> KeepsPendingDispatchWakeAsync(AutomaticMultiInstanceRecord body,
+        CancellationToken cancellationToken) =>
+        body.Phase == "running" && body.AdmissionBlockedReason is null && body.FailedCount == 0
+        && body.CompletedCount + 1 < body.TotalCount
+        && await repository.HasOpenControlJobAsync(body.Id, body.ActivationId, body.ControlGeneration,
+            WorkflowJobKinds.MultiInstanceDispatch, notStartedOnly: true, cancellationToken);
+
     private async Task SignalAsync(AutomaticMultiInstanceRecord body, WorkflowJobCreateRecord template,
         string kind, string? blockedReason, CancellationToken cancellationToken)
     {
-        var open = await jobs.ListOpenByInstanceAsync(body.InstanceId, false, cancellationToken);
-        if (open.Any(job => job.MultiInstanceExecutionId == body.Id && job.ActivationId == body.ActivationId
-            && job.MultiInstanceControlGeneration == body.ControlGeneration && job.Kind == kind)) return;
+        if (await repository.HasOpenControlJobAsync(body.Id, body.ActivationId, body.ControlGeneration, kind,
+                notStartedOnly: false, cancellationToken)) return;
         await repository.SupersedeControlJobsAsync(body.Id, body.ActivationId, null, cancellationToken);
         var phase = kind == WorkflowJobKinds.MultiInstanceComplete ? "completing" : "running";
         var generation = await repository.SetControlStateAsync(body.Id, body.ActivationId, phase, blockedReason, cancellationToken);

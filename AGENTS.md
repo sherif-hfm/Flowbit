@@ -428,7 +428,13 @@ saved error-route capture, and aggregate publication. The engine supplies its
 `IAutomaticMultiInstanceLifecycle` graph callbacks for timer/conditional lifetime,
 notification draining, cancellation and continuation. Dispatch/completion jobs
 use the reserved control slot; a capacity wait reuses its persisted result-ready
-job without consuming another activity attempt. Exact automatic access phases
+job without consuming another activity attempt. Item publication keeps a dispatch
+wake of the current control generation that is queued, or leased but not yet past
+the instance lock, when it leaves the control state unchanged (body running, nothing
+blocking admission, not the last item): that wake runs after the commit and admits
+against the published state. Every other wake is superseded before shared locks, as
+before. Check for a body's control job with `HasOpenControlJobAsync`, never by
+listing the instance's open jobs. Exact automatic access phases
 separate initialization, staging, item publication, aggregate publication and the
 selected error route. Shared collection reads always use the body snapshot after
 initialization. The monotonic lock proof treats these durable phases separately.

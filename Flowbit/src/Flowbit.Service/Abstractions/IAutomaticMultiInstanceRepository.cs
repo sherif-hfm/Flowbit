@@ -34,6 +34,15 @@ public interface IAutomaticMultiInstanceRepository
     Task<bool> AcknowledgePublicationFenceRefreshAsync(long executionId, long jobId, Guid activationId, Guid leaseToken, long leaseGeneration, CancellationToken cancellationToken);
     Task<bool> BlockItemAsync(long executionId, long itemId, Guid activationId, string code, string description, CancellationToken cancellationToken);
     Task<int> SupersedeControlJobsAsync(long executionId, Guid activationId, long? exceptJobId, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Whether the body has an open control job of this kind for its current control
+    /// generation. With <paramref name="notStartedOnly"/>, only a queued job or one leased
+    /// but not yet run counts: a caller holding the instance lock knows such a job runs
+    /// after its commit.
+    /// </summary>
+    Task<bool> HasOpenControlJobAsync(long executionId, Guid activationId, long controlGeneration, string kind,
+        bool notStartedOnly, CancellationToken cancellationToken);
     Task<bool> EnterBodyWaitAsync(long executionId, Guid activationId, long? entryJobId, CancellationToken cancellationToken);
     Task<bool> ClearBodyWaitAsync(long executionId, Guid activationId, CancellationToken cancellationToken);
     Task<bool> SetAdmissionBlockedReasonAsync(long executionId, Guid activationId, string? reason, CancellationToken cancellationToken);

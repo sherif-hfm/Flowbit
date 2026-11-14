@@ -470,6 +470,8 @@ public sealed partial class AutomaticMultiInstanceCoordinatorTests
                 case "SetAdmissionBlockedReasonAsync":
                     Body = Body with { AdmissionBlockedReason = (string?)args[2] }; return Task.FromResult(true);
                 case "SupersedeControlJobsAsync": return Task.FromResult(0);
+                // Like the job proxy's empty open-job list: no control job is open.
+                case "HasOpenControlJobAsync": return Task.FromResult(false);
                 case "AcknowledgePublicationFenceRefreshAsync": RefreshAcknowledgements++; return Task.FromResult(true);
                 case "AdmitAsync": Admissions++; return Task.FromResult<IReadOnlyList<AutomaticMultiInstanceItemRecord>>([Item]);
                 case "SaveCompletionIntentAsync":
