@@ -199,15 +199,16 @@ Agreed on **2026-11-14**: the work that remains before the integration change tu
 | --- | --- | --- | --- |
 | 0 | Baseline runs of the full solution and both browser suites on master; let the Worker acceptance stack open the release switch on its Development hosts. | Results recorded; acceptance hosts can publish and run a body. | Done on `claude/youthful-kalam-d9a667`, not yet merged: smoke 125 of 128 at `0ce99e0` (only the 3 stale editor-help assertions); full solution 5,089 of 5,089 at the same commit, from the TASK-05D record |
 | 1 | Close the open review findings in TASK-05A and TASK-05C. | Each fixed or closed with a reason. | Done ([record](task-05a-multi-instance-core.md#release-readiness-review-findings-2026-11-14)) |
-| 2 | Write the tests the subtasks list as missing. | Each written or struck with a reason; full solution green. | Open |
+| 2 | Write the tests the subtasks list as missing. | Each written or struck with a reason; full solution green. | Done on `claude/zealous-gagarin-22d60b`, not yet merged: full solution 5,139 of 5,139, automatic multi-instance classes 453 of 453, no product change. §12's ordered-array item is on the Phase 1 branch. The subtasks' **Still open** lists are updated when the branches merge. |
 | 3 | Worker-enabled browser acceptance for service, script, and call bodies, plus the manual steps the adapters still list. | Both browser suites pass with evidence. | Done on `claude/youthful-kalam-d9a667`, not yet merged: acceptance 151 passed, 1 skipped for the boundary-ring bug that Phase 1 fixes; smoke 128 of 128 |
 | 4 | 1,000-item scale runs per activity kind with production log levels and several Workers. | Queries per item do not grow with items or bodies; no incidents; figures recorded. | Open |
 | 5 | The integration change: remove `AutomaticMultiInstanceOptions`, the installed-kind list, the capability route, and the editor gate; rewrite the tests that pin the closed switch; update the behavior guides, examples, and the AI authoring package. | All suites pass with default configuration. | Open |
 | 6 | Migration timing on populated data, then a rehearsed rollout and rollback. | Runbook and figures in [deployment](../deployment.md). | Open |
 | 7 | Rerun every gate on the final tree, record evidence, tick the criteria, synchronize statuses. | TASK-05 Done. | Open |
 
-Found by the Phase 3 browser run and still to settle before Phase 5, fixed or accepted with a reason:
+Found by the Phase 2 and 3 runs and still to settle before Phase 5, fixed or accepted with a reason:
 
+- A 2xx REST response over `WorkflowServiceTasks.MaxResponseBodyBytes` fails its item with a description naming HTTP status 200 rather than the size limit.
 - An item waiting on an incident reads **Active · execution** in its row, while its body counts it as blocked.
 - The body's reset of its aggregate at initialization appears as a second `[]` variable row attributed to **start** and the starting user.
 - **Queued…** and **Waiting for automatic … items** appear only in the diagram's details panel, not in the execution-position list.
