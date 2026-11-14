@@ -88,6 +88,21 @@ public sealed class AutomaticMultiInstanceUiTests
         Assert.Null(Field<AutomaticMultiInstanceItemDetailDto>(component, "detail"));
     }
 
+    [Theory]
+    [InlineData("active", 501L, true)]
+    [InlineData("pending", 501L, true)]
+    [InlineData("active", null, false)]
+    // A settled item keeps its own status even if an old incident is still linked.
+    [InlineData("completed", 501L, false)]
+    [InlineData("failed", 501L, false)]
+    public void An_unfinished_item_with_an_open_incident_reads_as_blocked(string status, long? incidentId, bool blocked)
+    {
+        var item = Item(1, 0) with { Status = status, IncidentId = incidentId };
+        var waits = (bool)typeof(ResultsComponent).GetMethod("WaitsOnIncident", BindingFlags.Static | BindingFlags.NonPublic)!
+            .Invoke(null, [item])!;
+        Assert.Equal(blocked, waits);
+    }
+
     private static AutomaticMultiInstanceItemSummaryDto Item(long id, int index) =>
         new(id, 42, 7, index, "serviceTask", "completed", "completed", Now, Now, Now, Now, 99, null, 100)
         { CanReadPayload = true };

@@ -247,6 +247,19 @@ public sealed class AutomaticMultiInstanceServiceAdapterTests
                 Ok(new { id = "too-long" })));
     }
 
+    [Theory]
+    [InlineData(404, "The REST call failed with HTTP status 404.")]
+    [InlineData(503, "The REST call failed with HTTP status 503.")]
+    // A 2xx failure got its response but could not read the body: say so, not the status.
+    [InlineData(200, "The REST call returned HTTP status 200, but its response body could not be read: it was larger than the response size limit, or the transfer failed.")]
+    [InlineData(204, "The REST call returned HTTP status 204, but its response body could not be read: it was larger than the response size limit, or the transfer failed.")]
+    [InlineData(0, "The REST call got no HTTP response: it timed out, failed in transport, or its request could not be rendered.")]
+    public void A_caught_failure_describes_what_happened_without_the_error_text(int status, string expected)
+    {
+        var result = new ServiceTaskResult(false, status, null, "Response body exceeded the configured 256-byte limit. secret-token");
+        Assert.Equal(expected, WorkflowEngineService.AutomaticServiceFailureDescription(result));
+    }
+
     [Fact]
     public void A_body_freezes_exactly_the_instance_names_its_templates_and_expressions_reference()
     {

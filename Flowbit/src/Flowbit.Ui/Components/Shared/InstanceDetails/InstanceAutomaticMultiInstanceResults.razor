@@ -57,7 +57,18 @@
                             {
                                 <tr @key="item.Id">
                                     <td>@item.ItemIndex<span class="data-subtitle">Item #@item.Id</span></td>
-                                    <td><StatusBadge Status="@item.Status" /><span class="data-subtitle">@item.Phase</span></td>
+                                    <td>
+                                        @if (WaitsOnIncident(item))
+                                        {
+                                            <StatusBadge Status="incident" Text="Blocked" />
+                                            <span class="data-subtitle text-danger">Waiting on incident #@item.IncidentId</span>
+                                            <span class="data-subtitle">@item.Status · @item.Phase</span>
+                                        }
+                                        else
+                                        {
+                                            <StatusBadge Status="@item.Status" /><span class="data-subtitle">@item.Phase</span>
+                                        }
+                                    </td>
                                     <td><span class="data-subtitle">Created <LocalTime Value="@item.CreatedAt" /></span>
                                         @if (item.StartedAt is { } started) { <span class="data-subtitle">Started <LocalTime Value="@started" /></span> }
                                         @if (item.CompletedAt is { } completed) { <span class="data-subtitle">Settled <LocalTime Value="@completed" /></span> }
@@ -115,6 +126,11 @@
     private string? error, detailError;
     private PagedResult<AutomaticMultiInstanceItemSummaryDto>? items;
     private AutomaticMultiInstanceItemDetailDto? detail;
+
+    // An unfinished item with an open incident is what its body's progress counts as
+    // blocked, so its row says so instead of showing its unchanged item status.
+    private static bool WaitsOnIncident(AutomaticMultiInstanceItemSummaryDto item) =>
+        item.IncidentId is not null && item.Status is "active" or "pending";
 
     protected override void OnInitialized() => Token.Changed += IdentityChanged;
     protected override void OnParametersSet()

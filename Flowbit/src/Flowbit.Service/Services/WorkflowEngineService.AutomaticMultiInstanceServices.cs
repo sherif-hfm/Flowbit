@@ -95,12 +95,18 @@ public sealed partial class WorkflowEngineService
     /// <summary>
     /// What a caught REST failure records on its item and node visit: the HTTP status, or
     /// that no response arrived. Never the error text, which can echo request or response
-    /// data; uncaught failures keep that on the job's attempts and incident instead.
+    /// data; uncaught failures keep that on the job's attempts and incident instead. A
+    /// failure that still carries a 2xx status got its response but could not read the
+    /// body (larger than <c>WorkflowServiceTasks.MaxResponseBodyBytes</c>, or a broken
+    /// transfer), so it says so rather than blaming the status.
     /// </summary>
     internal static string AutomaticServiceFailureDescription(ServiceTaskResult result) =>
-        result.StatusCode > 0
-            ? $"The REST call failed with HTTP status {result.StatusCode}."
-            : "The REST call got no HTTP response: it timed out, failed in transport, or its request could not be rendered.";
+        result.StatusCode switch
+        {
+            >= 200 and < 300 => $"The REST call returned HTTP status {result.StatusCode}, but its response body could not be read: it was larger than the response size limit, or the transfer failed.",
+            > 0 => $"The REST call failed with HTTP status {result.StatusCode}.",
+            _ => "The REST call got no HTTP response: it timed out, failed in transport, or its request could not be rendered."
+        };
 
     internal static string AutomaticServiceMappingFailureDescription(ServiceTaskResult result) =>
         $"The REST call returned HTTP status {result.StatusCode}, but the response did not satisfy the output mappings.";
