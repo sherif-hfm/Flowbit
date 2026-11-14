@@ -540,22 +540,102 @@ it is written.
 Apply `20261111144523_AddAutomaticMultiInstanceCore`, then
 `20261111144824_ValidateAutomaticMultiInstanceConstraints`, then
 `20261111192010_HardenAutomaticMultiInstanceCore`, then
+`20261112162436_HashInstanceVariableStringIndex` (described
+[above](#database-migrations)), then
 `20261113145806_AddMultiInstanceStartJobShape`, then
-`20261113145843_ValidateMultiInstanceStartJobShape`. The second migration
-validates widened constraints outside a transaction. The third restores the
-general job index on the body column and adds the call-pin and invocation
-item-pair checks; it fails if a database already holds a nonempty call body
-without a pin, which no released build can create. The fourth adds the shape check
-of a call body's `multiInstanceStart` entry job without scanning `workflow_jobs`,
-and the fifth validates it outside a transaction; running the fifth again finishes
-a run that stopped partway. No released build creates `multiInstanceStart` jobs, so
-validation finds no rows to refuse. Existing human execution
+`20261113145843_ValidateMultiInstanceStartJobShape`; `database update` applies
+them in this order. The second migration validates widened constraints outside a
+transaction. The third restores the general job index on the body column and adds
+the call-pin and invocation item-pair checks; it fails if a database already holds
+a nonempty call body without a pin, which no released build can create. The fifth
+adds the shape check of a call body's `multiInstanceStart` entry job without
+scanning `workflow_jobs`, and the sixth validates it outside a transaction. No
+released build creates `multiInstanceStart` jobs, so validation finds no rows to
+refuse. Existing human execution
 rows keep activity kind `userTask`; ordinary call activation uniqueness excludes
 only rows with an automatic item identity. The additions include body-owned
 snapshots, persisted item candidates/results, activation and control-generation
 fences, reserved control capacity, and call-item/pin fields for adapter integration.
 See the [database schema](database-schema.md) and the inactive
 [concurrency settings](engine-settings.md#automatic-multi-instance-concurrency-foundation).
+
+**Measured cost.** These six migrations were measured with every API and Worker
+replica stopped, on PostgreSQL 17.5 with default settings and four logical CPUs,
+against restored copies of a long-used development database and of a 2 GB synthetic
+database built through the previous release's API. The synthetic copy held 296,452
+`workflow_jobs` rows (288,802 queued, 800 of them call messages, plus 300 waiting to
+retry and 100 in open incidents), 711,960 `node_executions`, 327,890
+`execution_tokens`, 316,490 `instance_variable_current_values`, 54,380 `user_tasks`
+(33,438 of them items of 16,719 open human multi-instance executions), and 1,800 call
+invocations. Applied in one `database update`, the six took 7.7 seconds, of which 2.2
+seconds were spent inside statements and most of the rest was `dotnet ef` start-up.
+No table was rewritten, and every constraint ended validated. On the synthetic copy,
+with the cache warm (the first migration also cold, after a PostgreSQL restart with
+the operating-system cache dropped):
+
+| Migration | Time inside statements | Blocks reads and writes on | Blocks writes only on |
+| --- | --- | --- | --- |
+| `AddAutomaticMultiInstanceCore` | 1.1 s warm and 2.5 s cold, in one transaction of 1.4 s or 2.8 s; its longest statement, an index on `node_executions`, took 0.4 s or 0.6 s | `workflow_jobs`, `node_executions`, `execution_tokens`, `multi_instance_executions`, and `call_activity_executions`, for 1.2 s warm and 2.6 s cold | `workflow_definitions` and `workflow_job_snapshots`, briefly, while their foreign keys are added |
+| `ValidateAutomaticMultiInstanceConstraints` | 0.45 s: four checks of 0.08 to 0.15 s, each committed on its own | nothing | nothing |
+| `HardenAutomaticMultiInstanceCore` | 0.1 s | `multi_instance_executions` and `call_activity_executions`, briefly | `workflow_jobs`, for 0.1 s |
+| `HashInstanceVariableStringIndex` | 0.6 s | `instance_variable_current_values`, briefly, when the old index is dropped | `instance_variable_current_values`, for 0.6 s |
+| `AddMultiInstanceStartJobShape` | under 0.01 s | `workflow_jobs`, briefly | nothing |
+| `ValidateMultiInstanceStartJobShape` | 0.08 s | nothing | nothing |
+
+Work that existed before the upgrade continues afterwards. On the migrated synthetic
+copy, the upgraded API completed the items of a waiting human multi-instance
+execution, and the upgraded Worker ran the queued `callStart`, `callResume`, and
+`callCancel` messages and queued activity jobs. On a small database prepared the same
+way, the upgraded Worker ran jobs that the previous Worker had left waiting to retry,
+and an incident retried through the upgraded API.
+
+**Command timeout.** `dotnet ef` runs each statement under Npgsql's default command
+timeout of 30 seconds, and that time includes waiting for a lock. Flowbit does not
+change it, and `dotnet ef` has no option for it. No statement above took longer than
+0.6 s, so on similar hardware a statement would approach the limit only on tables
+tens of times larger, or behind a session that still holds a lock: with one open read
+transaction on `workflow_jobs`, the first migration waited 30 seconds for its lock,
+was cancelled, and rolled back completely. To allow longer statements, add
+`Command Timeout=0` (no limit) or a number of seconds to the migration connection
+string, for example
+`ConnectionStrings__Flowbit="Host=db;Database=flowbit;Username=flowbit_migrator;Command Timeout=0"`;
+with it, the same run waited for the lock and finished. A reviewed script applied
+with `psql` has no client timeout, but the server's `statement_timeout` and
+`lock_timeout` for the migration role still apply. Stop every client of the database
+before migrating, not only API and Worker replicas: while a migration statement waits
+for an exclusive lock, every later query on that table waits behind it.
+
+**Resume an interrupted migration.** `AddAutomaticMultiInstanceCore`,
+`HardenAutomaticMultiInstanceCore`, `HashInstanceVariableStringIndex`, and
+`AddMultiInstanceStartJobShape` each run in one transaction, so an interruption rolls
+the whole migration back; run `database update` again. The two validation
+migrations commit each check on its own and record the migration in
+`__EFMigrationsHistory` only after the last one, so an interruption can leave some
+checks validated and the migration unrecorded. `dotnet ef` warns that such a
+migration would need to be reverted manually; do not revert it. Run
+`database update` again: validating a check that is already valid does nothing, and
+the rerun validates the rest and records the migration. Both validation migrations
+were interrupted this way, one by ending its server session and one by stopping
+`dotnet ef`, and a rerun finished each. When `dotnet ef` itself stops, PostgreSQL
+keeps running the statement it had sent: in the test, that session went on waiting
+for its lock, then validated the check without recording the migration. Before
+rerunning, look for such a session and wait for it to end, or cancel it with
+`pg_cancel_backend(pid)`; otherwise the rerun waits behind it, within the same
+30-second limit.
+
+```sql
+SELECT pid, state, wait_event_type, query
+FROM pg_stat_activity
+WHERE query LIKE '%VALIDATE CONSTRAINT%' AND pid <> pg_backend_pid();
+
+SELECT conrelid::regclass AS table_name, conname, convalidated
+FROM pg_constraint
+WHERE conname IN ('CK_workflow_jobs_automatic_control_shape',
+                  'CK_workflow_jobs_automatic_item_shape',
+                  'CK_node_executions_execution_kind',
+                  'CK_node_executions_multi_instance_shape',
+                  'CK_workflow_jobs_multi_instance_start_shape');
+```
 
 Completed-job retention keeps snapshots referenced by bodies. Item results live
 on their item rows and survive job and node-activity pruning. A body's staged item
