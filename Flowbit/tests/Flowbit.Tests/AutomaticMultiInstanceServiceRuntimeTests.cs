@@ -1120,7 +1120,8 @@ public sealed class AutomaticMultiInstanceServiceRuntimeTests(PostgresApiFixture
         Assert.Equal(JsonValueKind.Null, (await LatestAsync(instanceId, "anyFailure")).ValueKind);
         var item = await db.MultiInstanceActivityItems.SingleAsync(row => row.InstanceId == instanceId);
         Assert.Equal(WorkflowEngineService.AutomaticServiceFailureCode, item.ErrorCode);
-        Assert.Equal("The REST call failed with HTTP status 200.", item.ErrorDescription);
+        Assert.Equal("The REST call returned HTTP status 200, but its response body could not be read: it was larger than the response size limit, or the transfer failed.",
+            item.ErrorDescription);
         Assert.Null(item.CandidateJson);
         var visit = await db.NodeExecutions.SingleAsync(row => row.AutomaticMultiInstanceItemId == item.Id);
         Assert.Equal(item.ErrorDescription, visit.ErrorDescription);

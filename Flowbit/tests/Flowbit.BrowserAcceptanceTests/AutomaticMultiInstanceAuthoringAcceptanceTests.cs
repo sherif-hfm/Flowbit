@@ -173,9 +173,8 @@ public sealed class AutomaticMultiInstanceAuthoringAcceptanceTests(AutomaticMult
         });
     }
 
-    [Fact(Skip = "Product bug found 2026-11-14: unchecking 'Interrupt attached activity' calls only renderInspector() " +
-        "(flowbit-editor.js renderNodeInspector's boundary toggle), so the canvas keeps the interrupting ring until the next " +
-        "full render. flowbit-editor.js belongs to another session; enable this test when the toggle redraws the canvas.")]
+    // Found 2026-11-14: the toggle redrew only the inspector, so the canvas kept the old ring.
+    [Fact]
     public async Task TogglingInterruptionRedrawsTheConditionalBoundaryRingAtOnce()
     {
         await using var scenario = await Stack.CreateScenario("auto-mi-boundary-ring", 1440, 900);
