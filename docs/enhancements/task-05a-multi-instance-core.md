@@ -4,7 +4,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | In progress |
+| Status | Done |
 | Category | Shared runtime foundation |
 | Effort | L |
 | Priority | Required foundation for TASK-05 |
@@ -22,18 +22,18 @@ A subsequent user-requested scope revision on **2026-11-11** includes shared-var
 
 ## First release acceptance criteria
 
-- [ ] One shared model accepts instance or shared typed-array sources, an explicit `afterAll`, explicit local outputs, declared shared output targets, and ordered scalar-JSON aggregates in an instance or shared target while preserving human MI behavior.
-- [ ] One parent token/body owns durable automatic items, and at most one body per node is open in an instance; automatic parent items never become human tasks or claim/role-policy rows.
-- [ ] Input snapshots, item count, local declarations, result size, and persisted concurrency remain bounded and deterministic. A result that cannot fit is refused at entry, before any item runs.
-- [ ] Item completion, refill, aggregate publication, and recovery are idempotent; capacity contention has a durable wake-up, never repeats successful activity work, and opens an incident instead of waiting silently when the body has nothing in flight.
-- [ ] All adapters use common activation/item ownership fences, cancellation, loop guarding, ledger accounting, and terminal-state checks.
-- [ ] Shared bindings retain catalog/access/type validation, bounded snapshots, exact access plans, ordinal locking and value-version fences. Each item's shared writes commit once with its success; publication-only conflict recovery never repeats successful HTTP, script evaluation, or child work.
-- [ ] Interrupting and non-interrupting timer/conditional boundaries work on all three automatic body types, with activation/occurrence fencing, restart-safe subscriptions, queued-entry rules, and cancellation of unfinished items and calls when interrupted.
-- [ ] Aggregate reset/publication handles conditional reentrancy; output conflicts recover from saved results without rerunning completed items. A caught item failure stops the body at once, then publishes a partial result before the boundary continues, and a completion failure that retrying cannot change never waits in an incident.
-- [ ] Every existing reader of multi-instance executions (by table, entity, or `MultiInstanceExecutionId`), including administrative actions, role management, version change, diagram history, and instance detail, ignores automatic bodies or handles them explicitly; existing human-MI DTO fields never carry an automatic body.
-- [ ] Retention and migrations preserve open work, including bodies that outlive the completed-job retention period, and existing human MI, ordinary jobs, and ordinary calls.
-- [ ] Paged item reads, progress, node activity, diagram history, permissions, and shared UI work without per-item database queries or fabricated user actions.
-- [ ] A release switch keeps automatic MI rejected, and its new editor controls hidden, on every host except Development until the parent's integration step. Shared automated and browser checks pass with the switch opened on the Development test hosts; B/C/D integration gates remain mandatory before the parent can be Done.
+- [x] One shared model accepts instance or shared typed-array sources, an explicit `afterAll`, explicit local outputs, declared shared output targets, and ordered scalar-JSON aggregates in an instance or shared target while preserving human MI behavior.
+- [x] One parent token/body owns durable automatic items, and at most one body per node is open in an instance; automatic parent items never become human tasks or claim/role-policy rows.
+- [x] Input snapshots, item count, local declarations, result size, and persisted concurrency remain bounded and deterministic. A result that cannot fit is refused at entry, before any item runs.
+- [x] Item completion, refill, aggregate publication, and recovery are idempotent; capacity contention has a durable wake-up, never repeats successful activity work, and opens an incident instead of waiting silently when the body has nothing in flight.
+- [x] All adapters use common activation/item ownership fences, cancellation, loop guarding, ledger accounting, and terminal-state checks.
+- [x] Shared bindings retain catalog/access/type validation, bounded snapshots, exact access plans, ordinal locking and value-version fences. Each item's shared writes commit once with its success; publication-only conflict recovery never repeats successful HTTP, script evaluation, or child work.
+- [x] Interrupting and non-interrupting timer/conditional boundaries work on all three automatic body types, with activation/occurrence fencing, restart-safe subscriptions, queued-entry rules, and cancellation of unfinished items and calls when interrupted.
+- [x] Aggregate reset/publication handles conditional reentrancy; output conflicts recover from saved results without rerunning completed items. A caught item failure stops the body at once, then publishes a partial result before the boundary continues, and a completion failure that retrying cannot change never waits in an incident.
+- [x] Every existing reader of multi-instance executions (by table, entity, or `MultiInstanceExecutionId`), including administrative actions, role management, version change, diagram history, and instance detail, ignores automatic bodies or handles them explicitly; existing human-MI DTO fields never carry an automatic body.
+- [x] Retention and migrations preserve open work, including bodies that outlive the completed-job retention period, and existing human MI, ordinary jobs, and ordinary calls.
+- [x] Paged item reads, progress, node activity, diagram history, permissions, and shared UI work without per-item database queries or fabricated user actions.
+- [x] A release switch keeps automatic MI rejected, and its new editor controls hidden, on every host except Development until the parent's integration step. Shared automated and browser checks pass with the switch opened on the Development test hosts; B/C/D integration gates remain mandatory before the parent can be Done. (Met until the integration step; the switch was removed on 2026-11-14, so every host now publishes and runs all three kinds.)
 
 ## Scope and ownership
 
@@ -857,3 +857,7 @@ Phase 1 of the production-readiness plan recorded in the [parent plan](task-05-m
 - **Boundary ring redraw (found by the Phase 3 browser run).** Toggling **Interrupt attached activity** on a timer or conditional boundary redrew only the inspector, so the canvas kept the old solid or dashed ring until the next full render. The toggle now redraws the canvas; `EditorAutomaticMultiInstanceScriptTests.Toggling_a_boundarys_interruption_redraws_the_canvas` pins it, and the skipped acceptance scenario `TogglingInterruptionRedrawsTheConditionalBoundaryRingAtOnce` can be enabled once both branches are merged.
 - **Verification.** Full solution 5,106 of 5,106 in 15 minutes 5 seconds (`dotnet test Flowbit/Flowbit.slnx -m:1`), then the editor suites with the boundary test added, 203 of 203. Real browser: the hosted editor mounted with the capability open in the built-in Chromium pane at `http://localhost:15811/probe.html`. Real typing into an assignment updated the body's status line live and showed the aggregate message. A declined **Format** switch kept both assignments; an accepted one removed them and **Undo** restored them. The new help panels opened, with no horizontal overflow at 1440×900, 1024×768, and 390×844. The console showed only the pane's suppressed-dialog notice and a `beforeunload` notice from reloading the probe.
 - **Per-item cost** moves to the plan's scale run, and **the first migration's in-transaction foreign keys and indexes** to its migration timing; neither is changed here.
+
+### Release (2026-11-14)
+
+The release-readiness phases recorded in the [parent plan](task-05-multi-instance-automatic-activities.md#release-readiness) closed what this record still listed as open. All three adapters are integrated, and the Phase 5 integration change removed the release switch and the per-kind adapter list. Every review finding is fixed or accepted with a reason ([review findings](#release-readiness-review-findings-2026-11-14) and the parent's decisions table). §12's ordered-error-array item is pinned by `EditorValidatorCharacterizationTests.Validator_PreservesAutomaticBodyErrorOrder`, and the compatibility, migration and hardening tests were added in Phase 2. The first migration's in-transaction foreign keys and indexes were measured and need no rewrite ([deployment](../deployment.md#automatic-multi-instance-activities)).

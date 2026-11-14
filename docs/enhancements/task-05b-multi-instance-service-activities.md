@@ -4,7 +4,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | In progress |
+| Status | Done |
 | Category | New task type |
 | Effort | M |
 | Priority | Not ranked |
@@ -22,16 +22,16 @@ This subtask is one part of TASK-05's first release. Completing REST support doe
 
 ## First release acceptance criteria
 
-- [ ] A REST `serviceTask` with `multiInstance.source: "collection"` and `asyncBefore: true` uses the core coordinator in both sequential and parallel modes. Body entry never makes an extra ordinary service invocation.
-- [ ] Every admitted item owns one durable activity job with stable item/job identity, frozen inputs, existing HTTP timeout/response limits, and the core's item/lease fences. Empty input makes no HTTP request.
-- [ ] Exact-name templates can read `mi.item`, zero-based `mi.index`, `mi.total`, frozen instance inputs, and declared shared aliases plus `config.*`/`setting.*` values and clock captured when the item first stages. JSON items can be sent whole; no dotted item-path lookup is introduced.
-- [ ] `service.outputMappings` and `service.statusVariable` target declared item locals or declared `readWrite` shared aliases. The core atomically commits a successful item's shared write batch, local results, and completion under shared value-version fences; mapping/default/type/validation failures publish no partial batch.
-- [ ] REST failures preserve existing exact/range/catch-all boundary matching and `boundaryFirst`/`retryFirst` behavior. An exhausted uncaught failure opens an incident while the body waits. A caught failure publishes the core's partial result before the boundary continues. The boundary's error variable receives a stable code, and a failed response's status reaches the workflow only through the boundary it selects (§4).
-- [ ] Retry, restart, queue-capacity recovery, and shared-item/aggregate publication recovery do not invoke a successfully executed item again once its mapped result is durably saved as the item's candidate. At-least-once external effects and authored idempotency keys are documented accurately.
-- [ ] Body cancellation, an interrupting timer/conditional boundary, or a caught failure cancels/fences unfinished work. A late HTTP response cannot commit locals or shared writes, advance the parent, or overwrite its aggregate. Non-interrupting timer/conditional boundaries leave the body running and create their own continuation under the core's subscription/firing rules.
-- [ ] Editor authoring, import/export, validation, markers, runtime item detail, and authorized incident navigation work without changing ordinary REST tasks or human MI behavior.
-- [ ] Until the parent's integration step, service bodies publish and run only on a Development host with the release switch open. Call bodies stay rejected until TASK-05D lands, and every other environment rejects all three kinds (§1).
-- [ ] REST-specific automated tests, controlled HTTP integration scenarios, a recorded scale run, prepared examples and documentation, and real-browser evidence satisfy the completion handoff below. Behavior guides and canonical examples merge in the parent's integration change (§8).
+- [x] A REST `serviceTask` with `multiInstance.source: "collection"` and `asyncBefore: true` uses the core coordinator in both sequential and parallel modes. Body entry never makes an extra ordinary service invocation.
+- [x] Every admitted item owns one durable activity job with stable item/job identity, frozen inputs, existing HTTP timeout/response limits, and the core's item/lease fences. Empty input makes no HTTP request.
+- [x] Exact-name templates can read `mi.item`, zero-based `mi.index`, `mi.total`, frozen instance inputs, and declared shared aliases plus `config.*`/`setting.*` values and clock captured when the item first stages. JSON items can be sent whole; no dotted item-path lookup is introduced.
+- [x] `service.outputMappings` and `service.statusVariable` target declared item locals or declared `readWrite` shared aliases. The core atomically commits a successful item's shared write batch, local results, and completion under shared value-version fences; mapping/default/type/validation failures publish no partial batch.
+- [x] REST failures preserve existing exact/range/catch-all boundary matching and `boundaryFirst`/`retryFirst` behavior. An exhausted uncaught failure opens an incident while the body waits. A caught failure publishes the core's partial result before the boundary continues. The boundary's error variable receives a stable code, and a failed response's status reaches the workflow only through the boundary it selects (§4).
+- [x] Retry, restart, queue-capacity recovery, and shared-item/aggregate publication recovery do not invoke a successfully executed item again once its mapped result is durably saved as the item's candidate. At-least-once external effects and authored idempotency keys are documented accurately.
+- [x] Body cancellation, an interrupting timer/conditional boundary, or a caught failure cancels/fences unfinished work. A late HTTP response cannot commit locals or shared writes, advance the parent, or overwrite its aggregate. Non-interrupting timer/conditional boundaries leave the body running and create their own continuation under the core's subscription/firing rules.
+- [x] Editor authoring, import/export, validation, markers, runtime item detail, and authorized incident navigation work without changing ordinary REST tasks or human MI behavior.
+- [x] Until the parent's integration step, service bodies publish and run only on a Development host with the release switch open. Call bodies stay rejected until TASK-05D lands, and every other environment rejects all three kinds (§1). (Met until the integration step; the switch was removed on 2026-11-14, so every host now publishes and runs all three kinds.)
+- [x] REST-specific automated tests, controlled HTTP integration scenarios, a recorded scale run, prepared examples and documentation, and real-browser evidence satisfy the completion handoff below. Behavior guides and canonical examples merge in the parent's integration change (§8).
 
 ## Scope, non-goals, and current evidence
 
@@ -473,3 +473,11 @@ before its fix:
 - The prepared REST sections of the owning guides and the canonical REST examples,
   merged in the parent's integration change (§8). Until then the definitions above live
   in the tests.
+
+### Closed at release (2026-11-14)
+
+- Worker-enabled browser acceptance for service bodies and the remaining manual steps (incident retry from the UI, held responses with cancellation and conflicts, paging and permissions) ran in Phase 3 (`AutomaticMultiInstanceAcceptanceTests`, 151 of 151 with the rest of the suite after Phase 5).
+- The scale run with production log levels ran in Phase 4. Publication now keeps a pending dispatch wake, which removed the 750-in-1,000 superseded dispatch jobs.
+- The listed missing tests (conditional boundaries, a shared collection's success path, several incidents at once, an oversized response through the real invoker, a crash before the candidate save, two Workers under queue pressure) were added in Phase 2.
+- A caught 2xx failure whose body could not be read now says so instead of naming HTTP status 200.
+- The REST sections of the owning guides and the canonical REST examples landed with the Phase 5 integration change.

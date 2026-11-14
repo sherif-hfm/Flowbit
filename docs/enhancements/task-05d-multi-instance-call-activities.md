@@ -4,7 +4,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | In progress |
+| Status | Done |
 | Category | New task type |
 | Effort | L |
 | Priority | Required for TASK-05 first release |
@@ -19,19 +19,19 @@ Run a called workflow once for each item in an immutable collection, sequentiall
 
 ## Scope and acceptance criteria
 
-- [ ] `callActivity.multiInstance` supports instance-scoped or readable shared typed collection sources in `parallel` and `sequential` modes. Initialization freezes the collection; invalid/oversized input fails before any child is created, and an empty collection produces `[]` without an invocation or runtime target pin.
-- [ ] Input mappings accept exact `mi.item`, zero-based `mi.index`, and `mi.total`, frozen parent-instance inputs, and readable parent shared aliases captured when each item first stages, before its child exists. Output mappings target declared locals or authorized `readWrite` shared aliases; shared aggregate/error targets follow TASK-05A. Ordinary call mappings remain compatible.
-- [ ] Each nonempty body pins one immutable target definition/default plain start at successful durable initialization. Every later item and retry uses that pin even if the published default changes.
-- [ ] Every item creates at most one child. Duplicate jobs, immediate child completion, restarts, output-delivery retry, and aggregate-publication retry cannot create replacement children or advance the parent twice.
-- [ ] A call item retains its MI slot until its result settles, including child human work, waits, nested calls, and internal incidents. Sequential execution admits the next child only after the previous item commits success.
-- [ ] Existing call depth, root admission, business-key, fixed-system-actor, child-start, and failure semantics remain enforced, except that reaching the root's open-call limit holds an MI item pending instead of failing it. MI concurrency supplements those limits.
-- [ ] Child faults/independent cancellation take the whole-body catch-all boundary, after the core publishes its partial result, or fault the parent. Operational start/output failures without a boundary open incidents; child internal incidents keep the item waiting.
-- [ ] Parent/body cancellation immediately settles and fences unfinished invocations, then stops descendants through durable cancellation without locking two existing instances together. Late results cannot write outputs or continue a settled body.
-- [ ] Timer and conditional boundaries support interrupting and non-interrupting modes on the MI call body, with activation/occurrence fences, existing schedule/expression rules, and no per-item subscriptions. An interrupting condition can cancel queued entry; either boundary type can cancel unfinished children after initialization. A non-interrupting handler leaves them running.
-- [ ] Shared output conflicts preserve saved child results and the publication candidate. Authorized recovery never starts a replacement child, silently overwrites a changed shared value, or applies a committed shared write twice.
-- [ ] Ledger, progress, calls API, node activity, Operations, editor, and instance detail identify the body/item/invocation without exposing automatic items as human work or granting authority through relationships.
-- [ ] Until the parent's integration step, call bodies publish and run only on a Development host with the release switch open. A kind whose adapter is not installed stays rejected, and every other environment rejects all three (§1).
-- [ ] Target pin retention, migrations, version-switch/reactivation blockers, ordinary-call regressions, real-browser scenarios, and owning documentation are complete before this subtask is Done.
+- [x] `callActivity.multiInstance` supports instance-scoped or readable shared typed collection sources in `parallel` and `sequential` modes. Initialization freezes the collection; invalid/oversized input fails before any child is created, and an empty collection produces `[]` without an invocation or runtime target pin.
+- [x] Input mappings accept exact `mi.item`, zero-based `mi.index`, and `mi.total`, frozen parent-instance inputs, and readable parent shared aliases captured when each item first stages, before its child exists. Output mappings target declared locals or authorized `readWrite` shared aliases; shared aggregate/error targets follow TASK-05A. Ordinary call mappings remain compatible.
+- [x] Each nonempty body pins one immutable target definition/default plain start at successful durable initialization. Every later item and retry uses that pin even if the published default changes.
+- [x] Every item creates at most one child. Duplicate jobs, immediate child completion, restarts, output-delivery retry, and aggregate-publication retry cannot create replacement children or advance the parent twice.
+- [x] A call item retains its MI slot until its result settles, including child human work, waits, nested calls, and internal incidents. Sequential execution admits the next child only after the previous item commits success.
+- [x] Existing call depth, root admission, business-key, fixed-system-actor, child-start, and failure semantics remain enforced, except that reaching the root's open-call limit holds an MI item pending instead of failing it. MI concurrency supplements those limits.
+- [x] Child faults/independent cancellation take the whole-body catch-all boundary, after the core publishes its partial result, or fault the parent. Operational start/output failures without a boundary open incidents; child internal incidents keep the item waiting.
+- [x] Parent/body cancellation immediately settles and fences unfinished invocations, then stops descendants through durable cancellation without locking two existing instances together. Late results cannot write outputs or continue a settled body.
+- [x] Timer and conditional boundaries support interrupting and non-interrupting modes on the MI call body, with activation/occurrence fences, existing schedule/expression rules, and no per-item subscriptions. An interrupting condition can cancel queued entry; either boundary type can cancel unfinished children after initialization. A non-interrupting handler leaves them running.
+- [x] Shared output conflicts preserve saved child results and the publication candidate. Authorized recovery never starts a replacement child, silently overwrites a changed shared value, or applies a committed shared write twice.
+- [x] Ledger, progress, calls API, node activity, Operations, editor, and instance detail identify the body/item/invocation without exposing automatic items as human work or granting authority through relationships.
+- [x] Until the parent's integration step, call bodies publish and run only on a Development host with the release switch open. A kind whose adapter is not installed stays rejected, and every other environment rejects all three (§1). (Met until the integration step; the switch was removed on 2026-11-14, so every host now publishes and runs all three kinds.)
+- [x] Target pin retention, migrations, version-switch/reactivation blockers, ordinary-call regressions, real-browser scenarios, and owning documentation are complete before this subtask is Done.
 
 Out of scope: cardinality, early completion/voting, selectable parent interrupts, item-dependent workflow targets, extra authored version bindings, replacing a terminal child on retry, selective item cancellation, call mapping expressions/paths/conversions, direct per-item writes to parent instance variables, per-item boundaries, and compensation. Conditional and timer expressions retain their existing persisted-instance-variable dependency rules; shared-change subscriptions are not introduced. Called child workflows retain their existing capabilities and their own normal variable/task authorization.
 
@@ -563,3 +563,11 @@ sections and examples listed under [Still open](#still-open) are not complete.
   in the parent's integration change (§10). Until then the definitions live in the tests,
   and the node reference still states the released contract: `multiInstance` is invalid
   on a call.
+
+### Closed at release (2026-11-14)
+
+- Worker-enabled browser acceptance for call bodies and the remaining manual steps ran in Phase 3 (`AutomaticMultiInstanceCallAcceptanceTests`).
+- The listed missing tests (non-interrupting boundaries, a condition on a queued entry, duplicate leases and simultaneous last results, a child's own incident holding its slot, missing or archived bindings, the keyed pinned version, oversized outputs, children refused at the root limit, a shared collection, version and reactivation blockers, retention) were added in Phase 2.
+- The scale run with production log levels ran in Phase 4.
+- The stale-item-job note for REST and script bodies on a closed host no longer applies: Phase 5 removed the switch. Save refuses a service template or NCalc script that reads the body's own aggregate since Phase 1.
+- The call sections of the behavior guides, the AI authoring guide's call rules, and the paired example (`examples/call-activities/04-multi-instance-approval-call.json` with child 01) landed with the Phase 5 integration change. The node reference no longer says `multiInstance` is invalid on a call.

@@ -4,7 +4,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | In progress |
+| Status | Done |
 | Category | Automatic multi-instance activity adapter |
 | Effort | M |
 | Priority | Part of the TASK-05 first release |
@@ -21,17 +21,17 @@ This is an implementation plan. It was first written against the repository revi
 
 ## First release acceptance criteria
 
-- [ ] NCalc and JavaScript scripts each process a declared instance or shared typed collection in parallel and sequential modes through the shared core, with one durable activity job per admitted item.
-- [ ] Scripts read frozen instance inputs, declared shared aliases plus `config.*`/`setting.*` values and clock captured when the item first stages, and read-only `mi.item`, zero-based `mi.index`, and `mi.total`. Sequential items can observe earlier committed shared writes, but never another item's locals.
-- [ ] NCalc assignment targets and JavaScript `execution.setVariable` resolve declared `multiInstance.outputVariables` or declared `readWrite` shared aliases. Ordinary scripts retain their existing process-variable behavior; direct per-item writes to ordinary instance variables remain excluded.
-- [ ] Local/shared defaults, type conversion, nullability, and validation follow their respective contracts in both formats. The core commits a successful shared write batch, locals, and item completion atomically; a failed attempt publishes no partial batch.
-- [ ] JavaScript executes in the existing Jint sandbox outside runtime/shared row locks, with all existing resource and value-bridge limits. Computed names cannot bypass declaration/access checks or canonical-key collision rules.
-- [ ] Evaluation retries reuse item identity and frozen staged inputs and start with fresh buffers. Publication-only conflict retries preserve the saved candidate, refresh output fences through authorized recovery, and never reevaluate successful work or publish through stale activation/lease fences.
-- [ ] Script errors and authored output failures use the existing durable retry/error-boundary policy, integrated with whole-body cancellation and incidents from TASK-05A. A caught failure publishes the core's partial result before the boundary continues. A result that retrying cannot change, such as one over a size limit, is refused through the core; it is never retried and never waits in an incident (§5).
-- [ ] Interrupting timer/conditional boundaries cancel/fence the whole body; non-interrupting firings create a continuation while its items keep running. Attachments, subscriptions, races, and final publication follow TASK-05A, with existing instance-only conditional predicates.
-- [ ] Shared editor authoring, invalid-import preservation, script-format/type changes, undo/redo, runtime progress/results, and permissions work in a real browser.
-- [ ] Until the parent's integration step, script bodies publish and run only on a Development host with the release switch open. Service and call bodies stay rejected until their own adapters land, and every other environment rejects all three (§1).
-- [ ] Automated regressions, HTTP scenarios, and browser evidence are complete, and the script sections of the owning guides and the canonical examples are prepared, before this subtask is Done. They merge into the guides and the example catalog in the parent's integration change, as [TASK-05A §13](task-05a-multi-instance-core.md#13-documentation-and-completion-handoff) requires (§9). Parent TASK-05 still requires all four subtasks.
+- [x] NCalc and JavaScript scripts each process a declared instance or shared typed collection in parallel and sequential modes through the shared core, with one durable activity job per admitted item.
+- [x] Scripts read frozen instance inputs, declared shared aliases plus `config.*`/`setting.*` values and clock captured when the item first stages, and read-only `mi.item`, zero-based `mi.index`, and `mi.total`. Sequential items can observe earlier committed shared writes, but never another item's locals.
+- [x] NCalc assignment targets and JavaScript `execution.setVariable` resolve declared `multiInstance.outputVariables` or declared `readWrite` shared aliases. Ordinary scripts retain their existing process-variable behavior; direct per-item writes to ordinary instance variables remain excluded.
+- [x] Local/shared defaults, type conversion, nullability, and validation follow their respective contracts in both formats. The core commits a successful shared write batch, locals, and item completion atomically; a failed attempt publishes no partial batch.
+- [x] JavaScript executes in the existing Jint sandbox outside runtime/shared row locks, with all existing resource and value-bridge limits. Computed names cannot bypass declaration/access checks or canonical-key collision rules.
+- [x] Evaluation retries reuse item identity and frozen staged inputs and start with fresh buffers. Publication-only conflict retries preserve the saved candidate, refresh output fences through authorized recovery, and never reevaluate successful work or publish through stale activation/lease fences.
+- [x] Script errors and authored output failures use the existing durable retry/error-boundary policy, integrated with whole-body cancellation and incidents from TASK-05A. A caught failure publishes the core's partial result before the boundary continues. A result that retrying cannot change, such as one over a size limit, is refused through the core; it is never retried and never waits in an incident (§5).
+- [x] Interrupting timer/conditional boundaries cancel/fence the whole body; non-interrupting firings create a continuation while its items keep running. Attachments, subscriptions, races, and final publication follow TASK-05A, with existing instance-only conditional predicates.
+- [x] Shared editor authoring, invalid-import preservation, script-format/type changes, undo/redo, runtime progress/results, and permissions work in a real browser.
+- [x] Until the parent's integration step, script bodies publish and run only on a Development host with the release switch open. Service and call bodies stay rejected until their own adapters land, and every other environment rejects all three (§1). (Met until the integration step; the switch was removed on 2026-11-14, so every host now publishes and runs all three kinds.)
+- [x] Automated regressions, HTTP scenarios, and browser evidence are complete, and the script sections of the owning guides and the canonical examples are prepared, before this subtask is Done. They merge into the guides and the example catalog in the parent's integration change, as [TASK-05A §13](task-05a-multi-instance-core.md#13-documentation-and-completion-handoff) requires (§9). Parent TASK-05 still requires all four subtasks.
 
 ## Non-goals
 
@@ -489,3 +489,10 @@ both `failureHandling` values.
 - The 1,000-item scale run in both formats, recording duration and queries per item.
 - The prepared script sections of the owning guides and the canonical example
   definitions (§9); the runtime tests hold equivalent fixtures for now.
+
+### Closed at release (2026-11-14)
+
+- The review findings are closed (see above), and the listed missing tests were added in Phase 2.
+- Worker-enabled browser acceptance for NCalc and JavaScript bodies ran in Phase 3, and the 1,000-item scale run in both formats in Phase 4.
+- The JavaScript lock scope is documented as implemented: every shared binding except the collection is locked while an item stages. Narrowing it is listed in [TASK-06](task-06-multi-instance-automatic-activities-next.md).
+- The script sections of the owning guides and the canonical NCalc and JavaScript examples landed with the Phase 5 integration change.
