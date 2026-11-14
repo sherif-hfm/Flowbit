@@ -476,27 +476,111 @@ collection. Each JavaScript item stores its own copy of every `config.*` and
 `setting.*` value within its 1 MiB staged-input limit.
 
 **Rollout.** Mixed versions are unsupported: an earlier API or Worker does not
-understand the new job kinds, waits, items, and invocations.
+understand the new job kinds, waits, items, and invocations. This order was rehearsed
+on 2026-11-14 with every host in the `Staging` environment and
+[Local authentication](local-authentication.md), starting from the previous release
+running against a restored copy of the synthetic database described under
+**Measured cost** below.
 
-1. Back up the database.
-2. Stop every API and Worker replica, and every other client of the database.
-3. Apply the migrations listed below with `database update`.
+1. Stop every API and Worker replica, and every other client of the database. A
+   Worker that is killed rather than stopped leaves its leases to expire, and the next
+   Worker runs those jobs again.
+2. Back up the database. Taken after the stop, the backup is the exact state the
+   migrations start from; `pg_dump -Fc` of the 2 GB copy took 8 seconds.
+3. Apply the migrations listed below with `database update` from this release's
+   build, using the pinned `dotnet-ef` shown in
+   [Apply to the intended database](#apply-to-the-intended-database). On the copy, all
+   six took 7 seconds.
 4. Deploy the API, Worker, and UI of this release together, with the editor assets.
    Refresh open authoring tabs so an earlier editor cannot drop the new fields.
-5. Start the replicas, check `/health/ready`, and confirm a Worker is processing jobs.
+5. Start the replicas. The Worker's `/health/ready` returns `Healthy` once it can lease
+   jobs. The API has no health route, so check it with an authenticated request such
+   as `GET /api/auth/context`, and confirm with
+   [`GET /api/jobs`](api-guide.md#get-apijobs) or the Worker's `/metrics` that jobs
+   complete.
 6. With `WorkflowDurableProcessing:PublicationEnabled=true` on the API, publish
    definitions with automatic bodies. Start with a small collection and watch the
    body's progress on instance detail before relying on large batches.
 
-**Rollback.** Earlier binaries are not safe with an open automatic body or with a
-published definition that contains one: an earlier Worker cannot run their jobs, and
-an earlier API refuses such definitions or, before the multi-instance foundation,
-drops `multiInstance` from service, script, and call nodes. Before reverting,
-unpublish or replace those definitions so no new bodies start, then let open bodies
-finish, or cancel their instances; list them with
-`SELECT "InstanceId", "NodeId", "ActivityKind" FROM flowbit.multi_instance_executions WHERE "ActivityKind" <> 'userTask' AND "Status" = 'active';`.
-Keep the additive schema and its evidence: do not run the down migrations as a
-recovery step.
+A body's jobs wait behind due work already queued. A Worker leases the
+highest-priority, oldest due job of each instance and takes instances in the same
+order, so a body started on a database with a large backlog of due jobs waits until
+the older ones drain. On the rehearsal copy, which still held 239,535 due jobs from
+the previous release, a body started after the upgrade had not begun after 90
+seconds, while the Worker completed about 0.75 jobs a second. Once the bulk-loaded
+instances were cancelled through the API, it ran at once. Drain or cancel such a
+backlog before relying on new bodies. After that, the multi-instance examples 08 to
+12 and the [multi-instance call](../examples/call-activities/README.md#multi-instance-call)
+gave the results their READMEs describe. Human multi-instance executions, calls, jobs
+waiting to retry, and incidents left by the previous release continued on the new
+binaries.
+
+**Rollback.** Earlier binaries start against the migrated schema: the Worker logs that
+the database has migrations its build does not contain, then runs. They are safe only
+when no automatic body is open, no published version contains one, and no automatic
+job is unfinished. The rehearsal started the previous release, which predates the
+multi-instance foundation, while bodies were open. It damaged them and reported only
+one of the problems:
+
+- The earlier Worker leased each `multiInstanceItem` job, found that the job no longer
+  owned its token's wait, and completed it as stale without running it. The items
+  stayed active with no job, so their bodies could not finish, even after returning
+  to this release, and no incident was opened.
+- It settled a call item's child result as failed (`call_output_invalid`, because an
+  item's local output is not a process variable) without telling the body.
+- It opened a `job_invariant_violation` incident on a body's queued `asyncBefore`
+  entry job.
+- The earlier API read service, script, and call nodes without `multiInstance`. It
+  started new instances of a published body definition as one ordinary activity,
+  which failed, and it imported and published a body definition without its
+  `multiInstance`, which stays lost.
+
+Before reverting, on this release:
+
+1. Stop new bodies. Unpublish every published version that contains one (the second
+   query below). A family's default version cannot be unpublished, so first publish a
+   version without a body and set it as the default.
+2. Let open bodies finish, or cancel their instances (the first query). Cancelling
+   settles the body, and a call body's children are cancelled through `callCancel`
+   jobs.
+3. When all three queries return no rows, stop the replicas and start the earlier
+   binaries.
+
+```sql
+-- Open automatic bodies
+SELECT "InstanceId", "NodeId", "ActivityKind"
+FROM flowbit.multi_instance_executions
+WHERE "ActivityKind" <> 'userTask' AND "Status" = 'active';
+
+-- Published versions that contain an automatic body
+SELECT d."Id", d."WorkflowKey", d."Version", d."IsDefault", n->>'name' AS node_name
+FROM flowbit.workflow_definitions AS d
+CROSS JOIN LATERAL jsonb_array_elements(d."Definition"->'flowNodes') AS n
+WHERE d."IsPublished"
+  AND n->>'type' IN ('serviceTask', 'scriptTask', 'callActivity')
+  AND jsonb_typeof(n->'multiInstance') = 'object';
+
+-- Unfinished automatic jobs, including a call item's messages
+SELECT "Id", "InstanceId", "Kind", "Status"
+FROM flowbit.workflow_jobs
+WHERE "Status" NOT IN ('completed', 'cancelled')
+  AND ("Kind" LIKE 'multiInstance%'
+       OR "AutomaticMultiInstanceItemId" IS NOT NULL
+       OR "CallInvocationId" IN (SELECT "Id" FROM flowbit.call_activity_executions
+                                 WHERE "AutomaticMultiInstanceItemId" IS NOT NULL));
+```
+
+After these steps, the earlier API and Worker ran a call activity example and new
+instances end to end against the migrated database, logging only the migration
+warning. Keep the additive schema and its evidence: do not run the down migrations as
+a recovery step.
+
+If earlier binaries have already run while a body was open, return to this release.
+Retrying a `job_invariant_violation` incident on a body's entry job runs the body
+normally. Cancel the instance of any body that no longer progresses, of a call body
+whose item the earlier Worker failed, and of an instance an earlier API started from
+a body definition, whose job fails again on this release with `job_conflict`. Import
+again any body definition an earlier API saved.
 
 **Monitoring.** Watch two kinds of incident. An item incident is on a
 `multiInstanceItem` job, which Operations labels **Automatic item #N**, or on a call
