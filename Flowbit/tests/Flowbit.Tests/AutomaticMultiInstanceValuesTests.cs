@@ -140,21 +140,24 @@ public sealed class AutomaticMultiInstanceValuesTests
         Assert.Equal(3, WorkflowEngineService.ValidateAutomaticLocalResult(outputs, second, context).GetProperty("output").GetInt32());
     }
 
-    // A kind without an installed adapter must never run as one ordinary activity.
-    // TASK-05C and TASK-05B installed the script and service adapters, so only call
-    // bodies stay refused.
-    [Theory]
-    [InlineData("callActivity")]
-    public void Development_authoring_does_not_execute_a_body_as_an_ordinary_activity(string type)
-    {
-        Assert.Throws<WorkflowDomainException>(() => WorkflowEngineService.EnsureAutomaticMultiInstanceRuntimeAvailable(
-            new FlowNodeModel { Id = 2, Type = type, MultiInstance = new() }, released: true));
-        WorkflowEngineService.EnsureAutomaticMultiInstanceRuntimeAvailable(new FlowNodeModel { Id = 2, Type = type }, released: true);
-    }
-
+    // A body never runs as one ordinary activity: a host whose switch is closed refuses it
+    // at entry, while the ordinary activity of the same kind never depends on the switch.
     [Theory]
     [InlineData("scriptTask")]
     [InlineData("serviceTask")]
+    [InlineData("callActivity")]
+    public void A_closed_host_refuses_a_body_but_not_the_ordinary_activity_of_its_kind(string type)
+    {
+        Assert.Throws<WorkflowDomainException>(() => WorkflowEngineService.EnsureAutomaticMultiInstanceRuntimeAvailable(
+            new FlowNodeModel { Id = 2, Type = type, MultiInstance = new() }, released: false));
+        WorkflowEngineService.EnsureAutomaticMultiInstanceRuntimeAvailable(new FlowNodeModel { Id = 2, Type = type }, released: false);
+    }
+
+    // TASK-05C, TASK-05B, and TASK-05D installed the script, service, and call adapters.
+    [Theory]
+    [InlineData("scriptTask")]
+    [InlineData("serviceTask")]
+    [InlineData("callActivity")]
     public void An_installed_adapter_lets_its_bodies_enter_the_runtime_on_a_released_host(string type)
     {
         WorkflowEngineService.EnsureAutomaticMultiInstanceRuntimeAvailable(

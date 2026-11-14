@@ -52,6 +52,13 @@ public sealed partial class WorkflowEngineService
         IReadOnlyDictionary<string, JsonElement> stored,
         CancellationToken cancellationToken)
     {
+        // A call body enters through its own job and never as one ordinary call.
+        if (CallActivityRules.IsCallBody(node))
+        {
+            await EnterAutomaticCallBodyAsync(instance, token, node, cancellationToken);
+            return null;
+        }
+
         // Routing can visit a token that already rests here; a visit owns one invocation.
         EnsureAutomaticMultiInstanceRuntimeAvailable(node);
         if (token.WaitState is not null
@@ -249,6 +256,11 @@ public sealed partial class WorkflowEngineService
         var invocationId = RequireInvocationId(lease.Job);
         var seed = await CallActivities.GetInvocationAsync(invocationId, cancellationToken)
             ?? throw new WorkflowJobInvariantException($"Call invocation #{invocationId} no longer exists.");
+        if (seed.AutomaticMultiInstanceItemId is not null)
+        {
+            await ProcessAutomaticCallItemStartAsync(lease, fence, seed, cancellationToken);
+            return;
+        }
 
         CallFailure? failure;
         await using (var transaction = await unitOfWork.BeginTransactionAsync(cancellationToken))
@@ -662,6 +674,14 @@ public sealed partial class WorkflowEngineService
         CancellationToken cancellationToken)
     {
         var invocationId = RequireInvocationId(lease.Job);
+        // An automatic item's result is saved and published in separate transactions.
+        var item = await CallActivities.GetInvocationAsync(invocationId, cancellationToken);
+        if (item?.AutomaticMultiInstanceItemId is not null)
+        {
+            await ProcessAutomaticCallItemResumeAsync(lease, fence, item, cancellationToken);
+            return;
+        }
+
         await using var transaction = await unitOfWork.BeginTransactionAsync(cancellationToken);
         var seed = await CallActivities.GetInvocationAsync(invocationId, cancellationToken)
             ?? throw new WorkflowJobInvariantException($"Call invocation #{invocationId} no longer exists.");

@@ -23,16 +23,32 @@ public sealed class AutomaticMultiInstanceQueryRepository(AppDbContext db) : IAu
         JOIN flowbit.multi_instance_executions e ON e."Id" = i."MultiInstanceExecutionId" AND e."InstanceId" = i."InstanceId"
         JOIN flowbit.workflow_instances w ON w."Id" = e."InstanceId"
         JOIN flowbit.workflow_definitions d ON d."Id" = e."WorkflowDefinitionId"
+        LEFT JOIN flowbit.call_activity_executions invocation
+            ON invocation."AutomaticMultiInstanceItemId" = i."Id" AND invocation."ParentInstanceId" = i."InstanceId"
         LEFT JOIN LATERAL (
-            SELECT j."Id" FROM flowbit.workflow_jobs j
-            WHERE j."AutomaticMultiInstanceItemId" = i."Id" AND j."InstanceId" = i."InstanceId"
-            ORDER BY j."Id" DESC LIMIT 1
+            SELECT candidate."Id" FROM (
+                SELECT j."Id" FROM flowbit.workflow_jobs j
+                WHERE j."AutomaticMultiInstanceItemId" = i."Id" AND j."InstanceId" = i."InstanceId"
+                UNION ALL
+                -- A call item's jobs carry no item id: its callStart belongs to the parent and
+                -- its callResume to the child, and both name the item's invocation.
+                SELECT j."Id" FROM flowbit.workflow_jobs j
+                WHERE j."CallInvocationId" = invocation."Id" AND j."Kind" IN ('callStart', 'callResume')
+            ) candidate
+            ORDER BY candidate."Id" DESC LIMIT 1
         ) job ON TRUE
         LEFT JOIN LATERAL (
-            SELECT incident."Id" FROM flowbit.workflow_incidents incident
-            JOIN flowbit.workflow_jobs j ON j."Id" = incident."JobId"
-            WHERE j."AutomaticMultiInstanceItemId" = i."Id" AND j."InstanceId" = i."InstanceId" AND incident."Status" = 'open'
-            ORDER BY incident."Id" DESC LIMIT 1
+            SELECT candidate."Id" FROM (
+                SELECT incident."Id" FROM flowbit.workflow_incidents incident
+                JOIN flowbit.workflow_jobs j ON j."Id" = incident."JobId"
+                WHERE j."AutomaticMultiInstanceItemId" = i."Id" AND j."InstanceId" = i."InstanceId" AND incident."Status" = 'open'
+                UNION ALL
+                SELECT incident."Id" FROM flowbit.workflow_incidents incident
+                JOIN flowbit.workflow_jobs j ON j."Id" = incident."JobId"
+                WHERE j."CallInvocationId" = invocation."Id" AND j."Kind" IN ('callStart', 'callResume')
+                  AND incident."Status" = 'open'
+            ) candidate
+            ORDER BY candidate."Id" DESC LIMIT 1
         ) incident ON TRUE
         LEFT JOIN LATERAL (
             SELECT n."Id" FROM flowbit.node_executions n
@@ -44,7 +60,8 @@ public sealed class AutomaticMultiInstanceQueryRepository(AppDbContext db) : IAu
     private const string SummarySql = """
         i."Id", i."InstanceId", i."MultiInstanceExecutionId", i."ItemIndex", e."ActivityKind",
         i."Status", i."Phase", i."CreatedAt", i."UpdatedAt", i."StartedAt", i."CompletedAt",
-        job."Id" AS "JobId", incident."Id" AS "IncidentId", ledger."Id" AS "NodeExecutionId"
+        job."Id" AS "JobId", incident."Id" AS "IncidentId", ledger."Id" AS "NodeExecutionId",
+        invocation."Id" AS "CallInvocationId", invocation."ChildInstanceId"
         """;
 
     // Only constant SQL fragments are composed; every input is a typed parameter.
@@ -92,7 +109,11 @@ public sealed class AutomaticMultiInstanceQueryRepository(AppDbContext db) : IAu
 
     private static AutomaticMultiInstanceItemSummaryDto ToSummary(ItemRow row) => new(row.Id, row.InstanceId,
         row.MultiInstanceExecutionId, row.ItemIndex, row.ActivityKind, row.Status, row.Phase, row.CreatedAt,
-        row.UpdatedAt, row.StartedAt, row.CompletedAt, row.JobId, row.IncidentId, row.NodeExecutionId, row.CanReadPayload);
+        row.UpdatedAt, row.StartedAt, row.CompletedAt, row.JobId, row.IncidentId, row.NodeExecutionId, row.CanReadPayload)
+    {
+        CallInvocationId = row.CallInvocationId,
+        ChildInstanceId = row.ChildInstanceId
+    };
     private static JsonElement? Parse(string? value)
     {
         if (value is null) return null;
@@ -116,6 +137,8 @@ public sealed class AutomaticMultiInstanceQueryRepository(AppDbContext db) : IAu
         public long? JobId { get; set; }
         public long? IncidentId { get; set; }
         public long? NodeExecutionId { get; set; }
+        public long? CallInvocationId { get; set; }
+        public long? ChildInstanceId { get; set; }
         public bool CanReadPayload { get; set; }
         public string? ItemJson { get; set; }
         public string? ResultJson { get; set; }

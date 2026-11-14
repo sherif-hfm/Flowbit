@@ -707,10 +707,10 @@ One row per activation of a multi-instance user task. The parent token stays on 
 
 The `AddAutomaticMultiInstanceCore` and `ValidateAutomaticMultiInstanceConstraints`
 migrations install the storage foundation described below. Automatic execution remains
-inactive pending adapter integration; these objects do not enable service, script, or
-call multi-instance execution. Only Development API and Worker hosts with the TASK-05
-release switch open can already publish and run script bodies, whose items use these
-tables unchanged. Existing rows retain `ActivityKind = 'userTask'`,
+inactive pending the TASK-05 integration step; these objects do not by themselves enable
+service, script, or call multi-instance execution. Only Development API and Worker hosts
+with the TASK-05 release switch open can already publish and run service, script, and
+call bodies, whose items use these tables unchanged. Existing rows retain `ActivityKind = 'userTask'`,
 their human task/role/vote semantics, and their existing result format.
 
 Every size bound below is the byte length PostgreSQL prints for the stored `jsonb`
@@ -741,7 +741,7 @@ erDiagram
 | `Phase`, `AdmissionBlockedReason`, `ControlGeneration` | `running`, `dispatch`, `completing`, `errorCompletion`, or `settled`; optional admission reason and nonnegative control generation. |
 | `CompletionJson` | First accepted error-completion route/diagnostic intent, bounded to 1 MiB and retained independently of control-job cleanup. |
 | `FailedCount`, `ResultBytes` | Nonnegative failures and bounded aggregate accounting (0–1,048,576 bytes). |
-| `PinnedChildDefinitionId`, `PinnedChildStartEventId`, `PinState` | The target version and default plain start a nonempty call body pins at initialization; the call adapter resolves them, and they do not implement child execution. `CK_multi_instance_executions_call_pin_shape` requires all three on a nonempty call body and refuses them on every other body: `PinState` is `pinned` while the body is active and `released` once it settles. The pinned definition FK uses `RESTRICT`, and definition operations refuse unpublication while a pinned body is open, before its first child exists. |
+| `PinnedChildDefinitionId`, `PinnedChildStartEventId`, `PinState` | The target version and default plain start a nonempty call body pins at initialization: its entry job resolves the family's published default under the family lock, and every item and retry starts that version, even after the default changes. An empty call body has no pin. `CK_multi_instance_executions_call_pin_shape` requires all three on a nonempty call body and refuses them on every other body: `PinState` is `pinned` while the body is active and `released` once it settles. The pinned definition FK uses `RESTRICT`, and definition operations refuse unpublication while a pinned body is open, before its first child exists, and deletion while any body names the version. |
 
 The automatic shape check requires the definition, activation, snapshot, aggregate and
 window fields and excludes role policies/one-per-actor behavior. A filtered unique index
@@ -1120,7 +1120,7 @@ Each row is one unit of durable work, leased by `Flowbit.Worker` with `FOR UPDAT
 - **Referenced by:** [`administrative_action_batches`](#administrative_action_batches).`ExecutionJobId`, [`administrative_action_batches`](#administrative_action_batches).`PreparationJobId`, [`instance_variable_update_batch_jobs`](#instance_variable_update_batch_jobs).`JobId`, [`workflow_incidents`](#workflow_incidents).`JobId`, [`workflow_instance_version_change_batches`](#workflow_instance_version_change_batches).`ExecutionJobId`, [`workflow_instance_version_change_batches`](#workflow_instance_version_change_batches).`PreparationJobId`, [`workflow_job_attempts`](#workflow_job_attempts).`JobId`
 - **Unique:** (`ConditionalBoundarySubscriptionId`, `ConditionalBoundaryOccurrence`) where `ConditionalBoundarySubscriptionId IS NOT NULL AND ConditionalBoundaryOccurrence IS NOT NULL`; (`TimerSubscriptionId`, `ScheduledOccurrenceAt`) where `TimerSubscriptionId IS NOT NULL AND ScheduledOccurrenceAt IS NOT NULL`; (`CallInvocationId`, `Kind`) where `CallInvocationId IS NOT NULL`; `AutomaticMultiInstanceItemId` where it is not null; (`MultiInstanceExecutionId`, `MultiInstanceControlGeneration`) where the generation is not null; `MultiInstanceExecutionId` among open dispatch and completion jobs (`IX_workflow_jobs_automatic_control_slot`)
 - **Indexes:** `MultiInstanceExecutionId` (`IX_workflow_jobs_MultiInstanceExecutionId`)
-- **Checks:** include `CK_workflow_jobs_automatic_item_shape` and `CK_workflow_jobs_automatic_control_shape`
+- **Checks:** include `CK_workflow_jobs_automatic_item_shape`, `CK_workflow_jobs_automatic_control_shape`, and `CK_workflow_jobs_multi_instance_start_shape`, which gives a call body's `multiInstanceStart` entry job an instance and token, the `control` queue class, and no body, item, control generation, task, or invocation. A call item's `callStart` names its body in `MultiInstanceExecutionId` and its invocation in `CallInvocationId`, never an item: the item is reached through the invocation.
 
 ### `workflow_job_attempts`
 

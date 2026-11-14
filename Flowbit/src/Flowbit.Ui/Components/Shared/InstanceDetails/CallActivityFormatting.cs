@@ -73,13 +73,19 @@ internal static class CallActivityFormatting
         }
     }
 
-    /// <summary>The child's version, once a visit has chosen one.</summary>
+    /// <summary>
+    /// The child's version, once a visit has chosen one. A multi-instance item's body pins
+    /// one version for all its items when it starts, so the version is known before the
+    /// item's child exists.
+    /// </summary>
     internal static string VersionText(CallActivityExecutionDto call) =>
         call.ChildDefinitionVersion is int version
             ? $"Version {version}"
-            : call.State == "queued"
-                ? "Version chosen when the child starts"
-                : "No version chosen";
+            : call.PinnedChildDefinitionVersion is int pinned
+                ? $"Version {pinned}, pinned by the multi-instance body"
+                : call.State == "queued"
+                    ? "Version chosen when the child starts"
+                    : "No version chosen";
 
     /// <summary>The message for an instance under a cancelled call at any depth, or null.</summary>
     internal static string? ParentCancellationNotice(ParentCallSummaryDto? parentCall, string? instanceStatus) =>

@@ -293,12 +293,45 @@ standalone and other environments keep the gate closed. Publication, runtime ent
 and item processing each require the open switch and an installed activity kind:
 `AutomaticMultiInstanceRules.InstalledAdapterKinds` is the one list the three guards
 read (`WorkflowDefinitionReadinessChecker.EnsureDurablePublicationAllowed`,
-`EnsureAutomaticMultiInstanceRuntimeAvailable`, and the item-job dispatch in
-`WorkflowEngineService.AutomaticMultiInstanceItems.cs`), so a body published on an
+`EnsureAutomaticMultiInstanceRuntimeAvailable`, the item-job dispatch in
+`WorkflowEngineService.AutomaticMultiInstanceItems.cs`, a call item's `callStart`
+and `callResume`, and every body's dispatch and completion jobs, the last three checked
+once the job is known to own live work so stale work still closes quietly), so a body
+published on an
 open host neither starts nor runs on a closed one; its jobs retry, then wait in an
-incident. `serviceTask` and `scriptTask` are installed; call bodies stay refused at
-all three. Add a kind only in the change that completes its entry, item, failure,
-and cancellation paths, and never let an automatic body run as one ordinary activity.
+incident. `serviceTask`, `scriptTask`, and `callActivity` are installed. Add a kind only
+in the change that completes its entry, item, failure, and cancellation paths, and never
+let an automatic body run as one ordinary activity.
+
+**Call adapter (TASK-05D).** `WorkflowEngineService.AutomaticMultiInstanceCalls.cs` owns
+call bodies; they never use the service/script `asyncBefore` entry or `multiInstanceItem`
+jobs. Routing queues a `multiInstanceStart` job (token wait `multiInstanceStart`,
+`CK_workflow_jobs_multi_instance_start_shape`) before it reads any of the body's shared
+rows, because the lock-order proof treats a body as a pre-node boundary. That job takes
+the target family's lock before the parent's runtime locks, checks the call depth once,
+and resolves and checks the published default once; `InitializeBodyAsync` keeps the
+pin only for a nonempty collection, and a nonempty body without one fails before any
+body row exists, through the same entry exit as REST/script (`HandleAutomaticEntryFailureAsync`,
+catch-all at once, otherwise retries then an incident). Admission runs only in the
+dispatch job (`DispatchCallsAsync`): each admitted item gets a reserved invocation with
+no inputs and its `callStart`, and reads no shared row. The root's open-call limit is
+back-pressure: items stay pending and the dispatch parks with `callCapacity`, also after
+admitting only part of its window (a partial admission never completes the dispatch, or
+nothing would retry until one of the body's own items settled), and only a body with
+nothing in flight at the longest backoff opens `call_capacity_exceeded`. An item incident
+opens only after the item's fence is checked again in the incident's own transaction,
+because a sibling's failure may have cancelled the item since the failure was found. An item's `callStart`
+runs a parent-only stage transaction (shared inputs and output fences on the item, mapped
+inputs on the invocation, and the `sys.*`/`config.*`/`setting.*` values the local-output
+defaults and validations reference, read as the fixed `callActivity` actor; an item never
+reads its body's aggregate, so validation refuses it as an input source), then a start transaction that takes the family lock first and
+starts the pinned version with the saved inputs; neither `callStart` transaction holds
+the family lock and a parent shared row together, and every transaction that takes the
+family lock takes it first. Its `callResume` saves the mapped candidate, commits,
+then publishes it, settling the invocation and acknowledging the message in the same
+transaction. A failed item settles its own invocation before the body abandons the
+others, so a finished child never gets a cancel message. Execution positions never
+show an item's invocation as the body token's call.
 
 **Shared item protocol.** `WorkflowEngineService.AutomaticMultiInstanceItems.cs` owns
 what the service and script adapters share: one dispatch by node type for a body's
@@ -382,8 +415,7 @@ incident retries retain them. `AutomaticMultiInstanceItemFence` supports ordinar
 item leases and invocation-aware callStart/callResume leases under parent locks,
 without locking the child instance. Calls use the fixed system actor, no caller
 claims or job-attempt expression context; their adapter owns invocation settlement
-and message acknowledgement. This port does not implement TASK-05D admission or
-delivery integration. Item visits retain incoming-flow and completion attribution;
+and message acknowledgement. Item visits retain incoming-flow and completion attribution;
 shared writes link the retained visit. Progress matches the exact activation and
 batch-loads current control incidents independently of item counts.
 
@@ -410,8 +442,9 @@ value-free fault code. An item result that retrying cannot change goes through
 `RefuseItemResultAsync`: the body stops at once, publishes nothing, then takes its
 catch-all error boundary or faults the same way.
 
-An item is blocked while its own `multiInstanceItem` job, or a call item's
-`callStart`, has an open incident. Progress and admission read this from the
+An item is blocked while its own `multiInstanceItem` job, a call item's
+`callStart`, or the child-owned `callResume` delivering its result (found through the
+parent's invocation) has an open incident. Progress and admission read this from the
 incident; never write body or item rows when an incident opens, because that runs
 from job-side locks and would invert the runtime lock order. Only `multiInstanceItem`
 jobs carry `AutomaticMultiInstanceItemId`; call messages reach the item through their
@@ -423,8 +456,7 @@ Settling a body clears its items' staged inputs and candidates. Item-local outpu
 never stored instance variables: conditional, timer-expression, inbox-visibility and
 version-compatibility analysis must skip them, as `CallActivityRules.SourceDeclarations` does.
 Common hooks and tests
-do not substitute for TASK-05B/C/D preparation/execution/delivery integration or
-real Worker/browser release evidence. Record those gates in
+do not substitute for real Worker/browser release evidence. Record those gates in
 [TASK-05A](docs/enhancements/task-05a-multi-instance-core.md) before changing its
 release status.
 
@@ -3166,7 +3198,13 @@ when extending the model so new features stay close to BPMN terminology.
   `callOnly`, including null, and `renderCallOnlyField` or `renderMisplacedCallOnly`
   offers its removal. Selecting or redrawing never rewrites these; only
   `changeNodeTypeFromInspector` and **Remove these options** clear them
-  (`clearUnsupportedCallSettings`, `clearUnsupportedCallFlowSettings`).
+  (`clearUnsupportedCallSettings`, `clearUnsupportedCallFlowSettings`). **Remove these
+  options** keeps a valid call body (`isCallBodyNode`) on a host that can run one, and
+  disabling multi-instance on a call (`setAutomaticMultiInstance`) refuses while an input
+  reads `mi.item`/`mi.index`/`mi.total` or a shared alias, or a result writes one.
+  `callInputSourceDeclarations` mirrors `CallActivityRules.InputSourceDeclarations` and
+  adds those item sources only on a call body. Only an object `multiInstance` is shown as
+  a body; any other imported value stays for save validation to report.
   `EditorCallActivityTests.Import_AgreesWithTheServerOnEveryValueOfACallsOtherSettings`
   compares both sides value by value. `callSourceDeclarations` mirrors
   `CallActivityRules.SourceDeclarations` and lives inside the validator markers,

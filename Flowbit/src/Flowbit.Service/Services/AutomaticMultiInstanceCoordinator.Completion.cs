@@ -12,11 +12,27 @@ public sealed partial class AutomaticMultiInstanceCoordinator
     /// aggregate once, and installs a durable wake. Initial admission is a new
     /// segment so item locks cannot descend behind reset's shared locks.
     /// </summary>
+    /// <param name="callTargetFailure">
+    /// A call body's target failure (<c>call_target_unavailable</c>, <c>call_target_incompatible</c>,
+    /// or <c>call_depth_exceeded</c>) when the entry could not pin a target. The call adapter
+    /// resolves its target under the family lock, before the collection is counted here, so
+    /// it passes either a pin in <paramref name="create"/> or this failure. A nonempty body
+    /// keeps the pin or fails with this code before any body row exists; an empty body drops
+    /// both and completes with <c>[]</c>.
+    /// </param>
     public async Task<AutomaticMultiInstanceRecord?> InitializeBodyAsync(
         AutomaticMultiInstanceCreateRecord create, WorkflowModel definition, ActorContext actor,
         WorkflowJobFence entryFence, WorkflowJobCreateRecord controlTemplate,
-        IAutomaticMultiInstanceLifecycle lifecycle, CancellationToken ct)
+        IAutomaticMultiInstanceLifecycle lifecycle, CancellationToken ct, string? callTargetFailure = null)
     {
+        var call = create.ActivityKind == BpmnFlowNodeTypes.CallActivity;
+        if (!call && (create.PinnedChildDefinitionId is not null || create.PinnedChildStartEventId is not null
+                || callTargetFailure is not null))
+            throw new ArgumentException("Only a call body has a target pin.", nameof(create));
+        if (call && (create.PinnedChildDefinitionId is null) != (create.PinnedChildStartEventId is null))
+            throw new ArgumentException("A call body's target pin names both its definition and its start.", nameof(create));
+        if (call && (create.PinnedChildDefinitionId is null) == (callTargetFailure is null))
+            throw new ArgumentException("A call body passes either its target pin or its target failure.", nameof(create));
         RequireLifecycleStores();
         var entry = await jobs.GetForUpdateAsync(entryFence.JobId, ct);
         if (entry is null || entry.Kind is not (WorkflowJobKinds.AsyncBefore or WorkflowJobKinds.MultiInstanceStart)
@@ -50,6 +66,12 @@ public sealed partial class AutomaticMultiInstanceCoordinator
         };
         var input = await CaptureBodyInputAsync(create.InstanceId, create.WorkflowDefinitionId, definition,
             create.NodeId, create.MaxInstances, requestedInputs, create.InitializedAt, causalActor, ct);
+        // Only a nonempty call body creates children, so only it needs, and keeps, its pin.
+        // Its target failure is the entry's failure; an empty body ignores both.
+        if (call && input.TotalCount > 0 && callTargetFailure is not null)
+            throw new AutomaticMultiInstanceValueException(callTargetFailure);
+        if (call && input.TotalCount == 0)
+            create = create with { PinnedChildDefinitionId = null, PinnedChildStartEventId = null };
         var configuration = definition.FlowNodes.Single(node => node.Id == create.NodeId).MultiInstance!;
         var configuredDefault = engineSettings is null ? null
             : (await engineSettings.GetByKeyAsync(AutomaticMultiInstanceLimits.DefaultConcurrencyKey, ct))?.Value;
@@ -118,10 +140,11 @@ public sealed partial class AutomaticMultiInstanceCoordinator
     /// Siblings stop immediately; only the reserved completion job may publish
     /// the saved partial result and route the boundary after this commits.
     /// </summary>
+    /// <param name="childFaultCode">A call item's child fault code, kept on its settled invocation.</param>
     public async Task<bool> CaptureItemFailureAsync(long executionId, long itemId, Guid activationId,
         AutomaticMultiInstanceItemFence fence, AutomaticMultiInstanceCompletionIntent intent, ActorContext actor,
         WorkflowJobCreateRecord controlTemplate, IAutomaticMultiInstanceLifecycle lifecycle, CancellationToken ct,
-        string? failureDescription = null)
+        string? failureDescription = null, string? childFaultCode = null)
     {
         RequireLifecycleStores();
         var (body, _, _) = await RequireItemFenceAsync(executionId, itemId, activationId, fence, ct);
@@ -131,6 +154,12 @@ public sealed partial class AutomaticMultiInstanceCoordinator
             throw new ArgumentException("Invalid automatic body completion intent.", nameof(intent));
         if (!await repository.SaveCompletionIntentAsync(body.Id, activationId, JsonSerializer.SerializeToElement(intent), ct))
             return false;
+        // A failed call item settles its own invocation first, so abandoning the body's
+        // other calls sends no cancel message to a child that has already finished.
+        if (fence.CallInvocationId is long ownInvocation
+            && !await callActivities!.SettleAsync(ownInvocation, CallInvocationStates.Failed, intent.FailureCode,
+                failureDescription ?? "Automatic call item failed.", childFaultCode, ct))
+            throw new WorkflowConflictException("The automatic call item's invocation was settled during its failure.");
         await lifecycle.CloseHostSubscriptionsAsync(body, ct);
         // An adapter may name what failed, such as a REST item's HTTP status. The text lands
         // on the item and its node visit, so it never carries request data, response data,
@@ -165,6 +194,19 @@ public sealed partial class AutomaticMultiInstanceCoordinator
         WorkflowJobCreateRecord controlTemplate, IAutomaticMultiInstanceLifecycle lifecycle, CancellationToken ct) =>
         CaptureItemFailureAsync(executionId, itemId, activationId, fence,
             new AutomaticMultiInstanceCompletionIntent(null, failureCode, itemId), actor, controlTemplate, lifecycle, ct);
+
+    /// <summary>
+    /// Stops the body for a call item whose child faulted or was cancelled on its own, when
+    /// no error boundary catches it. Completion publishes nothing and faults the instance
+    /// with <paramref name="failureCode"/>, the parent's normal terminal path.
+    /// </summary>
+    public Task<bool> FailCallItemAsync(long executionId, long itemId, Guid activationId,
+        AutomaticMultiInstanceItemFence fence, string failureCode, string description, string? childFaultCode,
+        ActorContext actor, WorkflowJobCreateRecord controlTemplate, IAutomaticMultiInstanceLifecycle lifecycle,
+        CancellationToken ct) =>
+        CaptureItemFailureAsync(executionId, itemId, activationId, fence,
+            new AutomaticMultiInstanceCompletionIntent(null, failureCode, itemId), actor, controlTemplate, lifecycle, ct,
+            description, childFaultCode);
 
     /// <summary>
     /// Publishes saved results and advances the graph in one caller transaction.

@@ -25,7 +25,10 @@ public static class AutomaticMultiInstanceRules
     /// removes this list together with the Development-only release switch.
     /// </summary>
     public static IReadOnlySet<string> InstalledAdapterKinds { get; } =
-        new HashSet<string>(StringComparer.Ordinal) { BpmnFlowNodeTypes.ServiceTask, BpmnFlowNodeTypes.ScriptTask };
+        new HashSet<string>(StringComparer.Ordinal)
+        {
+            BpmnFlowNodeTypes.ServiceTask, BpmnFlowNodeTypes.ScriptTask, BpmnFlowNodeTypes.CallActivity
+        };
 
     /// <summary>Whether an automatic body of this node type has an installed activity adapter.</summary>
     public static bool IsAdapterInstalled(string? nodeType) =>

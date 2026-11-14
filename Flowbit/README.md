@@ -7,15 +7,17 @@ Start with the [developer documentation](../docs/index.md) for HTTP onboarding, 
 ## Automatic multi-instance foundation
 
 [TASK-05A](../docs/enhancements/task-05a-multi-instance-core.md) supplies common
-body/item persistence and publication operations. Publication, runtime entry, and
-item processing each require the release switch, which opens only on a Development
+body/item persistence and publication operations. Publication, runtime entry, item
+processing, and a body's dispatch and completion jobs each require the release switch,
+so a closed host never admits items or publishes an aggregate. The switch opens only on a Development
 host with `WorkflowAutomaticMultiInstance:AllowInDevelopment`, and an installed
 adapter. The API and the Worker each resolve the switch for themselves. The REST
-service ([TASK-05B](../docs/enhancements/task-05b-multi-instance-service-activities.md))
-and script ([TASK-05C](../docs/enhancements/task-05c-multi-instance-script-activities.md))
-adapters are installed, so open Development hosts publish and run service and script
-bodies; call bodies stay refused, and every other host refuses all automatic bodies,
-including ones another host published. Both adapters share one item protocol
+service ([TASK-05B](../docs/enhancements/task-05b-multi-instance-service-activities.md)),
+script ([TASK-05C](../docs/enhancements/task-05c-multi-instance-script-activities.md)),
+and call ([TASK-05D](../docs/enhancements/task-05d-multi-instance-call-activities.md))
+adapters are installed, so open Development hosts publish and run all three kinds of
+body; every other host refuses all automatic bodies, including ones another host
+published. The service and script adapters share one item protocol
 (`WorkflowEngineService.AutomaticMultiInstanceItems.cs`): stage, run the activity
 with no lock held, save the candidate, then publish it, each in its own transaction.
 A REST item maps its response in memory and saves only the candidate, so a recovered
@@ -32,21 +34,34 @@ Only explicit output-version-conflict recovery refreshes publication fences.
 `AutomaticMultiInstanceItemFence` accepts either a service/script item lease or
 a call invocation with its parent `callStart`/child `callResume` lease. Common
 operations recheck parent activation, body, item, invocation, message ownership
-and live lease; they never lock the child instance. A call start may stage inputs
-or report admission failure; successful candidates require a running invocation
-and its immutable child result. Calls use the fixed `callActivity` actor without
-caller claims or `sys.jobId`/`sys.jobAttempt`. The call adapter owns invocation
-settlement and message acknowledgement in the publication transaction. Call
-admission, capacity, pin resolution, execution and recovery integration remain
-TASK-05D; the body already requires and stores the pin it resolves, and invocations
-can record their item. Retrying a call item's `callResume` output conflict refreshes
-its publication fences without locking the parent.
+and live lease; they never lock the child instance. Calls use the fixed
+`callActivity` actor without caller claims or `sys.jobId`/`sys.jobAttempt`.
+
+The call adapter (`WorkflowEngineService.AutomaticMultiInstanceCalls.cs`) enters a
+body through a `multiInstanceStart` job, never inside the routing transaction. That
+job locks the target family before the parent, checks the call depth, and resolves
+and checks the family's published default once: a nonempty body keeps that pin for
+every item and retry, an empty body completes with `[]` without one, and a nonempty
+body without a usable target fails before any body row exists. The dispatch job
+admits items within the body's window and the root's open-call limit, giving each a
+reserved invocation and a `callStart`; a full root holds items pending, and the
+dispatch keeps retrying with backoff while the root holds back any part of the window.
+Only a body with nothing in flight at the longest backoff opens `call_capacity_exceeded`.
+Each `callStart` stages the item in a parent-only transaction (shared inputs, output
+fences, mapped inputs, and the context values its local-output defaults and validations
+reference), then, under the family lock, starts the pinned version with those inputs.
+Items never read their body's aggregate, so validation refuses it as an input source. The child's `callResume` saves the mapped result as the item's
+candidate, then publishes it, settles the invocation, and acknowledges the message
+together. Retrying a `callResume` output conflict refreshes its publication fences
+without starting the child again or locking it.
 
 Adapters hand a result that retrying cannot change, such as one over the body's
 result limit, to `RefuseItemResultAsync`: siblings stop, nothing is published, and
 the body takes its catch-all error boundary or faults with `multiInstanceFailed`.
-An open incident on an item's own job, or a call item's `callStart`, pauses
-admission until it is retried. Settlement clears staged inputs and candidates.
+A call child that faults or is cancelled on its own takes the catch-all at once, or
+faults the parent the same way. An open incident on an item's own job, a call item's
+`callStart`, or its `callResume`, pauses admission until it is retried. Settlement
+clears staged inputs and candidates.
 
 Item visits retain incoming-flow and completion audit evidence. Shared writes
 reference the retained visit; audit pruning does not erase durable item state.

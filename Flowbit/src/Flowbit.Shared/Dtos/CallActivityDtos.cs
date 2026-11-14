@@ -64,7 +64,9 @@ public sealed record CallActivityExecutionDto(
     string? ChildFaultCode,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] long? MultiInstanceExecutionId = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] long? AutomaticMultiInstanceItemId = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? ItemIndex = null);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? ItemIndex = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] long? PinnedChildDefinitionId = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? PinnedChildDefinitionVersion = null);
 
 /// <summary>A published version that calls a family, and whether it passes the contract check.</summary>
 public sealed record WorkflowCallerDto(

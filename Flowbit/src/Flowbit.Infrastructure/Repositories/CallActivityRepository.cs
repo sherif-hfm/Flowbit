@@ -396,9 +396,24 @@ public sealed class CallActivityRepository(AppDbContext dbContext) : ICallActivi
             .Where(call => call.ChildInstanceId is not null)
             .Select(call => call.ChildInstanceId!.Value)
             .ToArray();
+        // A call item's body pins one target version for every item when it starts, before
+        // any of its children exist; the invocation itself names a version only once its
+        // child does.
+        var bodyIds = entities
+            .Where(call => call.MultiInstanceExecutionId is not null)
+            .Select(call => call.MultiInstanceExecutionId!.Value)
+            .Distinct()
+            .ToArray();
+        var pins = bodyIds.Length == 0
+            ? new Dictionary<long, long>()
+            : await dbContext.MultiInstanceExecutions.AsNoTracking()
+                .Where(body => bodyIds.Contains(body.Id) && body.PinnedChildDefinitionId != null)
+                .Select(body => new { body.Id, Pinned = body.PinnedChildDefinitionId!.Value })
+                .ToDictionaryAsync(body => body.Id, body => body.Pinned, cancellationToken);
         var definitionIds = entities
             .Where(call => call.ChildDefinitionId is not null)
             .Select(call => call.ChildDefinitionId!.Value)
+            .Concat(pins.Values)
             .Distinct()
             .ToArray();
         var children = await dbContext.WorkflowInstances.AsNoTracking()
@@ -449,7 +464,15 @@ public sealed class CallActivityRepository(AppDbContext dbContext) : ICallActivi
                 ownJobIncidents.GetValueOrDefault(entity.Id)
                     + (entity.ChildInstanceId is long incidentChildId
                         ? childIncidents.GetValueOrDefault(incidentChildId)
-                        : 0)))
+                        : 0))
+            {
+                PinnedChildDefinitionId = entity.MultiInstanceExecutionId is long bodyId
+                    && pins.TryGetValue(bodyId, out var pinned) ? pinned : null,
+                PinnedChildDefinitionVersion = entity.MultiInstanceExecutionId is long pinnedBodyId
+                    && pins.TryGetValue(pinnedBodyId, out var pinnedId) && versions.TryGetValue(pinnedId, out var pinnedVersion)
+                        ? pinnedVersion
+                        : null
+            })
             .ToList();
         return new PagedResult<CallInvocationListRow>(rows, page, pageSize, totalCount);
     }
@@ -483,9 +506,12 @@ public sealed class CallActivityRepository(AppDbContext dbContext) : ICallActivi
             return new Dictionary<long, CallInvocationRecord>();
         }
 
+        // A call body's token waits on its body, not on one item's call: its position shows
+        // the body's progress once, never one child per token.
         var entities = await dbContext.CallActivityExecutions.AsNoTracking()
             .Where(call =>
                 call.ParentInstanceId == parentInstanceId
+                && call.AutomaticMultiInstanceItemId == null
                 && tokenIds.Contains(call.ParentTokenId)
                 && (call.State == CallInvocationStates.Queued || call.State == CallInvocationStates.Running))
             .Select(WithoutSnapshots)

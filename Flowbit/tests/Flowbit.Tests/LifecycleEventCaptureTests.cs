@@ -1451,7 +1451,28 @@ public sealed class LifecycleEventCaptureTests(PostgresApiFixture fixture)
     {
         long? instanceId = null, tokenId = null, bodyId = null, itemId = null, controlGeneration = null;
         var activationId = Guid.NewGuid();
-        if (kind is WorkflowJobKinds.MultiInstanceItem or WorkflowJobKinds.MultiInstanceDispatch or WorkflowJobKinds.MultiInstanceComplete)
+        if (kind == WorkflowJobKinds.MultiInstanceStart)
+        {
+            // A call body's entry job belongs to its token before any body exists
+            // (CK_workflow_jobs_multi_instance_start_shape).
+            await using var db = fixture.CreateDbContext();
+            var instance = new WorkflowInstanceEntity
+            {
+                WorkflowDefinitionId = workflowId, WorkflowKey = workflowKey, Status = "running"
+            };
+            db.WorkflowInstances.Add(instance);
+            await db.SaveChangesAsync();
+            var token = new ExecutionTokenEntity
+            {
+                InstanceId = instance.Id, NodeId = nodeId, NodeName = "Lifecycle capture node",
+                NodeType = BpmnFlowNodeTypes.CallActivity, ActivationId = activationId
+            };
+            db.ExecutionTokens.Add(token);
+            await db.SaveChangesAsync();
+            instanceId = instance.Id;
+            tokenId = token.Id;
+        }
+        else if (kind is WorkflowJobKinds.MultiInstanceItem or WorkflowJobKinds.MultiInstanceDispatch or WorkflowJobKinds.MultiInstanceComplete)
         {
             // Exercise the trigger with valid durable ownership, including the
             // automatic-item/control constraints that ordinary jobs do not use.

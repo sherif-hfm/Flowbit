@@ -54,9 +54,14 @@ public sealed partial class AutomaticMultiInstanceCoordinator(
     /// and transaction. Capacity waits retain this job in resultReady, so lease
     /// recovery is restart-safe and never consumes another activity attempt.
     /// </summary>
+    /// <param name="callAdmission">
+    /// A call body's admission: each admitted item gets a reserved invocation and its
+    /// <c>callStart</c> instead of a <c>multiInstanceItem</c> job. Required for a call body
+    /// and refused for every other body.
+    /// </param>
     public async Task<AutomaticMultiInstanceDispatchResult> DispatchAsync(long executionId, Guid activationId,
         WorkflowJobFence fence, WorkflowJobCreateRecord itemTemplate, long openJobLimit,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, AutomaticCallAdmission? callAdmission = null)
     {
         var body = await RequireBodyAsync(executionId, activationId, cancellationToken);
         RequireTemplate(body, itemTemplate);
@@ -70,8 +75,8 @@ public sealed partial class AutomaticMultiInstanceCoordinator(
             || job.LeaseToken != fence.LeaseToken || job.LeaseGeneration != fence.LeaseGeneration
             || !await jobs.IsLeaseAliveAsync(fence, cancellationToken))
             throw new WorkflowConflictException("The automatic dispatch generation or lease is stale.");
-        if (body.ActivityKind == BpmnFlowNodeTypes.CallActivity)
-            throw new InvalidOperationException("Call dispatch requires invocation admission.");
+        if ((body.ActivityKind == BpmnFlowNodeTypes.CallActivity) != (callAdmission is not null))
+            throw new InvalidOperationException("Call dispatch requires invocation admission, and only call dispatch takes it.");
         var progress = (await repository.GetProgressAsync(body.InstanceId, cancellationToken))
             .Single(item => item.Execution.Id == body.Id);
         if (body.CompletedCount == body.TotalCount)
@@ -113,6 +118,8 @@ public sealed partial class AutomaticMultiInstanceCoordinator(
                 throw new WorkflowConflictException("The automatic dispatch lease was lost before its durable wake was saved.");
             return new("queueCapacity", 0, delay);
         }
+        if (callAdmission is not null)
+            return await DispatchCallsAsync(body, job, fence, progress, callAdmission, openJobLimit - open, cancellationToken);
         // The reservation already occupies this job's slot. Completing it grants
         // no extra capacity credit. Refill and any replacement wake stay atomic.
         await CompleteDispatchAsync(fence, cancellationToken);

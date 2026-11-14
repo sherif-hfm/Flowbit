@@ -58,8 +58,54 @@ public static class CallActivityRules
         WorkflowVariableTypes.Json
     ];
 
+    /// <summary>
+    /// The item context a call body's input mappings may read, spelled exactly so. They are
+    /// the only reserved names a mapping accepts, and only as an input source of a call body.
+    /// </summary>
+    public static IReadOnlyList<string> ItemSourceNames { get; } = ["mi.item", "mi.index", "mi.total"];
+
     public static bool IsReservedName(string name) =>
         ReservedPrefixes.Any(prefix => name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>Whether a node is a multi-instance call body, which runs one child per item.</summary>
+    public static bool IsCallBody(FlowNodeModel node) =>
+        BpmnFlowNodeTypes.IsCallActivity(node.Type) && AutomaticMultiInstanceRules.IsAutomaticBody(node);
+
+    /// <summary>Whether a name is an item source that this call body's input mappings may read.</summary>
+    public static bool IsItemSource(FlowNodeModel node, string? name) =>
+        name is not null && IsCallBody(node) && ItemSourceNames.Contains(name, StringComparer.Ordinal);
+
+    /// <summary>
+    /// What a call's input mappings may read: the workflow's own declarations and, on a call
+    /// body, the item context. <c>mi.item</c> takes the collection's element type and can be
+    /// null only when that type is json; <c>mi.index</c> and <c>mi.total</c> are numbers.
+    /// </summary>
+    public static IReadOnlyDictionary<string, IReadOnlyList<CallSourceDeclaration>> InputSourceDeclarations(
+        WorkflowModel definition,
+        FlowNodeModel node)
+    {
+        var sources = SourceDeclarations(definition);
+        if (!IsCallBody(node))
+        {
+            return sources;
+        }
+
+        var withItems = new Dictionary<string, IReadOnlyList<CallSourceDeclaration>>(sources, StringComparer.OrdinalIgnoreCase);
+        var collection = (definition.Variables ?? []).OfType<VariableModel>().FirstOrDefault(variable =>
+            string.Equals(variable.Name, node.MultiInstance!.CollectionVariable, StringComparison.OrdinalIgnoreCase));
+        if (collection is { IsArray: true } && SupportedDataTypes.Contains(collection.DataType, StringComparer.Ordinal))
+        {
+            withItems[ItemSourceNames[0]] =
+            [
+                new CallSourceDeclaration(ItemSourceNames[0], collection.DataType, false,
+                    MayBeNull: collection.DataType == WorkflowVariableTypes.Json)
+            ];
+        }
+
+        withItems[ItemSourceNames[1]] = [new CallSourceDeclaration(ItemSourceNames[1], WorkflowVariableTypes.Number, false, false)];
+        withItems[ItemSourceNames[2]] = [new CallSourceDeclaration(ItemSourceNames[2], WorkflowVariableTypes.Number, false, false)];
+        return withItems;
+    }
 
     /// <summary>
     /// Whether any start or call activity in a definition can only run with a Worker: a
@@ -200,8 +246,8 @@ public static class CallActivityRules
             return $"{owner} has unsupported callActivity.versionBinding '{call.VersionBinding}'; omit it to call the published default.";
         }
 
-        return MappingListProblem(owner, "inputMappings", call.InputMappings)
-            ?? MappingListProblem(owner, "outputMappings", call.OutputMappings)
+        return MappingListProblem(owner, "inputMappings", call.InputMappings, IsCallBody(node))
+            ?? MappingListProblem(owner, "outputMappings", call.OutputMappings, false)
             ?? InputSourceProblem(owner, definition, node, call)
             ?? OutputTargetProblem(owner, definition, node, call);
     }
@@ -255,7 +301,7 @@ public static class CallActivityRules
 
         var inputs = start.Variables ?? [];
         var inputMappings = (call.InputMappings ?? []).OfType<CallVariableMappingModel>().ToList();
-        var parentSources = SourceDeclarations(parent);
+        var parentSources = InputSourceDeclarations(parent, node);
         foreach (var mapping in inputMappings)
         {
             var input = inputs.FirstOrDefault(variable =>
@@ -361,7 +407,8 @@ public static class CallActivityRules
     private static string? MappingListProblem(
         string owner,
         string property,
-        IReadOnlyList<CallVariableMappingModel>? mappings)
+        IReadOnlyList<CallVariableMappingModel>? mappings,
+        bool allowItemSources)
     {
         if (mappings is null)
         {
@@ -382,7 +429,8 @@ public static class CallActivityRules
                 return $"{owner} {path} cannot be null.";
             }
 
-            if (NameProblem(mapping.SourceVariable) is { } sourceProblem)
+            if (!(allowItemSources && ItemSourceNames.Contains(mapping.SourceVariable, StringComparer.Ordinal))
+                && NameProblem(mapping.SourceVariable) is { } sourceProblem)
             {
                 return $"{owner} {path}.sourceVariable {sourceProblem}";
             }
@@ -428,9 +476,18 @@ public static class CallActivityRules
 
     private static string? InputSourceProblem(string owner, WorkflowModel definition, FlowNodeModel node, CallActivityModel call)
     {
-        var sources = SourceDeclarations(definition);
+        var sources = InputSourceDeclarations(definition, node);
         foreach (var mapping in call.InputMappings)
         {
+            // A body's items never read its aggregate: staging leaves it out, so a mapping
+            // from it could only ever be missing.
+            if (IsCallBody(node)
+                && !string.IsNullOrWhiteSpace(node.MultiInstance!.ResultVariable)
+                && string.Equals(mapping.SourceVariable, node.MultiInstance.ResultVariable, StringComparison.OrdinalIgnoreCase))
+            {
+                return $"{owner} input source '{mapping.SourceVariable}' is this body's aggregate target, which its items never read.";
+            }
+
             if (!sources.TryGetValue(mapping.SourceVariable, out var declared))
             {
                 return $"{owner} input source '{mapping.SourceVariable}' is never declared or produced by this workflow.";

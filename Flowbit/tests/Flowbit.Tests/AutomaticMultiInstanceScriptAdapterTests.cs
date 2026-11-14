@@ -372,15 +372,15 @@ public sealed class AutomaticMultiInstanceScriptAdapterTests
             MultiInstance = new() { CollectionVariable = "items", ResultVariable = "results", CompletionEvaluation = "afterAll", OutputVariables = [] }
         });
 
-        Readiness(open).EnsureDurablePublicationAllowed(Body(BpmnFlowNodeTypes.ScriptTask), publish: true);
-        // TASK-05B installed the service adapter; only call bodies stay refused.
-        Readiness(open).EnsureDurablePublicationAllowed(Body(BpmnFlowNodeTypes.ServiceTask), publish: true);
-        Assert.Equal("Automatic multi-instance callActivity #2 cannot be published or run until its activity adapter is installed.",
-            Assert.Throws<WorkflowDomainException>(() =>
-                Readiness(open).EnsureDurablePublicationAllowed(Body(BpmnFlowNodeTypes.CallActivity), publish: true)).Message);
-        Assert.Contains("integration release gates", Assert.Throws<WorkflowDomainException>(() =>
-            Readiness(production).EnsureDurablePublicationAllowed(Body(BpmnFlowNodeTypes.ScriptTask), publish: true)).Message);
-        Readiness(production).EnsureDurablePublicationAllowed(Body(BpmnFlowNodeTypes.ScriptTask), publish: false);
+        // TASK-05B and TASK-05D installed the service and call adapters.
+        foreach (var kind in new[] { BpmnFlowNodeTypes.ScriptTask, BpmnFlowNodeTypes.ServiceTask, BpmnFlowNodeTypes.CallActivity })
+        {
+            Readiness(open).EnsureDurablePublicationAllowed(Body(kind), publish: true);
+            // A host outside Development refuses every kind, a call body included.
+            Assert.Contains("integration release gates", Assert.Throws<WorkflowDomainException>(() =>
+                Readiness(production).EnsureDurablePublicationAllowed(Body(kind), publish: true)).Message);
+            Readiness(production).EnsureDurablePublicationAllowed(Body(kind), publish: false);
+        }
     }
 
     [Fact]
@@ -393,15 +393,15 @@ public sealed class AutomaticMultiInstanceScriptAdapterTests
 
         WorkflowEngineService.EnsureAutomaticMultiInstanceRuntimeAvailable(Body(BpmnFlowNodeTypes.ScriptTask), released: true);
         WorkflowEngineService.EnsureAutomaticMultiInstanceRuntimeAvailable(Body(BpmnFlowNodeTypes.ServiceTask), released: true);
-        Assert.Throws<WorkflowDomainException>(() =>
-            WorkflowEngineService.EnsureAutomaticMultiInstanceRuntimeAvailable(Body(BpmnFlowNodeTypes.CallActivity), released: true));
+        WorkflowEngineService.EnsureAutomaticMultiInstanceRuntimeAvailable(Body(BpmnFlowNodeTypes.CallActivity), released: true);
         Assert.True(AutomaticMultiInstanceRules.InstalledAdapterKinds.SetEquals(
-            [BpmnFlowNodeTypes.ServiceTask, BpmnFlowNodeTypes.ScriptTask]));
+            [BpmnFlowNodeTypes.ServiceTask, BpmnFlowNodeTypes.ScriptTask, BpmnFlowNodeTypes.CallActivity]));
 
-        // A host outside Development, or with the switch closed, refuses even the installed kind.
-        Assert.Contains("runs only on a Development host with the release switch open",
-            Assert.Throws<WorkflowDomainException>(() => WorkflowEngineService.EnsureAutomaticMultiInstanceRuntimeAvailable(
-                Body(BpmnFlowNodeTypes.ScriptTask), released: false)).Message);
+        // A host outside Development, or with the switch closed, refuses every installed kind.
+        foreach (var kind in new[] { BpmnFlowNodeTypes.ScriptTask, BpmnFlowNodeTypes.CallActivity })
+            Assert.Contains("runs only on a Development host with the release switch open",
+                Assert.Throws<WorkflowDomainException>(() => WorkflowEngineService.EnsureAutomaticMultiInstanceRuntimeAvailable(
+                    Body(kind), released: false)).Message);
         // An ordinary activity never depends on the switch.
         WorkflowEngineService.EnsureAutomaticMultiInstanceRuntimeAvailable(
             new FlowNodeModel { Id = 2, Type = BpmnFlowNodeTypes.ScriptTask }, released: false);

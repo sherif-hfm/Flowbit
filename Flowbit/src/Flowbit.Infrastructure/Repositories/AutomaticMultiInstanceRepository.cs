@@ -141,14 +141,20 @@ public sealed class AutomaticMultiInstanceRepository(AppDbContext db) : IAutomat
             .Where(x => x.InstanceId == instanceId && x.ActivityKind != "userTask").OrderBy(x => x.Id).ToListAsync(ct);
         if (bodies.Count == 0) return [];
         // An item is blocked while its own work has an open incident: a REST/script
-        // item job, or a call item's parent-owned callStart. This is read, never
-        // written when the incident opens, because incidents open from fenced
-        // processing, the lease sweeper, and direct enqueue alike, and writing body
-        // rows from the job side would invert the runtime lock order.
+        // item job, a call item's parent-owned callStart, or the child-owned callResume
+        // that delivers its result (found through the parent's invocation, because that
+        // job belongs to the child). This is read, never written when the incident
+        // opens, because incidents open from fenced processing, the lease sweeper, and
+        // direct enqueue alike, and writing body rows from the job side would invert
+        // the runtime lock order.
         var incidentItems = await db.WorkflowIncidents.AsNoTracking()
-            .Where(incident => incident.Status == "open" && incident.Job != null && incident.Job.InstanceId == instanceId
-                && (incident.Job.Kind == "multiInstanceItem" && incident.Job.AutomaticMultiInstanceItemId != null
-                    || incident.Job.Kind == "callStart" && incident.Job.CallInvocation != null
+            .Where(incident => incident.Status == "open" && incident.Job != null
+                && (incident.Job.InstanceId == instanceId
+                        && (incident.Job.Kind == "multiInstanceItem" && incident.Job.AutomaticMultiInstanceItemId != null
+                            || incident.Job.Kind == "callStart" && incident.Job.CallInvocation != null
+                                && incident.Job.CallInvocation.AutomaticMultiInstanceItemId != null)
+                    || incident.Job.Kind == "callResume" && incident.Job.CallInvocation != null
+                        && incident.Job.CallInvocation.ParentInstanceId == instanceId
                         && incident.Job.CallInvocation.AutomaticMultiInstanceItemId != null))
             .Select(incident => incident.Job!.Kind == "multiInstanceItem"
                 ? incident.Job.AutomaticMultiInstanceItemId!.Value
@@ -175,6 +181,14 @@ public sealed class AutomaticMultiInstanceRepository(AppDbContext db) : IAutomat
             .Select(group => group.OrderByDescending(incident => incident.Id).Select(incident => new
                 { BodyId = group.Key, incident.Id, incident.JobId, incident.Type }).First())
             .ToDictionaryAsync(incident => incident.BodyId, ct);
+        // Only call bodies pin a version; the lookup is skipped for every other instance.
+        var pinnedIds = bodies.Where(body => body.PinnedChildDefinitionId != null)
+            .Select(body => body.PinnedChildDefinitionId!.Value).Distinct().ToArray();
+        var pinnedVersions = pinnedIds.Length == 0
+            ? new Dictionary<long, int>()
+            : await db.WorkflowDefinitions.AsNoTracking().Where(definition => pinnedIds.Contains(definition.Id))
+                .Select(definition => new { definition.Id, definition.Version })
+                .ToDictionaryAsync(definition => definition.Id, definition => definition.Version, ct);
         return bodies.Select(body => new AutomaticMultiInstanceProgressRecord(Map(body) with
             {
                 FailedCount = body.FailedCount + (counts.GetValueOrDefault(body.Id)?.Blocked ?? 0),
@@ -185,7 +199,9 @@ public sealed class AutomaticMultiInstanceRepository(AppDbContext db) : IAutomat
         {
             ControlJobId = controlIncidents.GetValueOrDefault(body.Id)?.JobId,
             ControlIncidentId = controlIncidents.GetValueOrDefault(body.Id)?.Id,
-            ControlIncidentType = controlIncidents.GetValueOrDefault(body.Id)?.Type
+            ControlIncidentType = controlIncidents.GetValueOrDefault(body.Id)?.Type,
+            PinnedChildDefinitionVersion = body.PinnedChildDefinitionId is long pinnedId
+                && pinnedVersions.TryGetValue(pinnedId, out var pinnedVersion) ? pinnedVersion : null
         }).ToArray();
     }
 
@@ -250,7 +266,12 @@ public sealed class AutomaticMultiInstanceRepository(AppDbContext db) : IAutomat
         var ids = items.Select(x => x.Id).ToArray();
         await db.NodeExecutions.Where(x => x.AutomaticMultiInstanceItemId != null && ids.Contains(x.AutomaticMultiInstanceItemId.Value))
             .ExecuteUpdateAsync(u => u.SetProperty(x => x.Status, "active").SetProperty(x => x.StartedAt, now).SetProperty(x => x.UpdatedAt, now), ct);
-        return items.Select(Map).ToArray();
+        // A call item's invocation records its item's visit, so return each one with it.
+        var visits = await db.NodeExecutions.AsNoTracking()
+            .Where(x => x.AutomaticMultiInstanceItemId != null && ids.Contains(x.AutomaticMultiInstanceItemId.Value))
+            .Select(x => new { ItemId = x.AutomaticMultiInstanceItemId!.Value, x.Id })
+            .ToDictionaryAsync(x => x.ItemId, x => (long?)x.Id, ct);
+        return items.Select(item => Map(item) with { NodeExecutionId = visits.GetValueOrDefault(item.Id) }).ToArray();
     }
 
     public async Task<bool> SaveStageAsync(long id, long itemId, Guid activation, JsonElement input, CancellationToken ct)

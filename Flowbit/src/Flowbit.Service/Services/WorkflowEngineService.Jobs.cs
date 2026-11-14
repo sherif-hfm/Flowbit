@@ -1095,6 +1095,14 @@ public sealed partial class WorkflowEngineService
                 }
             }
 
+            // A call body's entry: it pins the target and initializes the body. It never
+            // runs as an ordinary continuation or starts a child itself.
+            if (lease.Job.Kind == WorkflowJobKinds.MultiInstanceStart)
+            {
+                await ProcessAutomaticCallEntryAsync(lease, fence, cancellationToken);
+                return;
+            }
+
             if (lease.Job.Kind == WorkflowJobKinds.CallStart)
             {
                 await ProcessCallStartJobAsync(lease, fence, cancellationToken);
@@ -1336,6 +1344,23 @@ public sealed partial class WorkflowEngineService
                 return body.CompletionIntent is null && item?.Status == "active";
             }
             return body.ControlGeneration == job.MultiInstanceControlGeneration;
+        }
+
+        // A call item's callStart owns its item while the invocation is queued: nothing
+        // else can stage or start that child.
+        if (automaticMultiInstances is not null && callActivities is not null
+            && job.Kind == WorkflowJobKinds.CallStart && job.MultiInstanceExecutionId is long callBodyId
+            && token.WaitingMultiInstanceExecutionId == callBodyId
+            && job.CallInvocationId is long itemInvocationId
+            && await callActivities.GetInvocationAsync(itemInvocationId, cancellationToken) is
+                { State: CallInvocationStates.Queued, AutomaticMultiInstanceItemId: long callItemId } itemInvocation
+            && itemInvocation.MultiInstanceExecutionId == callBodyId)
+        {
+            var body = await automaticMultiInstances.GetAsync(callBodyId, false, cancellationToken);
+            var item = body is null ? null : await automaticMultiInstances.GetItemAsync(body.Id, callItemId, false, cancellationToken);
+            return body is { Status: MultiInstanceRecordStatuses.Active, CompletionIntent: null }
+                && body.ActivationId == job.ActivationId && body.TokenId == token.Id
+                && item?.Status == "active";
         }
 
         if (job.Kind != WorkflowJobKinds.TimerBoundary)
@@ -2797,6 +2822,7 @@ public sealed partial class WorkflowEngineService
             || token.NodeId != job.NodeId && job.Kind != WorkflowJobKinds.TimerBoundary
             || IsGuardedAutomaticActivity(job.NodeType)
                && job.Kind is WorkflowJobKinds.AsyncBefore or WorkflowJobKinds.AsyncAfter or WorkflowJobKinds.CallStart
+                   or WorkflowJobKinds.MultiInstanceStart
                && token.AutomaticActivationCount != job.AutomaticActivationCount)
         {
             throw new WorkflowConflictException(
@@ -2810,6 +2836,8 @@ public sealed partial class WorkflowEngineService
             WorkflowJobKinds.Timer => ExecutionTokenWaitStates.TimerCatch,
             WorkflowJobKinds.ConditionalWake => ExecutionTokenWaitStates.ConditionalWake,
             WorkflowJobKinds.CallStart => ExecutionTokenWaitStates.CallStart,
+            // A call body's entry, including one waiting for another body of its node.
+            WorkflowJobKinds.MultiInstanceStart => WorkflowJobKinds.MultiInstanceStart,
             _ => null
         };
         if (expectedWait is not null
@@ -2839,6 +2867,7 @@ public sealed partial class WorkflowEngineService
             WorkflowJobKinds.CallStart => WorkflowJobKinds.CallStart,
             WorkflowJobKinds.CallResume => WorkflowJobKinds.CallResume,
             WorkflowJobKinds.CallCancel => WorkflowJobKinds.CallCancel,
+            WorkflowJobKinds.MultiInstanceStart => WorkflowJobKinds.MultiInstanceStart,
             _ => null
         };
         if (job.Id != fence.JobId

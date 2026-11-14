@@ -27,14 +27,20 @@ public sealed partial class WorkflowEngineService
         EnsureJobFence(currentJob, fence);
         var workflow = await GetWorkflowAsync(body.WorkflowDefinitionId, cancellationToken);
         var node = GetFlowNode(workflow.Definition, body.NodeId);
+        // Admission and completion run the body too, so a closed host refuses them like its
+        // entry and items: the job retries, then waits in an incident until an open host
+        // takes it. A job that no longer owns its body was refused above and closes quietly.
+        EnsureAutomaticMultiInstanceRuntimeAvailable(node);
         var actor = ReadJobActor(currentJob);
         if (currentJob.Kind == WorkflowJobKinds.MultiInstanceDispatch)
         {
             var configured = await engineSettings.GetByKeyAsync("Workflow.MultiInstance.MaxInstances", cancellationToken);
             var template = BuildJobCreate(instance, token, node, WorkflowJobKinds.MultiInstanceItem,
                 WorkflowJobKinds.MultiInstanceItem, actor, timeProvider.GetUtcNow());
+            // A call item is a reserved invocation and its callStart, never a generic item job.
             await automaticMultiInstanceCoordinator.DispatchAsync(body.Id, body.ActivationId, fence, template,
-                WorkflowJobCapacity.ResolveOpenJobLimit(configured?.Value), cancellationToken);
+                WorkflowJobCapacity.ResolveOpenJobLimit(configured?.Value), cancellationToken,
+                CallActivityRules.IsCallBody(node) ? BuildAutomaticCallAdmission(instance, token, node) : null);
         }
         else
         {

@@ -18,7 +18,9 @@
                     @foreach (var execution in Executions)
                     {
                         <tr @key="execution.ExecutionId">
-                            <td><span class="mono-id">#@execution.ExecutionId</span><span class="data-subtitle">Node #@execution.NodeId · @ExecutionPositionText.NodeTypeLabel(execution.ActivityKind)</span></td>
+                            <td><span class="mono-id">#@execution.ExecutionId</span><span class="data-subtitle">Node #@execution.NodeId · @ExecutionPositionText.NodeTypeLabel(execution.ActivityKind)</span>
+                                @if (execution.PinnedChildDefinitionVersion is int pinned) { <span class="data-subtitle">Calls version @pinned for every item</span> }
+                            </td>
                             <td><StatusBadge Status="@execution.Status" /><span class="data-subtitle">@execution.Phase</span>
                                 @if (execution.ControlIncidentId is { } incidentId)
                                 {
@@ -63,6 +65,8 @@
                                     <td>
                                         @if (item.JobId is { } jobId) { <span class="data-subtitle">Job #@jobId</span> }
                                         @if (item.IncidentId is { } incidentId) { <span class="data-subtitle">Incident #@incidentId</span> }
+                                        @if (item.CallInvocationId is { } callId) { <span class="data-subtitle">Call #@callId</span> }
+                                        @if (item.ChildInstanceId is { } childId) { <a class="d-block" href="@($"instances/{childId}")">Child instance #@childId</a> }
                                         @if (item.CanReadPayload && item.NodeExecutionId is { } visitId) { <a href="@($"node-executions/{visitId}")">Node visit #@visitId</a> }
                                     </td>
                                     <td>

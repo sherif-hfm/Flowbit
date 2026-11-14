@@ -77,40 +77,9 @@ public sealed partial class WorkflowEngineService
             if (!IsInstalledAutomaticBodyOfKind(node, lease.Job.NodeType))
                 throw new WorkflowJobInvariantException("The automatic entry no longer names a body of its activity kind.");
             var actor = ReadJobActor(job);
-            var multi = node.MultiInstance!;
-            var aggregate = definition.Variables.Single(variable =>
-                string.Equals(variable.Name, multi.ResultVariable, StringComparison.OrdinalIgnoreCase));
             var stored = await runtime.LoadLatestVariableVersionsAsync(instance.Id, cancellationToken);
-            var inputs = instanceInputNames(node, definition, stored.Select(value => value.Name));
-            var configured = await engineSettings.GetByKeyAsync("Workflow.MultiInstance.MaxInstances", cancellationToken);
-            var create = new AutomaticMultiInstanceCreateRecord
-            {
-                InstanceId = instance.Id,
-                TokenId = token.Id,
-                WorkflowDefinitionId = instance.WorkflowDefinitionId,
-                ActivationId = token.ActivationId,
-                NodeId = node.Id,
-                NodeName = node.Name,
-                NodeExternalId = node.ExternalId,
-                ActivityKind = node.Type,
-                Mode = multi.Mode,
-                ResultVariable = aggregate.Name!,
-                AggregateScope = aggregate.Scope == VariableScopes.Shared ? VariableScopes.Shared : VariableScopes.Instance,
-                AggregateSharedKey = aggregate.Scope == VariableScopes.Shared ? aggregate.SharedKey : null,
-                AggregateValueVersion = 0,
-                MaxInstances = configured is not null && int.TryParse(configured.Value, out var parsed) && parsed > 0 ? parsed : 1000,
-                EffectiveConcurrency = 0,
-                TotalCount = 0,
-                ResultBytes = 2,
-                // The coordinator reads only the names; it captures their values and the
-                // collection under the initialization locks.
-                InputSnapshot = JsonSerializer.SerializeToElement(new
-                {
-                    collection = Array.Empty<object>(),
-                    instanceInputs = inputs.ToDictionary(name => name, _ => (object?)null)
-                }),
-                InitializedAt = timeProvider.GetUtcNow()
-            };
+            var create = await CreateAutomaticBodyRecordAsync(instance, token, node, definition,
+                instanceInputNames(node, definition, stored.Select(value => value.Name)), cancellationToken);
             try
             {
                 await coordinator.InitializeBodyAsync(create, definition, actor, fence,
@@ -135,17 +104,57 @@ public sealed partial class WorkflowEngineService
         await HandleAutomaticEntryFailureAsync(lease, fence, failureCode, cancellationToken);
     }
 
+    // The body row an entry job initializes. The coordinator reads only the instance-input
+    // names; it captures their values and the collection under the initialization locks.
+    private async Task<AutomaticMultiInstanceCreateRecord> CreateAutomaticBodyRecordAsync(
+        WorkflowInstanceRecord instance, ExecutionTokenRecord token, FlowNodeModel node,
+        WorkflowModel definition, IReadOnlyList<string> inputs, CancellationToken cancellationToken)
+    {
+        var multi = node.MultiInstance!;
+        var aggregate = definition.Variables.Single(variable =>
+            string.Equals(variable.Name, multi.ResultVariable, StringComparison.OrdinalIgnoreCase));
+        var configured = await engineSettings.GetByKeyAsync("Workflow.MultiInstance.MaxInstances", cancellationToken);
+        return new AutomaticMultiInstanceCreateRecord
+        {
+            InstanceId = instance.Id,
+            TokenId = token.Id,
+            WorkflowDefinitionId = instance.WorkflowDefinitionId,
+            ActivationId = token.ActivationId,
+            NodeId = node.Id,
+            NodeName = node.Name,
+            NodeExternalId = node.ExternalId,
+            ActivityKind = node.Type,
+            Mode = multi.Mode,
+            ResultVariable = aggregate.Name!,
+            AggregateScope = aggregate.Scope == VariableScopes.Shared ? VariableScopes.Shared : VariableScopes.Instance,
+            AggregateSharedKey = aggregate.Scope == VariableScopes.Shared ? aggregate.SharedKey : null,
+            AggregateValueVersion = 0,
+            MaxInstances = configured is not null && int.TryParse(configured.Value, out var parsed) && parsed > 0 ? parsed : 1000,
+            EffectiveConcurrency = 0,
+            TotalCount = 0,
+            ResultBytes = 2,
+            InputSnapshot = JsonSerializer.SerializeToElement(new
+            {
+                collection = Array.Empty<object>(),
+                instanceInputs = inputs.ToDictionary(name => name, _ => (object?)null)
+            }),
+            InitializedAt = timeProvider.GetUtcNow()
+        };
+    }
+
     /// <summary>
-    /// An invalid or oversized source is a pre-fan-out failure of the entry job. Like an
-    /// ordinary activity failure it follows the node's job policy: retry, then the
-    /// catch-all error boundary, or an incident when there is none. The failure has no
-    /// HTTP status, so a REST body's status-matched boundaries never take it. The
-    /// boundary is taken exactly as a body's own error route takes it, under the
-    /// Error-phase locks with the error target validated, never through the node's
-    /// ordinary lock plan.
+    /// A failure before any body exists: an invalid or oversized source, a result that
+    /// cannot fit, or, for a call body, an unavailable or incompatible target or the depth
+    /// limit. Like an ordinary activity failure it follows the node's job policy: the
+    /// catch-all error boundary at once, otherwise retries, then an incident on the entry
+    /// job (an <c>asyncBefore</c> job, or a call body's <c>multiInstanceStart</c>). A retry
+    /// repeats initialization from the start. The failure has no HTTP status, so a REST
+    /// body's status-matched boundaries never take it. The boundary is taken exactly as a
+    /// body's own error route takes it, under the Error-phase locks with the error target
+    /// validated, never through the node's ordinary lock plan.
     /// </summary>
     private async Task HandleAutomaticEntryFailureAsync(WorkflowJobLeaseRecord lease,
-        WorkflowJobFence fence, string code, CancellationToken cancellationToken)
+        WorkflowJobFence fence, string code, CancellationToken cancellationToken, string? description = null)
     {
         var outcome = TaskExecutionOutcome.Fail(code);
         await using (var transaction = await unitOfWork.BeginTransactionAsync(cancellationToken))
@@ -163,8 +172,10 @@ public sealed partial class WorkflowEngineService
                 && SelectErrorBoundary(definition, node.Id, outcome).Boundary is { } boundary)
             {
                 var actor = ReadJobActor(job);
+                var entryWait = job.Kind == WorkflowJobKinds.MultiInstanceStart
+                    ? WorkflowJobKinds.MultiInstanceStart : ExecutionTokenWaitStates.AsyncBefore;
                 if (!await runtime.ClearExecutionTokenWaitAsync(token.Id, token.ActivationId,
-                        ExecutionTokenWaitStates.AsyncBefore, job.Id, null, cancellationToken))
+                        entryWait, job.Id, null, cancellationToken))
                     throw new WorkflowConflictException("The workflow job no longer owns the token wait.");
                 // Error capture takes precedence over the host's other boundaries, as it
                 // does for any failed activity. No timer exists before a body does.
@@ -191,8 +202,13 @@ public sealed partial class WorkflowEngineService
         }
 
         unitOfWork.DiscardChanges();
-        await HandleProcessingFailureAsync(lease, fence, AutomaticItemFailureIncident,
-            $"Automatic multi-instance entry failed: {code}.", cancellationToken);
+        // A call target or depth failure keeps its stable call code as the incident type.
+        await HandleProcessingFailureAsync(lease, fence,
+            code.StartsWith("call_", StringComparison.Ordinal) ? code : AutomaticItemFailureIncident,
+            LimitJobFailure(description is null
+                ? $"Automatic multi-instance entry failed: {code}."
+                : $"Automatic multi-instance entry failed: {code}. {description}"),
+            cancellationToken);
     }
 
     private sealed record AutomaticItemOwner(

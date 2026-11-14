@@ -472,15 +472,29 @@ effective value from `GET /api/workflows/authoring-capabilities` and shows its
 controls only when that is true, so the UI host's own environment and settings
 never decide it; the standalone editor remains closed. On the Worker it opens a
 body's entry and item jobs. With the option in effect on both, a Development API
-can publish a multi-instance REST service or script task, and a Development Worker
-runs its items. A host where it is not in effect refuses a published body anyway:
-the API refuses to start an instance that reaches one, and the Worker's entry and
-item jobs fail, retry, and then wait in an incident that a retry on an open Worker
-resumes. Call bodies stay refused at publication, entry, and item processing until
-their adapter is installed. Do not use this option as a production feature switch.
-A service or script body needs a running Worker even for an empty collection, and
-each JavaScript item stores its own copy of every `config.*` and `setting.*` value
-within its 1 MiB staged-input limit.
+can publish a multi-instance REST service task, script task, or call activity, and a
+Development Worker runs its items. A host where it is not in effect refuses a
+published body anyway: the API refuses to start an instance that reaches one, and
+the Worker's entry and item jobs (a call item's `callStart` included) fail, retry,
+and then wait in an incident that a retry on an open Worker resumes. Do not use this
+option as a production feature switch. Every automatic body needs a running Worker
+even for an empty collection, and each JavaScript item stores its own copy of every
+`config.*` and `setting.*` value within its 1 MiB staged-input limit.
+
+A multi-instance call body counts its children against
+`WorkflowCallActivities:MaxOpenInvocationsPerRoot` like any other call under the same
+root. Reaching that limit holds the body's remaining items pending: its dispatch job
+waits and retries with a growing delay of up to a minute, and opens a
+`call_capacity_exceeded` incident only when the body has no item of its own in flight
+and the delay has reached its maximum; retry it once other calls under the root have
+finished. A body can also fill the root by itself, because its window can be larger
+than the limit, and its children's own calls are then refused as ordinary calls are,
+with a boundary or an incident. Keep `maxConcurrency` times the calls each child holds
+open below the limit. The depth limit (`WorkflowCallActivities:MaxDepth`) is checked
+once when the body starts, and fails the body before any child exists. A body pins the
+target's published default when it starts; that version cannot be unpublished or
+deleted until the body settles or is cancelled, and changing the family's default
+affects only bodies that start afterwards.
 
 A REST item reads the `config.*` and `setting.*` values its templates and
 expressions name when it first runs, and every retry of that item reuses them, as an
@@ -507,11 +521,17 @@ it is written.
 
 Apply `20261111144523_AddAutomaticMultiInstanceCore`, then
 `20261111144824_ValidateAutomaticMultiInstanceConstraints`, then
-`20261111192010_HardenAutomaticMultiInstanceCore`. The second migration
+`20261111192010_HardenAutomaticMultiInstanceCore`, then
+`20261113145806_AddMultiInstanceStartJobShape`, then
+`20261113145843_ValidateMultiInstanceStartJobShape`. The second migration
 validates widened constraints outside a transaction. The third restores the
 general job index on the body column and adds the call-pin and invocation
 item-pair checks; it fails if a database already holds a nonempty call body
-without a pin, which no released build can create. Existing human execution
+without a pin, which no released build can create. The fourth adds the shape check
+of a call body's `multiInstanceStart` entry job without scanning `workflow_jobs`,
+and the fifth validates it outside a transaction; running the fifth again finishes
+a run that stopped partway. No released build creates `multiInstanceStart` jobs, so
+validation finds no rows to refuse. Existing human execution
 rows keep activity kind `userTask`; ordinary call activation uniqueness excludes
 only rows with an automatic item identity. The additions include body-owned
 snapshots, persisted item candidates/results, activation and control-generation

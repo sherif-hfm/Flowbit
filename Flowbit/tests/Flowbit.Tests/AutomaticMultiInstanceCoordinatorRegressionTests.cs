@@ -147,6 +147,10 @@ public sealed partial class AutomaticMultiInstanceCoordinatorTests
         Assert.Equal(0, f.JobCompletions);
         Assert.Equal(new[] { "close", "abandon" }, lifecycle.Events);
         Assert.Equal("multiInstanceComplete", Assert.Single(f.Enqueued).Kind);
+        // The failed item's own invocation settles first, so abandoning the body's calls
+        // never sends a cancel message to its finished child.
+        Assert.Equal(new[] { delivered ? "running" : "queued" }, f.Settled);
+        Assert.Equal(CallInvocationStates.Failed, f.Invocation!.State);
     }
 
     private sealed class CallLifecycle : IAutomaticMultiInstanceLifecycle

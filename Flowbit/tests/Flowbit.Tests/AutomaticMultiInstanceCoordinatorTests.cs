@@ -410,8 +410,19 @@ public sealed partial class AutomaticMultiInstanceCoordinatorTests
                 {
                     "GetInvocationAsync" => Task.FromResult(Invocation),
                     "GetResultAsync" => Task.FromResult(CallResult),
+                    "SettleAsync" => Settle(),
                     _ => throw new NotSupportedException(method)
                 }));
+        }
+
+        public List<string> Settled { get; } = [];
+
+        private Task<bool> Settle()
+        {
+            if (Invocation is null || CallInvocationStates.IsSettled(Invocation.State)) return Task.FromResult(false);
+            Settled.Add(Invocation.State);
+            Invocation = Invocation with { State = CallInvocationStates.Failed };
+            return Task.FromResult(true);
         }
 
         public WorkflowJobFence Fence => new(7, "worker", LeaseToken, 1);

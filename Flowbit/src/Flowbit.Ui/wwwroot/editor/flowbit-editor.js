@@ -2843,7 +2843,9 @@ function renderNodes() {
         if (node.requiresAssignment) appendAssigneeMarker(g, "Assignment required before the task is visible");
         else if (node.assignee) appendAssigneeMarker(g);
       }
-      if (node.multiInstance && (isUserTaskType(node.type) || saveIsAutomaticMultiInstanceType(node.type)))
+      // An imported value that is not an object is kept for validation, never drawn as a body.
+      if (node.multiInstance && typeof node.multiInstance === "object" && !Array.isArray(node.multiInstance) &&
+          (isUserTaskType(node.type) || saveIsAutomaticMultiInstanceType(node.type)))
         appendMultiInstanceMarker(g, node.multiInstance.mode);
     }
 
@@ -4295,7 +4297,7 @@ function renderNodeInspector() {
   if (isUserTaskType(node.type) || isMessageCatchEventType(node.type) ||
       isTimerCatchEventType(node.type) || isAutomaticType(node.type) ||
       isServiceTaskType(node.type) || isScriptTaskType(node.type) ||
-      (isCallActivityType(node.type) && node.multiInstance && saveAutomaticMultiInstanceEnabled())) {
+      (isCallBodyNode(node) && saveAutomaticMultiInstanceEnabled())) {
     renderBoundaryHostSection(node);
   }
 
@@ -4390,6 +4392,22 @@ function setAutomaticMultiInstance(node, enabled) {
       alert("Remove this call's timer and conditional boundaries before disabling multi-instance; ordinary calls cannot host them.");
       return false;
     }
+    if (node.type === "callActivity") {
+      // An ordinary call reads only instance variables and writes only instance process
+      // variables, so item and shared mappings must be changed first, never dropped silently.
+      const isShared = name => isSharedProcessVariable(findProcessVariable(name));
+      const callOnly = [
+        ...list(node.callActivity?.inputMappings).filter(mapping => mapping &&
+          (CALL_ITEM_SOURCES.includes(mapping.sourceVariable) || isShared(mapping.sourceVariable)))
+          .map(mapping => "input " + mapping.sourceVariable),
+        ...list(node.callActivity?.outputMappings).filter(mapping => mapping && isShared(mapping.variable))
+          .map(mapping => "result " + mapping.variable)
+      ];
+      if (callOnly.length) {
+        alert("An ordinary call cannot read items or shared aliases, or write shared aliases. Change these mappings before disabling multi-instance: " + callOnly.join(", ") + ".");
+        return false;
+      }
+    }
     if (!confirm("Disable automatic multi-instance and remove its collection, aggregate, and local output declarations?")) return false;
     delete node.multiInstance;
   }
@@ -4402,23 +4420,33 @@ function renderAutomaticMultiInstanceSection(node) {
   title.textContent = "Automatic multi-instance";
   inspector.appendChild(title);
   attachInspectorHelp(title, "automatic-multi-instance", [
-    "Development preview: service and script bodies can be published and run on this Development host. Call bodies are refused at publication until their adapter is installed.",
+    "Development preview: service, script, and call bodies can be published and run on this Development host.",
     "Run one durable item per collection element. The Worker initializes a frozen collection and instance inputs; item-local outputs are collected in index order after every item succeeds.",
     "Other shared inputs, configuration and time are captured when each item starts. Shared outputs require readWrite access. Parallel shared writes may conflict; publication recovery accepts saved candidates against current values and can replace newer values without repeating the activity.",
     "Conditional boundaries observe the activity from entry. Timer boundaries start when the body initializes, after queue waits. Interrupting boundaries cancel unfinished items; committed shared writes remain.",
     "The aggregate contains copied collection elements and declared local outputs, governed by instance and node-activity payload permissions. No shared output is copied unless explicitly mapped to a local."
   ]);
-  inspector.appendChild(variableCheckbox("Multi-instance", node.multiInstance != null, checked => {
+  const multi = node.multiInstance;
+  // Only an object configures a body. Any other imported value, false included, stays as
+  // imported for save validation to report, and is never shown as an enabled body.
+  const configured = multi != null && typeof multi === "object" && !Array.isArray(multi);
+  inspector.appendChild(variableCheckbox("Multi-instance", configured, checked => {
     setAutomaticMultiInstance(node, checked);
     render();
   }));
-  if (node.multiInstance == null) return;
-  const multi = node.multiInstance;
-  if (typeof multi !== "object" || Array.isArray(multi)) {
+  if (multi == null) return;
+  if (!configured) {
     const warning = document.createElement("p");
     warning.className = "empty-note";
-    warning.textContent = "The imported multiInstance value must be an object. Disable it to remove the invalid value.";
+    warning.style.color = "var(--warning-text)";
+    warning.textContent = "The imported multiInstance value must be an object, so this node is not a multi-instance body. Remove the invalid value, or check Multi-instance to replace it.";
     inspector.appendChild(warning);
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.textContent = "Remove the invalid value";
+    remove.style.marginTop = "8px";
+    remove.onclick = () => { delete node.multiInstance; render(); };
+    inspector.appendChild(remove);
     return;
   }
   const status = document.createElement("p");
@@ -5138,23 +5166,31 @@ function callMappingTextField(box, label, value, onInput) {
 }
 
 // Offers what this workflow declares or produces on its instance, and adopts the type of
-// a name declared only one way.
-function attachCallSourceSuggestions(input, adoptType) {
-  const declarations = callSourceDeclarations(model);
-  const usable = [...declarations.values()].filter(entries => entries.every(entry => !entry.isShared));
-  if (usable.length === 0) return;
+// a name declared only one way. A call body also offers its item sources and shared reads.
+// Rebuilt on focus, so a changed collection or binding is offered without a redraw.
+function attachCallSourceSuggestions(input, adoptType, node) {
+  const declarations = () => callInputSourceDeclarations(model, node);
+  const body = isCallBodyNode(node);
+  // A body's items never read its own aggregate, so it is not offered.
+  const aggregate = () => body && typeof node.multiInstance.resultVariable === "string"
+    ? node.multiInstance.resultVariable.toLowerCase() : null;
+  const usable = () => [...declarations().values()].filter(entries =>
+    (body || entries.every(entry => !entry.isShared)) && entries[0].name.toLowerCase() !== aggregate());
   const list = document.createElement("datalist");
   list.id = `call-source-variable-${++writableTargetSuggestionId}`;
-  usable.forEach(entries => {
+  const fill = () => list.replaceChildren(...usable().map(entries => {
     const option = document.createElement("option");
     option.value = entries[0].name;
-    option.label = [...new Set(entries.map(entry => entry.dataType + (entry.isArray ? "[]" : "")))].join(", ");
-    list.appendChild(option);
-  });
+    option.label = [...new Set(entries.map(entry => entry.dataType + (entry.isArray ? "[]" : "")))].join(", ") +
+      (CALL_ITEM_SOURCES.includes(entries[0].name) ? " · item" : entries.some(entry => entry.isShared) ? " · shared" : "");
+    return option;
+  }));
+  fill();
   input.setAttribute("list", list.id);
   input.parentElement?.appendChild(list);
+  input.addEventListener("focus", fill);
   input.addEventListener("change", () => {
-    const entries = declarations.get(input.value.trim().toLowerCase());
+    const entries = declarations().get(input.value.trim().toLowerCase());
     if (!entries || new Set(entries.map(entry => entry.dataType + entry.isArray)).size !== 1) return;
     adoptType(entries[0].dataType, entries[0].isArray);
   });
@@ -5230,11 +5266,18 @@ function renderCallMappingList(call, property, options) {
       if (isArray) mapping.isArray = true;
       else delete mapping.isArray;
     };
-    if (options.sourceIsLocal) attachCallSourceSuggestions(source, adoptType);
+    if (options.sourceIsLocal) attachCallSourceSuggestions(source, adoptType, options.node);
     const target = callMappingTextField(box, options.targetLabel, mapping.variable, value => {
       mapping.variable = value;
     });
-    if (options.targetIsLocal) {
+    if (options.targetIsLocal && isCallBodyNode(options.node)) {
+      // An item writes its local outputs or readWrite shared aliases, never a process variable.
+      attachAutomaticItemTargetSuggestions(target, options.node, match => {
+        mapping.variable = match.name;
+        target.value = match.name;
+        adoptType(match.dataType, match.isArray === true);
+      });
+    } else if (options.targetIsLocal) {
       attachWritableTargetSuggestions(target, match => {
         mapping.variable = match.name;
         target.value = match.name;
@@ -5300,11 +5343,17 @@ function renderCallActivitySection(node) {
     renderInspector();
     inspector.querySelector("[data-call-section]")?.focus();
   };
-  attachInspectorHelp(title, "call-activity", [
-    "Starts a child instance of another workflow family and waits until it finishes. A Worker creates the child and delivers its result, so this needs a running Worker even when both workflows are otherwise synchronous.",
-    "Inputs are copied when the token reaches this node, and results when the child finishes. Later changes on either side do not affect those copies.",
-    "The server checks the target when you publish this workflow and again when it starts the child. The child runs as the system actor callActivity, so its start must not restrict roles."
-  ]);
+  attachInspectorHelp(title, "call-activity", isCallBodyNode(node)
+    ? [
+        "Starts one child instance of another workflow family for each collection item and waits until every child has finished. A Worker creates the children and delivers their results, so this needs a running Worker.",
+        "Each item keeps its slot while its child waits for people, messages, timers, or its own calls. Every call under the same root counts toward the deployment's open-call limit, so a body whose children make calls needs Maximum concurrency, times the calls each child holds open, to fit that limit; otherwise the children's own calls fail there.",
+        "The children run as the system actor callActivity, so the target's start must not restrict roles. Async and job settings do not apply: a call is always durable."
+      ]
+    : [
+        "Starts a child instance of another workflow family and waits until it finishes. A Worker creates the child and delivers its result, so this needs a running Worker even when both workflows are otherwise synchronous.",
+        "Inputs are copied when the token reaches this node, and results when the child finishes. Later changes on either side do not affect those copies.",
+        "The server checks the target when you publish this workflow and again when it starts the child. The child runs as the system actor callActivity, so its start must not restrict roles."
+      ]);
 
   if (node.callActivity === null || typeof node.callActivity !== "object" || Array.isArray(node.callActivity)) {
     const warning = document.createElement("p");
@@ -5333,8 +5382,9 @@ function renderCallActivitySection(node) {
     ["manager-approval"]);
 
   const versionInput = field("Version", "text", "Published default", null, true);
-  attachInspectorHelp(versionInput, "call-version",
-    "A call uses the family's published default when its job creates the child, and each visit remembers the version it used. A resolved version belongs to the visit, so it is never saved in this workflow.");
+  attachInspectorHelp(versionInput, "call-version", isCallBodyNode(node)
+    ? "The body resolves the family's published default once, when it starts, and every item and retry starts that version even after the default changes. That version cannot be unpublished or deleted until the body settles. It belongs to the visit, so it is never saved in this workflow."
+    : "A call uses the family's published default when its job creates the child, and each visit remembers the version it used. A resolved version belongs to the visit, so it is never saved in this workflow.");
   if (call.versionBinding != null && call.versionBinding !== "publishedDefault") {
     const warning = document.createElement("p");
     warning.className = "empty-note";
@@ -5348,7 +5398,10 @@ function renderCallActivitySection(node) {
     inspector.appendChild(clear);
   }
 
-  if (hasCallAsyncSettings(node) || (node.multiInstance != null && !saveAutomaticMultiInstanceEnabled()) || hasOtherCallRuntimeSettings(node)) {
+  // A valid call body is part of the call on a host that can run it, so it is never one of
+  // the options to remove; only an unusable one is.
+  const keepsBody = isCallBodyNode(node) && saveAutomaticMultiInstanceEnabled();
+  if (hasCallAsyncSettings(node) || (node.multiInstance != null && !keepsBody) || hasOtherCallRuntimeSettings(node)) {
     const warning = document.createElement("p");
     warning.className = "empty-note";
     warning.style.color = "var(--warning-text)";
@@ -5358,31 +5411,47 @@ function renderCallActivitySection(node) {
     clear.textContent = "Remove these options";
     clear.style.marginTop = "8px";
     clear.onclick = () => {
+      const body = keepsBody ? node.multiInstance : undefined;
       clearUnsupportedCallSettings(node);
+      if (body !== undefined) node.multiInstance = body;
       render();
       inspector.querySelector("[data-call-section]")?.focus();
     };
     inspector.appendChild(clear);
   }
 
+  const callBody = isCallBodyNode(node);
   renderCallMappingList(call, "inputMappings", {
+    node,
     title: "Inputs",
     helpKey: "call-inputs",
-    help: "Each mapping copies one whole variable into a declared input of the target's default start event. Every required input of the target needs a mapping marked Required. An optional mapping skips a missing variable, but a present null is passed on.",
+    help: callBody
+      ? [
+          "Each mapping copies one whole variable into a declared input of the target's default start event, once for each item. Every required input of the target needs a mapping marked Required.",
+          "mi.item is the item, typed like the collection's elements; mi.index is its position from 0, and mi.total the item count. Mapping the collection itself passes the whole frozen collection to every child, within the 1 MiB input limit.",
+          "Instance variables are frozen when the body starts. A shared alias is read when each item first stages, so a later item can see a newer value, while a retry keeps the value its item staged."
+        ]
+      : "Each mapping copies one whole variable into a declared input of the target's default start event. Every required input of the target needs a mapping marked Required. An optional mapping skips a missing variable, but a present null is passed on.",
     empty: "No inputs are copied to the child.",
-    sourceLabel: "Variable in this workflow",
+    sourceLabel: callBody ? "Variable or item in this workflow" : "Variable in this workflow",
     targetLabel: "Input of the called workflow",
     requiredLabel: "Required",
     sourceIsLocal: true,
     targetIsLocal: false
   });
   renderCallMappingList(call, "outputMappings", {
+    node,
     title: "Results",
     helpKey: "call-results",
-    help: "Each mapping copies one whole variable into a declared process variable of this workflow when the child completes. They are all written together or not at all. An optional mapping leaves the target unchanged when the child never set the variable.",
+    help: callBody
+      ? [
+          "Each mapping copies one whole variable of a finished child into this body's item-local output, or into a readWrite shared alias. An item never writes a process variable; the body's aggregate collects the local outputs in item order.",
+          "An item's local outputs and shared writes are published together. If a shared value changed after the item staged, its publication waits in an output_version_conflict incident; retrying it publishes the saved result over the newer value without running the child again."
+        ]
+      : "Each mapping copies one whole variable into a declared process variable of this workflow when the child completes. They are all written together or not at all. An optional mapping leaves the target unchanged when the child never set the variable.",
     empty: "No results are copied back.",
     sourceLabel: "Variable in the called workflow",
-    targetLabel: "Process variable in this workflow",
+    targetLabel: callBody ? "Item-local output or shared alias" : "Process variable in this workflow",
     requiredLabel: "Required",
     sourceIsLocal: false,
     targetIsLocal: true
@@ -13129,6 +13198,32 @@ function callSourceDeclarations(candidate) {
 }
 
 const CALL_RESERVED_NAME = /^(sys|config|setting|mi|gateway)\./i;
+// Mirrors CallActivityRules.ItemSourceNames: the only reserved names a mapping accepts,
+// spelled exactly so, and only as an input source of a call body.
+const CALL_ITEM_SOURCES = ["mi.item", "mi.index", "mi.total"];
+
+function isCallBodyNode(node) {
+  return !!node && node.type === "callActivity" && node.multiInstance != null &&
+    typeof node.multiInstance === "object" && !Array.isArray(node.multiInstance);
+}
+
+// Mirrors CallActivityRules.InputSourceDeclarations: on a call body the item context joins
+// the workflow's declarations. mi.item takes the collection's element type and can be null
+// only when that type is json; mi.index and mi.total are numbers.
+function callInputSourceDeclarations(candidate, node, declarations = callSourceDeclarations(candidate)) {
+  if (!isCallBodyNode(node)) return declarations;
+  const withItems = new Map(declarations);
+  const collectionName = node.multiInstance.collectionVariable;
+  const collection = (Array.isArray(candidate && candidate.variables) ? candidate.variables : [])
+    .find(variable => variable && typeof variable.name === "string" && typeof collectionName === "string" &&
+      variable.name.toLowerCase() === collectionName.toLowerCase());
+  if (collection && collection.isArray === true && supportedVariableTypes.has(collection.dataType)) {
+    withItems.set("mi.item", [{ name: "mi.item", dataType: collection.dataType, isArray: false, isShared: false }]);
+  }
+  withItems.set("mi.index", [{ name: "mi.index", dataType: "number", isArray: false, isShared: false }]);
+  withItems.set("mi.total", [{ name: "mi.total", dataType: "number", isArray: false, isShared: false }]);
+  return withItems;
+}
 
 function callMappingNameProblem(name) {
   if (!hasText(name)) return "must name a variable.";
@@ -13215,7 +13310,7 @@ function callValueType(mapping) {
   return String(mapping.dataType) + (mapping.isArray === true ? "[]" : "");
 }
 
-function validateSaveCallMappingList(ctx, label, property, mappings) {
+function validateSaveCallMappingList(ctx, label, property, mappings, allowItemSources = false) {
   const errors = ctx.errors;
   if (mappings === undefined) return [];
   if (!Array.isArray(mappings)) {
@@ -13238,7 +13333,8 @@ function validateSaveCallMappingList(ctx, label, property, mappings) {
     for (const key of Object.keys(mapping)) {
       if (!allowed.has(key)) errors.push(path + " has unknown property '" + key + "'.");
     }
-    const sourceProblem = callMappingNameProblem(mapping.sourceVariable);
+    const sourceProblem = allowItemSources && CALL_ITEM_SOURCES.includes(mapping.sourceVariable)
+      ? null : callMappingNameProblem(mapping.sourceVariable);
     const targetProblem = callMappingNameProblem(mapping.variable);
     if (sourceProblem) errors.push(path + ".sourceVariable " + sourceProblem);
     if (targetProblem) errors.push(path + ".variable " + targetProblem);
@@ -13351,11 +13447,18 @@ function validateSaveCallActivities(ctx) {
         "'; omit it to call the published default.");
     }
 
-    const inputs = validateSaveCallMappingList(ctx, label, "inputMappings", call.inputMappings);
+    const inputs = validateSaveCallMappingList(ctx, label, "inputMappings", call.inputMappings, isCallBodyNode(node));
     const outputs = validateSaveCallMappingList(ctx, label, "outputMappings", call.outputMappings);
+    const inputSources = callInputSourceDeclarations(ctx.candidate, node, sources);
+    const aggregate = isCallBodyNode(node) && typeof node.multiInstance.resultVariable === "string" &&
+      node.multiInstance.resultVariable.trim() ? node.multiInstance.resultVariable.toLowerCase() : null;
     for (const mapping of inputs) {
-      const declared = sources.get(mapping.sourceVariable.toLowerCase());
-      if (!declared) {
+      const declared = inputSources.get(mapping.sourceVariable.toLowerCase());
+      // A body's items never read its aggregate: staging leaves it out.
+      if (aggregate !== null && mapping.sourceVariable.toLowerCase() === aggregate) {
+        errors.push(label + " input source '" + mapping.sourceVariable +
+          "' is this body's aggregate target, which its items never read.");
+      } else if (!declared) {
         errors.push(label + " input source '" + mapping.sourceVariable +
           "' is never declared or produced by this workflow.");
       } else if (!node.multiInstance && declared.some(entry => entry.isShared)) {

@@ -634,7 +634,7 @@ Content-Type: application/json
 
 ### GET /api/workflows/authoring-capabilities
 
-Reports which optional authoring features this server's definition validation accepts, so a hosted editor offers only what saving allows. `automaticMultiInstance` is the server's effective switch for multi-instance service, script, and call activities. It is `true` only on an API running in the `Development` environment with `WorkflowAutomaticMultiInstance:AllowInDevelopment` set. Even then only service and script bodies can be published and run, and only a Worker with the same option in effect runs their jobs; publishing a call body returns `400` naming the node until its activity adapter is installed. Every other host returns `false`, whatever the option says, refuses to publish any automatic body, and returns `400` for a start or action that would route a token into one.
+Reports which optional authoring features this server's definition validation accepts, so a hosted editor offers only what saving allows. `automaticMultiInstance` is the server's effective switch for multi-instance service, script, and call activities. It is `true` only on an API running in the `Development` environment with `WorkflowAutomaticMultiInstance:AllowInDevelopment` set. Then service, script, and call bodies can be published and run, and only a Worker with the same option in effect runs their jobs. Every other host returns `false`, whatever the option says, refuses to publish any automatic body, and returns `400` for a start or action that would route a token into one.
 
 **Access:** Workflow administrator (`Workflow.RequiredRole`). See [authentication](#http-conventions-and-authentication).
 
@@ -2495,8 +2495,9 @@ Each summary has the following camel-case wire fields:
 | `status`, `phase` | string | Persisted item lifecycle and execution/publication phase. |
 | `createdAt`, `updatedAt` | date-time string | Item creation and latest transition. |
 | `startedAt`, `completedAt` | null or date-time string | Actual start and settlement; unstarted items retain null start time. |
-| `jobId`, `incidentId`, `nodeExecutionId` | null or integer (int64) | Latest retained item job, open item incident, and retained node visit. Correlations may disappear through retention. |
+| `jobId`, `incidentId`, `nodeExecutionId` | null or integer (int64) | Latest retained item job, open item incident, and retained node visit. For a call item the job and incident are those of its `callStart` (owned by the parent) or its `callResume` (owned by the child), found through the item's call invocation. Correlations may disappear through retention. |
 | `canReadPayload` | boolean | Current caller meets the body's node-activity read scope. Show payload controls only while true; detail rechecks permission. |
+| `callInvocationId`, `childInstanceId` | null or integer (int64) | A call item's invocation, from its admission, and the child instance it started, once that exists. Null for service and script items and for a call item not yet admitted. The child keeps its own read authorization. |
 
 The list never includes the copied element, local result, frozen context, staged shared writes, or candidate publication values. Job/incident IDs confer no Operations authority; those routes still require [Job operator permission](#http-conventions-and-authentication).
 
@@ -2508,13 +2509,14 @@ This payload read additionally requires the same scope as node-execution detail:
 
 A shared collection element deliberately copied into `item`, or an explicitly authored aggregate result, is workflow payload under this read permission. It does not grant direct access to live shared-catalog values or their history.
 
-Job and incident summaries add nullable `automaticMultiInstanceItemId` without changing Operations permissions. Only `multiInstanceItem` jobs carry it; a call item's call messages leave it null, because their call invocation owns the item. Incident correlation is available while its originating job is retained. Parent-call and outgoing-call summaries add nullable `multiInstanceExecutionId`, `automaticMultiInstanceItemId`, and `itemIndex`; ordinary calls omit them. Call-body execution positions use the automatic progress collection, rather than arbitrarily presenting one item invocation as the whole body's call.
+Job and incident summaries add nullable `automaticMultiInstanceItemId` without changing Operations permissions. Only `multiInstanceItem` jobs carry it; a call item's call messages leave it null, because their call invocation owns the item. Incident correlation is available while its originating job is retained. Parent-call and outgoing-call summaries add nullable `multiInstanceExecutionId`, `automaticMultiInstanceItemId`, and `itemIndex`; ordinary calls omit them. An outgoing call of a multi-instance item also has `pinnedChildDefinitionId` and `pinnedChildDefinitionVersion`, the target version its body pinned for every item when it started; they are set before the item's child exists, while `childDefinitionId` and `childDefinitionVersion` stay null until it does. Call-body execution positions use the automatic progress collection, rather than arbitrarily presenting one item invocation as the whole body's call.
 
 Instance detail also adds `automaticMultiInstances`, separate from the human-only `multiInstance` and `multiInstances`. Every progress object contains `executionId`, `tokenId`, `nodeId`, `activityKind`, `mode`, `status`, `phase`, `totalCount`, `completedCount`, `activeCount`, `pendingCount`, `failedCount`, `cancelledCount`, `effectiveConcurrency`, `admissionBlocked`, nullable `admissionBlockedReason`, `createdAt`, `updatedAt`, and nullable `completedAt`. It contains no item payloads. Execution positions retain `multiInstanceExecutionId` and add nullable `multiInstanceActivityKind`, in instance detail and in instance-list, version-change and variable-update candidate positions alike; an automatic body is named only on the position of the token activation that owns it, so a token that re-entered the node shows none until its own body exists. Clients resolve automatic IDs against `automaticMultiInstances`. An automatic version-change blocker (`automatic_multi_instance_open`) carries the open body's execution ID as `runtimeId`; a queued entry or async-after continuation blocks with no ID. Node activity accepts `executionKind=automaticActivityItem` and adds nullable `automaticMultiInstanceItemId` to summary/detail; automatic rows do not populate human `multiInstance` detail.
 
 Progress additionally exposes nullable `controlJobId`, `controlIncidentId`, and
 `controlIncidentType` for the current generation's open dispatch/completion
-incident. These are payload-free correlations and grant no Operations authority.
+incident, and, for a call body, nullable `pinnedChildDefinitionVersion`: the target
+version every item calls, null for an empty call body and for service and script bodies. These are payload-free correlations and grant no Operations authority.
 They clear when that incident is resolved or superseded; item counts and
 `admissionBlocked` retain their separate meanings. An aggregate-publication
 incident can therefore appear with every item completed and no failed items.

@@ -71,6 +71,9 @@ public sealed record AutomaticMultiInstanceProgressRecord(
     public long? ControlJobId { get; init; }
     public long? ControlIncidentId { get; init; }
     public string? ControlIncidentType { get; init; }
+
+    /// <summary>The version number of a call body's pinned target, for display.</summary>
+    public int? PinnedChildDefinitionVersion { get; init; }
 }
 
 public sealed record AutomaticMultiInstanceItemPageRecord(

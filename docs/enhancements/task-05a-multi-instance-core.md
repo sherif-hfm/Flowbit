@@ -131,7 +131,7 @@ Each item receives an independent local buffer and the same read-only context co
 | `mi.index` | The zero-based item index, from 0 through collection length minus one. |
 | `mi.total` | The frozen collection length. |
 
-These keys are reserved context, never writable locals or persisted process variables. Instance inputs and the item are frozen for the whole body. Other shared reads are captured under the exact shared access plan when each REST/script item first stages; MI calls capture them at item admission under the parent/shared locks before crossing into child-start processing. Persist this item snapshot for all execution and delivery retries. The collection alias, including any reference resolving to the same shared key, always resolves to the body's frozen collection. Permitted `config.*`/`setting.*` values and `sys.now`/`sys.today` are read when each REST/script item first stages and kept for its retries. A credential or shared value changed before a later item stages can therefore reach that item; sequential items may observe earlier committed shared writes. Authors needing the same non-collection value for every item copy it into an instance variable before the body. Calls retain whole-variable mappings without expressions or configuration sources, extended to shared aliases in [TASK-05D](task-05d-multi-instance-call-activities.md). REST/script jobs preserve existing attempt-specific `sys.jobId`/`sys.jobAttempt` behavior; `sys.jobId` remains stable across retries of that item. Capture `FlowInfo`, where already allowed for scripts, once for the body. Do not allow progress counters such as `mi.completed`/`mi.remaining` to introduce completion-order-dependent item calculations.
+These keys are reserved context, never writable locals or persisted process variables. Instance inputs and the item are frozen for the whole body. Other shared reads are captured under the exact shared access plan when each REST/script item first stages; MI calls capture them when the item first stages, in the first, parent-only transaction of its `callStart`, under the parent/shared locks before crossing into child-start processing. Persist this item snapshot for all execution and delivery retries. The collection alias, including any reference resolving to the same shared key, always resolves to the body's frozen collection. Permitted `config.*`/`setting.*` values and `sys.now`/`sys.today` are read when each REST/script item first stages and kept for its retries. A credential or shared value changed before a later item stages can therefore reach that item; sequential items may observe earlier committed shared writes. Authors needing the same non-collection value for every item copy it into an instance variable before the body. Calls retain whole-variable mappings without expressions or configuration sources, extended to shared aliases in [TASK-05D](task-05d-multi-instance-call-activities.md). REST/script jobs preserve existing attempt-specific `sys.jobId`/`sys.jobAttempt` behavior; `sys.jobId` remains stable across retries of that item. Capture `FlowInfo`, where already allowed for scripts, once for the body. Do not allow progress counters such as `mi.completed`/`mi.remaining` to introduce completion-order-dependent item calculations.
 
 Item local/shared-output rules apply only inside an automatic MI execution:
 
@@ -190,7 +190,7 @@ Keep `Workflow.MultiInstance.MaxInstances` (default 1,000) as the total item lim
 
 Use persisted slots under the parent lock. Pending rows are cheap work descriptors, not queued jobs or call reservations. Admit only the next ascending-index window. A retrying, incident-blocked, or waiting call item retains its slot; successful result delivery releases one and admits the next item transactionally. When an item-level start/execution/output incident blocks the body, pause new admission while allowing already admitted work to settle. A job incident inside a called child simply occupies that item's slot; it does not pause otherwise available slots in its parent body. Sequential mode never starts the next item before the previous item commits success. When call admission refuses an item because its root already has `WorkflowCallActivities:MaxOpenInvocationsPerRoot` open calls, the item stays pending as back-pressure rather than failing; [TASK-05D](task-05d-multi-instance-call-activities.md) defines that rule. Progress reports whether admission is blocked and why: an item incident, queue capacity, or call capacity.
 
-Shared-input capture can fail before a call item has an invocation. In that case the owning entry/dispatch control job carries the item-correlated admission incident; the item stays pending with a blocked reason and no admitted slot, invocation or child. Pause new admission until recovery. Retry admission only and freeze shared inputs on its first successful admission; do not attempt same-invocation recovery when no invocation exists. Missing/archived/changed bindings or access failures are operational incidents, while a value failing an otherwise valid input contract follows the adapter's error-boundary/incident policy. This is distinct from ordinary queue/root-capacity back-pressure.
+A call item's shared-input capture can fail after admission, because admission creates its invocation and `callStart` job and the item stages in that job ([call adapter decision 1](#8-definition-validation-compatibility-and-safety-of-loading)). The failure opens an incident on the item's `callStart`: the item stays active and blocked with its slot and queued invocation, but with no saved stage and no child. Pause new admission until recovery. A failed stage saves nothing, so the retry captures current shared values and freezes them at its first success. Missing/archived/changed bindings or access failures are operational incidents, while a value failing an otherwise valid input contract follows the adapter's error-boundary/incident policy. This is distinct from ordinary queue/root-capacity back-pressure, which holds an item pending before admission.
 
 The MI window supplements the per-instance open-job limit (`WorkflowJobCapacity`, checked by `EnqueueInstanceJobAsync`) and the Worker's `MaxPerInstance`, `ActivityConcurrency`, and `MaxConcurrency`; it does not override them. Current Worker defaults are 4, 6, and 8 respectively. No process-local semaphore may be the authority across replicas. Each Worker leases at most `MaxPerInstance` jobs of one instance, so a REST/script window wider than that times the Worker count runs no more items at once; document this beside the settings.
 
@@ -241,7 +241,7 @@ Implement a focused automatic-MI coordinator, with repository ports, rather than
 | --- | --- |
 | Enter | Install/evaluate host conditional subscriptions for the new token activation, then queue parent `asyncBefore` for REST/script or intrinsic `multiInstanceStart` for calls if still eligible. Commit its wait/activation once. No item activity or child workflow starts in the caller's transaction; do not start host timer clocks yet. |
 | Initialize | Lock and fence entry job/token; if another body of this node is open, reschedule without consuming attempts (§3), preserving this token's conditional subscriptions; validate/snapshot inputs and shared collection; install parent/items/ledger and transfer the control reservation; arm timers once, reset aggregate, drain instance notifications and recheck fences; admit the first window or queue dispatch; replace entry wait with body wait; complete entry job. Duplicate execution observes the existing body/timers. Empty input queues completion directly. |
-| Stage item | Fence parent activation, item ownership, stable job ID and lease generation; lock exact shared dependencies after runtime rows, build/persist the item context and output version fences from body inputs plus current shared/config values and fresh locals. Commit and discard tracked state before external work. Calls capture shared inputs at admission under the receiving-parent transaction. |
+| Stage item | Fence parent activation, item ownership, stable job ID and lease generation; lock exact shared dependencies after runtime rows, build/persist the item context and output version fences from body inputs plus current shared/config values and fresh locals. Commit and discard tracked state before external work. Calls stage in the first, parent-only transaction of the item's `callStart`, before the transaction that creates the child. |
 | Invoke/evaluate | Use the existing HTTP invoker or sandboxed script evaluator outside the long database transaction, preserving timeouts, cancellation, redaction, and attempt metadata. |
 | Start/deliver call item | Use its parent-owned invocation and existing call messages; create one child from the body pin, then deliver saved child outputs into local item storage under the receiver's lock. Waiting children consume slots, never long-held leases. |
 | Finalize item | Reacquire current runtime/shared state in normal lock order; reject stale leases/activations or a closed parent; persist the candidate before publication, then atomically validate/fence/commit its whole shared write batch and local result, update counts/ledger, and signal refill/completion. A publication conflict retains the candidate without marking success; capacity contention cannot roll back accepted success into reinvocation. Refill needing new shared keys runs through reserved dispatch rather than descending lock order. |
@@ -255,7 +255,7 @@ Each job kind has a fixed queue class and retry policy. `BuildJobCreate` otherwi
 | `multiInstanceStart` | Call | Control | Default delays (10 s, 1 min, 5 min); calls reject an authored `job`. Waiting for an open body of the same node reschedules without consuming attempts. | Counts the body once. |
 | `multiInstanceItem` | Service, script | Activity | Node `job` policy for each item: `retryDelays` plus one attempts, and its `failureHandling`. | Not counted. |
 | `callStart`, `callResume`, `callCancel` | Call items | As today | Existing call behavior. | Item starts are not counted. |
-| `multiInstanceDispatch` | All three | Control | Capacity backoff never consumes activity attempts; the nothing-in-flight/max-delay rule opens a capacity incident (§4). Also owns correlated pre-invocation shared-input admission failures under §4/TASK-05D; these are not capacity retries or item re-execution. | Not counted. |
+| `multiInstanceDispatch` | All three | Control | Capacity backoff never consumes activity attempts; the nothing-in-flight/max-delay rule opens a capacity incident (§4). For calls it also runs invocation admission and root-limit back-pressure under TASK-05D; a call item's staging failures belong to its `callStart`, not to this job. | Not counted. |
 | `multiInstanceComplete` | All three | Control | Default delays; runs the success path and a caught failure's boundary path. A version conflict opens an incident and other failures follow §3. | Not counted. |
 | `asyncAfter` | Service, script | Activity, as today | Node `job` policy. | As today. |
 
@@ -311,6 +311,7 @@ Until the parent's integration step, one release switch in the automatic-MI rule
 
 - Publication is allowed when the release switch is enabled and every automatic body in the definition has an installed adapter. The switch opens only on a Development host, so no other environment can publish a body of any kind.
 - Runtime entry and item processing proceed for a kind whose adapter is installed and keep failing closed for the others. An automatic body never falls through to one ordinary activity.
+- A body's dispatch and completion jobs check the switch too, once the job is known to still own its body (added by the [TASK-05D review follow-up](task-05d-multi-instance-call-activities.md#verification), 2026-11-14). Before that, a closed host could admit items and publish an aggregate for a body an open host had started.
 - An adapter counts as installed in the change that completes its entry, item, failure, and cancellation paths, not earlier. Proposed mechanism: the core owns one list of installed kinds, and the three guards read nothing else.
 - Service and script bodies share the entry (`asyncBefore`) and item (`multiInstanceItem`) routing in `WorkflowEngineService.Jobs.cs`. The first of TASK-05B and TASK-05C to land adds one dispatch by node type; the other adds its case. Calls enter through `multiInstanceStart` and their own call messages (TASK-05D).
 - Each adapter's tests pin that the kinds not yet installed stay refused at publication, entry, and item processing, and that a host outside Development refuses every kind.
@@ -383,6 +384,49 @@ implementation:
 6. An item's staged `config.*`/`setting.*` values stay frozen for its retries, also
    when the failure is an expired credential. Rotating the setting reaches only items
    that stage later.
+
+**Call adapter decisions (agreed 2026-11-13).** A review of
+[TASK-05D](task-05d-multi-instance-call-activities.md#plan-review-2026-11-13) against
+the code after both other adapters landed raised four questions that change or extend
+shared contracts. Each takes the proposal that plan recorded, and the call adapter
+implemented on 2026-11-13 follows all four:
+
+1. A call item stages in its `callStart`, not at admission. Admission, which runs only
+   in the dispatch job, creates the slot, the reserved invocation, and the `callStart`
+   job and reads no shared row. The first, parent-only `callStart` transaction captures
+   shared inputs and output fences; a second creates the child under the family lock. A
+   staging failure is a `callStart` incident that blocks its item, as the item fence and
+   the incident-derived blocking already assume. §3, §4, and §6 above use this wording.
+2. A call body whose reservations fill the root's open-call limit makes its children's
+   own ordinary calls fail there. That is documented, with a test, and not prevented:
+   ordinary calls keep their TASK-01 contract.
+3. A pinned version that can no longer start, because a newer version enabled business
+   keys for its family, gets no new guard. Its items take the catch-all error boundary
+   or wait in `callStart` incidents, within the known stuck-body limit.
+4. A call body's entry failures (an invalid or oversized source, a result that cannot
+   fit, an unavailable or incompatible target, the depth limit) use the exit REST and
+   script entries use: the catch-all boundary at once, otherwise the default retries and
+   then an incident on the `multiInstanceStart` job.
+
+The same review found seams the call adapter changes in this foundation:
+`InitializeBodyAsync` takes an optional pin and stores it only for a nonempty
+collection, the coordinator gains call admission, `HandleAutomaticEntryFailureAsync`
+also serves a `multiInstanceStart` wait, and the `multiInstanceStart` job gets its
+shape check.
+
+TASK-05D implemented these on 2026-11-13 ([implementation record](task-05d-multi-instance-call-activities.md#implementation-record-2026-11-13)):
+`InitializeBodyAsync` takes a call body's pin in its create record or its target
+failure (`callTargetFailure`), keeps the pin only for a nonempty collection, and fails
+a nonempty body without one with that code before any row exists; `DispatchAsync` takes
+an `AutomaticCallAdmission` for a call body and admits through `DispatchCallsAsync`,
+whose root-limit wait reuses the queue-capacity backoff and opens `call_capacity_exceeded`
+only with nothing in flight at the longest delay; `CaptureItemFailureAsync` settles a
+failed call item's own invocation before it abandons the body's other calls, and
+`FailCallItemAsync` stops a body for a child fault with no boundary;
+`HandleAutomaticEntryFailureAsync` clears a `multiInstanceStart` wait and keeps a
+call code as the incident type; `RequireCallItemAsync` exposes the call item fence;
+`AdmitAsync` returns each item's visit; and progress also counts an item blocked by an
+open incident on the child-owned `callResume` that delivers its result.
 
 For the first release, **block every workflow-version switch while an automatic MI entry/body/completion is open**, including incident-blocked work, an entry waiting for another body of its node, and its async-after continuation. Return a precise compatibility blocker identifying the node/execution. A target that adds, removes, or changes `multiInstance` on a node holding an open job is already blocked: `ValidateOpenJobs` compares the full `DurableNodeContract` before `JobDescriptorMatches`, and `CanonicalNode` includes `multiInstance`, so it reports `open_job_contract_changed`; open ordinary calls keep their unsettled-call blockers. Pin both with regression tests rather than adding a second mechanism. Do not implement partial rebinding of item jobs/snapshots. Completed executions remain immutable history and do not by themselves block switching at a later supported wait.
 
@@ -800,5 +844,5 @@ Verification of these corrections:
 
 Still open after these corrections:
 
-- Adapter integration owned by TASK-05B/C/D: initializing a body from its entry job, executing item jobs, resolving a call body's pin, call admission and result delivery. Each adapter also opens the publication, runtime, and item-job guards for its own kind, as §8 records under **Opening by activity kind**.
-- Review findings outside the recorded list: per-item cost (each item completion reads progress for every body in the instance and lists its open jobs); editor/server differences in first-error order, wording, and acceptance of a local `defaultValue` written as a string; local-output `validation` accepting `FlowInfo` and gateway functions (closed by TASK-05C on 2026-11-12, decision 5 above); disabling multi-instance or changing type not reviewing call-only mappings; **Remove these options** on a call also removing a valid automatic body; a falsy imported `multiInstance` loading as an enabled one; sparse inspector help; a possible one-slot capacity over-credit during completion; the first migration's validated foreign keys and indexes on large tables inside its transaction; no shape check for `multiInstanceStart`; and the authoring-side test gaps listed in §12.
+- Adapter integration owned by TASK-05B/C/D: initializing a body from its entry job, executing item jobs, resolving a call body's pin, call admission and result delivery. Each adapter also opens the publication, runtime, and item-job guards for its own kind, as §8 records under **Opening by activity kind**. All three adapters are now installed behind the Development-only switch; see the [TASK-05D implementation record](task-05d-multi-instance-call-activities.md#implementation-record-2026-11-13) for the call adapter.
+- Review findings outside the recorded list: per-item cost (each item completion reads progress for every body in the instance and lists its open jobs); editor/server differences in first-error order, wording, and acceptance of a local `defaultValue` written as a string; local-output `validation` accepting `FlowInfo` and gateway functions (closed by TASK-05C on 2026-11-12, decision 5 above); disabling multi-instance not reviewing call-only mappings (closed by TASK-05D on 2026-11-13: it is refused while a mapping reads an item or shared alias or writes a shared alias; a type change away from a call already removes its call settings after the existing confirmation); **Remove these options** on a call also removing a valid automatic body (closed by TASK-05D); a falsy imported `multiInstance` loading as an enabled one (closed by TASK-05D: only an object counts as a body, and any other value offers **Remove the invalid value**); sparse inspector help; a possible one-slot capacity over-credit during completion; the first migration's validated foreign keys and indexes on large tables inside its transaction; no shape check for `multiInstanceStart` (closed by TASK-05D with `CK_workflow_jobs_multi_instance_start_shape`); and the authoring-side test gaps listed in §12.

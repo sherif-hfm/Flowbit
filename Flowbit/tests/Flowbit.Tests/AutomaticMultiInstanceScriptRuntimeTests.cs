@@ -542,24 +542,23 @@ public sealed class AutomaticMultiInstanceScriptRuntimeTests(PostgresApiFixture 
     }
 
     [Fact]
-    public async Task Call_bodies_stay_refused_at_publication_while_only_scripts_and_services_are_installed()
+    public async Task A_host_outside_development_refuses_call_and_script_bodies_at_publication()
     {
-        await using var host = OpenHost();
         var body = new FlowNodeModel
         {
             Id = 2, Name = "Body", Type = BpmnFlowNodeTypes.CallActivity, X = 200, Y = 20,
             MultiInstance = Multi("parallel", "items", "results"),
             CallActivity = new() { WorkflowKey = "unused-child" }
         };
-        using (var response = await SendAsync(host, HttpMethod.Post, "/api/workflows",
+        // The ordinary test host is not Development: it refuses a call body, whatever its
+        // target, and script bodies too.
+        using (var response = await SendAsync(null, HttpMethod.Post, "/api/workflows",
                    new CreateWorkflowRequest(Workflow(Key("call"), body, Items(1)), true)))
         {
             Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-            Assert.Contains("Automatic multi-instance callActivity #2 cannot be published or run until its activity adapter is installed.",
-                await response.Content.ReadAsStringAsync());
+            Assert.Contains("automatic multiInstance is not enabled", await response.Content.ReadAsStringAsync());
         }
 
-        // The ordinary test host is not Development: it refuses script bodies too.
         var script = ThrowingBody("execution.setVariable('value', 1);");
         using var closed = await SendAsync(null, HttpMethod.Post, "/api/workflows",
             new CreateWorkflowRequest(Workflow(Key("closed"), script, Items(1)), true));

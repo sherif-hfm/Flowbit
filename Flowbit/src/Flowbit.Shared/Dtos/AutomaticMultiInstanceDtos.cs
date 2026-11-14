@@ -13,6 +13,9 @@ public sealed record AutomaticMultiInstanceProgressDto(
     public long? ControlJobId { get; init; }
     public long? ControlIncidentId { get; init; }
     public string? ControlIncidentType { get; init; }
+
+    /// <summary>A call body's target version, pinned for all its items when it started.</summary>
+    public int? PinnedChildDefinitionVersion { get; init; }
 }
 
 /// <summary>Payload-free item identity and current operational correlations.</summary>
@@ -20,7 +23,14 @@ public record AutomaticMultiInstanceItemSummaryDto(
     long Id, long InstanceId, long MultiInstanceExecutionId, int ItemIndex, string ActivityKind,
     string Status, string Phase, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt,
     DateTimeOffset? StartedAt, DateTimeOffset? CompletedAt, long? JobId, long? IncidentId,
-    long? NodeExecutionId, bool CanReadPayload = false);
+    long? NodeExecutionId, bool CanReadPayload = false)
+{
+    /// <summary>A call item's invocation, from admission on; null for service and script items.</summary>
+    public long? CallInvocationId { get; init; }
+
+    /// <summary>The child a call item started, once it exists.</summary>
+    public long? ChildInstanceId { get; init; }
+}
 
 /// <summary>
 /// An authorized copied element and committed local result. Never exposes staging,

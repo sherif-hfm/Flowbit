@@ -5,6 +5,7 @@ using Flowbit.Service.Abstractions;
 using Flowbit.Service.Models;
 using Flowbit.Service.Services;
 using Flowbit.Shared.Models;
+using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -24,11 +25,24 @@ public sealed class AutomaticMultiInstanceProcessorTests(PostgresApiFixture fixt
 {
     private readonly List<long> ownedInstanceIds = [];
     private static readonly ActorContext Actor = new("causal", ["User"], new Dictionary<string, string>());
+    private WebApplicationFactory<Program>? releasedHost;
+
+    // Dispatch and completion jobs run the body, so only a host with the release switch open
+    // processes them; the ordinary test host refuses them.
+    private WebApplicationFactory<Program> ReleasedHost => releasedHost ??=
+        fixture.Factory.WithWebHostBuilder(builder => builder.ConfigureTestServices(services =>
+        {
+            var options = new AutomaticMultiInstanceOptions { AllowInDevelopment = true };
+            options.ResolveForEnvironment(isDevelopment: true);
+            services.RemoveAll<AutomaticMultiInstanceOptions>();
+            services.AddSingleton(options);
+        }));
 
     public Task InitializeAsync() => Task.CompletedTask;
 
     public async Task DisposeAsync()
     {
+        if (releasedHost is not null) await releasedHost.DisposeAsync();
         // The shared database also hosts worker lease tests.
         await using var db = fixture.CreateDbContext();
         var jobs = new WorkflowJobRepository(db, fixture.DataSource);
@@ -95,9 +109,10 @@ public sealed class AutomaticMultiInstanceProcessorTests(PostgresApiFixture fixt
         Assert.Equal("[]", (await LatestAsync(db, seed.InstanceId, "results")).GetRawText());
     }
 
-    // The script and service adapters are installed (TASK-05C, TASK-05B); the call adapter
-    // is not (TASK-05D). An item job naming a kind without an adapter fails closed at item
-    // processing whatever reached the database: it never runs as another kind's item.
+    // Only script and service items run as multiInstanceItem jobs (TASK-05C, TASK-05B). A call
+    // item runs through its invocation's callStart and callResume (TASK-05D), so an item job
+    // naming any other kind fails closed at item processing whatever reached the database: it
+    // never runs as another kind's item.
     [Fact]
     public async Task An_item_job_of_a_kind_without_an_adapter_stays_refused_at_item_processing()
     {
@@ -277,7 +292,7 @@ public sealed class AutomaticMultiInstanceProcessorTests(PostgresApiFixture fixt
                 .SetProperty(job => job.Priority, 1_000_000)
                 .SetProperty(job => job.DueAt, DateTimeOffset.UtcNow.AddMinutes(-1))));
         }
-        await using var scope = fixture.Factory.Services.CreateAsyncScope();
+        await using var scope = ReleasedHost.Services.CreateAsyncScope();
         var leases = await scope.ServiceProvider.GetRequiredService<IWorkflowJobRepository>().LeaseRunnableAsync(
             new WorkflowJobLeaseRequest($"processor-test:{Guid.NewGuid():N}", MaxCount: 1,
                 MaxActivityCount: queueClass == WorkflowJobClasses.Activity ? 1 : 0, MaxPerInstance: 4,

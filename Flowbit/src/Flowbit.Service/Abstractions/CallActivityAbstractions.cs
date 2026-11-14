@@ -122,7 +122,10 @@ public interface ICallActivityRepository
         long parentInstanceId,
         CancellationToken cancellationToken);
 
-    /// <summary>The unsettled invocation each listed token owns, for execution positions.</summary>
+    /// <summary>
+    /// The unsettled ordinary invocation each listed token owns, for execution positions. An
+    /// automatic item's invocation belongs to its item, so a call body's position has none.
+    /// </summary>
     Task<IReadOnlyDictionary<long, CallInvocationRecord>> GetUnsettledByTokensAsync(
         long parentInstanceId,
         IReadOnlyCollection<long> tokenIds,

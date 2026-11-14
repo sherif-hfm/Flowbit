@@ -314,8 +314,8 @@ An early quorum, an interrupt, or another actor may cancel unfinished work. With
 
 The inactive [TASK-05A foundation](enhancements/task-05a-multi-instance-core.md)
 also has a separate **Automatic multi-instance work** panel. Automatic execution
-remains gated until B/C/D integration; only a Development API with the release
-switch open can already run service and script bodies. When automatic body data is available, the
+remains gated until the TASK-05 integration step; only a Development API with the release
+switch open can already run service, script, and call bodies. When automatic body data is available, the
 panel shows item counts, concurrency and saved results. A current body control
 incident displays **Needs attention**, its type, control job ID and incident ID,
 including when all items have completed but aggregate publication is blocked.
@@ -333,7 +333,26 @@ response mapping **Variable** and **Status variable** fields suggest the body's
 item-local outputs and its readWrite shared aliases (number targets only for the
 status), and the REST, response-mapping, status, and error-boundary help describe
 item templates, frozen credentials, idempotency, and which failures only a catch-all
-boundary catches.
+boundary catches. On a multi-instance call activity, the input **Variable or item in
+this workflow** field also suggests `mi.item` (typed like the collection's elements),
+`mi.index`, `mi.total`, and the workflow's shared aliases, and the result field
+suggests the body's item-local outputs and readWrite shared aliases instead of process
+variables. The call's help explains that the body pins the target's published default
+once, when items read shared values, and how `maxConcurrency` relates to the
+deployment's open-call limit. **Remove these options** keeps a valid multi-instance
+configuration, and clearing **Multi-instance** on a call is refused, with a list, while
+a mapping reads an item or a shared alias or writes a shared alias. An imported
+`multiInstance` that is not an object is not shown as enabled, draws no marker, offers
+no timer or conditional boundaries, and offers **Remove the invalid value**; saving
+reports it. The input source field never offers the body's own aggregate variable, and
+saving refuses a mapping from it, because items never read their aggregate. Instance
+detail lists each item's call under **Call activities** with its item index and body;
+before the item's child starts, its version reads **Version N, pinned by the
+multi-instance body**, because the body fixed it when it started. The body's execution
+position shows the body's progress rather than one child. In **Automatic
+multi-instance work**, a call body's row names the version every item calls, and each
+item lists its call, its child instance as a link once the child exists, and the open
+incident on its `callStart` or `callResume`.
 
 ## Inspect instances and activity
 

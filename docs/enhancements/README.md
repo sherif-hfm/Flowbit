@@ -84,7 +84,7 @@ subtask table together.
 | [TASK-05A](task-05a-multi-instance-core.md) | Shared automatic multi-instance core | L | None | In progress |
 | [TASK-05B](task-05b-multi-instance-service-activities.md) | Multi-instance service activities | M | [TASK-05A](task-05a-multi-instance-core.md) | In progress |
 | [TASK-05C](task-05c-multi-instance-script-activities.md) | Multi-instance script activities | M | [TASK-05A](task-05a-multi-instance-core.md) | In progress |
-| [TASK-05D](task-05d-multi-instance-call-activities.md) | Multi-instance call activities | L | [TASK-05A](task-05a-multi-instance-core.md), [TASK-01](task-01-call-activity.md) | Planned |
+| [TASK-05D](task-05d-multi-instance-call-activities.md) | Multi-instance call activities | L | [TASK-05A](task-05a-multi-instance-core.md), [TASK-01](task-01-call-activity.md) | In progress |
 
 ## New events and gateways
 

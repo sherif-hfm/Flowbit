@@ -121,7 +121,13 @@ public sealed record CallInvocationListRow(
     int? ChildDefinitionVersion,
     bool HasResult,
     string? ResultOutcome,
-    long OpenIncidentCount);
+    long OpenIncidentCount)
+{
+    /// <summary>The target version a call item's body pinned for all its items.</summary>
+    public long? PinnedChildDefinitionId { get; init; }
+
+    public int? PinnedChildDefinitionVersion { get; init; }
+}
 
 public sealed record CallCountsRecord(long Total, long Unsettled);
 

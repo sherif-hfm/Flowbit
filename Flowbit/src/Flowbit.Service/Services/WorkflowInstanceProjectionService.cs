@@ -72,7 +72,9 @@ internal sealed class WorkflowInstanceProjectionService(
                     row.Invocation.ChildFaultCode,
                     row.Invocation.MultiInstanceExecutionId,
                     row.Invocation.AutomaticMultiInstanceItemId,
-                    row.Invocation.ItemIndex))
+                    row.Invocation.ItemIndex,
+                    row.PinnedChildDefinitionId,
+                    row.PinnedChildDefinitionVersion))
                 .ToList(),
             rows.Page,
             rows.PageSize,
@@ -509,7 +511,8 @@ internal sealed class WorkflowInstanceProjectionService(
             {
                 ControlJobId = progress.ControlJobId,
                 ControlIncidentId = progress.ControlIncidentId,
-                ControlIncidentType = progress.ControlIncidentType
+                ControlIncidentType = progress.ControlIncidentType,
+                PinnedChildDefinitionVersion = progress.PinnedChildDefinitionVersion
             }).ToList()
         };
     }

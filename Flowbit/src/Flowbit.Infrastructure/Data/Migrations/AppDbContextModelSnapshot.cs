@@ -5232,6 +5232,8 @@ namespace Flowbit.Infrastructure.Data.Migrations
 
                             t.HasCheckConstraint("CK_workflow_jobs_lease_shape", "((\"Status\" IN ('running', 'resultReady') AND \"WorkerId\" IS NOT NULL AND \"LeaseToken\" IS NOT NULL AND \"LeaseExpiresAt\" IS NOT NULL) OR (\"Status\" NOT IN ('running', 'resultReady') AND \"WorkerId\" IS NULL AND \"LeaseToken\" IS NULL AND \"LeaseExpiresAt\" IS NULL))");
 
+                            t.HasCheckConstraint("CK_workflow_jobs_multi_instance_start_shape", "\"Kind\" <> 'multiInstanceStart' OR (\"MultiInstanceExecutionId\" IS NULL AND \"AutomaticMultiInstanceItemId\" IS NULL AND \"MultiInstanceControlGeneration\" IS NULL AND \"InstanceId\" IS NOT NULL AND \"TokenId\" IS NOT NULL AND \"UserTaskId\" IS NULL AND \"CallInvocationId\" IS NULL AND \"QueueClass\" = 'control')");
+
                             t.HasCheckConstraint("CK_workflow_jobs_queue_class", "\"QueueClass\" IN ('control', 'activity')");
 
                             t.HasCheckConstraint("CK_workflow_jobs_status", "\"Status\" IN ('queued', 'running', 'resultReady', 'retry', 'completed', 'incident', 'cancelled', 'skipped')");

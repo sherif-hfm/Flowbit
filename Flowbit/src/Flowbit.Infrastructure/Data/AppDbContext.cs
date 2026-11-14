@@ -2403,6 +2403,13 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                     + "(\"Kind\" IN ('multiInstanceDispatch', 'multiInstanceComplete') AND \"MultiInstanceControlGeneration\" IS NOT NULL AND \"MultiInstanceControlGeneration\" >= 0 "
                     + "AND \"MultiInstanceExecutionId\" IS NOT NULL AND \"InstanceId\" IS NOT NULL AND \"TokenId\" IS NOT NULL "
                     + "AND \"QueueClass\" = 'control' AND \"UserTaskId\" IS NULL)");
+                // A call body's entry job belongs to its token before any body exists, so it
+                // names no body, item, control generation, task, or invocation.
+                table.HasCheckConstraint("CK_workflow_jobs_multi_instance_start_shape",
+                    "\"Kind\" <> 'multiInstanceStart' OR (\"MultiInstanceExecutionId\" IS NULL "
+                    + "AND \"AutomaticMultiInstanceItemId\" IS NULL AND \"MultiInstanceControlGeneration\" IS NULL "
+                    + "AND \"InstanceId\" IS NOT NULL AND \"TokenId\" IS NOT NULL AND \"UserTaskId\" IS NULL "
+                    + "AND \"CallInvocationId\" IS NULL AND \"QueueClass\" = 'control')");
             });
             entity.HasKey(e => e.Id);
             entity.Property(e => e.WorkflowKey).HasMaxLength(300).IsRequired();

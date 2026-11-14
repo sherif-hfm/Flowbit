@@ -5421,6 +5421,15 @@ public sealed partial class WorkflowEngineService(
                     continue;
                 }
 
+                // A call body is a pre-node transaction boundary, like asyncBefore: its own
+                // entry job pins the target and initializes the body, so this routing
+                // transaction acquires none of the body's shared rows.
+                if (CallActivityRules.IsCallBody(currentNode) && !resumesCurrentActivation)
+                {
+                    await EnterAutomaticCallBodyAsync(tokenInstance, token, currentNode, cancellationToken);
+                    continue;
+                }
+
                 // asyncBefore is a true transaction boundary. Do not acquire
                 // this node's shared rows until its durable continuation owns
                 // the next instance transaction; otherwise an older shared-row
