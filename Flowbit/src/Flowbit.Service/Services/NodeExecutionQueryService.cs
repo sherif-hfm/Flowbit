@@ -1,3 +1,4 @@
+using System.Reflection;
 using Flowbit.Service.Abstractions;
 using Flowbit.Service.Models;
 using Flowbit.Shared.Dtos;
@@ -20,73 +21,23 @@ public sealed class NodeExecutionQueryService(
     private const int MaxVariableFilters = 10;
     private const int MaxSortCriteria = 3;
 
+    // Each filter accepts every constant of the class whose values the engine
+    // records, so a new node type, status, or reason is filterable without a
+    // second list to update.
     private static readonly IReadOnlyDictionary<string, string> ExecutionKinds =
-        CanonicalMap(NodeExecutionRecordKinds.Node, NodeExecutionRecordKinds.UserTaskItem, NodeExecutionRecordKinds.AutomaticActivityItem);
+        CanonicalMap(typeof(NodeExecutionRecordKinds));
 
     private static readonly IReadOnlyDictionary<string, string> ExecutionStatuses =
-        CanonicalMap(
-            NodeExecutionRecordStatuses.Pending,
-            NodeExecutionRecordStatuses.Active,
-            NodeExecutionRecordStatuses.Completed,
-            NodeExecutionRecordStatuses.Cancelled,
-            NodeExecutionRecordStatuses.Faulted,
-            NodeExecutionRecordStatuses.Merged);
+        CanonicalMap(typeof(NodeExecutionRecordStatuses));
 
     private static readonly IReadOnlyDictionary<string, string> InstanceStatuses =
-        CanonicalMap(
-            WorkflowInstanceStatuses.Running,
-            WorkflowInstanceStatuses.Completed,
-            WorkflowInstanceStatuses.Cancelled,
-            WorkflowInstanceStatuses.Faulted);
+        CanonicalMap(typeof(WorkflowInstanceStatuses));
 
     private static readonly IReadOnlyDictionary<string, string> CompletionReasons =
-        CanonicalMap(
-            NodeExecutionCompletionReasons.Normal,
-            NodeExecutionCompletionReasons.UserAction,
-            NodeExecutionCompletionReasons.AdministrativeAction,
-            NodeExecutionCompletionReasons.MessageDelivery,
-            NodeExecutionCompletionReasons.MultiInstanceItem,
-            NodeExecutionCompletionReasons.MultiInstanceCompleted,
-            NodeExecutionCompletionReasons.MultiInstanceInterrupt,
-            NodeExecutionCompletionReasons.BoundaryCaught,
-            NodeExecutionCompletionReasons.NormalEnd,
-            NodeExecutionCompletionReasons.TerminateEnd,
-            NodeExecutionCompletionReasons.ErrorEnd,
-            NodeExecutionCompletionReasons.InstanceCancelled,
-            NodeExecutionCompletionReasons.GatewayScopeCancelled,
-            NodeExecutionCompletionReasons.GatewayJoinMerged,
-            NodeExecutionCompletionReasons.ParallelFork,
-            NodeExecutionCompletionReasons.ParallelJoin,
-            NodeExecutionCompletionReasons.InclusiveSplit,
-            NodeExecutionCompletionReasons.InclusiveMerge,
-            NodeExecutionCompletionReasons.ComplexActivation,
-            NodeExecutionCompletionReasons.ComplexReset,
-            NodeExecutionCompletionReasons.ScopedInterrupt,
-            NodeExecutionCompletionReasons.ScopedInterruptSkipped,
-            NodeExecutionCompletionReasons.ConditionalTriggered,
-            NodeExecutionCompletionReasons.CallCompleted,
-            NodeExecutionCompletionReasons.CallFailed);
+        CanonicalMap(typeof(NodeExecutionCompletionReasons));
 
     private static readonly IReadOnlyDictionary<string, string> NodeTypes =
-        CanonicalMap(
-            BpmnFlowNodeTypes.StartEvent,
-            BpmnFlowNodeTypes.MessageStartEvent,
-            BpmnFlowNodeTypes.UserTask,
-            BpmnFlowNodeTypes.Task,
-            BpmnFlowNodeTypes.ServiceTask,
-            BpmnFlowNodeTypes.ScriptTask,
-            BpmnFlowNodeTypes.CallActivity,
-            BpmnFlowNodeTypes.ExclusiveGateway,
-            BpmnFlowNodeTypes.ParallelGateway,
-            BpmnFlowNodeTypes.InclusiveGateway,
-            BpmnFlowNodeTypes.ComplexGateway,
-            BpmnFlowNodeTypes.ScopedInterruptEvent,
-            BpmnFlowNodeTypes.ErrorBoundaryEvent,
-            BpmnFlowNodeTypes.IntermediateMessageCatchEvent,
-            BpmnFlowNodeTypes.IntermediateConditionalCatchEvent,
-            BpmnFlowNodeTypes.EndEvent,
-            BpmnFlowNodeTypes.TerminateEndEvent,
-            BpmnFlowNodeTypes.ErrorEndEvent);
+        CanonicalMap(typeof(BpmnFlowNodeTypes));
 
     public async Task<PagedResult<NodeExecutionSummaryDto>> SearchAsync(
         NodeExecutionSearchRequest request,
@@ -419,8 +370,12 @@ public sealed class NodeExecutionQueryService(
         return result;
     }
 
-    private static IReadOnlyDictionary<string, string> CanonicalMap(params string[] values) =>
-        values.ToDictionary(static value => value, static value => value, StringComparer.OrdinalIgnoreCase);
+    private static IReadOnlyDictionary<string, string> CanonicalMap(Type constants) =>
+        constants
+            .GetFields(BindingFlags.Public | BindingFlags.Static)
+            .Where(static field => field.IsLiteral && field.FieldType == typeof(string))
+            .Select(static field => (string)field.GetRawConstantValue()!)
+            .ToDictionary(static value => value, static value => value, StringComparer.OrdinalIgnoreCase);
 
     private static string? TrimToNull(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value.Trim();

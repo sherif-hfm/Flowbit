@@ -1,7 +1,9 @@
+using System.Reflection;
 using Flowbit.Service.Abstractions;
 using Flowbit.Service.Models;
 using Flowbit.Service.Services;
 using Flowbit.Shared.Dtos;
+using Flowbit.Shared.Models;
 using Xunit;
 
 namespace Flowbit.Tests;
@@ -97,6 +99,50 @@ public sealed class NodeExecutionQueryServiceTests
             query.Sort);
     }
 
+    // A value the engine records must be filterable. A hand-kept list once
+    // omitted four node types and timerFired, so their searches returned 400.
+    [Fact]
+    public async Task Search_AcceptsEveryRecordedNodeTypeStatusKindAndCompletionReason()
+    {
+        var nodeTypes = StringConstants(typeof(BpmnFlowNodeTypes));
+        var statuses = StringConstants(typeof(NodeExecutionRecordStatuses));
+        var instanceStatuses = StringConstants(typeof(WorkflowInstanceStatuses));
+        var reasons = StringConstants(typeof(NodeExecutionCompletionReasons));
+        Assert.Contains(BpmnFlowNodeTypes.TimerStartEvent, nodeTypes);
+        Assert.Contains(BpmnFlowNodeTypes.IntermediateTimerCatchEvent, nodeTypes);
+        Assert.Contains(BpmnFlowNodeTypes.TimerBoundaryEvent, nodeTypes);
+        Assert.Contains(BpmnFlowNodeTypes.ConditionalBoundaryEvent, nodeTypes);
+        Assert.Contains(NodeExecutionCompletionReasons.TimerFired, reasons);
+
+        var repository = new CapturingRepository();
+        var service = new NodeExecutionQueryService(repository, new StubSettingsRepository("admin"));
+        await service.SearchAsync(
+            new NodeExecutionSearchRequest
+            {
+                NodeTypes = nodeTypes.Select(value => value.ToUpperInvariant()).ToArray(),
+                Statuses = statuses.Select(value => value.ToUpperInvariant()).ToArray(),
+                InstanceStatuses = instanceStatuses.Select(value => value.ToUpperInvariant()).ToArray(),
+                CompletionReasons = reasons.Select(value => value.ToUpperInvariant()).ToArray()
+            },
+            Actor("reader", "admin"),
+            CancellationToken.None);
+
+        var query = Assert.IsType<NodeExecutionQuery>(repository.Query);
+        Assert.Equal(nodeTypes, query.NodeTypes);
+        Assert.Equal(statuses, query.Statuses);
+        Assert.Equal(instanceStatuses, query.InstanceStatuses);
+        Assert.Equal(reasons, query.CompletionReasons);
+
+        foreach (var kind in StringConstants(typeof(NodeExecutionRecordKinds)))
+        {
+            await service.SearchAsync(
+                new NodeExecutionSearchRequest { ExecutionKind = kind.ToUpperInvariant() },
+                Actor("reader", "admin"),
+                CancellationToken.None);
+            Assert.Equal(kind, repository.Query!.ExecutionKind);
+        }
+    }
+
     [Theory]
     [InlineData("unknown:asc")]
     [InlineData("updatedAt:sideways")]
@@ -178,6 +224,12 @@ public sealed class NodeExecutionQueryServiceTests
                 Actor("reader", "admin"),
                 CancellationToken.None));
     }
+
+    private static string[] StringConstants(Type type) => type
+        .GetFields(BindingFlags.Public | BindingFlags.Static)
+        .Where(field => field.IsLiteral && field.FieldType == typeof(string))
+        .Select(field => (string)field.GetRawConstantValue()!)
+        .ToArray();
 
     private static NodeExecutionQueryService CreateService() =>
         new(new CapturingRepository(), new StubSettingsRepository("admin"));

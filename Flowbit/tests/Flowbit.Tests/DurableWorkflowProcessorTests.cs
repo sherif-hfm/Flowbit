@@ -1,8 +1,11 @@
 using System.Data;
+using System.Net;
+using System.Net.Http.Json;
 using System.Text.Json;
 using Flowbit.Infrastructure.Entities;
 using Flowbit.Service.Abstractions;
 using Flowbit.Service.Models;
+using Flowbit.Shared.Dtos;
 using Flowbit.Shared.Models;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.TestHost;
@@ -253,6 +256,50 @@ public sealed class DurableWorkflowProcessorTests(PostgresApiFixture fixture)
             Assert.Equal(TimerSubscriptionStatuses.Cancelled,
                 (await completed.TimerSubscriptions.SingleAsync(item => item.InstanceId == instanceId
                     && item.TimerNodeId == 3)).Status);
+        }
+        finally
+        {
+            await DeleteWorkflowAsync(workflowKey);
+        }
+    }
+
+    // Activity search once rejected these node types and timerFired with 400,
+    // although the engine records them.
+    [Fact]
+    public async Task TimerVisitsAreSearchableByNodeTypeAndCompletionReason()
+    {
+        var workflowKey = $"timer-activity-search-{Guid.NewGuid():N}";
+        const string reader = "TimerActivityReader";
+        try
+        {
+            var definition = CreateTimerCatchBoundaryWorkflow(workflowKey);
+            // The version grants activity visibility whatever the global reader setting is.
+            definition.TaskAssignmentRoles = [reader];
+            var instanceId = await InsertAndStartAsync(workflowKey, definition);
+            long boundaryJobId;
+            await using (var db = fixture.CreateDbContext())
+            {
+                boundaryJobId = await db.WorkflowJobs.Where(job => job.InstanceId == instanceId
+                    && job.Kind == WorkflowJobKinds.TimerBoundary).Select(job => job.Id).SingleAsync();
+            }
+
+            await PromoteAndProcessAsync(boundaryJobId, WorkflowJobClasses.Control);
+
+            var interrupted = await SearchNodeExecutionsAsync(
+                $"/api/node-executions?instanceId={instanceId}"
+                + "&nodeType=intermediateTimerCatchEvent&completionReason=timerFired",
+                reader);
+            var catchVisit = Assert.Single(interrupted.Items);
+            Assert.Equal(2, catchVisit.NodeId);
+            Assert.Equal(NodeExecutionRecordStatuses.Cancelled, catchVisit.Status);
+            Assert.Equal(NodeExecutionCompletionReasons.TimerFired, catchVisit.CompletionReason);
+
+            var boundary = await SearchNodeExecutionsAsync(
+                $"/api/node-executions?instanceId={instanceId}&nodeType=TIMERBOUNDARYEVENT",
+                reader);
+            var boundaryVisit = Assert.Single(boundary.Items);
+            Assert.Equal(3, boundaryVisit.NodeId);
+            Assert.Equal(BpmnFlowNodeTypes.TimerBoundaryEvent, boundaryVisit.NodeType);
         }
         finally
         {
@@ -721,6 +768,16 @@ public sealed class DurableWorkflowProcessorTests(PostgresApiFixture fixture)
             new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase),
             CancellationToken.None);
         return started.Id;
+    }
+
+    private async Task<PagedResult<NodeExecutionSummaryDto>> SearchNodeExecutionsAsync(string path, string role)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, path);
+        ApiTestAuth.Authorize(request, "activity-reader", [role]);
+        request.Headers.TryAddWithoutValidation("X-Test-Suppress-Admin", "true");
+        using var response = await fixture.Client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        return (await response.Content.ReadFromJsonAsync<PagedResult<NodeExecutionSummaryDto>>())!;
     }
 
     private async Task RetryIncidentAsync(long incidentId)

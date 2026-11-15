@@ -641,15 +641,19 @@ Storage follows the hybrid design:
   token; parallel forks therefore produce one row per spawned branch token. A
   normal `userTask` shares a visit with its work item, while a multi-instance
   `userTask` produces one visit per child work item and no duplicate parent row.
-  Execution kind is `node` for token visits and `userTaskItem` for MI children.
+  Execution kind is `node` for token visits, `userTaskItem` for MI user-task
+  children, and `automaticActivityItem` for automatic MI items.
   Statuses are `pending`, `active`, `completed`, `cancelled`, `faulted`, and
-  `merged`. Completion reasons are `normal`, `userAction`, `messageDelivery`,
-  `multiInstanceItem`, `multiInstanceCompleted`, `multiInstanceInterrupt`,
-  `boundaryCaught`, `normalEnd`, `terminateEnd`, `errorEnd`,
-  `instanceCancelled`, `gatewayScopeCancelled`, `gatewayJoinMerged`,
+  `merged`. Completion reasons are `normal`, `userAction`, `administrativeAction`,
+  `messageDelivery`, `multiInstanceItem`, `multiInstanceCompleted`,
+  `multiInstanceInterrupt`, `boundaryCaught`, `normalEnd`, `terminateEnd`,
+  `errorEnd`, `instanceCancelled`, `gatewayScopeCancelled`, `gatewayJoinMerged`,
   `parallelFork`, `parallelJoin`, `inclusiveSplit`, `inclusiveMerge`,
   `complexActivation`, `complexReset`, `scopedInterrupt`,
-  `scopedInterruptSkipped`, `callCompleted`, and `callFailed`. Token `CurrentNodeExecutionId` points to the
+  `scopedInterruptSkipped`, `timerFired`, `conditionalTriggered`,
+  `callCompleted`, and `callFailed`. The search filters accept every constant of
+  `BpmnFlowNodeTypes`, `NodeExecutionCompletionReasons`, and the record kind and
+  status classes, read by reflection; never keep a second hand list. Token `CurrentNodeExecutionId` points to the
   current non-MI visit and remains null at a multi-instance parent. New
   instance-variable writes may carry `NodeExecutionId`, so execution detail
   returns only attributed changes rather than a misleading current or

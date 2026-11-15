@@ -1390,20 +1390,21 @@ A node execution represents one token visit to one node. Gateway splits
 therefore produce a visit for each spawned branch token. A normal user task
 shares one execution with its work item. A multi-instance user task instead
 produces one execution per child work item and deliberately has no duplicate
-parent execution row. Execution kind is `node` for a token visit and
-`userTaskItem` for a multi-instance child. The supported lifecycle statuses are
-`pending`, `active`, `completed`, `cancelled`, `faulted`, and `merged`;
-completion reasons distinguish normal/user/message/conditional/multi-instance
-work, gateway firing/interruption behavior,
-caught errors, scoped or instance cancellation, and terminal end behavior. The
-reason values are `normal`, `userAction`, `messageDelivery`,
-`conditionalTriggered`,
-`multiInstanceItem`, `multiInstanceCompleted`, `multiInstanceInterrupt`,
-`boundaryCaught`, `normalEnd`, `terminateEnd`, `errorEnd`,
-`instanceCancelled`, `gatewayScopeCancelled`, `gatewayJoinMerged`,
+parent execution row. Execution kind is `node` for a token visit,
+`userTaskItem` for a multi-instance user-task child, and `automaticActivityItem`
+for one item of a multi-instance service, script, or call body. The supported
+lifecycle statuses are `pending`, `active`, `completed`, `cancelled`, `faulted`,
+and `merged`; completion reasons distinguish normal/user/administrative/message/
+timer/conditional/multi-instance work, gateway firing/interruption behavior,
+caught errors, scoped or instance cancellation, call results, and terminal end
+behavior. The reason values are `normal`, `userAction`, `administrativeAction`,
+`messageDelivery`, `multiInstanceItem`, `multiInstanceCompleted`,
+`multiInstanceInterrupt`, `boundaryCaught`, `normalEnd`, `terminateEnd`,
+`errorEnd`, `instanceCancelled`, `gatewayScopeCancelled`, `gatewayJoinMerged`,
 `parallelFork`, `parallelJoin`, `inclusiveSplit`, `inclusiveMerge`,
 `complexActivation`, `complexReset`, `scopedInterrupt`,
-`scopedInterruptSkipped`, `callCompleted`, and `callFailed`.
+`scopedInterruptSkipped`, `timerFired`, `conditionalTriggered`,
+`callCompleted`, and `callFailed`.
 
 The list returns `PagedResult<NodeExecutionSummaryDto>` and the detail route
 returns `NodeExecutionDetailDto`. Summary rows include immutable workflow,
@@ -1421,7 +1422,10 @@ key, token, user-task, multi-instance, branch, item, node, lifecycle, actor,
 owner, flow, and timestamp/duration fields. Inclusive `From` and exclusive `To`
 bounds are used for created, started, updated, and completed time ranges.
 Repeated status, node-type, instance-status, and completion-reason values are
-OR-combined within their group; different groups are AND-combined.
+OR-combined within their group; different groups are AND-combined. Each of
+these filters accepts every value its constants class defines (every
+`BpmnFlowNodeTypes` type, for example), matched ignoring letter case; an unknown
+value returns 400.
 
 | Filter group | Query parameters |
 | --- | --- |
