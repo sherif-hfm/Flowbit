@@ -58,6 +58,9 @@ public class ExampleAcceptanceFixture : IAsyncLifetime
 
 public sealed record ExampleRetryRequest(long JobId, int Attempt, string Scenario, int StatusCode);
 
+/// <summary>One call to a showcase route: <c>credit</c> records the customer, <c>reservation</c> the SKU.</summary>
+public sealed record ExampleShowcaseCall(string Route, string OrderId, string Subject, int StatusCode);
+
 /// <summary>Controlled external service; never fabricates an application API response.</summary>
 public sealed class ExampleRetryService : IAsyncDisposable
 {
@@ -67,6 +70,9 @@ public sealed class ExampleRetryService : IAsyncDisposable
     private readonly ConcurrentQueue<ExampleRetryRequest> requests = new();
     private readonly ConcurrentDictionary<string, int> stockAttempts = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, ExampleItemGroup> itemGroups = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, byte> recoveredCustomers = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, byte> restockedOrders = new(StringComparer.Ordinal);
+    private readonly ConcurrentQueue<ExampleShowcaseCall> showcaseCalls = new();
     private WebApplication? app;
 
     /// <summary>The per-item routes of one scenario: <c>POST /items/{group}/{index}</c>.</summary>
@@ -110,6 +116,41 @@ public sealed class ExampleRetryService : IAsyncDisposable
             var attempt = stockAttempts.AddOrUpdate(scenario, 0, (_, previous) => previous + 1);
             return RespondAsync(context, scenario, attempt);
         });
+        // Showcase 02: the customer id picks the credit answer, as ShowcaseCreditAnswer describes.
+        app.MapPost("/customers/{customerId}/credit-checks", async context =>
+        {
+            if (context.Request.Headers.Authorization != $"Bearer {Credential}")
+            {
+                context.Response.StatusCode = 401;
+                return;
+            }
+            var customerId = (string)context.Request.RouteValues["customerId"]!;
+            using var payload = await System.Text.Json.JsonDocument.ParseAsync(context.Request.Body);
+            var orderId = payload.RootElement.GetProperty("orderId").GetString() ?? string.Empty;
+            var (status, decision) = ShowcaseCreditAnswer(customerId);
+            showcaseCalls.Enqueue(new("credit", orderId, customerId, status));
+            context.Response.StatusCode = status;
+            await context.Response.WriteAsJsonAsync(decision is null ? new { error = "credit_refused" } : (object)new { decision });
+        });
+        // Showcase 02: a SKU starting OUT- is out of stock until the order is restocked.
+        app.MapPost("/orders/{orderId}/reservations", async context =>
+        {
+            if (context.Request.Headers.Authorization != $"Bearer {Credential}")
+            {
+                context.Response.StatusCode = 401;
+                return;
+            }
+            var orderId = (string)context.Request.RouteValues["orderId"]!;
+            using var payload = await System.Text.Json.JsonDocument.ParseAsync(context.Request.Body);
+            var sku = payload.RootElement.GetProperty("line").GetProperty("sku").GetString() ?? string.Empty;
+            var available = !sku.StartsWith("OUT-", StringComparison.Ordinal) || restockedOrders.ContainsKey(orderId);
+            var status = available ? 201 : 409;
+            showcaseCalls.Enqueue(new("reservation", orderId, sku, status));
+            context.Response.StatusCode = status;
+            await context.Response.WriteAsJsonAsync(available
+                ? new { reservationId = $"RES-{orderId}-{sku}" }
+                : (object)new { error = "out_of_stock", sku });
+        });
         app.MapPost("/items/{group}/{index:int}", context =>
         {
             if (context.Request.Headers.Authorization != $"Bearer {Credential}")
@@ -127,6 +168,29 @@ public sealed class ExampleRetryService : IAsyncDisposable
 
     public int StockCalls(string scenario) =>
         stockAttempts.TryGetValue(scenario, out var attempt) ? attempt + 1 : 0;
+
+    /// <summary>Calls to the showcase credit and reservation routes, in arrival order.</summary>
+    public IReadOnlyList<ExampleShowcaseCall> ShowcaseCalls => showcaseCalls.ToArray();
+
+    /// <summary>Makes a <c>down-</c> customer's credit checks answer as approved from now on.</summary>
+    public void RecoverCreditService(string customerId) => recoveredCustomers.TryAdd(customerId, 0);
+
+    /// <summary>Makes every <c>OUT-</c> SKU of this order available from now on.</summary>
+    public void Restock(string orderId) => restockedOrders.TryAdd(orderId, 0);
+
+    // good- approves, review- asks for a manual review, odd- answers a decision the workflow
+    // does not accept, refused- answers 403, and down- answers 503 until RecoverCreditService
+    // releases it.
+    private (int Status, string? Decision) ShowcaseCreditAnswer(string customerId) => customerId.Split('-')[0] switch
+    {
+        "good" => (200, "approved"),
+        "review" => (200, "review"),
+        "odd" => (200, "declined"),
+        "refused" => (403, null),
+        "down" when recoveredCustomers.ContainsKey(customerId) => (200, "approved"),
+        "down" => (503, null),
+        _ => (404, null),
+    };
 
     // The scenario's first segment picks the behavior and the rest keeps it unique:
     // status-409-x answers 409, sequence-503-409-x answers each status in turn,

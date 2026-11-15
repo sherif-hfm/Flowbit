@@ -1,0 +1,914 @@
+{
+  "id": "example-showcase-purchase-request",
+  "name": "Showcase 01 - Purchase Request Approval",
+  "initialEventId": 1,
+  "variables": [
+    {
+      "id": 1,
+      "name": "boardVotes",
+      "dataType": "json",
+      "isArray": false,
+      "nullable": false,
+      "required": false,
+      "defaultValue": [],
+      "validation": null
+    }
+  ],
+  "lanes": [
+    {
+      "id": 1,
+      "name": "Requester",
+      "externalId": "LANE_REQUESTER",
+      "x": 30,
+      "y": 30,
+      "w": 2160,
+      "h": 300
+    },
+    {
+      "id": 2,
+      "name": "Management",
+      "externalId": "LANE_MANAGEMENT",
+      "x": 30,
+      "y": 360,
+      "w": 2160,
+      "h": 330
+    },
+    {
+      "id": 3,
+      "name": "Approval Board",
+      "externalId": "LANE_APPROVAL_BOARD",
+      "x": 30,
+      "y": 720,
+      "w": 2160,
+      "h": 240
+    },
+    {
+      "id": 4,
+      "name": "Finance and Procurement",
+      "externalId": "LANE_FINANCE_PROCUREMENT",
+      "x": 30,
+      "y": 990,
+      "w": 2160,
+      "h": 380
+    }
+  ],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Purchase Requested",
+      "externalId": "START_PURCHASE_REQUESTED",
+      "type": "startEvent",
+      "laneId": 1,
+      "x": 80,
+      "y": 208,
+      "roles": [
+        "Requester"
+      ],
+      "variables": [
+        {
+          "id": 1,
+          "name": "requestNumber",
+          "dataType": "string",
+          "isArray": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": "StartsWith(requestNumber, 'PR-') and Len(requestNumber) <= 20",
+          "label": "Request number",
+          "helpText": "Your reference, such as PR-2026-0042. Only one open request can use a number."
+        },
+        {
+          "id": 2,
+          "name": "title",
+          "dataType": "string",
+          "isArray": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": "Len(Trim(title)) >= 5 and Len(title) <= 120",
+          "label": "What are you buying?"
+        },
+        {
+          "id": 3,
+          "name": "category",
+          "dataType": "string",
+          "isArray": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": "category in ('equipment', 'software', 'services')",
+          "label": "Category",
+          "options": [
+            {
+              "value": "equipment",
+              "label": "Equipment"
+            },
+            {
+              "value": "software",
+              "label": "Software licences"
+            },
+            {
+              "value": "services",
+              "label": "Professional services"
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "name": "amount",
+          "dataType": "number",
+          "isArray": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": "amount > 0 and amount <= 1000000",
+          "label": "Total amount",
+          "helpText": "Including tax. A request of 25,000 or more also goes to the approval board."
+        },
+        {
+          "id": 5,
+          "name": "managerUser",
+          "dataType": "string",
+          "isArray": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": "Len(Trim(managerUser)) > 0",
+          "label": "Approving manager",
+          "helpText": "User name of the manager who reviews this request."
+        },
+        {
+          "id": 6,
+          "name": "requestedBy",
+          "dataType": "string",
+          "isArray": false,
+          "required": false,
+          "defaultValue": "${sys.user}",
+          "validation": "Len(Trim(requestedBy)) > 0",
+          "label": "Requester",
+          "helpText": "Defaults to you. Name a colleague when you raise the request for them; any revision goes to this person."
+        }
+      ],
+      "businessKey": {
+        "variable": "requestNumber",
+        "uniqueness": "active"
+      }
+    },
+    {
+      "id": 2,
+      "name": "Review Purchase Request",
+      "externalId": "TASK_MANAGER_REVIEW",
+      "attributes": [
+        {
+          "key": "form",
+          "value": "purchase-review"
+        }
+      ],
+      "type": "userTask",
+      "laneId": 2,
+      "x": 200,
+      "y": 416,
+      "roles": [
+        "Manager"
+      ],
+      "variables": [],
+      "assignee": "Trim(managerUser)",
+      "dueDate": "P2D",
+      "dueDateCalendar": "examples.weekdays",
+      "priority": "if(amount >= 25000, 80, 50)"
+    },
+    {
+      "id": 3,
+      "name": "Review Overdue",
+      "externalId": "BOUNDARY_REVIEW_OVERDUE",
+      "type": "timerBoundaryEvent",
+      "laneId": 2,
+      "x": 200,
+      "y": 416,
+      "roles": [],
+      "variables": [],
+      "attachedToRef": 2,
+      "cancelActivity": true,
+      "timer": {
+        "timeDuration": "P3D",
+        "calendar": "examples.weekdays"
+      }
+    },
+    {
+      "id": 4,
+      "name": "Escalated Review",
+      "externalId": "TASK_ESCALATED_REVIEW",
+      "attributes": [
+        {
+          "key": "form",
+          "value": "purchase-review"
+        }
+      ],
+      "type": "userTask",
+      "laneId": 2,
+      "x": 200,
+      "y": 576,
+      "roles": [
+        "DepartmentHead"
+      ],
+      "requiresClaim": true,
+      "claimMode": "fresh",
+      "variables": [],
+      "dueDate": "P1D",
+      "dueDateCalendar": "examples.weekdays",
+      "priority": "90"
+    },
+    {
+      "id": 5,
+      "name": "Send-Back Limit",
+      "externalId": "GATEWAY_SEND_BACK_LIMIT",
+      "type": "exclusiveGateway",
+      "laneId": 1,
+      "x": 580,
+      "y": 202,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 6,
+      "name": "Revise Request",
+      "externalId": "TASK_REVISE_REQUEST",
+      "attributes": [
+        {
+          "key": "form",
+          "value": "purchase-revision"
+        }
+      ],
+      "type": "userTask",
+      "laneId": 1,
+      "x": 200,
+      "y": 196,
+      "roles": [],
+      "variables": [],
+      "assignee": "Trim(requestedBy)",
+      "dueDate": "P5D",
+      "dueDateCalendar": "examples.weekdays",
+      "priority": "40"
+    },
+    {
+      "id": 7,
+      "name": "Approved by Management",
+      "externalId": "GATEWAY_APPROVED_BY_MANAGEMENT",
+      "type": "exclusiveGateway",
+      "laneId": 2,
+      "x": 600,
+      "y": 422,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 8,
+      "name": "Approval Route",
+      "externalId": "GATEWAY_APPROVAL_ROUTE",
+      "type": "exclusiveGateway",
+      "laneId": 2,
+      "x": 760,
+      "y": 422,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 9,
+      "name": "Board Vote",
+      "externalId": "TASK_BOARD_VOTE",
+      "attributes": [
+        {
+          "key": "form",
+          "value": "board-vote"
+        }
+      ],
+      "type": "userTask",
+      "laneId": 3,
+      "x": 703,
+      "y": 796,
+      "roles": [
+        "BoardMember"
+      ],
+      "variables": [],
+      "dueDate": "P5D",
+      "dueDateCalendar": "examples.weekdays",
+      "priority": "70",
+      "multiInstance": {
+        "mode": "parallel",
+        "source": "cardinality",
+        "cardinalityExpression": "3",
+        "onePerActor": true,
+        "completionEvaluation": "afterEach",
+        "resultVariable": "boardVotes"
+      }
+    },
+    {
+      "id": 10,
+      "name": "Ready for Purchase",
+      "externalId": "GATEWAY_READY_FOR_PURCHASE",
+      "type": "exclusiveGateway",
+      "laneId": 4,
+      "x": 1120,
+      "y": 1152,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 11,
+      "name": "Purchase Checks",
+      "externalId": "GATEWAY_PURCHASE_CHECKS",
+      "type": "parallelGateway",
+      "laneId": 4,
+      "x": 1260,
+      "y": 1152,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 12,
+      "name": "Confirm Budget",
+      "externalId": "TASK_CONFIRM_BUDGET",
+      "attributes": [
+        {
+          "key": "form",
+          "value": "budget-check"
+        }
+      ],
+      "type": "userTask",
+      "laneId": 4,
+      "x": 1400,
+      "y": 1026,
+      "roles": [
+        "Finance"
+      ],
+      "requiresClaim": true,
+      "claimMode": "fresh",
+      "variables": [],
+      "dueDate": "P2D",
+      "dueDateCalendar": "examples.weekdays",
+      "priority": "60"
+    },
+    {
+      "id": 13,
+      "name": "Select Supplier",
+      "externalId": "TASK_SELECT_SUPPLIER",
+      "attributes": [
+        {
+          "key": "form",
+          "value": "supplier-selection"
+        }
+      ],
+      "type": "userTask",
+      "laneId": 4,
+      "x": 1400,
+      "y": 1266,
+      "roles": [
+        "Buyer"
+      ],
+      "requiresAssignment": true,
+      "assignmentMode": "fresh",
+      "variables": [],
+      "dueDate": "P3D",
+      "dueDateCalendar": "examples.weekdays",
+      "priority": "60"
+    },
+    {
+      "id": 14,
+      "name": "Checks Complete",
+      "externalId": "GATEWAY_CHECKS_COMPLETE",
+      "type": "parallelGateway",
+      "laneId": 4,
+      "x": 1660,
+      "y": 1152,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 15,
+      "name": "Place Order",
+      "externalId": "TASK_PLACE_ORDER",
+      "attributes": [
+        {
+          "key": "form",
+          "value": "purchase-order"
+        }
+      ],
+      "type": "userTask",
+      "laneId": 4,
+      "x": 1800,
+      "y": 1146,
+      "roles": [
+        "Buyer"
+      ],
+      "requiresAssignment": true,
+      "assignmentMode": "fromNode",
+      "inheritAssignmentFromNodeId": 13,
+      "variables": [],
+      "dueDate": "P2D",
+      "dueDateCalendar": "examples.weekdays",
+      "priority": "60"
+    },
+    {
+      "id": 16,
+      "name": "Purchase Ordered",
+      "externalId": "END_PURCHASE_ORDERED",
+      "type": "endEvent",
+      "laneId": 4,
+      "x": 2080,
+      "y": 1158,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 17,
+      "name": "Rejected",
+      "externalId": "END_REJECTED",
+      "type": "endEvent",
+      "laneId": 2,
+      "x": 80,
+      "y": 588,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 18,
+      "name": "Withdrawn",
+      "externalId": "END_WITHDRAWN",
+      "type": "endEvent",
+      "laneId": 1,
+      "x": 40,
+      "y": 90,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 19,
+      "name": "Closed After Three Send-Backs",
+      "externalId": "END_CLOSED_AFTER_SEND_BACKS",
+      "type": "endEvent",
+      "laneId": 1,
+      "x": 780,
+      "y": 208,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 20,
+      "name": "No Board Majority",
+      "externalId": "END_NO_BOARD_MAJORITY",
+      "type": "endEvent",
+      "laneId": 3,
+      "x": 560,
+      "y": 856,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 21,
+      "name": "Stopped: No Budget",
+      "externalId": "END_STOPPED_NO_BUDGET",
+      "type": "terminateEndEvent",
+      "laneId": 4,
+      "x": 1666,
+      "y": 1038,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 22,
+      "name": "Rejected by Board",
+      "externalId": "END_REJECTED_BY_BOARD",
+      "type": "endEvent",
+      "laneId": 3,
+      "x": 560,
+      "y": 740,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "",
+      "externalId": null,
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": [],
+      "condition": null
+    },
+    {
+      "id": 201,
+      "name": "Approve",
+      "externalId": "FLOW_MANAGER_APPROVE",
+      "sourceRef": 2,
+      "targetRef": 7,
+      "roles": [],
+      "variables": [
+        {
+          "id": 1,
+          "name": "managerComment",
+          "dataType": "string",
+          "isArray": false,
+          "required": false,
+          "defaultValue": "",
+          "validation": "Len(managerComment) <= 500",
+          "label": "Comment",
+          "helpText": "Optional. Shown to the board and to finance."
+        }
+      ],
+      "condition": null
+    },
+    {
+      "id": 202,
+      "name": "Send Back",
+      "externalId": "FLOW_MANAGER_SEND_BACK",
+      "sourceRef": 2,
+      "targetRef": 5,
+      "roles": [],
+      "variables": [
+        {
+          "id": 1,
+          "name": "revisionNote",
+          "dataType": "string",
+          "isArray": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": "Len(Trim(revisionNote)) >= 10",
+          "label": "What needs to change?",
+          "helpText": "The requester sees this note. The third send-back closes the request."
+        }
+      ],
+      "condition": null
+    },
+    {
+      "id": 203,
+      "name": "Reject",
+      "externalId": "FLOW_MANAGER_REJECT",
+      "sourceRef": 2,
+      "targetRef": 17,
+      "roles": [],
+      "variables": [
+        {
+          "id": 1,
+          "name": "rejectionReason",
+          "dataType": "string",
+          "isArray": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": "Len(Trim(rejectionReason)) >= 10",
+          "label": "Reason for rejection"
+        }
+      ],
+      "condition": null
+    },
+    {
+      "id": 301,
+      "name": "Escalate",
+      "externalId": "FLOW_ESCALATE",
+      "sourceRef": 3,
+      "targetRef": 4,
+      "roles": [],
+      "variables": [],
+      "condition": null
+    },
+    {
+      "id": 401,
+      "name": "Approve",
+      "externalId": "FLOW_ESCALATED_APPROVE",
+      "sourceRef": 4,
+      "targetRef": 7,
+      "roles": [],
+      "variables": [
+        {
+          "id": 1,
+          "name": "managerComment",
+          "dataType": "string",
+          "isArray": false,
+          "required": false,
+          "defaultValue": "",
+          "validation": "Len(managerComment) <= 500",
+          "label": "Comment",
+          "helpText": "Optional. Shown to the board and to finance."
+        }
+      ],
+      "condition": null
+    },
+    {
+      "id": 402,
+      "name": "Reject",
+      "externalId": "FLOW_ESCALATED_REJECT",
+      "sourceRef": 4,
+      "targetRef": 17,
+      "roles": [],
+      "variables": [
+        {
+          "id": 1,
+          "name": "rejectionReason",
+          "dataType": "string",
+          "isArray": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": "Len(Trim(rejectionReason)) >= 10",
+          "label": "Reason for rejection"
+        }
+      ],
+      "condition": null
+    },
+    {
+      "id": 501,
+      "name": "Third send-back",
+      "externalId": "FLOW_SEND_BACK_LIMIT_REACHED",
+      "sourceRef": 5,
+      "targetRef": 19,
+      "roles": [],
+      "variables": [],
+      "condition": "FlowInfo(202, 'traversals.count') >= 3",
+      "conditionPriority": 1,
+      "isDefault": false
+    },
+    {
+      "id": 502,
+      "name": "Return to requester",
+      "externalId": "FLOW_RETURN_TO_REQUESTER",
+      "sourceRef": 5,
+      "targetRef": 6,
+      "roles": [],
+      "variables": [],
+      "condition": null,
+      "isDefault": true
+    },
+    {
+      "id": 601,
+      "name": "Resubmit",
+      "externalId": "FLOW_RESUBMIT",
+      "sourceRef": 6,
+      "targetRef": 2,
+      "roles": [],
+      "variables": [
+        {
+          "id": 1,
+          "name": "amount",
+          "dataType": "number",
+          "isArray": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": "amount > 0 and amount <= 1000000",
+          "label": "Total amount",
+          "helpText": "Enter the revised total, or the same total when only the details changed."
+        },
+        {
+          "id": 2,
+          "name": "changeSummary",
+          "dataType": "string",
+          "isArray": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": "Len(Trim(changeSummary)) >= 10",
+          "label": "What did you change?"
+        }
+      ],
+      "condition": null
+    },
+    {
+      "id": 602,
+      "name": "Withdraw",
+      "externalId": "FLOW_WITHDRAW",
+      "sourceRef": 6,
+      "targetRef": 18,
+      "roles": [],
+      "variables": [],
+      "condition": null
+    },
+    {
+      "id": 701,
+      "name": "",
+      "externalId": null,
+      "sourceRef": 7,
+      "targetRef": 8,
+      "roles": [],
+      "variables": [],
+      "condition": null
+    },
+    {
+      "id": 801,
+      "name": "25,000 or more",
+      "externalId": "FLOW_BOARD_REQUIRED",
+      "sourceRef": 8,
+      "targetRef": 9,
+      "roles": [],
+      "variables": [],
+      "condition": "amount >= 25000",
+      "conditionPriority": 1,
+      "isDefault": false
+    },
+    {
+      "id": 802,
+      "name": "Below 25,000",
+      "externalId": "FLOW_NO_BOARD_NEEDED",
+      "sourceRef": 8,
+      "targetRef": 10,
+      "roles": [],
+      "variables": [],
+      "condition": null,
+      "isDefault": true
+    },
+    {
+      "id": 901,
+      "name": "Approve",
+      "externalId": "FLOW_BOARD_APPROVE",
+      "sourceRef": 9,
+      "targetRef": 10,
+      "roles": [],
+      "variables": [
+        {
+          "id": 1,
+          "name": "voteComment",
+          "dataType": "string",
+          "isArray": false,
+          "required": false,
+          "defaultValue": "",
+          "validation": "Len(voteComment) <= 500",
+          "label": "Comment"
+        }
+      ],
+      "condition": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "completionCondition": "CountFlow(901) >= 2",
+      "completionPriority": 1
+    },
+    {
+      "id": 902,
+      "name": "Reject",
+      "externalId": "FLOW_BOARD_REJECT",
+      "sourceRef": 9,
+      "targetRef": 22,
+      "roles": [],
+      "variables": [
+        {
+          "id": 1,
+          "name": "voteComment",
+          "dataType": "string",
+          "isArray": false,
+          "required": false,
+          "defaultValue": "",
+          "validation": "Len(voteComment) <= 500",
+          "label": "Comment"
+        }
+      ],
+      "condition": null,
+      "isDefault": false,
+      "isSelectable": true,
+      "completionCondition": "CountFlow(902) >= 2",
+      "completionPriority": 2
+    },
+    {
+      "id": 903,
+      "name": "No majority",
+      "externalId": "FLOW_BOARD_NO_MAJORITY",
+      "sourceRef": 9,
+      "targetRef": 20,
+      "roles": [],
+      "variables": [],
+      "condition": null,
+      "isDefault": true,
+      "isSelectable": false
+    },
+    {
+      "id": 1001,
+      "name": "",
+      "externalId": null,
+      "sourceRef": 10,
+      "targetRef": 11,
+      "roles": [],
+      "variables": [],
+      "condition": null
+    },
+    {
+      "id": 1101,
+      "name": "",
+      "externalId": null,
+      "sourceRef": 11,
+      "targetRef": 12,
+      "roles": [],
+      "variables": [],
+      "condition": null
+    },
+    {
+      "id": 1102,
+      "name": "",
+      "externalId": null,
+      "sourceRef": 11,
+      "targetRef": 13,
+      "roles": [],
+      "variables": [],
+      "condition": null
+    },
+    {
+      "id": 1201,
+      "name": "Budget Confirmed",
+      "externalId": "FLOW_BUDGET_CONFIRMED",
+      "sourceRef": 12,
+      "targetRef": 14,
+      "roles": [],
+      "variables": [
+        {
+          "id": 1,
+          "name": "budgetCode",
+          "dataType": "string",
+          "isArray": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": "IsMatch(budgetCode, '^[A-Z]{2}-[0-9]{4}$')",
+          "label": "Budget code",
+          "helpText": "Two letters, a hyphen, and four digits, such as IT-2026."
+        }
+      ],
+      "condition": null
+    },
+    {
+      "id": 1202,
+      "name": "No Budget",
+      "externalId": "FLOW_NO_BUDGET",
+      "sourceRef": 12,
+      "targetRef": 21,
+      "roles": [],
+      "variables": [
+        {
+          "id": 1,
+          "name": "budgetNote",
+          "dataType": "string",
+          "isArray": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": "Len(Trim(budgetNote)) >= 10",
+          "label": "Why is there no budget?",
+          "helpText": "Stopping here also cancels supplier selection."
+        }
+      ],
+      "condition": null
+    },
+    {
+      "id": 1301,
+      "name": "Supplier Selected",
+      "externalId": "FLOW_SUPPLIER_SELECTED",
+      "sourceRef": 13,
+      "targetRef": 14,
+      "roles": [],
+      "variables": [
+        {
+          "id": 1,
+          "name": "supplierName",
+          "dataType": "string",
+          "isArray": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": "Len(Trim(supplierName)) >= 2",
+          "label": "Supplier"
+        },
+        {
+          "id": 2,
+          "name": "quotedAmount",
+          "dataType": "number",
+          "isArray": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": "quotedAmount > 0",
+          "label": "Quoted amount",
+          "helpText": "The supplier's quote, including tax."
+        }
+      ],
+      "condition": null
+    },
+    {
+      "id": 1401,
+      "name": "",
+      "externalId": null,
+      "sourceRef": 14,
+      "targetRef": 15,
+      "roles": [],
+      "variables": [],
+      "condition": null
+    },
+    {
+      "id": 1501,
+      "name": "Order Placed",
+      "externalId": "FLOW_ORDER_PLACED",
+      "sourceRef": 15,
+      "targetRef": 16,
+      "roles": [],
+      "variables": [
+        {
+          "id": 1,
+          "name": "purchaseOrderNumber",
+          "dataType": "string",
+          "isArray": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": "StartsWith(purchaseOrderNumber, 'PO-')",
+          "label": "Purchase order number"
+        }
+      ],
+      "condition": null
+    }
+  ],
+  "taskAssignmentRoles": [
+    "ProcurementLead"
+  ]
+}

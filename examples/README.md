@@ -4,10 +4,11 @@ This directory is the canonical catalog of editor-loadable, runtime-valid
 Flowbit workflow definitions. Each JSON file uses the current editor save
 format, stable workflow ids, integer node and sequence-flow ids, and no
 legacy properties. Most ids use `example-*`; the administrative-action sample
-retains its authored `admin-action` id. The examples are intentionally focused: combine their
-patterns when building a production workflow.
+retains its authored `admin-action` id. Most examples are intentionally focused;
+the two [showcases](#showcases) combine their patterns into complete processes,
+as a production workflow would.
 
-The catalog contains 66 workflows. Automated tests recursively discover every
+The catalog contains 68 workflows. Automated tests recursively discover every
 JSON file, deserialize it, validate it with the runtime's strict JavaScript
 parser, load and render it in the editor, and verify that this page links it.
 Those definition/editor tests do not execute integrations. The separate
@@ -28,6 +29,18 @@ New to the runtime? Follow the [HTTP getting-started guide](../docs/getting-star
 
 Dates, timer intervals, and retry delays are short or illustrative local-test
 values. Adjust them before production use.
+
+## Showcases
+
+Each showcase models a complete business process and combines many of the
+features the focused examples below isolate. See the
+[showcase guide](showcases/README.md) for what each one demonstrates, its
+actors, a walkthrough, and every ending.
+
+| Workflow | Start values | Actors and actions | Expected result | Requirements |
+| --- | --- | --- | --- | --- |
+| [Purchase request approval](showcases/01-purchase-request-approval.json) | As `Requester`, supply `requestNumber` (`PR-*`), `title`, `category`, `amount`, and `managerUser`; `requestedBy` defaults to you. | The named `Manager` approves, sends back, or rejects; the requester revises or withdraws; three `BoardMember` actors vote from 25,000; `Finance` confirms the budget while a `ProcurementLead` assigns supplier selection to a `Buyer`, who then places the order. | **Purchase Ordered**, or **Rejected**, **Rejected by Board**, **Withdrawn**, **Closed After Three Send-Backs**, or the terminating **Stopped: No Budget**. An unfinished review escalates to a `DepartmentHead` after three working days. | API and database; the seeded `examples.weekdays` calendar. Worker for the deadline timer and administrative actions. |
+| [Order fulfilment](showcases/02-order-fulfilment.json) | Deliver an order message with lines and a customer to the system-only message start, with its correlation and `Idempotency-Key` headers. | The Worker checks credit and reserves each line; a `Manager` approves a credit override in the called child; a `WarehouseLead` resolves a stock shortage; the carrier system confirms the shipment, or a `ShippingClerk` chases it after the timeout. | **Order Fulfilled**, or **Order Declined** or **Order Cancelled**, or faulted with `ORDER.INVALID_LINES` or `ORDER.CREDIT_REFUSED`. A credit outage retries, then opens a recoverable incident. | API, database, Worker, a controlled service, `config.exampleApiBaseUrl`, `config.exampleApiToken`, and `config.exampleMessageClientSecret` on API and Worker, and the manager approval child from [Call activities](#call-activities) published first. |
 
 ## Basics
 
@@ -220,8 +233,8 @@ actions, and records the outcome of each test run separately.
 | Coverage layer | Included | Verification boundary |
 | --- | --- | --- |
 | Authored node and event types | All 22: five tasks, four gateways, three starts, three intermediate catches, three boundaries, three ends, and the scoped-interrupt extension. | Recursive runtime/editor validation and the explicit 22-type assertion; editor execution here uses Jint rather than a real browser. |
-| Demonstrated catalog scenarios | Claims, assignment/distribution, captured roles, task due dates and priorities, working-time durations in a business calendar, scripts, typed REST/messages, idempotency, multi-instance aggregation for user tasks and for REST, script, and call bodies, timers including cron schedules for timer starts, conditional events, retries/recovery, and scope cancellation. | The 66 definitions and category walkthroughs explain actors, inputs, prerequisites, and expected outcomes. |
-| Focused runtime acceptance | Call activity completion, rejection, cancellation, and incident recovery; both REST recovery paths and boundary-order policies; HTTP status routing and its retry policy; both receipt/deadline paths; nested cancellation; MI role replacement/stale edits; normal versus terminate end; approval timer return; quorum cancellation before finalization. | `ExampleWorkflowAcceptanceTests`, and `CallActivityAcceptanceTests` for call activities, use real HTTP and Worker processing with controlled local services. They are explicitly run outside the solution and CI; inspect their results before claiming a verified run. |
+| Demonstrated catalog scenarios | Claims, assignment/distribution, captured roles, task due dates and priorities, working-time durations in a business calendar, scripts, typed REST/messages, idempotency, multi-instance aggregation for user tasks and for REST, script, and call bodies, timers including cron schedules for timer starts, conditional events, retries/recovery, and scope cancellation. | The 68 definitions and category walkthroughs explain actors, inputs, prerequisites, and expected outcomes. |
+| Focused runtime acceptance | Call activity completion, rejection, cancellation, and incident recovery; both REST recovery paths and boundary-order policies; HTTP status routing and its retry policy; both receipt/deadline paths; nested cancellation; MI role replacement/stale edits; normal versus terminate end; approval timer return; quorum cancellation before finalization; each reachable ending of both showcases, with the purchase deadline fired by an administrative timer action. | `ExampleWorkflowAcceptanceTests`, `CallActivityAcceptanceTests` for call activities, and `ExampleWorkflowShowcaseAcceptanceTests` for the showcases use real HTTP and Worker processing with controlled local services. They are explicitly run outside the solution and CI; inspect their results before claiming a verified run. |
 | Browser and manual checks | New diagrams at desktop/tablet widths; incident recovery and role management at desktop, tablet, and mobile widths. | Real Chromium input, screenshots, and browser diagnostics supplement API assertions; native picker and visual-review limitations are reported separately. |
 
 Run commands and evidence locations are in the

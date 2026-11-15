@@ -42,7 +42,7 @@ Choose provider-managed [OpenID Connect](docs/openid-connect.md) or [Local user 
 | Risk-based escalation | Observe persisted business variables and interrupt an active review when its condition becomes true. | [Conditional boundary](examples/basics/08-interrupting-conditional-boundary.json) |
 | Evidence-aware routing | Use recorded flow actions and traversals in NCalc, JavaScript, and gateway decisions. | [FlowInfo](examples/scripts/03-flowinfo-ncalc-and-javascript.json) |
 
-The [example catalog](examples/README.md) includes start values, actor roles, expected outcomes, and runtime prerequisites. Integration examples need the documented credentials or a controlled mock service; timer and durable-job examples need the Worker. The reminder example records reminder activity; sending a notification requires an integration.
+The [example catalog](examples/README.md) includes start values, actor roles, expected outcomes, and runtime prerequisites; its two [showcases](examples/showcases/README.md) combine many of these features in complete processes. Integration examples need the documented credentials or a controlled mock service; timer and durable-job examples need the Worker. The reminder example records reminder activity; sending a notification requires an integration.
 
 ## Design visually
 
@@ -233,6 +233,7 @@ See the [verification guide](Flowbit/README.md#verification) for the multi-insta
 
 ## Explore further
 
+- [Showcase workflows](examples/showcases/README.md): a purchase approval and an order fulfilment process that combine people, integrations, deadlines, and error paths.
 - [Example catalog](examples/README.md): discover complete workflows and their expected behavior.
 - [Human tasks](examples/user-tasks/README.md): roles, claims, and assignments; see the [catalog](examples/README.md#user-tasks) for waiting-task role management.
 - [Multi-instance workflows](examples/multi-instance/README.md): reviewers, voting, aggregate outcomes, interrupts, and REST and script work for every item of a collection.

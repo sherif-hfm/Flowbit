@@ -1,0 +1,912 @@
+{
+  "id": "example-showcase-order-fulfilment",
+  "name": "Showcase 02 - Order Fulfilment",
+  "initialEventId": null,
+  "variables": [
+    {
+      "id": 1,
+      "name": "stockLines",
+      "dataType": "json",
+      "isArray": true,
+      "nullable": false,
+      "required": false,
+      "defaultValue": [],
+      "validation": null
+    },
+    {
+      "id": 2,
+      "name": "shippingService",
+      "dataType": "string",
+      "isArray": false,
+      "nullable": false,
+      "required": false,
+      "defaultValue": "standard",
+      "validation": "shippingService in ('standard', 'express')"
+    },
+    {
+      "id": 3,
+      "name": "orderProblem",
+      "dataType": "string",
+      "isArray": false,
+      "nullable": true,
+      "required": false,
+      "defaultValue": null,
+      "validation": null
+    },
+    {
+      "id": 4,
+      "name": "creditDecision",
+      "dataType": "string",
+      "isArray": false,
+      "nullable": false,
+      "required": false,
+      "defaultValue": "pending",
+      "validation": "creditDecision in ('pending', 'approved', 'review')"
+    },
+    {
+      "id": 5,
+      "name": "creditStatus",
+      "dataType": "number",
+      "isArray": false,
+      "nullable": false,
+      "required": false,
+      "defaultValue": 0,
+      "validation": null
+    },
+    {
+      "id": 6,
+      "name": "creditFailure",
+      "dataType": "string",
+      "isArray": false,
+      "nullable": true,
+      "required": false,
+      "defaultValue": null,
+      "validation": null
+    },
+    {
+      "id": 7,
+      "name": "overrideApproved",
+      "dataType": "boolean",
+      "isArray": false,
+      "nullable": true,
+      "required": false,
+      "defaultValue": null,
+      "validation": null
+    },
+    {
+      "id": 8,
+      "name": "overrideFailure",
+      "dataType": "string",
+      "isArray": false,
+      "nullable": true,
+      "required": false,
+      "defaultValue": null,
+      "validation": null
+    },
+    {
+      "id": 9,
+      "name": "reservations",
+      "dataType": "json",
+      "isArray": false,
+      "nullable": false,
+      "required": false,
+      "defaultValue": [],
+      "validation": null
+    },
+    {
+      "id": 10,
+      "name": "stockFailure",
+      "dataType": "string",
+      "isArray": false,
+      "nullable": true,
+      "required": false,
+      "defaultValue": null,
+      "validation": null
+    },
+    {
+      "id": 11,
+      "name": "shipmentReference",
+      "dataType": "string",
+      "isArray": false,
+      "nullable": true,
+      "required": false,
+      "defaultValue": null,
+      "validation": null
+    }
+  ],
+  "lanes": [
+    {
+      "id": 1,
+      "name": "Order Intake",
+      "externalId": "LANE_ORDER_INTAKE",
+      "x": 30,
+      "y": 30,
+      "w": 2000,
+      "h": 220
+    },
+    {
+      "id": 2,
+      "name": "Credit Control",
+      "externalId": "LANE_CREDIT_CONTROL",
+      "x": 30,
+      "y": 280,
+      "w": 2000,
+      "h": 300
+    },
+    {
+      "id": 3,
+      "name": "Warehouse",
+      "externalId": "LANE_WAREHOUSE",
+      "x": 30,
+      "y": 610,
+      "w": 2000,
+      "h": 200
+    },
+    {
+      "id": 4,
+      "name": "Shipping",
+      "externalId": "LANE_SHIPPING",
+      "x": 30,
+      "y": 840,
+      "w": 2000,
+      "h": 300
+    }
+  ],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Order Received",
+      "externalId": "MESSAGE_START_ORDER_RECEIVED",
+      "type": "messageStartEvent",
+      "laneId": 1,
+      "x": 80,
+      "y": 88,
+      "roles": [],
+      "variables": [],
+      "message": {
+        "clientId": "${setting.examples.messageClientId}",
+        "clientSecret": "${config.exampleMessageClientSecret}",
+        "headerName": "X-Flowbit-Correlation",
+        "headerValue": "${setting.examples.messageCorrelation}",
+        "outputMappings": [
+          {
+            "variable": "orderId",
+            "path": "order.id",
+            "dataType": "string",
+            "isArray": false,
+            "required": true,
+            "defaultValue": null,
+            "validation": "StartsWith(orderId, 'ORD-') and Len(orderId) <= 40"
+          },
+          {
+            "variable": "customerId",
+            "path": "customer.id",
+            "dataType": "string",
+            "isArray": false,
+            "required": true,
+            "defaultValue": null,
+            "validation": "IsMatch(customerId, '^[A-Za-z0-9-]{3,40}$')"
+          },
+          {
+            "variable": "orderTotal",
+            "path": "order.total",
+            "dataType": "number",
+            "isArray": false,
+            "required": true,
+            "defaultValue": null,
+            "validation": "orderTotal > 0"
+          },
+          {
+            "variable": "orderLines",
+            "path": "order.lines",
+            "dataType": "json",
+            "isArray": true,
+            "required": true,
+            "defaultValue": null,
+            "validation": null
+          },
+          {
+            "variable": "expedited",
+            "path": "order.expedited",
+            "dataType": "boolean",
+            "isArray": false,
+            "required": false,
+            "defaultValue": false,
+            "validation": null
+          }
+        ]
+      },
+      "businessKey": {
+        "variable": "orderId",
+        "uniqueness": "active"
+      },
+      "idempotency": {
+        "headerName": "Idempotency-Key",
+        "variable": "orderRequestKey"
+      }
+    },
+    {
+      "id": 2,
+      "name": "Normalise Order Lines",
+      "externalId": "SCRIPT_NORMALISE_ORDER_LINES",
+      "type": "scriptTask",
+      "laneId": 1,
+      "x": 240,
+      "y": 76,
+      "roles": [],
+      "variables": [],
+      "scriptFormat": "javascript",
+      "script": "var lines = execution.getVariable('orderLines');\nif (!Array.isArray(lines) || lines.length === 0) {\n  throw new Error('The order has no lines.');\n}\nvar normalised = lines.map(function (line, index) {\n  var sku = line && typeof line.sku === 'string' ? line.sku.trim().toUpperCase() : '';\n  var quantity = line ? line.quantity : null;\n  if (sku.length === 0 || typeof quantity !== 'number' || quantity <= 0 || Math.floor(quantity) !== quantity) {\n    throw new Error('Order line ' + (index + 1) + ' needs a SKU and a whole positive quantity.');\n  }\n  return { sku: sku, quantity: quantity };\n});\nexecution.setVariable('stockLines', normalised);\nexecution.setVariable('shippingService', execution.getVariable('expedited') ? 'express' : 'standard');",
+      "usesFlowInfo": false
+    },
+    {
+      "id": 3,
+      "name": "Invalid Order Lines",
+      "externalId": "BOUNDARY_INVALID_ORDER_LINES",
+      "type": "errorBoundaryEvent",
+      "laneId": 1,
+      "x": 240,
+      "y": 76,
+      "roles": [],
+      "variables": [],
+      "attachedToRef": 2,
+      "errorVariable": "orderProblem"
+    },
+    {
+      "id": 4,
+      "name": "Order Lines Invalid",
+      "externalId": "END_ORDER_LINES_INVALID",
+      "type": "errorEndEvent",
+      "laneId": 1,
+      "x": 520,
+      "y": 140,
+      "roles": [],
+      "variables": [],
+      "errorCode": "ORDER.INVALID_LINES",
+      "errorDescription": "The order has a line without a SKU or a whole positive quantity."
+    },
+    {
+      "id": 5,
+      "name": "Check Credit",
+      "externalId": "SERVICE_CHECK_CREDIT",
+      "type": "serviceTask",
+      "laneId": 2,
+      "x": 240,
+      "y": 336,
+      "roles": [],
+      "variables": [],
+      "asyncBefore": true,
+      "asyncAfter": false,
+      "job": {
+        "failureHandling": "boundaryFirst",
+        "retryDelays": [
+          "PT5S",
+          "PT15S"
+        ]
+      },
+      "service": {
+        "type": "rest",
+        "method": "POST",
+        "url": "${config.exampleApiBaseUrl}/customers/${customerId}/credit-checks",
+        "headers": [
+          {
+            "name": "Authorization",
+            "value": "Bearer ${config.exampleApiToken}"
+          },
+          {
+            "name": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "name": "Idempotency-Key",
+            "value": "flowbit-${sys.jobId}"
+          }
+        ],
+        "body": "{\"orderId\":\"${orderId}\",\"amount\":${orderTotal}}",
+        "timeoutSeconds": 10,
+        "statusVariable": "creditStatus",
+        "outputMappings": [
+          {
+            "variable": "creditDecision",
+            "path": "decision",
+            "dataType": "string",
+            "isArray": false,
+            "required": true,
+            "defaultValue": null,
+            "validation": null
+          }
+        ]
+      }
+    },
+    {
+      "id": 6,
+      "name": "Credit Refused",
+      "externalId": "BOUNDARY_CREDIT_REFUSED",
+      "type": "errorBoundaryEvent",
+      "laneId": 2,
+      "x": 240,
+      "y": 336,
+      "roles": [],
+      "variables": [],
+      "attachedToRef": 5,
+      "errorVariable": "creditFailure",
+      "errorMatch": {
+        "httpStatusRanges": [
+          {
+            "from": 400,
+            "to": 499
+          }
+        ]
+      }
+    },
+    {
+      "id": 7,
+      "name": "Order Refused",
+      "externalId": "END_ORDER_REFUSED",
+      "type": "errorEndEvent",
+      "laneId": 2,
+      "x": 520,
+      "y": 468,
+      "roles": [],
+      "variables": [],
+      "errorCode": "ORDER.CREDIT_REFUSED",
+      "errorDescription": "The credit service refused the order."
+    },
+    {
+      "id": 8,
+      "name": "Credit Decision",
+      "externalId": "GATEWAY_CREDIT_DECISION",
+      "type": "exclusiveGateway",
+      "laneId": 2,
+      "x": 560,
+      "y": 342,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 9,
+      "name": "Approve Credit Override",
+      "externalId": "CALL_APPROVE_CREDIT_OVERRIDE",
+      "type": "callActivity",
+      "laneId": 2,
+      "x": 720,
+      "y": 456,
+      "roles": [],
+      "variables": [],
+      "callActivity": {
+        "workflowKey": "example-call-manager-approval",
+        "inputMappings": [
+          {
+            "sourceVariable": "orderTotal",
+            "variable": "amount",
+            "dataType": "number",
+            "required": true
+          },
+          {
+            "sourceVariable": "orderId",
+            "variable": "requestId",
+            "dataType": "string",
+            "required": true
+          }
+        ],
+        "outputMappings": [
+          {
+            "sourceVariable": "approved",
+            "variable": "overrideApproved",
+            "dataType": "boolean",
+            "required": true
+          }
+        ]
+      }
+    },
+    {
+      "id": 10,
+      "name": "Override Declined",
+      "externalId": "BOUNDARY_OVERRIDE_DECLINED",
+      "type": "errorBoundaryEvent",
+      "laneId": 2,
+      "x": 720,
+      "y": 456,
+      "roles": [],
+      "variables": [],
+      "attachedToRef": 9,
+      "errorVariable": "overrideFailure"
+    },
+    {
+      "id": 11,
+      "name": "Order Declined",
+      "externalId": "END_ORDER_DECLINED",
+      "type": "endEvent",
+      "laneId": 2,
+      "x": 1000,
+      "y": 470,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 12,
+      "name": "Credit Cleared",
+      "externalId": "GATEWAY_CREDIT_CLEARED",
+      "type": "exclusiveGateway",
+      "laneId": 2,
+      "x": 980,
+      "y": 342,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 13,
+      "name": "Reserve Stock",
+      "externalId": "SERVICE_RESERVE_STOCK",
+      "type": "serviceTask",
+      "laneId": 3,
+      "x": 1120,
+      "y": 656,
+      "roles": [],
+      "variables": [],
+      "asyncBefore": true,
+      "asyncAfter": false,
+      "multiInstance": {
+        "mode": "parallel",
+        "source": "collection",
+        "collectionVariable": "stockLines",
+        "completionEvaluation": "afterAll",
+        "maxConcurrency": 2,
+        "outputVariables": [
+          {
+            "name": "reservationId",
+            "dataType": "string",
+            "isArray": false,
+            "nullable": false,
+            "validation": "StartsWith(reservationId, 'RES-')"
+          }
+        ],
+        "resultVariable": "reservations"
+      },
+      "service": {
+        "type": "rest",
+        "method": "POST",
+        "url": "${config.exampleApiBaseUrl}/orders/${orderId}/reservations",
+        "headers": [
+          {
+            "name": "Authorization",
+            "value": "Bearer ${config.exampleApiToken}"
+          },
+          {
+            "name": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "name": "Idempotency-Key",
+            "value": "flowbit-${sys.jobId}"
+          }
+        ],
+        "body": "{\"orderId\":\"${orderId}\",\"line\":${mi.item}}",
+        "timeoutSeconds": 10,
+        "statusVariable": null,
+        "outputMappings": [
+          {
+            "variable": "reservationId",
+            "path": "reservationId",
+            "dataType": "string",
+            "isArray": false,
+            "required": true
+          }
+        ]
+      }
+    },
+    {
+      "id": 14,
+      "name": "Stock Unavailable",
+      "externalId": "BOUNDARY_STOCK_UNAVAILABLE",
+      "type": "errorBoundaryEvent",
+      "laneId": 3,
+      "x": 1120,
+      "y": 656,
+      "roles": [],
+      "variables": [],
+      "attachedToRef": 13,
+      "errorVariable": "stockFailure"
+    },
+    {
+      "id": 15,
+      "name": "Resolve Stock Shortage",
+      "externalId": "TASK_RESOLVE_STOCK_SHORTAGE",
+      "attributes": [
+        {
+          "key": "form",
+          "value": "stock-shortage"
+        }
+      ],
+      "type": "userTask",
+      "laneId": 3,
+      "x": 1420,
+      "y": 656,
+      "roles": [
+        "WarehouseLead"
+      ],
+      "variables": [],
+      "dueDate": "PT4H",
+      "priority": "if(expedited, 90, 60)"
+    },
+    {
+      "id": 16,
+      "name": "Order Cancelled",
+      "externalId": "END_ORDER_CANCELLED",
+      "type": "endEvent",
+      "laneId": 3,
+      "x": 1760,
+      "y": 668,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 17,
+      "name": "Prepare Shipment",
+      "externalId": "SCRIPT_PREPARE_SHIPMENT",
+      "type": "scriptTask",
+      "laneId": 4,
+      "x": 1120,
+      "y": 986,
+      "roles": [],
+      "variables": [],
+      "scriptFormat": "ncalc",
+      "assignments": [
+        {
+          "variable": "shipmentReference",
+          "expression": "'SHP-' + orderId"
+        }
+      ],
+      "script": null,
+      "usesFlowInfo": false
+    },
+    {
+      "id": 18,
+      "name": "Await Shipment Confirmation",
+      "externalId": "CATCH_SHIPMENT_CONFIRMED",
+      "type": "intermediateMessageCatchEvent",
+      "laneId": 4,
+      "x": 1400,
+      "y": 998,
+      "roles": [],
+      "variables": [],
+      "message": {
+        "clientId": "${setting.examples.messageClientId}",
+        "clientSecret": "${config.exampleMessageClientSecret}",
+        "headerName": "X-Shipment-Reference",
+        "headerValue": "${shipmentReference}",
+        "deliveryIdempotency": true,
+        "deliveryIdempotencyHeaderName": "X-Flowbit-Delivery-Key",
+        "outputMappings": [
+          {
+            "variable": "trackingNumber",
+            "path": "shipment.trackingNumber",
+            "dataType": "string",
+            "isArray": false,
+            "required": true,
+            "defaultValue": null,
+            "validation": "Len(Trim(trackingNumber)) >= 8"
+          },
+          {
+            "variable": "carrier",
+            "path": "shipment.carrier",
+            "dataType": "string",
+            "isArray": false,
+            "required": true,
+            "defaultValue": null,
+            "validation": "Len(Trim(carrier)) > 0"
+          }
+        ]
+      }
+    },
+    {
+      "id": 19,
+      "name": "Carrier Overdue",
+      "externalId": "BOUNDARY_CARRIER_OVERDUE",
+      "type": "timerBoundaryEvent",
+      "laneId": 4,
+      "x": 1400,
+      "y": 998,
+      "roles": [],
+      "variables": [],
+      "attachedToRef": 18,
+      "cancelActivity": true,
+      "timer": {
+        "timeDuration": "if(expedited, 'PT1M', 'PT5M')"
+      }
+    },
+    {
+      "id": 20,
+      "name": "Chase Carrier",
+      "externalId": "TASK_CHASE_CARRIER",
+      "attributes": [
+        {
+          "key": "form",
+          "value": "carrier-follow-up"
+        }
+      ],
+      "type": "userTask",
+      "laneId": 4,
+      "x": 1520,
+      "y": 866,
+      "roles": [
+        "ShippingClerk"
+      ],
+      "variables": [],
+      "dueDate": "PT2H",
+      "priority": "if(expedited, 90, 60)"
+    },
+    {
+      "id": 21,
+      "name": "Shipment Confirmed",
+      "externalId": "GATEWAY_SHIPMENT_CONFIRMED",
+      "type": "exclusiveGateway",
+      "laneId": 4,
+      "x": 1760,
+      "y": 992,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 22,
+      "name": "Order Fulfilled",
+      "externalId": "END_ORDER_FULFILLED",
+      "type": "endEvent",
+      "laneId": 4,
+      "x": 1900,
+      "y": 998,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "",
+      "externalId": null,
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": [],
+      "condition": null
+    },
+    {
+      "id": 201,
+      "name": "",
+      "externalId": null,
+      "sourceRef": 2,
+      "targetRef": 5,
+      "roles": [],
+      "variables": [],
+      "condition": null
+    },
+    {
+      "id": 301,
+      "name": "",
+      "externalId": null,
+      "sourceRef": 3,
+      "targetRef": 4,
+      "roles": [],
+      "variables": [],
+      "condition": null
+    },
+    {
+      "id": 501,
+      "name": "",
+      "externalId": null,
+      "sourceRef": 5,
+      "targetRef": 8,
+      "roles": [],
+      "variables": [],
+      "condition": null
+    },
+    {
+      "id": 601,
+      "name": "",
+      "externalId": null,
+      "sourceRef": 6,
+      "targetRef": 7,
+      "roles": [],
+      "variables": [],
+      "condition": null
+    },
+    {
+      "id": 801,
+      "name": "Approved",
+      "externalId": "FLOW_CREDIT_APPROVED",
+      "sourceRef": 8,
+      "targetRef": 12,
+      "roles": [],
+      "variables": [],
+      "condition": "creditDecision == 'approved'",
+      "conditionPriority": 1,
+      "isDefault": false
+    },
+    {
+      "id": 802,
+      "name": "Needs review",
+      "externalId": "FLOW_CREDIT_NEEDS_REVIEW",
+      "sourceRef": 8,
+      "targetRef": 9,
+      "roles": [],
+      "variables": [],
+      "condition": null,
+      "isDefault": true
+    },
+    {
+      "id": 901,
+      "name": "",
+      "externalId": null,
+      "sourceRef": 9,
+      "targetRef": 12,
+      "roles": [],
+      "variables": [],
+      "condition": null
+    },
+    {
+      "id": 1001,
+      "name": "",
+      "externalId": null,
+      "sourceRef": 10,
+      "targetRef": 11,
+      "roles": [],
+      "variables": [],
+      "condition": null
+    },
+    {
+      "id": 1201,
+      "name": "",
+      "externalId": null,
+      "sourceRef": 12,
+      "targetRef": 13,
+      "roles": [],
+      "variables": [],
+      "condition": null
+    },
+    {
+      "id": 1301,
+      "name": "",
+      "externalId": null,
+      "sourceRef": 13,
+      "targetRef": 17,
+      "roles": [],
+      "variables": [],
+      "condition": null
+    },
+    {
+      "id": 1401,
+      "name": "",
+      "externalId": null,
+      "sourceRef": 14,
+      "targetRef": 15,
+      "roles": [],
+      "variables": [],
+      "condition": null
+    },
+    {
+      "id": 1501,
+      "name": "Retry Reservation",
+      "externalId": "FLOW_RETRY_RESERVATION",
+      "sourceRef": 15,
+      "targetRef": 13,
+      "roles": [],
+      "variables": [
+        {
+          "id": 1,
+          "name": "resolutionNote",
+          "dataType": "string",
+          "isArray": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": "Len(Trim(resolutionNote)) >= 5",
+          "label": "What did you fix?",
+          "helpText": "Every line is reserved again; the warehouse service treats a repeated line of the same order as the same reservation."
+        }
+      ],
+      "condition": null
+    },
+    {
+      "id": 1502,
+      "name": "Cancel Order",
+      "externalId": "FLOW_CANCEL_ORDER",
+      "sourceRef": 15,
+      "targetRef": 16,
+      "roles": [],
+      "variables": [
+        {
+          "id": 1,
+          "name": "cancelReason",
+          "dataType": "string",
+          "isArray": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": "Len(Trim(cancelReason)) >= 5",
+          "label": "Reason for cancelling"
+        }
+      ],
+      "condition": null
+    },
+    {
+      "id": 1701,
+      "name": "",
+      "externalId": null,
+      "sourceRef": 17,
+      "targetRef": 18,
+      "roles": [],
+      "variables": [],
+      "condition": null
+    },
+    {
+      "id": 1801,
+      "name": "",
+      "externalId": null,
+      "sourceRef": 18,
+      "targetRef": 21,
+      "roles": [],
+      "variables": [],
+      "condition": null
+    },
+    {
+      "id": 1901,
+      "name": "",
+      "externalId": null,
+      "sourceRef": 19,
+      "targetRef": 20,
+      "roles": [],
+      "variables": [],
+      "condition": null
+    },
+    {
+      "id": 2001,
+      "name": "Tracking Number Received",
+      "externalId": "FLOW_TRACKING_NUMBER_RECEIVED",
+      "sourceRef": 20,
+      "targetRef": 21,
+      "roles": [],
+      "variables": [
+        {
+          "id": 1,
+          "name": "trackingNumber",
+          "dataType": "string",
+          "isArray": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": "Len(Trim(trackingNumber)) >= 8",
+          "label": "Tracking number"
+        },
+        {
+          "id": 2,
+          "name": "carrier",
+          "dataType": "string",
+          "isArray": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": "Len(Trim(carrier)) > 0",
+          "label": "Carrier",
+          "options": [
+            {
+              "value": "DHL"
+            },
+            {
+              "value": "FedEx"
+            },
+            {
+              "value": "UPS"
+            }
+          ]
+        }
+      ],
+      "condition": null
+    },
+    {
+      "id": 2101,
+      "name": "",
+      "externalId": null,
+      "sourceRef": 21,
+      "targetRef": 22,
+      "roles": [],
+      "variables": [],
+      "condition": null
+    }
+  ]
+}
