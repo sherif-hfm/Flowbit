@@ -2712,6 +2712,11 @@ public static class BpmnFlowNodeTypes
     // event is system-only. Pass-through: the engine auto-advances off it after
     // creating the instance (history note "messageStart").
     public const string MessageStartEvent = "messageStartEvent";
+    // Intermediate link events pair by name within one definition, as a "go to"
+    // connector. A token entering a throw continues at the catch with the same
+    // name in the same transaction. LinkEventRules owns the pairing.
+    public const string IntermediateLinkThrowEvent = "intermediateLinkThrowEvent";
+    public const string IntermediateLinkCatchEvent = "intermediateLinkCatchEvent";
 
     public static bool IsStart(string type) =>
         string.Equals(type, StartEvent, StringComparison.Ordinal);
@@ -2799,6 +2804,15 @@ public static class BpmnFlowNodeTypes
     public static bool IsMessageStart(string type) =>
         string.Equals(type, MessageStartEvent, StringComparison.Ordinal);
 
+    public static bool IsLinkThrow(string type) =>
+        string.Equals(type, IntermediateLinkThrowEvent, StringComparison.Ordinal);
+
+    public static bool IsLinkCatch(string type) =>
+        string.Equals(type, IntermediateLinkCatchEvent, StringComparison.Ordinal);
+
+    public static bool IsLinkEvent(string type) =>
+        IsLinkThrow(type) || IsLinkCatch(type);
+
     // Either kind of entry event: a user-facing startEvent or a system-only
     // messageStartEvent. A workflow must have at least one entry event.
     public static bool IsEntry(string type) =>
@@ -2816,12 +2830,14 @@ public static class BpmnFlowNodeTypes
     // message is delivered (ResolvePassThroughAsync stops on it).
     // A message start event IS pass-through: the engine creates the instance on
     // it then auto-advances, exactly like a plain startEvent.
+    // Both link events are pass-through: a throw hops to its catch, and a catch
+    // follows its one outgoing flow.
     public static bool IsPassThrough(string type) =>
         IsStart(type) || IsMessageStart(type) || IsTimerStart(type)
         || IsAutomatic(type) || IsServiceTask(type)
         || IsScriptTask(type) || IsGateway(type) || IsErrorBoundary(type)
         || IsTimerBoundary(type) || IsConditionalBoundary(type)
-        || IsScopedInterrupt(type);
+        || IsScopedInterrupt(type) || IsLinkEvent(type);
 
     public static bool IsSupported(string type) =>
         type is StartEvent or TimerStartEvent or EndEvent or UserTask or Task or ServiceTask or ScriptTask
@@ -2831,7 +2847,8 @@ public static class BpmnFlowNodeTypes
             or ErrorEndEvent or TerminateEndEvent or ErrorBoundaryEvent or TimerBoundaryEvent
             or ConditionalBoundaryEvent
             or IntermediateMessageCatchEvent or IntermediateTimerCatchEvent
-            or IntermediateConditionalCatchEvent or MessageStartEvent;
+            or IntermediateConditionalCatchEvent or MessageStartEvent
+            or IntermediateLinkThrowEvent or IntermediateLinkCatchEvent;
 }
 
 public static class WorkflowVariableTypes

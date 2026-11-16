@@ -168,7 +168,7 @@ public sealed class WorkflowAiWorkflowCheckTests
         var unreachable = Checker().Check(text).Errors.Where(error => error.Code == "unreachable-node").ToArray();
         Assert.Equal(new[] { ("/flowNodes/5", "node 6 (task \"Orphan\")"), ("/flowNodes/6", "node 7 (endEvent \"Also orphaned\")") },
             unreachable.Select(error => (error.Path, error.Where)));
-        Assert.Equal("Node 6 cannot be reached from any start event by following sequence flows and boundary attachments.", unreachable[0].Message);
+        Assert.Equal("Node 6 cannot be reached from any start event by following sequence flows, boundary attachments, and links.", unreachable[0].Message);
 
         var baseline = WorkflowAuthoringJson.Parse(text);
         Assert.DoesNotContain(Checker(baseline: baseline).Check(text).Errors, error => error.Code == "unreachable-node");

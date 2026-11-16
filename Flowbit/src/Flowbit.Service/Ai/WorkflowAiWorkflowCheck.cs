@@ -90,7 +90,7 @@ public sealed class WorkflowAiWorkflowCheck(IWorkflowDefinitionValidator validat
         {
             var pointer = "/flowNodes/" + authored.FlowNodes.IndexOf(node);
             errors.Add(Located(root, "unreachable-node", pointer,
-                $"Node {node.Id} cannot be reached from any start event by following sequence flows and boundary attachments."));
+                $"Node {node.Id} cannot be reached from any start event by following sequence flows, boundary attachments, and links."));
         }
         return errors.Count == 0 ? new([], restored.GetRawText()) : new(Sorted(errors), null);
     }

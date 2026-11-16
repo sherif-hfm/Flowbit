@@ -79,7 +79,9 @@
         "outputMappings": [{ "sourceVariable": "names", "variable": "approvers", "dataType": "string", "isArray": true }]
       }
     },
-    { "id": 28, "name": "Watcher", "type": "conditionalBoundaryEvent", "laneId": 1, "x": 0, "y": 0, "attachedToRef": 3, "cancelActivity": true, "conditional": { "condition": "amount > 1" } }
+    { "id": 28, "name": "Watcher", "type": "conditionalBoundaryEvent", "laneId": 1, "x": 0, "y": 0, "attachedToRef": 3, "cancelActivity": true, "conditional": { "condition": "amount > 1" } },
+    { "id": 30, "name": "Census link", "type": "intermediateLinkThrowEvent", "laneId": 1, "x": 700, "y": 640 },
+    { "id": 31, "name": "Census link", "type": "intermediateLinkCatchEvent", "laneId": 1, "x": 900, "y": 640 }
   ],
   "sequenceFlows": [
     { "id": 101, "name": "", "sourceRef": 1, "targetRef": 2 },
@@ -95,6 +97,8 @@
     { "id": 1001, "name": "Large", "sourceRef": 10, "targetRef": 11, "condition": "amount > 1", "conditionPriority": 1 },
     { "id": 1002, "name": "Otherwise", "sourceRef": 10, "targetRef": 18, "isDefault": true },
     { "id": 1101, "name": "", "sourceRef": 11, "targetRef": 12 },
-    { "id": 1201, "name": "Either", "sourceRef": 12, "targetRef": 13, "condition": "amount > 2" }
+    { "id": 1201, "name": "Either", "sourceRef": 12, "targetRef": 13, "condition": "amount > 2" },
+    { "id": 2501, "name": "", "sourceRef": 25, "targetRef": 30 },
+    { "id": 3101, "name": "", "sourceRef": 31, "targetRef": 18 }
   ]
 }

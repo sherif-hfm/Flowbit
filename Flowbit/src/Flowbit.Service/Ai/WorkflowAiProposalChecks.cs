@@ -15,8 +15,8 @@ public sealed partial class WorkflowAiAuthoringService
     }
 
     /// <summary>
-    /// Nodes no entry event reaches by following sequence flows and boundary attachments. Islands the original diagram already
-    /// had are left alone.
+    /// Nodes no entry event reaches by following sequence flows, boundary attachments, and links from a throw to its catch.
+    /// Islands the original diagram already had are left alone.
     /// </summary>
     internal static IReadOnlyList<FlowNodeModel> UnreachableNodes(WorkflowModel model, WorkflowModel? original)
     {
@@ -30,6 +30,7 @@ public sealed partial class WorkflowAiAuthoringService
         var edges = model.SequenceFlows.Select(flow => (Source: flow.SourceRef, Target: flow.TargetRef))
             .Concat(model.FlowNodes.Where(node => BpmnFlowNodeTypes.IsBoundary(node.Type) && node.AttachedToRef.HasValue)
                 .Select(node => (Source: node.AttachedToRef!.Value, Target: node.Id)))
+            .Concat(LinkEventRules.ImplicitEdges(model).Select(edge => (Source: edge.ThrowId, Target: edge.CatchId)))
             .ToLookup(edge => edge.Source, edge => edge.Target);
         var reached = new HashSet<int>();
         var queue = new Queue<int>(model.FlowNodes.Where(node => BpmnFlowNodeTypes.IsEntry(node.Type) || node.Id == model.InitialEventId).Select(node => node.Id));

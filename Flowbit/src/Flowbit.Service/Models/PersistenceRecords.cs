@@ -823,6 +823,10 @@ public static class InstanceHistoryNotes
     public const string CallCompleted = "callCompleted";
     public const string CallFailed = "callFailed";
     public const string CallCancelled = "callCancelled";
+    // A token entering a link throw hops to its catch (no sequence flow, no action id),
+    // then leaves the catch through the catch's one outgoing flow.
+    public const string LinkThrow = "linkThrow";
+    public const string LinkCatch = "linkCatch";
 }
 
 public static class ExecutionTokenTerminationReasons

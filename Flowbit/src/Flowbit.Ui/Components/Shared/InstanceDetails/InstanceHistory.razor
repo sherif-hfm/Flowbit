@@ -121,6 +121,16 @@
                 ? $"Gateway scope interrupted by token #{tokenId}; active sibling work was cancelled"
                 : "Gateway scope interrupted; active sibling work was cancelled";
         }
+        if (item.Note is "linkThrow")
+        {
+            return item.TokenId is long tokenId
+                ? $"Link throw #{item.FromNodeId} continued token #{tokenId} at link catch #{item.ToNodeId}"
+                : $"Link throw #{item.FromNodeId} continued at link catch #{item.ToNodeId}";
+        }
+        if (item.Note is "linkCatch")
+        {
+            return $"Continued from link catch #{item.FromNodeId}";
+        }
         if (item.Note is "scopedInterruptSkipped")
         {
             return "No matching active gateway scope remained; continuation ran without cancellation";

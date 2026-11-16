@@ -24,7 +24,7 @@ For each node's properties, required fields, defaults, nested configuration, and
 
 ## Supported node types
 
-The current model supports **22 node types**. “Worker” means the standalone `Flowbit.Worker` process. Every runtime workflow requires the API and PostgreSQL. A “No” below applies to the element itself; a downstream async task, timer, or durable conditional still requires a Worker.
+The current model supports **24 node types**. “Worker” means the standalone `Flowbit.Worker` process. Every runtime workflow requires the API and PostgreSQL. A “No” below applies to the element itself; a downstream async task, timer, or durable conditional still requires a Worker.
 
 | JSON `type` | Runtime behavior | Worker | Example or detail |
 | --- | --- | --- | --- |
@@ -43,6 +43,8 @@ The current model supports **22 node types**. “Worker” means the standalone 
 | `intermediateMessageCatchEvent` | Persists a message wait; valid instance-scoped delivery maps output and advances the waiting token. | No | [Message catch](../examples/messages/02-message-catch-delivery-idempotency.json) |
 | `intermediateTimerCatchEvent` | Persists a timer wait and resumes when its scheduled job runs. | Yes | [Timer delay](../examples/timers/02-intermediate-timer-delay.json) |
 | `intermediateConditionalCatchEvent` | Waits until its condition over persisted instance variables is true; evaluates on entry and relevant variable-write batches. | Only for `durableAsync` | [Conditional catch](../examples/basics/05-conditional-event.json) |
+| `intermediateLinkThrowEvent` | "Go to" connector: a token that enters it continues at the link catch event with the same name, in the same transaction and on the same gateway branch. Several throws may share one catch. | No | [Link events](../examples/basics/11-link-events.json) |
+| `intermediateLinkCatchEvent` | Where a link continues: it has no incoming flow and passes the token on through its one outgoing flow. An instance cannot start here. | No | [Link throw and catch](node-reference.md#intermediatelinkcatchevent) |
 | `errorBoundaryEvent` | Handles a service, script, or call failure through its attached error path; may capture an error string. Interrupting only. A REST service task may have up to eight, each matching HTTP statuses or ranges, with at most one catch-all; a script task or call has one catch-all. There are no named error codes, and an `errorEndEvent` does not throw into a boundary. | Follows host execution mode | [HTTP status routing](../examples/service-tasks/04-rest-http-status-routing.json), [Script error boundary](../examples/scripts/04-javascript-error-boundary.json) |
 | `timerBoundaryEvent` | Interrupts its host on expiry or creates a non-interrupting sibling branch; recurring reminders are supported. | Yes | [Reminder and deadline](../examples/timers/05-user-task-reminder-and-deadline.json), [multi-instance deadline](../examples/multi-instance/12-rest-error-and-deadline-boundaries.json) |
 | `conditionalBoundaryEvent` | Observes instance-variable changes while its host is active; interrupts the host or captures repeatable false-to-true occurrences. | For `durableAsync` or an async host | [Conditional boundaries](#conditional-boundaries) |
@@ -57,6 +59,7 @@ Definitions use integer authored node and flow IDs. A sequence flow has its own 
 
 - A workflow needs at least one manual, message, or timer entry. Entries have no incoming flow and exactly one unconditional outgoing flow. `initialEventId`, when present, identifies a manual `startEvent`.
 - Automatic tasks, service/script tasks, intermediate catches, and boundaries have one unconditional outgoing flow. End events have at least one incoming flow and no outgoing flows. A boundary is attached through `attachedToRef`, with no incoming sequence flow.
+- A link throw event has at least one incoming flow and no outgoing flow; a link catch event has no incoming flow and one unconditional outgoing flow. They pair by `name`, trimmed and then compared exactly, including letter case. Every throw needs a catch of its name and every catch needs at least one throw; link catch names must be unique ignoring letter case. Graph checks such as merge synchronization, scoped-interrupt and cancelling-join reachability, and reactivation safety follow a link as they follow a sequence flow.
 - A gateway must be a **split** with one incoming and at least two outgoing flows, or a **merge** with at least two incoming and one outgoing flow. One-in/one-out and many-in/many-out gateways are rejected; use adjacent split and merge nodes when needed.
 - Exclusive splits require exactly one default and a condition plus unique positive `conditionPriority` on every other route. Defaults have neither condition nor priority. Exclusive merges have one unconditional output.
 - Inclusive splits require exactly one unconditional default and a condition on every other route, without priorities. Inclusive merges have one unconditional output. Synchronization is based on tokens that can still reach the merge, not solely on a paired split ID.
@@ -229,7 +232,7 @@ Changes to active gateway, role, wait, job, or output contracts can block an in-
 - BPMN XML import/export, BPMN DI interchange, or automatic execution of definitions exported by other BPMN products.
 - Pools, collaborations, BPMN message flows, and choreography; lanes are visual organization only.
 - Embedded/event/transaction subprocesses and compensation scopes. [Call activities](#call-activities) invoke a reusable workflow, within the listed limits.
-- Event-based gateways; signal, escalation, compensation, cancel, link, and general throw-event families beyond the supported table.
+- Event-based gateways; signal, escalation, compensation, cancel, and general throw-event families beyond the supported table. Link events connect two places in one definition only; a call activity is the way to reach another workflow.
 - General BPMN send/receive task implementations, non-REST service connectors, and arbitrary external task executors.
 - Multi-instance `task` nodes, events, and gateways, and the [later-release automatic multi-instance features](#multi-instance-service-script-and-call-activities) such as the cardinality source, per-item boundaries, and item skipping.
 - DMN decision tables, FEEL, and month or year timer durations. Business calendars count only durations, not `timeDate`, `timeCycle`, or cron timers.
@@ -247,6 +250,7 @@ Do not assume a similarly named element has every option found in a full BPMN en
 | Call a service, run a script, or start a child workflow for every item of a list | [Automatic multi-instance examples](../examples/multi-instance/README.md#automatic-multi-instance-activities) and the [multi-instance call](../examples/call-activities/04-multi-instance-approval-call.json). |
 | Integrate a remote service or callback | [REST examples](../examples/service-tasks/README.md) and [message examples](../examples/messages/README.md). |
 | Reuse a fragment across workflows | [Call activity examples](../examples/call-activities/README.md). |
+| Replace a long return or crossing flow, or share a closing section | [Link events](../examples/basics/11-link-events.json). |
 | Pause, remind, or escalate | [Timer and conditional examples](../examples/README.md), with [Worker configuration](deployment.md#worker-operation). |
 | Interrupt one branch activation | [Gateway guide](../examples/gateways/README.md), including scoped interrupts and cancelling joins. |
 

@@ -1344,6 +1344,14 @@
   .flowbit-editor .node.intermediateConditionalCatchEvent circle.body { fill: var(--node-message-fill); stroke: var(--node-message-stroke); stroke-width: 2; }
   .flowbit-editor .node.intermediateConditionalCatchEvent circle.ring { fill: none; stroke: var(--node-message-stroke); stroke-width: 1.5; }
   .flowbit-editor .node.messageStartEvent circle.body { fill: var(--node-start-fill); stroke: var(--node-message-stroke); stroke-width: 2; }
+  .flowbit-editor .node.intermediateLinkThrowEvent circle.body,
+  .flowbit-editor .node.intermediateLinkCatchEvent circle.body { fill: var(--node-task-fill); stroke: var(--node-task-stroke); stroke-width: 2; }
+  .flowbit-editor .node.intermediateLinkThrowEvent circle.ring,
+  .flowbit-editor .node.intermediateLinkCatchEvent circle.ring { fill: none; stroke: var(--node-task-stroke); stroke-width: 1.5; }
+  /* The partners of a selected link event: its catch, or every throw that continues at it. */
+  .flowbit-editor .link-partner-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+  .flowbit-editor .link-partner-list .link-partner-button { max-width: 100%; overflow-wrap: anywhere; text-align: left; }
+  .flowbit-editor .node .link-partner-ring { fill: none; stroke: var(--node-selection-stroke); stroke-width: 2; stroke-dasharray: 5 4; pointer-events: none; }
   .flowbit-editor .node { transition: filter .15s, opacity .15s; }
   .flowbit-editor .node:hover { filter: drop-shadow(0 6px 10px var(--node-hover-shadow)); }
   .flowbit-editor .node.selected { filter: drop-shadow(0 0 8px var(--node-selection-shadow)); }
@@ -1355,6 +1363,8 @@
   .flowbit-editor .node.selected.errorEndEvent circle.body,
   .flowbit-editor .node.selected.terminateEndEvent circle.body { stroke: var(--node-selection-stroke); stroke-width: 5; }
   .flowbit-editor .node.selected.scopedInterruptEvent circle.body { stroke: var(--node-selection-stroke); stroke-width: 3; }
+  .flowbit-editor .node.selected.intermediateLinkThrowEvent circle.ring,
+  .flowbit-editor .node.selected.intermediateLinkCatchEvent circle.ring { stroke: var(--node-selection-stroke); }
   .flowbit-editor .node.selected.errorBoundaryEvent circle.body { stroke: var(--node-selection-stroke); stroke-width: 3; }
   .flowbit-editor .node.selected.timerBoundaryEvent circle.body { stroke: var(--node-selection-stroke); stroke-width: 3; }
   .flowbit-editor .node.selected.conditionalBoundaryEvent circle.body { stroke: var(--node-selection-stroke); stroke-width: 3; }
@@ -1382,7 +1392,9 @@
   .flowbit-editor .node.parallelGateway .node-icon,
   .flowbit-editor .node.inclusiveGateway .node-icon,
   .flowbit-editor .node.complexGateway .node-icon { color: var(--node-gateway-icon); }
-  .flowbit-editor .node.task .node-icon { color: var(--node-task-icon); }
+  .flowbit-editor .node.task .node-icon,
+  .flowbit-editor .node.intermediateLinkThrowEvent .node-icon,
+  .flowbit-editor .node.intermediateLinkCatchEvent .node-icon { color: var(--node-task-icon); }
   .flowbit-editor .node.serviceTask .node-icon { color: var(--node-service-icon); }
   .flowbit-editor .node.scriptTask .node-icon { color: var(--node-script-icon); }
   .flowbit-editor .node.callActivity .node-icon { color: var(--node-call-icon); }
@@ -1794,6 +1806,8 @@
 .flowbit-editor[data-mode="viewer"] #svg[data-active-tool="pan"] .node.instance-reached * { cursor: pointer !important; }
 .flowbit-editor[data-mode="viewer"] .node .instance-history-halo { fill: none; stroke: #64748b; stroke-width: 2.5; stroke-dasharray: 5 4; pointer-events: none; }
 .flowbit-editor[data-mode="viewer"] .node rect.instance-history-halo { rx: 16; ry: 16; }
+/* Beside the dashed grey "Reached" halo, a link partner's ring is dotted and in the selection colour. */
+.flowbit-editor[data-mode="viewer"] .node .link-partner-ring { stroke: var(--accent); stroke-width: 3; stroke-dasharray: 0.1 6; stroke-linecap: round; }
 .flowbit-editor[data-mode="viewer"] .edge .instance-history-line { fill: none; stroke: #0f766e; stroke-width: 7; stroke-opacity: .3; pointer-events: none; }
 .flowbit-editor[data-mode="viewer"] .instance-flow-count rect { fill: #f0fdfa; stroke: #0f766e; stroke-width: 1; }
 .flowbit-editor[data-mode="viewer"] .instance-flow-count text { fill: #115e59; font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; }

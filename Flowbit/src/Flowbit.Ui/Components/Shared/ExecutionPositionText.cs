@@ -27,6 +27,8 @@ internal static class ExecutionPositionText
         BpmnFlowNodeTypes.InclusiveGateway => "Inclusive gateway",
         BpmnFlowNodeTypes.ComplexGateway => "Complex gateway",
         BpmnFlowNodeTypes.ScopedInterruptEvent => "Scoped interrupt",
+        BpmnFlowNodeTypes.IntermediateLinkThrowEvent => "Link throw",
+        BpmnFlowNodeTypes.IntermediateLinkCatchEvent => "Link catch",
         BpmnFlowNodeTypes.ErrorBoundaryEvent => "Error boundary",
         BpmnFlowNodeTypes.TimerBoundaryEvent => "Timer boundary",
         BpmnFlowNodeTypes.ConditionalBoundaryEvent => "Conditional boundary",

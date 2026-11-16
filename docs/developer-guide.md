@@ -348,7 +348,7 @@ Keep authored IDs and integration labels stable when behavior is meant to remain
 
 For active instance migration, call `POST /api/instances/{instanceId}/version-change/preview` with `targetWorkflowId`. Inspect `compatible`, `blockers`, and `warnings`; then submit the change with the preview's `expectedSourceWorkflowId`, `expectedUpdatedAt`, and a reason. The server revalidates in the mutation transaction. Do not copy a preview's concurrency values between instances or retry a stale change unchanged without rereading state.
 
-Compatibility includes persisted variables, open task/action and role contracts, gateway/branch state, message/timer/conditional waits, and durable work. A same-family target is not sufficient by itself. Changing only a user task's `dueDate` or `priority` never blocks a change; open work items keep the values saved when they were created. Use the batch preview/execute APIs for managed migrations of many instances; see the API reference for their lifecycle. Database-schema upgrades and instance-definition version changes are separate operations.
+Compatibility includes persisted variables, open task/action and role contracts, gateway/branch state, message/timer/conditional waits, and durable work. A same-family target is not sufficient by itself. Changing only a user task's `dueDate` or `priority` never blocks a change; open work items keep the values saved when they were created. A token never rests on a link event, so adding, removing, or renaming link events does not block a change by itself. While several tokens or gateway state are active, the exact topology must match, and a link throw that keeps its ID but pairs with a different link catch blocks with `link_event_contract_changed`; renaming a link on all its events keeps every pair and is allowed. Use the batch preview/execute APIs for managed migrations of many instances; see the API reference for their lifecycle. Database-schema upgrades and instance-definition version changes are separate operations.
 
 ## Integrate inbound messages
 
@@ -747,6 +747,10 @@ add traversals. A source exit can mark an MI target reached even when interrupti
 occurred before fan-out. Direct async-after/MI-to-MI entries that end before fan-out
 cannot be recovered; `multiInstanceEntryUnrecorded` conservatively flags every
 definition with that edge shape. A reached node means arrival evidence, not success.
+A link has no sequence flow between its throw and catch, so the summary has no
+count for that hop. Both events are reached through their own visits, the flow
+into the throw is counted when its source exits, and the catch's outgoing flow is
+counted when the catch exits.
 
 Open visits rebind during a version switch: their nodes are reached on the new
 version, while ordinary incoming traversals remain on the version where the

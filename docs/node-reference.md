@@ -2,7 +2,7 @@
 
 [Documentation home](index.md) · [BPMN behavior](bpmn-support.md) · [Developer guide](developer-guide.md) · [Example catalog](../examples/README.md)
 
-Use this reference when choosing a task, event, or gateway and authoring its Flowbit JSON properties. It covers all **22 supported node types**, their shared and nested configuration, and the sequence flows that supply actions and routing. For execution semantics across a whole process, read [BPMN support](bpmn-support.md); for HTTP requests, read the [API reference](api-guide.md).
+Use this reference when choosing a task, event, or gateway and authoring its Flowbit JSON properties. It covers all **24 supported node types**, their shared and nested configuration, and the sequence flows that supply actions and routing. For execution semantics across a whole process, read [BPMN support](bpmn-support.md); for HTTP requests, read the [API reference](api-guide.md).
 
 The tables describe current authoring contracts and effective defaults. **Required** means needed for that configuration to work and pass validation; **conditional** means required only in the stated situation. Omit optional properties that do not apply to the selected type. The model uses one shared node class: a property existing on that class does not make it meaningful on every node. Some irrelevant legacy fields are cleared during normalization, while explicitly invalid combinations are rejected. Do not rely on normalization to repair newly authored definitions.
 
@@ -44,6 +44,8 @@ JSON blocks below are **fragments**, not standalone workflows, unless stated oth
 | Catch | [intermediateMessageCatchEvent](#intermediatemessagecatchevent) | Wait for an inbound message. |
 | Catch | [intermediateTimerCatchEvent](#intermediatetimercatchevent) | Wait for a scheduled trigger. |
 | Catch | [intermediateConditionalCatchEvent](#intermediateconditionalcatchevent) | Wait for a persisted-variable condition. |
+| Link | [intermediateLinkThrowEvent](#intermediatelinkthrowevent) | "Go to" the link catch event with the same name. |
+| Link | [intermediateLinkCatchEvent](#intermediatelinkcatchevent) | Continue here from every link throw event with the same name. |
 | Boundary | [errorBoundaryEvent](#errorboundaryevent) | Handle an attached service, script, or call failure. |
 | Boundary | [timerBoundaryEvent](#timerboundaryevent) | Deadline or reminder while a host is active. |
 | Boundary | [conditionalBoundaryEvent](#conditionalboundaryevent) | Interrupt or branch when a host's observed condition becomes true. |
@@ -765,6 +767,48 @@ Waits for a Boolean condition over persisted instance variables. The condition i
 ```
 
 Declare persisted instance variable `approved`. Timer/conditional boundaries cannot attach to a conditional catch. See the [conditional runtime reference](../Flowbit/README.md#intermediate-conditional-catch-events).
+
+### intermediateLinkThrowEvent
+
+A "go to" connector inside one workflow. A token that enters a link throw event continues at the [link catch event](#intermediatelinkcatchevent) with the same `name`, as if a sequence flow joined the two events. Use a link pair for a long return or crossing flow, or for a section that several routes enter, such as a shared closing step. Keep short flows as they are. A link cannot leave its workflow; use a [call activity](#callactivity) to reach another one.
+
+**Topology:** at least one incoming flow; no outgoing flows. **Worker:** not required. **Additional properties:** none beyond the [common node properties](#common-node-properties); `name` is the link name.
+
+```json
+{ "id": 7, "name": "Fulfilment", "type": "intermediateLinkThrowEvent" }
+```
+
+**Pairing.** A throw and a catch pair by their `name`:
+
+- The name is trimmed as .NET `string.Trim()` trims it: Unicode white space and U+0085, but not the U+FEFF byte-order mark. The trimmed names are then compared exactly, including letter case, with no Unicode normalization.
+- Every throw needs a link catch event of its name. Several throws may share one catch. A throw whose name matches a catch only ignoring letter case is rejected, and the message names both spellings.
+- A blank name is rejected as for any node. Other node types may use the same name as a link.
+
+Only `id`, `name`, `externalId`, `attributes`, `laneId`, `x`, and `y` are accepted. Task, role, variable, event, async, and multi-instance settings are rejected, and a boundary event cannot attach to a link event.
+
+**Routing.** When a token enters the throw, the engine moves it to the catch in the same transaction and on the same gateway branch; the Worker is not involved. The throw's node visit completes as `normal` with no exit flow, and history records a `linkThrow` row from the throw to the catch with no sequence flow or action. The catch then takes its own routing step. The hop between the two events has no sequence flow, so it records no flow evidence and `FlowInfo` cannot refer to it; the flow into the throw and the flow out of the catch record traversals as usual.
+
+Each link event is one routing step and counts against the per-token hop limit, as an automatic `task` does. Link events create no durable work, so they never count against the automatic-activation guard. A [scoped interrupt](#scopedinterruptevent) reached after a link therefore takes effect two routing steps later than one reached directly from the fork, as it would after two automatic tasks.
+
+**Loops.** A catch may come before its throws in the flow, which forms a loop. A loop that passes a user task or another resting node is valid. A loop of only link events and automatic nodes saves, but fails at run time with the `Pass-through routing cycle detected.` error, as any automatic cycle does.
+
+See the [link events example](../examples/basics/11-link-events.json).
+
+### intermediateLinkCatchEvent
+
+Where a link continues. A token that enters any [link throw event](#intermediatelinkthrowevent) with the same `name` continues here, then follows this event's one outgoing flow. An instance cannot start at a link catch event, and it is never a reactivation target.
+
+**Topology:** no incoming flows; exactly one unconditional outgoing flow. **Worker:** not required. **Additional properties:** none beyond the [common node properties](#common-node-properties); `name` is the link name.
+
+```json
+{ "id": 12, "name": "Fulfilment", "type": "intermediateLinkCatchEvent" }
+```
+
+- Link catch names must be unique among link catch events, ignoring letter case, so two links cannot differ only in case.
+- At least one link throw event must use the catch's exact name; an unused catch is rejected.
+- The outgoing flow has no condition, default flag, priority, roles, inputs, claim bypass, or multi-instance outcome settings. Task, role, variable, event, async, and multi-instance settings are rejected on the catch, as on a throw.
+
+The token arrives with no entry flow. The catch's visit completes as `normal` through its outgoing flow; history records a `linkCatch` row, and that flow's traversal evidence has kind `linkCatch`. Graph checks follow the link from each throw to its catch as they follow a sequence flow: inclusive and complex merge synchronization, `joinCancellation` and `scopedInterruptEvent` reachability, reactivation safety, and the shared-variable lock-order check. A version change that keeps a throw's ID but pairs it with a different catch is blocked while branch or gateway state is active; see [version changes](developer-guide.md#select-and-change-workflow-versions).
 
 ### errorBoundaryEvent
 
@@ -1567,7 +1611,7 @@ If an optional path is absent and there is no default, that mapping produces no 
 1. Start with a complete [catalog example](../examples/README.md), then select types and properties from this reference. Fragments here intentionally omit the surrounding graph.
 2. Give every node a nonblank name and an explicit canonical type and ID. Keep node/flow IDs unique within their own collections, and resolve every reference.
 3. Declare the process variables required by the selected node. Put manual start inputs on `startEvent.variables` and user inputs on the selected outgoing flow's `variables`.
-4. Apply the node's topology rules. Entry events have no incoming flow and one unconditional output; boundaries attach by `attachedToRef` and have no incoming sequence flow; ends have incoming flow and no output; gateway shape determines split versus merge.
+4. Apply the node's topology rules. Entry events have no incoming flow and one unconditional output; boundaries attach by `attachedToRef` and have no incoming sequence flow; ends have incoming flow and no output; a link throw has incoming flow and no output, and its link catch has no incoming flow and one unconditional output; gateway shape determines split versus merge.
 5. Save the definition through the [HTTP definition API](api-guide.md). Server validation, deployment settings, shared catalog contracts, and worker publication gates remain authoritative. Editor export alone does not publish it.
 
 Legacy documents may normalize differently from new authoring: old step/action vocabulary migrates to nodes/flows; Exclusive splits with all priorities omitted gain ordered priorities; old selectable MI defaults become a selectable outcome plus a hidden fallback. Write the current vocabulary explicitly. Changing properties on active tasks, waits, gateway scopes, or durable jobs can block in-place version switching; see [version selection and changes](developer-guide.md#select-and-change-workflow-versions).

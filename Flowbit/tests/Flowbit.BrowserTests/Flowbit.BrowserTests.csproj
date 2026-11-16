@@ -48,6 +48,8 @@
     <None Include="..\..\src\Flowbit.Ui\wwwroot\editor\*" Link="Fixtures\editor\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <None Include="Fixtures\**\*.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="Fixtures\README.md" CopyToOutputDirectory="PreserveNewest" />
+    <!-- R15 publishes the canonical link example itself, not a copy. -->
+    <None Include="..\..\..\examples\basics\11-link-events.json" Link="Fixtures\example-link-events.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

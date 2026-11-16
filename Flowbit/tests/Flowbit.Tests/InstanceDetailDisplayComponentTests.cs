@@ -601,6 +601,24 @@ public sealed class InstanceDetailDisplayComponentTests
     }
 
     [Fact]
+    public async Task HistoryDescribesBothStepsOfALink()
+    {
+        var now = DateTimeOffset.Parse("2026-11-15T12:00:00Z");
+        var hop = new InstanceHistoryDto(70, 12, null, null, null, null, 7, 12, "system", null, "linkThrow", now);
+        var leave = new InstanceHistoryDto(71, 12, null, null, null, null, 12, 13, "system", null, "linkCatch", now);
+
+        var html = await RenderAsync<HistorySection>(new()
+        {
+            [nameof(HistorySection.InstanceId)] = 42L,
+            [nameof(HistorySection.HistoryItems)] = new[] { hop, leave },
+        });
+
+        Assert.Contains("Link throw #7 continued token #12 at link catch #12", html, StringComparison.Ordinal);
+        Assert.Contains("Continued from link catch #12", html, StringComparison.Ordinal);
+        Assert.DoesNotContain(">linkThrow<", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task HistoryRendersAssignmentReasonAndActorWithoutClaims()
     {
         var now = DateTimeOffset.Parse("2026-08-10T12:00:00Z");

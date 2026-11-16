@@ -96,7 +96,7 @@ subtask table together.
 | [EVENT-03](event-03-event-based-gateway.md) | Event-based gateway | M | None | Not started |
 | [EVENT-04](event-04-signal-events.md) | Signal events | M–L | None | Not started |
 | [EVENT-05](event-05-error-code-boundaries.md) | HTTP status matching on error boundaries | M | None | Done |
-| [EVENT-06](event-06-link-events.md) | Link events | M | None | Planned |
+| [EVENT-06](event-06-link-events.md) | Link events | M | None | Done |
 | [EVENT-07](event-07-compensation.md) | Compensation | L | None | Not started |
 | [EVENT-08](event-08-business-calendars.md) | Business calendars | M–L | [UI-04](ui-04-task-due-date-and-priority.md) | Done |
 | [EVENT-09](event-09-cron-schedules.md) | Cron schedules for timer starts | M | None | Done |

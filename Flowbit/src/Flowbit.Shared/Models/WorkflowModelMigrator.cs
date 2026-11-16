@@ -676,11 +676,13 @@ public static class WorkflowModelMigrator
             node.AttachedToRef = null;
             node.ErrorVariable = null;
         }
-        else if (BpmnFlowNodeTypes.IsScopedInterrupt(node.Type))
+        else if (BpmnFlowNodeTypes.IsScopedInterrupt(node.Type) || BpmnFlowNodeTypes.IsLinkEvent(node.Type))
         {
             // A scoped interrupt is a Flowbit pass-through control event. Its
             // only authored behavior is the gateway reference; routing lives on
-            // its sole unconditional outgoing sequence flow.
+            // its sole unconditional outgoing sequence flow. A link event's only
+            // authored behavior is its name, which pairs a throw with a catch;
+            // names are never rewritten here.
             node.RequiresClaim = false;
             node.ClaimMode = ClaimModes.Fresh;
             node.InheritClaimFromNodeId = null;

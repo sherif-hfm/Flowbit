@@ -158,6 +158,8 @@ window.FlowbitEditorTemplate = String.raw`<header class="app-toolbar" aria-label
         <symbol id="icon-conditional" viewBox="0 0 24 24"><path d="M6.5 3.5h8l3 3v14h-11zM14.5 3.5v4h3" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M9 11h6M9 14h6M9 17h4.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></symbol>
         <symbol id="icon-error-throw" viewBox="0 0 24 24"><path d="M5 20 8.5 4 12 9 19 4 15.5 20 12 15z" fill="currentColor" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></symbol>
         <symbol id="icon-error-catch" viewBox="0 0 24 24"><path d="M5 20 8.5 4 12 9 19 4 15.5 20 12 15z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></symbol>
+        <symbol id="icon-link-throw" viewBox="0 0 24 24"><path d="M4 9h8.5V4.5L20 12l-7.5 7.5V15H4z" fill="currentColor" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></symbol>
+        <symbol id="icon-link-catch" viewBox="0 0 24 24"><path d="M4 9h8.5V4.5L20 12l-7.5 7.5V15H4z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></symbol>
         <symbol id="icon-assignee" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M3.5 19c.6-3.3 2.4-5 5.5-5 1.4 0 2.6.3 3.5 1M15 16l2 2 4-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
       </defs>
       <rect id="gridSurface" x="-100000" y="-100000" width="200000" height="200000" fill="url(#gridPattern)"></rect>

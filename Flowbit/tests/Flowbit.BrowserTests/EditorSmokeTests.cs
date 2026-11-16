@@ -1493,12 +1493,12 @@ public sealed class EditorSmokeTests(BrowserStackFixture stack)
             await CollectUnnamedAsync("the workflow");
             await SelectAsync("Everything", "Lane #1");
             await CollectUnnamedAsync("the lane");
-            foreach (var node in Enumerable.Range(1, 29))
+            foreach (var node in Enumerable.Range(1, 31))
             {
                 await SelectAsync($"#{node}", $"Node #{node}");
                 await CollectUnnamedAsync($"node #{node}");
             }
-            foreach (var flow in new[] { 101, 201, 301, 401, 402, 901, 1001, 1002, 1101, 1201 })
+            foreach (var flow in new[] { 101, 201, 301, 401, 402, 901, 1001, 1002, 1101, 1201, 2501, 3101 })
             {
                 await SelectAsync($"#{flow}", $"Flow #{flow}");
                 await CollectUnnamedAsync($"flow #{flow}");

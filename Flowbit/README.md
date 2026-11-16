@@ -122,7 +122,7 @@ One model agent controls authoring, the approach measured in the Flowbit AI Lab 
   - every structural problem through `WorkflowAuthoringJson.Inspect`;
   - credential placeholders;
   - Flowbit's first definition error, located by `WorkflowAiDiagnostics`;
-  - one error per newly unreachable node.
+  - one error per newly unreachable node, following sequence flows, boundary attachments, and links.
 - **`WorkflowAiConversation`** runs one turn, with the limits in `WorkflowAiOptions`:
   - message composition and the diagram-sync rule;
   - the agent run and at most `MaxNudges` validation follow-ups;
@@ -758,6 +758,63 @@ its interrupting token and merge node identify the winning route.
 The fan-out limit is configured by `Workflow.Gateway.MaxActiveTokens` and
 defaults to 1000. Adjacency and reachability plans are cached per immutable
 workflow-definition ID.
+
+## Link events
+
+`intermediateLinkThrowEvent` and `intermediateLinkCatchEvent` are pass-through
+"go to" connectors inside one definition. They pair by `name`: trimmed as .NET
+`string.Trim()` trims it, then compared exactly and case-sensitively, with no
+Unicode normalization. Several throws may share one catch; link catch names are
+unique under `StringComparer.OrdinalIgnoreCase`, and a throw resolves to the first
+catch, in node order, whose trimmed name equals its own. A throw has at least one
+incoming flow and no outgoing flow; a catch has no incoming flow and exactly one
+unconditional outgoing flow without user-action or multi-instance metadata, and
+needs at least one throw of its name. No JSON property, migration, job kind,
+route, or setting was added. See the
+[node reference](../docs/node-reference.md#intermediatelinkthrowevent).
+
+`LinkEventRules` (`Flowbit.Shared`) is the one source of pairing: the name key,
+each throw's catch, each catch's throws, the validation problems, and
+`ImplicitEdges`. Every analysis or display that follows a link reads it rather
+than comparing names itself:
+
+- definition reachability for `joinCancellation` and `scopedInterruptEvent.gatewayRef`
+  (`WorkflowDefinitionValidator.BuildStructuralAdjacency`);
+- Inclusive and Complex merge enabling and Complex drains (`GatewayTopologyIndex`,
+  whose `LinkCatchOf` also gives routing a throw's catch);
+- reactivation hazards (`FindUnsafeReactivationTopology`);
+- the shared-variable lock-order proof
+  (`SharedVariableTransactionLockOrderValidator.RouteChoices`: a throw routes to
+  its catch, and link events acquire no keys);
+- exact version-change topology (`link_event_contract_changed` when a throw
+  resolves to a different catch node; renaming a whole link keeps every pair);
+- the AI assistant's reachability check (`WorkflowAiProposalChecks.Reachable`);
+- Flowbit.Ui's instance-diagram partner buttons.
+
+Diagram history and the assistant's layout need no link edge: both events'
+visits mark them reached, the catch's flow is counted on exit, and a catch with
+no incoming flow starts a row in column 0 of its lane. A new graph analysis must
+add the link edges from `LinkEventRules`, as each of these does.
+
+`ResolvePassThroughAsync` handles a token on a throw before
+`SelectPassThroughFlow`: it writes a `linkThrow` history row from the throw to the
+catch with no sequence flow or action, moves the token to the catch on its
+current gateway branch with no entry flow, completes the throw's visit as
+`normal` with no exit flow, and queues the token. The catch then takes the
+generic pass-through step with note `linkCatch`; its visit completes as `normal`
+through its flow, whose traversal evidence has kind `linkCatch`. The hop has no
+flow evidence, so `FlowInfo` cannot name it. Each event is one routing step
+against the per-token and routing-step limits, so a scoped interrupt after a link
+takes effect two steps later than one reached directly from a fork. No completion
+reason was added. A loop of only link events and automatic nodes saves and fails
+at run time with `Pass-through routing cycle detected.`
+
+A token never rests on a link event at commit, so link events alone never block
+a version change. Upgrade every API, UI, and Worker replica before a definition
+with link events is saved: a replica without them treats a throw as a resting
+node and strands the token, and no publication switch guards this. Before rolling
+binaries back, retire those definitions and finish or cancel their instances. See
+[deployment](../docs/deployment.md#upgrade-and-compatibility-rules).
 
 ## Instance-wide flow evidence (`FlowInfo`)
 
@@ -1690,13 +1747,14 @@ dotnet test ./tests/Flowbit.BrowserTests/Flowbit.BrowserTests.csproj -c Release 
 ```
 
 Set `FLOWBIT_BROWSER_HEADED=1` to launch Chromium headed for local diagnosis.
-The suite covers editor E1–E20 and runtime R1–R14 scenarios (see the project
+The suite covers editor E1–E22 and runtime R1–R15 scenarios (see the project
 README); manual native-picker and full acceptance checks remain the caller's
 responsibility.
 
 The browser project also checks its own auxiliary-page diagnostics, retained
 warnings/network failures, one-shot native browser dialogs, and timeout cleanup
-(44 cases including 40 editor and runtime product scenarios). Each scenario retains
+(133 cases, of which 129 are editor, hosted-editor, runtime, and authentication
+product scenarios). Each scenario retains
 `diagnostics.json`, including successful runs.
 The UI shell and instance summary expose nonvisual `data-interactive` markers
 from Blazor's renderer state so tests do not act on prerendered controls.

@@ -88,6 +88,20 @@
                 <p class="instance-diagram-meta">
                     Node #@node.Id · @ExecutionPositionText.NodeTypeLabel(node.Type)@(string.IsNullOrWhiteSpace(node.ExternalId) ? null : $" · {node.ExternalId}")
                 </p>
+                @if (LinkPartners(node) is { Count: > 0 } partners)
+                {
+                    <div class="instance-diagram-link-partners">
+                        <span>@(BpmnFlowNodeTypes.IsLinkThrow(node.Type) ? "Continues at" : "Continued from")</span>
+                        @foreach (var partner in partners)
+                        {
+                            // The accessible name ends with the visible text, so speech input can press the button by what it shows.
+                            var partnerText = $"{NodeName(partner).Trim()} (#{partner.Id})";
+                            <button type="button" class="btn btn-sm btn-outline-secondary"
+                                    aria-label="@($"Select {(BpmnFlowNodeTypes.IsLinkThrow(partner.Type) ? "link throw" : "link catch")} event {partnerText}")"
+                                    @onclick="() => SelectHistoryNodeAsync(partner.Id)">@partnerText</button>
+                        }
+                    </div>
+                }
                 @if (HistoryEnabled)
                 {
                     <h4>Current/final positions</h4>
@@ -305,6 +319,7 @@
     private string? viewerError;
     private bool disposed;
     private IReadOnlyList<FlowNodeModel> reachedNodes = [];
+    private LinkEventIndex? links;
     private readonly Dictionary<int, long> flowCounts = [];
     private readonly Dictionary<int, long> incomingCounts = [];
     private readonly Dictionary<int, long> outgoingCounts = [];
@@ -320,6 +335,17 @@
         && InstanceDiagramOverlay.Matches(Instance, History) ? History : null;
 
     private IReadOnlyList<FlowNodeModel> ReachedNodes => reachedNodes;
+
+    // A link event's other ends, paired by the same rules the engine routes by.
+    private IReadOnlyList<FlowNodeModel> LinkPartners(FlowNodeModel node)
+    {
+        if (links is null || !BpmnFlowNodeTypes.IsLinkEvent(node.Type)) return [];
+        var ids = BpmnFlowNodeTypes.IsLinkThrow(node.Type)
+            ? (links.CatchOf(node.Id) is int catchId ? [catchId] : [])
+            : links.ThrowsOf(node.Id);
+        return ids.Select(id => Instance.Workflow.Definition.FlowNodes.FirstOrDefault(candidate => candidate.Id == id))
+            .OfType<FlowNodeModel>().ToList();
+    }
 
     private IEnumerable<SequenceFlowModel> NodeFlows(int id) => Instance.Workflow.Definition.SequenceFlows
         .Where(flow => flow.SourceRef == id || flow.TargetRef == id).OrderBy(flow => flow.Id);
@@ -374,6 +400,7 @@
     {
         var history = EffectiveHistory;
         overlay = InstanceDiagramOverlay.Build(Instance, history);
+        links = LinkEventRules.Index(Instance.Workflow.Definition);
         reachedNodes = [];
         flowCounts.Clear();
         incomingCounts.Clear();

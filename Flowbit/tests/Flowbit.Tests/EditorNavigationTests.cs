@@ -192,6 +192,9 @@ public sealed class EditorNavigationTests
             """
             function isBoundaryEventType(type) { return type === 'errorBoundaryEvent'; }
             """);
+        // The adjacency follows links through the validator's linkEventIndex.
+        engine.Execute(Regex.Match(html, @"// BEGIN WORKFLOW SAVE VALIDATOR(?<code>[\s\S]*?)// END WORKFLOW SAVE VALIDATOR")
+            .Groups["code"].Value);
         engine.Execute(match.Value);
         engine.SetValue(
             "candidateJson",
@@ -218,6 +221,33 @@ public sealed class EditorNavigationTests
             canReachWithAdjacency(2, 5, adjacency) &&
               !canReachWithAdjacency(6, 5, adjacency) &&
               !canReachWithAdjacencyAvoiding(2, 6, 5, adjacency);
+            """).AsBoolean());
+
+        // A split reaches an interrupt behind a link, and only through the throw's own catch.
+        engine.SetValue(
+            "linkedJson",
+            """
+            {
+              "flowNodes": [
+                { "id": 2, "type": "parallelGateway" },
+                { "id": 3, "type": "intermediateLinkThrowEvent", "name": " Stop " },
+                { "id": 4, "type": "intermediateLinkCatchEvent", "name": "Stop" },
+                { "id": 5, "type": "scopedInterruptEvent" },
+                { "id": 7, "type": "intermediateLinkCatchEvent", "name": "stop" },
+                { "id": 8, "type": "task" }
+              ],
+              "sequenceFlows": [
+                { "id": 201, "sourceRef": 2, "targetRef": 3 },
+                { "id": 401, "sourceRef": 4, "targetRef": 5 },
+                { "id": 701, "sourceRef": 7, "targetRef": 8 }
+              ]
+            }
+            """);
+        Assert.True(engine.Evaluate(
+            """
+            const linked = buildGatewayAdjacencyIndex(JSON.parse(linkedJson));
+            canReachWithAdjacency(2, 5, linked) && !canReachWithAdjacency(2, 8, linked) &&
+              !canReachWithAdjacency(4, 3, linked);
             """).AsBoolean());
         Assert.Contains(
             "canReachWithAdjacency(candidate.id, node.id, adjacency)",

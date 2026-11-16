@@ -190,6 +190,37 @@ public sealed class InstanceDiagramComponentTests
     }
 
     [Fact]
+    public async Task ASelectedLinkEventOffersItsPartners()
+    {
+        var definition = Definition();
+        definition.FlowNodes.Add(new FlowNodeModel { Id = 5, Name = " Fulfilment ", Type = BpmnFlowNodeTypes.IntermediateLinkThrowEvent });
+        definition.FlowNodes.Add(new FlowNodeModel { Id = 6, Name = "Fulfilment", Type = BpmnFlowNodeTypes.IntermediateLinkCatchEvent });
+        definition.FlowNodes.Add(new FlowNodeModel { Id = 7, Name = "Fulfilment", Type = BpmnFlowNodeTypes.IntermediateLinkThrowEvent });
+        definition.FlowNodes.Add(new FlowNodeModel { Id = 8, Name = "Elsewhere", Type = BpmnFlowNodeTypes.IntermediateLinkThrowEvent });
+        var instance = InstanceDiagramOverlayTests.Instance("running",
+            [InstanceDiagramOverlayTests.Position(1, 3, BpmnFlowNodeTypes.UserTask, "active", task: 501)],
+            definition: definition);
+
+        var throwPanel = await RenderAsync(instance, selectedNodeId: 5, executions: []);
+        Assert.Contains("Node #5 · Link throw", throwPanel, StringComparison.Ordinal);
+        Assert.Contains("Continues at", throwPanel, StringComparison.Ordinal);
+        Assert.Contains("aria-label=\"Select link catch event Fulfilment (#6)\"", throwPanel, StringComparison.Ordinal);
+        Assert.Contains("Fulfilment (#6)", throwPanel, StringComparison.Ordinal);
+
+        var catchPanel = await RenderAsync(instance, selectedNodeId: 6, executions: []);
+        Assert.Contains("Node #6 · Link catch", catchPanel, StringComparison.Ordinal);
+        Assert.Contains("Continued from", catchPanel, StringComparison.Ordinal);
+        Assert.Contains("aria-label=\"Select link throw event Fulfilment (#5)\"", catchPanel, StringComparison.Ordinal);
+        Assert.Contains("aria-label=\"Select link throw event Fulfilment (#7)\"", catchPanel, StringComparison.Ordinal);
+        Assert.DoesNotContain("#8)", catchPanel, StringComparison.Ordinal);
+
+        var unpaired = await RenderAsync(instance, selectedNodeId: 8, executions: []);
+        Assert.DoesNotContain("instance-diagram-link-partners", unpaired, StringComparison.Ordinal);
+        var task = await RenderAsync(instance, selectedNodeId: 3, executions: []);
+        Assert.DoesNotContain("instance-diagram-link-partners", task, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task UnmarkedAndFinishedNodesDescribeTheirState()
     {
         var unmarked = await RenderAsync(RunningReview(), selectedNodeId: 9, executions: []);

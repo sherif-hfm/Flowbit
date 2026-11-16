@@ -94,7 +94,9 @@ const NODE_TYPE = {
   MESSAGE_CATCH_EVENT: "intermediateMessageCatchEvent",
   TIMER_CATCH_EVENT: "intermediateTimerCatchEvent",
   CONDITIONAL_CATCH_EVENT: "intermediateConditionalCatchEvent",
-  MESSAGE_START_EVENT: "messageStartEvent"
+  MESSAGE_START_EVENT: "messageStartEvent",
+  LINK_THROW_EVENT: "intermediateLinkThrowEvent",
+  LINK_CATCH_EVENT: "intermediateLinkCatchEvent"
 };
 const NODE_TYPE_OPTIONS = [
   { value: NODE_TYPE.START_EVENT, label: "Start Event" },
@@ -115,13 +117,26 @@ const NODE_TYPE_OPTIONS = [
   { value: NODE_TYPE.MESSAGE_CATCH_EVENT, label: "Message Catch Event (wait for callback)" },
   { value: NODE_TYPE.TIMER_CATCH_EVENT, label: "Timer Catch Event (delay)" },
   { value: NODE_TYPE.CONDITIONAL_CATCH_EVENT, label: "Conditional Catch Event (wait for condition)" },
-  { value: NODE_TYPE.MESSAGE_START_EVENT, label: "Message Start Event (webhook start)" }
+  { value: NODE_TYPE.MESSAGE_START_EVENT, label: "Message Start Event (webhook start)" },
+  { value: NODE_TYPE.LINK_THROW_EVENT, label: "Link Throw Event (go to)" },
+  { value: NODE_TYPE.LINK_CATCH_EVENT, label: "Link Catch Event (continue here)" }
 ];
 
 // BEGIN DIAGRAM NAVIGATION HELPERS
-function buildDiagramTraceContext(candidate, selection, mode) {
+// linkEdges are the resolved { throwId, catchId } pairs of the link events, given as data.
+// Execution crosses a link, so the walks follow it; a link has no flow to highlight.
+function buildDiagramTraceContext(candidate, selection, mode, linkEdges = []) {
   const nodes = Array.isArray(candidate && candidate.flowNodes) ? candidate.flowNodes : [];
   const flows = Array.isArray(candidate && candidate.sequenceFlows) ? candidate.sequenceFlows : [];
+  const linkTargets = new Map();
+  const linkSources = new Map();
+  for (const link of Array.isArray(linkEdges) ? linkEdges : []) {
+    if (!link) continue;
+    if (!linkTargets.has(link.throwId)) linkTargets.set(link.throwId, []);
+    if (!linkSources.has(link.catchId)) linkSources.set(link.catchId, []);
+    linkTargets.get(link.throwId).push(link.catchId);
+    linkSources.get(link.catchId).push(link.throwId);
+  }
   const isTraceBoundaryType = type => [
     "errorBoundaryEvent", "timerBoundaryEvent", "conditionalBoundaryEvent"
   ].includes(type);
@@ -160,6 +175,12 @@ function buildDiagramTraceContext(candidate, selection, mode) {
       for (const flow of adjacent) {
         addFlow(flow);
         const nextId = direction === "upstream" ? flow.sourceRef : flow.targetRef;
+        if (!visited.has(nextId)) queue.push(nextId);
+      }
+      const linked = direction === "upstream"
+        ? (linkSources.get(nodeId) || [])
+        : (linkTargets.get(nodeId) || []);
+      for (const nextId of linked) {
         if (!visited.has(nextId)) queue.push(nextId);
       }
     }
@@ -203,6 +224,10 @@ function buildDiagramTraceContext(candidate, selection, mode) {
     }
     if (node.type === "scopedInterruptEvent" && nodeById.has(node.gatewayRef)) {
       contextNodeIds.add(node.gatewayRef);
+    }
+    // A link event's partners are where its route continues or comes from.
+    for (const partnerId of [...(linkTargets.get(nodeId) || []), ...(linkSources.get(nodeId) || [])]) {
+      if (nodeById.has(partnerId)) contextNodeIds.add(partnerId);
     }
     const cancellationScopeRef = node.joinCancellation &&
       typeof node.joinCancellation === "object" &&
@@ -275,7 +300,9 @@ function searchDiagram(candidate, query, limit = 20) {
     conditionalBoundaryEvent: "Conditional Boundary Event",
     intermediateMessageCatchEvent: "Message Catch Event",
     intermediateTimerCatchEvent: "Timer Catch Event",
-    intermediateConditionalCatchEvent: "Conditional Catch Event"
+    intermediateConditionalCatchEvent: "Conditional Catch Event",
+    intermediateLinkThrowEvent: "Link Throw Event",
+    intermediateLinkCatchEvent: "Link Catch Event"
   };
   const candidates = [];
   const addCandidate = (kind, id, label, detail, rawFields) => {
@@ -1227,7 +1254,7 @@ function incomingFlows(nodeId) { return model.sequenceFlows.filter(f => f.target
 function refreshTraceContext() {
   // A viewer never traces: highlighted flows would read as the path an instance took.
   activeTraceContext = !viewerMode && selected && selectedNodeIds.size <= 1
-    ? buildDiagramTraceContext(model, selected, traceMode)
+    ? buildDiagramTraceContext(model, selected, traceMode, linkEventIndex(model).edges)
     : null;
 }
 function traceClass(kind, id) {
@@ -1269,6 +1296,34 @@ function selectedLane() {
     return sourceLaneId != null && sourceLaneId === targetLaneId ? getLane(sourceLaneId) : null;
   }
   return null;
+}
+// The other end of each link the selected link event belongs to: a throw's
+// catch, or every throw that continues at a catch.
+function selectedLinkPartnerIds(index) {
+  if (!selected || selected.kind !== "node" || selectedNodeIds.size > 1) return new Set();
+  const node = getNode(selected.nodeId);
+  if (!node) return new Set();
+  if (isLinkThrowEventType(node.type)) {
+    const catchId = index.catchOf(node.id);
+    return new Set(catchId == null ? [] : [catchId]);
+  }
+  return isLinkCatchEventType(node.type) ? new Set(index.throwsOf(node.id)) : new Set();
+}
+function linkPartnerTitle(node, index) {
+  if (isLinkThrowEventType(node.type)) {
+    const catchId = index.catchOf(node.id);
+    return catchId != null ? ` · Continues at #${catchId}` : " · No link catch event has this name";
+  }
+  if (!isLinkCatchEventType(node.type)) return "";
+  const throws = index.throwsOf(node.id);
+  if (throws.length) return ` · Continued from ${throws.map(id => `#${id}`).join(", ")}`;
+  // Throws with this exact name continue at the first catch that has it.
+  const key = linkNameKey(node.name);
+  const first = key === null ? null : model.flowNodes.find(candidate =>
+    isLinkCatchEventType(candidate.type) && linkNameKey(candidate.name) === key);
+  return first && first !== node && index.throwsOf(first.id).length
+    ? ` · Link throw events with this name continue at #${first.id}`
+    : " · No link throw event uses this name";
 }
 function errorBoundariesOf(hostNodeId) {
   return model.flowNodes.filter(n => n.type === NODE_TYPE.ERROR_BOUNDARY_EVENT && n.attachedToRef === hostNodeId);
@@ -1350,7 +1405,7 @@ function isEventType(type) {
     type === NODE_TYPE.SCOPED_INTERRUPT_EVENT ||
     type === NODE_TYPE.MESSAGE_CATCH_EVENT || type === NODE_TYPE.MESSAGE_START_EVENT ||
     type === NODE_TYPE.TIMER_START_EVENT || type === NODE_TYPE.TIMER_CATCH_EVENT ||
-    type === NODE_TYPE.CONDITIONAL_CATCH_EVENT;
+    type === NODE_TYPE.CONDITIONAL_CATCH_EVENT || isLinkEventType(type);
 }
 function isAutomaticType(type) {
   return type === NODE_TYPE.TASK;
@@ -1385,6 +1440,15 @@ function isTerminateEndEventType(type) {
 }
 function isScopedInterruptEventType(type) {
   return type === NODE_TYPE.SCOPED_INTERRUPT_EVENT;
+}
+function isLinkThrowEventType(type) {
+  return type === NODE_TYPE.LINK_THROW_EVENT;
+}
+function isLinkCatchEventType(type) {
+  return type === NODE_TYPE.LINK_CATCH_EVENT;
+}
+function isLinkEventType(type) {
+  return isLinkThrowEventType(type) || isLinkCatchEventType(type);
 }
 function isBoundaryEventType(type) {
   return type === NODE_TYPE.ERROR_BOUNDARY_EVENT ||
@@ -1462,6 +1526,7 @@ function buildGatewayAdjacencyIndex(candidate = model) {
       addStructuralEdge(boundary.attachedToRef, boundary.id);
     }
   }
+  for (const link of linkEventIndex(candidate).edges) addStructuralEdge(link.throwId, link.catchId);
   return { incoming, outgoing, structuralIncoming, structuralOutgoing };
 }
 function canReachWithAdjacency(sourceId, targetId, adjacency) {
@@ -1626,7 +1691,8 @@ function isSingleOutgoingType(type) {
     || type === NODE_TYPE.MESSAGE_CATCH_EVENT
     || type === NODE_TYPE.TIMER_CATCH_EVENT
     || type === NODE_TYPE.CONDITIONAL_CATCH_EVENT
-    || type === NODE_TYPE.MESSAGE_START_EVENT;
+    || type === NODE_TYPE.MESSAGE_START_EVENT
+    || type === NODE_TYPE.LINK_CATCH_EVENT;
 }
 function typeLabel(type) {
   const match = NODE_TYPE_OPTIONS.find(o => o.value === type);
@@ -1643,12 +1709,13 @@ function nodeSize(node) {
   return { w: NODE_W, h: NODE_H };
 }
 // pass-through nodes advance without a user action (start / message start /
-// automatic task / service task / script task / gateway / interrupt / boundary).
+// automatic task / service task / script task / gateway / interrupt / boundary /
+// link catch).
 function isPassThroughType(type) {
   return isAutomaticType(type) || isServiceTaskType(type) || isScriptTaskType(type) ||
     isStartEventType(type) || isMessageStartEventType(type) || isTimerStartEventType(type) ||
     isGatewayType(type) ||
-    isScopedInterruptEventType(type) || isBoundaryEventType(type);
+    isScopedInterruptEventType(type) || isBoundaryEventType(type) || isLinkCatchEventType(type);
 }
 function normalizeJobPolicy(value) {
   if (value === undefined || value === null) return null;
@@ -1962,6 +2029,22 @@ function applyTypeInvariants(node) {
     delete node.errorVariable;
     delete node.message;
     if (typeof node.gatewayRef !== "number") node.gatewayRef = null;
+  } else if (isLinkEventType(node.type)) {
+    // A link event carries only its name, which pairs a throw with its catch;
+    // a catch's routing lives on its one outgoing flow.
+    node.requiresClaim = false;
+    node.claimMode = CLAIM_MODE.FRESH;
+    node.inheritClaimFromNodeId = null;
+    node.roles = [];
+    node.variables = [];
+    node.assignee = null;
+    delete node.service;
+    node.assignments = [];
+    delete node.scriptFormat;
+    delete node.script;
+    delete node.attachedToRef;
+    delete node.errorVariable;
+    delete node.message;
   } else if (isMessageCatchEventType(node.type)) {
     // A message catch event rests (like a userTask) until a matching message is
     // delivered via POST /api/instances/{id}/message. The delivery configuration
@@ -2183,7 +2266,8 @@ function applyFlowInvariants(flow) {
       flow.condition = null;
       flow.conditionPriority = null;
     }
-  } else if (gateway || (source && isScopedInterruptEventType(source.type))) {
+  } else if (gateway || (source && (isScopedInterruptEventType(source.type) ||
+      isLinkCatchEventType(source.type)))) {
     flow.roles = [];
     flow.variables = [];
     flow.condition = null;
@@ -2260,7 +2344,9 @@ const NODE_ICON_SYMBOL = {
   [NODE_TYPE.INCLUSIVE_GATEWAY]: "icon-inclusive-gateway",
   [NODE_TYPE.COMPLEX_GATEWAY]: "icon-complex-gateway",
   [NODE_TYPE.SCOPED_INTERRUPT_EVENT]: "icon-scoped-interrupt",
-  [NODE_TYPE.TERMINATE_END_EVENT]: "icon-terminate"
+  [NODE_TYPE.TERMINATE_END_EVENT]: "icon-terminate",
+  [NODE_TYPE.LINK_THROW_EVENT]: "icon-link-throw",
+  [NODE_TYPE.LINK_CATCH_EVENT]: "icon-link-catch"
 };
 
 function appendSvgTitle(parent, text) {
@@ -2758,21 +2844,24 @@ function renderNodes() {
   // Re-rendering replaces node elements; keep a viewer's keyboard focus on the same node.
   const focusedNodeId = viewerMode ? focusedViewerNodeId() : null;
   nodesG.innerHTML = "";
+  const links = linkEventIndex(model);
+  const linkPartnerIds = selectedLinkPartnerIds(links);
   for (const node of model.flowNodes) {
     const pos = nodePosition(node);
     const nodeSelected = isSel('node', node.id);
+    const linkPartner = linkPartnerIds.has(node.id);
     const primarySelected = selected?.kind === 'node' && selected.nodeId === node.id;
     const instanceMarker = viewerMode ? instanceOverlay.get(node.id) : null;
     const historyReached = viewerMode && instanceHistoryNodes.has(node.id);
     const g = el("g", {
-      class: `node ${node.type} ${isConditionalBoundaryEventType(node.type) && node.cancelActivity === false ? 'non-interrupting' : ''} ${nodeSelected ? 'selected' : ''} ${primarySelected ? 'primary-selected' : ''} ${traceClass('node', node.id)} ${instanceMarker ? `instance-marked instance-${instanceMarker.state}` : ''} ${historyReached ? 'instance-reached' : ''}`,
+      class: `node ${node.type} ${isConditionalBoundaryEventType(node.type) && node.cancelActivity === false ? 'non-interrupting' : ''} ${nodeSelected ? 'selected' : ''} ${primarySelected ? 'primary-selected' : ''} ${traceClass('node', node.id)} ${instanceMarker ? `instance-marked instance-${instanceMarker.state}` : ''} ${historyReached ? 'instance-reached' : ''} ${linkPartner ? 'link-partner' : ''}`,
       transform: `translate(${pos.x},${pos.y})`, "data-id": node.id
     });
     const marker = model.initialEventId === node.id ? " · START" : "";
     const roles = node.rolesVariable != null ? truncateText(`$${node.rolesVariable}`, 20) : roleSummary(node.roles, 20);
     const catchText = isErrorBoundaryEventType(node.type) && errorBoundaryShowsCatchText(node)
       ? ` · Catches: ${errorBoundaryCatchText(node)}` : "";
-    appendSvgTitle(g, `#${node.id} · ${typeLabel(node.type)} · ${node.name || "Unnamed"}${catchText}${node.rolesVariable != null ? ` · Role variable: ${node.rolesVariable} (captured on entry)` : roles ? ` · Roles: ${normalizeRoles(node.roles).join(", ")}` : ""}${instanceMarker?.label ? ` · ${instanceMarker.label}` : ""}${historyReached ? " · Recorded as reached" : ""}`);
+    appendSvgTitle(g, `#${node.id} · ${typeLabel(node.type)} · ${node.name || "Unnamed"}${catchText}${node.rolesVariable != null ? ` · Role variable: ${node.rolesVariable} (captured on entry)` : roles ? ` · Roles: ${normalizeRoles(node.roles).join(", ")}` : ""}${linkPartnerTitle(node, links)}${linkPartner ? " · Linked to the selected event" : ""}${instanceMarker?.label ? ` · ${instanceMarker.label}` : ""}${historyReached ? " · Recorded as reached" : ""}`);
 
     if (isBoundaryEventType(node.type)) {
       const r = BOUNDARY_D / 2;
@@ -2783,11 +2872,14 @@ function renderNodes() {
       const r = EVENT_D / 2;
       g.appendChild(el("circle", { class: "body", cx: r, cy: r, r: r - 2 }));
       if (isMessageCatchEventType(node.type) || isTimerCatchEventType(node.type) ||
-          isConditionalCatchEventType(node.type)) {
+          isConditionalCatchEventType(node.type) || isLinkEventType(node.type)) {
         g.appendChild(el("circle", { class: "ring", cx: r, cy: r, r: r - 6 }));
       }
       if (isScopedInterruptEventType(node.type)) {
         g.appendChild(el("circle", { class: "ring", cx: r, cy: r, r: r - 7 }));
+      }
+      if (linkPartner) {
+        g.appendChild(el("circle", { class: "link-partner-ring", cx: r, cy: r, r: r + 4 }));
       }
       appendNodeIcon(g, node.type, r - 11, r - 11, 22);
       const idText = el("text", {
@@ -3733,6 +3825,10 @@ function changeNodeTypeFromInspector(node, nextType) {
     alert("Remove all outgoing sequence flows before changing this node to an end event.");
     return false;
   }
+  if (isLinkThrowEventType(nextType) && outgoingFlows(node.id).length > 0) {
+    alert("Remove all outgoing sequence flows before changing this node to a link throw event.");
+    return false;
+  }
   const previousType = node.type;
   if (previousType !== nextType && node.multiInstance && saveIsAutomaticMultiInstanceType(previousType)) {
     if (!confirm("Changing the type removes this automatic multi-instance configuration and its local output declarations. Review output mappings, assignments, and attached boundaries after changing the type. Continue?")) return false;
@@ -3891,7 +3987,13 @@ function renderNodeInspector() {
   applyTypeInvariantsForRender(node);
   inspector.innerHTML = `<h2>Node #${node.id}</h2>`;
   field("Node ID", "text", node.id, null, true);
-  field("Name", "text", node.name, v => { node.name = v; renderNodes(); renderEdges(); });
+  // A link event's name is its pairing key, so typing it also changes what a trace follows.
+  field("Name", "text", node.name, v => {
+    node.name = v;
+    if (isLinkEventType(node.type)) renderDiagramLayers();
+    else { renderNodes(); renderEdges(); }
+    refreshLinkSection(node);
+  });
   field("External ID", "text", node.externalId ?? "", v => { node.externalId = v.trim() ? v : null; });
   if (isBoundaryEventType(node.type)) {
     // Boundary events are created via their host's add-boundary controls
@@ -3995,6 +4097,8 @@ function renderNodeInspector() {
       inspector.appendChild(warning);
     }
   }
+
+  renderLinkSection(node);
 
   if (isErrorEndEventType(node.type)) {
     const errorCodeInput = field("Error code", "text", node.errorCode ?? "", v => {
@@ -4302,7 +4406,7 @@ function renderNodeInspector() {
     renderBoundaryHostSection(node);
   }
 
-  if (!isEndEventType(node.type)) {
+  if (!isEndEventType(node.type) && !isLinkThrowEventType(node.type)) {
     const flowsTitle = document.createElement("h2");
     flowsTitle.textContent = "Outgoing flows";
     flowsTitle.style.marginTop = "16px";
@@ -4617,6 +4721,187 @@ function appendTypedOutputMappingFields(box, mapping, requiredLabel, defaultPlac
   };
   validationField.appendChild(validationInput);
   box.appendChild(validationField);
+}
+
+// The open inspector's Link section, so typing the name updates its status.
+let linkSectionView = null;
+
+function renderLinkSection(node) {
+  linkSectionView = null;
+  if (!isLinkEventType(node.type)) return;
+  const isThrow = isLinkThrowEventType(node.type);
+  const title = document.createElement("h2");
+  title.textContent = "Link";
+  title.style.marginTop = "16px";
+  inspector.appendChild(title);
+  attachInspectorHelp(title, "link-event", isThrow
+    ? ["A token that reaches this event continues at the link catch event with the same name, as if a sequence flow joined them. Several link throw events may continue at one catch.",
+       "Names match after trimming, exactly and including letter case. Use a link for a long return or crossing flow, or for a section entered from several places; keep short flows as flows."]
+    : ["Tokens continue here from every link throw event with this event's name, then follow its one outgoing flow. A catch has no incoming flows, so place it at the start of a row.",
+       "Names match after trimming, exactly and including letter case. No two link catch events may share a name, even in different letter case."]);
+  const container = document.createElement("div");
+  container.className = "link-section";
+  const controls = document.createElement("div");
+  // The lines that change while the name is typed stay in one region, announced
+  // politely as the other live inspector statuses are.
+  const notes = document.createElement("div");
+  notes.className = "link-notes";
+  notes.setAttribute("role", "status");
+  notes.setAttribute("aria-live", "polite");
+  const actions = document.createElement("div");
+  container.appendChild(controls);
+  container.appendChild(notes);
+  container.appendChild(actions);
+  inspector.appendChild(container);
+  linkSectionView = { node, controls, notes, actions };
+  renderLinkSectionContent(node, linkSectionView);
+}
+
+function refreshLinkSection(node) {
+  if (!linkSectionView || linkSectionView.node !== node) return;
+  renderLinkSectionContent(node, linkSectionView);
+  linkInspectorLabels(linkSectionView.controls);
+}
+
+// Selects a link partner and brings it into view, as choosing a diagram search result does.
+// The inspector redraw removes the pressed button, so focus moves to the partner's
+// heading, as it does for an error boundary opened from its host: the next Tab reaches
+// its first field, and hosted shortcuts keep working because focus stays in the editor.
+function goToLinkPartner(nodeId) {
+  chooseDiagramSearchResult({ kind: "node", id: nodeId });
+  const heading = inspector.querySelector("h2");
+  if (!heading) return;
+  heading.tabIndex = -1;
+  heading.focus();
+}
+
+function linkStatusNote(text, warning) {
+  const note = document.createElement("p");
+  note.className = "empty-note link-status";
+  if (warning) note.style.color = "var(--warning-text)";
+  note.style.marginTop = "8px";
+  note.style.overflowWrap = "anywhere";
+  note.textContent = text;
+  return note;
+}
+
+// The accessible name starts with or contains the visible text, so speech input
+// can press the button by what it shows.
+function linkPartnerButton(text, ariaLabel, nodeId) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "link-partner-button";
+  button.textContent = text;
+  if (ariaLabel) button.setAttribute("aria-label", ariaLabel);
+  if (nodeId == null) button.disabled = true;
+  else button.onclick = () => goToLinkPartner(nodeId);
+  return button;
+}
+
+function renderLinkSectionContent(node, view) {
+  const { controls, notes, actions } = view;
+  controls.replaceChildren();
+  notes.replaceChildren();
+  actions.replaceChildren();
+  const links = linkEventIndex(model);
+  const key = linkNameKey(node.name);
+  const sameName = (left, right) => left !== null && right !== null &&
+    ordinalIgnoreCaseAttributeKey(left) === ordinalIgnoreCaseAttributeKey(right);
+  const catches = model.flowNodes.filter(candidate => isLinkCatchEventType(candidate.type));
+  const sharesNameNote = other =>
+    `Link catch event #${other.id} is also named '${linkNameKey(other.name)}'; link catch names must be unique, ignoring letter case.`;
+  if (isLinkThrowEventType(node.type)) {
+    const catchId = links.catchOf(node.id);
+    const selectBox = document.createElement("div");
+    selectBox.className = "field";
+    const label = document.createElement("label");
+    label.textContent = "Continues at";
+    selectBox.appendChild(label);
+    const select = document.createElement("select");
+    select.dataset.linkContinuesAt = "true";
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = catches.length
+      ? "— choose a link catch event —"
+      : "— no link catch event yet —";
+    select.appendChild(placeholder);
+    for (const candidate of catches) {
+      const candidateKey = linkNameKey(candidate.name);
+      const option = document.createElement("option");
+      option.value = String(candidate.id);
+      option.textContent = `${candidateKey ?? "(unnamed)"} · #${candidate.id}`;
+      // A catch without a name has nothing to copy; name it first.
+      option.disabled = candidateKey === null;
+      select.appendChild(option);
+    }
+    const shownValue = catchId != null ? String(catchId) : "";
+    select.value = shownValue;
+    // Copies the catch's name to this throw: one undoable change. The redraw replaces
+    // this list, so focus returns to the new one and stays inside the editor.
+    select.onchange = () => {
+      const chosen = getNode(Number(select.value));
+      const chosenKey = chosen && isLinkCatchEventType(chosen.type) ? linkNameKey(chosen.name) : null;
+      if (chosenKey === null) {
+        // The placeholder is not a choice; keep showing where tokens continue.
+        select.value = shownValue;
+        return;
+      }
+      node.name = chosenKey;
+      render();
+      inspector.querySelector("[data-link-continues-at]")?.focus();
+    };
+    selectBox.appendChild(select);
+    controls.appendChild(selectBox);
+
+    if (key === null) {
+      notes.appendChild(linkStatusNote(
+        "Name this event, or choose a link catch event above, to say where tokens continue.", true));
+    } else if (catchId != null) {
+      notes.appendChild(linkStatusNote(
+        `Tokens continue at link catch event #${catchId} ('${linkNameKey(getNode(catchId)?.name)}').`, false));
+      // Two catches with one name: tokens continue at the first, whichever was chosen.
+      const other = catches.find(candidate => candidate.id !== catchId && sameName(linkNameKey(candidate.name), key));
+      if (other) notes.appendChild(linkStatusNote(sharesNameNote(other), true));
+    } else {
+      const caseOnly = catches.find(candidate => sameName(linkNameKey(candidate.name), key));
+      notes.appendChild(linkStatusNote(caseOnly
+        ? `No link catch event is named '${key}'. Link catch event #${caseOnly.id} is named '${linkNameKey(caseOnly.name)}'; names must match exactly, including letter case.`
+        : `No link catch event is named '${key}'. Choose one above, or give a link catch event this name.`, true));
+    }
+    const goTo = linkPartnerButton("Go to catch", catchId != null ? `Go to catch #${catchId}` : null, catchId);
+    goTo.style.marginTop = "8px";
+    actions.appendChild(goTo);
+    return;
+  }
+
+  if (key === null) {
+    notes.appendChild(linkStatusNote(
+      "Name this event; link throw events with the same name continue here.", true));
+    return;
+  }
+  const duplicate = catches.find(candidate => candidate !== node && sameName(linkNameKey(candidate.name), key));
+  if (duplicate) notes.appendChild(linkStatusNote(sharesNameNote(duplicate), true));
+  const throws = links.throwsOf(node.id).map(getNode).filter(Boolean);
+  if (throws.length === 0) {
+    // Throws with this exact name continue at the first catch that has it, as save validation counts them.
+    const first = catches.find(candidate => linkNameKey(candidate.name) === key);
+    const named = model.flowNodes.some(candidate =>
+      isLinkThrowEventType(candidate.type) && linkNameKey(candidate.name) === key);
+    notes.appendChild(linkStatusNote(named && first && first !== node
+      ? `Link throw events named '${key}' continue at link catch event #${first.id}, the first with this name.`
+      : `No link throw event uses the name '${key}' yet.`, true));
+    return;
+  }
+  notes.appendChild(linkStatusNote(throws.length === 1
+    ? "Tokens continue here from 1 link throw event:"
+    : `Tokens continue here from ${throws.length} link throw events:`, false));
+  const list = document.createElement("div");
+  list.className = "link-partner-list";
+  for (const throwNode of throws) {
+    const text = `#${throwNode.id} · ${linkNameKey(throwNode.name)}`;
+    list.appendChild(linkPartnerButton(text, `Go to link throw event ${text}`, throwNode.id));
+  }
+  actions.appendChild(list);
 }
 
 function renderJoinCancellationSection(node) {
@@ -9553,6 +9838,7 @@ function finishRectangleSelection(event) {
 function connectionSourceProblem(node) {
   if (!node) return "The source node no longer exists.";
   if (isEndEventType(node.type)) return "An end event cannot have an outgoing sequence flow.";
+  if (isLinkThrowEventType(node.type)) return "A link throw event cannot have an outgoing sequence flow.";
   if (isSingleOutgoingType(node.type) && outgoingFlows(node.id).length >= 1) {
     return "This node type can have exactly one outgoing flow.";
   }
@@ -9585,6 +9871,7 @@ function scopedInterruptTargetProblem(source, target, prospective = false) {
 function connectionTargetProblem(node) {
   if (!node) return "Drop the connection on a target node.";
   if (isBoundaryEventType(node.type)) return "A boundary event cannot have an incoming sequence flow.";
+  if (isLinkCatchEventType(node.type)) return "A link catch event cannot have an incoming sequence flow.";
   if (isStartEventType(node.type) || isMessageStartEventType(node.type) ||
       isTimerStartEventType(node.type)) {
     return "An entry event cannot have an incoming sequence flow.";
@@ -10178,6 +10465,45 @@ function ordinalIgnoreCaseAttributeKey(value) {
       ? upper
       : character;
   }).join("");
+}
+
+// Link events pair by name, as LinkEventRules does on the server: the name
+// trimmed as .NET Trim() does, then compared exactly. This is the editor's only
+// pairing code; everything that follows a link reads linkEventIndex.
+function linkNameKey(name) {
+  if (typeof name !== "string") return null;
+  const key = trimAttributeKey(name);
+  return key ? key : null;
+}
+// A throw resolves to the first catch, in node order, whose name equals its own
+// exactly; a throw with a blank name or no such catch stays unresolved.
+function linkEventIndex(candidate) {
+  const nodes = Array.isArray(candidate && candidate.flowNodes)
+    ? candidate.flowNodes.filter(Boolean) : [];
+  const catchByName = new Map();
+  for (const node of nodes) {
+    if (node.type !== "intermediateLinkCatchEvent") continue;
+    const key = linkNameKey(node.name);
+    if (key !== null && !catchByName.has(key)) catchByName.set(key, node.id);
+  }
+  const catchByThrow = new Map();
+  const throwsByCatch = new Map();
+  const edges = [];
+  for (const node of nodes) {
+    if (node.type !== "intermediateLinkThrowEvent") continue;
+    const key = linkNameKey(node.name);
+    if (key === null || !catchByName.has(key) || catchByThrow.has(node.id)) continue;
+    const catchId = catchByName.get(key);
+    catchByThrow.set(node.id, catchId);
+    if (!throwsByCatch.has(catchId)) throwsByCatch.set(catchId, []);
+    throwsByCatch.get(catchId).push(node.id);
+    edges.push({ throwId: node.id, catchId });
+  }
+  return {
+    edges,
+    catchOf: throwId => catchByThrow.has(throwId) ? catchByThrow.get(throwId) : null,
+    throwsOf: catchId => throwsByCatch.get(catchId) || []
+  };
 }
 
 const INBOX_VISIBILITY_LIMITS = Object.freeze({
@@ -11134,6 +11460,9 @@ function createSaveValidationContext(candidate) {
       addStructuralTarget(boundary.attachedToRef, boundary.id);
     }
   }
+  // A link joins its throw to its catch as a sequence flow would.
+  ctx.links = linkEventIndex(candidate);
+  for (const link of ctx.links.edges) addStructuralTarget(link.throwId, link.catchId);
   ctx.incomingFor = nodeId => ctx.incomingByNode.get(nodeId) || [];
   ctx.outgoingFor = nodeId => ctx.outgoingByNode.get(nodeId) || [];
   ctx.userTasksById = new Map(ctx.nodes
@@ -11209,6 +11538,7 @@ function validateModelForSave(candidate) {
   validateSaveMessageStarts(ctx);
   validateSaveEntries(ctx);
   validateSaveEndEvents(ctx);
+  validateSaveLinkEvents(ctx);
   validateSaveNodeTypes(ctx);
   validateSaveGateways(ctx);
   validateSaveGraphScopes(ctx);
@@ -13873,13 +14203,65 @@ function validateSaveEndEvents(ctx) {
   }
 }
 
+// Mirrors LinkEventRules.FindProblems: for each link event in node order, a blank
+// name, then its sequence-flow topology, then its pairing.
+function validateSaveLinkEvents(ctx) {
+  const nodes = ctx.nodes.filter(Boolean);
+  const throws = nodes.filter(node => node.type === "intermediateLinkThrowEvent");
+  const catches = nodes.filter(node => node.type === "intermediateLinkCatchEvent");
+  if (throws.length === 0 && catches.length === 0) return;
+  const errors = ctx.errors;
+  const sameName = (left, right) => left !== null && right !== null &&
+    ordinalIgnoreCaseAttributeKey(left) === ordinalIgnoreCaseAttributeKey(right);
+  const seenCatches = [];
+  for (const node of nodes) {
+    const isThrow = node.type === "intermediateLinkThrowEvent";
+    if (!isThrow && node.type !== "intermediateLinkCatchEvent") continue;
+    const label = (isThrow ? "Link throw event #" : "Link catch event #") + String(node.id);
+    const key = linkNameKey(node.name);
+    if (key === null) errors.push("Flow node #" + String(node.id) + " name is required.");
+    const incoming = ctx.incomingFor(node.id).length;
+    const outgoing = ctx.outgoingFor(node.id);
+    if (isThrow) {
+      if (incoming === 0) errors.push(label + " must have at least one incoming sequence flow.");
+      if (outgoing.length > 0) errors.push(label + " cannot have outgoing sequence flows.");
+      if (key === null) continue;
+      if (catches.some(candidate => linkNameKey(candidate.name) === key)) continue;
+      const caseOnly = catches.find(candidate => sameName(linkNameKey(candidate.name), key));
+      errors.push(caseOnly
+        ? label + " is named '" + key + "', but link catch event #" + String(caseOnly.id) +
+          " is named '" + linkNameKey(caseOnly.name) +
+          "'; link names must match exactly, including letter case."
+        : label + " has no link catch event named '" + key + "'.");
+      continue;
+    }
+    if (incoming > 0) errors.push(label + " cannot have incoming sequence flows.");
+    if (outgoing.length !== 1) {
+      errors.push(label + " must have exactly one outgoing sequence flow.");
+    } else if (hasUnsupportedPassThroughMetadata(outgoing[0]) || outgoing[0].conditionPriority != null) {
+      errors.push(label + " must have one unconditional outgoing sequence flow without " +
+        "user-action or multi-instance metadata.");
+    }
+    if (key === null) continue;
+    const earlier = seenCatches.find(candidate => sameName(linkNameKey(candidate.name), key));
+    seenCatches.push(node);
+    if (earlier) {
+      errors.push(label + " has the same name as link catch event #" + String(earlier.id) +
+        " ('" + linkNameKey(earlier.name) + "'); link catch names must be unique, ignoring letter case.");
+    }
+    if (!throws.some(candidate => linkNameKey(candidate.name) === key)) {
+      errors.push(label + " has no link throw event named '" + key + "'.");
+    }
+  }
+}
+
 const supportedNodeTypes = new Set([
   "startEvent", "messageStartEvent", "timerStartEvent", "userTask", "task", "serviceTask",
   "scriptTask", "callActivity", "exclusiveGateway", "parallelGateway", "inclusiveGateway",
   "complexGateway", "scopedInterruptEvent", "endEvent", "terminateEndEvent",
   "errorEndEvent", "errorBoundaryEvent", "timerBoundaryEvent", "conditionalBoundaryEvent",
   "intermediateMessageCatchEvent", "intermediateTimerCatchEvent",
-  "intermediateConditionalCatchEvent"
+  "intermediateConditionalCatchEvent", "intermediateLinkThrowEvent", "intermediateLinkCatchEvent"
 ]);
 function validateSaveNodeTypes(ctx) {
   const errors = ctx.errors;

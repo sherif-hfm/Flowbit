@@ -550,6 +550,24 @@ public static class WorkflowVersionCompatibilityEvaluator
             }
         }
 
+        // A throw that keeps its id but continues at a different catch reroutes
+        // like a flow whose endpoints changed. Renaming a whole link keeps every
+        // pair and is allowed.
+        var sourceLinks = LinkEventRules.Index(source);
+        var targetLinks = LinkEventRules.Index(target);
+        foreach (var nodeId in sourceNodes.Keys.Intersect(targetNodes.Keys).OrderBy(id => id))
+        {
+            if (BpmnFlowNodeTypes.IsLinkThrow(sourceNodes[nodeId].Type)
+                && BpmnFlowNodeTypes.IsLinkThrow(targetNodes[nodeId].Type)
+                && sourceLinks.CatchOf(nodeId) != targetLinks.CatchOf(nodeId))
+            {
+                blockers.Add(Issue(
+                    WorkflowVersionCompatibilityCodes.LinkEventContractChanged,
+                    $"Link throw node #{nodeId} continues at a different link catch event while branch or gateway state is active.",
+                    nodeId));
+            }
+        }
+
         var sourceFlows = IndexFlows(source);
         var targetFlows = IndexFlows(target);
         foreach (var flowId in sourceFlows.Keys.Except(targetFlows.Keys).OrderBy(id => id))

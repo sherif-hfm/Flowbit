@@ -46,6 +46,7 @@ internal sealed class GatewayTopologyIndex
     private readonly IReadOnlyDictionary<int, IReadOnlyList<SequenceFlowModel>> _incoming;
     private readonly IReadOnlyDictionary<int, IReadOnlyList<SequenceFlowModel>> _outgoing;
     private readonly ConcurrentDictionary<int, MergeReachability> _mergePlans = new();
+    private readonly LinkEventIndex _links;
 
     public GatewayTopologyIndex(WorkflowModel definition)
     {
@@ -82,6 +83,16 @@ internal sealed class GatewayTopologyIndex
         {
             predecessors[boundary.Id].Add(boundary.AttachedToRef!.Value);
         }
+        // A link is an implicit throw -> catch edge: a token on a throw can
+        // still reach every merge input downstream of its catch.
+        _links = LinkEventRules.Index(definition);
+        foreach (var link in _links.Edges)
+        {
+            if (predecessors.TryGetValue(link.CatchId, out var values))
+            {
+                values.Add(link.ThrowId);
+            }
+        }
         _predecessors = predecessors.ToDictionary(
             pair => pair.Key,
             pair => (IReadOnlyList<int>)pair.Value.Distinct().OrderBy(id => id).ToArray());
@@ -102,6 +113,9 @@ internal sealed class GatewayTopologyIndex
 
     public IReadOnlyList<SequenceFlowModel> OutgoingFlows(int nodeId) =>
         _outgoing.GetValueOrDefault(nodeId) ?? [];
+
+    /// <summary>The catch a link throw continues at, or null when the throw is unresolved.</summary>
+    public int? LinkCatchOf(int throwNodeId) => _links.CatchOf(throwNodeId);
 
     public bool CanReachAnyInput(
         int mergeNodeId,

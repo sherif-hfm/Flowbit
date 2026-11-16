@@ -961,7 +961,7 @@ The instance's event and audit trail: flow traversals, automatic routing, claims
 | `InstanceId`, `WorkflowDefinitionId` | Owning instance and the version in effect when the row was written. |
 | `FromStepId`, `ToStepId` | Source and target node IDs (legacy "step" naming). |
 | `ActionId` | Sequence flow taken, when the event selected one. |
-| `Note` | Event kind, for example `start`, `automatic`, `gateway`, `message`, `taskClaim`, `taskAssignment`, `taskRolesChanged`, or `instanceReactivated`. |
+| `Note` | Event kind, for example `start`, `automatic`, `gateway`, `message`, `linkThrow`, `linkCatch`, `taskClaim`, `taskAssignment`, `taskRolesChanged`, or `instanceReactivated`. Notes are not constrained by the database. A `linkThrow` row goes from a link throw event to its link catch event and has no `ActionId`. |
 | `Payload` | Event-specific JSON details. |
 | `PerformedBy`, `PerformedAt`, `ActingFor`, `DelegationId`, `ActorClaimsJson` | Actor, time, delegation attribution, and allowlisted JWT claims (`WorkflowAudit:AllowedClaims`). |
 | `TokenId`, `UserTaskId`, `MultiInstanceExecutionId`, `ItemIndex` | Runtime correlation. These columns have no foreign keys. |

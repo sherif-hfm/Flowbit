@@ -47,6 +47,8 @@
 .instance-diagram-position p { margin: .3rem 0 0; }
 .instance-diagram-position-heading { display: flex; align-items: center; justify-content: space-between; gap: .5rem; color: var(--fb-muted); }
 .instance-diagram-links { display: flex; flex-wrap: wrap; gap: .3rem .8rem; margin-top: .35rem; }
+.instance-diagram-link-partners { display: flex; flex-wrap: wrap; align-items: center; gap: .35rem; margin: .25rem 0 .5rem; }
+.instance-diagram-link-partners .btn { max-width: 100%; overflow-wrap: anywhere; text-align: left; }
 .instance-diagram-items { display: grid; gap: .25rem; margin: .45rem 0 0; padding: 0; list-style: none; }
 .instance-diagram-items li { display: flex; flex-wrap: wrap; align-items: baseline; gap: .15rem .6rem; }
 .instance-diagram-item-status { color: var(--fb-muted); }

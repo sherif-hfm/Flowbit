@@ -68,7 +68,7 @@ public sealed class WorkflowAuthoringPackageTests
         }
         var nodes = definitions.GetProperty(nameof(FlowNodeModel)).GetProperty("properties").GetProperty("type").GetProperty("enum")
             .EnumerateArray().Select(value => value.GetString()!).ToArray();
-        Assert.Equal(22, nodes.Length);
+        Assert.Equal(24, nodes.Length);
         Assert.Equal(WorkflowAuthoringJson.NodeTypes, nodes);
         Assert.All(nodes, type => Assert.True(BpmnFlowNodeTypes.IsSupported(type!)));
         Assert.False(definitions.GetProperty(nameof(MessageCatchModel)).GetProperty("properties").TryGetProperty("idempotencyVariable", out _));
@@ -197,6 +197,23 @@ public sealed class WorkflowAuthoringPackageTests
         foreach (var node in WorkflowAuthoringJson.NodeTypes) Assert.Contains("### " + node + "\n", docs.Files["node-reference.md"]);
         Assert.Contains("examples/basics/02-two-step-approval.json", docs.Files.Keys);
         Assert.Contains("developer-guide.md", docs.Files.Keys);
+    }
+
+    [Fact]
+    public void NewDiagramLayout_StartsALinkCatchItsOwnRowInTheFirstColumn()
+    {
+        // A catch has no incoming flow, so like a start event it takes column 0 of its lane, and the section after it reads
+        // left to right. The layout follows only sequence flows; it needs no link edge.
+        var model = LaidOut("examples/basics/11-link-events.json");
+        var nodes = model.FlowNodes.ToDictionary(node => node.Id);
+        var start = nodes[1];
+        var catchNode = nodes[7];
+
+        Assert.Equal(BpmnFlowNodeTypes.IntermediateLinkCatchEvent, catchNode.Type);
+        Assert.Equal(start.X, catchNode.X);
+        Assert.True(nodes[8].X > catchNode.X && nodes[9].X > nodes[8].X);
+        Assert.All(model.FlowNodes.Where(node => node.LaneId == catchNode.LaneId && node.Id != catchNode.Id),
+            node => Assert.True(node.X > catchNode.X));
     }
 
     [Fact]

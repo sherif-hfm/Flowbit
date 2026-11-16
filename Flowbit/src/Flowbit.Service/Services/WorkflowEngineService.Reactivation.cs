@@ -731,15 +731,20 @@ public sealed partial class WorkflowEngineService
                 boundary.Id);
     }
 
-    private static string? FindUnsafeReactivationTopology(
+    internal static string? FindUnsafeReactivationTopology(
         WorkflowModel definition,
         int targetNodeId)
     {
+        // A link joins its throw to its catch as a sequence flow would, so a
+        // hazard behind a link is as reachable as one behind a flow.
         var outgoing = definition.SequenceFlows
-            .GroupBy(flow => flow.SourceRef)
+            .Select(flow => (Source: flow.SourceRef, Target: flow.TargetRef))
+            .Concat(LinkEventRules.ImplicitEdges(definition)
+                .Select(edge => (Source: edge.ThrowId, Target: edge.CatchId)))
+            .GroupBy(edge => edge.Source)
             .ToDictionary(
                 group => group.Key,
-                group => group.Select(flow => flow.TargetRef).Distinct().ToArray());
+                group => group.Select(edge => edge.Target).Distinct().ToArray());
         var incomingFlows = definition.SequenceFlows
             .GroupBy(flow => flow.TargetRef)
             .ToDictionary(

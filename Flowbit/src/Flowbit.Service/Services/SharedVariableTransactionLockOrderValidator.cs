@@ -64,6 +64,9 @@ public static class SharedVariableTransactionLockOrderValidator
         var variableByAlias = variables
             .Where(variable => variable is not null && !string.IsNullOrWhiteSpace(variable.Name))
             .ToDictionary(variable => variable.Name, StringComparer.OrdinalIgnoreCase);
+        // The engine queues a token on a throw's catch as one routing step.
+        var linkCatches = LinkEventRules.ImplicitEdges(definition)
+            .ToDictionary(edge => edge.ThrowId, edge => edge.CatchId);
         var boundariesByHost = flowNodes
             .Where(node => BpmnFlowNodeTypes.IsErrorBoundary(node.Type)
                 && node.AttachedToRef is not null)
@@ -354,6 +357,7 @@ public static class SharedVariableTransactionLockOrderValidator
                 scenario,
                 nodes,
                 outgoing,
+                linkCatches,
                 nodeKeys,
                 nodePostWrites,
                 boundaryPostWrites,
@@ -368,6 +372,7 @@ public static class SharedVariableTransactionLockOrderValidator
         SimulationState initial,
         IReadOnlyDictionary<int, FlowNodeModel> nodes,
         IReadOnlyDictionary<int, SequenceFlowModel[]> outgoing,
+        IReadOnlyDictionary<int, int> linkCatches,
         IReadOnlyDictionary<int, string[]> nodeKeys,
         IReadOnlyDictionary<int, PostWritePlan> nodePostWrites,
         IReadOnlyDictionary<int, PostWritePlan> boundaryPostWrites,
@@ -447,7 +452,8 @@ public static class SharedVariableTransactionLockOrderValidator
             var routes = RouteChoices(
                 node,
                 cursor,
-                outgoing[node.Id]);
+                outgoing[node.Id],
+                linkCatches);
             foreach (var triggered in Subsets(post.AtomicTargets, includeEmpty: true))
             {
                 foreach (var route in routes)
@@ -495,11 +501,18 @@ public static class SharedVariableTransactionLockOrderValidator
     private static IReadOnlyList<int[]> RouteChoices(
         FlowNodeModel node,
         Cursor cursor,
-        IReadOnlyList<SequenceFlowModel> outgoing)
+        IReadOnlyList<SequenceFlowModel> outgoing,
+        IReadOnlyDictionary<int, int> linkCatches)
     {
         if (BpmnFlowNodeTypes.IsEnd(node.Type))
         {
             return [[]];
+        }
+        // A throw routes to its catch; the catch then routes through its one
+        // flow below, as any pass-through node does. Link events acquire no keys.
+        if (BpmnFlowNodeTypes.IsLinkThrow(node.Type))
+        {
+            return linkCatches.TryGetValue(node.Id, out var catchId) ? [[catchId]] : [[]];
         }
         if (AutomaticMultiInstanceRules.IsAutomaticBody(node)) return [[]];
         if (BpmnFlowNodeTypes.IsConditionalCatch(node.Type))

@@ -863,6 +863,9 @@ public sealed class EditorValidatorTests
             function isGatewayType(type) { return type === NODE_TYPE.EXCLUSIVE_GATEWAY; }
             function isComplexGatewayType(type) { return type === NODE_TYPE.COMPLEX_GATEWAY; }
             function isScopedInterruptEventType(type) { return type === NODE_TYPE.SCOPED_INTERRUPT_EVENT; }
+            function isLinkThrowEventType(type) { return type === 'intermediateLinkThrowEvent'; }
+            function isLinkCatchEventType(type) { return type === 'intermediateLinkCatchEvent'; }
+            function isLinkEventType(type) { return isLinkThrowEventType(type) || isLinkCatchEventType(type); }
             function isServiceTaskType(type) { return type === NODE_TYPE.SERVICE_TASK; }
             function isScriptTaskType(type) { return type === NODE_TYPE.SCRIPT_TASK; }
             function isCallActivityType(type) { return type === 'callActivity'; }
@@ -1455,6 +1458,9 @@ public sealed class EditorValidatorTests
             function isErrorEndEventType(type) { return type === 'errorEndEvent'; }
             function isComplexGatewayType(type) { return type === NODE_TYPE.COMPLEX_GATEWAY; }
             function isScopedInterruptEventType(type) { return type === NODE_TYPE.SCOPED_INTERRUPT_EVENT; }
+            function isLinkThrowEventType(type) { return type === 'intermediateLinkThrowEvent'; }
+            function isLinkCatchEventType(type) { return type === 'intermediateLinkCatchEvent'; }
+            function isLinkEventType(type) { return isLinkThrowEventType(type) || isLinkCatchEventType(type); }
             function isMessageCatchEventType(type) { return type === 'intermediateMessageCatchEvent'; }
             function isMessageStartEventType(type) { return type === 'messageStartEvent'; }
             function isStartEventType(type) { return type === NODE_TYPE.START_EVENT; }
@@ -1660,6 +1666,9 @@ public sealed class EditorValidatorTests
             function isCallActivityType(type) { return type === 'callActivity'; }
             function isComplexGatewayType(type) { return type === NODE_TYPE.COMPLEX_GATEWAY; }
             function isScopedInterruptEventType(type) { return type === NODE_TYPE.SCOPED_INTERRUPT_EVENT; }
+            function isLinkThrowEventType(type) { return type === 'intermediateLinkThrowEvent'; }
+            function isLinkCatchEventType(type) { return type === 'intermediateLinkCatchEvent'; }
+            function isLinkEventType(type) { return isLinkThrowEventType(type) || isLinkCatchEventType(type); }
             function isUserTaskType(type) { return type === NODE_TYPE.USER_TASK; }
             function isErrorEndEventType(type) { return type === NODE_TYPE.ERROR_END_EVENT; }
             function isStartEventType(type) { return type === NODE_TYPE.START_EVENT; }

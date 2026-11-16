@@ -299,6 +299,13 @@ public sealed class WorkflowDefinitionValidator(
             incomingByNodeId[flow.TargetRef].Add(flow);
         }
 
+        // Pairs must be resolved before any reachability rule reads the
+        // structural adjacency, which follows each throw to its catch.
+        if (LinkEventRules.FindProblems(definition).FirstOrDefault() is { } linkProblem)
+        {
+            throw new WorkflowDomainException(linkProblem);
+        }
+
         var structuralTargetsBySource = BuildStructuralAdjacency(definition);
         foreach (var node in definition.FlowNodes)
         {
@@ -406,11 +413,14 @@ public sealed class WorkflowDefinitionValidator(
                     || BpmnFlowNodeTypes.IsConditionalCatch(node.Type)
                     || BpmnFlowNodeTypes.IsTimerStart(node.Type)
                     || BpmnFlowNodeTypes.IsMessageStart(node.Type)
-                    || BpmnFlowNodeTypes.IsCallActivity(node.Type))
+                    || BpmnFlowNodeTypes.IsCallActivity(node.Type)
+                    || BpmnFlowNodeTypes.IsLinkCatch(node.Type))
                 && outgoing.Count != 1)
             {
                 var kind = BpmnFlowNodeTypes.IsStart(node.Type)
                     ? "Start event"
+                    : BpmnFlowNodeTypes.IsLinkCatch(node.Type)
+                        ? "Link catch event"
                     : BpmnFlowNodeTypes.IsServiceTask(node.Type)
                         ? "Service task"
                         : BpmnFlowNodeTypes.IsCallActivity(node.Type)
@@ -1131,6 +1141,14 @@ public sealed class WorkflowDefinitionValidator(
                 throw new WorkflowDomainException(
                     $"Scoped interrupt event #{node.Id} cannot define task, role, variable, event, or multi-instance metadata.");
             }
+
+            if (BpmnFlowNodeTypes.IsLinkEvent(node.Type)
+                && HasUnsupportedLinkEventNodeMetadata(node))
+            {
+                var label = BpmnFlowNodeTypes.IsLinkThrow(node.Type) ? "Link throw event" : "Link catch event";
+                throw new WorkflowDomainException(
+                    $"{label} #{node.Id} cannot define task, role, variable, event, or multi-instance metadata.");
+            }
         }
 
         foreach (var flow in flows)
@@ -1138,6 +1156,16 @@ public sealed class WorkflowDefinitionValidator(
             var source = nodes.FirstOrDefault(node => node.Id == flow.SourceRef);
             if (source is null)
             {
+                continue;
+            }
+
+            if (BpmnFlowNodeTypes.IsLinkCatch(source.Type))
+            {
+                if (LinkEventRules.HasRoutingMetadata(flow))
+                {
+                    throw new WorkflowDomainException(
+                        $"Link catch event #{source.Id} must have one unconditional outgoing sequence flow without user-action or multi-instance metadata.");
+                }
                 continue;
             }
 
@@ -1226,6 +1254,24 @@ public sealed class WorkflowDefinitionValidator(
         || !string.IsNullOrWhiteSpace(node.ErrorVariable)
         || !string.IsNullOrWhiteSpace(node.ErrorCode)
         || !string.IsNullOrWhiteSpace(node.ErrorDescription);
+
+    // A link event carries only its identity, name, and layout: the name pairs it,
+    // and the routing lives on the catch's one outgoing flow.
+    private static bool HasUnsupportedLinkEventNodeMetadata(FlowNodeModel node) =>
+        HasUnsupportedScopedInterruptNodeMetadata(node)
+        || node.AsyncBefore
+        || node.AsyncAfter
+        || node.Job is not null
+        || node.Timer is not null
+        || node.Conditional is not null
+        || node.CancelActivity is not null
+        || node.ErrorMatch is not null
+        || node.CallOnly
+        || !string.IsNullOrWhiteSpace(node.RolesVariable)
+        || !string.IsNullOrWhiteSpace(node.InboxVisibilityCondition)
+        || !string.IsNullOrWhiteSpace(node.DueDateExpression)
+        || !string.IsNullOrWhiteSpace(node.DueDateCalendar)
+        || !string.IsNullOrWhiteSpace(node.PriorityExpression);
 
     /// <summary>
     /// Rejects gateway metadata that the tolerant migrator may otherwise clear.
@@ -1819,7 +1865,8 @@ public sealed class WorkflowDefinitionValidator(
         WorkflowModel definition)
     {
         // A boundary event is structurally reached through its attachment rather
-        // than an authored incoming sequence flow.
+        // than an authored incoming sequence flow, and a link catch through the
+        // throws that share its name.
         return definition.SequenceFlows
             .Select(flow => (Source: flow.SourceRef, Target: flow.TargetRef))
             .Concat(definition.FlowNodes
@@ -1829,6 +1876,8 @@ public sealed class WorkflowDefinitionValidator(
                         || BpmnFlowNodeTypes.IsConditionalBoundary(node.Type))
                     && node.AttachedToRef is not null)
                 .Select(node => (Source: node.AttachedToRef!.Value, Target: node.Id)))
+            .Concat(LinkEventRules.ImplicitEdges(definition)
+                .Select(edge => (Source: edge.ThrowId, Target: edge.CatchId)))
             .GroupBy(edge => edge.Source)
             .ToDictionary(
                 group => group.Key,

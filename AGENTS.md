@@ -8,7 +8,8 @@ edges), attach typed **variables**, and save/load the whole model as JSON.
 The model is a simplified, BPMN 2.0-aligned subset. Flow nodes are typed as
 `startEvent`, `userTask`, `task`, `serviceTask`, `callActivity`, `exclusiveGateway`,
 `inclusiveGateway`, `complexGateway`, or `endEvent`, plus `parallelGateway`,
-`intermediateConditionalCatchEvent`, `conditionalBoundaryEvent`, `scopedInterruptEvent`, and
+`intermediateConditionalCatchEvent`, `conditionalBoundaryEvent`, `scopedInterruptEvent`,
+`intermediateLinkThrowEvent`, `intermediateLinkCatchEvent`, and
 `terminateEndEvent`, drawn with BPMN-style shapes (event circles, task rounded
 rectangles, gateway diamonds). `scopedInterruptEvent` is a documented Flowbit
 extension; strict BPMN would normally model that scope with an interruptible
@@ -149,7 +150,7 @@ The key pieces:
   heading's info button and help. The Type selector's graph-changing body lives in
   the named helper `changeNodeTypeFromInspector(node, nextType)` (before
   `renderNodeInspector()`); it returns `false` for a rejected transition (end
-  target with outgoing flows, or declined gateway-semantics confirmation) and
+  or link-throw target with outgoing flows, or declined gateway-semantics confirmation) and
   `true` after all accepted-transition work. The selector adapter inside
   `renderNodeInspector()` owns both redraw decisions (`renderInspector()` on
   rejection, full `render()` on acceptance); the helper never redraws or
@@ -225,7 +226,8 @@ The key pieces:
   script tasks, variable contracts, variable presentation, declared producers,
   async/job/timer settings, per-node-type settings (error boundaries, wait
   boundaries, then `validateSaveCallActivities`, which mirrors
-  `CallActivityRules.FindLocalProblem`), end events, node types, gateway
+  `CallActivityRules.FindLocalProblem`), end events, link events
+  (`validateSaveLinkEvents`), node types, gateway
   topology, graph scopes, entry identity,
   and multi-instance outcomes. Rule helpers such as `validateTypedOutputMappings`
   and `validateRuntimeOutputTarget` stay shared across phases. The whole
@@ -264,7 +266,7 @@ A repeatable Chromium smoke suite exists at
 real copied editor and the real published API/UI over localhost with a
 disposable PostgreSQL container; see its
 [README](Flowbit/tests/Flowbit.BrowserTests/README.md) for setup and the
-E1–E21/H1–H15/R1–R14 coverage matrix. It is the baseline for editor/runtime UI changes,
+E1–E22/H1–H15/R1–R15 coverage matrix. It is the baseline for editor/runtime UI changes,
 but it does not replace scenario-specific manual verification: the native
 file-picker success/cancel path, visual comparisons, and behaviors outside the
 matrix still need the manual steps above.
@@ -940,7 +942,8 @@ Storage follows the hybrid design:
 - **Pass-through routing** (`ResolvePassThroughAsync`): `startEvent`,
   `messageStartEvent`, automatic `task`, `serviceTask`, `scriptTask`,
   `exclusiveGateway`, `parallelGateway`, `inclusiveGateway`, `complexGateway`,
-  `scopedInterruptEvent`, and
+  `scopedInterruptEvent`, `intermediateLinkThrowEvent`,
+  `intermediateLinkCatchEvent`, and
   `errorBoundaryEvent` nodes are resolved in the same
   transaction until the instance rests on a `userTask`, `callActivity`,
   `intermediateMessageCatchEvent`, `intermediateTimerCatchEvent`, or
@@ -949,9 +952,31 @@ Storage follows the hybrid design:
   written with a `start`, `messageStart`, `automatic`, `service`, `script`,
   `gateway`, `parallelFork`, `parallelJoin`, `inclusiveSplit`, `inclusiveMerge`,
   `complexActivation`, `complexReset`, `scopedInterrupt`,
-  `scopedInterruptSkipped`, `boundary`, `error`, or `message` note. Gateway history also stores
+  `scopedInterruptSkipped`, `linkThrow`, `linkCatch`, `boundary`, `error`, or
+  `message` note. Gateway history also stores
   the selected sequence-flow id; automatic gateway rows are excluded from
   previous-actor claim inheritance even though that audit id is populated.
+- **Link events.** `intermediateLinkThrowEvent` and `intermediateLinkCatchEvent`
+  pair by `name` (trimmed as .NET `Trim()` does, then exact and case-sensitive;
+  catch names unique under `OrdinalIgnoreCase`; several throws per catch; a throw
+  resolves to the first catch in node order with its exact name). A throw has
+  incoming flows and no outgoing flow; a catch has no incoming flow, one
+  unconditional outgoing flow, and at least one throw. `LinkEventRules`
+  (`Flowbit.Shared`) is the one source of pairing; never compare link names
+  elsewhere. In `ResolvePassThroughAsync` a throw takes one routing step to its
+  catch on the same token and gateway branch (`linkThrow` history row with no
+  flow or action; throw visit `normal` with no exit flow, catch visit with no
+  entry flow), then the catch takes the generic step (`linkCatch`, traversal kind
+  `linkCatch`). The hop has no flow evidence or `FlowInfo`. Every graph analysis
+  must add `LinkEventRules` edges as if they were flows:
+  `BuildStructuralAdjacency`, `GatewayTopologyIndex` (also `LinkCatchOf` for
+  routing), `FindUnsafeReactivationTopology`, the lock-order proof's
+  `RouteChoices` (link events acquire no keys), `ValidateExactTopology`
+  (`link_event_contract_changed`), and `WorkflowAiProposalChecks.Reachable`.
+  Diagram history and assistant layout need no edge. No JSON property,
+  migration, job, completion reason, or route exists for links; every replica
+  must be upgraded before a link is saved, because an older one strands a token
+  on a throw.
 - **Intermediate conditional catch events.** An
   `intermediateConditionalCatchEvent` is a persisted resting position with at
   least one incoming flow and exactly one unconditional outgoing flow. Its
@@ -2121,7 +2146,8 @@ what the cross-version `workflowKey` instance search matches.
   authorization. Selecting a node keeps current-position links separate from
   recorded executions, paged 50 at a time through the role-scoped search with
   an exact version filter. An async-after wait links the completed visit it
-  follows. Identity changes clear the previous instance and its related data
+  follows. A selected link event lists its partners, paired through
+  `LinkEventRules`, as buttons that select them. Identity changes clear the previous instance and its related data
   before reloading; history resets off and stale responses cannot restore it.
 
 Display sections live in shared child components so pages keep their own
@@ -2280,7 +2306,8 @@ falls inside a lane are assigned to it (`flowNode.laneId`).
 A node in the workflow. `type` is one of `startEvent`, `userTask`, `task`,
 `serviceTask`, `scriptTask`, `callActivity`, `exclusiveGateway`, `endEvent`, `errorEndEvent`,
 `errorBoundaryEvent`, `conditionalBoundaryEvent`, `intermediateMessageCatchEvent`,
-`intermediateConditionalCatchEvent`, or `messageStartEvent`.
+`intermediateConditionalCatchEvent`, `intermediateLinkThrowEvent`,
+`intermediateLinkCatchEvent`, or `messageStartEvent`.
 
 ```jsonc
 {
@@ -2473,6 +2500,12 @@ Node kinds and their outgoing-flow rules:
   Interrupting capture cancels the host immediately; non-interrupting capture
   creates a concurrent sibling and rearms only after the expression becomes
   false. It has no incoming flow and one fixed unconditional continuation.
+- **`intermediateLinkThrowEvent`** / **`intermediateLinkCatchEvent`**: a "go to"
+  pair inside one definition; event circles with an intermediate inner ring and a
+  filled (throw) or outlined (catch) arrow. A throw has incoming flows and no
+  outgoing flow; a token entering it continues at the catch with the same `name`.
+  A catch has no incoming flow and one unconditional outgoing flow, drawn dashed.
+  Both are pass-through and carry only the common node properties.
 - **`messageStartEvent`**: an entry point (like a `startEvent`) started by an
   external system via `POST /api/workflows/{workflowKey}/message-start`; a thin
   single-ring circle with an envelope glyph on canvas. Its `message.outputMappings`
@@ -3113,6 +3146,8 @@ when extending the model so new features stay close to BPMN terminology.
 | `type: "intermediateMessageCatchEvent"` | Intermediate Message Catch Event | A resting node that waits for a message delivered via `POST /api/instances/{id}/message`; thin double-ring circle with an envelope glyph. Auth is the node-config client id/secret + a required custom header (with optional NCalc validation), not the user JWT. Parallel waits are selected by exact `catchEvent` external ID when instance-only addressing is ambiguous. No cross-instance message-name/signal matching; timer boundaries support timeout or reminder paths. |
 | `type: "intermediateConditionalCatchEvent"` | Intermediate Conditional Catch Event | A resting double-ring event with a conditional/document glyph. It observes declared persisted instance variables only; shared aliases are rejected. It evaluates on entry and dependency-changing write batches and follows one fixed unconditional flow. Flowbit adds `atomic` and PostgreSQL-backed `durableAsync` delivery policies for transactionally safe wakeup. |
 | `type: "conditionalBoundaryEvent"` | Conditional Boundary Event | Attached to a durable activity and observes declared persisted instance variables. Missing `cancelActivity` is interrupting (solid ring); `false` is non-interrupting (dashed ring) and retriggers on each false-to-true edge. Flowbit applies its `atomic`/`durableAsync` delivery policies and persistent activation/occurrence fencing. |
+| `type: "intermediateLinkThrowEvent"` | Intermediate Link Throw Event | Double-ring event with a filled arrow. Has incoming flows and no outgoing flow; continues at the link catch with the same `name` in the same transaction. Simplified: the link name is the event's `name`, compared exactly after trimming; links stay within one definition. |
+| `type: "intermediateLinkCatchEvent"` | Intermediate Link Catch Event | Double-ring event with an outlined arrow. No incoming flow; one unconditional outgoing flow. Several throws may share it, and catch names are unique ignoring letter case. |
 | `type: "messageStartEvent"` | Message Start Event | An entry point started by an external system via `POST /api/workflows/{workflowKey}/message-start`; thin single-ring circle with an envelope glyph. Typed `message.outputMappings` declare its start variables. System-only (`IsStart` is false). The engine creates the instance and auto-advances off it (pass-through, history note `messageStart`). Simplified: instance-less credential resolution (no `sys.user`/`sys.roles`/`sys.instanceId` for credentials since there is no caller/instance yet). It shares the same optional node-level, database-claimed transport idempotency as `startEvent`. |
 | `sequenceFlow` | Sequence Flow | First-class directed edge with its own id, `sourceRef`, `targetRef`. |
 | `sequenceFlow.condition` | Condition Expression | NCalc expression on user-task and gateway flows (comparisons, boolean/arithmetic operators, functions, bare-variable truthiness). |
@@ -3137,7 +3172,8 @@ when extending the model so new features stay close to BPMN terminology.
   durable asynchronous jobs with retries and incidents. Other connector
   implementations remain out of scope. See [durable execution](docs/developer-guide.md).
 - **A bounded event subset.** Flowbit supports none/message/timer starts,
-  message/timer/conditional intermediate catches, timer/conditional/error boundaries,
+  message/timer/conditional intermediate catches, link throw/catch pairs within one
+  definition, timer/conditional/error boundaries,
   and none/error/terminate ends. Conditional events observe persisted instance variables
   rather than arbitrary engine context. Message correlation remains instance
   scoped, and signal, escalation, compensation, and event-based gateways remain
@@ -3174,7 +3210,8 @@ when extending the model so new features stay close to BPMN terminology.
   `WorkflowModelMigrator` (.NET) so older documents still load.
 - Update `BpmnFlowNodeTypes` predicates (`IsStart`, `IsEnd`, `IsErrorEnd`,
   `IsErrorBoundary`, `IsAutomatic`, `IsServiceTask`, `IsScriptTask`, `IsCallActivity`,
-  `IsUserTask`, `IsGateway`, `IsMessageCatch`, `IsPassThrough`) and
+  `IsUserTask`, `IsGateway`, `IsMessageCatch`, `IsLinkThrow`, `IsLinkCatch`,
+  `IsLinkEvent`, `IsPassThrough`) and
   `ValidateDefinition` together so the engine and editor agree.
 
 ---
@@ -3253,6 +3290,28 @@ when extending the model so new features stay close to BPMN terminology.
   `conditionalLatched` followed by `conditionalTriggered` for `durableAsync`.
   The event ring—not the sequence flow—shows interrupting versus
   non-interrupting behavior.
+- **Link events**: `linkEventIndex(candidate)`, inside the save-validator
+  markers, is the editor's only pairing code and mirrors `LinkEventRules`
+  (`trimAttributeKey`, `ordinalIgnoreCaseAttributeKey`); `validateSaveLinkEvents`
+  gives the server's messages. `createSaveValidationContext` and
+  `buildGatewayAdjacencyIndex` add its edges to their structural adjacency. The
+  navigation block runs alone in its Jint suite, so
+  `buildDiagramTraceContext(candidate, selection, mode, linkEdges)` takes the
+  edges as data and never pairs names itself; trace walks follow them, and local
+  mode keeps partners as context. A throw's outgoing connections and a catch's
+  incoming ones are refused, a node with outgoing flows cannot become a throw, and
+  the inspector's **Link** section (`renderLinkSection`) shows partners with
+  navigation through `chooseDiagramSearchResult`. A redraw removes the control
+  that was used, so `goToLinkPartner` focuses the partner's heading and
+  **Continues at** refocuses its new list: hosted shortcuts need focus inside the
+  editor. The lines that change while the name is typed live in one
+  `role="status"` region (`link-notes`) that `refreshLinkSection` keeps; the
+  name's handler calls `renderDiagramLayers()` for a link event, because the name
+  is what a trace follows. A partner button's `aria-label` contains its visible
+  text. Selecting a link event adds `link-partner` to its partners in authoring
+  and viewer modes; the viewer draws that ring dotted in the accent color, so it
+  cannot be read as the dashed "Reached" halo. No edge is drawn between paired
+  events.
 - **Gateway flows**: `exclusiveGateway` outgoing flows carry a `condition` plus
   unique positive `conditionPriority`, or the required `isDefault` marker. The
   editor shows priority/default metadata beneath the edge and enforces exactly

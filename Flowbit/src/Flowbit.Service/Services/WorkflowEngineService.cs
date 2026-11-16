@@ -5856,12 +5856,21 @@ public sealed partial class WorkflowEngineService(
                 continue;
             }
 
+            // A throw has no outgoing flow: it is one routing step to its catch,
+            // and the catch then routes below like any pass-through node.
+            if (BpmnFlowNodeTypes.IsLinkThrow(currentNode.Type))
+            {
+                await HopLinkThrowAsync(instance, token, currentNode, definition, actor, queue, cancellationToken);
+                continue;
+            }
+
             var note = currentNode.Type switch
             {
                 var t when BpmnFlowNodeTypes.IsStart(t) => "start",
                 var t when BpmnFlowNodeTypes.IsMessageStart(t) => "messageStart",
                 var t when BpmnFlowNodeTypes.IsExclusiveGateway(t) => "gateway",
                 var t when BpmnFlowNodeTypes.IsScopedInterrupt(t) => "scopedInterruptSkipped",
+                var t when BpmnFlowNodeTypes.IsLinkCatch(t) => InstanceHistoryNotes.LinkCatch,
                 var t when BpmnFlowNodeTypes.IsServiceTask(t) => "service",
                 var t when BpmnFlowNodeTypes.IsScriptTask(t) => "script",
                 var t when BpmnFlowNodeTypes.IsErrorBoundary(t) => "boundary",
@@ -7826,6 +7835,62 @@ public sealed partial class WorkflowEngineService(
         return result;
     }
 
+    /// <summary>
+    /// Moves a token from a link throw to the catch with the same name, in this transaction and on
+    /// the token's current gateway branch. The throw's visit completes with no exit flow and the
+    /// catch's starts with no entry flow; the hop records history but no flow evidence, because no
+    /// sequence flow joins the two events. The token is queued, so the catch takes its own routing
+    /// step, as two automatic tasks joined by a flow would.
+    /// </summary>
+    private async Task HopLinkThrowAsync(
+        WorkflowInstanceRecord instance,
+        ExecutionTokenRecord token,
+        FlowNodeModel throwNode,
+        WorkflowModel definition,
+        ActorContext actor,
+        Queue<long> queue,
+        CancellationToken cancellationToken)
+    {
+        // Validation guarantees a catch; a definition inserted without it fails here.
+        var catchId = GatewayTopologyCache.Get(instance.WorkflowDefinitionId, definition)
+                .LinkCatchOf(throwNode.Id)
+            ?? throw new WorkflowDomainException(
+                $"Link throw event #{throwNode.Id} has no link catch event named '{LinkEventRules.NameKey(throwNode.Name)}'.");
+        var catchNode = GetFlowNode(definition, catchId);
+        await runtime.AddTokenHistoryAsync(
+            instance.Id,
+            token.Id,
+            null,
+            throwNode.Id,
+            catchNode.Id,
+            actor.User,
+            null,
+            InstanceHistoryNotes.LinkThrow,
+            cancellationToken,
+            actor.ActingFor,
+            actor.DelegationId,
+            actorClaims: actor.AuditClaims);
+        await runtime.UpdateExecutionTokenAsync(
+            token.Id,
+            ToSnapshot(catchNode),
+            ExecutionTokenRecordStatuses.Active,
+            token.GatewayBranchId,
+            null,
+            null,
+            null,
+            ToNodeExecutionActor(actor),
+            new NodeExecutionCompletionRecord(
+                NodeExecutionRecordStatuses.Completed,
+                NodeExecutionCompletionReasons.Normal,
+                null,
+                null,
+                token.GatewayBranchId,
+                ToNodeExecutionActor(actor),
+                HasExitGatewayBranchSnapshot: true),
+            cancellationToken);
+        queue.Enqueue(token.Id);
+    }
+
     private async Task AdvanceAutomaticTokenAsync(
         WorkflowInstanceRecord instance,
         ExecutionTokenRecord token,
@@ -8652,7 +8717,9 @@ public sealed partial class WorkflowEngineService(
             InstanceHistoryNotes.CallCancelled or
             InstanceHistoryNotes.AutomaticMultiInstanceStarted or
             InstanceHistoryNotes.AutomaticMultiInstanceFailed or
-            InstanceHistoryNotes.AutomaticMultiInstanceCompleted);
+            InstanceHistoryNotes.AutomaticMultiInstanceCompleted or
+            InstanceHistoryNotes.LinkThrow or
+            InstanceHistoryNotes.LinkCatch);
 
     private SequenceFlowModel SelectPassThroughFlow(
         long definitionId,
@@ -8710,7 +8777,9 @@ public sealed partial class WorkflowEngineService(
                             ? "Script task"
                             : BpmnFlowNodeTypes.IsErrorBoundary(node.Type)
                                 ? "Error boundary event"
-                                : "Automatic task";
+                                : BpmnFlowNodeTypes.IsLinkCatch(node.Type)
+                                    ? "Link catch event"
+                                    : "Automatic task";
             throw new WorkflowDomainException($"{kind} #{node.Id} must have exactly one outgoing sequence flow.");
         }
 

@@ -146,6 +146,7 @@ public static class WorkflowVersionCompatibilityCodes
     public const string TopologyFlowEndpointsChanged = "topology_flow_endpoints_changed";
     public const string GatewayContractChanged = "gateway_contract_changed";
     public const string ScopedInterruptContractChanged = "scoped_interrupt_contract_changed";
+    public const string LinkEventContractChanged = "link_event_contract_changed";
 
     public const string VariableTypeIncompatible = "variable_type_incompatible";
     public const string VariableValidationFailed = "variable_validation_failed";

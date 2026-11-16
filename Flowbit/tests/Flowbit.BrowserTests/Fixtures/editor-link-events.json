@@ -1,0 +1,22 @@
+{
+  "id": "browser-editor-link-events",
+  "name": "Browser editor link events",
+  "initialEventId": 1,
+  "variables": [],
+  "lanes": [
+    { "id": 1, "name": "Review", "x": 20, "y": 20, "w": 980, "h": 220 },
+    { "id": 2, "name": "Closing", "x": 20, "y": 260, "w": 980, "h": 220 }
+  ],
+  "flowNodes": [
+    { "id": 1, "name": "Start", "type": "startEvent", "laneId": 1, "x": 80, "y": 98 },
+    { "id": 2, "name": "Review", "type": "userTask", "laneId": 1, "x": 240, "y": 86 },
+    { "id": 3, "name": "Hand off", "type": "task", "laneId": 1, "x": 560, "y": 86 },
+    { "id": 4, "name": "Receive", "type": "task", "laneId": 2, "x": 80, "y": 326 },
+    { "id": 5, "name": "Done", "type": "endEvent", "laneId": 2, "x": 420, "y": 338 }
+  ],
+  "sequenceFlows": [
+    { "id": 101, "name": "", "sourceRef": 1, "targetRef": 2 },
+    { "id": 201, "name": "Send", "sourceRef": 2, "targetRef": 3 },
+    { "id": 401, "name": "", "sourceRef": 4, "targetRef": 5 }
+  ]
+}

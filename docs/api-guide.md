@@ -1169,6 +1169,8 @@ This is an authenticated deployment-level detail read, not a personal-task visib
 
 Each history row may include `actorClaims`, a snapshot of the actual actor's selected JWT claims, separate from the business `payload`. Claim names map to arrays of strings, including repeated values. `null` or an absent property means not recorded; `{}` means capture was enabled but no selected claim was present. These values have the same access boundary as instance detail; select suitable claims through [audit configuration](deployment.md#selected-claim-audit).
 
+A history row's `note` names the kind of step. A token that enters a [link throw event](node-reference.md#intermediatelinkthrowevent) records a `linkThrow` row from the throw to its link catch event, with null `sequenceFlowId`; the catch's own step records a `linkCatch` row from the catch to the node its outgoing flow reaches, also with null `sequenceFlowId`, as other automatic steps have.
+
 ```http
 GET /api/instances/101 HTTP/1.1
 Host: localhost:5017

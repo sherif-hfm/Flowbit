@@ -293,6 +293,38 @@ public sealed class WorkflowVersionCompatibilityEvaluatorTests
             WorkflowVersionCompatibilityCodes.TopologyNodeAdded);
     }
 
+    [Fact]
+    public void Exact_topology_keeps_and_renames_links_but_blocks_a_throw_that_continues_elsewhere()
+    {
+        var sourceModel = LinkEventFixtures.Base();
+        sourceModel.FlowNodes.Add(new FlowNodeModel { Id = 6, Name = "Archive", Type = BpmnFlowNodeTypes.IntermediateLinkCatchEvent });
+        sourceModel.FlowNodes.Add(new FlowNodeModel { Id = 7, Name = "Archived", Type = BpmnFlowNodeTypes.EndEvent });
+        sourceModel.SequenceFlows.Add(new SequenceFlowModel { Id = 601, SourceRef = 6, TargetRef = 7 });
+        var source = Definition(21, 1, sourceModel);
+        WorkflowVersionCompatibilityResult Switch(WorkflowModel targetModel) =>
+            WorkflowVersionCompatibilityEvaluator.Evaluate(Context(source, Definition(22, 2, targetModel)) with
+            {
+                ActiveTokens =
+                [
+                    Token(101, 2, BpmnFlowNodeTypes.UserTask, null),
+                    Token(102, 2, BpmnFlowNodeTypes.UserTask, null)
+                ]
+            });
+
+        AssertCodes(Switch(Clone(sourceModel)));
+
+        var renamed = Clone(sourceModel);
+        renamed.FlowNodes.Single(node => node.Id == 3).Name = "Dispatch";
+        renamed.FlowNodes.Single(node => node.Id == 4).Name = " Dispatch ";
+        AssertCodes(Switch(renamed));
+
+        var repointed = Clone(sourceModel);
+        repointed.FlowNodes.Single(node => node.Id == 3).Name = "Archive";
+        var blocked = Switch(repointed);
+        AssertCodes(blocked, WorkflowVersionCompatibilityCodes.LinkEventContractChanged);
+        Assert.Equal(3, Assert.Single(blocked.Blockers).NodeId);
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
