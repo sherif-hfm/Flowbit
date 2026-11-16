@@ -67,6 +67,10 @@ public static class SharedVariableTransactionLockOrderValidator
         // The engine queues a token on a throw's catch as one routing step.
         var linkCatches = LinkEventRules.ImplicitEdges(definition)
             .ToDictionary(edge => edge.ThrowId, edge => edge.CatchId);
+        var interruptContinuations = ScopedInterruptContinuations(nodes, outgoing);
+        // A token the engine moves along a flow (AdvanceAutomaticTokenAsync) passes a scoped
+        // interrupt in the same routing step and is queued at the interrupt's continuation.
+        int Arrive(int targetId) => interruptContinuations.GetValueOrDefault(targetId, targetId);
         var boundariesByHost = flowNodes
             .Where(node => BpmnFlowNodeTypes.IsErrorBoundary(node.Type)
                 && node.AttachedToRef is not null)
@@ -99,7 +103,7 @@ public static class SharedVariableTransactionLockOrderValidator
                 .Where(nodeId => conditionalPlan.EventsByNodeId.TryGetValue(nodeId, out var entry)
                     && entry.DeliveryMode == ConditionalEventDeliveryModes.Atomic)
                 .SelectMany(nodeId => outgoing.GetValueOrDefault(nodeId, []))
-                .Select(flow => flow.TargetRef)
+                .Select(flow => Arrive(flow.TargetRef))
                 .Distinct()
                 .Order()
                 .ToArray();
@@ -231,6 +235,13 @@ public static class SharedVariableTransactionLockOrderValidator
                         // ResolvePassThroughAsync. Its target is therefore at
                         // the head of the new queue; the initial mutation drain
                         // appends released conditional siblings behind it.
+                        // A user action, a message delivery, or an administrative
+                        // action places the token on its target, so a scoped
+                        // interrupt there takes the first queued step; a call's
+                        // result routes the call node first. Neither passes an
+                        // interrupt before the released siblings are queued.
+                        // Timer and conditional continuations do pass it at once,
+                        // but they write nothing, so no cursor can come between.
                         state.Queue.Add(new Cursor(flow.TargetRef));
                     }
                     state.Queue.AddRange(triggered.Select(target => new Cursor(target)));
@@ -245,7 +256,7 @@ public static class SharedVariableTransactionLockOrderValidator
                         finalize,
                         nodeKeys[node.Id].Concat(flowKeys[flow.Id]),
                         $"node #{node.Id} / sequence flow #{flow.Id} asyncAfter continuation");
-                    finalize.Queue.Add(new Cursor(flow.TargetRef));
+                    finalize.Queue.Add(new Cursor(Arrive(flow.TargetRef)));
                     scenarios.Add(finalize);
                 }
             }
@@ -295,7 +306,7 @@ public static class SharedVariableTransactionLockOrderValidator
                 // Aggregate notifications drain before the body's continuation.
                 success.Queue.AddRange(triggered.Select(target => new Cursor(target)));
                 if (!node.AsyncAfter)
-                    success.Queue.AddRange(outgoing[node.Id].Select(flow => new Cursor(flow.TargetRef, AfterDrain: true)));
+                    success.Queue.AddRange(outgoing[node.Id].Select(flow => new Cursor(Arrive(flow.TargetRef), AfterDrain: true)));
                 scenarios.Add(success);
                 foreach (var boundary in boundariesByHost.GetValueOrDefault(node.Id, []))
                 {
@@ -314,7 +325,7 @@ public static class SharedVariableTransactionLockOrderValidator
             if (node.AsyncAfter)
             {
                 foreach (var flow in outgoing[node.Id])
-                    scenarios.Add(SimulationState.Start($"automatic node #{node.Id} asyncAfter continuation", new Cursor(flow.TargetRef)));
+                    scenarios.Add(SimulationState.Start($"automatic node #{node.Id} asyncAfter continuation", new Cursor(Arrive(flow.TargetRef))));
             }
         }
 
@@ -345,7 +356,7 @@ public static class SharedVariableTransactionLockOrderValidator
             foreach (var item in affected.Where(item =>
                          item.DeliveryMode == ConditionalEventDeliveryModes.Atomic))
             {
-                state.Queue.Add(new Cursor(outgoing[item.NodeId].Single().TargetRef));
+                state.Queue.Add(new Cursor(Arrive(outgoing[item.NodeId].Single().TargetRef)));
             }
             scenarios.Add(state);
         }
@@ -358,6 +369,7 @@ public static class SharedVariableTransactionLockOrderValidator
                 nodes,
                 outgoing,
                 linkCatches,
+                interruptContinuations,
                 nodeKeys,
                 nodePostWrites,
                 boundaryPostWrites,
@@ -373,6 +385,7 @@ public static class SharedVariableTransactionLockOrderValidator
         IReadOnlyDictionary<int, FlowNodeModel> nodes,
         IReadOnlyDictionary<int, SequenceFlowModel[]> outgoing,
         IReadOnlyDictionary<int, int> linkCatches,
+        IReadOnlyDictionary<int, int> interruptContinuations,
         IReadOnlyDictionary<int, string[]> nodeKeys,
         IReadOnlyDictionary<int, PostWritePlan> nodePostWrites,
         IReadOnlyDictionary<int, PostWritePlan> boundaryPostWrites,
@@ -460,7 +473,11 @@ public static class SharedVariableTransactionLockOrderValidator
                 {
                     var next = state.Clone();
                     next.Queue.AddRange(triggered.Select(target => new Cursor(target)));
-                    next.Queue.AddRange(route.Select(target => new Cursor(target)));
+                    // Every route below is a flow the engine moves the token along
+                    // with AdvanceAutomaticTokenAsync, which passes a scoped
+                    // interrupt at once. A throw's catch is never an interrupt.
+                    next.Queue.AddRange(route.Select(target =>
+                        new Cursor(interruptContinuations.GetValueOrDefault(target, target))));
                     pending.Push(next);
                 }
             }
@@ -496,6 +513,35 @@ public static class SharedVariableTransactionLockOrderValidator
                 }
             }
         }
+    }
+
+    // Where a token that arrives at a scoped interrupt is queued: the engine interrupts
+    // the scope and follows the interrupt's one flow in the same step, through a chain of
+    // interrupts if there is one. Scoped interrupts acquire no keys and write nothing,
+    // because validation refuses their metadata. A chain that loops makes the engine
+    // throw, so its interrupts keep their own cursors.
+    private static Dictionary<int, int> ScopedInterruptContinuations(
+        IReadOnlyDictionary<int, FlowNodeModel> nodes,
+        IReadOnlyDictionary<int, SequenceFlowModel[]> outgoing)
+    {
+        var continuations = new Dictionary<int, int>();
+        foreach (var interrupt in nodes.Values.Where(node => BpmnFlowNodeTypes.IsScopedInterrupt(node.Type)))
+        {
+            var visited = new HashSet<int>();
+            var current = interrupt.Id;
+            while (nodes.TryGetValue(current, out var node)
+                   && BpmnFlowNodeTypes.IsScopedInterrupt(node.Type)
+                   && outgoing.GetValueOrDefault(current, []) is [var flow]
+                   && visited.Add(current))
+            {
+                current = flow.TargetRef;
+            }
+            if (nodes.TryGetValue(current, out var end) && !BpmnFlowNodeTypes.IsScopedInterrupt(end.Type))
+            {
+                continuations[interrupt.Id] = current;
+            }
+        }
+        return continuations;
     }
 
     private static IReadOnlyList<int[]> RouteChoices(

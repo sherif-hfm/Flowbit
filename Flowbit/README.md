@@ -527,7 +527,9 @@ rather than suppressing the check.
 Steady-state locking is exact per node/selected flow. Every newly acquired
 shared key across one synchronous transaction segment must be nondecreasing in
 ordinal order. Validation models the full FIFO routing queue, forks, node/flow
-producers, output fences, and error paths.
+producers, output fences, and error paths. A token that routing carries into a
+scoped interrupt is queued at the interrupt's continuation in the same step, as
+the engine does.
 `asyncBefore` resets before a node; service/script `asyncAfter` has the same
 implicit pre-node stage, while async-after and true resting/durable waits reset
 downstream continuation. Unsafe new definitions are rejected. An immutable-ID

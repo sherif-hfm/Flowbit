@@ -2809,7 +2809,12 @@ Across one synchronous transaction segment, every newly acquired shared key
 must be nondecreasing under `StringComparer.Ordinal`. The definition-time proof
 models the engine's whole FIFO queue (including parallel/inclusive branches),
 node and selected-flow producers, error paths, script/service output validation,
-and output fences. `asyncBefore` is a pre-node
+and output fences. Its queue must match the engine's step for step: a token the
+engine moves along a flow with `AdvanceAutomaticTokenAsync` (routing, a fork or
+join, an atomic conditional release) passes a scoped interrupt in that same step
+and is queued at the interrupt's continuation, so the proof queues it there too
+(`ScopedInterruptContinuations`); a token that a user, message, or administrative
+action places on an interrupt takes a queued step there. `asyncBefore` is a pre-node
 reset; service/script `asyncAfter` also has the engine's implicit pre-node
 durable stage. An `asyncAfter` wait, a user/message/timer/conditional resting
 position, or a durable conditional latch resets downstream acquisition. Resume
