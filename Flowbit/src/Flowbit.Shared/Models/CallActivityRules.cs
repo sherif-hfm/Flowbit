@@ -183,6 +183,17 @@ public static class CallActivityRules
                     MayBeNull: !mapping.Required && !isArray && dataType == WorkflowVariableTypes.Json));
             }
 
+            foreach (var mapping in (node.Signal?.OutputMappings ?? []).OfType<MessageOutputMappingModel>())
+            {
+                var dataType = mapping.DataType ?? WorkflowVariableTypes.Json;
+                var isArray = mapping.IsArray ?? false;
+                Add(new CallSourceDeclaration(
+                    mapping.Variable,
+                    dataType,
+                    isArray,
+                    MayBeNull: !mapping.Required && !isArray && dataType == WorkflowVariableTypes.Json));
+            }
+
             foreach (var mapping in (node.Service?.OutputMappings ?? []).OfType<ServiceOutputMappingModel>())
             {
                 if (AutomaticMultiInstanceRules.IsLocalOutput(node, mapping.Variable)) continue;

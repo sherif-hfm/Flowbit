@@ -545,7 +545,8 @@ public sealed partial class WorkflowEngineService
     private async Task CancelAttachedBoundaryWaitsAsync(
         long instanceId,
         IReadOnlyCollection<long> tokenIds,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        WorkflowModel? definition = null)
     {
         await timerSubscriptions.CancelByTokenIdsAsync(
             instanceId,
@@ -558,6 +559,7 @@ public sealed partial class WorkflowEngineService
                 tokenIds,
                 cancellationToken);
         }
+        await CancelSignalSubscriptionsAsync(instanceId, tokenIds, definition, cancellationToken);
         await jobs.CancelTimerJobsByTokenIdsAsync(
             instanceId,
             tokenIds,
@@ -570,7 +572,8 @@ public sealed partial class WorkflowEngineService
         long instanceId,
         IReadOnlyCollection<long> tokenIds,
         string reason,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        WorkflowModel? definition = null)
     {
         if (tokenIds.Count == 0)
         {
@@ -587,6 +590,7 @@ public sealed partial class WorkflowEngineService
                 tokenIds,
                 cancellationToken);
         }
+        await CancelSignalSubscriptionsAsync(instanceId, tokenIds, definition, cancellationToken);
         if (automaticMultiInstances is not null)
         {
             var bodies = await automaticMultiInstances.GetProgressAsync(instanceId, cancellationToken);
@@ -3261,6 +3265,7 @@ public sealed partial class WorkflowEngineService
                 [token.Id],
                 cancellationToken);
         }
+        await CancelSignalSubscriptionsAsync(instance.Id, [token.Id], definition, cancellationToken);
         await jobs.CancelOtherJobsByTokenIdsAsync(
             instance.Id,
             [token.Id],
@@ -3480,6 +3485,7 @@ public sealed partial class WorkflowEngineService
                     ids,
                     cancellationToken);
             }
+            await CancelSignalSubscriptionsAsync(instance.Id, ids, definition, cancellationToken);
             await jobs.CancelOtherJobsByTokenIdsAsync(
                 instance.Id,
                 ids,

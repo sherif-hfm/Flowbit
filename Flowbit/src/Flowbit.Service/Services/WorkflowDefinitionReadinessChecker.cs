@@ -31,6 +31,7 @@ public sealed class WorkflowDefinitionReadinessChecker(
             || BpmnFlowNodeTypes.IsTimerStart(node.Type)
             || BpmnFlowNodeTypes.IsTimerCatch(node.Type)
             || BpmnFlowNodeTypes.IsTimerBoundary(node.Type)
+            || BpmnFlowNodeTypes.IsSignalEvent(node.Type)
             || (BpmnFlowNodeTypes.IsConditionalEvent(node.Type)
                 && node.Conditional?.EffectiveDeliveryMode
                     == ConditionalEventDeliveryModes.DurableAsync));
@@ -51,7 +52,7 @@ public sealed class WorkflowDefinitionReadinessChecker(
 
         throw new WorkflowDomainException(
             $"{DurableProcessingOptions.SectionName}:PublicationEnabled is false; "
-            + "async, timer, durable conditional, call-activity, and call-only definitions cannot be published until the durable worker is ready.");
+            + "async, timer, durable conditional, signal, call-activity, and call-only definitions cannot be published until the durable worker is ready.");
     }
 
     /// <summary>

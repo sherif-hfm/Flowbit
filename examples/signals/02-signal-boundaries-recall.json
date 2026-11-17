@@ -1,0 +1,264 @@
+{
+  "id": "example-signal-boundaries-recall",
+  "name": "Signal Example 02 - Recall and Price Updates on a Shipment",
+  "initialEventId": 1,
+  "variables": [
+    {
+      "id": 1,
+      "name": "unitPrice",
+      "dataType": "number",
+      "isArray": false,
+      "required": false,
+      "nullable": true,
+      "defaultValue": null,
+      "validation": "unitPrice > 0"
+    }
+  ],
+  "lanes": [
+    {
+      "id": 1,
+      "name": "Warehouse",
+      "externalId": "LANE_WAREHOUSE",
+      "x": 40,
+      "y": 30,
+      "w": 1180,
+      "h": 420
+    }
+  ],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Order accepted",
+      "externalId": "START_ORDER",
+      "attributes": [],
+      "type": "startEvent",
+      "laneId": 1,
+      "x": 100,
+      "y": 128,
+      "roles": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [
+        {
+          "id": 2,
+          "name": "orderNumber",
+          "dataType": "string",
+          "isArray": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": "Len(orderNumber) > 0"
+        }
+      ],
+      "assignee": null,
+      "assignments": []
+    },
+    {
+      "id": 2,
+      "name": "Prepare the shipment",
+      "externalId": "TASK_PREPARE_SHIPMENT",
+      "attributes": [],
+      "type": "userTask",
+      "laneId": 1,
+      "x": 300,
+      "y": 116,
+      "roles": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null
+    },
+    {
+      "id": 3,
+      "name": "Product recalled",
+      "externalId": "SIGNAL_PRODUCT_RECALL",
+      "attributes": [],
+      "type": "signalBoundaryEvent",
+      "laneId": null,
+      "x": 360,
+      "y": 190,
+      "attachedToRef": 2,
+      "cancelActivity": true,
+      "signal": {
+        "name": "warehouse.product-recall",
+        "outputMappings": [
+          {
+            "variable": "recallReason",
+            "path": "reason",
+            "required": false,
+            "dataType": "string",
+            "isArray": false,
+            "defaultValue": "No reason given"
+          }
+        ]
+      }
+    },
+    {
+      "id": 4,
+      "name": "Price updated",
+      "externalId": "SIGNAL_PRICE_UPDATE",
+      "attributes": [],
+      "type": "signalBoundaryEvent",
+      "laneId": null,
+      "x": 430,
+      "y": 190,
+      "attachedToRef": 2,
+      "cancelActivity": false,
+      "signal": {
+        "name": "warehouse.price-update",
+        "outputMappings": [
+          {
+            "variable": "unitPrice",
+            "path": "unitPrice",
+            "required": true,
+            "dataType": "number",
+            "isArray": false
+          }
+        ]
+      }
+    },
+    {
+      "id": 5,
+      "name": "Shipped",
+      "externalId": "END_SHIPPED",
+      "attributes": [],
+      "type": "endEvent",
+      "laneId": 1,
+      "x": 620,
+      "y": 128,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 6,
+      "name": "Stop the shipment",
+      "externalId": "TASK_STOP_SHIPMENT",
+      "attributes": [],
+      "type": "userTask",
+      "laneId": 1,
+      "x": 300,
+      "y": 300,
+      "roles": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null
+    },
+    {
+      "id": 7,
+      "name": "Recalled",
+      "externalId": "END_RECALLED",
+      "attributes": [],
+      "type": "endEvent",
+      "laneId": 1,
+      "x": 620,
+      "y": 312,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 8,
+      "name": "Update the invoice",
+      "externalId": "TASK_UPDATE_INVOICE",
+      "attributes": [],
+      "type": "userTask",
+      "laneId": 1,
+      "x": 780,
+      "y": 300,
+      "roles": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null
+    },
+    {
+      "id": 9,
+      "name": "Invoice updated",
+      "externalId": "END_INVOICE_UPDATED",
+      "attributes": [],
+      "type": "endEvent",
+      "laneId": 1,
+      "x": 1080,
+      "y": 312,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "",
+      "externalId": null,
+      "attributes": [],
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 201,
+      "name": "Ship",
+      "externalId": "FLOW_SHIP",
+      "attributes": [],
+      "sourceRef": 2,
+      "targetRef": 5,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 301,
+      "name": "",
+      "externalId": null,
+      "attributes": [],
+      "sourceRef": 3,
+      "targetRef": 6,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 401,
+      "name": "",
+      "externalId": null,
+      "attributes": [],
+      "sourceRef": 4,
+      "targetRef": 8,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 601,
+      "name": "Stopped",
+      "externalId": "FLOW_STOPPED",
+      "attributes": [],
+      "sourceRef": 6,
+      "targetRef": 7,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 801,
+      "name": "Updated",
+      "externalId": "FLOW_INVOICE_UPDATED",
+      "attributes": [],
+      "sourceRef": 8,
+      "targetRef": 9,
+      "roles": [],
+      "variables": []
+    }
+  ]
+}

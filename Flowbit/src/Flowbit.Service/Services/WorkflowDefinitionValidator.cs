@@ -185,6 +185,7 @@ public sealed class WorkflowDefinitionValidator(
         ValidateAuthoredInboxVisibilityMetadata(definition);
         ValidateAuthoredUserTaskDueMetadata(definition);
         ValidateAuthoredConditionalEventMetadata(definition);
+        ValidateAuthoredSignalEventMetadata(definition);
         ValidateAuthoredErrorMatchMetadata(definition);
         ValidateAuthoredSharedVariableMetadata(definition);
         ValidateRoleSources(definition);
@@ -414,13 +415,18 @@ public sealed class WorkflowDefinitionValidator(
                     || BpmnFlowNodeTypes.IsTimerStart(node.Type)
                     || BpmnFlowNodeTypes.IsMessageStart(node.Type)
                     || BpmnFlowNodeTypes.IsCallActivity(node.Type)
-                    || BpmnFlowNodeTypes.IsLinkCatch(node.Type))
+                    || BpmnFlowNodeTypes.IsLinkCatch(node.Type)
+                    || BpmnFlowNodeTypes.IsSignalEvent(node.Type))
                 && outgoing.Count != 1)
             {
                 var kind = BpmnFlowNodeTypes.IsStart(node.Type)
                     ? "Start event"
                     : BpmnFlowNodeTypes.IsLinkCatch(node.Type)
                         ? "Link catch event"
+                    : BpmnFlowNodeTypes.IsSignalCatch(node.Type)
+                        ? "Signal catch event"
+                    : BpmnFlowNodeTypes.IsSignalBoundary(node.Type)
+                        ? "Signal boundary event"
                     : BpmnFlowNodeTypes.IsServiceTask(node.Type)
                         ? "Service task"
                         : BpmnFlowNodeTypes.IsCallActivity(node.Type)
@@ -462,6 +468,11 @@ public sealed class WorkflowDefinitionValidator(
                 ValidateConditionalBoundary(node, definition, incoming, outgoing);
             }
 
+            if (BpmnFlowNodeTypes.IsSignalBoundary(node.Type))
+            {
+                ValidateSignalBoundary(node, definition, incoming, outgoing);
+            }
+
             if (BpmnFlowNodeTypes.IsServiceTask(node.Type))
             {
                 ValidateServiceTask(node, AutomaticMultiInstanceRules.IsAutomaticBody(node)
@@ -493,6 +504,11 @@ public sealed class WorkflowDefinitionValidator(
             if (BpmnFlowNodeTypes.IsConditionalCatch(node.Type))
             {
                 ValidateConditionalCatch(node, incoming, outgoing);
+            }
+
+            if (BpmnFlowNodeTypes.IsSignalCatch(node.Type))
+            {
+                ValidateSignalCatch(node, definition, incoming, outgoing);
             }
 
             if (BpmnFlowNodeTypes.IsMessageStart(node.Type))
@@ -751,6 +767,46 @@ public sealed class WorkflowDefinitionValidator(
             }
         }
     }
+
+    /// <summary>
+    /// Rejects a signal configuration on a node that cannot use it, and settings a
+    /// signal event cannot carry, which the tolerant migrator would otherwise discard.
+    /// </summary>
+    private static void ValidateAuthoredSignalEventMetadata(WorkflowModel definition)
+    {
+        foreach (var node in definition.FlowNodes ?? [])
+        {
+            if (node is null)
+            {
+                continue;
+            }
+
+            if (!BpmnFlowNodeTypes.IsSignalEvent(node.Type))
+            {
+                if (node.Signal is not null)
+                {
+                    throw new WorkflowDomainException(
+                        $"Flow node #{node.Id} defines signal but is not a signal event.");
+                }
+                continue;
+            }
+
+            if (HasUnsupportedSignalEventNodeMetadata(node))
+            {
+                throw new WorkflowDomainException(
+                    $"{SignalEventRules.Label(node)} cannot define task, role, variable, timer, conditional, message, async, or multi-instance settings.");
+            }
+        }
+    }
+
+    // A signal event carries only the common node properties and its signal
+    // configuration; a boundary also names its host and whether it interrupts.
+    private static bool HasUnsupportedSignalEventNodeMetadata(FlowNodeModel node) =>
+        HasUnsupportedLinkEventNodeMetadata(node, allowAttachment: BpmnFlowNodeTypes.IsSignalBoundary(node.Type))
+        || !string.IsNullOrWhiteSpace(node.ActivationCondition)
+        || node.GatewayRef is not null
+        || node.JoinCancellation is not null
+        || node.CallActivity is not null;
 
     /// <summary>
     /// Rejects an HTTP status matcher on a node that cannot use it, which the
@@ -1071,12 +1127,11 @@ public sealed class WorkflowDefinitionValidator(
                     $"Timer start event #{node.Id} cannot define businessKey or idempotency; scheduler occurrences use an internal key.");
             }
 
-            if (!BpmnFlowNodeTypes.IsTimerBoundary(node.Type)
-                && !BpmnFlowNodeTypes.IsConditionalBoundary(node.Type)
+            if (!BpmnFlowNodeTypes.IsObservableBoundary(node.Type)
                 && node.CancelActivity is not null)
             {
                 throw new WorkflowDomainException(
-                    $"Flow node #{node.Id} defines cancelActivity but is not a timer or conditional boundary event.");
+                    $"Flow node #{node.Id} defines cancelActivity but is not a timer, conditional, or signal boundary event.");
             }
         }
     }
@@ -1231,7 +1286,10 @@ public sealed class WorkflowDefinitionValidator(
         }
     }
 
-    private static bool HasUnsupportedScopedInterruptNodeMetadata(FlowNodeModel node, bool allowAutomaticMultiInstance = false) =>
+    private static bool HasUnsupportedScopedInterruptNodeMetadata(
+        FlowNodeModel node,
+        bool allowAutomaticMultiInstance = false,
+        bool allowAttachment = false) =>
         node.Roles is { Count: > 0 }
         || node.RequiresClaim
         || !string.Equals(node.ClaimMode, ClaimModes.Fresh, StringComparison.OrdinalIgnoreCase)
@@ -1250,21 +1308,21 @@ public sealed class WorkflowDefinitionValidator(
         || !string.Equals(node.AssignmentMode, AssignmentModes.Fresh, StringComparison.OrdinalIgnoreCase)
         || node.InheritAssignmentFromNodeId is not null
         || (node.MultiInstance is not null && !allowAutomaticMultiInstance)
-        || node.AttachedToRef is not null
+        || (node.AttachedToRef is not null && !allowAttachment)
         || !string.IsNullOrWhiteSpace(node.ErrorVariable)
         || !string.IsNullOrWhiteSpace(node.ErrorCode)
         || !string.IsNullOrWhiteSpace(node.ErrorDescription);
 
     // A link event carries only its identity, name, and layout: the name pairs it,
     // and the routing lives on the catch's one outgoing flow.
-    private static bool HasUnsupportedLinkEventNodeMetadata(FlowNodeModel node) =>
-        HasUnsupportedScopedInterruptNodeMetadata(node)
+    private static bool HasUnsupportedLinkEventNodeMetadata(FlowNodeModel node, bool allowAttachment = false) =>
+        HasUnsupportedScopedInterruptNodeMetadata(node, allowAttachment: allowAttachment)
         || node.AsyncBefore
         || node.AsyncAfter
         || node.Job is not null
         || node.Timer is not null
         || node.Conditional is not null
-        || node.CancelActivity is not null
+        || (node.CancelActivity is not null && !allowAttachment)
         || node.ErrorMatch is not null
         || node.CallOnly
         || !string.IsNullOrWhiteSpace(node.RolesVariable)
@@ -1871,9 +1929,7 @@ public sealed class WorkflowDefinitionValidator(
             .Select(flow => (Source: flow.SourceRef, Target: flow.TargetRef))
             .Concat(definition.FlowNodes
                 .Where(node =>
-                    (BpmnFlowNodeTypes.IsErrorBoundary(node.Type)
-                        || BpmnFlowNodeTypes.IsTimerBoundary(node.Type)
-                        || BpmnFlowNodeTypes.IsConditionalBoundary(node.Type))
+                    BpmnFlowNodeTypes.IsBoundary(node.Type)
                     && node.AttachedToRef is not null)
                 .Select(node => (Source: node.AttachedToRef!.Value, Target: node.Id)))
             .Concat(LinkEventRules.ImplicitEdges(definition)
@@ -2545,7 +2601,8 @@ public sealed class WorkflowDefinitionValidator(
         WorkflowModel definition,
         IReadOnlyCollection<SequenceFlowModel> incoming,
         IReadOnlyList<SequenceFlowModel> outgoing,
-        string eventName)
+        string eventName,
+        bool allowAutomaticBodies = true)
     {
         if (node.AttachedToRef is null)
         {
@@ -2562,7 +2619,8 @@ public sealed class WorkflowDefinitionValidator(
 
         var durableWait = BpmnFlowNodeTypes.IsUserTask(host.Type)
             || BpmnFlowNodeTypes.IsMessageCatch(host.Type)
-            || BpmnFlowNodeTypes.IsTimerCatch(host.Type);
+            || BpmnFlowNodeTypes.IsTimerCatch(host.Type)
+            || BpmnFlowNodeTypes.IsSignalCatch(host.Type);
         var asyncAutomatic = (BpmnFlowNodeTypes.IsAutomatic(host.Type)
                 || BpmnFlowNodeTypes.IsServiceTask(host.Type)
                 || BpmnFlowNodeTypes.IsScriptTask(host.Type))
@@ -2572,6 +2630,12 @@ public sealed class WorkflowDefinitionValidator(
         {
             throw new WorkflowDomainException(
                 $"{eventName} #{node.Id} host #{host.Id} must be a durable wait or an automatic task with asyncBefore enabled.");
+        }
+
+        if (!allowAutomaticBodies && AutomaticMultiInstanceRules.IsAutomaticBody(host))
+        {
+            throw new WorkflowDomainException(
+                $"{eventName} #{node.Id} host #{host.Id} is a multi-instance service, script, or call activity, which signal boundaries do not support.");
         }
 
         if (incoming.Count != 0)
@@ -2587,15 +2651,43 @@ public sealed class WorkflowDefinitionValidator(
         }
 
         var siblingCount = definition.FlowNodes.Count(candidate =>
-            (BpmnFlowNodeTypes.IsTimerBoundary(candidate.Type)
-                || BpmnFlowNodeTypes.IsConditionalBoundary(candidate.Type))
+            BpmnFlowNodeTypes.IsObservableBoundary(candidate.Type)
             && candidate.AttachedToRef == node.AttachedToRef);
         if (siblingCount > BoundaryEventRules.MaxObservableBoundariesPerHost)
         {
             throw new WorkflowDomainException(
-                $"Host node #{host.Id} has {siblingCount} timer and conditional boundary events; "
+                $"Host node #{host.Id} has {siblingCount} timer, conditional, and signal boundary events; "
                 + $"at most {BoundaryEventRules.MaxObservableBoundariesPerHost} are allowed.");
         }
+    }
+
+    private static void ValidateSignalBoundary(
+        FlowNodeModel node,
+        WorkflowModel definition,
+        IReadOnlyCollection<SequenceFlowModel> incoming,
+        IReadOnlyList<SequenceFlowModel> outgoing)
+    {
+        if (SignalEventRules.NodeProblems(node).FirstOrDefault() is { } nameProblem)
+        {
+            throw new WorkflowDomainException(nameProblem);
+        }
+
+        ValidateObservableBoundary(
+            node,
+            definition,
+            incoming,
+            outgoing,
+            "Signal boundary event",
+            allowAutomaticBodies: false);
+
+        var prefix = $"{SignalEventRules.Label(node)} ";
+        if (SignalEventRules.BoundaryNameProblems(definition.FlowNodes)
+                .FirstOrDefault(problem => problem.StartsWith(prefix, StringComparison.Ordinal)) is { } boundaryProblem)
+        {
+            throw new WorkflowDomainException(boundaryProblem);
+        }
+
+        ValidateSignalMappings(node, definition, "Signal boundary event");
     }
 
     private static void ValidateTimerCatch(
@@ -2631,6 +2723,114 @@ public sealed class WorkflowDefinitionValidator(
         {
             throw new WorkflowDomainException(
                 $"Conditional catch event #{node.Id} must have one unconditional outgoing sequence flow without user-action or multi-instance metadata.");
+        }
+    }
+
+    private static void ValidateSignalCatch(
+        FlowNodeModel node,
+        WorkflowModel definition,
+        IReadOnlyCollection<SequenceFlowModel> incoming,
+        IReadOnlyList<SequenceFlowModel> outgoing)
+    {
+        if (SignalEventRules.NodeProblems(node).FirstOrDefault() is { } nameProblem)
+        {
+            throw new WorkflowDomainException(nameProblem);
+        }
+
+        var label = SignalEventRules.Label(node);
+        if (incoming.Count == 0)
+        {
+            throw new WorkflowDomainException(
+                $"{label} must have at least one incoming sequence flow.");
+        }
+
+        if (outgoing.Count == 1 && HasUnsupportedPassThroughMetadata(outgoing[0]))
+        {
+            throw new WorkflowDomainException(
+                $"{label} must have one unconditional outgoing sequence flow without user-action or multi-instance metadata.");
+        }
+
+        ValidateSignalMappings(node, definition, "Signal catch event");
+    }
+
+    /// <summary>
+    /// A signal mapping writes instance variables only and reads no shared alias: one
+    /// broadcast would otherwise write the same shared key from every recipient, and a
+    /// delivery acquires no shared row. Reads are found from the parsed references of
+    /// default templates and validation expressions, including the validation rule of
+    /// a targeted process variable, never by matching text.
+    /// </summary>
+    private static void ValidateSignalMappings(FlowNodeModel node, WorkflowModel definition, string kind)
+    {
+        var mappings = node.Signal!.OutputMappings ?? [];
+        if (mappings.Any(mapping => mapping is null))
+        {
+            throw new WorkflowDomainException($"{kind} #{node.Id} output mappings cannot contain null entries.");
+        }
+
+        ValidateTypedOutputMappings(
+            node.Id,
+            kind,
+            mappings.Select(ToTypedOutputDefinition),
+            definition.Variables);
+
+        var shared = definition.Variables
+            .Where(variable => string.Equals(variable.Scope, VariableScopes.Shared, StringComparison.Ordinal))
+            .Select(variable => variable.Name)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (shared.Count == 0)
+        {
+            return;
+        }
+
+        var label = SignalEventRules.Label(node);
+        foreach (var mapping in mappings)
+        {
+            if (shared.TryGetValue(mapping.Variable, out var written))
+            {
+                throw new WorkflowDomainException(
+                    $"{label} output mapping '{mapping.Variable}' cannot write shared variable alias '{written}'; signal mappings write instance variables only.");
+            }
+
+            var reads = new List<string>();
+            if (mapping.DefaultValue is { } value)
+            {
+                var templates = value.ValueKind switch
+                {
+                    JsonValueKind.String => [value.GetString()],
+                    JsonValueKind.Array => value.EnumerateArray()
+                        .Where(item => item.ValueKind == JsonValueKind.String)
+                        .Select(item => item.GetString())
+                        .ToArray(),
+                    _ => Array.Empty<string?>()
+                };
+                foreach (var template in templates)
+                {
+                    if (!string.IsNullOrEmpty(template))
+                    {
+                        reads.AddRange(ServiceTaskTemplating.GetPlaceholderNames(template));
+                    }
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(mapping.Validation))
+            {
+                reads.AddRange(SequenceFlowConditionEvaluator.ParameterNames(mapping.Validation));
+            }
+
+            var target = definition.Variables.FirstOrDefault(variable =>
+                string.Equals(variable.Name, mapping.Variable, StringComparison.OrdinalIgnoreCase));
+            if (!string.IsNullOrWhiteSpace(target?.Validation))
+            {
+                reads.AddRange(SequenceFlowConditionEvaluator.ParameterNames(target.Validation));
+            }
+
+            if (reads.FirstOrDefault(shared.Contains) is { } read)
+            {
+                shared.TryGetValue(read, out var alias);
+                throw new WorkflowDomainException(
+                    $"{label} output mapping '{mapping.Variable}' cannot read shared variable alias '{alias ?? read}' in its default or validation.");
+            }
         }
     }
 
@@ -3872,6 +4072,18 @@ public sealed class WorkflowDefinitionValidator(
                     $"Message event #{node.Id} output mapping '{mapping.Variable}' validation");
             }
 
+            foreach (var mapping in node.Signal?.OutputMappings ?? [])
+            {
+                if (mapping is null)
+                {
+                    // The signal-event validator reports a precise domain error.
+                    continue;
+                }
+
+                Check(mapping.Validation, false,
+                    $"Signal event #{node.Id} output mapping '{mapping.Variable}' validation");
+            }
+
             foreach (var assignment in node.Assignments)
             {
                 if (assignment is null)
@@ -3995,6 +4207,15 @@ public sealed class WorkflowDefinitionValidator(
                 {
                     Check(mapping.Validation, null, false,
                         $"Message event #{node.Id} output mapping '{mapping.Variable}' validation");
+                }
+            }
+
+            foreach (var mapping in node.Signal?.OutputMappings ?? [])
+            {
+                if (mapping is not null)
+                {
+                    Check(mapping.Validation, null, false,
+                        $"Signal event #{node.Id} output mapping '{mapping.Variable}' validation");
                 }
             }
 

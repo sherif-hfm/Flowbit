@@ -1221,6 +1221,17 @@ public static class InboxVisibilityConditionCompiler
                     }
                 }
 
+                if (node.Signal is not null)
+                {
+                    foreach (var mapping in node.Signal.OutputMappings ?? [])
+                    {
+                        if (mapping is not null)
+                        {
+                            Add(mapping.Variable, mapping.DataType, mapping.IsArray, $"signal node #{node.Id} output");
+                        }
+                    }
+                }
+
                 if (!string.IsNullOrWhiteSpace(node.ErrorVariable))
                 {
                     Add(

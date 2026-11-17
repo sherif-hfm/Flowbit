@@ -83,6 +83,15 @@ public static class WorkflowVersionCompatibilityEvaluator
             sourceNodes,
             targetNodes,
             blockers);
+        ValidateOpenSignalSubscriptions(
+            context,
+            source,
+            target,
+            sourceNodes,
+            targetNodes,
+            blockers,
+            warnings);
+        ValidateAttachedSignalBoundaries(context, source, target, blockers);
 
         return new WorkflowVersionCompatibilityResult(
             SortIssues(blockers),
@@ -249,6 +258,10 @@ public static class WorkflowVersionCompatibilityEvaluator
             .Concat(context.ActiveComplexGatewayStates.Select(state => state.GatewayNodeId))
             .Concat(context.OpenConditionalBoundaries.Select(subscription => subscription.AttachedToNodeId))
             .Concat(context.OpenConditionalBoundaries.Select(subscription => subscription.BoundaryNodeId))
+            .Concat(context.OpenSignalSubscriptions.Select(subscription => subscription.SignalNodeId))
+            .Concat(context.OpenSignalSubscriptions
+                .Where(subscription => subscription.AttachedToNodeId is not null)
+                .Select(subscription => subscription.AttachedToNodeId!.Value))
             .Distinct()
             .OrderBy(id => id)
             .ToArray();
@@ -1143,6 +1156,21 @@ public static class WorkflowVersionCompatibilityEvaluator
                     false,
                     mapping.Validation));
             }
+            foreach (var mapping in node.Signal?.OutputMappings ?? [])
+            {
+                if (mapping is null || string.IsNullOrWhiteSpace(mapping.Variable))
+                {
+                    continue;
+                }
+
+                result.Add(new TargetVariableDeclaration(
+                    $"signal node #{node.Id} output mapping",
+                    mapping.Variable,
+                    mapping.DataType ?? WorkflowVariableTypes.Json,
+                    mapping.IsArray ?? false,
+                    false,
+                    mapping.Validation));
+            }
         }
         foreach (var flow in target.SequenceFlows.OrderBy(flow => flow.Id))
         {
@@ -1276,7 +1304,8 @@ public static class WorkflowVersionCompatibilityEvaluator
             ConditionalBoundaries = BoundaryContracts(
                 definition,
                 node.Id,
-                BpmnFlowNodeTypes.IsConditionalBoundary)
+                BpmnFlowNodeTypes.IsConditionalBoundary),
+            SignalBoundaries = BoundaryContracts(definition, node.Id, BpmnFlowNodeTypes.IsSignalBoundary)
         });
 
     private static string TimerNodeContract(WorkflowModel definition, FlowNodeModel node) =>
@@ -1294,6 +1323,115 @@ public static class WorkflowVersionCompatibilityEvaluator
             Condition = ConditionalDefinitionRules.NormalizeCondition(
                 node.Conditional?.Condition),
             DeliveryMode = node.Conditional?.EffectiveDeliveryMode,
+            Outgoing = OutgoingFlowContracts(definition, node.Id)
+        });
+
+    /// <summary>
+    /// An open signal subscription keeps its wait across a version change only when the
+    /// target node waits for the same signal at the same place: node type, signal name,
+    /// host, interrupting flag, and outgoing flow. Mappings may change; the target's
+    /// apply to later deliveries.
+    /// </summary>
+    private static void ValidateOpenSignalSubscriptions(
+        WorkflowVersionCompatibilityContext context,
+        WorkflowModel source,
+        WorkflowModel target,
+        IReadOnlyDictionary<int, FlowNodeModel> sourceNodes,
+        IReadOnlyDictionary<int, FlowNodeModel> targetNodes,
+        ICollection<WorkflowVersionCompatibilityIssue> blockers,
+        ICollection<WorkflowVersionCompatibilityIssue> warnings)
+    {
+        var mappingWarnings = new HashSet<int>();
+        foreach (var subscription in context.OpenSignalSubscriptions.OrderBy(subscription => subscription.Id))
+        {
+            var nodeId = subscription.SignalNodeId;
+            if (!sourceNodes.TryGetValue(nodeId, out var sourceNode)
+                || !targetNodes.TryGetValue(nodeId, out var targetNode))
+            {
+                blockers.Add(Issue(
+                    WorkflowVersionCompatibilityCodes.OpenSignalSubscriptionNodeMissing,
+                    $"Open signal subscription #{subscription.Id} references node #{nodeId}, which is absent from a source or target definition.",
+                    nodeId,
+                    runtimeId: subscription.Id));
+                continue;
+            }
+
+            if (!string.Equals(
+                    SignalNodeContract(source, sourceNode),
+                    SignalNodeContract(target, targetNode),
+                    StringComparison.Ordinal)
+                || !BpmnFlowNodeTypes.IsSignalEvent(targetNode.Type)
+                || !string.Equals(subscription.SignalName, targetNode.Signal?.Name, StringComparison.Ordinal)
+                || subscription.AttachedToNodeId != (BpmnFlowNodeTypes.IsSignalCatch(targetNode.Type) ? null : targetNode.AttachedToRef)
+                || subscription.WorkflowDefinitionId != context.SourceDefinition.Id
+                || !string.Equals(subscription.WorkflowKey, context.Instance.WorkflowKey, StringComparison.Ordinal))
+            {
+                blockers.Add(Issue(
+                    WorkflowVersionCompatibilityCodes.OpenSignalSubscriptionContractChanged,
+                    $"Open signal subscription #{subscription.Id} is not exactly compatible with target node #{nodeId}.",
+                    nodeId,
+                    runtimeId: subscription.Id));
+                continue;
+            }
+
+            if (!JsonContractEquals(sourceNode.Signal?.OutputMappings, targetNode.Signal?.OutputMappings)
+                && mappingWarnings.Add(nodeId))
+            {
+                warnings.Add(Issue(
+                    WorkflowVersionCompatibilityCodes.SignalMappingContractChanged,
+                    $"Signal node #{nodeId} changes its output mappings; the target mappings apply to later deliveries.",
+                    nodeId));
+            }
+        }
+    }
+
+    /// <summary>
+    /// A host subscribes to its signal boundaries when its token enters it, so an active
+    /// host must keep exactly the signal boundaries it entered with: a gained boundary
+    /// would never be subscribed, and a lost or changed one would keep a stale wait.
+    /// Definitions without signal events are skipped.
+    /// </summary>
+    private static void ValidateAttachedSignalBoundaries(
+        WorkflowVersionCompatibilityContext context,
+        WorkflowModel source,
+        WorkflowModel target,
+        ICollection<WorkflowVersionCompatibilityIssue> blockers)
+    {
+        if (!SignalEventRules.HasSignalEvents(source) && !SignalEventRules.HasSignalEvents(target))
+        {
+            return;
+        }
+
+        foreach (var nodeId in context.ActiveTokens.Select(token => token.NodeId).Distinct().Order())
+        {
+            if (!string.Equals(
+                    AttachedSignalBoundaryContract(source, nodeId),
+                    AttachedSignalBoundaryContract(target, nodeId),
+                    StringComparison.Ordinal))
+            {
+                blockers.Add(Issue(
+                    WorkflowVersionCompatibilityCodes.AttachedSignalBoundaryContractChanged,
+                    $"Active node #{nodeId} gains, loses, or changes a signal boundary.",
+                    nodeId));
+            }
+        }
+    }
+
+    private static string AttachedSignalBoundaryContract(WorkflowModel definition, int hostNodeId) =>
+        JsonSerializer.Serialize(definition.FlowNodes
+            .Where(node => BpmnFlowNodeTypes.IsSignalBoundary(node.Type) && node.AttachedToRef == hostNodeId)
+            .OrderBy(node => node.Id)
+            .Select(node => SignalNodeContract(definition, node))
+            .ToArray());
+
+    private static string SignalNodeContract(WorkflowModel definition, FlowNodeModel node) =>
+        JsonSerializer.Serialize(new
+        {
+            NodeId = node.Id,
+            node.Type,
+            SignalName = node.Signal?.Name,
+            AttachedToRef = BpmnFlowNodeTypes.IsSignalCatch(node.Type) ? null : node.AttachedToRef,
+            CancelActivity = BpmnFlowNodeTypes.IsSignalCatch(node.Type) || (node.CancelActivity ?? true),
             Outgoing = OutgoingFlowContracts(definition, node.Id)
         });
 

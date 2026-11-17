@@ -21,6 +21,7 @@ Start with the [runnable getting-started guide](getting-started.md). This guide 
 - [Perform explicit administrative actions](#perform-explicit-administrative-actions)
 - [Select and change workflow versions](#select-and-change-workflow-versions)
 - [Integrate inbound messages](#integrate-inbound-messages)
+- [Broadcast signals](#broadcast-signals)
 - [Separate retries from business identity](#separate-retries-from-business-identity)
 - [Integrate automatic work and durable jobs](#integrate-automatic-work-and-durable-jobs)
 - [Call another workflow](#call-another-workflow)
@@ -49,7 +50,7 @@ flowchart LR
 | Editor | Author and export JSON. The shared HTML/CSS/JavaScript asset folder runs independently of the engine and is also mounted inline in Flowbit.Ui. |
 | API | Validate/version/publish definitions; start, inspect, and advance runtime work over HTTP. |
 | PostgreSQL | Store immutable definition snapshots and transactional runtime state in the `flowbit` schema. |
-| Worker | Execute durable jobs, timer events, and durable conditional wakes, and send [lifecycle webhooks](#lifecycle-webhooks). It shares the API's database and required workflow context configuration. |
+| Worker | Execute durable jobs, timer events, durable conditional wakes, and [signal deliveries](#broadcast-signals), and send [lifecycle webhooks](#lifecycle-webhooks). It shares the API's database and required workflow context configuration. |
 | Flowbit.Ui | Optional Blazor client for visual authoring, exploration, task handling, and operations. Your own application can use the API without running it. |
 
 Keep application business records in your application's store and retain the returned Flowbit instance ID as the link. Use a configured business key when the engine must also enforce domain uniqueness. Update engine state through its APIs and authored activities; direct writes to runtime tables bypass transactions, authorization, subscriptions, and audit.
@@ -348,7 +349,7 @@ Keep authored IDs and integration labels stable when behavior is meant to remain
 
 For active instance migration, call `POST /api/instances/{instanceId}/version-change/preview` with `targetWorkflowId`. Inspect `compatible`, `blockers`, and `warnings`; then submit the change with the preview's `expectedSourceWorkflowId`, `expectedUpdatedAt`, and a reason. The server revalidates in the mutation transaction. Do not copy a preview's concurrency values between instances or retry a stale change unchanged without rereading state.
 
-Compatibility includes persisted variables, open task/action and role contracts, gateway/branch state, message/timer/conditional waits, and durable work. A same-family target is not sufficient by itself. Changing only a user task's `dueDate` or `priority` never blocks a change; open work items keep the values saved when they were created. A token never rests on a link event, so adding, removing, or renaming link events does not block a change by itself. While several tokens or gateway state are active, the exact topology must match, and a link throw that keeps its ID but pairs with a different link catch blocks with `link_event_contract_changed`; renaming a link on all its events keeps every pair and is allowed. Use the batch preview/execute APIs for managed migrations of many instances; see the API reference for their lifecycle. Database-schema upgrades and instance-definition version changes are separate operations.
+Compatibility includes persisted variables, open task/action and role contracts, gateway/branch state, message/timer/conditional waits, and durable work. A same-family target is not sufficient by itself. Changing only a user task's `dueDate` or `priority` never blocks a change; open work items keep the values saved when they were created. A token never rests on a link event, so adding, removing, or renaming link events does not block a change by itself. While several tokens or gateway state are active, the exact topology must match, and a link throw that keeps its ID but pairs with a different link catch blocks with `link_event_contract_changed`; renaming a link on all its events keeps every pair and is allowed. Open signal waits and the signal boundaries of active nodes have their own rules; see [signals and version changes](#signals-and-version-changes). Use the batch preview/execute APIs for managed migrations of many instances; see the API reference for their lifecycle. Database-schema upgrades and instance-definition version changes are separate operations.
 
 ## Integrate inbound messages
 
@@ -386,6 +387,84 @@ X-Flowbit-Delivery-Key: provider-receipt-0001
 The payload is raw business JSON, not a `variables` envelope. Typed output mappings select its values. Non-empty message bodies require a JSON media type and must fit `WorkflowMessageDelivery.MaxPayloadBytes`. Acknowledgments contain runtime IDs/position/status and optional completion/fault data, rather than exposing the instance's full definition and history to the machine caller.
 
 Message correlation is instance-scoped; it is not a cross-instance BPMN message bus. Store the returned instance ID for later deliveries, and model timer boundaries if a message wait needs a timeout route.
+
+## Broadcast signals
+
+Use a signal when many running instances must react to one announcement, such as a changed policy, a product recall, or a closed fiscal year, and the sender does not know which instances are waiting. The workflow models the wait as an [`intermediateSignalCatchEvent`](node-reference.md#intermediatesignalcatchevent) with a literal `signal.name`, or reacts while other work is in progress with a [`signalBoundaryEvent`](node-reference.md#signalboundaryevent) on that work; your application throws the signal over HTTP. Use a message instead to address one instance, or for an event that must not be missed.
+
+| | Message catch | Signal catch |
+| --- | --- | --- |
+| Addressed by | Instance ID, plus the catch's external ID when needed. | Signal name, within one workflow family or all of them. |
+| Sender authenticates with | The node's configured client credentials and correlation header. | A JWT with a role from `Signals.RequiredRole`, or a managed API client with `signals.throw`. |
+| When no wait exists yet | The delivery is rejected, and the sender can deliver again later. | Nothing is stored: a wait that starts later never receives an earlier signal. |
+| Applied | In the request's transaction. | By the Worker, one recipient per transaction, after the request returns. |
+| Continues as | The message client ID. | The fixed system actor `signal`. |
+
+Give related workflows one naming convention, such as `claims.policy-changed`. Names are lowercase and compared exactly, and a throw names one `workflowKey` or sets `allWorkflows: true`, so an unrelated family that happens to use the same name is reached only when you ask for all of them.
+
+### Throw a signal
+
+With the [signal example](../examples/signals/README.md) published and a few instances waiting, a user with the signal role or a client with `signals.throw` sends:
+
+```http
+POST /api/signal-broadcasts HTTP/1.1
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{
+  "name": "claims.policy-changed",
+  "workflowKey": "example-signal-catch-policy-change",
+  "payload": { "version": 7, "effectiveDate": "2027-01-01" },
+  "idempotencyKey": "policy-7"
+}
+```
+
+A managed client sends `X-Client-Id` and `X-Client-Secret` in place of `Authorization`; never both. The `202` response is the broadcast: keep its `id`, and check `totalDeliveryCount` and `recipientsByWorkflowKey` to see how many waits it reached in which families. The payload is a JSON object of at most 256 KiB; each waiting catch copies the values its typed `outputMappings` name, so agree on the payload contract with the workflow authors.
+
+Choose one `idempotencyKey` per announcement and persist it before sending. After a timeout or a lost response, send the same request with the same key: it returns the first broadcast with `200` instead of reaching the waits twice. The same key with a different name, scope, or payload returns `409`. Keys are scoped to the thrower.
+
+### Which waits receive it
+
+The throw freezes its recipients in one statement: the signal waits that are committed and active at that moment. It does not wait for any instance's transaction, and nothing is added later, however long delivery takes. A signal therefore reaches neither an instance that arrives at its catch a moment later nor a second catch of the same name that the same instance reaches after the first one received it.
+
+Delivery happens when the Worker runs each recipient, not at the moment of the throw. A wait that ended in between, for example because a timer boundary fired or the instance was cancelled, is skipped with `subscription_ended`. While no Worker runs, deliveries wait and act when it returns; nothing expires. If a signal is no longer wanted, cancel the broadcast: pending deliveries become `cancelled` and the waits stay subscribed.
+
+A throw that would reach more than `Signals.MaxSubscriptionsPerBroadcast` waits is rejected with `400` rather than truncated; narrow it to one family or raise the [setting](engine-settings.md#signal-settings). When `Signals.MaxOpenBroadcasts` broadcasts are still delivering, a throw returns `409`; wait for one to finish or cancel one.
+
+### Read progress
+
+- Poll `GET /api/signal-broadcasts/{id}` until `status` leaves `delivering`. It ends `completed`, or `completedWithIssues` when any delivery failed.
+- Page through `GET /api/signal-broadcasts/{id}/deliveries`, filtered by `status` or `instanceId`, for each recipient's `resultCode`. A managed client sees only its own broadcasts and no `resultDescription`.
+- Instance detail's `signalSubscriptions` lists the signals an instance is waiting for now, armed boundaries included, and its history records each delivered signal as a `signalReceived` row naming the broadcast and its thrower.
+- Before throwing, a user can count the current waits per name and family with `GET /api/signal-subscriptions/summary`. The count can change before the throw runs.
+
+### Handle failed deliveries
+
+A payload that fails a mapping fails only that delivery with `signal_payload_invalid`: nothing is written and the instance keeps waiting with its subscription. Either throw a new signal with a corrected payload, which reaches the waits that are still open, or correct the workflow, move the waiting instances to the corrected version, and call `POST /api/signal-broadcasts/{id}/retry-failed` with the broadcast's current `updatedAt`. Retried deliveries use the instance's current definition, and one whose wait has ended meanwhile is skipped. See the [result codes](api-guide.md#signals).
+
+### React while work is in progress
+
+A signal catch waits at one point of the process. To react to a signal while a task or another wait is in progress, attach a [`signalBoundaryEvent`](node-reference.md#signalboundaryevent) to it: a user task, a message, timer, or signal catch, or a `task`, `serviceTask`, or `scriptTask` with `asyncBefore: true`, but not a call activity or a multi-instance service or script task. The boundary listens from the moment the host's token arrives until the host ends, so a signal reaches it only while the host is active; a throw counts it among its recipients, and the subscription summary counts it as a wait.
+
+| Choose | When | What a delivery does |
+| --- | --- | --- |
+| Interrupting (`cancelActivity` missing or `true`) | The signal makes the work pointless, such as a recall that stops a shipment. | Cancels the host's open work items, waits, jobs, and calls, writes the mapped values, and continues on the boundary's flow. Result `interrupted`. |
+| Non-interrupting (`cancelActivity: false`) | The signal adds work beside the host, such as an invoice update after a price change. | Leaves the host active, starts a new branch at the boundary with the mapped values, and keeps listening, so each later signal starts another branch. Result `branched`. |
+
+Every branch is an active token of the instance, and `Workflow.Gateway.MaxActiveTokens` (default 1,000) bounds them. A delivery that would pass that limit fails with `signal_token_limit`, writes nothing, and leaves the boundary listening; once branches have finished, `POST /api/signal-broadcasts/{id}/retry-failed` delivers it again if the host is still active. A host that ends before its delivery runs, including one that starts an `asyncAfter` wait, is skipped. The [signal boundaries example](../examples/signals/02-signal-boundaries-recall.json) has one boundary of each kind on one task.
+
+### Signals and version changes
+
+Version-change preview checks every open signal wait of the instance, including armed signal boundaries, and the signal boundaries of every node where the instance has an active token:
+
+| Code | Kind | Cause |
+| --- | --- | --- |
+| `open_signal_subscription_node_missing` | Blocker | The source or target definition has no node with the wait's ID. |
+| `open_signal_subscription_contract_changed` | Blocker | The target node's type, `signal.name`, attachment, interrupting flag, or outgoing-flow contract differs, or it is not a signal event. |
+| `attached_signal_boundary_contract_changed` | Blocker | A node with an active token gains, loses, or changes a signal boundary: its ID, type, `signal.name`, host, interrupting flag, or outgoing flow. A boundary added in the target would never be subscribed. |
+| `signal_mapping_contract_changed` | Warning | Only `signal.outputMappings` differ; the target's mappings apply to later deliveries. |
+
+Changing only a boundary's mappings is allowed, unless its host has an open job: that job's contract includes the host's boundaries, so the change blocks with `open_job_contract_changed`. A successful change moves the open wait to the target version, and a pending delivery needs no change, because it reads the signal event from the instance's current definition. Batch version changes apply the same rules. A child instance started by a call activity waits like any other instance, and cancelling the call cancels its waits. A terminal instance with an active signal wait cannot be reactivated (`unresolved_durable_work`); normally it has none.
 
 ## Separate retries from business identity
 

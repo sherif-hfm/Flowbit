@@ -8,7 +8,7 @@ retains its authored `admin-action` id. Most examples are intentionally focused;
 the two [showcases](#showcases) combine their patterns into complete processes,
 as a production workflow would.
 
-The catalog contains 69 workflows. Automated tests recursively discover every
+The catalog contains 71 workflows. Automated tests recursively discover every
 JSON file, deserialize it, validate it with the runtime's strict JavaScript
 parser, load and render it in the editor, and verify that this page links it.
 Those definition/editor tests do not execute integrations. The separate
@@ -122,6 +122,16 @@ delivery behavior, and local test calls.
 | [Message catch delivery idempotency](messages/02-message-catch-delivery-idempotency.json) | `Purchasing` starts with a `PO-*` `purchaseOrderId`, then sends the order. | The authenticated external client delivers a typed receipt; `Purchasing` verifies it. | The catch validates credentials/header, maps values, and accepts a delivery key once; a duplicate `X-Flowbit-Delivery-Key` delivery is rejected. | API and database; the message client id has a seeded default, while `${config.exampleMessageClientSecret}` must be configured; no Worker. |
 | [Receipt versus timeout](messages/03-message-catch-with-timeout.json) | `ExampleRequester` starts with `caseKey` or its default. | Deliver the receipt before expiry and let `ExampleReviewer` confirm it, or let the deadline expire and let `ExampleOperator` resolve escalation. | The competing message wait or 30-second timer is cancelled. A late delivery returns `400` without changing mapped values; a duplicate committed key returns `409`. | API, database, Worker, seeded message client id, and `${config.exampleMessageClientSecret}`. |
 
+## Signals
+
+See the [signal guide](signals/README.md) for throwing a signal from the Signals page
+or over HTTP, the payload, and what a later wait does not receive.
+
+| Workflow | Start values | Actors and actions | Expected result | Requirements |
+| --- | --- | --- | --- | --- |
+| [Wait for a policy change](signals/01-signal-catch-policy-change.json) | Supply `claimNumber`. | A user with the signal role, or a client with `signals.throw`, throws `claims.policy-changed` with a `version`; any authenticated user completes the next task. | The signal catch maps `version` and `effectiveDate` and continues to **Recalculate under the new policy**; its one-hour timer boundary instead cancels the wait and opens **Review under the current policy**. | API, database, and `Flowbit.Worker`; no configuration. |
+| [Recall and price updates on a shipment](signals/02-signal-boundaries-recall.json) | Supply `orderNumber`. | A user with the signal role, or a client with `signals.throw`, throws `warehouse.price-update` with a `unitPrice` or `warehouse.product-recall` with an optional `reason`; any authenticated user completes the open tasks. | Each price update adds an **Update the invoice** task beside **Prepare the shipment**, which stays open and waits for more; a recall cancels the shipment task and opens **Stop the shipment** with `recallReason`. | API, database, and `Flowbit.Worker`; no configuration. |
+
 ## Start events
 
 See the [start-event guide](start-events/README.md) for request shapes and
@@ -233,8 +243,8 @@ actions, and records the outcome of each test run separately.
 
 | Coverage layer | Included | Verification boundary |
 | --- | --- | --- |
-| Authored node and event types | All 24: five tasks, four gateways, three starts, three intermediate catches, a link throw and catch, three boundaries, three ends, and the scoped-interrupt extension. | Recursive runtime/editor validation and the explicit 24-type assertion; editor execution here uses Jint rather than a real browser. |
-| Demonstrated catalog scenarios | Claims, assignment/distribution, captured roles, task due dates and priorities, working-time durations in a business calendar, scripts, typed REST/messages, idempotency, multi-instance aggregation for user tasks and for REST, script, and call bodies, timers including cron schedules for timer starts, conditional events, link events, retries/recovery, and scope cancellation. | The 69 definitions and category walkthroughs explain actors, inputs, prerequisites, and expected outcomes. |
+| Authored node and event types | All 26: five tasks, four gateways, three starts, four intermediate catches, a link throw and catch, four boundaries, three ends, and the scoped-interrupt extension. | Recursive runtime/editor validation and the explicit 26-type assertion; editor execution here uses Jint rather than a real browser. |
+| Demonstrated catalog scenarios | Claims, assignment/distribution, captured roles, task due dates and priorities, working-time durations in a business calendar, scripts, typed REST/messages, idempotency, multi-instance aggregation for user tasks and for REST, script, and call bodies, timers including cron schedules for timer starts, conditional events, link events, signal events, retries/recovery, and scope cancellation. | The 71 definitions and category walkthroughs explain actors, inputs, prerequisites, and expected outcomes. |
 | Focused runtime acceptance | Call activity completion, rejection, cancellation, and incident recovery; both REST recovery paths and boundary-order policies; HTTP status routing and its retry policy; both receipt/deadline paths; nested cancellation; MI role replacement/stale edits; normal versus terminate end; approval timer return; quorum cancellation before finalization; each reachable ending of both showcases, with the purchase deadline fired by an administrative timer action. | `ExampleWorkflowAcceptanceTests`, `CallActivityAcceptanceTests` for call activities, and `ExampleWorkflowShowcaseAcceptanceTests` for the showcases use real HTTP and Worker processing with controlled local services. They are explicitly run outside the solution and CI; inspect their results before claiming a verified run. |
 | Browser and manual checks | New diagrams at desktop/tablet widths; incident recovery and role management at desktop, tablet, and mobile widths. | Real Chromium input, screenshots, and browser diagnostics supplement API assertions; native picker and visual-review limitations are reported separately. |
 

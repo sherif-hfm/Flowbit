@@ -1,0 +1,210 @@
+using System.Security.Claims;
+using Flowbit.Api.Auth;
+using Flowbit.Service.Abstractions;
+using Flowbit.Shared.Dtos;
+using Microsoft.AspNetCore.Mvc;
+
+namespace Flowbit.Api.Endpoints;
+
+/// <summary>
+/// Signal broadcasts: throw, read, cancel, and retry, for JWT users with a role from
+/// <c>Signals.RequiredRole</c> and managed API clients with the signal scopes. A client
+/// sees and changes only the broadcasts it threw.
+/// </summary>
+public static class SignalEndpoints
+{
+    private const long MaxThrowBodyBytes = 1024 * 1024;
+    private const long MaxCommandBodyBytes = 64 * 1024;
+
+    public static IEndpointRouteBuilder MapSignalEndpoints(this IEndpointRouteBuilder app)
+    {
+        var group = app.MapGroup("/api/signal-broadcasts")
+            .WithTags("Signals");
+
+        group.MapPost(string.Empty, Throw)
+            .RequireAuthorization(SignalAuthorizationPolicies.Throw)
+            .Accepts<ThrowSignalRequest>("application/json")
+            .WithMetadata(new RequestSizeLimitAttribute(MaxThrowBodyBytes))
+            .WithSummary("Throw a signal")
+            .WithDescription("Freezes the signal subscriptions that are active now as the recipients and queues their delivery. Name one workflowKey or set allWorkflows to true. A repeated idempotencyKey returns the first broadcast with 200.")
+            .Produces<SignalBroadcastDetailDto>(StatusCodes.Status202Accepted)
+            .Produces<SignalBroadcastDetailDto>()
+            .Produces(StatusCodes.Status400BadRequest)
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status403Forbidden)
+            .Produces(StatusCodes.Status409Conflict)
+            .Produces(StatusCodes.Status413PayloadTooLarge)
+            .Produces(StatusCodes.Status415UnsupportedMediaType);
+
+        group.MapGet(string.Empty, List)
+            .RequireAuthorization(SignalAuthorizationPolicies.Read)
+            .WithSummary("List signal broadcasts")
+            .WithDescription("Newest first, without payloads. A managed API client sees only the broadcasts it threw.")
+            .Produces<PagedResult<SignalBroadcastSummaryDto>>()
+            .Produces(StatusCodes.Status400BadRequest)
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status403Forbidden);
+
+        group.MapGet("/{id:long}", Get)
+            .RequireAuthorization(SignalAuthorizationPolicies.Read)
+            .WithSummary("Get a signal broadcast with its counts and payload")
+            .Produces<SignalBroadcastDetailDto>()
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status403Forbidden)
+            .Produces(StatusCodes.Status404NotFound);
+
+        group.MapGet("/{id:long}/deliveries", ListDeliveries)
+            .RequireAuthorization(SignalAuthorizationPolicies.Read)
+            .WithSummary("List a broadcast's deliveries")
+            .WithDescription("In ascending id; pageSize is clamped to 1-200. A managed API client receives result codes without descriptions.")
+            .Produces<PagedResult<SignalDeliveryDto>>()
+            .Produces(StatusCodes.Status400BadRequest)
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status403Forbidden)
+            .Produces(StatusCodes.Status404NotFound);
+
+        group.MapPost("/{id:long}/cancel", Cancel)
+            .RequireAuthorization(SignalAuthorizationPolicies.Throw)
+            .Accepts<CancelSignalBroadcastRequest>("application/json")
+            .WithMetadata(new RequestSizeLimitAttribute(MaxCommandBodyBytes))
+            .WithSummary("Cancel a broadcast's pending deliveries")
+            .WithDescription("A delivery already in its transaction finishes normally. Repeating the request changes nothing; a finished broadcast returns 409.")
+            .Produces<SignalBroadcastDetailDto>()
+            .Produces(StatusCodes.Status400BadRequest)
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status403Forbidden)
+            .Produces(StatusCodes.Status404NotFound)
+            .Produces(StatusCodes.Status409Conflict);
+
+        group.MapPost("/{id:long}/retry-failed", RetryFailed)
+            .RequireAuthorization(SignalAuthorizationPolicies.Throw)
+            .Accepts<RetrySignalDeliveriesRequest>("application/json")
+            .WithMetadata(new RequestSizeLimitAttribute(MaxCommandBodyBytes))
+            .WithSummary("Retry a broadcast's failed deliveries")
+            .WithDescription("Allowed only for a broadcast that finished with issues, with its current updatedAt. A delivery whose wait has ended meanwhile is skipped.")
+            .Produces<SignalBroadcastDetailDto>()
+            .Produces(StatusCodes.Status400BadRequest)
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status403Forbidden)
+            .Produces(StatusCodes.Status404NotFound)
+            .Produces(StatusCodes.Status409Conflict);
+
+        app.MapGet("/api/signal-subscriptions/summary", Summary)
+            .WithTags("Signals")
+            .RequireAuthorization(SignalAuthorizationPolicies.Summary)
+            .WithSummary("Count active signal subscriptions by signal name and workflow family")
+            .WithDescription("At most 200 rows, with truncated set when more exist. Users only.")
+            .Produces<SignalSubscriptionSummaryDto>()
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status403Forbidden);
+
+        return app;
+    }
+
+    private static async Task<IResult> Throw(
+        ThrowSignalRequest request,
+        ClaimsPrincipal principal,
+        [FromServices] ISignalCallerResolver callerResolver,
+        [FromServices] ISignalBroadcastService service,
+        CancellationToken cancellationToken)
+    {
+        var (broadcast, replayed) = await service.ThrowAsync(
+            request,
+            callerResolver.Resolve(principal),
+            cancellationToken);
+        return replayed
+            ? Results.Ok(broadcast)
+            : Results.Accepted($"/api/signal-broadcasts/{broadcast.Id}", broadcast);
+    }
+
+    private static async Task<IResult> List(
+        ClaimsPrincipal principal,
+        [FromServices] ISignalCallerResolver callerResolver,
+        [FromServices] ISignalBroadcastService service,
+        [FromQuery] string? name,
+        [FromQuery] string? workflowKey,
+        [FromQuery] string? status,
+        [FromQuery] int? page,
+        [FromQuery] int? pageSize,
+        CancellationToken cancellationToken) =>
+        Results.Ok(await service.ListAsync(
+            callerResolver.Resolve(principal),
+            name,
+            workflowKey,
+            status,
+            page ?? 1,
+            pageSize ?? 50,
+            cancellationToken));
+
+    private static async Task<IResult> Get(
+        long id,
+        ClaimsPrincipal principal,
+        [FromServices] ISignalCallerResolver callerResolver,
+        [FromServices] ISignalBroadcastService service,
+        CancellationToken cancellationToken)
+    {
+        var broadcast = await service.GetAsync(callerResolver.Resolve(principal), id, cancellationToken);
+        return broadcast is null ? Results.NotFound() : Results.Ok(broadcast);
+    }
+
+    private static async Task<IResult> ListDeliveries(
+        long id,
+        ClaimsPrincipal principal,
+        [FromServices] ISignalCallerResolver callerResolver,
+        [FromServices] ISignalBroadcastService service,
+        [FromQuery] string? status,
+        [FromQuery] long? instanceId,
+        [FromQuery] int? page,
+        [FromQuery] int? pageSize,
+        CancellationToken cancellationToken)
+    {
+        var deliveries = await service.ListDeliveriesAsync(
+            callerResolver.Resolve(principal),
+            id,
+            status,
+            instanceId,
+            page ?? 1,
+            pageSize ?? 50,
+            cancellationToken);
+        return deliveries is null ? Results.NotFound() : Results.Ok(deliveries);
+    }
+
+    private static async Task<IResult> Cancel(
+        long id,
+        CancelSignalBroadcastRequest? request,
+        ClaimsPrincipal principal,
+        [FromServices] ISignalCallerResolver callerResolver,
+        [FromServices] ISignalBroadcastService service,
+        CancellationToken cancellationToken)
+    {
+        var broadcast = await service.CancelAsync(
+            callerResolver.Resolve(principal),
+            id,
+            request ?? new CancelSignalBroadcastRequest(),
+            cancellationToken);
+        return broadcast is null ? Results.NotFound() : Results.Ok(broadcast);
+    }
+
+    private static async Task<IResult> RetryFailed(
+        long id,
+        RetrySignalDeliveriesRequest request,
+        ClaimsPrincipal principal,
+        [FromServices] ISignalCallerResolver callerResolver,
+        [FromServices] ISignalBroadcastService service,
+        CancellationToken cancellationToken)
+    {
+        var broadcast = await service.RetryFailedAsync(
+            callerResolver.Resolve(principal),
+            id,
+            request,
+            cancellationToken);
+        return broadcast is null ? Results.NotFound() : Results.Ok(broadcast);
+    }
+
+    private static async Task<IResult> Summary(
+        [FromServices] ISignalBroadcastService service,
+        [FromQuery] string? name,
+        [FromQuery] string? workflowKey,
+        CancellationToken cancellationToken) =>
+        Results.Ok(await service.SummarizeSubscriptionsAsync(name, workflowKey, cancellationToken));
+}

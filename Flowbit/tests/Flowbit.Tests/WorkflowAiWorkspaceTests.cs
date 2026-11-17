@@ -15,9 +15,9 @@ public sealed class WorkflowAiWorkspaceTests
     public void TheDocsViewIsTheLabsDocSetFromTheRealPackageUnderTheLabsPaths()
     {
         var docs = new WorkflowAiDocs(new ResourceKnowledge(AuthoringRepository.Package));
-        Assert.Equal(86, docs.Files.Count);
+        Assert.Equal(89, docs.Files.Count);
         Assert.Equal(WorkflowAiDocs.Guides, docs.Files.Keys.Where(path => !path.Contains('/')));
-        Assert.Equal(69, docs.Files.Keys.Count(path => path.StartsWith("examples/", StringComparison.Ordinal) && path.EndsWith(".json", StringComparison.Ordinal)));
+        Assert.Equal(71, docs.Files.Keys.Count(path => path.StartsWith("examples/", StringComparison.Ordinal) && path.EndsWith(".json", StringComparison.Ordinal)));
         Assert.Contains("examples/gateways/02-parallel-fork-and-join.json", docs.Files.Keys);
         Assert.DoesNotContain(docs.Files.Keys, path => path.Contains("api-guide") || path.Contains("SKILL") || path.Contains("authoring-guide") || path.Contains("plans/"));
         Assert.Equal(64, docs.Fingerprint.Length);

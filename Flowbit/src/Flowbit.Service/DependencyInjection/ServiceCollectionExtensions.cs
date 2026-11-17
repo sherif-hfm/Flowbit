@@ -55,6 +55,10 @@ public static class ServiceCollectionExtensions
             provider.GetRequiredService<InstanceVariableUpdateService>());
         services.AddScoped<IInstanceVariableUpdateBatchService, InstanceVariableUpdateBatchService>();
         services.AddScoped<IInstanceVariableUpdateBatchJobProcessor, InstanceVariableUpdateBatchJobProcessor>();
+        services.AddScoped<ISignalBroadcastService, SignalBroadcastService>();
+        services.AddScoped<ISignalBroadcastJobProcessor, SignalBroadcastJobProcessor>();
+        services.AddScoped<ISignalDeliveryExecutor>(provider =>
+            provider.GetRequiredService<WorkflowEngineService>());
         services.AddScoped<IWorkflowJobProcessor, WorkflowJobProcessorRouter>();
         services.AddScoped<IWorkflowJobOperationsService, WorkflowJobOperationsService>();
         services.AddScoped<INodeExecutionQueryService, NodeExecutionQueryService>();

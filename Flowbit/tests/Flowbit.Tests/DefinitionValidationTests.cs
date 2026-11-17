@@ -4179,7 +4179,7 @@ public sealed class DefinitionValidationTests
         var error = await Assert.ThrowsAsync<WorkflowDomainException>(() =>
             CreateService(out _).CreateAsync(model, false, CancellationToken.None));
 
-        Assert.Contains("9 timer and conditional", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("9 timer, conditional, and signal boundary events", error.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("at most 8 are allowed", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 

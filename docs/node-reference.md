@@ -2,7 +2,7 @@
 
 [Documentation home](index.md) · [BPMN behavior](bpmn-support.md) · [Developer guide](developer-guide.md) · [Example catalog](../examples/README.md)
 
-Use this reference when choosing a task, event, or gateway and authoring its Flowbit JSON properties. It covers all **24 supported node types**, their shared and nested configuration, and the sequence flows that supply actions and routing. For execution semantics across a whole process, read [BPMN support](bpmn-support.md); for HTTP requests, read the [API reference](api-guide.md).
+Use this reference when choosing a task, event, or gateway and authoring its Flowbit JSON properties. It covers all **26 supported node types**, their shared and nested configuration, and the sequence flows that supply actions and routing. For execution semantics across a whole process, read [BPMN support](bpmn-support.md); for HTTP requests, read the [API reference](api-guide.md).
 
 The tables describe current authoring contracts and effective defaults. **Required** means needed for that configuration to work and pass validation; **conditional** means required only in the stated situation. Omit optional properties that do not apply to the selected type. The model uses one shared node class: a property existing on that class does not make it meaningful on every node. Some irrelevant legacy fields are cleared during normalization, while explicitly invalid combinations are rejected. Do not rely on normalization to repair newly authored definitions.
 
@@ -22,6 +22,7 @@ JSON blocks below are **fragments**, not standalone workflows, unless stated oth
 - [Timer configuration](#timer-configuration)
 - [Working-time durations](#working-time-durations)
 - [Conditional configuration](#conditional-configuration)
+- [Signal configuration](#signal-configuration)
 - [Boundary host rules](#boundary-host-rules)
 - [Durable job policy](#durable-job-policy)
 - [Sequence flows](#sequence-flows)
@@ -44,11 +45,13 @@ JSON blocks below are **fragments**, not standalone workflows, unless stated oth
 | Catch | [intermediateMessageCatchEvent](#intermediatemessagecatchevent) | Wait for an inbound message. |
 | Catch | [intermediateTimerCatchEvent](#intermediatetimercatchevent) | Wait for a scheduled trigger. |
 | Catch | [intermediateConditionalCatchEvent](#intermediateconditionalcatchevent) | Wait for a persisted-variable condition. |
+| Catch | [intermediateSignalCatchEvent](#intermediatesignalcatchevent) | Wait for a signal broadcast with its name. |
 | Link | [intermediateLinkThrowEvent](#intermediatelinkthrowevent) | "Go to" the link catch event with the same name. |
 | Link | [intermediateLinkCatchEvent](#intermediatelinkcatchevent) | Continue here from every link throw event with the same name. |
 | Boundary | [errorBoundaryEvent](#errorboundaryevent) | Handle an attached service, script, or call failure. |
 | Boundary | [timerBoundaryEvent](#timerboundaryevent) | Deadline or reminder while a host is active. |
 | Boundary | [conditionalBoundaryEvent](#conditionalboundaryevent) | Interrupt or branch when a host's observed condition becomes true. |
+| Boundary | [signalBoundaryEvent](#signalboundaryevent) | Interrupt or branch when a signal with its name is delivered while a host is active. |
 | Interrupt | [scopedInterruptEvent](#scopedinterruptevent) | Interrupt a particular active gateway scope. |
 | End | [endEvent](#endevent) | Complete this token. |
 | End | [terminateEndEvent](#terminateendevent) | Complete the instance and cancel its remaining work. |
@@ -58,7 +61,7 @@ JSON blocks below are **fragments**, not standalone workflows, unless stated oth
 | Gateway | [inclusiveGateway](#inclusivegateway) | Start matching branches or merge using reachability. |
 | Gateway | [complexGateway](#complexgateway) | Stateful activation and reset conditions. |
 
-Timers, conditional `durableAsync` delivery, call activities, call-only starts, and multi-instance service, script, and call activities require a running Worker. Task async flags also require a Worker. The [BPMN catalog](bpmn-support.md#supported-node-types) gives the prerequisites for each type; [deployment](deployment.md#worker-operation) explains setup.
+Timers, conditional `durableAsync` delivery, signal events, call activities, call-only starts, and multi-instance service, script, and call activities require a running Worker. Task async flags also require a Worker. The [BPMN catalog](bpmn-support.md#supported-node-types) gives the prerequisites for each type; [deployment](deployment.md#worker-operation) explains setup.
 
 ## Common node properties
 
@@ -465,7 +468,7 @@ Each mapping copies one whole variable, so it has no path, expression, default, 
 
 **Identity.** The child starts as the fixed system actor `callActivity`, with no roles, claims, or delegation, and this workflow continues as the same actor after delivery. In the child, `sys.user` is therefore `callActivity`, so an `assignee` expression or `${sys.user}` default that relies on the starter produces a value no real user owns. Pass a requester or approver as an ordinary mapped input instead. The child's own tasks keep their roles, assignment, and action checks.
 
-**Boundaries and failures.** A call may have one catch-all [errorBoundaryEvent](#errorboundaryevent). `errorMatch` is invalid on a call, and so are timer and conditional boundaries unless the call is multi-instance. The boundary's `errorVariable` receives `code: description` on a single call and the code alone on a multi-instance call.
+**Boundaries and failures.** A call may have one catch-all [errorBoundaryEvent](#errorboundaryevent). `errorMatch` is invalid on a call, and so are signal boundaries, and timer and conditional boundaries unless the call is multi-instance. The boundary's `errorVariable` receives `code: description` on a single call and the code alone on a multi-instance call.
 
 | What happened | With a boundary | Without a boundary |
 | --- | --- | --- |
@@ -544,7 +547,7 @@ Progress names such as `mi.completed` and `mi.remaining` are refused in item exp
 
 `variables` holds the item's local outputs only, or `{}` with no declarations; shared writes are never copied into it. When an error boundary catches an item failure, the partial result also has `failed` rows for the failure and any already failed items and `cancelled` rows for unfinished and unstarted items, each with `"variables": {}`. A timer or conditional interruption and cancellation publish no result.
 
-**Topology and durability.** A body has exactly one ordinary unconditional outgoing flow, without a condition, default, `isSelectable: false`, or completion settings. A service or script body requires `asyncBefore: true`; its `job` policy applies to its entry and to each item, and an optional `asyncAfter` runs once, after the result is published. A call body refuses `asyncBefore`, `asyncAfter`, and `job`. Error boundaries keep their host's rules; timer and conditional boundaries attach to all three kinds, as [boundary host rules](#boundary-host-rules) describe. A boundary's `errorVariable` receives a stable failure code, never request or response data; declare it as a process variable, an instance `string` or a `readWrite` shared alias.
+**Topology and durability.** A body has exactly one ordinary unconditional outgoing flow, without a condition, default, `isSelectable: false`, or completion settings. A service or script body requires `asyncBefore: true`; its `job` policy applies to its entry and to each item, and an optional `asyncAfter` runs once, after the result is published. A call body refuses `asyncBefore`, `asyncAfter`, and `job`. Error boundaries keep their host's rules; timer and conditional boundaries attach to all three kinds, and signal boundaries to none, as [boundary host rules](#boundary-host-rules) describe. A boundary's `errorVariable` receives a stable failure code, never request or response data; declare it as a process variable, an instance `string` or a `readWrite` shared alias.
 
 **Limits.** At most `Workflow.MultiInstance.MaxInstances` items (default 1,000; an empty collection is valid), a 1 MiB input snapshot, a 1 MiB result, and 1 MiB per item for its frozen inputs and saved result together. Sizes count the text PostgreSQL stores for the JSON, which can be larger than compact JSON. A result whose rows cannot fit even before any output is refused at entry, before any item runs.
 
@@ -582,7 +585,7 @@ Declare `supplierIds` as a process `string[]` and `notificationResults` as a pro
 
 ## Events
 
-Every event also has the [common node properties](#common-node-properties). Set `type` to the exact name in its heading. Event properties listed here add to those common properties; task ownership, assignment, multi-instance configuration, `asyncBefore`, `asyncAfter`, and node `job` policies do not apply to events. Timers and durable conditionals use Worker jobs through their own event contracts.
+Every event also has the [common node properties](#common-node-properties). Set `type` to the exact name in its heading. Event properties listed here add to those common properties; task ownership, assignment, multi-instance configuration, `asyncBefore`, `asyncAfter`, and node `job` policies do not apply to events. Timers, durable conditionals, and signal deliveries use Worker jobs through their own event contracts.
 
 The JSON examples below are **node fragments**, not complete importable workflows. Add the referenced nodes, declared variables, and sequence flows in a workflow definition. An unconditional event continuation has no condition, default flag, role/input/action configuration, or multi-instance metadata.
 
@@ -698,7 +701,7 @@ Persists a wait in an existing instance. `POST /api/instances/{instanceId}/messa
 | `externalId` | string | Optional | Exact, case-sensitive `catchEvent` request selector when multiple waiting catches need disambiguation. Give independently addressable waits distinct external IDs. |
 | `message` | [message configuration](#message-configuration) | Required | Credentials, correlation contract, typed output mappings, and optional catch-delivery idempotency. |
 
-The event carries no node `variables` input form. Credentials and correlation templates resolve against stored values and server-controlled context, before applying inbound outputs. All output mappings commit atomically. Timer/conditional boundaries may attach to this wait.
+The event carries no node `variables` input form. Credentials and correlation templates resolve against stored values and server-controlled context, before applying inbound outputs. All output mappings commit atomically. Timer, conditional, and signal boundaries may attach to this wait.
 
 ```json
 {
@@ -745,7 +748,7 @@ Persists a timed wait. The Worker resumes the token when its scheduled occurrenc
 }
 ```
 
-Timer and conditional boundaries may attach to this event. A Worker outage delays delivery; a finite cyclic catch with no eligible occurrence remaining opens an incident. See [timer semantics](bpmn-support.md#timers).
+Timer, conditional, and signal boundaries may attach to this event. A Worker outage delays delivery; a finite cyclic catch with no eligible occurrence remaining opens an incident. See [timer semantics](bpmn-support.md#timers).
 
 ### intermediateConditionalCatchEvent
 
@@ -766,7 +769,42 @@ Waits for a Boolean condition over persisted instance variables. The condition i
 }
 ```
 
-Declare persisted instance variable `approved`. Timer/conditional boundaries cannot attach to a conditional catch. See the [conditional runtime reference](../Flowbit/README.md#intermediate-conditional-catch-events).
+Declare persisted instance variable `approved`. Timer, conditional, and signal boundaries cannot attach to a conditional catch. See the [conditional runtime reference](../Flowbit/README.md#intermediate-conditional-catch-events).
+
+### intermediateSignalCatchEvent
+
+Persists a wait for a named signal. A signal is thrown through `POST /api/signal-broadcasts`, never by a workflow in this release, and reaches every signal catch that is waiting for its name, in one workflow family or in all of them, when it is thrown. The Worker then delivers it to each waiting token: the catch maps the broadcast's JSON payload into variables and continues through its outgoing flow. Use it when many instances must react to one announcement, such as a changed policy; use an [intermediate message catch](#intermediatemessagecatchevent) for one instance or for something that must not be missed.
+
+**Topology:** at least one incoming flow; exactly one unconditional outgoing flow. **Worker:** required, and the definition publishes only when durable publication is enabled.
+
+| Property | Type | Required / default | Meaning and constraints |
+| --- | --- | --- | --- |
+| `signal` | [signal configuration](#signal-configuration) | Required | The literal signal name and optional typed payload mappings. |
+
+```json
+{
+  "id": 9,
+  "name": "Wait for the new policy",
+  "type": "intermediateSignalCatchEvent",
+  "signal": {
+    "name": "claims.policy-changed",
+    "outputMappings": [
+      { "variable": "policyVersion", "path": "version", "dataType": "number", "isArray": false, "required": true }
+    ]
+  }
+}
+```
+
+The example assumes `policyVersion` is undeclared or a declared scalar `number` instance variable.
+
+- **When it waits.** A token that arrives on the catch creates a signal subscription for that visit and rests there. The subscription ends in the same transaction as the wait: when a signal is delivered, when an attached boundary interrupts the catch, or when the instance or the token's branch is cancelled. A loop that returns to the catch subscribes again for the new visit.
+- **What it receives.** A throw freezes its recipients when it runs, so a catch reached after the throw does not receive it, and a signal is not stored for later waits. One broadcast advances one wait: when a catch is followed by another catch of the same name, the second subscribes after the first was delivered, and the same broadcast does not reach it.
+- **Delivery.** The delivery runs as the fixed system actor `signal`, with no roles or claims. It writes the mapped values on the catch's visit, lets conditional events observe them, and then follows the outgoing flow if the token is still waiting. History records a `signalReceived` row whose payload names the broadcast, the signal, and its thrower; the catch's visit completes with reason `signalReceived`, and the outgoing flow's traversal evidence has kind `signalCatch`. Routing after the catch runs in the Worker, so a later service or script task becomes a durable job of its own.
+- **Failures.** A payload that fails a mapping fails only that delivery with `signal_payload_invalid`, writes nothing, and leaves the catch waiting and subscribed.
+- **Boundaries.** Timer, conditional, and [signal](#signalboundaryevent) boundaries may attach, for example to stop waiting after seven days; see [boundary host rules](#boundary-host-rules). A signal boundary on the catch must use another signal name than the catch. A conditional boundary that the mapped values make true can take the token before the catch continues.
+- **Other settings.** Only the [common node properties](#common-node-properties) and `signal` are accepted. Task, role, variable, timer, conditional, message, async, job, and multi-instance settings are rejected, as is `signal` on any other node type.
+
+See [signals](bpmn-support.md#signals), [broadcasting signals](developer-guide.md#broadcast-signals), and the [signal catch example](../examples/signals/01-signal-catch-policy-change.json).
 
 ### intermediateLinkThrowEvent
 
@@ -960,6 +998,47 @@ Observes a variable condition while its host activation is active. Its initial t
 ```
 
 Declare persisted instance variable `riskScore`. In one matching batch, non-interrupting boundaries are captured in node-ID order, then the lowest-ID interrupting boundary wins. Successful host outputs are evaluated while the host is active, so an interrupting match can take precedence over normal exit; service/script failure handling retains error-boundary precedence. Several durable rearmed occurrences can remain queued independently. See the [conditional-boundary runtime reference](../Flowbit/README.md#conditional-boundary-events).
+
+### signalBoundaryEvent
+
+Listens for a named signal while its host is active. A signal thrown through `POST /api/signal-broadcasts` reaches every signal boundary with its name whose host is active in the chosen scope when it is thrown, as it reaches waiting [signal catches](#intermediatesignalcatchevent). An interrupting boundary ends the host and takes the boundary route; a non-interrupting one starts a new branch for each signal while the host carries on. Use it when an announcement must reach work in progress, such as a product recall that stops a shipment, or a price update that adds a step beside it.
+
+**Topology:** no incoming flows; exactly one unconditional outgoing flow. **Worker:** required, and the definition publishes only when durable publication is enabled.
+
+| Property | Type | Required / default | Meaning and constraints |
+| --- | --- | --- | --- |
+| `attachedToRef` | integer | Required | Existing eligible host ID; see [boundary host rules](#boundary-host-rules). |
+| `cancelActivity` | Boolean | Optional; `true` | `true` interrupts the host when a signal is delivered; `false` starts a new branch for each signal and keeps the host and the boundary active. |
+| `signal` | [signal configuration](#signal-configuration) | Required | The literal signal name and optional typed payload mappings. |
+
+```json
+{
+  "id": 4,
+  "name": "Price updated",
+  "type": "signalBoundaryEvent",
+  "attachedToRef": 2,
+  "cancelActivity": false,
+  "signal": {
+    "name": "warehouse.price-update",
+    "outputMappings": [
+      { "variable": "unitPrice", "path": "unitPrice", "dataType": "number", "isArray": false, "required": true }
+    ]
+  }
+}
+```
+
+The example assumes node `2` is an eligible host and `unitPrice` is undeclared or a declared scalar `number` instance variable.
+
+- **When it listens.** When the host's token enters the host, it subscribes once for each signal boundary attached there, in the same transaction and before an `asyncBefore` job runs. Every way the host ends cancels those subscriptions: its normal exit, including the start of an `asyncAfter` wait, another boundary interrupting it, a caught failure, or the cancellation of the instance or the token's branch. A loop that enters the host again subscribes again for the new visit. A delivery that arrives after the host has ended is skipped.
+- **Interrupting** (`cancelActivity` missing or `true`). The delivery ends the subscription and cancels the host's work as an interrupting conditional boundary does: open user tasks and multi-instance work items, an automatic body, the host's other timer, conditional, and signal subscriptions, its jobs, and its calls. The host's visit is cancelled with reason `signalReceived`, and the token moves to the boundary. The mapped values are written on the boundary's visit, conditional events observe them, and the token continues through the boundary's flow. The delivery's result code is `interrupted`.
+- **Non-interrupting** (`cancelActivity: false`). The host and the subscription stay active, and the subscription's occurrence count increases. The delivery adds a token at the boundary, in the host's gateway branch, writes the mapped values on that token's visit, lets conditional events observe them, and continues it through the boundary's flow; the result code is `branched`. Each later signal adds another branch. A delivery that would raise the instance's active tokens beyond `Workflow.Gateway.MaxActiveTokens` (default 1,000) fails with `signal_token_limit`, adds nothing, and leaves the boundary listening.
+- **Records.** History records a `signalReceived` row from the boundary to the next node; its payload has `eventKind` `boundary`, `cancelActivity`, and the host's token as `hostTokenId`. The boundary's visit completes with reason `signalReceived`, and the outgoing flow's traversal evidence has kind `signalBoundary`. The delivery runs as the fixed system actor `signal`, and routing after the boundary runs in the Worker.
+- **Names.** Two signal boundaries on one host cannot use the same signal name, and a boundary on a signal catch cannot use the name the catch waits for. Boundaries on different hosts may share a name; one broadcast then reaches each of them whose host is active.
+- **Failures.** A payload that fails a mapping fails only that delivery with `signal_payload_invalid`, writes nothing, and leaves the host active and the boundary listening.
+- **Version changes.** While a token is at the host, a target version that adds, removes, or changes a signal boundary on it (its ID, type, name, interrupting flag, or outgoing flow) blocks the change with `attached_signal_boundary_contract_changed`. Changing only the mappings gives the `signal_mapping_contract_changed` warning, unless the host has an open job, which then blocks with `open_job_contract_changed` because a job's contract includes its host's boundaries. See [signals and version changes](developer-guide.md#signals-and-version-changes).
+- **Other settings.** Only the [common node properties](#common-node-properties), `attachedToRef`, `cancelActivity`, and `signal` are accepted. Task, role, variable, timer, conditional, message, async, job, and multi-instance settings are rejected.
+
+See [signals](bpmn-support.md#signals), [broadcasting signals](developer-guide.md#broadcast-signals), and the [signal boundaries example](../examples/signals/02-signal-boundaries-recall.json).
 
 ### scopedInterruptEvent
 
@@ -1219,9 +1298,26 @@ The required `conditional` object belongs only to `intermediateConditionalCatchE
 
 Conditions support NCalc built-ins plus the pure string helpers `Length`, `Len`, `IsNullOrEmpty`, `IsNullOrWhiteSpace`, `Contains`, `StartsWith`, `EndsWith`, `Lower`, `Upper`, `Trim`, and `IsMatch`. NCalc resolves each built-in only in its own spelling: the maths functions capitalized, such as `Max`, `Round`, and `Abs`, and `if`, `in`, and `ifs` in lowercase. The string helpers accept any casing. A condition saved before this check with another casing keeps running, but never becomes true. The engine extracts dependencies from the parsed expression and reevaluates affected waits against the complete post-write-batch current-value snapshot. This includes supported variable producers such as user actions, messages, scripts/service outputs, and administrative variable updates. Shared aliases are rejected in both delivery modes. See the [conditional runtime reference](../Flowbit/README.md#intermediate-conditional-catch-events) for persistence and version-switch restrictions.
 
+## Signal configuration
+
+The required `signal` object belongs only to `intermediateSignalCatchEvent` and `signalBoundaryEvent`.
+
+| Property | Type | Required / default | Meaning and constraints |
+| --- | --- | --- | --- |
+| `name` | string | Required | Literal signal name: 1 to 100 lowercase ASCII letters, digits, `.`, `_`, or `-`, starting with a letter or digit (`^[a-z0-9][a-z0-9._-]{0,99}$`). It is not a template and is not trimmed; throws match it exactly. An uppercase letter is rejected. Prefer a dotted prefix, such as `claims.policy-changed`, so that unrelated workflows do not share a name by accident. |
+| `outputMappings` | [output-mapping array](#output-mappings) | Optional; `[]` | At most 100 typed mappings, in the shape message mappings use. `path` reads the broadcast's JSON payload. `dataType` and `isArray` are required: signals have no untyped legacy form. |
+
+A mapping writes an instance variable: a declared instance-scoped process variable, whose type, array shape, nullability, and validation then apply, or a new instance variable that the mapping declares. It cannot write a shared-variable alias, and neither its `defaultValue` template, its `validation`, nor the validation of a targeted process variable may read one, because one broadcast would otherwise touch the same shared key from every recipient. Reserved `sys.`, `config.`, `setting.`, and `mi.` names are rejected as for other mappings.
+
+A broadcast without a payload leaves every path missing, so each mapping's default or required check applies. All mappings resolve and validate before anything is written; a failure fails that delivery with `signal_payload_invalid` and leaves the catch waiting, or the boundary listening.
+
+Validation messages start with `Signal catch event #<id>` or `Signal boundary event #<id>`, for example `Signal catch event #9 signal.name must be 1 to 100 lowercase letters, digits, '.', '_', or '-', starting with a letter or digit.` A `signal` object on another node type returns `Flow node #<id> defines signal but is not a signal event.` The boundary name rules return `Signal boundary event #15 uses signal 'warehouse.product-recall', which signal boundary event #14 on host #3 already uses.` and `Signal boundary event #14 uses signal 'claims.policy-changed', the signal its host signal catch event #9 waits for.`
+
 ## Boundary host rules
 
-A `callActivity` hosts only one catch-all `errorBoundaryEvent`; timer and conditional boundaries attach to it only when it is multi-instance. Timer/conditional boundaries attach to a normal or multi-instance `userTask`, an `intermediateMessageCatchEvent`, an `intermediateTimerCatchEvent`, a `task`/`serviceTask`/`scriptTask` with `asyncBefore: true` (which every multi-instance service or script task has), or a multi-instance `callActivity`. A conditional catch, gateway, start, end, or another boundary is not an eligible host. A host may have at most **eight timer and conditional boundaries combined**, plus its separate error-boundary allowance when it is a service, script, or call activity.
+A `callActivity` hosts only one catch-all `errorBoundaryEvent`; timer and conditional boundaries attach to it only when it is multi-instance, and signal boundaries never. Timer, conditional, and signal boundaries attach to a normal or multi-instance `userTask`, an `intermediateMessageCatchEvent`, an `intermediateTimerCatchEvent`, an `intermediateSignalCatchEvent`, or a `task`/`serviceTask`/`scriptTask` with `asyncBefore: true`. Timer and conditional boundaries also attach to a multi-instance service or script task, which always has `asyncBefore: true`, and to a multi-instance `callActivity`; a signal boundary on any of these [multi-instance bodies](#automatic-multi-instance-properties) is rejected. A conditional catch, gateway, start, end, or another boundary is not an eligible host. A host may have at most **eight timer, conditional, and signal boundaries combined**, plus its separate error-boundary allowance when it is a service, script, or call activity.
+
+Host problems are reported with the boundary's kind, for example `Signal boundary event #14 host #3 must be a durable wait or an automatic task with asyncBefore enabled.` and `Signal boundary event #14 host #3 is a multi-instance service, script, or call activity, which signal boundaries do not support.` The limit returns `Host node #3 has 9 timer, conditional, and signal boundary events; at most 8 are allowed.` whichever kinds the nine are, and `cancelActivity` on any other node type returns `Flow node #5 defines cancelActivity but is not a timer, conditional, or signal boundary event.`
 
 On a [multi-instance body](#automatic-multi-instance-properties), a boundary belongs to the whole body, never one item. A conditional subscription starts when the token enters the node, even while it waits behind another body of the same node, and can interrupt that waiting entry without touching the other body. A timer starts when the body initializes, not while it is queued. An interrupting occurrence stops unfinished items, cancels their call children, publishes no result, and routes once; writes that items had already committed stay. A non-interrupting occurrence creates a sibling branch while the body keeps running, and an occurrence already captured survives the body's normal completion. Conditions still read only declared, persisted instance variables, never item locals, `mi.*`, or shared aliases.
 
@@ -1578,7 +1674,7 @@ See [input collection](developer-guide.md#collect-and-validate-variables) for nu
 
 ## Output mappings
 
-Service responses and message payloads use the same JSON mapping fields. For a `messageStartEvent`, mappings also declare the entry variables; for `serviceTask` and `intermediateMessageCatchEvent`, they describe operation-specific writes. They are not the node's `variables` list.
+Service responses, message payloads, and signal payloads use the same JSON mapping fields. For a `messageStartEvent`, mappings also declare the entry variables; for `serviceTask`, `intermediateMessageCatchEvent`, `intermediateSignalCatchEvent`, and `signalBoundaryEvent`, they describe operation-specific writes. They are not the node's `variables` list. On a signal event, `path` reads the broadcast's payload, `dataType` and `isArray` are always required, and the mapping cannot read or write a shared alias; see [signal configuration](#signal-configuration).
 
 | Property | Type | Required / default | Meaning and constraints |
 | --- | --- | --- | --- |
@@ -1592,7 +1688,7 @@ Service responses and message payloads use the same JSON mapping fields. For a `
 
 Incoming extracted values are type-checked strictly: `number` requires a JSON number and `boolean` a JSON Boolean; strings such as `"12"` are not accepted as numeric response values. `date` requires `YYYY-MM-DD`; `datetime` requires a parseable timestamp containing `T`. Arrays require compatible elements. A declared process target's `nullable` contract determines whether explicit JSON null is accepted. Undeclared `json` outputs retain JSON-null compatibility; mappings have no independent `nullable` property.
 
-If an optional path is absent and there is no default, that mapping produces no write and preserves an existing value. Its authored validation still runs against the final context, so optional does not bypass a validation rule. A present wrong-type value fails even when the mapping is optional or has a fallback. All mappings are resolved and validated before writes. A service mapping failure fails the activity and may be caught by an error boundary; a message-catch failure rejects delivery and leaves the wait in place. Message-start failure creates no instance.
+If an optional path is absent and there is no default, that mapping produces no write and preserves an existing value. Its authored validation still runs against the final context, so optional does not bypass a validation rule. A present wrong-type value fails even when the mapping is optional or has a fallback. All mappings are resolved and validated before writes. A service mapping failure fails the activity and may be caught by an error boundary; a message-catch failure rejects delivery and leaves the wait in place, and a signal-event failure fails that delivery and leaves the wait or the boundary in place. Message-start failure creates no instance.
 
 ```json
 {

@@ -25,7 +25,7 @@ public sealed partial class WorkflowEngineService
             _ = await engine.DrainAutomaticMultiInstanceNotificationsAsync(instance, body, definition, Actor(body), ct);
 
         public Task CloseHostSubscriptionsAsync(AutomaticMultiInstanceRecord body, CancellationToken ct) =>
-            engine.CloseAutomaticMultiInstanceBoundariesAsync(instance.Id, body.TokenId, ct);
+            engine.CloseAutomaticMultiInstanceBoundariesAsync(instance.Id, body.TokenId, definition, ct);
 
         public Task AbandonItemCallsAsync(AutomaticMultiInstanceRecord body, CancellationToken ct) =>
             engine.AbandonAutomaticCallsForTokensAsync(instance.Id, [body.TokenId], ct);
@@ -304,8 +304,8 @@ public sealed partial class WorkflowEngineService
     }
 
     internal Task CloseAutomaticMultiInstanceBoundariesAsync(
-        long instanceId, long tokenId, CancellationToken cancellationToken) =>
-        CancelAttachedBoundaryWaitsAsync(instanceId, [tokenId], cancellationToken);
+        long instanceId, long tokenId, WorkflowModel definition, CancellationToken cancellationToken) =>
+        CancelAttachedBoundaryWaitsAsync(instanceId, [tokenId], cancellationToken, definition);
 
     private async Task CancelAutomaticBodyForBoundaryAsync(
         ExecutionTokenRecord token, string reason, CancellationToken cancellationToken)

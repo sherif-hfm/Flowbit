@@ -40,6 +40,7 @@ public static class FlowbitEndpointMappingExtensions
         app.MapSharedVariableEndpoints();
         app.MapSharedVariableClientEndpoints();
         app.MapWebhookEndpoints();
+        app.MapSignalEndpoints();
 
         return app;
     }

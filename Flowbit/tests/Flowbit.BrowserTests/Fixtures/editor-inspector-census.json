@@ -81,7 +81,21 @@
     },
     { "id": 28, "name": "Watcher", "type": "conditionalBoundaryEvent", "laneId": 1, "x": 0, "y": 0, "attachedToRef": 3, "cancelActivity": true, "conditional": { "condition": "amount > 1" } },
     { "id": 30, "name": "Census link", "type": "intermediateLinkThrowEvent", "laneId": 1, "x": 700, "y": 640 },
-    { "id": 31, "name": "Census link", "type": "intermediateLinkCatchEvent", "laneId": 1, "x": 900, "y": 640 }
+    { "id": 31, "name": "Census link", "type": "intermediateLinkCatchEvent", "laneId": 1, "x": 900, "y": 640 },
+    {
+      "id": 32, "name": "Policy change", "type": "intermediateSignalCatchEvent", "laneId": 1, "x": 1100, "y": 640,
+      "signal": {
+        "name": "census.policy-changed",
+        "outputMappings": [{ "variable": "amount", "path": "version", "dataType": "number", "isArray": false, "required": false, "defaultValue": null, "validation": null }]
+      }
+    },
+    {
+      "id": 33, "name": "Recall", "type": "signalBoundaryEvent", "laneId": 1, "x": 0, "y": 0, "attachedToRef": 2, "cancelActivity": false,
+      "signal": {
+        "name": "census.recall",
+        "outputMappings": [{ "variable": "subject", "path": "reason", "dataType": "string", "isArray": false, "required": false, "defaultValue": null, "validation": null }]
+      }
+    }
   ],
   "sequenceFlows": [
     { "id": 101, "name": "", "sourceRef": 1, "targetRef": 2 },

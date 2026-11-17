@@ -38,7 +38,9 @@ public sealed partial class WorkflowEngineService(
     ICallActivityRepository? callActivities = null,
     CallActivityOptions? callActivityOptions = null,
     IAutomaticMultiInstanceRepository? automaticMultiInstances = null,
-    AutomaticMultiInstanceCoordinator? automaticMultiInstanceCoordinator = null)
+    AutomaticMultiInstanceCoordinator? automaticMultiInstanceCoordinator = null,
+    ISignalSubscriptionRepository? signalSubscriptions = null,
+    ISignalBroadcastRepository? signalBroadcasts = null)
     : IWorkflowEngineService, IWorkflowJobProcessor,
       IInstanceVersionChangeBatchExecutor, IConditionalEventRuntimeCoordinator,
       IAdministrativeActionExecutor
@@ -511,6 +513,7 @@ public sealed partial class WorkflowEngineService(
                     instance,
                     actor,
                     rise,
+                    definition,
                     cancellationToken)
                 : siblingTokens[siblingIndex++];
             if (rise.Subscription.DeliveryMode
@@ -611,6 +614,7 @@ public sealed partial class WorkflowEngineService(
         WorkflowInstanceRecord instance,
         ActorContext actor,
         ConditionalBoundaryRise rise,
+        WorkflowModel definition,
         CancellationToken cancellationToken)
     {
         var subscription = rise.Subscription;
@@ -632,39 +636,86 @@ public sealed partial class WorkflowEngineService(
             return sibling;
         }
 
+        await InterruptBoundaryHostAsync(
+            instance,
+            host,
+            rise.Node,
+            definition,
+            actor,
+            NodeExecutionCompletionReasons.ConditionalTriggered,
+            "interruptingConditionalBoundary",
+            keepConditionalSubscriptionId: subscription.Id,
+            cancellationToken);
+        return await runtime.GetExecutionTokenAsync(
+                host.Id,
+                false,
+                cancellationToken)
+            ?? throw new WorkflowConflictException(
+                "The interrupting conditional boundary token disappeared while it was captured.");
+    }
+
+    /// <summary>
+    /// Ends a host's work for an interrupting conditional or signal boundary and moves
+    /// its token onto the boundary: the automatic body, open user tasks and
+    /// multi-instance children, timer, conditional, and signal subscriptions, other
+    /// jobs, and calls. One sequence for both kinds, so they cannot drift. The
+    /// conditional capture keeps its own subscription, which it settles itself.
+    /// </summary>
+    private async Task InterruptBoundaryHostAsync(
+        WorkflowInstanceRecord instance,
+        ExecutionTokenRecord host,
+        FlowNodeModel boundary,
+        WorkflowModel definition,
+        ActorContext actor,
+        string completionReason,
+        string jobCancelReason,
+        long? keepConditionalSubscriptionId,
+        CancellationToken cancellationToken)
+    {
         var ids = new[] { host.Id };
-        await CancelAutomaticBodyForBoundaryAsync(host,
-            NodeExecutionCompletionReasons.ConditionalTriggered, cancellationToken);
+        var completionActor = ToNodeExecutionActor(actor);
+        await CancelAutomaticBodyForBoundaryAsync(host, completionReason, cancellationToken);
         await runtime.CancelOpenUserTasksForTokensAsync(
             ids,
-            NodeExecutionCompletionReasons.ConditionalTriggered,
+            completionReason,
             completionActor,
             cancellationToken);
         await runtime.CancelActiveMultiInstancesForTokensAsync(
             ids,
-            NodeExecutionCompletionReasons.ConditionalTriggered,
+            completionReason,
             completionActor,
             cancellationToken);
         await timerSubscriptions.CancelByTokenIdsAsync(
             instance.Id,
             ids,
             cancellationToken);
-        await conditionalBoundarySubscriptions!.CancelOtherForTokenAsync(
-            instance.Id,
-            host.Id,
-            subscription.Id,
-            cancellationToken);
+        if (keepConditionalSubscriptionId is long keep)
+        {
+            await conditionalBoundarySubscriptions!.CancelOtherForTokenAsync(
+                instance.Id,
+                host.Id,
+                keep,
+                cancellationToken);
+        }
+        else if (conditionalBoundarySubscriptions is not null)
+        {
+            await conditionalBoundarySubscriptions.CancelByTokenIdsAsync(
+                instance.Id,
+                ids,
+                cancellationToken);
+        }
+        await CancelSignalSubscriptionsAsync(instance.Id, ids, definition, cancellationToken);
         await jobs.CancelOtherJobsByTokenIdsAsync(
             instance.Id,
             ids,
             _processingJobId,
-            "interruptingConditionalBoundary",
+            jobCancelReason,
             cancellationToken);
         await AbandonCallsForTokensAsync(instance.Id, ids, cancellationToken);
         await AbandonAutomaticCallsForTokensAsync(instance.Id, ids, cancellationToken);
         await runtime.UpdateExecutionTokenAsync(
             host.Id,
-            ToSnapshot(rise.Node),
+            ToSnapshot(boundary),
             ExecutionTokenRecordStatuses.Active,
             host.GatewayBranchId,
             null,
@@ -673,7 +724,7 @@ public sealed partial class WorkflowEngineService(
             completionActor,
             new NodeExecutionCompletionRecord(
                 NodeExecutionRecordStatuses.Cancelled,
-                NodeExecutionCompletionReasons.ConditionalTriggered,
+                completionReason,
                 null,
                 null,
                 host.GatewayBranchId,
@@ -682,12 +733,6 @@ public sealed partial class WorkflowEngineService(
             automaticActivationCount:
                 WorkflowAutomaticActivationGuard.ResetAfterExternalWaitOrTrigger(),
             automaticActivationStateIds: host.AutomaticActivationStateIds);
-        return await runtime.GetExecutionTokenAsync(
-                host.Id,
-                false,
-                cancellationToken)
-            ?? throw new WorkflowConflictException(
-                "The interrupting conditional boundary token disappeared while it was captured.");
     }
 
     private async Task<int> EnsureAttachedConditionalBoundarySubscriptionsAsync(
@@ -3306,7 +3351,8 @@ public sealed partial class WorkflowEngineService(
             await CancelAttachedBoundaryWaitsAsync(
                 instance.Id,
                 [token.Id],
-                cancellationToken);
+                cancellationToken,
+                workflow.Definition);
             await unitOfWork.SaveChangesAsync(cancellationToken);
             return await runtime.GetInstanceAsync(instance.Id, cancellationToken)
                 ?? waitingInstance;
@@ -3315,7 +3361,8 @@ public sealed partial class WorkflowEngineService(
         await CancelAttachedBoundaryWaitsAsync(
             instance.Id,
             [token.Id],
-            cancellationToken);
+            cancellationToken,
+            workflow.Definition);
         var nextNode = GetFlowNode(workflow.Definition, winning.TargetRef);
         var targetTokenStatus = BpmnFlowNodeTypes.IsErrorEnd(nextNode.Type)
             ? ExecutionTokenRecordStatuses.Faulted
@@ -3357,11 +3404,11 @@ public sealed partial class WorkflowEngineService(
         await unitOfWork.SaveChangesAsync(cancellationToken);
         if (BpmnFlowNodeTypes.IsTerminateEnd(nextNode.Type))
         {
-            await TerminateInstanceAsync(instance.Id, token.Id, actor, cancellationToken);
+            await TerminateInstanceAsync(instance.Id, token.Id, actor, cancellationToken, workflow.Definition);
         }
         else if (BpmnFlowNodeTypes.IsErrorEnd(nextNode.Type))
         {
-            await FaultInstanceAsync(instance.Id, token.Id, actor, cancellationToken);
+            await FaultInstanceAsync(instance.Id, token.Id, actor, cancellationToken, workflow.Definition);
         }
         else if (BpmnFlowNodeTypes.IsEnd(nextNode.Type))
         {
@@ -3802,7 +3849,8 @@ public sealed partial class WorkflowEngineService(
             await CancelAttachedBoundaryWaitsAsync(
                 instance.Id,
                 [token.Id],
-                cancellationToken);
+                cancellationToken,
+                workflow.Definition);
             if (administrativeBatch is not null)
             {
                 await CompleteAdministrativeBatchItemAsync(
@@ -3849,7 +3897,8 @@ public sealed partial class WorkflowEngineService(
         await CancelAttachedBoundaryWaitsAsync(
             instance.Id,
             [token.Id],
-            cancellationToken);
+            cancellationToken,
+            workflow.Definition);
         await runtime.UpdateExecutionTokenAsync(
             token.Id,
             ToSnapshot(nextNode, nextContext, instance.Id, workflow.Definition),
@@ -3868,11 +3917,11 @@ public sealed partial class WorkflowEngineService(
         {
             if (BpmnFlowNodeTypes.IsTerminateEnd(nextNode.Type))
             {
-                await TerminateInstanceAsync(instance.Id, token.Id, executionActor, cancellationToken);
+                await TerminateInstanceAsync(instance.Id, token.Id, executionActor, cancellationToken, workflow.Definition);
             }
             else if (BpmnFlowNodeTypes.IsErrorEnd(nextNode.Type))
             {
-                await FaultInstanceAsync(instance.Id, token.Id, executionActor, cancellationToken);
+                await FaultInstanceAsync(instance.Id, token.Id, executionActor, cancellationToken, workflow.Definition);
             }
             else if (BpmnFlowNodeTypes.IsEnd(nextNode.Type))
             {
@@ -4179,7 +4228,8 @@ public sealed partial class WorkflowEngineService(
             await CancelAttachedBoundaryWaitsAsync(
             instance.Id,
             [token.Id],
-            cancellationToken);
+            cancellationToken,
+            workflow.Definition);
             await runtime.UpdateExecutionTokenAsync(
             token.Id,
             ToSnapshot(nextNode, nextContext, instance.Id, workflow.Definition),
@@ -4202,11 +4252,11 @@ public sealed partial class WorkflowEngineService(
             await unitOfWork.SaveChangesAsync(cancellationToken);
             if (BpmnFlowNodeTypes.IsTerminateEnd(nextNode.Type))
             {
-                await TerminateInstanceAsync(instance.Id, token.Id, actor, cancellationToken);
+                await TerminateInstanceAsync(instance.Id, token.Id, actor, cancellationToken, workflow.Definition);
             }
             else if (BpmnFlowNodeTypes.IsErrorEnd(nextNode.Type))
             {
-                await FaultInstanceAsync(instance.Id, token.Id, actor, cancellationToken);
+                await FaultInstanceAsync(instance.Id, token.Id, actor, cancellationToken, workflow.Definition);
             }
             else if (BpmnFlowNodeTypes.IsEnd(nextNode.Type))
             {
@@ -5382,6 +5432,15 @@ public sealed partial class WorkflowEngineService(
                         continue;
                     }
                     token = tokenAfterBoundaryEntry!;
+
+                    // Only after that re-check, so a signal subscription never
+                    // belongs to a token that has already left its node.
+                    await EnsureSignalSubscriptionsAsync(
+                        tokenInstance,
+                        token,
+                        currentNode,
+                        definition,
+                        cancellationToken);
                 }
 
                 var isExternalOrCpuActivity =
@@ -5643,6 +5702,7 @@ public sealed partial class WorkflowEngineService(
                             [token.Id],
                             cancellationToken);
                     }
+                    await CancelSignalSubscriptionsAsync(instance.Id, [token.Id], definition, cancellationToken);
                 }
 
                 routingSteps += await DrainConditionalVariableChangesAsync(
@@ -5746,7 +5806,8 @@ public sealed partial class WorkflowEngineService(
                 await CancelAttachedBoundaryWaitsAsync(
                     instance.Id,
                     [token.Id],
-                    cancellationToken);
+                    cancellationToken,
+                    definition);
                 await runtime.UpdateExecutionTokenAsync(
                     token.Id,
                     ToSnapshot(boundary),
@@ -5784,7 +5845,8 @@ public sealed partial class WorkflowEngineService(
                 await CancelAttachedBoundaryWaitsAsync(
                     instance.Id,
                     [token.Id],
-                    cancellationToken);
+                    cancellationToken,
+                    definition);
                 continue;
             }
 
@@ -6017,13 +6079,7 @@ public sealed partial class WorkflowEngineService(
         ISet<long>? forceDurableTokenIds = null)
     {
         var selectedOutgoing = outgoing.OrderBy(flow => flow.Id).ToList();
-        var configured = await engineSettings.GetByKeyAsync(
-            "Workflow.Gateway.MaxActiveTokens", cancellationToken);
-        var maxActiveTokens = configured is not null
-                              && int.TryParse(configured.Value, out var parsed)
-                              && parsed > 0
-            ? parsed
-            : 1000;
+        var maxActiveTokens = await ReadMaxActiveTokensAsync(cancellationToken);
         var activeCount = (await runtime.ListExecutionTokensAsync(
             instance.Id, ExecutionTokenRecordStatuses.Active, cancellationToken)).Count;
         if (activeCount + selectedOutgoing.Count - 1 > maxActiveTokens)
@@ -7640,7 +7696,8 @@ public sealed partial class WorkflowEngineService(
             instance.Id,
             cancelledTokenIds,
             "gatewayScopeCancelled",
-            cancellationToken);
+            cancellationToken,
+            definition);
         await runtime.CancelOpenUserTasksForTokensAsync(
             cancelledTokenIds,
             NodeExecutionCompletionReasons.GatewayScopeCancelled,
@@ -7998,7 +8055,8 @@ public sealed partial class WorkflowEngineService(
             await CancelAttachedBoundaryWaitsAsync(
                 instance.Id,
                 [token.Id],
-                cancellationToken);
+                cancellationToken,
+                definition);
         }
         await runtime.UpdateExecutionTokenAsync(
             token.Id,
@@ -8067,13 +8125,13 @@ public sealed partial class WorkflowEngineService(
 
         if (BpmnFlowNodeTypes.IsTerminateEnd(nextNode.Type))
         {
-            await TerminateInstanceAsync(instance.Id, token.Id, actor, cancellationToken);
+            await TerminateInstanceAsync(instance.Id, token.Id, actor, cancellationToken, definition);
             instance = instance with { Status = WorkflowInstanceStatuses.Completed };
             return;
         }
         if (BpmnFlowNodeTypes.IsErrorEnd(nextNode.Type))
         {
-            await FaultInstanceAsync(instance.Id, token.Id, actor, cancellationToken);
+            await FaultInstanceAsync(instance.Id, token.Id, actor, cancellationToken, definition);
             instance = instance with { Status = WorkflowInstanceStatuses.Faulted };
             return;
         }
@@ -8099,7 +8157,8 @@ public sealed partial class WorkflowEngineService(
         long instanceId,
         long triggeringTokenId,
         ActorContext actor,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        WorkflowModel? definition = null)
     {
         await unitOfWork.SaveChangesAsync(cancellationToken);
         var triggeringToken = await runtime.GetExecutionTokenAsync(
@@ -8125,7 +8184,8 @@ public sealed partial class WorkflowEngineService(
             instanceId,
             cancelledIds,
             "terminateEnd",
-            cancellationToken);
+            cancellationToken,
+            definition);
         await runtime.CancelOpenUserTasksForTokensAsync(
             cancelledIds,
             NodeExecutionCompletionReasons.TerminateEnd,
@@ -8171,7 +8231,8 @@ public sealed partial class WorkflowEngineService(
         long instanceId,
         long triggeringTokenId,
         ActorContext actor,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        WorkflowModel? definition = null)
     {
         await unitOfWork.SaveChangesAsync(cancellationToken);
         var triggeringToken = await runtime.GetExecutionTokenAsync(
@@ -8197,7 +8258,8 @@ public sealed partial class WorkflowEngineService(
             instanceId,
             cancelledIds,
             "errorEnd",
-            cancellationToken);
+            cancellationToken,
+            definition);
         await runtime.CancelOpenUserTasksForTokensAsync(
             cancelledIds,
             NodeExecutionCompletionReasons.ErrorEnd,

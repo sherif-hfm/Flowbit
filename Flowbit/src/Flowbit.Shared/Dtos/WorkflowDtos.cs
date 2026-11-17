@@ -604,6 +604,15 @@ public sealed record InstanceDetailDto(
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public CallCountsDto? Calls { get; init; }
+
+    /// <summary>
+    /// The instance's active signal waits, armed boundaries included: at most 50, with
+    /// <see cref="SignalSubscriptionCount"/> giving the total. Empty for a definition
+    /// without signal events.
+    /// </summary>
+    public IReadOnlyList<SignalSubscriptionDto> SignalSubscriptions { get; init; } = [];
+
+    public int SignalSubscriptionCount { get; init; }
 }
 
 /// <summary>The updated instance and audit entry returned after a workflow version change.</summary>

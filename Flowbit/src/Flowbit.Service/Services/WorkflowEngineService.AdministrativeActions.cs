@@ -372,6 +372,20 @@ public sealed partial class WorkflowEngineService
             state.Token.Id,
             subscription.Id,
             cancellationToken);
+        // The token leaves its host here, and moving on from a timer boundary skips the
+        // usual host cleanup, so the host's other waits end now, as when the timer fires.
+        if (conditionalBoundarySubscriptions is not null)
+        {
+            await conditionalBoundarySubscriptions.CancelByTokenIdsAsync(
+                state.Instance.Id,
+                tokenIds,
+                cancellationToken);
+        }
+        await CancelSignalSubscriptionsAsync(
+            state.Instance.Id,
+            tokenIds,
+            state.Workflow.Definition,
+            cancellationToken);
         await jobs.CancelTimerJobsByTokenIdsAsync(
             state.Instance.Id,
             tokenIds,

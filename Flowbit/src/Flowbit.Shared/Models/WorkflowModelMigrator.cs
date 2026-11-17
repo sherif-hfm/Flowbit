@@ -558,8 +558,7 @@ public static class WorkflowModelMigrator
             node.Conditional = null;
         }
 
-        if (BpmnFlowNodeTypes.IsTimerBoundary(node.Type)
-            || BpmnFlowNodeTypes.IsConditionalBoundary(node.Type))
+        if (BpmnFlowNodeTypes.IsObservableBoundary(node.Type))
         {
             node.CancelActivity ??= true;
         }
@@ -571,6 +570,13 @@ public static class WorkflowModelMigrator
         if (!BpmnFlowNodeTypes.IsScriptTask(node.Type))
         {
             node.UsesFlowInfo = null;
+        }
+
+        // Create/version authoring rejects signal settings on other types. A signal
+        // event with no config keeps none, so validation reports the missing name.
+        if (!BpmnFlowNodeTypes.IsSignalEvent(node.Type))
+        {
+            node.Signal = null;
         }
 
         if (BpmnFlowNodeTypes.IsComplexGateway(node.Type))
@@ -913,6 +919,34 @@ public static class WorkflowModelMigrator
             node.AttachedToRef = null;
             node.ErrorVariable = null;
         }
+        else if (BpmnFlowNodeTypes.IsSignalEvent(node.Type))
+        {
+            // A signal catch rests until a broadcast with its name is delivered, and a
+            // signal boundary waits on its host. Their only authored data lives under
+            // node.Signal, plus a boundary's attachedToRef and cancelActivity. The name
+            // is never rewritten, and a mapping without dataType or isArray stays that
+            // way, because signals have no untyped legacy form and validation reports it.
+            node.RequiresClaim = false;
+            node.ClaimMode = ClaimModes.Fresh;
+            node.InheritClaimFromNodeId = null;
+            node.Roles = [];
+            node.Variables = [];
+            node.Service = null;
+            node.Message = null;
+            node.Assignments = [];
+            node.Script = null;
+            node.AssigneeExpression = null;
+            if (BpmnFlowNodeTypes.IsSignalCatch(node.Type))
+            {
+                node.AttachedToRef = null;
+            }
+            node.ErrorVariable = null;
+            if (node.Signal is { } signal)
+            {
+                signal.OutputMappings ??= [];
+                NormalizeSignalMappings(signal.OutputMappings, processVariables);
+            }
+        }
         else if (BpmnFlowNodeTypes.IsConditionalCatch(node.Type))
         {
             // Conditional catch events are durable wait positions whose only
@@ -1188,6 +1222,42 @@ public static class WorkflowModelMigrator
                 mapping.IsArray,
                 value => mapping.IsArray = value,
                 processVariables);
+        }
+    }
+
+    /// <summary>
+    /// Canonicalizes a signal mapping's target spelling and known data type. Unlike
+    /// message mappings, a missing dataType or isArray is not filled in.
+    /// </summary>
+    private static void NormalizeSignalMappings(
+        IEnumerable<MessageOutputMappingModel> mappings,
+        IReadOnlyList<VariableModel> processVariables)
+    {
+        foreach (var mapping in mappings)
+        {
+            if (mapping is null)
+            {
+                continue;
+            }
+
+            var processVariable = processVariables.FirstOrDefault(variable =>
+                string.Equals(variable.Name, mapping.Variable, StringComparison.OrdinalIgnoreCase));
+            if (processVariable is not null)
+            {
+                mapping.Variable = processVariable.Name;
+            }
+
+            if (mapping.DataType is not null)
+            {
+                mapping.DataType = CanonicalizeKnown(
+                    mapping.DataType,
+                    WorkflowVariableTypes.String,
+                    WorkflowVariableTypes.Number,
+                    WorkflowVariableTypes.Boolean,
+                    WorkflowVariableTypes.Date,
+                    WorkflowVariableTypes.DateTime,
+                    WorkflowVariableTypes.Json);
+            }
         }
     }
 

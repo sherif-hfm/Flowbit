@@ -831,6 +831,7 @@ public sealed class EditorValidatorTests
             errorCode = "TERMINAL_FAULT",
             errorDescription = "Terminal description.",
             message = new { clientSecret = "secret-terminal" },
+            signal = new { name = "secret-terminal", outputMappings = Array.Empty<object>() },
             businessKey = new { variable = "caseId", uniqueness = "all" },
             idempotency = new { headerName = "Idempotency-Key", variable = "requestId" }
         };
@@ -886,7 +887,7 @@ public sealed class EditorValidatorTests
             function isErrorBoundaryEventType(type) { return type === NODE_TYPE.ERROR_BOUNDARY_EVENT; }
             function isBoundaryEventType(type) {
               return isErrorBoundaryEventType(type) || isTimerBoundaryEventType(type) ||
-                isConditionalBoundaryEventType(type);
+                isConditionalBoundaryEventType(type) || type === 'signalBoundaryEvent';
             }
             function isConditionalCatchEventType(type) {
               return type === NODE_TYPE.CONDITIONAL_CATCH_EVENT;
@@ -895,6 +896,9 @@ public sealed class EditorValidatorTests
               return isConditionalCatchEventType(type) || isConditionalBoundaryEventType(type);
             }
             function isMessageCatchEventType(type) { return type === NODE_TYPE.MESSAGE_CATCH_EVENT; }
+            function isSignalCatchEventType(type) { return type === 'intermediateSignalCatchEvent'; }
+            function isSignalBoundaryEventType(type) { return type === 'signalBoundaryEvent'; }
+            function isSignalEventType(type) { return isSignalCatchEventType(type) || isSignalBoundaryEventType(type); }
             function isSingleOutgoingType() { return false; }
             """);
         engine.Execute(match.Value);
@@ -916,7 +920,7 @@ public sealed class EditorValidatorTests
         foreach (var property in new[]
                  {
                      "multiInstance", "service", "scriptFormat", "script", "attachedToRef",
-                     "errorVariable", "message", "businessKey", "idempotency"
+                     "errorVariable", "message", "signal", "businessKey", "idempotency"
                  })
         {
             Assert.False(root.TryGetProperty(property, out _), $"Terminal node retained '{property}'.");
@@ -1463,6 +1467,9 @@ public sealed class EditorValidatorTests
             function isLinkEventType(type) { return isLinkThrowEventType(type) || isLinkCatchEventType(type); }
             function isMessageCatchEventType(type) { return type === 'intermediateMessageCatchEvent'; }
             function isMessageStartEventType(type) { return type === 'messageStartEvent'; }
+            function isSignalCatchEventType(type) { return type === 'intermediateSignalCatchEvent'; }
+            function isSignalBoundaryEventType(type) { return type === 'signalBoundaryEvent'; }
+            function isSignalEventType(type) { return isSignalCatchEventType(type) || isSignalBoundaryEventType(type); }
             function isStartEventType(type) { return type === NODE_TYPE.START_EVENT; }
             function normalizeMultiInstanceForLoad(value) { return value; }
             function normalizeService(value) { return value; }
@@ -1702,7 +1709,7 @@ public sealed class EditorValidatorTests
             function isErrorBoundaryEventType(type) { return type === NODE_TYPE.ERROR_BOUNDARY_EVENT; }
             function isBoundaryEventType(type) {
               return isErrorBoundaryEventType(type) || isTimerBoundaryEventType(type) ||
-                isConditionalBoundaryEventType(type);
+                isConditionalBoundaryEventType(type) || type === 'signalBoundaryEvent';
             }
             function isConditionalCatchEventType(type) {
               return type === NODE_TYPE.CONDITIONAL_CATCH_EVENT;
@@ -1711,6 +1718,9 @@ public sealed class EditorValidatorTests
               return isConditionalCatchEventType(type) || isConditionalBoundaryEventType(type);
             }
             function isMessageCatchEventType(type) { return type === NODE_TYPE.MESSAGE_CATCH_EVENT; }
+            function isSignalCatchEventType(type) { return type === 'intermediateSignalCatchEvent'; }
+            function isSignalBoundaryEventType(type) { return type === 'signalBoundaryEvent'; }
+            function isSignalEventType(type) { return isSignalCatchEventType(type) || isSignalBoundaryEventType(type); }
             function isSingleOutgoingType() { return false; }
             """);
         engine.Execute(match.Value);
@@ -2217,7 +2227,7 @@ public sealed class EditorValidatorTests
         var errors = Validate(model);
 
         Assert.Single(errors, error =>
-            error.Contains("more than eight combined timer and conditional boundary events",
+            error.Contains("9 timer, conditional, and signal boundary events; at most 8 are allowed",
                 StringComparison.OrdinalIgnoreCase));
     }
 

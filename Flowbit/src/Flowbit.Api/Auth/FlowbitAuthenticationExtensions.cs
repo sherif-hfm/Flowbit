@@ -107,10 +107,12 @@ public static class FlowbitAuthenticationExtensions
                 .AddRequirements(new FlowbitBearerScopeRequirement())
                 .Build();
             SharedVariableAuthorizationPolicies.AddPolicies(options);
+            SignalAuthorizationPolicies.AddPolicies(options);
         });
         services.AddSingleton<IAuthorizationHandler, FlowbitBearerScopeHandler>();
         services.AddScoped<IAuthorizationHandler, SharedVariableAccessAuthorizationHandler>();
         services.AddScoped<ISharedVariableCallerResolver, SharedVariableCallerResolver>();
+        services.AddScoped<ISignalCallerResolver, SignalCallerResolver>();
         return services;
     }
 

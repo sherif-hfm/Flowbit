@@ -1,0 +1,37 @@
+@using static Flowbit.Ui.Components.Shared.Signals.SignalFormatting
+@if (Deliveries is null)
+{
+    <div class="p-3"><div class="skeleton" role="status"></div></div>
+}
+else if (Deliveries.Count == 0)
+{
+    <div class="px-3 pb-3"><EmptyState Icon="jobs" Title="No deliveries" Description="No delivery matches the selected status." /></div>
+}
+else
+{
+    <div class="table-responsive">
+        <table class="table align-middle">
+            <thead><tr><th>Delivery</th><th>Instance</th><th>Event</th><th>Status</th><th>Result</th><th>Updated</th></tr></thead>
+            <tbody>
+                @foreach (var delivery in Deliveries)
+                {
+                    <tr>
+                        <td>#@delivery.Id<span class="data-subtitle">Attempts: @delivery.AttemptCount</span></td>
+                        <td><a href="@($"instances/{delivery.InstanceId}")">Instance #@delivery.InstanceId</a><span class="data-subtitle">@delivery.WorkflowKey</span></td>
+                        <td>Node #@delivery.SignalNodeId<span class="data-subtitle">@(delivery.AttachedToNodeId is null ? "Catch" : $"Boundary on node #{delivery.AttachedToNodeId}")</span></td>
+                        <td><StatusBadge Status="@delivery.Status" Text="@DeliveryStatusLabel(delivery.Status)" /></td>
+                        <td>@ResultLabel(delivery.ResultCode)@if (!string.IsNullOrWhiteSpace(delivery.ResultDescription))
+                            {
+                                <span class="data-subtitle signal-result-description">@delivery.ResultDescription</span>
+                            }</td>
+                        <td><LocalTime Value="@delivery.UpdatedAt" /></td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+@code {
+    [Parameter] public IReadOnlyList<SignalDeliveryDto>? Deliveries { get; set; }
+}

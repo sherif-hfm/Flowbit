@@ -64,7 +64,8 @@ public sealed class LifecycleEventCaptureTests(PostgresApiFixture fixture)
             [WorkflowJobKinds.InstanceVersionChangeBatchPrepare] = false,
             [WorkflowJobKinds.InstanceVersionChangeBatchExecute] = false,
             [WorkflowJobKinds.InstanceVariableUpdateBatchPrepare] = false,
-            [WorkflowJobKinds.InstanceVariableUpdateBatchExecute] = false
+            [WorkflowJobKinds.InstanceVariableUpdateBatchExecute] = false,
+            [WorkflowJobKinds.SignalBroadcastDeliver] = false
         };
 
     [Fact]

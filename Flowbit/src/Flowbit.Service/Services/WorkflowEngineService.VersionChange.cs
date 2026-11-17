@@ -323,6 +323,15 @@ public sealed partial class WorkflowEngineService
                     instance.Id,
                     lockDurableState,
                     cancellationToken);
+        // Signal subscriptions are locked last. A definition without signal events
+        // never has any.
+        IReadOnlyList<SignalSubscriptionRecord> openSignalSubscriptions =
+            signalSubscriptions is null || !SignalEventRules.HasSignalEvents(source.Definition)
+                ? []
+                : await signalSubscriptions.ListActiveByInstanceAsync(
+                    instance.Id,
+                    lockDurableState,
+                    cancellationToken);
 
         var contextNodeId = activeTokens.FirstOrDefault()?.NodeId
             ?? instance.CurrentStepId;
@@ -373,6 +382,7 @@ public sealed partial class WorkflowEngineService
             OpenJobs = openJobs,
             OpenTimers = openTimers,
             OpenConditionalBoundaries = openConditionalBoundaries,
+            OpenSignalSubscriptions = openSignalSubscriptions,
             HasCommittedTraversals = observedFlows.Count > 0
                 || flowSummaries.Any(summary => summary.TraversalCount > 0)
         };

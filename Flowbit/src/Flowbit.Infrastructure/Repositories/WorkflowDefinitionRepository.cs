@@ -804,7 +804,25 @@ public sealed class WorkflowDefinitionRepository(
             || await dbContext.TimerSubscriptions.AsNoTracking()
                 .AnyAsync(subscription =>
                     subscription.InstanceId != null && subscription.WorkflowDefinitionId == id,
-                    cancellationToken);
+                    cancellationToken)
+            // A pending signal delivery belongs to a delivery job of this version, which the
+            // deletion would remove with the version's other instance-less jobs. Only a
+            // delivering broadcast has pending deliveries, so this reads the few open ones.
+            || await dbContext.Database.SqlQuery<bool>(
+                    $"""
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM flowbit.signal_broadcasts AS broadcast
+                        WHERE broadcast."Status" = 'delivering'
+                          AND EXISTS (
+                              SELECT 1
+                              FROM flowbit.signal_deliveries AS delivery
+                              WHERE delivery."BroadcastId" = broadcast."Id"
+                                AND delivery."WorkflowDefinitionId" = {id}
+                                AND delivery."Status" = 'pending')
+                    ) AS "Value"
+                    """)
+                .SingleAsync(cancellationToken);
         if (isInUse)
         {
             return new DeletionCoreAssessment(

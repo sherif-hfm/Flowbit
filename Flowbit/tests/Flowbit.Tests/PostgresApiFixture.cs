@@ -470,14 +470,32 @@ public sealed class ApiDbCommandCounter : DbCommandInterceptor
     private int _readerCommands;
     private int _captureReaderCommandTexts;
     private readonly ConcurrentQueue<string> _readerCommandTexts = new();
+    private readonly ConcurrentQueue<string> _nonQueryCommandTexts = new();
 
     public int ReaderCommands => Volatile.Read(ref _readerCommands);
     public IReadOnlyList<string> ReaderCommandTexts => _readerCommandTexts.ToArray();
+
+    /// <summary>Statements without a result set, such as EF's ExecuteUpdate, captured with the reader texts.</summary>
+    public IReadOnlyList<string> NonQueryCommandTexts => _nonQueryCommandTexts.ToArray();
+
+    public override ValueTask<InterceptionResult<int>> NonQueryExecutingAsync(
+        DbCommand command,
+        CommandEventData eventData,
+        InterceptionResult<int> result,
+        CancellationToken cancellationToken = default)
+    {
+        if (Volatile.Read(ref _captureReaderCommandTexts) != 0)
+        {
+            _nonQueryCommandTexts.Enqueue(command.CommandText);
+        }
+        return ValueTask.FromResult(result);
+    }
 
     public void Reset(bool captureReaderCommandTexts = false)
     {
         Interlocked.Exchange(ref _readerCommands, 0);
         _readerCommandTexts.Clear();
+        _nonQueryCommandTexts.Clear();
         Volatile.Write(
             ref _captureReaderCommandTexts,
             captureReaderCommandTexts ? 1 : 0);

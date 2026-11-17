@@ -94,7 +94,7 @@ subtask table together.
 | [EVENT-01](event-01-expression-timers.md) | Expression timers | M | None | Done |
 | [EVENT-02](event-02-message-correlation-by-business-key.md) | Message correlation by business key | M | None | Not started |
 | [EVENT-03](event-03-event-based-gateway.md) | Event-based gateway | M | None | Not started |
-| [EVENT-04](event-04-signal-events.md) | Signal events | M–L | None | Not started |
+| [EVENT-04](event-04-signal-events.md) | Signal events | L | None | Done |
 | [EVENT-05](event-05-error-code-boundaries.md) | HTTP status matching on error boundaries | M | None | Done |
 | [EVENT-06](event-06-link-events.md) | Link events | M | None | Done |
 | [EVENT-07](event-07-compensation.md) | Compensation | L | None | Not started |

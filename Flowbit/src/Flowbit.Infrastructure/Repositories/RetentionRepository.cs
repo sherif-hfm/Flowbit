@@ -26,7 +26,8 @@ public sealed class RetentionRepository(RetentionDataSource source, TimeProvider
         RetentionCategories.NodeActivity, RetentionCategories.AdministrativeAudits,
         RetentionCategories.CompletedJobs, RetentionCategories.ResolvedIncidents,
         // Deliveries before events: an event goes only once no delivery references it.
-        RetentionCategories.WebhookDeliveries, RetentionCategories.LifecycleEvents];
+        RetentionCategories.WebhookDeliveries, RetentionCategories.LifecycleEvents,
+        RetentionCategories.SignalBroadcasts];
 
     public async Task<RetentionStatusDto> GetAsync(CancellationToken cancellationToken)
     {
@@ -393,7 +394,7 @@ public sealed class RetentionRepository(RetentionDataSource source, TimeProvider
             SELECT t."Id", ({spec.Protection}) AS "Protected",
                 {(spec.Kind == TableKind.Shared ? "t.\"SharedVariableId\"" : "NULL::bigint")}
             FROM flowbit.{spec.Name} t WHERE ({predicate}) AND t."Id"<=@upper ORDER BY t."Id" LIMIT @limit
-            {(spec.Kind is TableKind.Jobs or TableKind.Incidents or TableKind.Snapshots ? "FOR UPDATE OF t SKIP LOCKED" : "")}
+            {(spec.Kind is TableKind.Jobs or TableKind.Incidents or TableKind.Snapshots or TableKind.SignalBroadcasts ? "FOR UPDATE OF t SKIP LOCKED" : "")}
             """))
         {
             Add(command, "row", category.RowCursor); Add(command, "cutoff", category.Cutoff!.Value);
@@ -446,6 +447,7 @@ public sealed class RetentionRepository(RetentionDataSource source, TimeProvider
                 Add(count, "ids", ids); attempts = Convert.ToInt64(await count.ExecuteScalarAsync(ct));
             }
             var deleteAge = spec.Kind is TableKind.Jobs or TableKind.Incidents or TableKind.Snapshots
+                or TableKind.SignalBroadcasts
                 ? $" AND ({AgePredicate(spec)})" : "";
             var removed = new List<long>();
             await using (var delete = Command(connection, transaction, $"""
@@ -771,7 +773,7 @@ public sealed class RetentionRepository(RetentionDataSource source, TimeProvider
         return actor.Trim();
     }
 
-    private enum TableKind { Instance, Shared, Jobs, Incidents, Snapshots, WebhookDeliveries, LifecycleEvents }
+    private enum TableKind { Instance, Shared, Jobs, Incidents, Snapshots, WebhookDeliveries, LifecycleEvents, SignalBroadcasts }
     private sealed record TableSpec(string Name, TableKind Kind, string Protection);
     private sealed record BatchResult(long Deleted, long Protected, bool Done,
         IReadOnlyDictionary<string, long>? DeletedByTable = null);
@@ -784,6 +786,8 @@ public sealed class RetentionRepository(RetentionDataSource source, TimeProvider
         // Settled deliveries age from settlement; outstanding ones are previewed by event time and protected.
         TableKind.WebhookDeliveries => "COALESCE(t.\"SettledAt\", t.\"OccurredAt\")<@cutoff",
         TableKind.LifecycleEvents => "t.\"OccurredAt\"<@cutoff",
+        // A broadcast ages from when it finished; its deliveries and job links go with it.
+        TableKind.SignalBroadcasts => "t.\"Status\"<>'delivering' AND t.\"CompletedAt\"<@cutoff",
         _ => "TRUE"
     };
 
@@ -810,6 +814,9 @@ public sealed class RetentionRepository(RetentionDataSource source, TimeProvider
             "t.\"State\" NOT IN ('succeeded','discarded')")],
         RetentionCategories.LifecycleEvents => [new("lifecycle_events", TableKind.LifecycleEvents,
             "t.\"FanoutCompletedAt\" IS NULL OR EXISTS (SELECT 1 FROM flowbit.webhook_deliveries d WHERE d.\"EventId\"=t.\"Id\")")],
+        // A broadcast with pending work stays, whatever its age.
+        RetentionCategories.SignalBroadcasts => [new("signal_broadcasts", TableKind.SignalBroadcasts,
+            "t.\"Status\"='delivering' OR EXISTS (SELECT 1 FROM flowbit.signal_deliveries d WHERE d.\"BroadcastId\"=t.\"Id\" AND d.\"Status\"='pending')")],
         _ => throw new WorkflowDomainException("Unknown retention category.")
     };
 

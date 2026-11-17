@@ -40,6 +40,9 @@ public sealed class QueueTelemetryService(
                 .GetRequiredService<IWorkflowJobRepository>();
             telemetry.RecordQueueSnapshot(
                 await repository.GetQueueStatisticsAsync(cancellationToken));
+            telemetry.RecordSignalBacklog(
+                await scope.ServiceProvider.GetRequiredService<ISignalBroadcastRepository>()
+                    .GetBacklogAsync(cancellationToken));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

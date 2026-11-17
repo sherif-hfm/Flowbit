@@ -16,6 +16,7 @@ All JSON property names below are the wire names. Database identifiers are integ
 - [Workflow definitions](#workflow-definitions)
 - [AI authoring and read-only validation](#ai-authoring-and-read-only-validation)
 - [Instances and messages](#instances-and-messages)
+- [Signals](#signals)
 - [User tasks](#user-tasks)
 - [Multi-instance executions](#multi-instance-executions)
 - [Task distribution](#task-distribution)
@@ -61,8 +62,10 @@ All three modes default to `Username`, then `ClaimTypes.Name` (`http://schemas.x
 | Message client | The target node's configured `X-Client-Id` and `X-Client-Secret`, plus its authored correlation header. These routes do not use bearer authorization. |
 | Distributor | Workflow-family `X-Client-Id` and `X-Client-Secret`; this is separate from message-client and shared-variable-client authentication. |
 | Shared-variable client | A managed deployment-wide API client with `shared-variables.read` or `shared-variables.write` as required. Send exactly one of each client header. |
+| Signal administrator | Bearer plus any role in `Signals.RequiredRole`, default `admin`. Throws, reads, cancels, and retries every signal broadcast and reads the subscription summary. |
+| Signal client | The same managed API client, with `signals.throw` to throw, cancel, and retry, or `signals.read` to list and read. It sees only the broadcasts it threw. Send exactly one of each client header. |
 
-Shared-variable routes reject combining bearer and client credentials. A write scope permits only `PUT /api/shared-variables/{key}/value`; catalog reads require the read scope. Contract creation, metadata/lifecycle changes, history, blockers, and client management require the JWT administrator.
+Shared-variable and signal routes reject combining bearer and client credentials with `400`. A write scope permits only `PUT /api/shared-variables/{key}/value`; catalog reads require the read scope. Contract creation, metadata/lifecycle changes, history, blockers, and client management require the JWT administrator.
 
 **Integration boundary:** this checkout does not apply a universal tenant/owner filter to every bearer endpoint. Instance detail is a deployment-level read after authentication; instance lists/search separately enforce the workflow-version visibility rule above. Every administrative-action catalog, candidate, batch, and direct instance endpoint requires a nonblank authenticated actor and workflow-administrator permission. Those explicit overrides bypass ordinary task authorization; having the administrator role alone does not bypass personal task APIs or inbox filtering. Actor-scoped inbox and personal task routes retain their own visibility rules; filtering an API request is not an authorization mechanism.
 
@@ -78,7 +81,7 @@ The API does not have one universal error envelope. Clients should branch on HTT
 
 | Status | Contract and client behavior |
 | --- | --- |
-| `200`, `201`, `202`, `204` | Successful read/mutation, created resource, accepted durable work, or success without a response body. `201` and `202` endpoints described below set `Location`. A batch `202` means preparation is queued, not that its items have executed. |
+| `200`, `201`, `202`, `204` | Successful read/mutation, created resource, accepted durable work, or success without a response body. `201` and `202` endpoints described below set `Location`. A batch `202` means preparation is queued, not that its items have executed; a signal `202` means its recipients are frozen and their deliveries are queued. |
 | `400` | Domain validation and a request that cannot be bound both return `{"error":"description"}`. For a JSON body that cannot be read, the description gives the cause and the JSON path. Task role/claim/flow mismatches are often domain errors, not `403`. For example, an `errorMatch` listing `"409"` as a string returns `The value has the wrong JSON type. Path: $.definition.flowNodes[3].errorMatch.httpStatusCodes[0]`, and a misspelled selector returns `Unknown property 'httpStatusRangez'.` with its path. Neither names the boundary, because the request never reached validation. One that lists a duplicate status fails validation and names the boundary and host IDs. |
 | `401` | Missing/invalid JWT or machine credentials. JWT middleware may return an empty body; service authentication errors can return `{"error":"description"}`. |
 | `403` | Required OIDC API scope or administrator/manager permission missing. Endpoint filters may return an empty body; service-level forbiddance returns an `error` object. |
@@ -398,7 +401,7 @@ Deletes a specific version of a workflow definition.
 **Success:** `204` without a response body.
 **Errors:** `401` Unauthorized; `403` Forbidden; `404` Not Found; `409` Retained runtime or audit references prevent deletion. See [error envelopes](#errors-and-concurrency) and the family rules above.
 
-No request body. Retained runtime/audit references block deletion with 409; choose unpublish when the intent is to stop future starts.
+No request body. Retained runtime/audit references block deletion with 409, and so does a signal delivery still pending for the version, whose delivery job the deletion would remove; choose unpublish when the intent is to stop future starts.
 
 ```http
 DELETE /api/workflows/11 HTTP/1.1
@@ -1169,7 +1172,9 @@ This is an authenticated deployment-level detail read, not a personal-task visib
 
 Each history row may include `actorClaims`, a snapshot of the actual actor's selected JWT claims, separate from the business `payload`. Claim names map to arrays of strings, including repeated values. `null` or an absent property means not recorded; `{}` means capture was enabled but no selected claim was present. These values have the same access boundary as instance detail; select suitable claims through [audit configuration](deployment.md#selected-claim-audit).
 
-A history row's `note` names the kind of step. A token that enters a [link throw event](node-reference.md#intermediatelinkthrowevent) records a `linkThrow` row from the throw to its link catch event, with null `sequenceFlowId`; the catch's own step records a `linkCatch` row from the catch to the node its outgoing flow reaches, also with null `sequenceFlowId`, as other automatic steps have.
+A history row's `note` names the kind of step. A token that enters a [link throw event](node-reference.md#intermediatelinkthrowevent) records a `linkThrow` row from the throw to its link catch event, with null `sequenceFlowId`; the catch's own step records a `linkCatch` row from the catch to the node its outgoing flow reaches, also with null `sequenceFlowId`, as other automatic steps have. A delivered [signal](#signals) records a `signalReceived` row from the signal catch or signal boundary to the next node, performed by the fixed actor `signal`; its `payload` holds `broadcastId`, `signalName`, `subscriptionId`, `eventNodeId`, `eventKind` (`catch` or `boundary`), `hostTokenId` (the catch's token, or the boundary's host token), `cancelActivity`, `thrownBy`, and `thrownByKind`, never the signal's payload. For a non-interrupting boundary the row belongs to the new branch's token.
+
+`signalSubscriptions` lists the instance's active signal waits, at most 50, with `signalSubscriptionCount` giving the total: one for each token waiting at a signal catch, and one for each signal boundary armed on an active host, with the host's node ID in `attachedToNodeId` and the boundary's `cancelActivity`. Both are empty for a definition without signal events.
 
 ```http
 GET /api/instances/101 HTTP/1.1
@@ -1870,6 +1875,320 @@ Content-Type: application/json
   "currentNodeExternalId": null,
   "status": "completed",
   "updatedAt": "2026-09-09T10:00:00Z"
+}
+```
+
+## Signals
+
+A signal broadcast reaches every [`intermediateSignalCatchEvent`](node-reference.md#intermediatesignalcatchevent) that is waiting for its name when it is thrown, and every [`signalBoundaryEvent`](node-reference.md#signalboundaryevent) with its name whose host is active then, in one workflow family or in all of them. The throw freezes those recipients in one statement and returns at once; the Worker then delivers each recipient in its own transaction. A wait that starts after the throw never receives it. See [BPMN semantics](bpmn-support.md#signals) and the [integration guide](developer-guide.md#broadcast-signals).
+
+- **Authorization.** A JWT user needs a role from `Signals.RequiredRole` (default `admin`) on every route. A managed API client, created on the [shared-variable client routes](#shared-variable-clients), sends `X-Client-Id` and `X-Client-Secret` and needs `signals.throw` to throw, cancel, and retry, or `signals.read` to list and read broadcasts and deliveries; a client that throws and follows its broadcasts needs both. Sending both a bearer token and client headers returns `400`.
+- **What a client sees.** A client lists, reads, cancels, and retries only the broadcasts it threw; any other broadcast returns `404`. Its delivery rows carry `resultCode` with a null `resultDescription`, because the engine's message can quote a validation expression of the receiving workflow. When a user cancels a client's broadcast, the client sees `status: "cancelled"` and `cancelledAt`, but `cancelledBy` and `cancellationReason` are null. The subscription summary is for users only.
+- **Name and scope.** `name` follows the [signal-name rule](node-reference.md#signal-configuration), and an uppercase letter returns `400` rather than missing its waits. Name one `workflowKey`, or set `allWorkflows` to `true`; neither or both return `400`, and so does a blank `workflowKey` or a key that no workflow definition has. A repeated `idempotencyKey` returns its broadcast even after the family's last version has been deleted.
+- **Paging.** The two list routes take `page` (default 1) and `pageSize` (default 50, clamped to 1-200).
+- **Limits.** A payload is an optional JSON object of at most 256 KiB; the throw body is limited to 1 MiB and the cancel and retry bodies to 64 KiB (`413` beyond). A throw that would reach more than `Signals.MaxSubscriptionsPerBroadcast` waits (default 10,000, at most 100,000) returns `400` and stores nothing. When `Signals.MaxOpenBroadcasts` broadcasts (default 20, at most 1,000) are still delivering, a throw returns `409`; concurrent throws can pass this soft limit by a few.
+- **Idempotency.** `idempotencyKey` is optional, trimmed, at most 300 characters, and unique per thrower (user or client). Repeating the same name, scope, and payload with it returns the first broadcast with `200`; the payload is compared as parsed JSON, so whitespace and member order do not matter. The same key with a different request returns `409`. The key can be used again only after retention has removed the broadcast.
+- **Outcomes.** A broadcast is `delivering` until no delivery is pending, then `completed`, or `completedWithIssues` when any delivery failed; `cancelled` stops its pending deliveries. Each delivery ends once:
+
+| Status | `resultCode` | Meaning |
+| --- | --- | --- |
+| `delivered` | `caught` | The catch wrote the mapped values and continued. |
+| `delivered` | `interrupted` | An interrupting boundary cancelled its host's work, wrote the mapped values, and continued on the boundary's flow. |
+| `delivered` | `branched` | A non-interrupting boundary started a new branch with the mapped values; the host and the boundary stay active. |
+| `delivered` | `superseded` | The mapped values made a conditional boundary on the catch interrupt it first. |
+| `skipped` | `subscription_ended` | The wait ended, or the instance stopped running, between the throw and the delivery. |
+| `skipped` | `stale` | The instance changed in a way that makes the delivery obsolete, such as a cancelled call above it. |
+| `failed` | `signal_payload_invalid` | The payload failed a typed mapping. Nothing was written and the instance still waits. |
+| `failed` | `signal_delivery_rejected` | Another workflow rule failed after the mapping, such as routing that found no flow. Nothing was written. |
+| `failed` | `signal_token_limit` | A non-interrupting boundary's new branch would exceed the instance's `Workflow.Gateway.MaxActiveTokens` active tokens (default 1,000). Nothing was written and the boundary keeps listening. |
+| `failed` | `delivery_error` | The delivery failed unexpectedly on the job's final attempt (earlier attempts retry it), or at once because the recipient's durable state is inconsistent. |
+| `failed` | `lease_exhausted` | The delivery job's final lease expired. |
+| `cancelled` | `broadcast_cancelled` | The broadcast was cancelled first. |
+
+A delivery continues the instance as the fixed system actor `signal`, with no roles or claims. A signal wait or boundary of an instance that has moved to another version is delivered under that version; [version-change preview](#post-apiinstancesidversion-changepreview) reports open signal waits and changed signal boundaries with the codes in [signals and version changes](developer-guide.md#signals-and-version-changes). Delivery jobs have the kind `signalBroadcastDeliver` and appear under [Jobs and incidents](#jobs-and-incidents); a broadcast has one job per workflow definition among its recipients, and another for each retry.
+
+### POST /api/signal-broadcasts
+
+Throw a signal and queue its deliveries.
+
+**Access:** Signal administrator, or a signal client with `signals.throw`. See [authentication](#http-conventions-and-authentication).
+
+**Parameters:** none.
+
+**JSON body:** [ThrowSignalRequest](#schema-throwsignalrequest). Required JSON object; field presence, nullability and defaults are in the linked schema.
+
+**Success:** `202` [SignalBroadcastDetailDto](#schema-signalbroadcastdetaildto) with `Location: /api/signal-broadcasts/{id}`; `200` with the earlier broadcast when `idempotencyKey` replays it.
+**Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden; `409` Conflict; `413` Payload Too Large; `415` Unsupported Media Type. See [error envelopes](#errors-and-concurrency) and the family rules above.
+
+A broadcast that finds no waiting event is stored as `completed` with `totalDeliveryCount: 0` and queues no job.
+
+```http
+POST /api/signal-broadcasts HTTP/1.1
+Host: localhost:5017
+Authorization: Bearer TOKEN
+Content-Type: application/json
+
+{
+  "name": "claims.policy-changed",
+  "workflowKey": "example-signal-catch-policy-change",
+  "payload": { "version": 7, "effectiveDate": "2027-01-01" },
+  "idempotencyKey": "policy-7"
+}
+```
+
+A broadcast to every family sends `"allWorkflows": true` in place of `workflowKey`.
+
+Response example (object bodies may be excerpts; see the full linked schema):
+
+```http
+HTTP/1.1 202 Accepted
+Location: /api/signal-broadcasts/42
+Content-Type: application/json
+
+{
+  "id": 42,
+  "name": "claims.policy-changed",
+  "workflowKey": "example-signal-catch-policy-change",
+  "allWorkflows": false,
+  "status": "delivering",
+  "totalDeliveryCount": 3,
+  "pendingCount": 3,
+  "deliveredCount": 0,
+  "skippedCount": 0,
+  "failedCount": 0,
+  "cancelledCount": 0,
+  "thrownBy": "admin@example.com",
+  "thrownByKind": "user",
+  "thrownByRoles": ["admin"],
+  "payload": { "version": 7, "effectiveDate": "2027-01-01" },
+  "recipientsByWorkflowKey": [{ "workflowKey": "example-signal-catch-policy-change", "count": 3 }],
+  "recipientsTruncated": false,
+  "cancelledBy": null,
+  "cancellationReason": null,
+  "createdAt": "2026-11-16T10:00:00Z",
+  "updatedAt": "2026-11-16T10:00:00Z",
+  "completedAt": null,
+  "cancelledAt": null
+}
+```
+
+### GET /api/signal-broadcasts
+
+List broadcasts, newest first, without payloads.
+
+**Access:** Signal administrator, or a signal client with `signals.read`, which sees only its own broadcasts. See [authentication](#http-conventions-and-authentication).
+
+| Parameter | Location | Type | Required | Meaning / default |
+| --- | --- | --- | --- | --- |
+| `name` | query | string | No | Exact signal name. |
+| `workflowKey` | query | string | No | Exact workflow family named by the throw; broadcasts to all workflows have none. |
+| `status` | query | string | No | `delivering`, `completed`, `completedWithIssues`, or `cancelled`; another value returns `400`. |
+| `page` | query | integer (int32) | No | Default 1. |
+| `pageSize` | query | integer (int32) | No | Default 50; clamped to 1–200. |
+
+**Body:** none.
+
+**Success:** `200` [PagedResultOfSignalBroadcastSummaryDto](#schema-pagedresultofsignalbroadcastsummarydto).
+**Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden. See [error envelopes](#errors-and-concurrency) and the family rules above.
+
+```http
+GET /api/signal-broadcasts?name=claims.policy-changed&pageSize=25 HTTP/1.1
+Host: localhost:5017
+X-Client-Id: policy-service
+X-Client-Secret: CLIENT_SECRET
+```
+
+Response example (object bodies may be excerpts; see the full linked schema):
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "items": [],
+  "page": 1,
+  "pageSize": 25,
+  "totalCount": 0
+}
+```
+
+### GET /api/signal-broadcasts/{id}
+
+Get one broadcast with its counters, payload, and recipients per workflow family.
+
+**Access:** Signal administrator, or a signal client with `signals.read` for a broadcast it threw. See [authentication](#http-conventions-and-authentication).
+
+| Parameter | Location | Type | Required | Meaning / default |
+| --- | --- | --- | --- | --- |
+| `id` | path | integer (int64) | Yes | Broadcast ID. |
+
+**Body:** none.
+
+**Success:** `200` [SignalBroadcastDetailDto](#schema-signalbroadcastdetaildto).
+**Errors:** `401` Unauthorized; `403` Forbidden; `404` Not Found. See [error envelopes](#errors-and-concurrency) and the family rules above.
+
+Poll this route to follow a broadcast while it is `delivering`.
+
+```http
+GET /api/signal-broadcasts/42 HTTP/1.1
+Host: localhost:5017
+Authorization: Bearer TOKEN
+```
+
+The response has the shape of the throw response above, with current counters.
+
+### GET /api/signal-broadcasts/{id}/deliveries
+
+List a broadcast's deliveries in ascending ID.
+
+**Access:** Signal administrator, or a signal client with `signals.read` for a broadcast it threw. See [authentication](#http-conventions-and-authentication).
+
+| Parameter | Location | Type | Required | Meaning / default |
+| --- | --- | --- | --- | --- |
+| `id` | path | integer (int64) | Yes | Broadcast ID. |
+| `status` | query | string | No | `pending`, `delivered`, `skipped`, `failed`, or `cancelled`; another value returns `400`. |
+| `instanceId` | query | integer (int64) | No | Only the delivery to this instance. |
+| `page` | query | integer (int32) | No | Default 1. |
+| `pageSize` | query | integer (int32) | No | Default 50; clamped to 1–200. |
+
+**Body:** none.
+
+**Success:** `200` [PagedResultOfSignalDeliveryDto](#schema-pagedresultofsignaldeliverydto).
+**Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden; `404` Not Found. See [error envelopes](#errors-and-concurrency) and the family rules above.
+
+```http
+GET /api/signal-broadcasts/42/deliveries?status=failed HTTP/1.1
+Host: localhost:5017
+Authorization: Bearer TOKEN
+```
+
+Response example (object bodies may be excerpts; see the full linked schema):
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "items": [
+    {
+      "id": 901,
+      "broadcastId": 42,
+      "instanceId": 101,
+      "workflowKey": "example-signal-catch-policy-change",
+      "workflowDefinitionId": 7,
+      "signalNodeId": 2,
+      "attachedToNodeId": null,
+      "cancelActivity": true,
+      "status": "failed",
+      "resultCode": "signal_payload_invalid",
+      "resultDescription": "Signal catch event #2 output mapping 'policyVersion' ...",
+      "attemptCount": 1,
+      "createdAt": "2026-11-16T10:00:00Z",
+      "updatedAt": "2026-11-16T10:00:02Z",
+      "completedAt": "2026-11-16T10:00:02Z"
+    }
+  ],
+  "page": 1,
+  "pageSize": 50,
+  "totalCount": 1
+}
+```
+
+### POST /api/signal-broadcasts/{id}/cancel
+
+Cancel a broadcast's pending deliveries.
+
+**Access:** Signal administrator, or a signal client with `signals.throw` for a broadcast it threw. See [authentication](#http-conventions-and-authentication).
+
+| Parameter | Location | Type | Required | Meaning / default |
+| --- | --- | --- | --- | --- |
+| `id` | path | integer (int64) | Yes | Broadcast ID. |
+
+**JSON body:** [CancelSignalBroadcastRequest](#schema-cancelsignalbroadcastrequest). Optional.
+
+**Success:** `200` [SignalBroadcastDetailDto](#schema-signalbroadcastdetaildto).
+**Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden; `404` Not Found; `409` Conflict; `413` Payload Too Large; `415` Unsupported Media Type. See [error envelopes](#errors-and-concurrency) and the family rules above.
+
+Every pending delivery becomes `cancelled` with `broadcast_cancelled`, and the broadcast becomes `cancelled`. A delivery already in its own transaction finishes normally, and the waits that were not delivered stay subscribed. Repeating the request on a cancelled broadcast changes nothing and returns it; a broadcast that already finished returns `409`.
+
+```http
+POST /api/signal-broadcasts/42/cancel HTTP/1.1
+Host: localhost:5017
+Authorization: Bearer TOKEN
+Content-Type: application/json
+
+{
+  "reason": "Wrong policy version"
+}
+```
+
+The response is the broadcast with `status: "cancelled"` and updated counters.
+
+### POST /api/signal-broadcasts/{id}/retry-failed
+
+Return a broadcast's failed deliveries to pending and queue them again.
+
+**Access:** Signal administrator, or a signal client with `signals.throw` for a broadcast it threw. See [authentication](#http-conventions-and-authentication).
+
+| Parameter | Location | Type | Required | Meaning / default |
+| --- | --- | --- | --- | --- |
+| `id` | path | integer (int64) | Yes | Broadcast ID. |
+
+**JSON body:** [RetrySignalDeliveriesRequest](#schema-retrysignaldeliveriesrequest). Required JSON object.
+
+**Success:** `200` [SignalBroadcastDetailDto](#schema-signalbroadcastdetaildto).
+**Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden; `404` Not Found; `409` Conflict; `413` Payload Too Large; `415` Unsupported Media Type. See [error envelopes](#errors-and-concurrency) and the family rules above.
+
+Allowed only for a `completedWithIssues` broadcast, with its current `updatedAt`. A missing `expectedUpdatedAt` returns `400`; any other status, a stale `expectedUpdatedAt`, or no failed delivery returns `409`. The broadcast returns to `delivering`. Each retried delivery moves to the workflow version its instance runs now, its `workflowDefinitionId` changes to match, and a new `signalBroadcastDeliver` job is queued for each of those versions. So retrying after moving the instances to a version with corrected mappings applies those mappings, and a retry does not depend on the version that was current at the throw, which may since have been deleted. A delivery whose wait has ended meanwhile is skipped.
+
+```http
+POST /api/signal-broadcasts/42/retry-failed HTTP/1.1
+Host: localhost:5017
+Authorization: Bearer TOKEN
+Content-Type: application/json
+
+{
+  "expectedUpdatedAt": "2026-11-16T10:00:02Z"
+}
+```
+
+The response is the broadcast with `status: "delivering"` and the retried deliveries counted as pending.
+
+### GET /api/signal-subscriptions/summary
+
+Count the active signal waits by signal name and workflow family. It writes nothing.
+
+**Access:** Signal administrator only; managed API clients are refused. See [authentication](#http-conventions-and-authentication).
+
+| Parameter | Location | Type | Required | Meaning / default |
+| --- | --- | --- | --- | --- |
+| `name` | query | string | No | Exact signal name. |
+| `workflowKey` | query | string | No | Exact workflow family. |
+
+**Body:** none.
+
+**Success:** `200` [SignalSubscriptionSummaryDto](#schema-signalsubscriptionsummarydto).
+**Errors:** `401` Unauthorized; `403` Forbidden. See [error envelopes](#errors-and-concurrency) and the family rules above.
+
+The counts describe this moment; a throw counts again when it runs.
+
+```http
+GET /api/signal-subscriptions/summary?name=claims.policy-changed HTTP/1.1
+Host: localhost:5017
+Authorization: Bearer TOKEN
+```
+
+Response example (object bodies may be excerpts; see the full linked schema):
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "items": [
+    { "name": "claims.policy-changed", "workflowKey": "example-signal-catch-policy-change", "count": 3 }
+  ],
+  "truncated": false
 }
 ```
 
@@ -3123,7 +3442,7 @@ Content-Type: application/json
 
 Every route in this section requires the Job operator role, including endpoints whose OpenAPI metadata does not repeat `401`/`403`. Lists and attempts use opaque cursors. Operational DTOs expose bounded metadata and failure summaries, not job snapshots or persisted external-response bodies. A resolved incident may remain after its completed job has been pruned, so `IncidentDetailDto.job` may be null.
 
-Job statuses: `queued`, `running`, `resultReady`, `retry`, `completed`, `incident`, `cancelled`, `skipped`. Kinds: `asyncBefore`, `asyncAfter`, `timer`, `timerStart`, `timerBoundary`, `conditionalWake`, `multiInstanceStart`, `multiInstanceItem`, `multiInstanceDispatch`, `multiInstanceComplete`, `callStart`, `callResume`, `callCancel`, `administrativeBatchPrepare`, `administrativeBatchExecute`, `instanceVersionChangeBatchPrepare`, `instanceVersionChangeBatchExecute`, `instanceVariableUpdateBatchPrepare`, `instanceVariableUpdateBatchExecute`. The four `multiInstance*` kinds belong to [automatic multi-instance bodies](#multi-instance-executions): `multiInstanceStart` initializes a call body (a service or script body initializes in its `asyncBefore` job), `multiInstanceItem` runs one REST or script item, and `multiInstanceDispatch` and `multiInstanceComplete` admit items and publish the result. Incident statuses: `open`, `resolved`; `type` is the recorded failure category, including `automatic_loop_limit`; `call_capacity_exceeded`, a call refused at the root's open-call limit, or a multi-instance call body's dispatch with nothing in flight while that limit holds its items back, where retrying repeats admission; `output_version_conflict`, an output that changed since the job read it, where retrying an automatic item's or body's incident publishes its saved result over the newer value without running the item again; `job_conflict`, a conflict in a job that still owns its work, whose `details` give the cause; and `timer_schedule_failed`, a timer start whose first due time cannot be computed, such as a cron schedule whose zone the Worker cannot resolve, where retrying schedules the timer start again. A timer-start job for a cron schedule never completes its subscription; a failure to calculate its next occurrence rolls the firing back and the job retries, then opens a `job_execution_failed` incident. Repeated filters are supplied as repeated query parameters. Retry fences the original activation and queues work; it does not immediately finish the workflow. A no-longer-retryable incident/job returns `409`.
+Job statuses: `queued`, `running`, `resultReady`, `retry`, `completed`, `incident`, `cancelled`, `skipped`. Kinds: `asyncBefore`, `asyncAfter`, `timer`, `timerStart`, `timerBoundary`, `conditionalWake`, `multiInstanceStart`, `multiInstanceItem`, `multiInstanceDispatch`, `multiInstanceComplete`, `callStart`, `callResume`, `callCancel`, `administrativeBatchPrepare`, `administrativeBatchExecute`, `instanceVersionChangeBatchPrepare`, `instanceVersionChangeBatchExecute`, `instanceVariableUpdateBatchPrepare`, `instanceVariableUpdateBatchExecute`, `signalBroadcastDeliver`. A `signalBroadcastDeliver` job delivers the pending deliveries of one [signal broadcast](#signals) for one workflow definition; it names no instance or token, and its row names the definition's initial start event only as an anchor. The four `multiInstance*` kinds belong to [automatic multi-instance bodies](#multi-instance-executions): `multiInstanceStart` initializes a call body (a service or script body initializes in its `asyncBefore` job), `multiInstanceItem` runs one REST or script item, and `multiInstanceDispatch` and `multiInstanceComplete` admit items and publish the result. Incident statuses: `open`, `resolved`; `type` is the recorded failure category, including `automatic_loop_limit`; `call_capacity_exceeded`, a call refused at the root's open-call limit, or a multi-instance call body's dispatch with nothing in flight while that limit holds its items back, where retrying repeats admission; `output_version_conflict`, an output that changed since the job read it, where retrying an automatic item's or body's incident publishes its saved result over the newer value without running the item again; `job_conflict`, a conflict in a job that still owns its work, whose `details` give the cause; and `timer_schedule_failed`, a timer start whose first due time cannot be computed, such as a cron schedule whose zone the Worker cannot resolve, where retrying schedules the timer start again. A timer-start job for a cron schedule never completes its subscription; a failure to calculate its next occurrence rolls the firing back and the job retries, then opens a `job_execution_failed` incident. Repeated filters are supplied as repeated query parameters. Retry fences the original activation and queues work; it does not immediately finish the workflow. A no-longer-retryable incident/job returns `409`.
 
 ### GET /api/jobs
 
@@ -6229,7 +6548,7 @@ Content-Type: application/json
 
 ## Shared-variable clients
 
-JWT Shared-variable administrator permission is required for every route. Client IDs are administrator-chosen, case-sensitive and immutable. Allowed scopes are `shared-variables.read` and `shared-variables.write`; they are explicit separate permissions. Creation and secret rotation return a generated secret exactly once with `Cache-Control: no-store` and `Pragma: no-cache`. Metadata reads cannot recover it. Update replaces displayName/scopes/expiresAt with `expectedRevision`; revoked clients cannot be used. An optional `expiresAt` must be in the future; it may carry any UTC offset and is stored and returned in UTC. Rotation grace is 0–168 hours, default 24. Revocation immediately invalidates all active secrets. All request bodies are limited to 64 KiB.
+JWT Shared-variable administrator permission is required for every route. Client IDs are administrator-chosen, case-sensitive and immutable. Allowed scopes are `shared-variables.read`, `shared-variables.write`, `signals.throw`, and `signals.read`; they are explicit separate permissions. The two signal scopes let the same client throw signals and read its own broadcasts through the [signal routes](#signals). Creation and secret rotation return a generated secret exactly once with `Cache-Control: no-store` and `Pragma: no-cache`. Metadata reads cannot recover it. Update replaces displayName/scopes/expiresAt with `expectedRevision`; revoked clients cannot be used. An optional `expiresAt` must be in the future; it may carry any UTC offset and is stored and returned in UTC. Rotation grace is 0–168 hours, default 24. Revocation immediately invalidates all active secrets. All request bodies are limited to 64 KiB.
 
 ### GET /api/shared-variable-clients
 
@@ -6527,7 +6846,7 @@ Content-Type: application/json
 
 ## Retention
 
-Settings administrator permission is required; mutations additionally require a nonblank actor. Categories are `workflowHistory`, `variableHistory`, `nodeActivity`, `administrativeAudits`, `sharedVariableHistory`, `completedJobs`, `resolvedIncidents`, `webhookDeliveries`, and `lifecycleEvents`. `retentionDays:null` means keep forever. `webhookDeliveries` ages from settlement and removes succeeded or discarded deliveries with their attempts; pending, retrying, leased, and failed deliveries stay protected. `lifecycleEvents` ages from the event time and removes only fanned-out events that no delivery references. Neither touches workflow history or reactivation eligibility. Updates use `expectedRevision`. Preview evaluates a proposed period without saving or deleting; it may be a bounded lower estimate (`isLowerBound`). `/runs` queues or joins a cleanup run using saved policies and returns `202 Location: /api/retention`. The Worker applies bounded deletion and load protection. Pruning instance-owned history permanently prevents reactivation; retained current state and protected audit references are not an instruction to purge an entire workflow.
+Settings administrator permission is required; mutations additionally require a nonblank actor. Categories are `workflowHistory`, `variableHistory`, `nodeActivity`, `administrativeAudits`, `sharedVariableHistory`, `completedJobs`, `resolvedIncidents`, `webhookDeliveries`, `lifecycleEvents`, and `signalBroadcasts`. `retentionDays:null` means keep forever. `signalBroadcasts` ages a finished [signal broadcast](#signals) from its completion and removes it with its payload, deliveries, and job links; a broadcast that is still delivering or has a pending delivery stays protected. `webhookDeliveries` ages from settlement and removes succeeded or discarded deliveries with their attempts; pending, retrying, leased, and failed deliveries stay protected. `lifecycleEvents` ages from the event time and removes only fanned-out events that no delivery references. Neither touches workflow history or reactivation eligibility. Updates use `expectedRevision`. Preview evaluates a proposed period without saving or deleting; it may be a bounded lower estimate (`isLowerBound`). `/runs` queues or joins a cleanup run using saved policies and returns `202 Location: /api/retention`. The Worker applies bounded deletion and load protection. Pruning instance-owned history permanently prevents reactivation; retained current state and protected audit references are not an instruction to purge an entire workflow.
 
 ### GET /api/retention
 
@@ -7685,6 +8004,19 @@ Copies one whole variable through a call. Unknown members and wrong JSON types a
 
 </details>
 
+<a id="schema-cancelsignalbroadcastrequest"></a>
+
+<details>
+<summary>CancelSignalBroadcastRequest</summary>
+
+The whole body is optional.
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `reason` | null or string | No | Optional cancellation reason, trimmed, at most 1,000 characters; blank means none. Stored as `cancellationReason`. |
+
+</details>
+
 <a id="schema-changeinstanceversionrequest"></a>
 
 <details>
@@ -7967,7 +8299,7 @@ Administrative form of delegation creation. The authenticated administrator rema
 | --- | --- | --- | --- |
 | `clientId` | string | Yes | Trimmed immutable identifier: 3–100 ASCII characters from A–Z, a–z, 0–9, dot, underscore, colon or hyphen. Case-sensitive. |
 | `displayName` | string | Yes | Required nonblank name, at most 300 Unicode scalars. |
-| `scopes` | array of string | Yes | Nonempty list of exact-case shared-variables.read and/or shared-variables.write. |
+| `scopes` | array of string | Yes | Nonempty list of exact-case shared-variables.read, shared-variables.write, signals.throw, and/or signals.read. |
 | `expiresAt` | null or string (date-time) | No | Null or a future ISO 8601 instant. |
 
 </details>
@@ -8187,7 +8519,7 @@ Type-specific requirements and defaults are in BPMN support. Missing cancelActiv
 | `job` | null or [JobPolicyModel](#schema-jobpolicymodel) | No | — |
 | `timer` | null or [TimerDefinitionModel](#schema-timerdefinitionmodel) | No | — |
 | `conditional` | null or [ConditionalDefinitionModel](#schema-conditionaldefinitionmodel) | No | — |
-| `cancelActivity` | null or boolean | No | Timer and conditional boundary events: true interrupts the attached activity; false creates a sibling branch while the activity remains active. Missing values normalize to true. |
+| `cancelActivity` | null or boolean | No | Timer, conditional, and signal boundary events: true interrupts the attached activity; false creates a sibling branch while the activity remains active. Missing values normalize to true. |
 | `laneId` | null or integer (int32) | No | The ID of the lane this node resides in. |
 | `x` | integer (int32) | No | The X coordinate on the designer canvas. |
 | `y` | integer (int32) | No | The Y coordinate on the designer canvas. |
@@ -8199,6 +8531,7 @@ Type-specific requirements and defaults are in BPMN support. Missing cancelActiv
 | `variables` | array of [VariableModel](#schema-variablemodel) or null | No | Start input declarations. Message starts use typed outputMappings instead of a separate variables declaration section. |
 | `service` | null or [ServiceTaskModel](#schema-servicetaskmodel) | No | — |
 | `message` | null or [MessageCatchModel](#schema-messagecatchmodel) | No | — |
+| `signal` | null or [SignalEventModel](#schema-signaleventmodel) | No | `intermediateSignalCatchEvent` and `signalBoundaryEvent` only: the signal name and typed payload mappings. See [signal configuration](node-reference.md#signal-configuration). |
 | `businessKey` | null or [BusinessKeyModel](#schema-businesskeymodel) | No | — |
 | `idempotency` | null or [IdempotencyModel](#schema-idempotencymodel) | No | — |
 | `scriptFormat` | string | No | ncalc (default) or javascript. Default: `"ncalc"`. |
@@ -8214,7 +8547,7 @@ Type-specific requirements and defaults are in BPMN support. Missing cancelActiv
 | `dueDateCalendar` | null or string | No | Optional name of the [business calendar](#business-calendars) whose working time a `dueDate` duration counts. User tasks only; requires `dueDate`. See [working-time durations](node-reference.md#working-time-durations). |
 | `priority` | null or string | No | Optional NCalc expression giving the task's priority as a whole number; higher values are more urgent. User tasks only. |
 | `multiInstance` | null or [MultiInstanceModel](#schema-multiinstancemodel) | No | — |
-| `attachedToRef` | null or integer (int32) | No | Authored host node ID for the boundary. Allowed hosts depend on error/timer/conditional boundary type; see BPMN support. |
+| `attachedToRef` | null or integer (int32) | No | Authored host node ID for the boundary. Allowed hosts depend on error/timer/conditional/signal boundary type; see [boundary host rules](node-reference.md#boundary-host-rules). |
 | `errorVariable` | null or string | No | The variable name where the failure reason is written when caught. |
 | `errorMatch` | null or [ErrorBoundaryMatchModel](#schema-errorboundarymatchmodel) | No | errorBoundaryEvent on a REST service task only: the HTTP statuses this boundary catches. Absent or null means it catches every failure. |
 | `errorCode` | null or string | No | Stable, business-facing fault code thrown by an errorEndEvent. |
@@ -8426,6 +8759,8 @@ Represents full details of a workflow instance, including variable values and hi
 | `versionChanges` | array of [InstanceVersionChangeAuditDto](#schema-instanceversionchangeauditdto) | No | — |
 | `variableUpdates` | array of [InstanceVariableUpdateAuditDto](#schema-instancevariableupdateauditdto) | No | Append-only administrative variable-update operations applied to this instance, including the actor, reason, and correlated history rows. |
 | `sharedVariables` | array of [SharedVariableBindingMetadataDto](#schema-sharedvariablebindingmetadatadto) | No | — |
+| `signalSubscriptions` | array of [SignalSubscriptionDto](#schema-signalsubscriptiondto) | No | The instance's active signal waits, including signal boundaries armed on active hosts, at most 50. Empty for a definition without signal events. |
+| `signalSubscriptionCount` | integer (int32) | No | Total active signal waits, which can exceed the listed 50. Default: `0`. |
 
 </details>
 
@@ -9772,7 +10107,7 @@ One deployment-wide shared-variable revision attributed to this execution. The k
 
 One durable visit to a workflow node. Normal visits are correlated to an execution token; multi-instance user tasks instead expose one row per child work item and deliberately do not expose a duplicate parent visit.
 
-completionReason vocabulary: normal, userAction, administrativeAction, messageDelivery, multiInstanceItem, multiInstanceCompleted, multiInstanceInterrupt, boundaryCaught, normalEnd, terminateEnd, errorEnd, instanceCancelled, gatewayScopeCancelled, gatewayJoinMerged, parallelFork, parallelJoin, inclusiveSplit, inclusiveMerge, complexActivation, complexReset, scopedInterrupt, scopedInterruptSkipped, timerFired, conditionalTriggered, callCompleted, callFailed.
+completionReason vocabulary: normal, userAction, administrativeAction, messageDelivery, multiInstanceItem, multiInstanceCompleted, multiInstanceInterrupt, boundaryCaught, normalEnd, terminateEnd, errorEnd, instanceCancelled, gatewayScopeCancelled, gatewayJoinMerged, parallelFork, parallelJoin, inclusiveSplit, inclusiveMerge, complexActivation, complexReset, scopedInterrupt, scopedInterruptSkipped, timerFired, conditionalTriggered, callCompleted, callFailed, signalReceived.
 
 | Field | JSON type / schema | Required | Meaning / default |
 | --- | --- | --- | --- |
@@ -10178,6 +10513,44 @@ items/page/pageSize/totalCount are the core fields. nextCursor is omitted when n
 
 </details>
 
+<a id="schema-pagedresultofsignalbroadcastsummarydto"></a>
+
+<details>
+<summary>PagedResultOfSignalBroadcastSummaryDto</summary>
+
+Generic wrapper representing a paged list of items.
+
+items/page/pageSize/totalCount are the core fields. nextCursor is omitted when null. There are no totalPages, hasNextPage or hasPreviousPage fields.
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `items` | array of [SignalBroadcastSummaryDto](#schema-signalbroadcastsummarydto) | Yes | The collection of items on the current page. |
+| `page` | integer (int32) | Yes | The 1-based page index. |
+| `pageSize` | integer (int32) | Yes | The maximum number of items in the page. |
+| `totalCount` | integer (int64) | Yes | The total number of matching items across all pages. |
+| `nextCursor` | null or string | No | Not used by this numbered-page endpoint; omitted. |
+
+</details>
+
+<a id="schema-pagedresultofsignaldeliverydto"></a>
+
+<details>
+<summary>PagedResultOfSignalDeliveryDto</summary>
+
+Generic wrapper representing a paged list of items.
+
+items/page/pageSize/totalCount are the core fields. nextCursor is omitted when null. There are no totalPages, hasNextPage or hasPreviousPage fields.
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `items` | array of [SignalDeliveryDto](#schema-signaldeliverydto) | Yes | The collection of items on the current page. |
+| `page` | integer (int32) | Yes | The 1-based page index. |
+| `pageSize` | integer (int32) | Yes | The maximum number of items in the page. |
+| `totalCount` | integer (int64) | Yes | The total number of matching items across all pages. |
+| `nextCursor` | null or string | No | Not used by this numbered-page endpoint; omitted. |
+
+</details>
+
 <a id="schema-pagedresultofuserdelegationdto"></a>
 
 <details>
@@ -10402,6 +10775,17 @@ Request payload for atomically reactivating a completed or cancelled workflow in
 
 </details>
 
+<a id="schema-retrysignaldeliveriesrequest"></a>
+
+<details>
+<summary>RetrySignalDeliveriesRequest</summary>
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `expectedUpdatedAt` | null or string (date-time) | Yes | The broadcast's exact `updatedAt` from the latest response. Null or missing returns `400`; a different value returns `409`. |
+
+</details>
+
 <a id="schema-revokesharedvariableclientrequest"></a>
 
 <details>
@@ -10573,7 +10957,7 @@ Value-free catalog metadata for one workflow-local shared alias. Instance APIs e
 | `id` | integer (int64) | Yes | — |
 | `clientId` | string | Yes | — |
 | `displayName` | string | Yes | — |
-| `scopes` | array of string | Yes | shared-variables.read and/or shared-variables.write. |
+| `scopes` | array of string | Yes | shared-variables.read, shared-variables.write, signals.throw, and/or signals.read. |
 | `status` | string | Yes | active or revoked. |
 | `revision` | integer (int64) | Yes | — |
 | `expiresAt` | null or string (date-time) | Yes | Nullable expiry; null means no configured expiry. |
@@ -10685,6 +11069,167 @@ Value-free correlation between a workflow-local alias and the durable shared-var
 
 </details>
 
+<a id="schema-signalbroadcastdetaildto"></a>
+
+<details>
+<summary>SignalBroadcastDetailDto</summary>
+
+One thrown signal with its counters, payload, and recipients per workflow family. Returned by throw, read, cancel, and retry. The counters change as the Worker delivers; `pendingCount` is the total minus the four outcome counts.
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `id` | integer (int64) | Yes | Broadcast ID. |
+| `name` | string | Yes | The signal name. |
+| `workflowKey` | null or string | Yes | The workflow family the throw named; null when it addressed all workflows. |
+| `allWorkflows` | boolean | Yes | True when `workflowKey` is null. |
+| `status` | string | Yes | `delivering`, `completed`, `completedWithIssues` (finished with at least one failed delivery), or `cancelled`. A broadcast with no recipients is `completed` at once. |
+| `totalDeliveryCount` | integer (int32) | Yes | Recipients frozen by the throw. |
+| `pendingCount` | integer (int32) | Yes | Deliveries not yet finished. |
+| `deliveredCount` | integer (int32) | Yes | Deliveries that reached their wait. |
+| `skippedCount` | integer (int32) | Yes | Deliveries whose wait had ended or whose instance had changed. |
+| `failedCount` | integer (int32) | Yes | Deliveries that failed; these can be retried. |
+| `cancelledCount` | integer (int32) | Yes | Deliveries cancelled with the broadcast. |
+| `thrownBy` | string | Yes | The user's actor identity, or the managed client's ID. |
+| `thrownByKind` | string | Yes | `user` or `client`. |
+| `thrownByRoles` | array of string | Yes | The user's roles when it threw; empty for a client. |
+| `payload` | null or [JsonElement](#schema-jsonelement) | Yes | The JSON object the throw sent, or null. |
+| `recipientsByWorkflowKey` | array of [SignalRecipientCountDto](#schema-signalrecipientcountdto) | Yes | Recipients per workflow family, most first, at most 50. |
+| `recipientsTruncated` | boolean | Yes | True when more than 50 families received the signal. |
+| `cancelledBy` | null or string | Yes | Who cancelled the broadcast. Null for a managed client when someone else cancelled its broadcast. |
+| `cancellationReason` | null or string | Yes | The cancellation reason, if one was given. Null for a managed client when someone else cancelled its broadcast. |
+| `createdAt` | string (date-time) | Yes | When the signal was thrown. |
+| `updatedAt` | string (date-time) | Yes | Last change to the counters or status; send it as `expectedUpdatedAt` to retry failed deliveries. |
+| `completedAt` | null or string (date-time) | Yes | When the broadcast finished or was cancelled; null while delivering. |
+| `cancelledAt` | null or string (date-time) | Yes | When it was cancelled. |
+
+</details>
+
+<a id="schema-signalbroadcastsummarydto"></a>
+
+<details>
+<summary>SignalBroadcastSummaryDto</summary>
+
+A list row of a broadcast, without its payload, roles, recipients, or cancellation details. The fields have the meanings given in [SignalBroadcastDetailDto](#schema-signalbroadcastdetaildto).
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `id` | integer (int64) | Yes | — |
+| `name` | string | Yes | — |
+| `workflowKey` | null or string | Yes | — |
+| `allWorkflows` | boolean | Yes | — |
+| `status` | string | Yes | — |
+| `totalDeliveryCount` | integer (int32) | Yes | — |
+| `pendingCount` | integer (int32) | Yes | — |
+| `deliveredCount` | integer (int32) | Yes | — |
+| `skippedCount` | integer (int32) | Yes | — |
+| `failedCount` | integer (int32) | Yes | — |
+| `cancelledCount` | integer (int32) | Yes | — |
+| `thrownBy` | string | Yes | — |
+| `thrownByKind` | string | Yes | — |
+| `createdAt` | string (date-time) | Yes | — |
+| `updatedAt` | string (date-time) | Yes | — |
+| `completedAt` | null or string (date-time) | Yes | — |
+
+</details>
+
+<a id="schema-signaldeliverydto"></a>
+
+<details>
+<summary>SignalDeliveryDto</summary>
+
+One frozen recipient of a broadcast and its outcome. A managed API client receives `resultDescription` as null, because the engine's message can quote a validation expression of the receiving workflow.
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `id` | integer (int64) | Yes | Delivery ID. |
+| `broadcastId` | integer (int64) | Yes | — |
+| `instanceId` | integer (int64) | Yes | Runtime workflow-instance database ID. |
+| `workflowKey` | string | Yes | Stable authored workflow-family key. |
+| `workflowDefinitionId` | integer (int64) | Yes | The version the instance ran when the signal was thrown. |
+| `signalNodeId` | integer (int32) | Yes | Authored ID of the signal event. |
+| `attachedToNodeId` | null or integer (int32) | Yes | The host node of a signal boundary; null for a catch. |
+| `cancelActivity` | boolean | Yes | Whether the delivery interrupts a boundary's host; always true for a catch. |
+| `status` | string | Yes | `pending`, `delivered`, `skipped`, `failed`, or `cancelled`. |
+| `resultCode` | null or string | Yes | Null while pending. `caught`, `interrupted`, `branched`, or `superseded` when delivered; `subscription_ended` or `stale` when skipped; `signal_payload_invalid`, `signal_delivery_rejected`, `signal_token_limit`, `delivery_error`, or `lease_exhausted` when failed; `broadcast_cancelled` when cancelled. See [Signals](#signals). |
+| `resultDescription` | null or string | Yes | The engine's explanation, at most 1,000 characters; null for a managed client. |
+| `attemptCount` | integer (int32) | Yes | How many times the delivery finished, including failed attempts that were later retried. |
+| `createdAt` | string (date-time) | Yes | When the throw froze it. |
+| `updatedAt` | string (date-time) | Yes | — |
+| `completedAt` | null or string (date-time) | Yes | When it finished; null while pending. |
+
+</details>
+
+<a id="schema-signaleventmodel"></a>
+
+<details>
+<summary>SignalEventModel</summary>
+
+The `signal` object of an `intermediateSignalCatchEvent` or a `signalBoundaryEvent`. See [signal configuration](node-reference.md#signal-configuration).
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `name` | string | Yes | Literal signal name: 1 to 100 lowercase letters, digits, `.`, `_`, or `-`, starting with a letter or digit. |
+| `outputMappings` | array of [MessageOutputMappingModel](#schema-messageoutputmappingmodel) | No | At most 100 typed mappings whose `path` reads the broadcast's payload; `dataType` and `isArray` are required. Default: `[]`. |
+
+</details>
+
+<a id="schema-signalrecipientcountdto"></a>
+
+<details>
+<summary>SignalRecipientCountDto</summary>
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `workflowKey` | string | Yes | A workflow family the broadcast reached. |
+| `count` | integer (int32) | Yes | Recipients the throw froze in that family. |
+
+</details>
+
+<a id="schema-signalsubscriptioncountdto"></a>
+
+<details>
+<summary>SignalSubscriptionCountDto</summary>
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `name` | string | Yes | Signal name. |
+| `workflowKey` | string | Yes | Workflow family. |
+| `count` | integer (int32) | Yes | Active signal waits for that name in that family now. |
+
+</details>
+
+<a id="schema-signalsubscriptiondto"></a>
+
+<details>
+<summary>SignalSubscriptionDto</summary>
+
+An active wait for a signal, listed on instance detail.
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `id` | integer (int64) | Yes | Subscription ID. |
+| `name` | string | Yes | The signal name it waits for. |
+| `signalNodeId` | integer (int32) | Yes | Authored ID of the signal event. |
+| `signalNodeName` | string | Yes | The event's name in the instance's current version. |
+| `attachedToNodeId` | null or integer (int32) | Yes | The host node of a signal boundary; null for a catch. |
+| `cancelActivity` | boolean | Yes | Whether a delivered signal interrupts a boundary's host; always true for a catch. |
+| `tokenId` | integer (int64) | Yes | The waiting execution token of a catch, or the host's token for a boundary. |
+| `createdAt` | string (date-time) | Yes | When the wait started. |
+
+</details>
+
+<a id="schema-signalsubscriptionsummarydto"></a>
+
+<details>
+<summary>SignalSubscriptionSummaryDto</summary>
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `items` | array of [SignalSubscriptionCountDto](#schema-signalsubscriptioncountdto) | Yes | Counts by signal name and workflow family, ordered by name and then workflow key, at most 200 rows. |
+| `truncated` | boolean | Yes | True when more rows match than were returned. |
+
+</details>
+
 <a id="schema-startconflictdto"></a>
 
 <details>
@@ -10768,6 +11313,23 @@ Machine credentials for the workflow-family task-distribution API.
 | --- | --- | --- | --- |
 | `clientId` | string | No | — |
 | `clientSecret` | string | No | Returned only by creation/rotation; never recoverable from metadata. |
+
+</details>
+
+<a id="schema-throwsignalrequest"></a>
+
+<details>
+<summary>ThrowSignalRequest</summary>
+
+Throws a signal. Exactly one of `workflowKey` and `allWorkflows: true` states the scope.
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `name` | string | Yes | 1 to 100 lowercase letters, digits, `.`, `_`, or `-`, starting with a letter or digit; compared exactly with the waiting events' names. |
+| `workflowKey` | null or string | No | One workflow family. At least one version with this key must exist; a family without waits is accepted. |
+| `allWorkflows` | boolean | No | True addresses every workflow family. Default: `false`. |
+| `payload` | null or object | No | A JSON object of at most 262,144 bytes as PostgreSQL prints it. Missing and null both mean no payload. |
+| `idempotencyKey` | null or string | No | Trimmed, at most 300 characters, unique per thrower. Repeating the same request with it returns the first broadcast with `200`; a different request with it returns `409`. |
 
 </details>
 
@@ -10954,7 +11516,7 @@ Result of one atomic administrative instance-variable operation.
 | Field | JSON type / schema | Required | Meaning / default |
 | --- | --- | --- | --- |
 | `displayName` | string | Yes | — |
-| `scopes` | array of string | Yes | Replacement nonempty list of exact-case shared-variables.read and/or shared-variables.write. |
+| `scopes` | array of string | Yes | Replacement nonempty list of exact-case shared-variables.read, shared-variables.write, signals.throw, and/or signals.read. |
 | `expiresAt` | null or string (date-time) | No | Null or a future ISO 8601 instant. |
 | `expectedRevision` | integer (int64) | Yes | Exact current revision from a preceding read. |
 

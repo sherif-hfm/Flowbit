@@ -156,6 +156,50 @@ public sealed class AdministrativeTimerBoundaryOverrideApiTests(
     }
 
     [Fact]
+    public async Task Override_EndsTheHostsSignalAndConditionalSubscriptions()
+    {
+        var signal = $"test.override-{Guid.NewGuid():N}";
+        var workflowId = await CreateWorkflowAsync(CreateObservedHostWorkflow(signal));
+        var instance = await StartAsync(workflowId);
+        await using (var before = fixture.CreateDbContext())
+        {
+            Assert.Equal(SignalSubscriptionStatuses.Active, await before.SignalSubscriptions
+                .Where(item => item.InstanceId == instance.Id).Select(item => item.Status).SingleAsync());
+            Assert.Equal(ConditionalBoundarySubscriptionStatuses.Active, await before.ConditionalBoundarySubscriptions
+                .Where(item => item.InstanceId == instance.Id).Select(item => item.Status).SingleAsync());
+        }
+
+        var candidate = await GetSingleCandidateAsync(workflowId, 2);
+        var batch = await CreatePrepareConfirmAsync(
+            workflowId,
+            sourceNodeId: 2,
+            boundaryNodeId: 6,
+            flowId: 401,
+            candidate,
+            "observed-host-operator");
+        await ProcessBatchJobAsync(batch.ExecutionJobId!.Value);
+        batch = await GetBatchAsync(batch.Summary.Id, "observed-host-operator");
+        Assert.Equal(AdministrativeActionBatchStatuses.Completed, batch.Summary.Status);
+
+        // The timeout path ends the instance at once, so nothing later would end these waits.
+        await using var db = fixture.CreateDbContext();
+        Assert.Equal(WorkflowInstanceStatuses.Completed, await db.WorkflowInstances
+            .Where(item => item.Id == instance.Id).Select(item => item.Status).SingleAsync());
+        Assert.Equal(SignalSubscriptionStatuses.Cancelled, await db.SignalSubscriptions
+            .Where(item => item.InstanceId == instance.Id).Select(item => item.Status).SingleAsync());
+        Assert.Equal(ConditionalBoundarySubscriptionStatuses.Cancelled, await db.ConditionalBoundarySubscriptions
+            .Where(item => item.InstanceId == instance.Id).Select(item => item.Status).SingleAsync());
+
+        using var thrown = await SendAsync(
+            HttpMethod.Post,
+            "/api/signal-broadcasts",
+            new ThrowSignalRequest(signal, null, AllWorkflows: true));
+        Assert.Equal(HttpStatusCode.Accepted, thrown.StatusCode);
+        var broadcast = await ReadAsync<SignalBroadcastDetailDto>(thrown);
+        Assert.Equal(0, broadcast.TotalDeliveryCount);
+    }
+
+    [Fact]
     public async Task NaturalTimerAndAdministrativeOverrideRace_CommitsOneBoundaryTraversal()
     {
         var workflowId = await CreateWorkflowAsync(
@@ -559,6 +603,72 @@ public sealed class AdministrativeTimerBoundaryOverrideApiTests(
             InitialEventId = 1,
             FlowNodes = nodes,
             SequenceFlows = flows
+        };
+    }
+
+    /// <summary>
+    /// Task 2 hosts a timer boundary (6, straight to an end), a signal boundary (7) and a
+    /// conditional boundary (8).
+    /// </summary>
+    private static WorkflowModel CreateObservedHostWorkflow(string signal)
+    {
+        var suffix = Guid.NewGuid().ToString("N");
+        return new WorkflowModel
+        {
+            Id = $"administrative-observed-host-{suffix}",
+            Name = $"Administrative observed host {suffix}",
+            InitialEventId = 1,
+            Variables =
+            [
+                new VariableModel
+                {
+                    Id = 1, Name = "escalate", DataType = WorkflowVariableTypes.Boolean,
+                    DefaultValue = JsonSerializer.SerializeToElement(false)
+                }
+            ],
+            FlowNodes =
+            [
+                new FlowNodeModel { Id = 1, Name = "Start", Type = BpmnFlowNodeTypes.StartEvent },
+                new FlowNodeModel { Id = 2, Name = "Wait for approval", Type = BpmnFlowNodeTypes.UserTask },
+                new FlowNodeModel { Id = 3, Name = "Approved", Type = BpmnFlowNodeTypes.EndEvent },
+                new FlowNodeModel { Id = 4, Name = "Escalated", Type = BpmnFlowNodeTypes.EndEvent },
+                new FlowNodeModel { Id = 5, Name = "Observed", Type = BpmnFlowNodeTypes.EndEvent },
+                new FlowNodeModel
+                {
+                    Id = 6,
+                    Name = "Escalation deadline",
+                    Type = BpmnFlowNodeTypes.TimerBoundaryEvent,
+                    AttachedToRef = 2,
+                    CancelActivity = true,
+                    Timer = new TimerDefinitionModel { TimeDuration = "P2D" }
+                },
+                new FlowNodeModel
+                {
+                    Id = 7,
+                    Name = "Policy changed",
+                    Type = BpmnFlowNodeTypes.SignalBoundaryEvent,
+                    AttachedToRef = 2,
+                    CancelActivity = true,
+                    Signal = new SignalEventModel { Name = signal, OutputMappings = [] }
+                },
+                new FlowNodeModel
+                {
+                    Id = 8,
+                    Name = "Escalation requested",
+                    Type = BpmnFlowNodeTypes.ConditionalBoundaryEvent,
+                    AttachedToRef = 2,
+                    CancelActivity = true,
+                    Conditional = new ConditionalDefinitionModel { Condition = "escalate == true" }
+                }
+            ],
+            SequenceFlows =
+            [
+                new SequenceFlowModel { Id = 101, Name = "Begin", SourceRef = 1, TargetRef = 2 },
+                new SequenceFlowModel { Id = 201, Name = "Approve", SourceRef = 2, TargetRef = 3 },
+                new SequenceFlowModel { Id = 401, Name = "Escalate", SourceRef = 6, TargetRef = 4 },
+                new SequenceFlowModel { Id = 701, Name = "Observe", SourceRef = 7, TargetRef = 5 },
+                new SequenceFlowModel { Id = 801, Name = "Observe", SourceRef = 8, TargetRef = 5 }
+            ]
         };
     }
 

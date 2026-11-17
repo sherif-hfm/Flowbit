@@ -512,11 +512,12 @@ public sealed partial class WorkflowEngineService
         if (state.NonTerminalWorkflowJobCount > 0
             || state.OpenIncidentCount > 0
             || state.ActiveOrPausedTimerSubscriptionCount > 0
-            || state.ActiveConditionalBoundarySubscriptionCount > 0)
+            || state.ActiveConditionalBoundarySubscriptionCount > 0
+            || state.ActiveSignalSubscriptionCount > 0)
         {
             blockers.Add(new InstanceReactivationIssueDto(
                 "unresolved_durable_work",
-                "The terminal instance still has unresolved jobs, incidents, timers, or conditional boundary subscriptions."));
+                "The terminal instance still has unresolved jobs, incidents, timers, conditional boundary subscriptions, or signal subscriptions."));
         }
         foreach (var stateId in state.NonResetComplexGatewayStateIds)
         {

@@ -605,8 +605,7 @@ public static class SharedVariableTransactionLockOrderValidator
     }
 
     private static bool IsExternalRestingOrBoundary(FlowNodeModel node) =>
-        IsExternalResting(node) || BpmnFlowNodeTypes.IsTimerBoundary(node.Type)
-        || BpmnFlowNodeTypes.IsConditionalBoundary(node.Type);
+        IsExternalResting(node) || BpmnFlowNodeTypes.IsObservableBoundary(node.Type);
 
     private static bool RequiresPreNodeDurableBoundary(FlowNodeModel node) =>
         AutomaticMultiInstanceRules.IsAutomaticBody(node) || node.AsyncBefore
@@ -615,13 +614,15 @@ public static class SharedVariableTransactionLockOrderValidator
                || BpmnFlowNodeTypes.IsScriptTask(node.Type));
 
     // A call is a durable resting boundary: its entry ends a transaction segment, and
-    // delivering its result starts a new one.
+    // delivering its result starts a new one. A signal catch rests too, and its
+    // delivery starts a new segment.
     private static bool IsExternalResting(FlowNodeModel node) =>
         BpmnFlowNodeTypes.IsUserTask(node.Type)
         || BpmnFlowNodeTypes.IsCallActivity(node.Type)
         || BpmnFlowNodeTypes.IsMessageCatch(node.Type)
         || BpmnFlowNodeTypes.IsTimerCatch(node.Type)
-        || BpmnFlowNodeTypes.IsConditionalCatch(node.Type);
+        || BpmnFlowNodeTypes.IsConditionalCatch(node.Type)
+        || BpmnFlowNodeTypes.IsSignalCatch(node.Type);
 
     private static IEnumerable<int[]> Subsets(
         IReadOnlyList<int> values,

@@ -424,6 +424,13 @@ public sealed class ConditionalEventDefinitionAnalyzer
                     AddTarget(mapping.Variable);
                 }
             }
+            foreach (var mapping in node.Signal?.OutputMappings ?? [])
+            {
+                if (mapping is not null)
+                {
+                    AddTarget(mapping.Variable);
+                }
+            }
             AddTarget(node.ErrorVariable);
             AddTarget(node.Idempotency?.Variable);
         }

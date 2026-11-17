@@ -138,6 +138,7 @@ public static class WorkflowAuthoringJson
         : type == typeof(VariableOptionModel) ? ["value"]
         : type == typeof(HttpStatusRangeModel) ? ["from", "to"]
         : type == typeof(CallActivityModel) ? ["workflowKey"]
+        : type == typeof(SignalEventModel) ? ["name"]
         : type == typeof(CallVariableMappingModel) ? ["sourceVariable", "variable", "dataType"] : [];
 
     private static bool AllowsNull(PropertyInfo property) => NullableProperties.GetOrAdd(property, item =>

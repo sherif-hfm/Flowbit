@@ -2,7 +2,7 @@
 
 [Documentation home](index.md) · [Deployment and operations](deployment.md#configuration) · [Settings API](api-guide.md#settings) · [Settings UI](ui-guide.md#engine-and-workflow-settings)
 
-This is the complete reference for the **18 current built-in settings** read from PostgreSQL's `flowbit.engine_settings` table. These are deployment-wide string records, shared by API and Worker replicas using that database. They are distinct from [host configuration](deployment.md#configuration) in `appsettings.json` or environment variables, JSON [workflow-context settings](developer-guide.md#output-mappings-and-expression-context), and properties authored in workflow definitions.
+This is the complete reference for the **21 current built-in settings** read from PostgreSQL's `flowbit.engine_settings` table. These are deployment-wide string records, shared by API and Worker replicas using that database. They are distinct from [host configuration](deployment.md#configuration) in `appsettings.json` or environment variables, JSON [workflow-context settings](developer-guide.md#output-mappings-and-expression-context), and properties authored in workflow definitions.
 
 A **runtime default** is what a consumer uses without a usable setting. A **seed value** is a row inserted by a migration when the setting is missing. Deleting a seeded row does not rerun an already-applied migration; consumers still apply their documented fallback. The AI catalog, `AiAuthoring.Models`, is reserved and has its own management API. `Webhooks.CaptureEnabled` is a protected Boolean setting that can be edited but cannot be deleted.
 
@@ -18,7 +18,8 @@ A **runtime default** is what a consumer uses without a usable setting. A **seed
 | [Users.RequiredRole](#usersrequiredrole) | Local user and user-attribute administration. | `admin` |
 | [SharedVariables.RequiredRole](#sharedvariablesrequiredrole) | JWT access to shared variables and client administration. | `admin` |
 | [Delegation.AdminRoles](#delegationadminroles) | Delegation and acceptance-policy administration. | `admin` |
-| [Workflow.Gateway.MaxActiveTokens](#workflowgatewaymaxactivetokens) | Active-token bound at gateway splits. | `1000` |
+| [Signals.RequiredRole](#signalsrequiredrole) | JWT access to throw, read, cancel, and retry signal broadcasts. | `admin` |
+| [Workflow.Gateway.MaxActiveTokens](#workflowgatewaymaxactivetokens) | Active-token bound at gateway splits and non-interrupting signal boundaries. | `1000` |
 | [Workflow.MultiInstance.MaxInstances](#workflowmultiinstancemaxinstances) | Multi-instance item count, for user tasks and automatic bodies, and durable-job capacity. | `1000`; job capacity `2000` |
 | [Workflow.MultiInstance.DefaultConcurrency](#automatic-multi-instance-concurrency) | Default window of a parallel service, script, or call body. | `4` |
 | [Workflow.MultiInstance.MaxConcurrency](#automatic-multi-instance-concurrency) | Cap on the window of every service, script, or call body. | `1000` |
@@ -26,6 +27,8 @@ A **runtime default** is what a consumer uses without a usable setting. A **seed
 | [WorkflowBatchActions.MaxAffectedTasks](#workflowbatchactionsmaxaffectedtasks) | Tasks affected by one administrative action batch. | `10000` |
 | [WorkflowVersionChanges.MaxBatchInstances](#workflowversionchangesmaxbatchinstances) | Instances frozen into one version-change batch. | `10000` |
 | [WorkflowVariableUpdates.MaxBatchInstances](#workflowvariableupdatesmaxbatchinstances) | Instances frozen into one variable-update batch. | `10000` |
+| [Signals.MaxSubscriptionsPerBroadcast](#signalsmaxsubscriptionsperbroadcast) | Waiting signal events one broadcast may reach. | `10000` |
+| [Signals.MaxOpenBroadcasts](#signalsmaxopenbroadcasts) | Signal broadcasts that may be delivering at once. | `20` |
 | [UserTasks.DueSoonThreshold](#usertasksduesoonthreshold) | How long before its due time an open user task counts as due soon. | `P1D` |
 | [Authentication.UserIdentityClaim](#authenticationuseridentityclaim) | Authoritative JWT claim identifying the actor. | Unset: identity selection chain |
 | [AiAuthoring.Models](#aiauthoringmodels) | Assistant model catalog, including provider keys. | Empty catalog |
@@ -104,7 +107,7 @@ Authorization: Bearer YOUR_SETTINGS_ADMIN_ACCESS_TOKEN
 
 ## Permission settings
 
-All eight permission settings below use a comma-separated string, such as `admin, workflow-operators`. Whitespace around entries is trimmed, empty entries are ignored, and **any one** matching role authorizes the relevant operation, ignoring case. Missing, empty, whitespace-only, or separator-only values fall back to `admin`.
+All nine permission settings below use a comma-separated string, such as `admin, workflow-operators`. Whitespace around entries is trimmed, empty entries are ignored, and **any one** matching role authorizes the relevant operation, ignoring case. Missing, empty, whitespace-only, or separator-only values fall back to `admin`.
 
 A nonempty custom list **replaces** `admin`; include `admin` if it should retain access. There is no special malformed-role fallback or role-name registry: `unknown-role` is a literal role name, and `["admin"]` is not parsed as a JSON array. These settings have no separate consumer-enforced list-size or per-role-length bound. Token and request limits still apply. They do not grant unrelated management permissions or satisfy roles authored on tasks, actions, starts, assignment, or cancellation. Authentication and any required actor/scope checks still apply.
 
@@ -204,6 +207,19 @@ Controls administrative listing, creation, and revocation of other users' delega
 
 See [delegation contracts](api-guide.md#delegation). Implementation: [delegation service](../Flowbit/src/Flowbit.Service/Services/UserDelegationService.cs) and [setting constant](../Flowbit/src/Flowbit.Service/Models/UserDelegationModels.cs).
 
+### Signals.RequiredRole
+
+- **Namespace / key:** `Signals` / `RequiredRole`.
+- **Value / fallback:** permission-list format; default `admin`; example `admin, signal-operators`.
+- **Seed:** `admin` in `AddSignalEvents`; existing overrides are preserved.
+- **Takes effect:** the next signal-route authorization check; no restart. It does not change broadcasts already thrown or deliveries in progress.
+
+Controls JWT-user access to every signal route: throwing a signal, listing and reading broadcasts and their deliveries, cancelling a broadcast, retrying its failed deliveries, and the subscription summary. Users see every broadcast and the engine's delivery descriptions. It also gates the **Signals** page in Flowbit.Ui, which calls those routes.
+
+Managed API clients use their persisted `signals.throw` and `signals.read` scopes instead, see only the broadcasts they threw, and cannot read the subscription summary. This setting does not grant shared-variable access, client administration, or any workflow permission.
+
+See [signal routes](api-guide.md#signals). Implementation: [authorization policies and handler](../Flowbit/src/Flowbit.Api/Auth/SharedVariableAuthorization.cs) and [setting constants](../Flowbit/src/Flowbit.Service/Models/SignalModels.cs).
+
 ## Execution limits
 
 These settings accept positive decimal integers fitting a signed 32-bit integer (`1` through `2147483647`), stored as strings. Surrounding whitespace and a leading `+` are accepted; decimals, thousands separators, exponents, nonnumbers, overflow, zero, and negative values fall back to `1000`. There is no disable/unlimited sentinel. Generic settings CRUD does not validate these rules.
@@ -213,9 +229,9 @@ These settings accept positive decimal integers fitting a signed 32-bit integer 
 - **Namespace / key:** `Workflow.Gateway` / `MaxActiveTokens`.
 - **Value / fallback:** positive-integer format above; default `1000`; example `2000`.
 - **Seed:** `1000` in `SeedDefaultSettings`.
-- **Takes effect:** each gateway split's capacity check; no restart. Existing tokens are not removed when the limit is lowered.
+- **Takes effect:** each gateway split's capacity check and each non-interrupting signal boundary delivery; no restart. Existing tokens are not removed when the limit is lowered.
 
-Bounds active execution tokens in an instance when a gateway splits. The check uses the current active-token count plus the selected outgoing-flow count minus the replaced incoming token. A split exceeding the limit throws a domain error before creating that split; normal transaction/error handling applies. This is not a total-history count, a per-lane limit, or a Worker-concurrency setting.
+Bounds active execution tokens in an instance when a gateway splits. The check uses the current active-token count plus the selected outgoing-flow count minus the replaced incoming token. A split exceeding the limit throws a domain error before creating that split; normal transaction/error handling applies. A non-interrupting [signal boundary](node-reference.md#signalboundaryevent) checks the same limit before it adds its branch: a delivery that would exceed it fails with `signal_token_limit`, writes nothing, and leaves the boundary armed. Tokens that timer and conditional boundaries add are not counted. This is not a total-history count, a per-lane limit, or a Worker-concurrency setting.
 
 See [gateway semantics](../Flowbit/README.md#gateways-and-scoped-interruption) and [node reference](node-reference.md). Implementation: [gateway split check](../Flowbit/src/Flowbit.Service/Services/WorkflowEngineService.cs).
 
@@ -323,6 +339,28 @@ Bounds running instances frozen into one administrative variable-update batch. B
 
 See [administrative variable updates](api-guide.md#variable-update-batches) and [runtime update rules](../Flowbit/README.md#administrative-instance-variable-updates). Implementation: [batch service](../Flowbit/src/Flowbit.Service/Services/InstanceVariableUpdateBatchService.cs) and [limits](../Flowbit/src/Flowbit.Service/Models/InstanceVariableUpdateModels.cs).
 
+## Signal settings
+
+Two limits bound signal broadcasts; the [Signals.RequiredRole](#signalsrequiredrole) permission setting controls who throws them. Both accept a positive signed 32-bit integer as a string, with surrounding whitespace and a leading `+` allowed. A parseable value above the hard cap is capped; missing, blank, malformed, overflowing, zero, or negative values use the default. No value disables a limit. Both are read for each throw, so a change applies to the next throw without a restart and never changes a broadcast already thrown. See [signals](bpmn-support.md#signals) and [signal operations](deployment.md#signal-events).
+
+### Signals.MaxSubscriptionsPerBroadcast
+
+- **Namespace / key:** `Signals` / `MaxSubscriptionsPerBroadcast`.
+- **Value / fallback:** the integer format above; default `10000`, hard cap `100000`; example `50000`.
+- **Seed:** `10000` in `AddSignalEvents` when missing.
+- **Takes effect:** the next throw.
+
+The most waiting signal events one broadcast may reach. A throw freezes its recipients in one statement; when more active subscriptions match than this limit, it returns `400` and stores nothing, rather than reaching only some of them. Narrow the throw to one workflow family, or raise the limit. A throw inserts all its recipients in one statement, so the limit also bounds the work of one request.
+
+### Signals.MaxOpenBroadcasts
+
+- **Namespace / key:** `Signals` / `MaxOpenBroadcasts`.
+- **Value / fallback:** the integer format above; default `20`, hard cap `1000`; example `50`.
+- **Seed:** `20` in `AddSignalEvents` when missing.
+- **Takes effect:** the next throw.
+
+How many broadcasts may be delivering at once. While this many or more are `delivering`, a throw returns `409`. The count is read without a lock, so concurrent throws can pass the limit by a few. A broadcast stays `delivering` while no Worker runs, so a long Worker outage can reach the limit; cancel broadcasts that are no longer wanted. Implementation: [setting rules](../Flowbit/src/Flowbit.Service/Models/SignalModels.cs) and [throw service](../Flowbit/src/Flowbit.Service/Services/SignalBroadcastService.cs).
+
 ## Task settings
 
 ### UserTasks.DueSoonThreshold
@@ -410,6 +448,7 @@ Migration names below link to their actual seed implementation. Seeds are applie
 | [AddUserTaskDueDateAndPriority](../Flowbit/src/Flowbit.Infrastructure/Data/Migrations/20261027075021_AddUserTaskDueDateAndPriority.cs) | `UserTasks.DueSoonThreshold` = `P1D`. Down removes the row only if it is unchanged. |
 | [ConsolidateLifecycleCaptureSettings](../Flowbit/src/Flowbit.Infrastructure/Data/Migrations/20261108120000_ConsolidateLifecycleCaptureSettings.cs) | `Webhooks.CaptureEnabled` from the previous database capture switch; fresh installs retain `false`. Adds nullable actor columns for all engine settings. |
 | [AddAutomaticMultiInstanceCore](../Flowbit/src/Flowbit.Infrastructure/Data/Migrations/20261111144523_AddAutomaticMultiInstanceCore.cs) | `Workflow.MultiInstance.DefaultConcurrency` = `4` and `Workflow.MultiInstance.MaxConcurrency` = `1000`, with descriptions. |
+| [AddSignalEvents](../Flowbit/src/Flowbit.Infrastructure/Data/Migrations/20261116135625_AddSignalEvents.cs) | `Signals.RequiredRole` = `admin`, `Signals.MaxSubscriptionsPerBroadcast` = `10000`, and `Signals.MaxOpenBroadcasts` = `20`, with descriptions. Down removes the three rows. |
 
 Capture consolidation requires a coordinated upgrade of API/UI/Worker versions; stop API and Worker writers before migration. It removes the old capture table without a compatibility view and refuses any existing canonical or equivalent capture key rather than overwrite it. The imported setting uses the old `ChangedAt` for both initial timestamps (its original creation time is unknown), copies `ChangedBy` to `UpdatedBy`, and leaves `CreatedBy` null. Other existing rows retain null actors. Down restores the current capture state and original functions but removes the new actor columns. See [rollout](deployment.md#rollout).
 

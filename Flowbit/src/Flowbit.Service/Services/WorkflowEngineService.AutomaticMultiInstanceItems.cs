@@ -170,7 +170,7 @@ public sealed partial class WorkflowEngineService
                     throw new WorkflowConflictException("The workflow job no longer owns the token wait.");
                 // Error capture takes precedence over the host's other boundaries, as it
                 // does for any failed activity. No timer exists before a body does.
-                await CloseAutomaticMultiInstanceBoundariesAsync(instance.Id, token.Id, cancellationToken);
+                await CloseAutomaticMultiInstanceBoundariesAsync(instance.Id, token.Id, definition, cancellationToken);
                 var waiting = await runtime.GetExecutionTokenAsync(token.Id, false, cancellationToken)
                     ?? throw new WorkflowConflictException("The automatic entry token no longer exists.");
                 if (await EnterAutomaticErrorBoundaryAsync(instance, waiting, node, boundary, definition, actor, code,

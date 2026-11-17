@@ -821,17 +821,30 @@ public sealed class CallActivityRecoveryTests(PostgresApiFixture fixture) : IAsy
             .Order(StringComparer.Ordinal)
             .ToArray();
 
-        // "reason" is CancelDurableWorkForTokensAsync, the hook itself. A new caller on a
-        // token that can rest at a call has to go through that hook instead.
+        // "reason" is CancelDurableWorkForTokensAsync, the hook itself, and "jobCancelReason"
+        // is InterruptBoundaryHostAsync, which abandons the host's calls itself. A new caller on
+        // a token that can rest at a call has to go through one of them instead.
         Assert.Equal(
             new[]
             {
                 "\"conditionalWakeCompleted\"",
-                "\"interruptingConditionalBoundary\"",
                 "\"interruptingTimerBoundary\"",
                 "\"timerCatchCompleted\"",
+                "jobCancelReason",
                 "reason"
             },
             reasons);
+
+        // The shared interrupt serves conditional and signal boundaries only.
+        var interruptReasons = Directory.EnumerateFiles(services, "WorkflowEngineService*.cs")
+            .SelectMany(file => Regex.Matches(
+                File.ReadAllText(file),
+                @"InterruptBoundaryHostAsync\(\s*(?:[^,]+,\s*){6}(?<reason>""[^""]+"")"))
+            .Select(match => match.Groups["reason"].Value)
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+        Assert.Equal(
+            new[] { "\"interruptingConditionalBoundary\"", "\"interruptingSignalBoundary\"" },
+            interruptReasons);
     }
 }

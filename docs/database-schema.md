@@ -19,6 +19,7 @@ Table names below omit the `flowbit.` qualifier. The page reflects the current m
 - [User tasks and multi-instance work](#user-tasks-and-multi-instance-work)
 - [Variables, history, and flow evidence](#variables-history-and-flow-evidence)
 - [Durable jobs, timers, and subscriptions](#durable-jobs-timers-and-subscriptions)
+- [Signals](#signals)
 - [Administrative operations](#administrative-operations)
 - [Shared variables](#shared-variables)
 - [Delegation](#delegation)
@@ -33,7 +34,7 @@ Table names below omit the `flowbit.` qualifier. The page reflects the current m
 
 ## Conventions
 
-- **Schema.** All 67 tables, the EF `__EFMigrationsHistory` table, sequences, triggers, and functions live in `flowbit`. The `citext` extension, used for case-insensitive keys and user names, is installed in `public`.
+- **Schema.** All 71 tables, the EF `__EFMigrationsHistory` table, sequences, triggers, and functions live in `flowbit`. The `citext` extension, used for case-insensitive keys and user names, is installed in `public`.
 - **Identifiers.** Most tables use a `bigint` identity `Id`. Natural or composite primary keys are called out per table.
 - **Authored IDs are not foreign keys.** `NodeId`, `FlowId`, `SequenceFlowId`, `SourceNodeId`, `GatewayNodeId`, and similar integer columns refer to elements inside `workflow_definitions.Definition` JSON. Read them together with the row's `WorkflowDefinitionId`.
 - **Snapshots.** Runtime rows copy what they need from the definition (node names, types, external IDs, roles, conditions) when they are created, so open work keeps the rules it started with. Only an audited version change updates them.
@@ -72,12 +73,16 @@ Table names below omit the `flowbit.` qualifier. The page reflects the current m
 | [`node_executions`](#node_executions) | [Variables, history, and flow evidence](#variables-history-and-flow-evidence) | Lifecycle ledger of every committed node visit since the cutover. |
 | [`sequence_flow_occurrences`](#sequence_flow_occurrences) | [Variables, history, and flow evidence](#variables-history-and-flow-evidence) | Audit occurrence for each flow action or traversal (FlowInfo evidence). |
 | [`sequence_flow_summaries`](#sequence_flow_summaries) | [Variables, history, and flow evidence](#variables-history-and-flow-evidence) | Fixed-size lifetime summary per instance and flow, read by FlowInfo. |
-| [`workflow_jobs`](#workflow_jobs) | [Durable jobs, timers, and subscriptions](#durable-jobs-timers-and-subscriptions) | Durable work queue: async continuations, timers, conditional wakes, and administrative batches. |
+| [`workflow_jobs`](#workflow_jobs) | [Durable jobs, timers, and subscriptions](#durable-jobs-timers-and-subscriptions) | Durable work queue: async continuations, timers, conditional wakes, administrative batches, and signal deliveries. |
 | [`workflow_job_attempts`](#workflow_job_attempts) | [Durable jobs, timers, and subscriptions](#durable-jobs-timers-and-subscriptions) | One row per leased attempt of a durable job. |
 | [`workflow_job_snapshots`](#workflow_job_snapshots) | [Durable jobs, timers, and subscriptions](#durable-jobs-timers-and-subscriptions) | Frozen variable, invocation, and version-fence inputs for a durable job. |
 | [`workflow_incidents`](#workflow_incidents) | [Durable jobs, timers, and subscriptions](#durable-jobs-timers-and-subscriptions) | Operational incidents that need administrator action. |
 | [`timer_subscriptions`](#timer_subscriptions) | [Durable jobs, timers, and subscriptions](#durable-jobs-timers-and-subscriptions) | Armed timers for timer start events, intermediate timer catches, and timer boundaries. |
 | [`conditional_boundary_subscriptions`](#conditional_boundary_subscriptions) | [Durable jobs, timers, and subscriptions](#durable-jobs-timers-and-subscriptions) | Per-activation state of a conditional boundary event on its host. |
+| [`signal_subscriptions`](#signal_subscriptions) | [Signals](#signals) | One active or ended wait for a signal by a token's visit to a signal event. |
+| [`signal_broadcasts`](#signal_broadcasts) | [Signals](#signals) | One thrown signal with its payload, thrower, and outcome counters. |
+| [`signal_deliveries`](#signal_deliveries) | [Signals](#signals) | One frozen recipient of a broadcast and its outcome. |
+| [`signal_broadcast_jobs`](#signal_broadcast_jobs) | [Signals](#signals) | Links a broadcast to its per-definition delivery jobs, for the throw and each retry. |
 | [`administrative_action_batches`](#administrative_action_batches) | [Administrative operations](#administrative-operations) | An administrative action applied to a frozen population of execution positions. |
 | [`administrative_action_batch_items`](#administrative_action_batch_items) | [Administrative operations](#administrative-operations) | One frozen execution position in an administrative action batch. |
 | [`workflow_instance_version_changes`](#workflow_instance_version_changes) | [Administrative operations](#administrative-operations) | Immutable audit of each committed instance version change. |
@@ -120,7 +125,7 @@ Two tables anchor almost everything else:
 - `workflow_definitions` holds immutable versions. Instances, tasks, jobs, timers, node executions, flow evidence, and every audit table pin an exact version through `WorkflowDefinitionId`. Several of them also carry `WorkflowKey`, the cross-version family key.
 - `workflow_instances` owns all runtime state. Tokens, gateway scopes, user tasks, multi-instance executions, variables, history, node executions, and flow evidence reference it, and most of those references cascade.
 
-Inside an instance, `execution_tokens` is the hub. User tasks, multi-instance executions, node executions, timers, conditional subscriptions, jobs, and administrative batch items all reference the token they belong to. `gateway_executions` and `gateway_branches` form a scope tree that tokens attach to through `GatewayBranchId`.
+Inside an instance, `execution_tokens` is the hub. User tasks, multi-instance executions, node executions, timers, conditional and signal subscriptions, jobs, and administrative batch items all reference the token they belong to. `gateway_executions` and `gateway_branches` form a scope tree that tokens attach to through `GatewayBranchId`.
 
 Some relationships are deliberately two-way:
 
@@ -143,6 +148,8 @@ Some ID columns intentionally have **no foreign key**, either because the refere
 | `local_users.AttributesJson` keys | `user_attribute_definitions.Key` |
 | `lifecycle_events.InstanceId`, `UserTaskId`, `SourceId`, `WorkflowDefinitionId`; `webhook_deliveries.InstanceId` | Runtime rows, kept as immutable references so delivery survives runtime retention and capture never waits on runtime locks |
 | `lifecycle_events.TargetRevisionIds` | `webhook_subscription_revisions.Id`; revisions are retained indefinitely because an uncommitted capture holds no fence |
+| `signal_deliveries.SubscriptionId`, `InstanceId`, `TokenId`, `WorkflowDefinitionId` | Signal subscription and runtime rows, kept as plain IDs so a throw never waits on a recipient's instance or token lock |
+| `signal_broadcast_jobs.WorkflowDefinitionId`, `OriginalJobId`; `signal_broadcasts.WorkflowKey` | `workflow_definitions.Id`, `workflow_jobs.Id` kept after the job is pruned, and `workflow_definitions.WorkflowKey` |
 
 ## Workflow definitions
 
@@ -189,10 +196,10 @@ Each row is one immutable version of a workflow. `POST /api/workflows` creates v
 
 - **Primary key:** `Id`
 - **References:** none
-- **Referenced by:** [`administrative_action_batches`](#administrative_action_batches).`WorkflowDefinitionId`, [`administrative_action_batch_items`](#administrative_action_batch_items).`WorkflowDefinitionId`, [`conditional_boundary_subscriptions`](#conditional_boundary_subscriptions) (`WorkflowDefinitionId`, `WorkflowKey`), [`instance_history`](#instance_history).`WorkflowDefinitionId`, [`instance_variable_update_batch_items`](#instance_variable_update_batch_items).`CapturedWorkflowDefinitionId`, [`instance_variable_update_batch_jobs`](#instance_variable_update_batch_jobs).`WorkflowDefinitionId`, [`instance_variable_updates`](#instance_variable_updates).`WorkflowDefinitionId`, [`node_executions`](#node_executions).`WorkflowDefinitionId`, [`sequence_flow_occurrences`](#sequence_flow_occurrences).`WorkflowDefinitionId`, [`shared_variable_revisions`](#shared_variable_revisions).`WorkflowDefinitionId`, [`timer_subscriptions`](#timer_subscriptions) (`WorkflowDefinitionId`, `WorkflowKey`), [`user_task_role_policies`](#user_task_role_policies).`WorkflowDefinitionId`, [`workflow_definition_shared_variable_bindings`](#workflow_definition_shared_variable_bindings).`WorkflowDefinitionId`, [`workflow_definition_user_task_conditions`](#workflow_definition_user_task_conditions).`WorkflowDefinitionId`, [`workflow_incidents`](#workflow_incidents) (`WorkflowDefinitionId`, `WorkflowKey`), [`workflow_instances`](#workflow_instances) (`WorkflowDefinitionId`, `WorkflowKey`), [`workflow_instance_version_change_batches`](#workflow_instance_version_change_batches).`SourceWorkflowDefinitionId`, [`workflow_instance_version_change_batches`](#workflow_instance_version_change_batches).`TargetWorkflowDefinitionId`, [`workflow_instance_version_change_batch_items`](#workflow_instance_version_change_batch_items).`CapturedSourceWorkflowDefinitionId`, [`workflow_instance_version_changes`](#workflow_instance_version_changes).`SourceWorkflowDefinitionId`, [`workflow_instance_version_changes`](#workflow_instance_version_changes).`TargetWorkflowDefinitionId`, [`workflow_jobs`](#workflow_jobs) (`WorkflowDefinitionId`, `WorkflowKey`), [`workflow_definition_call_targets`](#workflow_definition_call_targets).`WorkflowDefinitionId`, [`call_activity_executions`](#call_activity_executions).`ParentDefinitionId`, [`call_activity_executions`](#call_activity_executions).`ChildDefinitionId`
+- **Referenced by:** [`administrative_action_batches`](#administrative_action_batches).`WorkflowDefinitionId`, [`administrative_action_batch_items`](#administrative_action_batch_items).`WorkflowDefinitionId`, [`conditional_boundary_subscriptions`](#conditional_boundary_subscriptions) (`WorkflowDefinitionId`, `WorkflowKey`), [`instance_history`](#instance_history).`WorkflowDefinitionId`, [`instance_variable_update_batch_items`](#instance_variable_update_batch_items).`CapturedWorkflowDefinitionId`, [`instance_variable_update_batch_jobs`](#instance_variable_update_batch_jobs).`WorkflowDefinitionId`, [`instance_variable_updates`](#instance_variable_updates).`WorkflowDefinitionId`, [`node_executions`](#node_executions).`WorkflowDefinitionId`, [`sequence_flow_occurrences`](#sequence_flow_occurrences).`WorkflowDefinitionId`, [`shared_variable_revisions`](#shared_variable_revisions).`WorkflowDefinitionId`, [`timer_subscriptions`](#timer_subscriptions) (`WorkflowDefinitionId`, `WorkflowKey`), [`user_task_role_policies`](#user_task_role_policies).`WorkflowDefinitionId`, [`workflow_definition_shared_variable_bindings`](#workflow_definition_shared_variable_bindings).`WorkflowDefinitionId`, [`workflow_definition_user_task_conditions`](#workflow_definition_user_task_conditions).`WorkflowDefinitionId`, [`workflow_incidents`](#workflow_incidents) (`WorkflowDefinitionId`, `WorkflowKey`), [`workflow_instances`](#workflow_instances) (`WorkflowDefinitionId`, `WorkflowKey`), [`workflow_instance_version_change_batches`](#workflow_instance_version_change_batches).`SourceWorkflowDefinitionId`, [`workflow_instance_version_change_batches`](#workflow_instance_version_change_batches).`TargetWorkflowDefinitionId`, [`workflow_instance_version_change_batch_items`](#workflow_instance_version_change_batch_items).`CapturedSourceWorkflowDefinitionId`, [`workflow_instance_version_changes`](#workflow_instance_version_changes).`SourceWorkflowDefinitionId`, [`workflow_instance_version_changes`](#workflow_instance_version_changes).`TargetWorkflowDefinitionId`, [`workflow_jobs`](#workflow_jobs) (`WorkflowDefinitionId`, `WorkflowKey`), [`workflow_definition_call_targets`](#workflow_definition_call_targets).`WorkflowDefinitionId`, [`call_activity_executions`](#call_activity_executions).`ParentDefinitionId`, [`call_activity_executions`](#call_activity_executions).`ChildDefinitionId`, [`signal_subscriptions`](#signal_subscriptions) (`WorkflowDefinitionId`, `WorkflowKey`)
 - **Unique:** (`Id`, `WorkflowKey`) (alternate key); (`WorkflowKey`, `Version`)
 
-The alternate key `(Id, WorkflowKey)` is the target of the composite foreign keys from `workflow_instances`, `workflow_jobs`, `workflow_incidents`, `timer_subscriptions`, and `conditional_boundary_subscriptions`. It guarantees that a row's denormalized `WorkflowKey` always matches its exact version.
+The alternate key `(Id, WorkflowKey)` is the target of the composite foreign keys from `workflow_instances`, `workflow_jobs`, `workflow_incidents`, `timer_subscriptions`, `conditional_boundary_subscriptions`, and `signal_subscriptions`. It guarantees that a row's denormalized `WorkflowKey` always matches its exact version.
 
 Node IDs and sequence-flow IDs stored in other tables (`NodeId`, `FlowId`, `SequenceFlowId`, and similar) are authored integers inside `Definition`. They are not foreign keys.
 
@@ -413,7 +420,7 @@ One row per started instance. It owns lifecycle status and timestamps. It no lon
 
 - **Primary key:** `Id`
 - **References:** (`WorkflowDefinitionId`, `WorkflowKey`) → [`workflow_definitions`](#workflow_definitions) (`Id`, `WorkflowKey`) (required, `RESTRICT`); (`WorkflowKey`, `BusinessKey`) → [`workflow_business_key_claims`](#workflow_business_key_claims) (optional, `RESTRICT`); (`WorkflowKey`, `IdempotencyKey`) → [`workflow_idempotency_claims`](#workflow_idempotency_claims) (optional, `RESTRICT`)
-- **Referenced by:** [`administrative_action_batch_items`](#administrative_action_batch_items).`InstanceId`, [`complex_gateway_states`](#complex_gateway_states).`InstanceId`, [`conditional_boundary_subscriptions`](#conditional_boundary_subscriptions).`InstanceId`, [`execution_tokens`](#execution_tokens).`InstanceId`, [`gateway_executions`](#gateway_executions).`InstanceId`, [`instance_history`](#instance_history).`InstanceId`, [`instance_variable_current_values`](#instance_variable_current_values).`InstanceId`, [`instance_variables`](#instance_variables).`InstanceId`, [`instance_variable_update_batch_items`](#instance_variable_update_batch_items).`InstanceId`, [`instance_variable_updates`](#instance_variable_updates).`InstanceId`, [`message_delivery_receipts`](#message_delivery_receipts).`InstanceId`, [`multi_instance_executions`](#multi_instance_executions).`InstanceId`, [`node_executions`](#node_executions).`InstanceId`, [`sequence_flow_occurrences`](#sequence_flow_occurrences).`InstanceId`, [`sequence_flow_summaries`](#sequence_flow_summaries).`InstanceId`, [`shared_variable_revisions`](#shared_variable_revisions).`InstanceId`, [`timer_subscriptions`](#timer_subscriptions).`InstanceId`, [`user_task_role_policies`](#user_task_role_policies).`InstanceId`, [`user_tasks`](#user_tasks).`InstanceId`, [`workflow_business_key_claims`](#workflow_business_key_claims).`ActiveInstanceId`, [`workflow_business_key_claims`](#workflow_business_key_claims).`LastInstanceId`, [`workflow_idempotency_claims`](#workflow_idempotency_claims).`InstanceId`, [`workflow_incidents`](#workflow_incidents).`InstanceId`, [`workflow_instance_version_change_batch_items`](#workflow_instance_version_change_batch_items).`InstanceId`, [`workflow_instance_version_changes`](#workflow_instance_version_changes).`InstanceId`, [`workflow_jobs`](#workflow_jobs).`InstanceId`, [`call_activity_executions`](#call_activity_executions).`ParentInstanceId`, [`call_activity_executions`](#call_activity_executions).`ChildInstanceId`, [`call_activity_results`](#call_activity_results).`ChildInstanceId`
+- **Referenced by:** [`administrative_action_batch_items`](#administrative_action_batch_items).`InstanceId`, [`complex_gateway_states`](#complex_gateway_states).`InstanceId`, [`conditional_boundary_subscriptions`](#conditional_boundary_subscriptions).`InstanceId`, [`execution_tokens`](#execution_tokens).`InstanceId`, [`gateway_executions`](#gateway_executions).`InstanceId`, [`instance_history`](#instance_history).`InstanceId`, [`instance_variable_current_values`](#instance_variable_current_values).`InstanceId`, [`instance_variables`](#instance_variables).`InstanceId`, [`instance_variable_update_batch_items`](#instance_variable_update_batch_items).`InstanceId`, [`instance_variable_updates`](#instance_variable_updates).`InstanceId`, [`message_delivery_receipts`](#message_delivery_receipts).`InstanceId`, [`multi_instance_executions`](#multi_instance_executions).`InstanceId`, [`node_executions`](#node_executions).`InstanceId`, [`sequence_flow_occurrences`](#sequence_flow_occurrences).`InstanceId`, [`sequence_flow_summaries`](#sequence_flow_summaries).`InstanceId`, [`shared_variable_revisions`](#shared_variable_revisions).`InstanceId`, [`timer_subscriptions`](#timer_subscriptions).`InstanceId`, [`user_task_role_policies`](#user_task_role_policies).`InstanceId`, [`user_tasks`](#user_tasks).`InstanceId`, [`workflow_business_key_claims`](#workflow_business_key_claims).`ActiveInstanceId`, [`workflow_business_key_claims`](#workflow_business_key_claims).`LastInstanceId`, [`workflow_idempotency_claims`](#workflow_idempotency_claims).`InstanceId`, [`workflow_incidents`](#workflow_incidents).`InstanceId`, [`workflow_instance_version_change_batch_items`](#workflow_instance_version_change_batch_items).`InstanceId`, [`workflow_instance_version_changes`](#workflow_instance_version_changes).`InstanceId`, [`workflow_jobs`](#workflow_jobs).`InstanceId`, [`call_activity_executions`](#call_activity_executions).`ParentInstanceId`, [`call_activity_executions`](#call_activity_executions).`ChildInstanceId`, [`call_activity_results`](#call_activity_results).`ChildInstanceId`, [`signal_subscriptions`](#signal_subscriptions).`InstanceId`
 
 ### `workflow_business_key_scopes`
 
@@ -541,7 +548,7 @@ An instance may have several active tokens, for example one per parallel branch.
 
 - **Primary key:** `Id`
 - **References:** `ComplexGatewayStateId` → [`complex_gateway_states`](#complex_gateway_states) (optional, `NO ACTION`); `CurrentNodeExecutionId` → [`node_executions`](#node_executions) (optional, `NO ACTION`); `GatewayBranchId` → [`gateway_branches`](#gateway_branches) (optional, `NO ACTION`); `InstanceId` → [`workflow_instances`](#workflow_instances) (required, `CASCADE`); `WaitingMultiInstanceExecutionId` → [`multi_instance_executions`](#multi_instance_executions) (optional, `NO ACTION`)
-- **Referenced by:** [`administrative_action_batch_items`](#administrative_action_batch_items).`TokenId`, [`conditional_boundary_subscriptions`](#conditional_boundary_subscriptions).`HostTokenId`, [`gateway_executions`](#gateway_executions).`InterruptingTokenId`, [`multi_instance_executions`](#multi_instance_executions).`TokenId`, [`node_executions`](#node_executions).`ExecutionTokenId`, [`timer_subscriptions`](#timer_subscriptions).`TokenId`, [`user_tasks`](#user_tasks).`TokenId`, [`workflow_jobs`](#workflow_jobs).`TokenId`, [`call_activity_executions`](#call_activity_executions).`ParentTokenId`
+- **Referenced by:** [`administrative_action_batch_items`](#administrative_action_batch_items).`TokenId`, [`conditional_boundary_subscriptions`](#conditional_boundary_subscriptions).`HostTokenId`, [`gateway_executions`](#gateway_executions).`InterruptingTokenId`, [`multi_instance_executions`](#multi_instance_executions).`TokenId`, [`node_executions`](#node_executions).`ExecutionTokenId`, [`timer_subscriptions`](#timer_subscriptions).`TokenId`, [`user_tasks`](#user_tasks).`TokenId`, [`workflow_jobs`](#workflow_jobs).`TokenId`, [`call_activity_executions`](#call_activity_executions).`ParentTokenId`, [`signal_subscriptions`](#signal_subscriptions).`TokenId`
 - **Unique:** `CurrentNodeExecutionId`
 
 ### `gateway_executions`
@@ -983,7 +990,7 @@ The [instance diagram history](ui-guide.md#read-the-instance-diagram) aggregates
 | `NodeId`, `NodeName`, `NodeType`, `NodeExternalId`, `NodeRolesJson` | Immutable node snapshot. |
 | `ExecutionKind` | `node`, `userTaskItem`, or `automaticActivityItem` (one per item of an automatic multi-instance body). |
 | `Status` | `pending`, `active`, `completed`, `cancelled`, `faulted`, or `merged`. |
-| `CompletionReason` | Why the visit ended, for example `userAction`, `boundaryCaught`, or `parallelJoin`. It is required exactly when the visit is terminal. |
+| `CompletionReason` | Why the visit ended, for example `userAction`, `boundaryCaught`, `parallelJoin`, or `signalReceived` for a signal catch or signal boundary a signal continued, and for a host visit an interrupting signal boundary cancelled. It is required exactly when the visit is terminal; `CK_node_executions_completion_reason` lists the allowed reasons. `AddSignalEvents` replaced that check `NOT VALID` to add `signalReceived`, and `ValidateSignalEventConstraints` validates it. |
 | `UserTaskId` | The work item sharing this visit (unique). |
 | `MultiInstanceExecutionId`, `ItemIndex` | Multi-instance parent and child index (unique together). |
 | `AutomaticMultiInstanceItemId` | The automatic item an `automaticActivityItem` row records (unique). |
@@ -1101,11 +1108,11 @@ erDiagram
 
 ### `workflow_jobs`
 
-Each row is one unit of durable work, leased by `Flowbit.Worker` with `FOR UPDATE SKIP LOCKED`. The same table serves instance work (async continuations, timers, durable conditional wakes) and instance-less control work (administrative, version-change, and variable-update batch phases). Locked finalization reads use the current persisted lease and publication-recovery fields even when the same context previously enqueued or read the job.
+Each row is one unit of durable work, leased by `Flowbit.Worker` with `FOR UPDATE SKIP LOCKED`. The same table serves instance work (async continuations, timers, durable conditional wakes) and instance-less work (administrative, version-change, and variable-update batch phases, and signal deliveries). Locked finalization reads use the current persisted lease and publication-recovery fields even when the same context previously enqueued or read the job.
 
 | Column | Meaning |
 | --- | --- |
-| `Kind` | `asyncBefore`, `asyncAfter`, `timer`, `timerStart`, `timerBoundary`, `conditionalWake`, `callStart`, `callResume`, `callCancel`, `administrativeBatchPrepare`, `administrativeBatchExecute`, `instanceVersionChangeBatchPrepare`, `instanceVersionChangeBatchExecute`, `instanceVariableUpdateBatchPrepare`, `instanceVariableUpdateBatchExecute`, `multiInstanceStart`, `multiInstanceItem`, `multiInstanceDispatch`, or `multiInstanceComplete`. The last four belong to automatic multi-instance bodies. |
+| `Kind` | `asyncBefore`, `asyncAfter`, `timer`, `timerStart`, `timerBoundary`, `conditionalWake`, `callStart`, `callResume`, `callCancel`, `administrativeBatchPrepare`, `administrativeBatchExecute`, `instanceVersionChangeBatchPrepare`, `instanceVersionChangeBatchExecute`, `instanceVariableUpdateBatchPrepare`, `instanceVariableUpdateBatchExecute`, `multiInstanceStart`, `multiInstanceItem`, `multiInstanceDispatch`, `multiInstanceComplete`, or `signalBroadcastDeliver`. The four `multiInstance*` kinds belong to automatic multi-instance bodies. A `signalBroadcastDeliver` job, on the `activity` queue in phase `deliver`, delivers one broadcast's pending deliveries for one definition; it has no instance or token, names the definition's initial start event only to anchor its row, and carries the broadcast and definition IDs in `PayloadJson`. |
 | `QueueClass`, `Priority`, `DueAt` | `control` or `activity` queue, priority, and earliest run time. |
 | `Status` | `queued`, `running`, `resultReady`, `retry`, `completed`, `incident`, `cancelled`, or `skipped`. |
 | `Phase`, `PayloadJson`, `ResultJson`, `ErrorJson` | Job-specific progress, input, staged result, and last error. |
@@ -1122,7 +1129,7 @@ Each row is one unit of durable work, leased by `Flowbit.Worker` with `FOR UPDAT
 
 - **Primary key:** `Id`
 - **References:** `ConditionalBoundarySubscriptionId` → [`conditional_boundary_subscriptions`](#conditional_boundary_subscriptions) (optional, `RESTRICT`); `InstanceId` → [`workflow_instances`](#workflow_instances) (optional, `CASCADE`); `MultiInstanceExecutionId` → [`multi_instance_executions`](#multi_instance_executions) (optional, `RESTRICT`); `SnapshotId` → [`workflow_job_snapshots`](#workflow_job_snapshots) (optional, `RESTRICT`); `TimerSubscriptionId` → [`timer_subscriptions`](#timer_subscriptions) (optional, `RESTRICT`); `TokenId` → [`execution_tokens`](#execution_tokens) (optional, `RESTRICT`); `UserTaskId` → [`user_tasks`](#user_tasks) (optional, `RESTRICT`); (`WorkflowDefinitionId`, `WorkflowKey`) → [`workflow_definitions`](#workflow_definitions) (`Id`, `WorkflowKey`) (required, `RESTRICT`); `CallInvocationId` → [`call_activity_executions`](#call_activity_executions) (optional, `RESTRICT`); (`AutomaticMultiInstanceItemId`, `MultiInstanceExecutionId`, `InstanceId`) → [`multi_instance_activity_items`](#multi_instance_activity_items) (optional, `RESTRICT`)
-- **Referenced by:** [`administrative_action_batches`](#administrative_action_batches).`ExecutionJobId`, [`administrative_action_batches`](#administrative_action_batches).`PreparationJobId`, [`instance_variable_update_batch_jobs`](#instance_variable_update_batch_jobs).`JobId`, [`workflow_incidents`](#workflow_incidents).`JobId`, [`workflow_instance_version_change_batches`](#workflow_instance_version_change_batches).`ExecutionJobId`, [`workflow_instance_version_change_batches`](#workflow_instance_version_change_batches).`PreparationJobId`, [`workflow_job_attempts`](#workflow_job_attempts).`JobId`
+- **Referenced by:** [`administrative_action_batches`](#administrative_action_batches).`ExecutionJobId`, [`administrative_action_batches`](#administrative_action_batches).`PreparationJobId`, [`instance_variable_update_batch_jobs`](#instance_variable_update_batch_jobs).`JobId`, [`signal_broadcast_jobs`](#signal_broadcast_jobs).`JobId`, [`workflow_incidents`](#workflow_incidents).`JobId`, [`workflow_instance_version_change_batches`](#workflow_instance_version_change_batches).`ExecutionJobId`, [`workflow_instance_version_change_batches`](#workflow_instance_version_change_batches).`PreparationJobId`, [`workflow_job_attempts`](#workflow_job_attempts).`JobId`
 - **Unique:** (`ConditionalBoundarySubscriptionId`, `ConditionalBoundaryOccurrence`) where `ConditionalBoundarySubscriptionId IS NOT NULL AND ConditionalBoundaryOccurrence IS NOT NULL`; (`TimerSubscriptionId`, `ScheduledOccurrenceAt`) where `TimerSubscriptionId IS NOT NULL AND ScheduledOccurrenceAt IS NOT NULL`; (`CallInvocationId`, `Kind`) where `CallInvocationId IS NOT NULL`; `AutomaticMultiInstanceItemId` where it is not null; (`MultiInstanceExecutionId`, `MultiInstanceControlGeneration`) where the generation is not null; `MultiInstanceExecutionId` among open dispatch and completion jobs (`IX_workflow_jobs_automatic_control_slot`)
 - **Indexes:** `MultiInstanceExecutionId` (`IX_workflow_jobs_MultiInstanceExecutionId`)
 - **Checks:** include `CK_workflow_jobs_automatic_item_shape`, `CK_workflow_jobs_automatic_control_shape`, and `CK_workflow_jobs_multi_instance_start_shape`, which gives a call body's `multiInstanceStart` entry job an instance and token, the `control` queue class, and no body, item, control generation, task, or invocation. A call item's `callStart` names its body in `MultiInstanceExecutionId` and its invocation in `CallInvocationId`, never an item: the item is reached through the invocation.
@@ -1214,6 +1221,130 @@ One row per conditional boundary per host activation. Evaluation compares the ne
 - **References:** `HostTokenId` → [`execution_tokens`](#execution_tokens) (required, `RESTRICT`); `InstanceId` → [`workflow_instances`](#workflow_instances) (required, `CASCADE`); (`WorkflowDefinitionId`, `WorkflowKey`) → [`workflow_definitions`](#workflow_definitions) (`Id`, `WorkflowKey`) (required, `RESTRICT`)
 - **Referenced by:** [`workflow_jobs`](#workflow_jobs).`ConditionalBoundarySubscriptionId`
 - **Unique:** (`InstanceId`, `HostTokenId`, `HostActivationId`, `BoundaryNodeId`)
+
+## Signals
+
+Waits for signals and the broadcasts that reach them. See [signals](bpmn-support.md#signals) and [signal event operations](deployment.md#signal-events).
+
+- **Subscriptions** are written only under the owning instance's lock, in the transaction that starts or ends the wait: routing creates one when a token reaches a signal catch, and one per signal boundary when a token enters that boundary's host, and every path that ends the wait or the host completes or cancels it. A delivery to a non-interrupting boundary only increases the row's `Occurrence`.
+- **A throw** inserts the broadcast, then copies every matching active subscription into `signal_deliveries` in one `INSERT ... SELECT` statement, and links one delivery job per represented definition. It takes no runtime lock. Delivery rows name their subscription, instance, and token by plain ID, because a foreign-key check would wait for a recipient's transaction that holds those rows `FOR UPDATE`.
+- **A delivery** locks the instance hierarchy, then the subscription row, then the delivery row, and commits the delivery's final status with the instance change it describes. Cancel and retry lock the broadcast row, then update delivery rows; a delivery never locks the broadcast. A delivery job recounts a broadcast's counters and status only while holding its row, so a recount never overwrites a cancel or retry. A retry moves each delivery's `WorkflowDefinitionId` to the version its instance runs now. Only a delivering broadcast has pending deliveries, so pending-delivery queries start from the open broadcasts.
+- **Retention.** The `signalBroadcasts` category deletes finished broadcasts aged from `CompletedAt`, and their deliveries and job links cascade. Subscriptions stay with their instance.
+
+```mermaid
+erDiagram
+    signal_subscriptions {
+        bigint Id PK
+        bigint InstanceId FK
+        bigint WorkflowDefinitionId FK
+        varchar WorkflowKey FK
+        bigint TokenId FK
+    }
+    signal_broadcasts {
+        bigint Id PK
+    }
+    signal_deliveries {
+        bigint Id PK
+        bigint BroadcastId FK
+    }
+    signal_broadcast_jobs {
+        bigint Id PK
+        bigint BroadcastId FK
+        bigint JobId FK
+    }
+    workflow_instances ||--o{ signal_subscriptions : "InstanceId"
+    execution_tokens ||--o{ signal_subscriptions : "TokenId"
+    workflow_definitions ||--o{ signal_subscriptions : "WorkflowDefinitionId, WorkflowKey"
+    signal_broadcasts ||--o{ signal_deliveries : "BroadcastId"
+    signal_broadcasts ||--o{ signal_broadcast_jobs : "BroadcastId"
+    workflow_jobs |o--o{ signal_broadcast_jobs : "JobId"
+```
+
+### `signal_subscriptions`
+
+One wait for a signal by one visit of a token to a signal event. A loop that returns to the catch creates a new row for the new activation.
+
+| Column | Meaning |
+| --- | --- |
+| `InstanceId`, `TokenId`, `ActivationId`, `SignalNodeId` | Activation fence; unique together. `TokenId` is the waiting token of a catch, or the host token of a boundary. |
+| `WorkflowDefinitionId`, `WorkflowKey` | Version and family. A version change moves an active row to the target version. |
+| `SignalNodeName`, `AttachedToNodeId`, `OutgoingFlowId` | The event's name, the host node of a boundary (null for a catch), and the continuation flow. |
+| `SignalName` | The name the wait listens for, at most 100 characters, with `C` collation. |
+| `CancelActivity` | Whether a delivery ends the wait: true for a catch and an interrupting boundary, false for a non-interrupting boundary, whose row stays active. |
+| `Occurrence` | Number of signals delivered to this row: at most 1 for a catch or an interrupting boundary, one per branch started for a non-interrupting boundary. |
+| `Status`, `CompletedAt` | `active`; `completed` when a delivered signal ended the wait; `cancelled` when the wait ended otherwise, including every non-interrupting boundary row when its host ends. |
+| `CreatedAt`, `UpdatedAt` | Lifecycle timestamps. |
+
+- **Primary key:** `Id`
+- **References:** `InstanceId` → [`workflow_instances`](#workflow_instances) (required, `CASCADE`); `TokenId` → [`execution_tokens`](#execution_tokens) (required, `RESTRICT`); (`WorkflowDefinitionId`, `WorkflowKey`) → [`workflow_definitions`](#workflow_definitions) (`Id`, `WorkflowKey`) (required, `RESTRICT`)
+- **Referenced by:** none; `signal_deliveries.SubscriptionId` is a plain column
+- **Unique:** (`InstanceId`, `TokenId`, `ActivationId`, `SignalNodeId`)
+- **Indexes:** `IX_signal_subscriptions_active_name` on (`SignalName`, `WorkflowKey`, `Id`) where `Status = 'active'`, which throws and the subscription summary read; `IX_signal_subscriptions_active_token` on (`InstanceId`, `TokenId`) where `Status = 'active'`, for cancellation by token; `TokenId`
+- **Checks:** `CK_signal_subscriptions_status`; `_occurrence` (`Occurrence >= 0`); `_terminal_time` (`CompletedAt` set exactly when the row is not active); `_catch_consumes` (a row without `AttachedToNodeId` has `CancelActivity`)
+
+### `signal_broadcasts`
+
+One thrown signal. Its recipients are frozen in the throw's transaction; a broadcast without recipients is stored as `completed`.
+
+| Column | Meaning |
+| --- | --- |
+| `SignalName` | The signal name, with `C` collation. |
+| `WorkflowKey` | The family the throw named; null for a broadcast to all workflows. |
+| `PayloadJson` | The `jsonb` object payload, or null. |
+| `Status`, `CompletedAt` | `delivering`, `completed`, `completedWithIssues`, or `cancelled`; `CompletedAt` is set exactly when the broadcast is not delivering. |
+| `TotalDeliveryCount`, `DeliveredCount`, `SkippedCount`, `FailedCount`, `CancelledCount` | Frozen recipient count and outcome counters, recounted from `signal_deliveries` by the delivery jobs and by cancel and retry. |
+| `RecipientsJson`, `RecipientsTruncated` | Recipients per workflow family, at most 50, and whether more families were reached. |
+| `ThrownByKind`, `ThrownBy`, `ThrownByRolesJson`, `ThrownByClaimsJson` | `user` or `client`, the actor identity or client ID, the user's roles, and the claims `WorkflowAudit:AllowedClaims` selects; null claims for a client. |
+| `IdempotencyKey`, `RequestHash` | Optional thrower-scoped key, with `C` collation, and a SHA-256 hash of the name, scope, and canonical payload that decides whether a repeated key is the same request. |
+| `CancelledBy`, `CancellationReason`, `CancelledAt` | Cancellation attribution. |
+| `CreatedAt`, `UpdatedAt` | Throw time and last counter or status change. `UpdatedAt` is the fence of a retry. |
+
+- **Primary key:** `Id`
+- **References:** none
+- **Referenced by:** [`signal_deliveries`](#signal_deliveries).`BroadcastId`, [`signal_broadcast_jobs`](#signal_broadcast_jobs).`BroadcastId`
+- **Unique:** (`ThrownByKind`, `ThrownBy`, `IdempotencyKey`) where `IdempotencyKey IS NOT NULL`
+- **Indexes:** (`Status`, `UpdatedAt`, `Id`); (`SignalName`, `CreatedAt`, `Id`); (`ThrownByKind`, `ThrownBy`, `CreatedAt`, `Id`), for a client's own list
+- **Checks:** `CK_signal_broadcasts_status`; `_counts` (non-negative counters whose sum is at most `TotalDeliveryCount`, which is at most 100,000); `_payload` (null, or a JSON object of at most 262,144 bytes as `octet_length("PayloadJson"::text)` measures it); `_thrower` (`user` or `client`); `_terminal_time`
+
+### `signal_deliveries`
+
+One frozen recipient of a broadcast. Each ends exactly once; its final status commits with the instance change it describes.
+
+| Column | Meaning |
+| --- | --- |
+| `BroadcastId`, `SubscriptionId` | Unique together, so a broadcast reaches a subscription at most once. |
+| `InstanceId`, `WorkflowDefinitionId`, `WorkflowKey`, `TokenId`, `ActivationId`, `SignalNodeId`, `AttachedToNodeId`, `CancelActivity` | Copied from the subscription when the throw froze it, as plain columns without foreign keys. `WorkflowDefinitionId` keeps the version the throw saw and selects the job that delivers the row; a retry moves it to the version the instance runs then. While a row is pending, its version cannot be deleted. |
+| `Status`, `CompletedAt` | `pending`, `delivered`, `skipped`, `failed`, or `cancelled`; `CompletedAt` is set exactly when the delivery is not pending. |
+| `ResultCode`, `ResultDescription` | The result code, at most 64 characters, and the engine's explanation, at most 1,000. |
+| `AttemptCount` | Times the delivery finished, including failures that were later retried. |
+| `CreatedAt`, `UpdatedAt` | Freeze time and last change. |
+
+- **Primary key:** `Id`
+- **References:** `BroadcastId` → [`signal_broadcasts`](#signal_broadcasts) (required, `CASCADE`)
+- **Referenced by:** none
+- **Unique:** (`BroadcastId`, `SubscriptionId`)
+- **Indexes:** (`BroadcastId`, `WorkflowDefinitionId`, `Status`, `Id`), for the delivery job's pages; (`BroadcastId`, `Status`, `Id`), for the API; (`InstanceId`, `Id`)
+- **Checks:** `CK_signal_deliveries_status`; `_terminal_time`; `_attempts` (`AttemptCount >= 0`)
+
+### `signal_broadcast_jobs`
+
+One row per delivery job of a broadcast: one per represented definition for the throw, and one per definition with failed deliveries for each retry.
+
+| Column | Meaning |
+| --- | --- |
+| `BroadcastId`, `WorkflowDefinitionId` | The broadcast, and the definition whose deliveries the job handles. |
+| `JobId` | The live job; set to null if the job is deleted. |
+| `OriginalJobId` | Permanent copy of the job ID (unique). |
+| `Reason`, `RequestedBy`, `CreatedAt` | `throw` or `retry`, who threw or retried, and when. |
+
+- **Primary key:** `Id`
+- **References:** `BroadcastId` → [`signal_broadcasts`](#signal_broadcasts) (required, `CASCADE`); `JobId` → [`workflow_jobs`](#workflow_jobs) (optional, `SET NULL`)
+- **Referenced by:** none
+- **Unique:** `JobId` where `JobId IS NOT NULL`; `OriginalJobId`
+- **Indexes:** (`BroadcastId`, `Id`)
+- **Checks:** `CK_signal_broadcast_jobs_reason` (`throw` or `retry`)
+
+A final lease expiry of a delivery job fails that job's pending deliveries with `lease_exhausted` through this link. The down migration of `AddSignalEvents` refuses while any signal subscription, broadcast, `signalBroadcastDeliver` job, or node visit with the reason `signalReceived` exists.
 
 ## Administrative operations
 
@@ -1749,7 +1880,7 @@ These tables have no foreign keys, so this area has no relationship diagram.
 
 ### `retention_policies`
 
-One row per retention category: `workflowHistory`, `variableHistory`, `nodeActivity`, `administrativeAudits`, `sharedVariableHistory`, `completedJobs`, `resolvedIncidents`, `webhookDeliveries`, and `lifecycleEvents`.
+One row per retention category: `workflowHistory`, `variableHistory`, `nodeActivity`, `administrativeAudits`, `sharedVariableHistory`, `completedJobs`, `resolvedIncidents`, `webhookDeliveries`, `lifecycleEvents`, and `signalBroadcasts`. `AddSignalEvents` seeds `signalBroadcasts` with no period when the row is missing.
 
 | Column | Meaning |
 | --- | --- |
@@ -1793,7 +1924,7 @@ erDiagram
 ```
 
 - **Body bound.** Every string a capture function copies into a body is bounded by a column limit, never truncated. Workflow keys are at most 300 characters in every source table and in `lifecycle_events`, and so are task external IDs (`user_tasks.NodeExternalId`). An incident's node external ID comes from the definition JSON, which does not limit it, so it is reported as JSON `null` when it is not a string or is longer than the 300 characters that tokens and tasks can hold. The other fields are numbers, UUIDs, timestamps, and fixed status strings. Even if every character escapes to six bytes, a body stays under 5 KiB, far below the 16 KiB `CK_lifecycle_events_body` check; a body over that check would fail the source commit.
-- **Incident nodes.** An `incident.opened` body reports a node only when an authored node applies. Its capture function reads the source job's `Kind`: version-change and variable-update batch jobs name the initial start event only to anchor their row, so their incidents report null `nodeId` and `nodeExternalId`, as does a `NodeId` that is not positive. An administrative batch job reports the user task whose positions its batch acts on, and every other job kind reports its own node. `LifecycleEventCaptureTests` classifies every job kind, so a new kind must be classified there and, when no node applies, listed in `capture_workflow_incident_lifecycle()`.
+- **Incident nodes.** An `incident.opened` body reports a node only when an authored node applies. Its capture function reads the source job's `Kind`: version-change and variable-update batch jobs and signal delivery jobs (`signalBroadcastDeliver`) name the initial start event only to anchor their row, so their incidents report null `nodeId` and `nodeExternalId`, as does a `NodeId` that is not positive. An administrative batch job reports the user task whose positions its batch acts on, and every other job kind reports its own node. `LifecycleEventCaptureTests` classifies every job kind, so a new kind must be classified there and, when no node applies, listed in `capture_workflow_incident_lifecycle()`.
 - **Cleanup.** [Retention](#retention) runs the `webhookDeliveries` category before `lifecycleEvents`; both keep rows forever by default. Delivery cleanup ages `succeeded` and `discarded` deliveries from `SettledAt` and deletes each delivery's `webhook_delivery_attempts` rows before the delivery. Pending, scheduled, leased, and failed deliveries are never deleted, so a failure must be retried or discarded first. Event cleanup ages events from `OccurredAt` and deletes one only when `FanoutCompletedAt` is set and no delivery references it. Both skip locked rows instead of waiting. Subscriptions, revisions, dispatch state, management audit, signing-key rows, and the key ring are kept; the Worker only clears the `ProtectedSecret` of a key that is no longer current or previous once its `RemoveSecretNotBefore` has passed. Webhook cleanup never touches runtime rows, `HistoryPrunedAt`, or reactivation eligibility.
 
 Capture configuration is the protected `Webhooks.CaptureEnabled` row in [`engine_settings`](#engine_settings); the former singleton capture table no longer exists.
@@ -1991,7 +2122,7 @@ Migrations also create these objects with raw SQL. They are part of the schema c
 | `UX_multi_instance_executions_ActiveTokenNode` | Partial unique index | At most one active multi-instance execution per token and node. |
 | `TR_workflow_instances_lifecycle_insert`, `TR_workflow_instances_lifecycle_status` → `capture_workflow_instance_lifecycle()` | Deferred constraint triggers on `workflow_instances` (`AFTER INSERT`; `AFTER UPDATE OF "Status"` when it changes) | Record `instance.*` events at commit. |
 | `TR_user_tasks_lifecycle_insert`, `TR_user_tasks_lifecycle_update` → `capture_user_task_lifecycle()` | Deferred constraint triggers on `user_tasks` (`AFTER INSERT` unless pending without an assignee; `AFTER UPDATE OF "Status", "Assignee"` when status or the case-insensitive assignee changes) | Record `task.*` events at commit. |
-| `TR_workflow_incidents_lifecycle_insert` → `capture_workflow_incident_lifecycle()` | Deferred constraint trigger on `workflow_incidents` (`AFTER INSERT` of an open incident) | Records `incident.opened`, reading the source job's kind and the node's external ID under the [incident node rules](#lifecycle-webhooks). |
+| `TR_workflow_incidents_lifecycle_insert` → `capture_workflow_incident_lifecycle()` | Deferred constraint trigger on `workflow_incidents` (`AFTER INSERT` of an open incident) | Records `incident.opened`, reading the source job's kind and the node's external ID under the [incident node rules](#lifecycle-webhooks). `AddSignalEvents` replaced the function to add `signalBroadcastDeliver` to the kinds that report no node. |
 | `TR_user_delegations_lifecycle_insert` → `capture_user_delegation_lifecycle()` | Deferred constraint trigger on `user_delegations` (`AFTER INSERT`) | Records `delegation.granted`. |
 | `lifecycle_capture_wanted()`, `lifecycle_event_targets()`, `record_lifecycle_event()`, `lifecycle_event_timestamp()`, `lifecycle_json_text()` | Functions | The capture gate (switch, `flowbit.lifecycle_events` setting, any matching target), target matching, and canonical body construction. A new lifecycle status or source table must update these and the capture functions. |
 | `uuid_v7()` | Function | Time-ordered UUIDv7 event and delivery ids; PostgreSQL 18 adds a built-in. |
@@ -2021,7 +2152,7 @@ SELECT c.conrelid::regclass AS child_table,
  ORDER BY 1, 2;
 ```
 
-A database migrated to the current release has 66 `flowbit` tables (plus `__EFMigrationsHistory`) and 130 foreign keys.
+A database migrated to the current release has 71 `flowbit` tables (plus `__EFMigrationsHistory`) and 144 foreign keys.
 
 ## Keeping this page current
 

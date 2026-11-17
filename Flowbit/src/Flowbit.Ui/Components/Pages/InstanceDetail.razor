@@ -100,6 +100,31 @@ else
                                LegacyNodeName="@instance.CurrentNodeName"
                                LegacyNodeExternalId="@instance.CurrentNodeExternalId" />
 
+        @if (instance.SignalSubscriptions.Count > 0)
+        {
+            <h3 class="h6 mt-3 mb-2" id="instance-signal-waits-heading">Waiting for signals</h3>
+            <ul class="list-unstyled mb-0" aria-labelledby="instance-signal-waits-heading">
+                @foreach (var wait in instance.SignalSubscriptions)
+                {
+                    <li>
+                        <code>@wait.Name</code> · @wait.SignalNodeName (node #@wait.SignalNodeId)
+                        @if (wait.AttachedToNodeId is int host)
+                        {
+                            <span class="data-subtitle">@(wait.CancelActivity ? "Interrupting" : "Non-interrupting") boundary on node #@host</span>
+                        }
+                        else
+                        {
+                            <span class="data-subtitle">Catch event · token #@wait.TokenId</span>
+                        }
+                    </li>
+                }
+            </ul>
+            @if (instance.SignalSubscriptionCount > instance.SignalSubscriptions.Count)
+            {
+                <p class="form-text">Showing @instance.SignalSubscriptions.Count of @instance.SignalSubscriptionCount signal waits.</p>
+            }
+        }
+
         @if (currentAttributeNodes.Count > 0)
         {
             <div class="d-grid gap-2 mt-3" aria-label="Current node attributes">
@@ -492,6 +517,12 @@ else
                 Waiting for an authenticated external message. This page refreshes automatically after delivery.
             </div>
         }
+        else if (IsWaitingForSignal)
+        {
+            <div class="alert alert-info mb-0">
+                Waiting for @(WaitingSignalNames.Count == 1 ? $"signal '{WaitingSignalNames[0]}'" : "a signal"). This page refreshes automatically after delivery.
+            </div>
+        }
         else if (availableFlows.Count == 0)
         {
             <p>No user actions are available.</p>
@@ -779,6 +810,17 @@ else
     private bool IsWaitingForCall =>
         instance?.Status == "running"
         && (instance.Calls is { Unsettled: > 0 } || instance.ParentCall is { CancellationInProgress: true });
+
+    private bool IsWaitingForSignal =>
+        instance?.Status == "running"
+        && ActivePositions.Any(position => BpmnFlowNodeTypes.IsSignalCatch(position.NodeType));
+
+    private IReadOnlyList<string> WaitingSignalNames =>
+        instance?.SignalSubscriptions
+            .Where(subscription => subscription.AttachedToNodeId is null)
+            .Select(subscription => subscription.Name)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray() ?? [];
 
     private bool IsWaitingForMessage =>
         instance?.Status == "running"
@@ -1085,6 +1127,7 @@ else
             {
                 if (SoleActiveMultiInstance is null
                     && !IsWaitingForMessage
+                    && !IsWaitingForSignal
                     && !IsWaitingForCall
                     && !IsWaitingForAutomaticItems
                     && ActivePositions.Count <= 1)

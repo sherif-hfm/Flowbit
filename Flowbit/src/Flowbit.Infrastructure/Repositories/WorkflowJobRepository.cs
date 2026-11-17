@@ -408,6 +408,11 @@ public sealed class WorkflowJobRepository(
             transaction,
             ids,
             cancellationToken);
+        await ReconcileExhaustedSignalBroadcastsAsync(
+            connection,
+            transaction,
+            ids,
+            cancellationToken);
 
         await using (var attempts = new NpgsqlCommand(
             """
@@ -712,6 +717,103 @@ public sealed class WorkflowJobRepository(
             transaction);
         parents.Parameters.AddWithValue("batchIds", batchIds.ToArray());
         await parents.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    // A signal delivery job whose final lease expired fails its own pending deliveries,
+    // those of its broadcast and definition, and recounts the broadcast. Like cancel, it
+    // locks the broadcast before the delivery rows.
+    private static async Task ReconcileExhaustedSignalBroadcastsAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        IReadOnlyCollection<long> exhaustedJobIds,
+        CancellationToken cancellationToken)
+    {
+        var broadcastIds = new List<long>();
+        await using (var broadcasts = new NpgsqlCommand(
+            """
+            SELECT broadcast."Id"
+            FROM flowbit.signal_broadcasts AS broadcast
+            WHERE broadcast."Id" IN (
+                SELECT link."BroadcastId"
+                FROM flowbit.signal_broadcast_jobs AS link
+                WHERE link."JobId" = ANY(@jobIds))
+            ORDER BY broadcast."Id"
+            FOR UPDATE
+            """,
+            connection,
+            transaction))
+        {
+            broadcasts.Parameters.AddWithValue("jobIds", exhaustedJobIds.ToArray());
+            await using var reader = await broadcasts.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                broadcastIds.Add(reader.GetInt64(0));
+            }
+        }
+        if (broadcastIds.Count == 0)
+        {
+            return;
+        }
+
+        await using (var deliveries = new NpgsqlCommand(
+            """
+            UPDATE flowbit.signal_deliveries AS delivery
+            SET "Status" = 'failed',
+                "ResultCode" = 'lease_exhausted',
+                "ResultDescription" = 'The final permitted worker attempt lost its lease.',
+                "AttemptCount" = delivery."AttemptCount" + 1,
+                "UpdatedAt" = clock_timestamp(),
+                "CompletedAt" = clock_timestamp()
+            FROM flowbit.signal_broadcast_jobs AS link
+            WHERE link."JobId" = ANY(@jobIds)
+              AND delivery."BroadcastId" = link."BroadcastId"
+              AND delivery."WorkflowDefinitionId" = link."WorkflowDefinitionId"
+              AND delivery."Status" = 'pending'
+            """,
+            connection,
+            transaction))
+        {
+            deliveries.Parameters.AddWithValue("jobIds", exhaustedJobIds.ToArray());
+            await deliveries.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await using var recount = new NpgsqlCommand(
+            """
+            WITH counts AS (
+                SELECT
+                    delivery."BroadcastId",
+                    count(*) FILTER (WHERE delivery."Status" = 'pending')::int AS pending,
+                    count(*) FILTER (WHERE delivery."Status" = 'delivered')::int AS delivered,
+                    count(*) FILTER (WHERE delivery."Status" = 'skipped')::int AS skipped,
+                    count(*) FILTER (WHERE delivery."Status" = 'failed')::int AS failed,
+                    count(*) FILTER (WHERE delivery."Status" = 'cancelled')::int AS cancelled
+                FROM flowbit.signal_deliveries AS delivery
+                WHERE delivery."BroadcastId" = ANY(@broadcastIds)
+                GROUP BY delivery."BroadcastId"
+            )
+            UPDATE flowbit.signal_broadcasts AS broadcast
+            SET "DeliveredCount" = counts.delivered,
+                "SkippedCount" = counts.skipped,
+                "FailedCount" = counts.failed,
+                "CancelledCount" = counts.cancelled,
+                "Status" = CASE
+                    WHEN broadcast."Status" = 'cancelled' THEN 'cancelled'
+                    WHEN counts.pending > 0 THEN 'delivering'
+                    WHEN counts.failed > 0 THEN 'completedWithIssues'
+                    ELSE 'completed'
+                END,
+                "CompletedAt" = CASE
+                    WHEN broadcast."Status" <> 'cancelled' AND counts.pending > 0 THEN NULL
+                    ELSE COALESCE(broadcast."CompletedAt", clock_timestamp())
+                END,
+                "UpdatedAt" = clock_timestamp()
+            FROM counts
+            WHERE broadcast."Id" = counts."BroadcastId"
+            """,
+            connection,
+            transaction);
+        recount.Parameters.AddWithValue("broadcastIds", broadcastIds.ToArray());
+        await recount.ExecuteNonQueryAsync(cancellationToken);
     }
 
     private static async Task ReconcileExhaustedInstanceVariableUpdateBatchesAsync(

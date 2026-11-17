@@ -88,6 +88,10 @@
                 <p class="instance-diagram-meta">
                     Node #@node.Id · @ExecutionPositionText.NodeTypeLabel(node.Type)@(string.IsNullOrWhiteSpace(node.ExternalId) ? null : $" · {node.ExternalId}")
                 </p>
+                @if (BpmnFlowNodeTypes.IsSignalEvent(node.Type) && !string.IsNullOrWhiteSpace(node.Signal?.Name))
+                {
+                    <p class="instance-diagram-meta">Signal <code>@node.Signal.Name</code>@(BpmnFlowNodeTypes.IsSignalBoundary(node.Type) ? (node.CancelActivity == false ? " · non-interrupting" : " · interrupting") : null)</p>
+                }
                 @if (LinkPartners(node) is { Count: > 0 } partners)
                 {
                     <div class="instance-diagram-link-partners">

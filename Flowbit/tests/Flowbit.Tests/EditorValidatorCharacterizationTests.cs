@@ -130,7 +130,7 @@ public sealed class EditorValidatorCharacterizationTests
             "Flow node #2 job retryDelays[9] must be a positive fixed-unit ISO-8601 duration.",
             "Flow node #2 job retryDelays[10] must be a positive fixed-unit ISO-8601 duration.",
             "Flow node #2 defines a timer but is not a timer event.",
-            "Flow node #2 defines cancelActivity but is not a timer or conditional boundary event.",
+            "Flow node #2 defines cancelActivity but is not a timer, conditional, or signal boundary event.",
             "Workflow initialEventId must reference an existing startEvent.",
             "The outgoing sequence flow from start event #1 must be unconditional and cannot define action or multi-instance metadata.",
             "End event #5 must have at least one incoming sequence flow.",

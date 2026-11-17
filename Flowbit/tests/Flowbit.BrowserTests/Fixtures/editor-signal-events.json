@@ -1,0 +1,22 @@
+{
+  "id": "browser-signal-events",
+  "name": "Browser signal events",
+  "initialEventId": 1,
+  "variables": [
+    { "id": 1, "name": "policyVersion", "dataType": "number", "isArray": false, "required": false, "nullable": true, "defaultValue": null, "validation": null }
+  ],
+  "lanes": [
+    { "id": 1, "name": "Claims", "x": 30, "y": 40, "w": 1100, "h": 260 }
+  ],
+  "flowNodes": [
+    { "id": 1, "name": "Claim received", "type": "startEvent", "laneId": 1, "x": 80, "y": 130, "roles": [], "variables": [] },
+    { "id": 2, "name": "Wait for the new policy", "type": "task", "laneId": 1, "x": 260, "y": 118 },
+    { "id": 3, "name": "Recalculate", "type": "userTask", "laneId": 1, "x": 560, "y": 118, "roles": [], "variables": [] },
+    { "id": 4, "name": "Done", "type": "endEvent", "laneId": 1, "x": 900, "y": 130 }
+  ],
+  "sequenceFlows": [
+    { "id": 101, "name": "", "sourceRef": 1, "targetRef": 2 },
+    { "id": 201, "name": "", "sourceRef": 2, "targetRef": 3 },
+    { "id": 301, "name": "Settle", "sourceRef": 3, "targetRef": 4 }
+  ]
+}

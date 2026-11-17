@@ -64,6 +64,9 @@ X-Client-Secret: @oneTimeSecret</code></pre>
                     <div class="d-flex flex-wrap gap-4">
                         <div class="form-check"><input id="shared-client-read" class="form-check-input" type="checkbox" @bind="formRead" /><label class="form-check-label" for="shared-client-read">Read shared variables</label></div>
                         <div class="form-check"><input id="shared-client-write" class="form-check-input" type="checkbox" @bind="formWrite" /><label class="form-check-label" for="shared-client-write">Create and update shared variables</label></div>
+                        <div class="form-check"><input id="shared-client-signal-throw" class="form-check-input" type="checkbox" @bind="formSignalsThrow" /><label class="form-check-label" for="shared-client-signal-throw">Throw signals, and cancel and retry its own broadcasts</label></div>
+                        <div class="form-check"><input id="shared-client-signal-read" class="form-check-input" type="checkbox" @bind="formSignalsRead" /><label class="form-check-label" for="shared-client-signal-read">Read its own signal broadcasts</label></div>
+                        <div class="form-text">A client with signal scopes sees only the broadcasts it threw.</div>
                     </div>
                 </div>
                 <div><label class="form-label" for="shared-client-expires">Expires (optional, @TimeZone.DisplayName)</label><input @key="formExpiresGeneration" id="shared-client-expires" class="form-control" type="datetime-local" value="@formExpiresShown" @onchange="e => formExpires = e.Value?.ToString()" /></div>
@@ -142,6 +145,8 @@ X-Client-Secret: @oneTimeSecret</code></pre>
     private int formExpiresGeneration;
     private bool formRead = true;
     private bool formWrite;
+    private bool formSignalsThrow;
+    private bool formSignalsRead;
     private bool formOpen;
     private bool loading;
     private bool busy;
@@ -162,7 +167,7 @@ X-Client-Secret: @oneTimeSecret</code></pre>
         finally { loading = false; busy = false; }
     }
 
-    private void OpenCreate() { rotating = null; editingClient = null; formOpen = true; formError = null; clientConflict = false; formClientId = formDisplayName = string.Empty; ShowExpires(null); formRead = true; formWrite = false; }
+    private void OpenCreate() { rotating = null; editingClient = null; formOpen = true; formError = null; clientConflict = false; formClientId = formDisplayName = string.Empty; ShowExpires(null); formRead = true; formWrite = false; formSignalsThrow = false; formSignalsRead = false; }
     private void CloseForm() { formOpen = false; editingClient = null; formError = null; clientConflict = false; }
     private void OpenRotate(SharedVariableClientDto client) { formOpen = false; editingClient = null; rotating = client; graceHours = 24; formError = null; clientConflict = false; }
     private void CloseRotate() { rotating = null; formError = null; clientConflict = false; }
@@ -174,6 +179,8 @@ X-Client-Secret: @oneTimeSecret</code></pre>
         clientConflict = false; formClientId = client.ClientId; formDisplayName = client.DisplayName;
         formRead = client.Scopes.Contains(SharedVariableClientScopes.Read, StringComparer.Ordinal);
         formWrite = client.Scopes.Contains(SharedVariableClientScopes.Write, StringComparer.Ordinal);
+        formSignalsThrow = client.Scopes.Contains(SharedVariableClientScopes.SignalsThrow, StringComparer.Ordinal);
+        formSignalsRead = client.Scopes.Contains(SharedVariableClientScopes.SignalsRead, StringComparer.Ordinal);
         ShowExpires(client.ExpiresAt);
     }
 
@@ -264,7 +271,7 @@ X-Client-Secret: @oneTimeSecret</code></pre>
     private void Reveal(SharedVariableClientDto client, string secret) { secretClient = client; oneTimeSecret = secret; }
     private void ClearSecret() { secretClient = null; oneTimeSecret = null; }
     private async Task CopyCredentialsAsync() { if (secretClient is null || string.IsNullOrEmpty(oneTimeSecret)) return; await JS.InvokeVoidAsync("navigator.clipboard.writeText", $"X-Client-Id: {secretClient.ClientId}\nX-Client-Secret: {oneTimeSecret}"); success = "Copied the two authentication headers."; }
-    private IReadOnlyList<string> Scopes() { var scopes = new List<string>(); if (formRead) scopes.Add(SharedVariableClientScopes.Read); if (formWrite) scopes.Add(SharedVariableClientScopes.Write); return scopes; }
+    private IReadOnlyList<string> Scopes() { var scopes = new List<string>(); if (formRead) scopes.Add(SharedVariableClientScopes.Read); if (formWrite) scopes.Add(SharedVariableClientScopes.Write); if (formSignalsThrow) scopes.Add(SharedVariableClientScopes.SignalsThrow); if (formSignalsRead) scopes.Add(SharedVariableClientScopes.SignalsRead); return scopes; }
     private bool TryExpires(out DateTimeOffset? expires, out string? message)
     {
         // An untouched field sends the stored instant itself, which its minute text cannot always express.
@@ -277,7 +284,7 @@ X-Client-Secret: @oneTimeSecret</code></pre>
     private async Task NextPageAsync() { if (page < TotalPages) { page++; await LoadAsync(); } }
     private async Task ReloadClientsAsync() { CloseRotate(); await LoadAsync(); }
     private void OnTokenChanged() => _ = InvokeAsync(async () => { result = null; CloseForm(); CloseRotate(); ClearSecret(); error = success = null; page = 1; await LoadAsync(); });
-    private static string ScopeLabel(string scope) => scope == SharedVariableClientScopes.Read ? "read" : scope == SharedVariableClientScopes.Write ? "write" : scope;
+    private static string ScopeLabel(string scope) => scope == SharedVariableClientScopes.Read ? "read" : scope == SharedVariableClientScopes.Write ? "write" : scope == SharedVariableClientScopes.SignalsThrow ? "throw signals" : scope == SharedVariableClientScopes.SignalsRead ? "read signals" : scope;
     private static string FriendlyError(WorkflowApiException ex) => ex.StatusCode switch { HttpStatusCode.Forbidden => "This identity does not have the configured shared-variable administrator role.", HttpStatusCode.Conflict => "The client changed or this identifier is already in use. Refresh and try again.", _ => ex.Message ?? "The client-management request failed." };
     public void Dispose() => Token.Changed -= OnTokenChanged;
 }

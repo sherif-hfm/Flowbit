@@ -22,6 +22,7 @@ internal static class ExecutionPositionText
         BpmnFlowNodeTypes.IntermediateMessageCatchEvent => "Message wait",
         BpmnFlowNodeTypes.IntermediateTimerCatchEvent => "Timer wait",
         BpmnFlowNodeTypes.IntermediateConditionalCatchEvent => "Condition wait",
+        BpmnFlowNodeTypes.IntermediateSignalCatchEvent => "Signal wait",
         BpmnFlowNodeTypes.ExclusiveGateway => "Exclusive gateway",
         BpmnFlowNodeTypes.ParallelGateway => "Parallel gateway",
         BpmnFlowNodeTypes.InclusiveGateway => "Inclusive gateway",
@@ -32,6 +33,7 @@ internal static class ExecutionPositionText
         BpmnFlowNodeTypes.ErrorBoundaryEvent => "Error boundary",
         BpmnFlowNodeTypes.TimerBoundaryEvent => "Timer boundary",
         BpmnFlowNodeTypes.ConditionalBoundaryEvent => "Conditional boundary",
+        BpmnFlowNodeTypes.SignalBoundaryEvent => "Signal boundary",
         BpmnFlowNodeTypes.TerminateEndEvent => "Terminate end",
         BpmnFlowNodeTypes.ErrorEndEvent => "Error end",
         BpmnFlowNodeTypes.EndEvent => "End event",
@@ -70,6 +72,7 @@ internal static class ExecutionPositionText
         if (BpmnFlowNodeTypes.IsMessageCatch(type)) return "Waiting for a message";
         if (BpmnFlowNodeTypes.IsTimerCatch(type)) return "Waiting for a timer";
         if (BpmnFlowNodeTypes.IsConditionalCatch(type)) return "Waiting for a condition";
+        if (BpmnFlowNodeTypes.IsSignalCatch(type)) return "Waiting for a signal";
         if (BpmnFlowNodeTypes.IsGateway(type)) return "Waiting at the gateway";
         return "Active";
     }

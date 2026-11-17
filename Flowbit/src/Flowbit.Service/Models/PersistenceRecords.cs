@@ -222,10 +222,12 @@ public sealed record WorkflowReactivationRuntimeStateRecord(
     long ActiveOrPausedTimerSubscriptionCount,
     long ActiveConditionalBoundarySubscriptionCount,
     IReadOnlyList<long> NonResetComplexGatewayStateIds,
-    IReadOnlyList<long> RetainedComplexLineageTokenIds)
+    IReadOnlyList<long> RetainedComplexLineageTokenIds,
+    long ActiveSignalSubscriptionCount = 0)
 {
     public bool IsClean =>
-        ActiveExecutionTokenCount == 0
+        ActiveSignalSubscriptionCount == 0
+        && ActiveExecutionTokenCount == 0
         && OpenUserTaskCount == 0
         && OpenNodeExecutionCount == 0
         && ActiveMultiInstanceExecutionCount == 0
@@ -808,6 +810,9 @@ public static class NodeExecutionCompletionReasons
     public const string ConditionalTriggered = "conditionalTriggered";
     public const string CallCompleted = "callCompleted";
     public const string CallFailed = "callFailed";
+    // A delivered signal: a catch completes, an interrupted host is cancelled, and a
+    // boundary completes when its token leaves through the boundary's flow.
+    public const string SignalReceived = "signalReceived";
 }
 
 public static class InstanceHistoryNotes
@@ -827,6 +832,8 @@ public static class InstanceHistoryNotes
     // then leaves the catch through the catch's one outgoing flow.
     public const string LinkThrow = "linkThrow";
     public const string LinkCatch = "linkCatch";
+    // A broadcast signal moved a token off a signal catch, or through a signal boundary.
+    public const string SignalReceived = "signalReceived";
 }
 
 public static class ExecutionTokenTerminationReasons

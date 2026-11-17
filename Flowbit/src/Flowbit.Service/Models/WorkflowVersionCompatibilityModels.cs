@@ -70,6 +70,9 @@ public sealed record WorkflowVersionCompatibilityContext
     public IReadOnlyList<ConditionalBoundarySubscriptionRecord>
         OpenConditionalBoundaries { get; init; } = [];
 
+    /// <summary>Active signal subscriptions: catch waits and armed signal boundaries.</summary>
+    public IReadOnlyList<SignalSubscriptionRecord> OpenSignalSubscriptions { get; init; } = [];
+
     /// <summary>
     /// True when any traversal committed before this snapshot, even when the
     /// source definition did not opt into flow-evidence persistence.
@@ -165,4 +168,11 @@ public static class WorkflowVersionCompatibilityCodes
         "open_conditional_boundary_node_missing";
     public const string OpenConditionalBoundaryContractChanged =
         "open_conditional_boundary_contract_changed";
+    public const string OpenSignalSubscriptionNodeMissing =
+        "open_signal_subscription_node_missing";
+    public const string OpenSignalSubscriptionContractChanged =
+        "open_signal_subscription_contract_changed";
+    public const string AttachedSignalBoundaryContractChanged =
+        "attached_signal_boundary_contract_changed";
+    public const string SignalMappingContractChanged = "signal_mapping_contract_changed";
 }

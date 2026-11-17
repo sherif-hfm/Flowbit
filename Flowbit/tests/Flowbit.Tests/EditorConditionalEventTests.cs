@@ -112,7 +112,7 @@ public sealed class EditorConditionalEventTests
             flows.Add(Flow(200 + index, id, 3));
         }
         Assert.Contains(
-            "Host node #1 has more than eight combined timer and conditional boundary events.",
+            "Host node #1 has 9 timer, conditional, and signal boundary events; at most 8 are allowed.",
             Validate(candidate));
     }
 

@@ -1548,6 +1548,11 @@ public sealed partial class WorkflowRuntimeRepository(
                      WHERE subscription."InstanceId" = @instance_id
                        AND subscription."Status" = @active_conditional_subscription_status)
                         AS "ActiveConditionalBoundarySubscriptionCount",
+                    (SELECT COUNT(*)
+                     FROM flowbit.signal_subscriptions subscription
+                     WHERE subscription."InstanceId" = @instance_id
+                       AND subscription."Status" = 'active')
+                        AS "ActiveSignalSubscriptionCount",
                     COALESCE(
                         (SELECT array_agg(state."Id" ORDER BY state."Id")
                          FROM flowbit.complex_gateway_states state
@@ -1645,7 +1650,8 @@ public sealed partial class WorkflowRuntimeRepository(
             row.ActiveOrPausedTimerSubscriptionCount,
             row.ActiveConditionalBoundarySubscriptionCount,
             row.NonResetComplexGatewayStateIds,
-            row.RetainedComplexLineageTokenIds);
+            row.RetainedComplexLineageTokenIds,
+            row.ActiveSignalSubscriptionCount);
     }
 
     public async Task<WorkflowInstanceRecord?> GetInstanceForUpdateAsync(
@@ -3775,6 +3781,7 @@ public sealed partial class WorkflowRuntimeRepository(
         public long OpenIncidentCount { get; set; }
         public long ActiveOrPausedTimerSubscriptionCount { get; set; }
         public long ActiveConditionalBoundarySubscriptionCount { get; set; }
+        public long ActiveSignalSubscriptionCount { get; set; }
         public long[] NonResetComplexGatewayStateIds { get; set; } = [];
         public long[] RetainedComplexLineageTokenIds { get; set; } = [];
     }
@@ -5871,6 +5878,21 @@ public sealed partial class WorkflowRuntimeRepository(
             var node = RequireTargetNode(subscription.BoundaryNodeId);
             subscription.WorkflowDefinitionId = targetWorkflowDefinitionId;
             subscription.BoundaryNodeName = node.Name;
+        }
+
+        // A pending signal delivery names its subscription by id and reads the node
+        // from the instance's current definition, so it needs no change here.
+        var openSignalSubscriptions = await dbContext.SignalSubscriptions
+            .Where(subscription =>
+                subscription.InstanceId == instanceId
+                && subscription.Status == SignalSubscriptionStatuses.Active)
+            .OrderBy(subscription => subscription.Id)
+            .ToListAsync(cancellationToken);
+        foreach (var subscription in openSignalSubscriptions)
+        {
+            var node = RequireTargetNode(subscription.SignalNodeId);
+            subscription.WorkflowDefinitionId = targetWorkflowDefinitionId;
+            subscription.SignalNodeName = node.Name;
         }
 
         var clockValue = DateTimeOffset.UtcNow;

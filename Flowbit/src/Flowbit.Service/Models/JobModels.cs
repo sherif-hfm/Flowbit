@@ -61,6 +61,12 @@ public static class WorkflowJobKinds
     public const string InstanceVersionChangeBatchExecute = "instanceVersionChangeBatchExecute";
     public const string InstanceVariableUpdateBatchPrepare = "instanceVariableUpdateBatchPrepare";
     public const string InstanceVariableUpdateBatchExecute = "instanceVariableUpdateBatchExecute";
+
+    /// <summary>
+    /// Delivers the pending deliveries of one signal broadcast for one workflow
+    /// definition, in pages, one transaction per delivery. It names no instance or token.
+    /// </summary>
+    public const string SignalBroadcastDeliver = "signalBroadcastDeliver";
 }
 
 public static class WorkflowJobFailureHandling

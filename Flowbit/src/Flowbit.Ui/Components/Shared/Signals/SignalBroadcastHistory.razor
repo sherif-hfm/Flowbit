@@ -1,0 +1,38 @@
+@using static Flowbit.Ui.Components.Shared.Signals.SignalFormatting
+@if (Broadcasts is null)
+{
+    <div class="p-3"><div class="skeleton" role="status"></div></div>
+}
+else if (Broadcasts.Count == 0)
+{
+    <div class="px-3 pb-3"><EmptyState Icon="jobs" Title="No signal broadcasts" Description="No broadcast matches the selected status." /></div>
+}
+else
+{
+    <div class="table-responsive">
+        <table class="table align-middle">
+            <thead><tr><th>Broadcast</th><th>Signal</th><th>Scope</th><th>Thrown by</th><th>Progress</th><th>Status</th><th>Thrown</th><th></th></tr></thead>
+            <tbody>
+                @foreach (var item in Broadcasts)
+                {
+                    <tr class="@(CurrentBroadcastId == item.Id ? "table-active" : null)">
+                        <td>#@item.Id</td>
+                        <td><code>@item.Name</code></td>
+                        <td>@ScopeLabel(item.WorkflowKey)</td>
+                        <td>@ThrowerLabel(item.ThrownBy, item.ThrownByKind)</td>
+                        <td>@item.DeliveredCount.ToString("N0") / @item.TotalDeliveryCount.ToString("N0")<span class="data-subtitle">@item.SkippedCount.ToString("N0") skipped · @item.FailedCount.ToString("N0") failed</span></td>
+                        <td><StatusBadge Status="@item.Status" Text="@BroadcastStatusLabel(item.Status)" /></td>
+                        <td><LocalTime Value="@item.CreatedAt" /></td>
+                        <td class="text-end"><button class="btn btn-sm btn-outline-primary" @onclick="@(() => OnOpenBroadcast.InvokeAsync(item.Id))">Open</button></td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+@code {
+    [Parameter] public IReadOnlyList<SignalBroadcastSummaryDto>? Broadcasts { get; set; }
+    [Parameter] public long? CurrentBroadcastId { get; set; }
+    [Parameter] public EventCallback<long> OnOpenBroadcast { get; set; }
+}

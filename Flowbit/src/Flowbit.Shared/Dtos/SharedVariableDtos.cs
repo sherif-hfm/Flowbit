@@ -19,8 +19,14 @@ public static class SharedVariableClientScopes
     public const string Read = "shared-variables.read";
     public const string Write = "shared-variables.write";
 
+    /// <summary>Throws signals, and cancels and retries the client's own broadcasts.</summary>
+    public const string SignalsThrow = "signals.throw";
+
+    /// <summary>Reads the client's own broadcasts and their deliveries.</summary>
+    public const string SignalsRead = "signals.read";
+
     public static IReadOnlySet<string> Allowed { get; } =
-        new HashSet<string>([Read, Write], StringComparer.Ordinal);
+        new HashSet<string>([Read, Write, SignalsThrow, SignalsRead], StringComparer.Ordinal);
 }
 
 public static class SharedVariableCallerKinds

@@ -91,9 +91,11 @@ const NODE_TYPE = {
   ERROR_BOUNDARY_EVENT: "errorBoundaryEvent",
   TIMER_BOUNDARY_EVENT: "timerBoundaryEvent",
   CONDITIONAL_BOUNDARY_EVENT: "conditionalBoundaryEvent",
+  SIGNAL_BOUNDARY_EVENT: "signalBoundaryEvent",
   MESSAGE_CATCH_EVENT: "intermediateMessageCatchEvent",
   TIMER_CATCH_EVENT: "intermediateTimerCatchEvent",
   CONDITIONAL_CATCH_EVENT: "intermediateConditionalCatchEvent",
+  SIGNAL_CATCH_EVENT: "intermediateSignalCatchEvent",
   MESSAGE_START_EVENT: "messageStartEvent",
   LINK_THROW_EVENT: "intermediateLinkThrowEvent",
   LINK_CATCH_EVENT: "intermediateLinkCatchEvent"
@@ -117,6 +119,7 @@ const NODE_TYPE_OPTIONS = [
   { value: NODE_TYPE.MESSAGE_CATCH_EVENT, label: "Message Catch Event (wait for callback)" },
   { value: NODE_TYPE.TIMER_CATCH_EVENT, label: "Timer Catch Event (delay)" },
   { value: NODE_TYPE.CONDITIONAL_CATCH_EVENT, label: "Conditional Catch Event (wait for condition)" },
+  { value: NODE_TYPE.SIGNAL_CATCH_EVENT, label: "Signal Catch Event (wait for a broadcast)" },
   { value: NODE_TYPE.MESSAGE_START_EVENT, label: "Message Start Event (webhook start)" },
   { value: NODE_TYPE.LINK_THROW_EVENT, label: "Link Throw Event (go to)" },
   { value: NODE_TYPE.LINK_CATCH_EVENT, label: "Link Catch Event (continue here)" }
@@ -138,7 +141,7 @@ function buildDiagramTraceContext(candidate, selection, mode, linkEdges = []) {
     linkSources.get(link.catchId).push(link.throwId);
   }
   const isTraceBoundaryType = type => [
-    "errorBoundaryEvent", "timerBoundaryEvent", "conditionalBoundaryEvent"
+    "errorBoundaryEvent", "timerBoundaryEvent", "conditionalBoundaryEvent", "signalBoundaryEvent"
   ].includes(type);
   const nodeById = new Map(nodes.filter(Boolean).map(node => [node.id, node]));
   const flowById = new Map(flows.filter(Boolean).map(flow => [flow.id, flow]));
@@ -298,9 +301,11 @@ function searchDiagram(candidate, query, limit = 20) {
     errorBoundaryEvent: "Error Boundary Event",
     timerBoundaryEvent: "Timer Boundary Event",
     conditionalBoundaryEvent: "Conditional Boundary Event",
+    signalBoundaryEvent: "Signal Boundary Event",
     intermediateMessageCatchEvent: "Message Catch Event",
     intermediateTimerCatchEvent: "Timer Catch Event",
     intermediateConditionalCatchEvent: "Conditional Catch Event",
+    intermediateSignalCatchEvent: "Signal Catch Event",
     intermediateLinkThrowEvent: "Link Throw Event",
     intermediateLinkCatchEvent: "Link Catch Event"
   };
@@ -1371,8 +1376,15 @@ function findConditionalBoundaries(hostNodeId) {
       n.attachedToRef === hostNodeId)
     .sort((a, b) => a.id - b.id);
 }
+function findSignalBoundaries(hostNodeId) {
+  return model.flowNodes
+    .filter(n => n.type === NODE_TYPE.SIGNAL_BOUNDARY_EVENT && n.attachedToRef === hostNodeId)
+    .sort((a, b) => a.id - b.id);
+}
+// Timer, conditional, and signal boundaries share one host limit and one host rule.
 function findObservableBoundaries(hostNodeId) {
-  return [...findTimerBoundaries(hostNodeId), ...findConditionalBoundaries(hostNodeId)]
+  return [...findTimerBoundaries(hostNodeId), ...findConditionalBoundaries(hostNodeId),
+    ...findSignalBoundaries(hostNodeId)]
     .sort((a, b) => a.id - b.id);
 }
 function normalizeRoles(roles) {
@@ -1405,7 +1417,8 @@ function isEventType(type) {
     type === NODE_TYPE.SCOPED_INTERRUPT_EVENT ||
     type === NODE_TYPE.MESSAGE_CATCH_EVENT || type === NODE_TYPE.MESSAGE_START_EVENT ||
     type === NODE_TYPE.TIMER_START_EVENT || type === NODE_TYPE.TIMER_CATCH_EVENT ||
-    type === NODE_TYPE.CONDITIONAL_CATCH_EVENT || isLinkEventType(type);
+    type === NODE_TYPE.CONDITIONAL_CATCH_EVENT || type === NODE_TYPE.SIGNAL_CATCH_EVENT ||
+    isLinkEventType(type);
 }
 function isAutomaticType(type) {
   return type === NODE_TYPE.TASK;
@@ -1453,7 +1466,8 @@ function isLinkEventType(type) {
 function isBoundaryEventType(type) {
   return type === NODE_TYPE.ERROR_BOUNDARY_EVENT ||
     type === NODE_TYPE.TIMER_BOUNDARY_EVENT ||
-    type === NODE_TYPE.CONDITIONAL_BOUNDARY_EVENT;
+    type === NODE_TYPE.CONDITIONAL_BOUNDARY_EVENT ||
+    type === NODE_TYPE.SIGNAL_BOUNDARY_EVENT;
 }
 function isErrorBoundaryEventType(type) {
   return type === NODE_TYPE.ERROR_BOUNDARY_EVENT;
@@ -1478,6 +1492,16 @@ function isConditionalCatchEventType(type) {
 }
 function isConditionalEventType(type) {
   return isConditionalCatchEventType(type) || isConditionalBoundaryEventType(type);
+}
+function isSignalCatchEventType(type) {
+  return type === NODE_TYPE.SIGNAL_CATCH_EVENT;
+}
+function isSignalBoundaryEventType(type) {
+  return type === NODE_TYPE.SIGNAL_BOUNDARY_EVENT;
+}
+// Every type that carries node.signal.
+function isSignalEventType(type) {
+  return isSignalCatchEventType(type) || isSignalBoundaryEventType(type);
 }
 function isTimerEventType(type) {
   return isTimerStartEventType(type) || isTimerCatchEventType(type) ||
@@ -1688,9 +1712,11 @@ function isSingleOutgoingType(type) {
     || type === NODE_TYPE.ERROR_BOUNDARY_EVENT
     || type === NODE_TYPE.TIMER_BOUNDARY_EVENT
     || type === NODE_TYPE.CONDITIONAL_BOUNDARY_EVENT
+    || type === NODE_TYPE.SIGNAL_BOUNDARY_EVENT
     || type === NODE_TYPE.MESSAGE_CATCH_EVENT
     || type === NODE_TYPE.TIMER_CATCH_EVENT
     || type === NODE_TYPE.CONDITIONAL_CATCH_EVENT
+    || type === NODE_TYPE.SIGNAL_CATCH_EVENT
     || type === NODE_TYPE.MESSAGE_START_EVENT
     || type === NODE_TYPE.LINK_CATCH_EVENT;
 }
@@ -1700,6 +1726,7 @@ function typeLabel(type) {
   if (type === NODE_TYPE.ERROR_BOUNDARY_EVENT) return "Error Boundary Event";
   if (type === NODE_TYPE.TIMER_BOUNDARY_EVENT) return "Timer Boundary Event";
   if (type === NODE_TYPE.CONDITIONAL_BOUNDARY_EVENT) return "Conditional Boundary Event";
+  if (type === NODE_TYPE.SIGNAL_BOUNDARY_EVENT) return "Signal Boundary Event";
   return type;
 }
 function nodeSize(node) {
@@ -1781,7 +1808,7 @@ function clearUnsupportedCallSettings(node) {
     "asyncBefore", "asyncAfter", "job", "multiInstance", "timer", "conditional", "cancelActivity",
     "errorMatch", "gatewayRef", "joinCancellation", "activationCondition",
     "inboxVisibilityCondition", "dueDate", "dueDateCalendar", "priority", "rolesVariable",
-    "service", "message", "businessKey", "idempotency", "usesFlowInfo", "attachedToRef",
+    "service", "message", "signal", "businessKey", "idempotency", "usesFlowInfo", "attachedToRef",
     "errorVariable", "errorCode", "errorDescription", "scriptFormat", "script"
   ]) {
     delete node[property];
@@ -1844,7 +1871,8 @@ function applyTypeInvariants(node) {
   } else if (node.timer == null) {
     delete node.timer;
   }
-  if (isTimerBoundaryEventType(node.type) || isConditionalBoundaryEventType(node.type)) {
+  if (isTimerBoundaryEventType(node.type) || isConditionalBoundaryEventType(node.type) ||
+      isSignalBoundaryEventType(node.type)) {
     if (node.cancelActivity === undefined || node.cancelActivity === null) {
       node.cancelActivity = true;
     }
@@ -1855,6 +1883,7 @@ function applyTypeInvariants(node) {
   if (!isComplexGatewayType(node.type)) delete node.activationCondition;
   if (!isScopedInterruptEventType(node.type)) delete node.gatewayRef;
   if (!isConditionalEventType(node.type)) delete node.conditional;
+  if (!isSignalEventType(node.type)) delete node.signal;
   if (!isUserTaskType(node.type)) {
     node.requiresAssignment = false;
     node.assignmentMode = ASSIGNMENT_MODE.FRESH;
@@ -2014,6 +2043,26 @@ function applyTypeInvariants(node) {
     if (node.conditional !== undefined && node.conditional !== null) {
       node.conditional = normalizeConditionalDefinition(node.conditional);
     }
+  } else if (isSignalBoundaryEventType(node.type)) {
+    // A signal boundary waits on its host for a broadcast with its name. Like the
+    // catch, its name and payload mappings live only in node.signal; it also keeps
+    // its host and whether it interrupts.
+    node.requiresClaim = false;
+    node.claimMode = CLAIM_MODE.FRESH;
+    node.inheritClaimFromNodeId = null;
+    node.roles = [];
+    node.variables = [];
+    node.assignee = null;
+    delete node.service;
+    node.assignments = [];
+    delete node.scriptFormat;
+    delete node.script;
+    delete node.message;
+    delete node.errorVariable;
+    if (typeof node.attachedToRef !== "number") node.attachedToRef = null;
+    if (node.signal !== undefined && node.signal !== null) {
+      node.signal = normalizeSignalDefinition(node.signal, model.variables);
+    }
   } else if (isScopedInterruptEventType(node.type)) {
     node.requiresClaim = false;
     node.claimMode = CLAIM_MODE.FRESH;
@@ -2080,6 +2129,25 @@ function applyTypeInvariants(node) {
     delete node.errorVariable;
     if (node.conditional !== undefined && node.conditional !== null) {
       node.conditional = normalizeConditionalDefinition(node.conditional);
+    }
+  } else if (isSignalCatchEventType(node.type)) {
+    // A signal catch rests until a broadcast with its name reaches it. It has no
+    // user-action metadata; its name and payload mappings live only in node.signal.
+    node.requiresClaim = false;
+    node.claimMode = CLAIM_MODE.FRESH;
+    node.inheritClaimFromNodeId = null;
+    node.roles = [];
+    node.variables = [];
+    node.assignee = null;
+    delete node.service;
+    delete node.message;
+    node.assignments = [];
+    delete node.scriptFormat;
+    delete node.script;
+    delete node.attachedToRef;
+    delete node.errorVariable;
+    if (node.signal !== undefined && node.signal !== null) {
+      node.signal = normalizeSignalDefinition(node.signal, model.variables);
     }
   } else if (isMessageStartEventType(node.type)) {
     // A message start event is an entry point started by an external system via
@@ -2331,9 +2399,12 @@ const NODE_ICON_SYMBOL = {
   [NODE_TYPE.ERROR_BOUNDARY_EVENT]: "icon-error-catch",
   [NODE_TYPE.TIMER_BOUNDARY_EVENT]: "icon-timer",
   [NODE_TYPE.CONDITIONAL_BOUNDARY_EVENT]: "icon-conditional",
+  // A boundary catches, so it uses the catch's outlined triangle.
+  [NODE_TYPE.SIGNAL_BOUNDARY_EVENT]: "icon-signal-catch",
   [NODE_TYPE.MESSAGE_CATCH_EVENT]: "icon-message",
   [NODE_TYPE.TIMER_CATCH_EVENT]: "icon-timer",
   [NODE_TYPE.CONDITIONAL_CATCH_EVENT]: "icon-conditional",
+  [NODE_TYPE.SIGNAL_CATCH_EVENT]: "icon-signal-catch",
   [NODE_TYPE.USER_TASK]: "icon-user",
   [NODE_TYPE.TASK]: "icon-task",
   [NODE_TYPE.SERVICE_TASK]: "icon-service",
@@ -2854,7 +2925,7 @@ function renderNodes() {
     const instanceMarker = viewerMode ? instanceOverlay.get(node.id) : null;
     const historyReached = viewerMode && instanceHistoryNodes.has(node.id);
     const g = el("g", {
-      class: `node ${node.type} ${isConditionalBoundaryEventType(node.type) && node.cancelActivity === false ? 'non-interrupting' : ''} ${nodeSelected ? 'selected' : ''} ${primarySelected ? 'primary-selected' : ''} ${traceClass('node', node.id)} ${instanceMarker ? `instance-marked instance-${instanceMarker.state}` : ''} ${historyReached ? 'instance-reached' : ''} ${linkPartner ? 'link-partner' : ''}`,
+      class: `node ${node.type} ${(isConditionalBoundaryEventType(node.type) || isSignalBoundaryEventType(node.type)) && node.cancelActivity === false ? 'non-interrupting' : ''} ${nodeSelected ? 'selected' : ''} ${primarySelected ? 'primary-selected' : ''} ${traceClass('node', node.id)} ${instanceMarker ? `instance-marked instance-${instanceMarker.state}` : ''} ${historyReached ? 'instance-reached' : ''} ${linkPartner ? 'link-partner' : ''}`,
       transform: `translate(${pos.x},${pos.y})`, "data-id": node.id
     });
     const marker = model.initialEventId === node.id ? " · START" : "";
@@ -2872,7 +2943,8 @@ function renderNodes() {
       const r = EVENT_D / 2;
       g.appendChild(el("circle", { class: "body", cx: r, cy: r, r: r - 2 }));
       if (isMessageCatchEventType(node.type) || isTimerCatchEventType(node.type) ||
-          isConditionalCatchEventType(node.type) || isLinkEventType(node.type)) {
+          isConditionalCatchEventType(node.type) || isSignalCatchEventType(node.type) ||
+          isLinkEventType(node.type)) {
         g.appendChild(el("circle", { class: "ring", cx: r, cy: r, r: r - 6 }));
       }
       if (isScopedInterruptEventType(node.type)) {
@@ -3608,6 +3680,7 @@ function flowLabel(flow, source) {
   if (isErrorBoundaryEventType(source.type)) return "error";
   if (isTimerBoundaryEventType(source.type)) return "timer";
   if (isConditionalBoundaryEventType(source.type)) return "condition";
+  if (isSignalBoundaryEventType(source.type)) return "signal";
   if (isStartEventType(source.type)) return "start";
   if (isAutomaticType(source.type)) return "auto";
   if (isScriptTaskType(source.type)) return "script";
@@ -3925,6 +3998,11 @@ function changeNodeTypeFromInspector(node, nextType) {
   if (isConditionalCatchEventType(nextType) && !isConditionalCatchEventType(previousType)) {
     node.conditional = { condition: "" };
   }
+  // A signal catch and a signal boundary keep the signal across a change between them;
+  // any other type loses it in applyTypeInvariants below.
+  if (isSignalEventType(nextType) && !isSignalEventType(previousType)) {
+    node.signal = { name: "", outputMappings: [] };
+  }
   if (isStartEventType(previousType) && !isStartEventType(nextType)) {
     delete node.callOnly;
   }
@@ -3956,15 +4034,12 @@ function changeNodeTypeFromInspector(node, nextType) {
     }
   }
   const boundaryHostIsDurable = isUserTaskType(nextType) ||
-    isMessageCatchEventType(nextType) || isTimerCatchEventType(nextType);
+    isMessageCatchEventType(nextType) || isTimerCatchEventType(nextType) ||
+    isSignalCatchEventType(nextType);
   const boundaryHostIsAsyncAutomatic = (isAutomaticType(nextType) ||
     isServiceTaskType(nextType) || isScriptTaskType(nextType)) && node.asyncBefore === true;
   if (!boundaryHostIsDurable && !boundaryHostIsAsyncAutomatic) {
-    const attachedObservableBoundaries = model.flowNodes.filter(candidate =>
-      (isTimerBoundaryEventType(candidate.type) ||
-        isConditionalBoundaryEventType(candidate.type)) &&
-      candidate.attachedToRef === node.id);
-    const boundaryIds = new Set(attachedObservableBoundaries.map(candidate => candidate.id));
+    const boundaryIds = new Set(findObservableBoundaries(node.id).map(candidate => candidate.id));
     if (boundaryIds.size > 0) {
       model.flowNodes = model.flowNodes.filter(candidate => !boundaryIds.has(candidate.id));
       model.sequenceFlows = model.sequenceFlows.filter(flow =>
@@ -4062,6 +4137,11 @@ function renderNodeInspector() {
 
   if (isConditionalEventType(node.type)) {
     renderConditionalSection(node);
+  }
+
+  // A signal boundary draws its Signal section after its host and interruption fields.
+  if (isSignalCatchEventType(node.type)) {
+    renderSignalSection(node);
   }
 
   if (isScopedInterruptEventType(node.type)) {
@@ -4324,7 +4404,8 @@ function renderNodeInspector() {
       variable => variable.dataType === "string" && !variable.isArray);
   }
 
-  if (isTimerBoundaryEventType(node.type) || isConditionalBoundaryEventType(node.type)) {
+  if (isTimerBoundaryEventType(node.type) || isConditionalBoundaryEventType(node.type) ||
+      isSignalBoundaryEventType(node.type)) {
     const host = getNode(node.attachedToRef);
     const hostField = document.createElement("div");
     hostField.className = "field";
@@ -4335,16 +4416,25 @@ function renderNodeInspector() {
     hostInput.value = host ? `#${host.id} ${host.name}` : "(missing host)";
     hostField.appendChild(hostInput);
     inspector.appendChild(hostField);
+    if (isSignalBoundaryEventType(node.type)) {
+      attachInspectorHelp(hostField, "signal-boundary-host",
+        "The activity this boundary watches. A signal with this boundary's name reaches it only while that activity is active. To watch another activity, add a signal boundary from that activity's Boundary events.");
+    }
     const interruptToggle = inspector.appendChild(variableCheckbox(
       "Interrupt attached activity",
       node.cancelActivity === true,
       // The canvas draws the ring solid or dashed from this setting, so redraw it too.
       checked => { node.cancelActivity = checked; render(); }));
-    const eventName = isConditionalBoundaryEventType(node.type) ? "condition" : "timer";
+    const trigger = isConditionalBoundaryEventType(node.type) ? "the condition triggers"
+      : isSignalBoundaryEventType(node.type) ? "a signal with this name arrives"
+      : "the timer triggers";
     attachInspectorHelp(interruptToggle, "boundary-interrupt", [
-      `Checked: when the ${eventName} triggers, the attached activity and its open work are cancelled before the boundary path continues.`,
-      `Unchecked: when the ${eventName} triggers, a sibling execution follows the boundary path while the attached activity keeps waiting.`
+      `Checked: when ${trigger}, the attached activity and its open work are cancelled before the boundary path continues.`,
+      isSignalBoundaryEventType(node.type)
+        ? `Unchecked: each time ${trigger}, a sibling execution follows the boundary path while the attached activity keeps waiting.`
+        : `Unchecked: when ${trigger}, a sibling execution follows the boundary path while the attached activity keeps waiting.`
     ]);
+    if (isSignalBoundaryEventType(node.type)) renderSignalSection(node);
   }
 
   if (isTimerEventType(node.type)) {
@@ -4384,6 +4474,7 @@ function renderNodeInspector() {
     renderMisplacedCallOnly(node);
   }
   renderMisplacedTimer(node);
+  renderMisplacedSignal(node);
   // Service, script, and call nodes edit multi-instance in their own section; any
   // other imported node needs this explicit way to remove it.
   if (!isUserTaskType(node.type) && node.multiInstance != null &&
@@ -4400,7 +4491,8 @@ function renderNodeInspector() {
   }
 
   if (isUserTaskType(node.type) || isMessageCatchEventType(node.type) ||
-      isTimerCatchEventType(node.type) || isAutomaticType(node.type) ||
+      isTimerCatchEventType(node.type) || isSignalCatchEventType(node.type) ||
+      isAutomaticType(node.type) ||
       isServiceTaskType(node.type) || isScriptTaskType(node.type) ||
       isCallBodyNode(node)) {
     renderBoundaryHostSection(node);
@@ -4478,6 +4570,11 @@ function setAutomaticMultiInstance(node, enabled) {
       alert("Automatic items write declared local outputs or readWrite shared aliases. Remove or redirect these existing output mappings/assignments before enabling multi-instance: " + incompatible.join(", ") + ".");
       return false;
     }
+    // A multi-instance body cannot host a signal boundary, so nothing is removed silently.
+    if (findSignalBoundaries(node.id).length) {
+      alert("Delete this activity's signal boundaries before enabling multi-instance; a multi-instance service, script, or call activity cannot host them.");
+      return false;
+    }
     // A computed setVariable target cannot be checked here. Nothing is redirected:
     // the author reviews the script, and a write to a process variable fails the item.
     if (node.type === "scriptTask" && node.scriptFormat === "javascript" && hasText(node.script) &&
@@ -4494,7 +4591,7 @@ function setAutomaticMultiInstance(node, enabled) {
       return false;
     }
     if (node.type === "callActivity" && findObservableBoundaries(node.id).length) {
-      alert("Remove this call's timer and conditional boundaries before disabling multi-instance; ordinary calls cannot host them.");
+      alert("Remove this call's timer, conditional, and signal boundaries before disabling multi-instance; ordinary calls cannot host them.");
       return false;
     }
     if (node.type === "callActivity") {
@@ -4721,6 +4818,8 @@ function appendTypedOutputMappingFields(box, mapping, requiredLabel, defaultPlac
   };
   validationField.appendChild(validationInput);
   box.appendChild(validationField);
+  // A caller that adopts a suggested variable's type updates these without a redraw.
+  return { typeSelect, arrayInput: arrayCheckbox.querySelector("input"), defaultInput };
 }
 
 // The open inspector's Link section, so typing the name updates its status.
@@ -5269,6 +5368,235 @@ function renderConditionalSection(node) {
     "Atomic evaluates and captures the event in the variable writer transaction. It is the default and is omitted from saved JSON.",
     "Durable async persists the capture in that transaction, then a worker continues its path."
   ]);
+}
+
+// The names the other signal events in the diagram use, offered as suggestions. A boundary
+// is not offered the names save would refuse for it: its host catch's name and the names of
+// the other signal boundaries on the same host.
+function signalNamesInDiagram(exceptNode) {
+  const nameOf = candidate => {
+    const signal = candidate && candidate.signal;
+    return signal && typeof signal === "object" && typeof signal.name === "string" && signal.name
+      ? signal.name : null;
+  };
+  const refused = new Set();
+  if (exceptNode && isSignalBoundaryEventType(exceptNode.type)) {
+    for (const candidate of model.flowNodes) {
+      const hostOrSibling = candidate.id === exceptNode.attachedToRef ||
+        (isSignalBoundaryEventType(candidate.type) && candidate !== exceptNode &&
+          candidate.attachedToRef === exceptNode.attachedToRef);
+      if (hostOrSibling && nameOf(candidate)) refused.add(nameOf(candidate));
+    }
+  }
+  const names = new Set();
+  for (const candidate of model.flowNodes) {
+    if (candidate === exceptNode || !isSignalEventType(candidate.type)) continue;
+    const name = nameOf(candidate);
+    if (name && !refused.has(name)) names.add(name);
+  }
+  return [...names].sort();
+}
+
+function renderSignalSection(node) {
+  const title = document.createElement("h2");
+  title.textContent = "Signal";
+  title.style.marginTop = "16px";
+  inspector.appendChild(title);
+  attachInspectorHelp(title, "signal-event", [
+    (isSignalBoundaryEventType(node.type)
+      ? "Reacts to a signal with this name while the attached activity is active, then continues along its one outgoing flow. An interrupting boundary cancels the activity first; a non-interrupting one leaves it waiting and reacts to every later signal too. "
+      : "Waits until a signal with this name is thrown, then continues along its one outgoing flow. ") +
+      "A signal reaches only the waits that exist when it is thrown and is never kept for a wait that starts later, so use a message event when an instance must not miss it.",
+    "Throw a signal from the Signals page or with `POST /api/signal-broadcasts`. A running Worker delivers it to each waiting instance."
+  ]);
+
+  const signal = node.signal && typeof node.signal === "object" && !Array.isArray(node.signal)
+    ? node.signal : null;
+  if (!signal) {
+    // Drawing never writes: the imported value stays for save validation until replaced.
+    const warning = document.createElement("p");
+    warning.className = "empty-note";
+    warning.style.color = "var(--warning-text)";
+    warning.textContent = "The imported signal configuration is missing or malformed.";
+    inspector.appendChild(warning);
+
+    const repair = document.createElement("button");
+    repair.type = "button";
+    repair.textContent = "Replace with a signal configuration";
+    repair.onclick = () => {
+      node.signal = { name: "", outputMappings: [] };
+      renderInspector();
+      inspector.querySelector("[data-signal-name]")?.focus();
+    };
+    inspector.appendChild(repair);
+    return;
+  }
+
+  const nameInput = field("Signal name", "text", signal.name == null ? "" : String(signal.name), value => {
+    signal.name = value;
+    updateNameStatus();
+  });
+  nameInput.setAttribute("data-signal-name", "true");
+  nameInput.placeholder = "claims.policy-changed";
+  nameInput.spellcheck = false;
+  const knownNames = signalNamesInDiagram(node);
+  if (knownNames.length > 0) {
+    const list = document.createElement("datalist");
+    list.id = `signal-name-suggestions-${++writableTargetSuggestionId}`;
+    knownNames.forEach(name => {
+      const option = document.createElement("option");
+      option.value = name;
+      list.appendChild(option);
+    });
+    nameInput.setAttribute("list", list.id);
+    nameInput.parentNode.appendChild(list);
+  }
+  const nameStatus = document.createElement("p");
+  nameStatus.className = "expression-validation";
+  nameStatus.setAttribute("role", "status");
+  nameStatus.setAttribute("aria-live", "polite");
+  nameStatus.id = "signal-name-status-" + String(node.id);
+  nameInput.setAttribute("aria-describedby", nameStatus.id);
+  nameInput.parentNode.appendChild(nameStatus);
+  // The line shows what saving would report; an uppercase letter gets its reason too. A
+  // boundary also reports a name its host catch or a sibling signal boundary already uses,
+  // including when saving reports it on the sibling with the higher id.
+  const boundaryNameProblem = () => {
+    if (!isSignalBoundaryEventType(node.type)) return null;
+    const problems = signalBoundaryNameProblems(model.flowNodes);
+    return (problems.find(item => item.id === node.id) ||
+      problems.find(item => item.otherId === node.id))?.message ?? null;
+  };
+  const updateNameStatus = () => {
+    const problem = signalNameProblem(signal.name, signalEventLabel(node)) || boundaryNameProblem();
+    const uppercase = typeof signal.name === "string" && /[A-Z]/.test(signal.name);
+    nameInput.setAttribute("aria-invalid", problem ? "true" : "false");
+    nameStatus.textContent = !problem ? ""
+      : uppercase ? problem + " Use lowercase letters, so letter case never makes a signal miss a wait."
+      : problem;
+  };
+  updateNameStatus();
+  attachInspectorHelp(nameInput, "signal-name",
+    "A literal name compared exactly: 1 to 100 lowercase letters, digits, '.', '_', or '-', starting with a letter or digit. Start it with a dotted prefix, such as `claims.policy-changed`, so that unrelated workflows do not share a name by accident.",
+    ["claims.policy-changed"]);
+
+  const outTitle = document.createElement("h2");
+  outTitle.textContent = "Output mappings";
+  outTitle.style.marginTop = "16px";
+  inspector.appendChild(outTitle);
+  attachInspectorHelp(outTitle, "signal-output-mappings",
+    "Each mapping copies a value from the signal's payload into a typed instance variable. A signal reaches many instances at once, so its mappings never write or read shared variables. The payload path may be blank only when a default value is configured.");
+
+  if (!Array.isArray(signal.outputMappings)) {
+    const warning = document.createElement("p");
+    warning.className = "empty-note";
+    warning.style.color = "var(--warning-text)";
+    warning.textContent = "This imported outputMappings value is not a list, so it cannot be edited here.";
+    inspector.appendChild(warning);
+    const reset = document.createElement("button");
+    reset.type = "button";
+    reset.textContent = "Replace it with an empty list";
+    reset.style.marginTop = "8px";
+    reset.onclick = () => {
+      signal.outputMappings = [];
+      renderInspector();
+      inspector.querySelector("[data-signal-add-mapping]")?.focus();
+    };
+    inspector.appendChild(reset);
+    return;
+  }
+
+  const mappings = signal.outputMappings;
+  mappings.forEach((mapping, index) => {
+    const box = document.createElement("div");
+    box.className = "field inspector-card";
+
+    const varField = document.createElement("div");
+    varField.className = "field";
+    varField.innerHTML = "<label>Variable</label>";
+    const varInput = document.createElement("input");
+    varInput.type = "text";
+    varInput.value = mapping.variable ?? "";
+    varInput.setAttribute("data-signal-mapping", String(index));
+    varInput.oninput = () => { mapping.variable = varInput.value; };
+    varField.appendChild(varInput);
+    box.appendChild(varField);
+
+    const pathField = document.createElement("div");
+    pathField.className = "field";
+    pathField.innerHTML = "<label>Payload path</label>";
+    const pathInput = document.createElement("input");
+    pathInput.type = "text";
+    pathInput.value = mapping.path ?? "";
+    pathInput.placeholder = "version";
+    pathInput.oninput = () => { mapping.path = pathInput.value; };
+    pathField.appendChild(pathInput);
+    box.appendChild(pathField);
+
+    const typed = appendTypedOutputMappingFields(
+      box,
+      mapping,
+      "Required final value",
+      "Used only when the payload path is absent");
+    // Choosing a suggested variable adopts its type in place, so Tab still reaches the next field.
+    attachWritableTargetSuggestions(varInput, match => {
+      if (isSharedProcessVariable(match)) return;
+      mapping.variable = match.name;
+      varInput.value = match.name;
+      mapping.dataType = match.dataType;
+      mapping.isArray = !!match.isArray;
+      typed.typeSelect.value = match.dataType;
+      if (typed.arrayInput) typed.arrayInput.checked = !!match.isArray;
+      mapping.defaultValue = parseDefaultValue(typed.defaultInput.value, mapping);
+    }, false, variable => !isSharedProcessVariable(variable));
+
+    const del = document.createElement("button");
+    del.type = "button";
+    del.textContent = "Delete mapping";
+    del.className = "danger";
+    del.style.width = "100%";
+    del.onclick = () => {
+      mappings.splice(index, 1);
+      renderInspector();
+      inspector.querySelector("[data-signal-add-mapping]")?.focus();
+    };
+    box.appendChild(del);
+
+    inspector.appendChild(box);
+  });
+
+  const addMappingBtn = document.createElement("button");
+  addMappingBtn.type = "button";
+  addMappingBtn.textContent = "+ Add mapping";
+  addMappingBtn.style.marginTop = "8px";
+  addMappingBtn.setAttribute("data-signal-add-mapping", "true");
+  addMappingBtn.onclick = () => {
+    mappings.push({
+      variable: "", path: "", dataType: "string", isArray: false,
+      required: false, defaultValue: null, validation: null
+    });
+    renderInspector();
+    inspector.querySelector(`[data-signal-mapping="${mappings.length - 1}"]`)?.focus();
+  };
+  inspector.appendChild(addMappingBtn);
+}
+
+// Save refuses a signal configuration on any other node type, so this is the way to remove one
+// that an import kept, such as on a call.
+function renderMisplacedSignal(node) {
+  if (node.signal == null || isSignalEventType(node.type)) return;
+  const warning = document.createElement("p");
+  warning.className = "empty-note";
+  warning.style.color = "var(--warning-text)";
+  warning.style.marginTop = "12px";
+  warning.textContent = "This imported node defines a signal, which only a signal event can use, so the workflow cannot be saved.";
+  inspector.appendChild(warning);
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.textContent = "Remove this signal";
+  remove.style.marginTop = "8px";
+  remove.onclick = () => { delete node.signal; renderInspector(); };
+  inspector.appendChild(remove);
 }
 
 function renderMessageSection(node) {
@@ -6576,7 +6904,7 @@ function renderAsyncJobSection(node) {
   inspector.appendChild(variableCheckbox("Async before", node.asyncBefore === true, checked => {
     if (!checked && findObservableBoundaries(node.id).length > 0 &&
         (isAutomaticType(node.type) || isServiceTaskType(node.type) || isScriptTaskType(node.type))) {
-      if (!confirm("Disabling async before removes attached timer and conditional boundary events and their outgoing flows. Continue?")) {
+      if (!confirm("Disabling async before removes attached timer, conditional, and signal boundary events and their outgoing flows. Continue?")) {
         renderInspector();
         return;
       }
@@ -7308,6 +7636,9 @@ function renderBoundaryHostSection(hostNode) {
   const automatic = isAutomaticType(hostNode.type) ||
     isServiceTaskType(hostNode.type) || isScriptTaskType(hostNode.type);
   const eligible = !automatic || hostNode.asyncBefore === true;
+  // Mirrors the server: a multi-instance service, script, or call body hosts timer and
+  // conditional boundaries, but never a signal boundary.
+  const automaticBody = saveIsAutomaticMultiInstanceType(hostNode.type) && hostNode.multiInstance != null;
   const boundaries = findObservableBoundaries(hostNode.id);
   for (const boundary of boundaries) {
     const box = document.createElement("div");
@@ -7315,7 +7646,8 @@ function renderBoundaryHostSection(hostNode) {
     const out = outgoingFlows(boundary.id);
     const target = out.length ? getNode(out[0].targetRef) : null;
     const behavior = boundary.cancelActivity === false ? "non-interrupting" : "interrupting";
-    const kind = isConditionalBoundaryEventType(boundary.type) ? "conditional" : "timer";
+    const kind = isConditionalBoundaryEventType(boundary.type) ? "conditional"
+      : isSignalBoundaryEventType(boundary.type) ? "signal" : "timer";
     box.innerHTML = `<div class="badge">${kind} #${boundary.id} · ${behavior} → ${target ? '#' + target.id + ' ' + target.name : 'no flow yet'}</div>`;
     box.onclick = () => select("node", boundary.id);
     inspector.appendChild(box);
@@ -7324,14 +7656,24 @@ function renderBoundaryHostSection(hostNode) {
   if (!eligible) {
     const hint = document.createElement("p");
     hint.className = "empty-note";
-    hint.textContent = "Enable async before to attach timer or conditional boundaries; the durable wait must exist before external or scripted work begins.";
+    hint.textContent = "Enable async before to attach timer, conditional, or signal boundaries; the durable wait must exist before external or scripted work begins.";
     inspector.appendChild(hint);
     return;
+  }
+  if (automaticBody) {
+    const attachedSignals = findSignalBoundaries(hostNode.id).length > 0;
+    const note = document.createElement("p");
+    note.className = "empty-note";
+    if (attachedSignals) note.style.color = "var(--warning-text)";
+    note.textContent = attachedSignals
+      ? "A multi-instance service, script, or call activity cannot host signal boundaries. Delete the attached signal boundaries before saving."
+      : "A multi-instance service, script, or call activity cannot host signal boundaries.";
+    inspector.appendChild(note);
   }
   if (boundaries.length >= 8) {
     const limit = document.createElement("p");
     limit.className = "empty-note";
-    limit.textContent = "The combined limit of eight timer and conditional boundaries on this host has been reached.";
+    limit.textContent = "The combined limit of eight timer, conditional, and signal boundaries on this host has been reached.";
     inspector.appendChild(limit);
     return;
   }
@@ -7348,6 +7690,14 @@ function renderBoundaryHostSection(hostNode) {
   addConditional.style.marginTop = "8px";
   addConditional.onclick = () => addConditionalBoundary(hostNode);
   inspector.appendChild(addConditional);
+
+  if (automaticBody) return;
+  const addSignal = document.createElement("button");
+  addSignal.textContent = "+ Add signal boundary event";
+  addSignal.style.width = "100%";
+  addSignal.style.marginTop = "8px";
+  addSignal.onclick = () => addSignalBoundary(hostNode);
+  inspector.appendChild(addSignal);
 }
 
 function addTimerBoundary(hostNode) {
@@ -7404,6 +7754,39 @@ function addConditionalBoundary(hostNode) {
     attachedToRef: hostNode.id,
     cancelActivity: true,
     conditional: { condition: "" }
+  };
+  model.flowNodes.push(boundary);
+  applyTypeInvariants(boundary);
+  select("node", boundary.id);
+  setConnectMode(true);
+  connectSource = boundary.id;
+  renderHint();
+  render();
+}
+
+// The boundary starts without a signal name, so saving reports it until one is typed.
+function addSignalBoundary(hostNode) {
+  const boundary = {
+    id: nextNodeId(),
+    name: hostNode.name ? `${hostNode.name} signal` : "Signal",
+    externalId: null,
+    type: NODE_TYPE.SIGNAL_BOUNDARY_EVENT,
+    laneId: hostNode.laneId ?? null,
+    x: hostNode.x,
+    y: hostNode.y,
+    attributes: [],
+    roles: [],
+    requiresClaim: false,
+    claimMode: CLAIM_MODE.FRESH,
+    inheritClaimFromNodeId: null,
+    requiresAssignment: false,
+    assignmentMode: ASSIGNMENT_MODE.FRESH,
+    inheritAssignmentFromNodeId: null,
+    variables: [],
+    assignee: null,
+    attachedToRef: hostNode.id,
+    cancelActivity: true,
+    signal: { name: "", outputMappings: [] }
   };
   model.flowNodes.push(boundary);
   applyTypeInvariants(boundary);
@@ -10592,6 +10975,9 @@ function buildInboxVisibilitySymbols(definitionOrVariables) {
     if (node.message && typeof node.message === "object") {
       addMappings(node.message.outputMappings, nodeProducer + " message output");
     }
+    if (node.signal && typeof node.signal === "object") {
+      addMappings(node.signal.outputMappings, nodeProducer + " signal output");
+    }
     add(node.errorVariable, "string", false, nodeProducer + " boundary error");
     if (node.idempotency && typeof node.idempotency === "object") {
       add(node.idempotency.variable, "string", false,
@@ -11455,7 +11841,8 @@ function createSaveValidationContext(candidate) {
   for (const boundary of ctx.nodes) {
     if (boundary && (boundary.type === "errorBoundaryEvent" ||
         boundary.type === "timerBoundaryEvent" ||
-        boundary.type === "conditionalBoundaryEvent") &&
+        boundary.type === "conditionalBoundaryEvent" ||
+        boundary.type === "signalBoundaryEvent") &&
         Number.isInteger(boundary.attachedToRef)) {
       addStructuralTarget(boundary.attachedToRef, boundary.id);
     }
@@ -11535,6 +11922,7 @@ function validateModelForSave(candidate) {
   validateSaveMessageCatches(ctx);
   validateSaveTimerCatches(ctx);
   validateSaveConditionalEvents(ctx);
+  validateSaveSignalEvents(ctx);
   validateSaveMessageStarts(ctx);
   validateSaveEntries(ctx);
   validateSaveEndEvents(ctx);
@@ -11724,6 +12112,11 @@ function validateFlowInfoUsage(ctx) {
         validateFlowInfoExpression(ctx, mapping && mapping.validation,
           label + " message output validation", false);
       }
+      const signal = node && node.signal && typeof node.signal === "object" ? node.signal : null;
+      for (const mapping of Array.isArray(signal && signal.outputMappings) ? signal.outputMappings : []) {
+        validateFlowInfoExpression(ctx, mapping && mapping.validation,
+          label + " signal output validation", false);
+      }
 
       const isNCalcScript = node && node.type === "scriptTask" && node.scriptFormat !== "javascript";
       for (const assignment of Array.isArray(node && node.assignments) ? node.assignments : []) {
@@ -11891,6 +12284,12 @@ function validateGatewayExpressionUsage(ctx) {
           ? message.outputMappings : []) {
         validateGatewayExpression(ctx, mapping && mapping.validation,
           label + " message output validation", null, false);
+      }
+      const signal = node && node.signal && typeof node.signal === "object" ? node.signal : null;
+      for (const mapping of Array.isArray(signal && signal.outputMappings)
+          ? signal.outputMappings : []) {
+        validateGatewayExpression(ctx, mapping && mapping.validation,
+          label + " signal output validation", null, false);
       }
       for (const assignment of Array.isArray(node && node.assignments)
           ? node.assignments : []) {
@@ -12997,7 +13396,8 @@ function validateSaveDeclaredProducers(ctx) {
   }
 }
 
-function validateTypedOutputMappings(ctx, label, mappings, pathKind, enforceProcessContract) {
+// instanceOnly: the caller reports every shared target itself, read-only or not.
+function validateTypedOutputMappings(ctx, label, mappings, pathKind, enforceProcessContract, instanceOnly = false) {
     const errors = ctx.errors;
     const processByName = ctx.processByName;
     const seenMappings = new Set();
@@ -13035,7 +13435,7 @@ function validateTypedOutputMappings(ctx, label, mappings, pathKind, enforceProc
       }
 
       const processVariable = processByName.get(key);
-      if (processVariable && !saveIsWritableProcessVariable(processVariable)) {
+      if (!instanceOnly && processVariable && !saveIsWritableProcessVariable(processVariable)) {
         errors.push(label + " output mapping '" + variableName +
           "' cannot target a read-only shared variable.");
       }
@@ -13125,12 +13525,12 @@ function validateSaveAsyncJobsAndTimers(ctx) {
       errors.push("Timer start event #" + node.id +
         " cannot define businessKey or idempotency; scheduler occurrences use an internal key.");
     }
-    if (!["timerBoundaryEvent", "conditionalBoundaryEvent"].includes(node.type) &&
+    if (!OBSERVABLE_BOUNDARY_TYPES.includes(node.type) &&
         node.cancelActivity != null) {
       errors.push("Flow node #" + node.id +
-        " defines cancelActivity but is not a timer or conditional boundary event.");
+        " defines cancelActivity but is not a timer, conditional, or signal boundary event.");
     }
-    if (["timerBoundaryEvent", "conditionalBoundaryEvent"].includes(node.type) &&
+    if (OBSERVABLE_BOUNDARY_TYPES.includes(node.type) &&
         node.cancelActivity != null &&
         typeof node.cancelActivity !== "boolean") {
       errors.push("Boundary event #" + node.id +
@@ -13474,6 +13874,12 @@ function validateSaveErrorBoundaries(ctx) {
   }
 }
 
+// Mirrors BpmnFlowNodeTypes.IsObservableBoundary: the boundaries that share one host limit.
+const OBSERVABLE_BOUNDARY_TYPES = ["timerBoundaryEvent", "conditionalBoundaryEvent", "signalBoundaryEvent"];
+const MAX_OBSERVABLE_BOUNDARIES_PER_HOST = 8;
+
+// Timer and conditional boundaries; validateSaveSignalEvents checks signal boundaries in the
+// server's order. The host limit counts all three kinds.
 function validateSaveWaitBoundaries(ctx) {
   const errors = ctx.errors;
   const nodes = ctx.nodes;
@@ -13485,7 +13891,7 @@ function validateSaveWaitBoundaries(ctx) {
       : "Timer boundary event #") + String(node.id);
     const host = nodes.find(candidate => candidate && candidate.id === node.attachedToRef);
     const durableWait = host && ["userTask", "intermediateMessageCatchEvent",
-      "intermediateTimerCatchEvent"].includes(host.type);
+      "intermediateTimerCatchEvent", "intermediateSignalCatchEvent"].includes(host.type);
     const asyncAutomatic = host && ["task", "serviceTask", "scriptTask"].includes(host.type) &&
       host.asyncBefore === true;
     const automaticCall = host && host.type === "callActivity" && host.multiInstance != null;
@@ -13502,21 +13908,23 @@ function validateSaveWaitBoundaries(ctx) {
       errors.push(label + " must have one unconditional outgoing sequence flow without " +
         "user-action or multi-instance metadata.");
     }
+    const hostLimit = observableHostLimitProblem(ctx, node);
+    if (hostLimit) errors.push(hostLimit);
   }
-  const observableBoundaryHostIds = new Set(nodes
-    .filter(candidate => candidate &&
-      ["timerBoundaryEvent", "conditionalBoundaryEvent"].includes(candidate.type) &&
-      Number.isInteger(candidate.attachedToRef))
-    .map(candidate => candidate.attachedToRef));
-  for (const hostId of observableBoundaryHostIds) {
-    const siblingCount = nodes.filter(candidate => candidate &&
-      ["timerBoundaryEvent", "conditionalBoundaryEvent"].includes(candidate.type) &&
-      candidate.attachedToRef === hostId).length;
-    if (siblingCount > 8) {
-      errors.push("Host node #" + String(hostId) +
-        " has more than eight combined timer and conditional boundary events.");
-    }
-  }
+}
+
+// Mirrors the host limit in ValidateObservableBoundary. The server reaches it on the host's
+// first timer, conditional, or signal boundary in node order, after that boundary's own
+// checks, so it is reported there once, never ahead of that boundary's other problems.
+function observableHostLimitProblem(ctx, node) {
+  if (!Number.isInteger(node.attachedToRef)) return null;
+  const siblings = ctx.nodes.filter(candidate => candidate &&
+    OBSERVABLE_BOUNDARY_TYPES.includes(candidate.type) &&
+    candidate.attachedToRef === node.attachedToRef);
+  if (siblings[0] !== node || siblings.length <= MAX_OBSERVABLE_BOUNDARIES_PER_HOST) return null;
+  return "Host node #" + String(node.attachedToRef) + " has " + siblings.length +
+    " timer, conditional, and signal boundary events; at most " +
+    MAX_OBSERVABLE_BOUNDARIES_PER_HOST + " are allowed.";
 }
 
 const CALL_MAPPINGS_PER_DIRECTION = 100;
@@ -13544,6 +13952,10 @@ function callSourceDeclarations(candidate) {
     if (node.idempotency && typeof node.idempotency === "object") add(node.idempotency.variable, "string", false);
     const message = node.message && typeof node.message === "object" ? node.message : null;
     for (const mapping of Array.isArray(message && message.outputMappings) ? message.outputMappings : []) {
+      add(mapping && mapping.variable, (mapping && mapping.dataType) || "json", mapping && mapping.isArray);
+    }
+    const signal = node.signal && typeof node.signal === "object" ? node.signal : null;
+    for (const mapping of Array.isArray(signal && signal.outputMappings) ? signal.outputMappings : []) {
       add(mapping && mapping.variable, (mapping && mapping.dataType) || "json", mapping && mapping.isArray);
     }
     const service = node.service && typeof node.service === "object" ? node.service : null;
@@ -14062,6 +14474,189 @@ function validateSaveConditionalEvents(ctx) {
   }
 }
 
+// Mirrors SignalEventRules: a signal name is literal text, compared exactly. A JavaScript
+// $ matches only at the end of the text, as the server's \z does.
+const SIGNAL_NAME_PATTERN = /^[a-z0-9][a-z0-9._-]{0,99}$/;
+const SIGNAL_NAME_RULE =
+  "1 to 100 lowercase letters, digits, '.', '_', or '-', starting with a letter or digit";
+const SIGNAL_MAX_OUTPUT_MAPPINGS = 100;
+function signalEventLabel(node) {
+  return (node && node.type === "signalBoundaryEvent" ? "Signal boundary event #" : "Signal catch event #") +
+    String(node && node.id);
+}
+// Mirrors SignalEventRules.BoundaryNameProblems, in its order: by boundary id, a later signal
+// boundary repeating an earlier one's name on the same host, then a boundary repeating its
+// host catch's name. Only valid names are compared, so an invalid one is reported once.
+// Returns { id, message } items, so a caller can take one boundary's problems; a repeated
+// name also gives otherId, the boundary that used it first.
+function signalBoundaryNameProblems(nodes) {
+  const list = (Array.isArray(nodes) ? nodes : []).filter(Boolean);
+  const byId = new Map();
+  for (const node of list) if (!byId.has(node.id)) byId.set(node.id, node);
+  const nameOf = node => node && node.signal && typeof node.signal === "object" ? node.signal.name : undefined;
+  const problems = [];
+  const firstOnHost = new Map();
+  const boundaries = list
+    .filter(node => node.type === "signalBoundaryEvent" && Number.isInteger(node.attachedToRef) &&
+      typeof nameOf(node) === "string" && SIGNAL_NAME_PATTERN.test(nameOf(node)))
+    .map((node, index) => ({ node, index }))
+    // A stable order by id, as LINQ's OrderBy is.
+    .sort((left, right) => (left.node.id - right.node.id) || (left.index - right.index))
+    .map(item => item.node);
+  for (const node of boundaries) {
+    const name = nameOf(node);
+    const hostId = node.attachedToRef;
+    const key = JSON.stringify([hostId, name]);
+    if (firstOnHost.has(key)) {
+      problems.push({ id: node.id, otherId: firstOnHost.get(key), message: "Signal boundary event #" + String(node.id) +
+        " uses signal '" + name + "', which signal boundary event #" + String(firstOnHost.get(key)) +
+        " on host #" + String(hostId) + " already uses." });
+    } else {
+      firstOnHost.set(key, node.id);
+    }
+    const host = byId.get(hostId);
+    if (host && host.type === "intermediateSignalCatchEvent" && nameOf(host) === name) {
+      problems.push({ id: node.id, message: "Signal boundary event #" + String(node.id) +
+        " uses signal '" + name + "', the signal its host signal catch event #" + String(hostId) +
+        " waits for." });
+    }
+  }
+  return problems;
+}
+// The server's message for a missing or invalid signal name, or null for a valid one.
+function signalNameProblem(name, label) {
+  if (name === undefined || name === null || name === "") {
+    return label + " must define signal.name.";
+  }
+  if (typeof name !== "string" || !SIGNAL_NAME_PATTERN.test(name)) {
+    return label + " signal.name must be " + SIGNAL_NAME_RULE + ".";
+  }
+  return null;
+}
+// Mirrors ValidateSignalCatch, ValidateSignalBoundary, and ValidateSignalMappings, in the
+// server's order for each event: its outgoing count, its name, its mapping count, then for a
+// catch its incoming flow, or for a boundary its host and its incoming flows, then its
+// outgoing flow's metadata, a boundary's host limit (observableHostLimitProblem), its name
+// rules, and its mappings. Mappings write instance variables only, and nothing a delivery
+// evaluates may read a shared alias, which the parsed references show.
+function validateSaveSignalEvents(ctx) {
+  const errors = ctx.errors;
+  const signalEvents = ctx.nodes.filter(candidate => candidate &&
+    (candidate.type === "intermediateSignalCatchEvent" || candidate.type === "signalBoundaryEvent"));
+  const boundaryNameProblems = signalEvents.some(node => node.type === "signalBoundaryEvent")
+    ? signalBoundaryNameProblems(ctx.nodes) : [];
+  for (const node of signalEvents) {
+    const boundary = node.type === "signalBoundaryEvent";
+    const label = signalEventLabel(node);
+    const incoming = ctx.incomingFor(node.id);
+    const outgoing = ctx.outgoingFor(node.id);
+    if (outgoing.length !== 1) {
+      errors.push(label + " must have exactly one outgoing sequence flow.");
+    }
+    const configured = node.signal !== undefined && node.signal !== null;
+    const signal = configured && typeof node.signal === "object" && !Array.isArray(node.signal)
+      ? node.signal : null;
+    if (configured && !signal) {
+      errors.push(label + " signal must be an object with a name and output mappings.");
+    } else {
+      const nameProblem = signalNameProblem(signal ? signal.name : undefined, label);
+      if (nameProblem) errors.push(nameProblem);
+    }
+    const rawMappings = signal ? signal.outputMappings : undefined;
+    if (rawMappings !== undefined && rawMappings !== null && !Array.isArray(rawMappings)) {
+      errors.push(label + " signal.outputMappings must be a list.");
+    }
+    const mappings = Array.isArray(rawMappings) ? rawMappings : [];
+    if (mappings.length > SIGNAL_MAX_OUTPUT_MAPPINGS) {
+      errors.push(label + " defines more than " + SIGNAL_MAX_OUTPUT_MAPPINGS + " output mappings.");
+    }
+    if (boundary) {
+      // Mirrors ValidateObservableBoundary with automatic bodies refused.
+      const hostId = node.attachedToRef;
+      const host = hostId == null ? null : ctx.nodesById.get(hostId);
+      if (hostId == null) {
+        errors.push(label + " must reference a host via attachedToRef.");
+      } else if (!host) {
+        errors.push(label + " attachedToRef #" + String(hostId) + " does not reference an existing flow node.");
+      } else {
+        const durableWait = ["userTask", "intermediateMessageCatchEvent",
+          "intermediateTimerCatchEvent", "intermediateSignalCatchEvent"].includes(host.type);
+        const asyncAutomatic = ["task", "serviceTask", "scriptTask"].includes(host.type) &&
+          host.asyncBefore === true;
+        const automaticBody = saveIsAutomaticMultiInstanceType(host.type) && host.multiInstance != null;
+        if (!durableWait && !asyncAutomatic && !(host.type === "callActivity" && automaticBody)) {
+          errors.push(label + " host #" + String(host.id) +
+            " must be a durable wait or an automatic task with asyncBefore enabled.");
+        } else if (automaticBody) {
+          errors.push(label + " host #" + String(host.id) +
+            " is a multi-instance service, script, or call activity, which signal boundaries do not support.");
+        }
+      }
+      if (incoming.length > 0) errors.push(label + " cannot have incoming sequence flows.");
+    } else if (incoming.length === 0) {
+      errors.push(label + " must have at least one incoming sequence flow.");
+    }
+    if (outgoing.length === 1 &&
+        (hasUnsupportedPassThroughMetadata(outgoing[0]) || outgoing[0].conditionPriority != null)) {
+      errors.push(label + " must have one unconditional outgoing sequence flow without " +
+        "user-action or multi-instance metadata.");
+    }
+    if (boundary) {
+      const hostLimit = observableHostLimitProblem(ctx, node);
+      if (hostLimit) errors.push(hostLimit);
+      for (const problem of boundaryNameProblems) {
+        if (problem.id === node.id) errors.push(problem.message);
+      }
+    }
+    if (mappings.some(mapping => mapping === null)) {
+      errors.push(label + " output mappings cannot contain null entries.");
+    }
+    const entries = mappings.filter(mapping => mapping !== null);
+    validateTypedOutputMappings(ctx, label, entries, "payload", true, true);
+
+    const shared = ctx.processVariables.filter(variable =>
+      saveIsSharedProcessVariable(variable) && hasText(variable.name));
+    if (shared.length === 0) continue;
+    for (const mapping of entries) {
+      if (!mapping || typeof mapping !== "object" || !hasText(mapping.variable)) continue;
+      const target = ctx.processByName.get(mapping.variable.trim().toLowerCase());
+      // The server's normalization gives a mapping its target's spelling before it reports one.
+      const shown = target ? target.name : mapping.variable;
+      if (target && saveIsSharedProcessVariable(target)) {
+        errors.push(label + " output mapping '" + shown + "' cannot write shared variable alias '" +
+          target.name + "'; signal mappings write instance variables only.");
+        continue;
+      }
+      // Default templates, then the mapping's validation, then the target's validation.
+      const defaults = typeof mapping.defaultValue === "string" ? [mapping.defaultValue]
+        : Array.isArray(mapping.defaultValue)
+          ? mapping.defaultValue.filter(item => typeof item === "string") : [];
+      const sources = [
+        ...defaults.map(text => ({ text, template: true })),
+        { text: mapping.validation, template: false },
+        { text: target && target.validation, template: false }
+      ];
+      // The server names the alias referenced first, not the one declared first.
+      let read = null;
+      for (const source of sources) {
+        let earliest = -1;
+        for (const variable of shared) {
+          const index = automaticExpressionReadIndex(source.text, source.template, variable.name.trim());
+          if (index >= 0 && (earliest < 0 || index < earliest)) {
+            earliest = index;
+            read = variable;
+          }
+        }
+        if (read) break;
+      }
+      if (read) {
+        errors.push(label + " output mapping '" + shown + "' cannot read shared variable alias '" +
+          read.name + "' in its default or validation.");
+      }
+    }
+  }
+}
+
 function validateSaveMessageStarts(ctx) {
   const errors = ctx.errors;
   const nodes = ctx.nodes;
@@ -14260,8 +14855,9 @@ const supportedNodeTypes = new Set([
   "scriptTask", "callActivity", "exclusiveGateway", "parallelGateway", "inclusiveGateway",
   "complexGateway", "scopedInterruptEvent", "endEvent", "terminateEndEvent",
   "errorEndEvent", "errorBoundaryEvent", "timerBoundaryEvent", "conditionalBoundaryEvent",
-  "intermediateMessageCatchEvent", "intermediateTimerCatchEvent",
-  "intermediateConditionalCatchEvent", "intermediateLinkThrowEvent", "intermediateLinkCatchEvent"
+  "signalBoundaryEvent", "intermediateMessageCatchEvent", "intermediateTimerCatchEvent",
+  "intermediateConditionalCatchEvent", "intermediateSignalCatchEvent",
+  "intermediateLinkThrowEvent", "intermediateLinkCatchEvent"
 ]);
 function validateSaveNodeTypes(ctx) {
   const errors = ctx.errors;
@@ -14287,6 +14883,10 @@ function validateSaveNodeTypes(ctx) {
         node.conditional != null) {
       errors.push("Flow node #" + String(node.id) +
         " can define conditional only when its type is a conditional catch or boundary event.");
+    }
+    if (node.type !== "intermediateSignalCatchEvent" && node.type !== "signalBoundaryEvent" &&
+        node.signal != null) {
+      errors.push("Flow node #" + String(node.id) + " defines signal but is not a signal event.");
     }
   }
 }
@@ -14342,7 +14942,7 @@ function validateSaveGateways(ctx) {
         gateway.inheritAssignmentFromNodeId != null ||
         gateway.multiInstance != null || gateway.service != null ||
         countItems(gateway.assignments) > 0 || hasText(gateway.script) ||
-        gateway.message != null || gateway.attachedToRef != null ||
+        gateway.message != null || gateway.signal != null || gateway.attachedToRef != null ||
         gateway.errorVariable != null || gateway.businessKey != null ||
         gateway.idempotency != null) {
       errors.push(label + " can define only gateway configuration and normal node identity/layout fields.");
@@ -14506,7 +15106,7 @@ function validateSaveGraphScopes(ctx) {
         interrupt.inheritAssignmentFromNodeId != null ||
         interrupt.multiInstance != null || interrupt.service != null ||
         countItems(interrupt.assignments) > 0 || hasText(interrupt.script) ||
-        interrupt.message != null || interrupt.attachedToRef != null ||
+        interrupt.message != null || interrupt.signal != null || interrupt.attachedToRef != null ||
         interrupt.errorVariable != null || interrupt.businessKey != null ||
         interrupt.idempotency != null) {
       errors.push(label + " can define only gatewayRef and normal node identity/layout fields.");
@@ -14630,23 +15230,30 @@ function automaticItemContextViolation(expression, template) {
 // parameter: [name], {name}, or a bare name that is neither part of a dotted name
 // nor a function call, outside quoted text.
 function automaticExpressionReadsName(expression, template, name) {
-  if (typeof expression !== "string" || !hasText(expression) || !hasText(name)) return false;
+  return automaticExpressionReadIndex(expression, template, name) >= 0;
+}
+
+// Where the expression first reads name, or -1 when it does not. Parsed references come
+// in the order they are written, so the earliest index is the server's first reference.
+function automaticExpressionReadIndex(expression, template, name) {
+  if (typeof expression !== "string" || !hasText(expression) || !hasText(name)) return -1;
   let match;
   if (template) {
     const placeholders = /\$\{\s*([^}\s]+)\s*\}/g;
     while ((match = placeholders.exec(expression)) !== null) {
-      if (match[1].toLowerCase() === name.toLowerCase()) return true;
+      if (match[1].toLowerCase() === name.toLowerCase()) return match.index;
     }
-    return false;
+    return -1;
   }
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   // NCalc identifiers are ASCII letters, digits, '_' and '$'.
   const parameter = new RegExp("(^|[^A-Za-z0-9_$.\\[{])(\\[" + escaped + "\\]|\\{" + escaped + "\\}|" + escaped +
     "(?![A-Za-z0-9_$.]|\\s*\\())", "gi");
   while ((match = parameter.exec(expression)) !== null) {
-    if (!isInsideQuotedExpressionText(expression, match.index + match[1].length)) return true;
+    const index = match.index + match[1].length;
+    if (!isInsideQuotedExpressionText(expression, index)) return index;
   }
-  return false;
+  return -1;
 }
 
 // Mirrors WorkflowDefinitionValidator.FindItemExpressionProblem: an item reads only
@@ -15024,6 +15631,9 @@ function prepareWorkflowExport(candidate = model) {
     if (isConditionalEventType(node.type) && node.conditional != null) {
       node.conditional = normalizeConditionalDefinition(node.conditional);
     }
+    if (isSignalEventType(node.type) && node.signal != null) {
+      node.signal = normalizeSignalDefinition(node.signal, exportModel.variables);
+    }
     if (isScriptTaskType(node.type)) {
       node.scriptFormat = canonicalizeKnownValue(
         node.scriptFormat, [SCRIPT_FORMAT.NCALC, SCRIPT_FORMAT.JAVASCRIPT], undefined);
@@ -15379,7 +15989,7 @@ function normalizeLoadedModel(obj) {
         timer: ["timerStartEvent", "intermediateTimerCatchEvent", "timerBoundaryEvent"].includes(s.type)
           ? normalizeTimerDefinition(s.timer)
           : s.timer == null ? undefined : JSON.parse(JSON.stringify(s.timer)),
-        cancelActivity: ["timerBoundaryEvent", "conditionalBoundaryEvent"].includes(s.type)
+        cancelActivity: ["timerBoundaryEvent", "conditionalBoundaryEvent", "signalBoundaryEvent"].includes(s.type)
           ? (s.cancelActivity === undefined || s.cancelActivity === null
               ? true : s.cancelActivity)
           : undefined,
@@ -15452,6 +16062,8 @@ function normalizeLoadedModel(obj) {
           ? normalizeMessage(s.message, isMessageStartEventType(s.type), loadedProcessVariables) : undefined,
         conditional: ["intermediateConditionalCatchEvent", "conditionalBoundaryEvent"].includes(s.type)
           ? normalizeConditionalDefinition(s.conditional) : undefined,
+        signal: isSignalEventType(s.type)
+          ? normalizeSignalDefinition(s.signal, loadedProcessVariables) : undefined,
         // Keep every non-null value on any node type, as authored: an invalid one stays
         // visible and fails save, and a default is never invented for it.
         callActivity: s.callActivity == null
@@ -15527,7 +16139,7 @@ function keepImportedCallSettings(source, node) {
   if (!isCallActivityType(source.type)) return node;
   const copy = value => JSON.parse(JSON.stringify(value));
   for (const property of [
-    "timer", "conditional", "cancelActivity", "service", "message", "businessKey", "idempotency",
+    "timer", "conditional", "cancelActivity", "service", "message", "signal", "businessKey", "idempotency",
     "assignments", "script", "usesFlowInfo", "attachedToRef", "errorVariable",
     "errorCode", "errorDescription", "gatewayRef", "inboxVisibilityCondition",
     "dueDate", "dueDateCalendar", "priority", "assignee", "roles"
@@ -15555,6 +16167,23 @@ function keepImportedCallFlowSettings(source, importedCallIds, flow) {
     if (source[property] !== undefined) flow[property] = copy(source[property]);
   }
   return flow;
+}
+// A signal's name is literal text compared exactly, so it stays as authored. Mappings take
+// the typed shape of message catch mappings; signals have no untyped legacy form, so a
+// missing type stays missing for save validation to report, as does a value that is not an
+// object and a mapping list that is not a list.
+function normalizeSignalDefinition(value, processVariables = []) {
+  if (value === undefined || value === null) return value;
+  if (typeof value !== "object" || Array.isArray(value)) return value;
+  const mappings = value.outputMappings;
+  return {
+    name: value.name === undefined ? "" : value.name,
+    outputMappings: mappings === undefined || mappings === null
+      ? []
+      : Array.isArray(mappings)
+        ? mappings.map(mapping => normalizeTypedOutputMapping(mapping, processVariables, true))
+        : mappings
+  };
 }
 
 function loadFromObject(obj) {

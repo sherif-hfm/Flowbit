@@ -50,9 +50,62 @@ public static class SharedVariableAuthorizationPolicies
     }
 }
 
+/// <summary>
+/// A managed API client needs <paramref name="RequiredClientScope"/>; a JWT user needs a
+/// role from the engine setting <paramref name="RoleSettingKey"/>, <c>admin</c> when it is
+/// missing or blank. Shared variables and signals both use it.
+/// </summary>
 public sealed record SharedVariableAccessRequirement(
     string? RequiredClientScope,
-    bool AllowClient) : IAuthorizationRequirement;
+    bool AllowClient,
+    string RoleSettingKey = SharedVariableAuthorizationPolicies.RequiredRoleSettingKey) : IAuthorizationRequirement;
+
+public static class SignalAuthorizationPolicies
+{
+    public const string Throw = "Signals.Throw";
+    public const string Read = "Signals.Read";
+    public const string Summary = "Signals.Summary";
+    public const string RequiredRoleSettingKey = "Signals.RequiredRole";
+
+    public static void AddPolicies(AuthorizationOptions options)
+    {
+        options.AddPolicy(Throw, policy =>
+        {
+            policy.AddAuthenticationSchemes(
+                JwtBearerDefaults.AuthenticationScheme,
+                SharedVariableClientAuthenticationDefaults.Scheme);
+            policy.RequireAuthenticatedUser();
+            policy.AddRequirements(new FlowbitBearerScopeRequirement());
+            policy.AddRequirements(new SharedVariableAccessRequirement(
+                SharedVariableClientScopes.SignalsThrow,
+                AllowClient: true,
+                RequiredRoleSettingKey));
+        });
+        options.AddPolicy(Read, policy =>
+        {
+            policy.AddAuthenticationSchemes(
+                JwtBearerDefaults.AuthenticationScheme,
+                SharedVariableClientAuthenticationDefaults.Scheme);
+            policy.RequireAuthenticatedUser();
+            policy.AddRequirements(new FlowbitBearerScopeRequirement());
+            policy.AddRequirements(new SharedVariableAccessRequirement(
+                SharedVariableClientScopes.SignalsRead,
+                AllowClient: true,
+                RequiredRoleSettingKey));
+        });
+        // The subscription summary spans every workflow family, so it is for users only.
+        options.AddPolicy(Summary, policy =>
+        {
+            policy.AddAuthenticationSchemes(JwtBearerDefaults.AuthenticationScheme);
+            policy.RequireAuthenticatedUser();
+            policy.AddRequirements(new FlowbitBearerScopeRequirement());
+            policy.AddRequirements(new SharedVariableAccessRequirement(
+                RequiredClientScope: null,
+                AllowClient: false,
+                RequiredRoleSettingKey));
+        });
+    }
+}
 
 /// <summary>
 /// Applies one policy to two intentionally different caller types: JWT users are
@@ -96,7 +149,7 @@ public sealed class SharedVariableAccessAuthorizationHandler(
         }
 
         var setting = await settings.GetByKeyAsync(
-            SharedVariableAuthorizationPolicies.RequiredRoleSettingKey,
+            requirement.RoleSettingKey,
             (context.Resource as HttpContext)?.RequestAborted ?? CancellationToken.None);
         var requiredRoles = ParseRequiredRoles(setting?.Value);
         var actorRoles = actorResolver.Resolve(context.User).Roles

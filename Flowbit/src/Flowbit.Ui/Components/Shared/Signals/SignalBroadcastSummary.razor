@@ -1,0 +1,43 @@
+@using static Flowbit.Ui.Components.Shared.Signals.SignalFormatting
+<div class="summary-grid px-3 pb-3">
+    <div class="summary-item"><span>Recipients</span><strong>@Broadcast.TotalDeliveryCount.ToString("N0")</strong></div>
+    <div class="summary-item"><span>Pending</span><strong>@Broadcast.PendingCount.ToString("N0")</strong></div>
+    <div class="summary-item"><span>Delivered</span><strong>@Broadcast.DeliveredCount.ToString("N0")</strong></div>
+    <div class="summary-item"><span>Skipped</span><strong>@Broadcast.SkippedCount.ToString("N0")</strong></div>
+    <div class="summary-item"><span>Failed</span><strong>@Broadcast.FailedCount.ToString("N0")</strong></div>
+    <div class="summary-item"><span>Cancelled</span><strong>@Broadcast.CancelledCount.ToString("N0")</strong></div>
+</div>
+<div class="border-top px-3 py-3">
+    <h3 class="h6">Broadcast</h3>
+    <dl class="row mb-2">
+        <dt class="col-md-2">Signal</dt><dd class="col-md-10"><code>@Broadcast.Name</code></dd>
+        <dt class="col-md-2">Scope</dt><dd class="col-md-10">@ScopeLabel(Broadcast.WorkflowKey)</dd>
+        <dt class="col-md-2">Thrown by</dt><dd class="col-md-10">@ThrowerLabel(Broadcast.ThrownBy, Broadcast.ThrownByKind)</dd>
+        <dt class="col-md-2">Thrown</dt><dd class="col-md-10"><LocalTime Value="@Broadcast.CreatedAt" /></dd>
+        <dt class="col-md-2">Finished</dt><dd class="col-md-10"><LocalTime Value="@Broadcast.CompletedAt" EmptyText="Still delivering" /></dd>
+        @if (Broadcast.CancelledBy is not null)
+        {
+            <dt class="col-md-2">Cancelled by</dt>
+            <dd class="col-md-10">@Broadcast.CancelledBy@(string.IsNullOrWhiteSpace(Broadcast.CancellationReason) ? null : $" · {Broadcast.CancellationReason}")</dd>
+        }
+    </dl>
+    @if (Broadcast.RecipientsByWorkflowKey.Count > 0)
+    {
+        <h4 class="h6 mt-3">Recipients by workflow family</h4>
+        <ul class="signal-families mb-2">
+            @foreach (var family in Broadcast.RecipientsByWorkflowKey)
+            {
+                <li><code>@family.WorkflowKey</code> · @family.Count.ToString("N0")</li>
+            }
+        </ul>
+        @if (Broadcast.RecipientsTruncated)
+        {
+            <p class="form-text">Only the 50 families with the most recipients are listed.</p>
+        }
+    }
+    <details><summary class="section-link">Payload</summary><pre class="signal-json mt-2">@FormatJson(Broadcast.Payload)</pre></details>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public SignalBroadcastDetailDto Broadcast { get; set; } = null!;
+}

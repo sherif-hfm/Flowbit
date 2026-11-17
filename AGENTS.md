@@ -9,7 +9,8 @@ The model is a simplified, BPMN 2.0-aligned subset. Flow nodes are typed as
 `startEvent`, `userTask`, `task`, `serviceTask`, `callActivity`, `exclusiveGateway`,
 `inclusiveGateway`, `complexGateway`, or `endEvent`, plus `parallelGateway`,
 `intermediateConditionalCatchEvent`, `conditionalBoundaryEvent`, `scopedInterruptEvent`,
-`intermediateLinkThrowEvent`, `intermediateLinkCatchEvent`, and
+`intermediateLinkThrowEvent`, `intermediateLinkCatchEvent`,
+`intermediateSignalCatchEvent`, `signalBoundaryEvent`, and
 `terminateEndEvent`, drawn with BPMN-style shapes (event circles, task rounded
 rectangles, gateway diamonds). `scopedInterruptEvent` is a documented Flowbit
 extension; strict BPMN would normally model that scope with an interruptible
@@ -266,7 +267,7 @@ A repeatable Chromium smoke suite exists at
 real copied editor and the real published API/UI over localhost with a
 disposable PostgreSQL container; see its
 [README](Flowbit/tests/Flowbit.BrowserTests/README.md) for setup and the
-E1–E22/H1–H15/R1–R15 coverage matrix. It is the baseline for editor/runtime UI changes,
+E1–E23/H1–H16/R1–R16 coverage matrix. It is the baseline for editor/runtime UI changes,
 but it does not replace scenario-specific manual verification: the native
 file-picker success/cancel path, visual comparisons, and behaviors outside the
 matrix still need the manual steps above.
@@ -946,8 +947,9 @@ Storage follows the hybrid design:
   `intermediateLinkCatchEvent`, and
   `errorBoundaryEvent` nodes are resolved in the same
   transaction until the instance rests on a `userTask`, `callActivity`,
-  `intermediateMessageCatchEvent`, `intermediateTimerCatchEvent`, or
-  `intermediateConditionalCatchEvent`, or reaches an end event. A per-token hop
+  `intermediateMessageCatchEvent`, `intermediateTimerCatchEvent`,
+  `intermediateConditionalCatchEvent`, or `intermediateSignalCatchEvent`, or
+  reaches an end event. A per-token hop
   limit (`flowNodes.Count + 1`) guards against cycles. History rows are
   written with a `start`, `messageStart`, `automatic`, `service`, `script`,
   `gateway`, `parallelFork`, `parallelJoin`, `inclusiveSplit`, `inclusiveMerge`,
@@ -977,6 +979,84 @@ Storage follows the hybrid design:
   migration, job, completion reason, or route exists for links; every replica
   must be upgraded before a link is saved, because an older one strands a token
   on a throw.
+- **Signal events (EVENT-04).** An `intermediateSignalCatchEvent`
+  (`signal: { name, outputMappings }`) rests until a broadcast with its name is
+  delivered, and a `signalBoundaryEvent` (the same `signal`, plus `attachedToRef`
+  and `cancelActivity`) listens while its host is active; see the
+  [runtime reference](Flowbit/README.md#signal-events). Signals are thrown only
+  through `POST /api/signal-broadcasts`; signal start/throw/end events do not
+  exist yet. Preserve these invariants:
+  - A signal is a broadcast, not a queue: it reaches the waits that exist when
+    it is thrown and is never kept. The throw freezes its recipients in one
+    `INSERT ... SELECT` over active `signal_subscriptions`, takes no runtime
+    lock, and rejects (never truncates) more than
+    `Signals.MaxSubscriptionsPerBroadcast` recipients.
+  - `SignalEventRules` (`Flowbit.Shared`) owns the lowercase name rule, the
+    mapping limit, and `HasSignalEvents`; the throw endpoint and the validator
+    use it, and the editor mirrors it.
+  - A subscription lives exactly as long as its wait. Its rows are written only
+    under the instance lock: `EnsureSignalSubscriptionsAsync` runs in routing
+    after the conditional-boundary activation re-check, and
+    `CancelSignalSubscriptionsAsync` runs wherever conditional boundary
+    subscriptions are cancelled (`CancelAttachedBoundaryWaitsAsync`,
+    `CancelDurableWorkForTokensAsync`, `InterruptBoundaryHostAsync`, timer
+    boundary and timer catch firing, the administrative timer-boundary override,
+    and error capture). Pass the instance's definition so a
+    definition without signal events (`HasSignalEvents`) runs no signal
+    statement; only instance cancellation, which has no definition at hand, runs
+    it unconditionally. A new path that ends a wait must cancel signal
+    subscriptions too.
+  - Delivery rows (`signal_deliveries`) hold plain IDs, never foreign keys to an
+    instance, token, or subscription, so a throw never waits on a recipient's
+    `FOR UPDATE` locks. One delivery per broadcast and subscription; its final
+    status commits with the instance change it describes.
+  - A delivery (`DeliverSignalAsync`, one scope and transaction each, from paged
+    `signalBroadcastDeliver` jobs) locks the instance hierarchy, then the
+    subscription, then the delivery row, takes no shared-variable row, and runs
+    as the fixed actor `signal` with no roles or claims. Values first, then
+    conditional events, then the catch's exit; routing continues with
+    `forceDurableActivities`. Cancel and retry lock the broadcast row before
+    delivery rows; a delivery never locks the broadcast. Every recount
+    (`RefreshCountsAsync`) runs in a transaction that already holds the
+    broadcast row, so it reads the status a cancel or retry committed; a
+    one-statement recount would wait for the lock and then write a status from
+    its older snapshot. Only a delivering broadcast has pending deliveries, so
+    pending-delivery queries start from the open broadcasts. A retry moves each
+    delivery to the version its instance runs now.
+  - Signal mappings write instance variables only and read no shared alias.
+    A signal event requires the Worker (`RequiresDurableProcessing`).
+  - Signal boundaries attach to the hosts of timer and conditional boundaries and
+    share their combined limit of eight (`BpmnFlowNodeTypes.IsObservableBoundary`,
+    `BoundaryEventRules.MaxObservableBoundariesPerHost`), except that
+    `ValidateObservableBoundary(allowAutomaticBodies: false)` refuses every
+    multi-instance body; `SignalEventRules.BoundaryNameProblems` refuses one name
+    twice on a host and a boundary repeating its host catch's name.
+    `EnsureSignalSubscriptionsAsync` subscribes each signal boundary when its host
+    is entered and `IsBoundaryHostEligibleAsync` accepts it (before an
+    `asyncBefore` job), and every host exit cancels them.
+  - An interrupting boundary delivery completes its subscription, then calls
+    `InterruptBoundaryHostAsync`, the one cancel sequence shared with
+    `CaptureConditionalBoundaryAsync` (body, user tasks, multi-instance
+    children, timer/conditional/signal subscriptions, jobs, calls; host visit
+    cancelled with the given reason, token moved to the boundary). Change that
+    helper, never a copy of it. A non-interrupting delivery checks
+    `Workflow.Gateway.MaxActiveTokens` first (`signal_token_limit`, boundary still
+    subscribed), then increases `Occurrence` on the active subscription and adds a
+    sibling token on the boundary in the host's gateway branch. Mapped values are
+    written on the visit of the token that continues.
+  - Version changes: `open_signal_subscription_node_missing` and
+    `open_signal_subscription_contract_changed` block, and
+    `signal_mapping_contract_changed` warns; the switch rebinds open
+    subscriptions. `attached_signal_boundary_contract_changed` blocks an active
+    node that gains, loses, or changes a signal boundary (mappings excepted), and
+    `DurableNodeContract` includes signal boundaries for hosts with open jobs.
+    Reactivation blocks an active subscription (`unresolved_durable_work`).
+  - A managed API client (`signals.throw`, `signals.read`) sees and changes only
+    the broadcasts it threw and never receives `resultDescription`.
+  Every replica must be upgraded before a signal definition is saved: an older
+  API routes a token onto a catch, or into a boundary's host, without a
+  subscription. Signal boundaries need no migration beyond `AddSignalEvents` and
+  `ValidateSignalEventConstraints`.
 - **Intermediate conditional catch events.** An
   `intermediateConditionalCatchEvent` is a persisted resting position with at
   least one incoming flow and exactly one unconditional outgoing flow. Its
@@ -1034,8 +1114,8 @@ Storage follows the hybrid design:
   automatic task with `asyncBefore: true`, or a multi-instance call activity.
   Missing `cancelActivity` means
   interrupting and missing `conditional.deliveryMode` means `atomic`. A host may
-  have eight timer and conditional boundaries combined; its error boundary is
-  separate. Conditions use the same limits and instance-only dependency rules as
+  have eight timer, conditional, and signal boundaries combined; its error
+  boundary is separate. Conditions use the same limits and instance-only dependency rules as
   intermediate conditional catches.
   Each host activation persists subscription state fenced by instance, host
   token, activation, and boundary node. Initial state is false, so initial truth
@@ -1820,10 +1900,12 @@ Storage follows the hybrid design:
   removes the old singleton table with no compatibility view: coordinate API/UI/
   Worker upgrades and stop old writers first.
 
-- **History and audit retention.** `/retention` manages nine deployment-wide
+- **History and audit retention.** `/retention` manages ten deployment-wide
   categories through `/api/retention`, authorized by `Settings.RequiredRole`,
-  including the `webhookDeliveries` and `lifecycleEvents` webhook categories.
-  New history and webhook categories default to keep forever; the Worker initializes job
+  including the `webhookDeliveries` and `lifecycleEvents` webhook categories and
+  `signalBroadcasts` (finished broadcasts aged from `CompletedAt`, with their
+  deliveries and job links; pending work is protected).
+  New history, webhook, and signal categories default to keep forever; the Worker initializes job
   and incident periods from its existing configuration once. `Flowbit.Worker`
   performs hourly and durable manually requested cleanup using the same
   coordinator, limits, and database load protections. The UI never executes a
@@ -1951,6 +2033,15 @@ what the cross-version `workflowKey` instance search matches.
   previous key, and archive (202) subscriptions; and search, read, and retry or
   discard deliveries singly or in bulk (at most 1,000 per request). Revisions are
   optimistic (`409`); unusable key protection returns `503`.
+- `SignalEndpoints` (`/api/signal-broadcasts`, `/api/signal-subscriptions/summary`):
+  throw (`202`, or `200` replaying an `idempotencyKey`), list, read, list
+  deliveries, cancel, and retry failed (`expectedUpdatedAt`) broadcasts; JWT users
+  need `Signals.RequiredRole` (`SignalAuthorizationPolicies`), managed clients the
+  `signals.throw`/`signals.read` scopes and see only their own broadcasts (others
+  `404`). The summary is JWT-only. Over the recipient limit is `400`; a reused
+  key with a different request, the open-broadcast limit, a finished broadcast's
+  cancel, and a stale retry are `409`. `SharedVariableCredentialSourceMiddleware`
+  rejects bearer plus client headers.
 - `TaskDistributionEndpoints`
   (`/api/task-distribution/workflows/{workflowKey}/tasks`): `GET /` returns a
   paged family-scoped list using the same task/instance/workflow-version,
@@ -2132,6 +2223,13 @@ what the cross-version `workflowKey` instance search matches.
   recovery; `WebhookFormatting` owns the pure presentation rules. Secrets live only
   in transient component state and are cleared on dismissal, identity change,
   permission loss, and disposal.
+- `/signals` (`Signals.razor`) - `Signals.RequiredRole` page that reviews and
+  throws a signal (one idempotency key per reviewed draft), follows the open
+  broadcast with a three-second poll while it is delivering, pages deliveries,
+  and offers cancel and retry failed; `?broadcastId=` opens one. Display-only
+  children under `Components/Shared/Signals/` with the pure `SignalFormatting`;
+  every call goes through an identity epoch guard, and `401`/`403` or an identity
+  change clears all signal data.
 - `/instances/{id}` (`InstanceDetailRoute.razor`, which keys `InstanceDetail.razor`
   by instance id, so a link between a parent and a child gets fresh state) - claim/unclaim, take available
   sequence flows, take authorized parent-level multi-instance interrupt actions,
@@ -2147,7 +2245,10 @@ what the cross-version `workflowKey` instance search matches.
   recorded executions, paged 50 at a time through the role-scoped search with
   an exact version filter. An async-after wait links the completed visit it
   follows. A selected link event lists its partners, paired through
-  `LinkEventRules`, as buttons that select them. Identity changes clear the previous instance and its related data
+  `LinkEventRules`, as buttons that select them. **Waiting for signals** lists
+  `signalSubscriptions`, a boundary's row naming its host and whether it
+  interrupts, and a `signalReceived` history row links its broadcast
+  on `/signals`. Identity changes clear the previous instance and its related data
   before reloading; history resets off and stale responses cannot restore it.
 
 Display sections live in shared child components so pages keep their own
@@ -2307,7 +2408,8 @@ A node in the workflow. `type` is one of `startEvent`, `userTask`, `task`,
 `serviceTask`, `scriptTask`, `callActivity`, `exclusiveGateway`, `endEvent`, `errorEndEvent`,
 `errorBoundaryEvent`, `conditionalBoundaryEvent`, `intermediateMessageCatchEvent`,
 `intermediateConditionalCatchEvent`, `intermediateLinkThrowEvent`,
-`intermediateLinkCatchEvent`, or `messageStartEvent`.
+`intermediateLinkCatchEvent`, `intermediateSignalCatchEvent`, `signalBoundaryEvent`,
+or `messageStartEvent`.
 
 ```jsonc
 {
@@ -2337,13 +2439,14 @@ A node in the workflow. `type` is one of `startEvent`, `userTask`, `task`,
   "assignments": [ /* Assignment[] */ ], // scriptTask + scriptFormat "ncalc" only (see Assignment)
   "script": null,              // scriptTask + scriptFormat "javascript" only (see below)
   "attachedToRef": null,       // boundary events only: attached host node id
-  "cancelActivity": true,      // timer/conditional boundary only; omitted means true
+  "cancelActivity": true,      // timer/conditional/signal boundary only; omitted means true
   "errorVariable": null,       // errorBoundaryEvent only, optional: captures the failure reason
   "errorMatch": null,          // errorBoundaryEvent on a REST host only: { httpStatusCodes, httpStatusRanges }; null = catch-all
   "callActivity": { /* CallActivityConfig */ }, // callActivity only (see CallActivityConfig)
   "callOnly": false,           // startEvent selected by initialEventId only; omitted when false
   "message": { /* MessageCatchConfig */ }, // intermediateMessageCatchEvent only (see MessageCatchConfig)
-  "conditional": { /* ConditionalDefinition */ } // conditional catch/boundary only
+  "conditional": { /* ConditionalDefinition */ }, // conditional catch/boundary only
+  "signal": { /* SignalDefinition */ } // intermediateSignalCatchEvent / signalBoundaryEvent only
 }
 ```
 
@@ -2367,6 +2470,30 @@ instance variables and cannot depend on `sys.*`, `config.*`, `setting.*`, `mi.*`
 `gateway.*`, `FlowInfo`, or gateway/multi-instance functions, because only
 stored-variable writes can wake it. Write bracketed names without inner spaces
 and built-ins in NCalc's spelling: saving rejects `[ approved ]` and `If(...)`.
+
+### SignalDefinition
+
+Configuration for an `intermediateSignalCatchEvent` or a `signalBoundaryEvent`
+(`SignalEventModel`).
+
+```jsonc
+{
+  "name": "claims.policy-changed", // required literal: 1-100 lowercase letters, digits, '.', '_', '-'
+  "outputMappings": [              // optional, at most 100; paths read the broadcast's payload
+    { "variable": "policyVersion", "path": "version", "dataType": "number", "isArray": false, "required": true }
+  ]
+}
+```
+
+The name is not a template, is not trimmed, and is compared exactly; uppercase is
+rejected on save and on throw. Mappings use the typed message-mapping shape with
+required `dataType` and `isArray`, write instance variables only, and cannot read
+a shared alias in a default or validation. The catch has at least one incoming
+flow and one unconditional outgoing flow, and may host timer, conditional, and
+signal boundaries. A signal boundary has no incoming flow and one unconditional
+outgoing flow, `attachedToRef`, and optional `cancelActivity` (missing means
+interrupting). Two signal boundaries on one host cannot share a name, and a
+boundary on a signal catch cannot use the catch's name.
 
 ### Assignment
 An ordered variable write performed by a `scriptTask` node during its pass-through
@@ -2506,6 +2633,23 @@ Node kinds and their outgoing-flow rules:
   outgoing flow; a token entering it continues at the catch with the same `name`.
   A catch has no incoming flow and one unconditional outgoing flow, drawn dashed.
   Both are pass-through and carry only the common node properties.
+- **`intermediateSignalCatchEvent`**: a resting node that waits for a broadcast
+  signal with its `signal.name`; an intermediate event circle with an outlined
+  triangle. A throw through `POST /api/signal-broadcasts` reaches the waits that
+  exist when it is thrown; a Worker job then maps the payload through
+  `signal.outputMappings`, lets conditional events observe the values, and
+  advances down its one unconditional outgoing flow (solid, because the node
+  rests) as the fixed actor `signal`. A payload that fails a mapping leaves the
+  wait in place. Timer, conditional, and signal boundaries may attach.
+- **`signalBoundaryEvent`**: a signal event attached to a durable host (not a call
+  activity or any multi-instance body); an outlined triangle in a boundary
+  circle, whose ring is solid when interrupting and dashed when non-interrupting.
+  The host subscribes on entry and every host exit cancels the subscription. An
+  interrupting delivery cancels the host's work and continues on the boundary's
+  one unconditional flow with the mapped values (`interrupted`); a
+  non-interrupting one adds a sibling branch each time and keeps listening
+  (`branched`), bounded by `Workflow.Gateway.MaxActiveTokens`
+  (`signal_token_limit`).
 - **`messageStartEvent`**: an entry point (like a `startEvent`) started by an
   external system via `POST /api/workflows/{workflowKey}/message-start`; a thin
   single-ring circle with an envelope glyph on canvas. Its `message.outputMappings`
@@ -3153,6 +3297,8 @@ when extending the model so new features stay close to BPMN terminology.
 | `type: "conditionalBoundaryEvent"` | Conditional Boundary Event | Attached to a durable activity and observes declared persisted instance variables. Missing `cancelActivity` is interrupting (solid ring); `false` is non-interrupting (dashed ring) and retriggers on each false-to-true edge. Flowbit applies its `atomic`/`durableAsync` delivery policies and persistent activation/occurrence fencing. |
 | `type: "intermediateLinkThrowEvent"` | Intermediate Link Throw Event | Double-ring event with a filled arrow. Has incoming flows and no outgoing flow; continues at the link catch with the same `name` in the same transaction. Simplified: the link name is the event's `name`, compared exactly after trimming; links stay within one definition. |
 | `type: "intermediateLinkCatchEvent"` | Intermediate Link Catch Event | Double-ring event with an outlined arrow. No incoming flow; one unconditional outgoing flow. Several throws may share it, and catch names are unique ignoring letter case. |
+| `type: "intermediateSignalCatchEvent"` | Intermediate Signal Catch Event | Double-ring event with an outlined triangle. Rests until a signal with its literal lowercase `signal.name` is delivered, maps the payload through typed mappings, and follows one unconditional flow. Simplified: signals are thrown only through the API, scoped to one workflow family or explicitly to all; a throw reaches only the waits that exist when it is thrown, and the Worker delivers each in its own transaction. |
+| `type: "signalBoundaryEvent"` | Signal Boundary Event | Attached to a durable host; listens for its `signal.name` while the host is active. Missing `cancelActivity` is interrupting (solid ring); `false` is non-interrupting (dashed ring) and adds a branch for every delivered signal. Simplified: not on call activities or multi-instance bodies, and a non-interrupting delivery that would exceed the instance's active-token limit fails rather than waiting. |
 | `type: "messageStartEvent"` | Message Start Event | An entry point started by an external system via `POST /api/workflows/{workflowKey}/message-start`; thin single-ring circle with an envelope glyph. Typed `message.outputMappings` declare its start variables. System-only (`IsStart` is false). The engine creates the instance and auto-advances off it (pass-through, history note `messageStart`). Simplified: instance-less credential resolution (no `sys.user`/`sys.roles`/`sys.instanceId` for credentials since there is no caller/instance yet). It shares the same optional node-level, database-claimed transport idempotency as `startEvent`. |
 | `sequenceFlow` | Sequence Flow | First-class directed edge with its own id, `sourceRef`, `targetRef`. |
 | `sequenceFlow.condition` | Condition Expression | NCalc expression on user-task and gateway flows (comparisons, boolean/arithmetic operators, functions, bare-variable truthiness). |
@@ -3177,12 +3323,13 @@ when extending the model so new features stay close to BPMN terminology.
   durable asynchronous jobs with retries and incidents. Other connector
   implementations remain out of scope. See [durable execution](docs/developer-guide.md).
 - **A bounded event subset.** Flowbit supports none/message/timer starts,
-  message/timer/conditional intermediate catches, link throw/catch pairs within one
-  definition, timer/conditional/error boundaries,
+  message/timer/conditional/signal intermediate catches, link throw/catch pairs within one
+  definition, timer/conditional/signal/error boundaries,
   and none/error/terminate ends. Conditional events observe persisted instance variables
   rather than arbitrary engine context. Message correlation remains instance
-  scoped, and signal, escalation, compensation, and event-based gateways remain
-  out of scope.
+  scoped, signals are thrown only through the API, and signal start, throw, and
+  end events, escalation, compensation, and event-based gateways remain out of
+  scope.
 - **No pools / collaboration.** Lanes exist without a multi-party pool or message
   flow.
 - **NCalc condition language.** Gateway conditions are evaluated with NCalc, so
@@ -3216,7 +3363,8 @@ when extending the model so new features stay close to BPMN terminology.
 - Update `BpmnFlowNodeTypes` predicates (`IsStart`, `IsEnd`, `IsErrorEnd`,
   `IsErrorBoundary`, `IsAutomatic`, `IsServiceTask`, `IsScriptTask`, `IsCallActivity`,
   `IsUserTask`, `IsGateway`, `IsMessageCatch`, `IsLinkThrow`, `IsLinkCatch`,
-  `IsLinkEvent`, `IsPassThrough`) and
+  `IsLinkEvent`, `IsSignalCatch`, `IsSignalBoundary`, `IsSignalEvent`,
+  `IsBoundary`, `IsObservableBoundary`, `IsPassThrough`) and
   `ValidateDefinition` together so the engine and editor agree.
 
 ---
@@ -3295,6 +3443,46 @@ when extending the model so new features stay close to BPMN terminology.
   `conditionalLatched` followed by `conditionalTriggered` for `durableAsync`.
   The event ring—not the sequence flow—shows interrupting versus
   non-interrupting behavior.
+- **Signal catch flow**: an `intermediateSignalCatchEvent` owns one unconditional
+  solid outgoing flow, because the node rests; a delivered signal records
+  `signalReceived` (history note, completion reason) and a `signalCatch`
+  traversal. In the editor the catch is an event type that is not pass-through
+  and a durable boundary host. `renderSignalSection` draws its **Signal**
+  section: name suggestions from the diagram, a live status line with the save
+  message (plus a lowercase hint the save message leaves out), and payload
+  mapping rows whose target suggestions leave out shared aliases; choosing a
+  declared variable adopts its type without a redraw, so Tab keeps going.
+  `normalizeSignalDefinition` serves the loader, `applyTypeInvariants`, and
+  export; the loader drops `signal` on other types except a call, where
+  `renderMisplacedSignal` offers its removal. The name rule and its messages
+  (`signalNameProblem`, `validateSaveSignalEvents`) must live inside the
+  `// BEGIN/END WORKFLOW SAVE VALIDATOR` markers and give the same first error
+  as `SignalEventRules` and `WorkflowDefinitionValidator`;
+  `SignalEventFixtures` runs each case through both. Signal mappings join the
+  editor sites that read `message.outputMappings` as declarations.
+  A `signalBoundaryEvent` owns one unconditional outgoing flow, which
+  `flowLabel` labels `signal`, and records `signalReceived` and a
+  `signalBoundary` traversal. In the editor it is a boundary type
+  (`isSignalBoundaryEventType`, so single-outgoing and pass-through), kept out of
+  the Type list, and `renderNodes` adds `non-interrupting`, the dashed ring, when
+  `cancelActivity` is `false`. `renderBoundaryHostSection` offers
+  **+ Add signal boundary event** beside the timer and conditional buttons,
+  except on a multi-instance automatic body; `findObservableBoundaries` counts
+  all three kinds, so the buttons and the limit note at eight agree.
+  `addSignalBoundary` creates `signal: { name: "", outputMappings: [] }` with
+  `cancelActivity: true`, selects it, and starts a connection, as the other two
+  do. The existing **Attached to** field and **Interrupt attached activity**
+  checkbox serve it beside its **Signal** section. A host that stops being
+  eligible in `changeNodeTypeFromInspector` loses its signal boundaries with its
+  timer and conditional ones. `validateSaveSignalEvents` applies the boundary's
+  host, incoming-flow, and name rules (`signalBoundaryNameProblems`) in the
+  server's order, inside the validator markers. The combined limit
+  (`observableHostLimitProblem`) is reported once, on the host's first timer,
+  conditional, or signal boundary in node order, after that boundary's own
+  problems, where the server's `ValidateObservableBoundary` reaches it. A shared
+  alias read by a signal mapping is the one referenced first
+  (`automaticExpressionReadIndex`), as the server's parsed references give it. The boundary's status line also reports a
+  duplicate or host-catch name as it is typed, on both boundaries involved.
 - **Link events**: `linkEventIndex(candidate)`, inside the save-validator
   markers, is the editor's only pairing code and mirrors `LinkEventRules`
   (`trimAttributeKey`, `ordinalIgnoreCaseAttributeKey`); `validateSaveLinkEvents`

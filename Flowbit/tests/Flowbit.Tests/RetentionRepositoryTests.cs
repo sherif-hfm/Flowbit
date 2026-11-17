@@ -488,6 +488,7 @@ public sealed class RetentionRepositoryTests(PostgresApiFixture fixture)
         await db.WorkflowInstances.Where(i => i.Id == instances[0])
             .ExecuteUpdateAsync(set => set.SetProperty(i => i.HistoryPrunedAt, scope.Now));
         await WebhookTestDatabase.CheckpointCatchAllCaptureAsync(fixture.DataSource);
+        await ClearSignalStateForDowngradeAsync();
         try
         {
             var exception = await Assert.ThrowsAsync<PostgresException>(() => db.GetService<IMigrator>()
@@ -507,6 +508,23 @@ public sealed class RetentionRepositoryTests(PostgresApiFixture fixture)
             await WebhookTestDatabase.ReinstateCatchAllCaptureAsync(fixture.DataSource);
         }
         Assert.Empty(await db.Database.GetPendingMigrationsAsync());
+    }
+
+    /// <summary>
+    /// The downgrade passes AddSignalEvents, whose Down refuses while signal rows exist so that a
+    /// real deployment cannot drop them by accident. Signal tests earlier in the shared database
+    /// leave such rows; the downgrade would drop the signal tables anyway, so clear them first.
+    /// </summary>
+    private async Task ClearSignalStateForDowngradeAsync()
+    {
+        await using var connection = await fixture.DataSource.OpenConnectionAsync();
+        await using var command = new NpgsqlCommand("""
+            DELETE FROM flowbit.signal_broadcasts;
+            DELETE FROM flowbit.signal_subscriptions;
+            DELETE FROM flowbit.workflow_jobs WHERE "Kind" = 'signalBroadcastDeliver';
+            UPDATE flowbit.node_executions SET "CompletionReason" = 'normal' WHERE "CompletionReason" = 'signalReceived';
+            """, connection);
+        await command.ExecuteNonQueryAsync();
     }
 
     [Fact]

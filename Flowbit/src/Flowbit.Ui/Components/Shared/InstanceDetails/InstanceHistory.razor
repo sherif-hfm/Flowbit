@@ -45,6 +45,10 @@
                             {
                                 <a href="@($"administrative-actions?batchId={batchId}")">Batch #@batchId</a>
                             }
+                            else if (item.Note is "signalReceived" && HistoryPayloadString(item, "broadcastId") is { } broadcastId)
+                            {
+                                <a href="@($"signals?broadcastId={broadcastId}")">Broadcast #@broadcastId</a>
+                            }
                             else
                             {
                                 <span>&mdash;</span>
@@ -130,6 +134,15 @@
         if (item.Note is "linkCatch")
         {
             return $"Continued from link catch #{item.FromNodeId}";
+        }
+        if (item.Note is "signalReceived")
+        {
+            var signal = HistoryPayloadString(item, "signalName") ?? "a signal";
+            var thrower = HistoryPayloadString(item, "thrownBy");
+            var kind = HistoryPayloadString(item, "thrownByKind");
+            var by = thrower is null ? null : kind == "client" ? $" from API client {thrower}" : $" from {thrower}";
+            var broadcast = HistoryPayloadString(item, "broadcastId");
+            return $"Received signal '{signal}'{by}" + (broadcast is null ? string.Empty : $" (broadcast #{broadcast})");
         }
         if (item.Note is "scopedInterruptSkipped")
         {

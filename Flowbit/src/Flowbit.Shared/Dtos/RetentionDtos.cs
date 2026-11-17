@@ -11,9 +11,10 @@ public static class RetentionCategories
     public const string ResolvedIncidents = "resolvedIncidents";
     public const string WebhookDeliveries = "webhookDeliveries";
     public const string LifecycleEvents = "lifecycleEvents";
+    public const string SignalBroadcasts = "signalBroadcasts";
     public static readonly string[] All = [WorkflowHistory, VariableHistory, NodeActivity,
         AdministrativeAudits, SharedVariableHistory, CompletedJobs, ResolvedIncidents,
-        WebhookDeliveries, LifecycleEvents];
+        WebhookDeliveries, LifecycleEvents, SignalBroadcasts];
 }
 
 public sealed record RetentionPolicyDto(string Category, int? RetentionDays, long Revision,

@@ -1,0 +1,694 @@
+@page "/signals"
+@implements IAsyncDisposable
+@using System.Net
+@using System.Text.Json
+@using Flowbit.Ui.Auth
+@using static Flowbit.Ui.Components.Shared.Signals.SignalFormatting
+@inject WorkflowApiClient Api
+@inject TokenState Token
+
+<PageTitle>Signals · Flowbit</PageTitle>
+
+<PageHeader Eyebrow="Manage" Title="Signals"
+            Description="Throw a named signal to every waiting signal event and follow its deliveries.">
+    <Actions>
+        <button class="btn btn-outline-secondary" @onclick="RefreshAllAsync" disabled="@loading"><AppIcon Name="refresh" /> Refresh</button>
+    </Actions>
+</PageHeader>
+
+<div class="alert alert-info" role="note">
+    <strong>A signal reaches only the waits that exist when it is thrown.</strong>
+    Each waiting signal event receives it once, when the Worker delivers it. A wait that starts later does not receive it, and nothing is stored for later.
+    Use a message for one instance or for something that must not be missed.
+</div>
+
+@if (!string.IsNullOrWhiteSpace(error))
+{
+    <div class="alert alert-danger" role="alert">@error</div>
+}
+@if (!string.IsNullOrWhiteSpace(success))
+{
+    <div class="alert alert-success" role="status">@success</div>
+}
+
+@if (!Token.HasToken)
+{
+    <section class="panel">
+        <EmptyState Icon="token" Title="An authenticated identity is required"
+                    Description="Set an identity with the configured signal role before throwing or reading signals.">
+            <IdentityAction Class="btn btn-primary" DevelopmentLabel="Set test identity" />
+        </EmptyState>
+    </section>
+}
+else if (authorizationDenied)
+{
+    <section class="panel">
+        <EmptyState Icon="token" Title="Signal permission is required"
+                    Description="The API denied access for this identity. Use an identity with a role from Signals.RequiredRole." />
+    </section>
+}
+else
+{
+    @* A new key on an identity change rebuilds the inputs, so text typed but not yet sent goes too. *@
+    <section class="panel mb-3" aria-labelledby="signal-throw-heading" @key="@($"signal-form-{formGeneration}")">
+        <div class="section-heading">
+            <div>
+                <span class="page-eyebrow">1</span>
+                <h2 id="signal-throw-heading">Choose a signal and its scope</h2>
+                <p>Names are lowercase; a dotted prefix such as <code>claims.policy-changed</code> keeps unrelated workflows apart.</p>
+            </div>
+        </div>
+        <div class="row g-3">
+            <div class="col-md-6">
+                <label class="form-label" for="signal-name">Signal name</label>
+                <input id="signal-name" class="form-control" list="signal-name-options" maxlength="100"
+                       value="@signalName" @onchange="OnSignalNameChangedAsync" autocomplete="off" />
+                <datalist id="signal-name-options">
+                    @foreach (var name in KnownNames) { <option value="@name"></option> }
+                </datalist>
+            </div>
+            <div class="col-md-6">
+                <fieldset>
+                    <legend class="form-label">Scope</legend>
+                    <div class="form-check">
+                        <input class="form-check-input" type="radio" name="signal-scope" id="signal-scope-family"
+                               checked="@(!allWorkflows)" @onchange="@(() => SetScope(false))" />
+                        <label class="form-check-label" for="signal-scope-family">One workflow family</label>
+                    </div>
+                    <div class="form-check">
+                        <input class="form-check-input" type="radio" name="signal-scope" id="signal-scope-all"
+                               checked="@allWorkflows" @onchange="@(() => SetScope(true))" />
+                        <label class="form-check-label" for="signal-scope-all">All workflows</label>
+                    </div>
+                </fieldset>
+            </div>
+            @if (!allWorkflows)
+            {
+                <div class="col-md-6">
+                    <label class="form-label" for="signal-workflow-key">Workflow key</label>
+                    <input id="signal-workflow-key" class="form-control" list="signal-family-options" maxlength="300"
+                           value="@workflowKey" @onchange="OnWorkflowKeyChanged" autocomplete="off" />
+                    <datalist id="signal-family-options">
+                        @foreach (var family in KnownFamilies) { <option value="@family"></option> }
+                    </datalist>
+                </div>
+            }
+            <div class="col-12">
+                <p class="mb-0" role="status" aria-live="polite">@MatchSummary</p>
+            </div>
+        </div>
+    </section>
+
+    <section class="panel mb-3" aria-labelledby="signal-payload-heading" @key="@($"signal-payload-{formGeneration}")">
+        <div class="section-heading">
+            <div>
+                <span class="page-eyebrow">2</span>
+                <h2 id="signal-payload-heading">Payload</h2>
+                <p>Optional JSON object. Each waiting event copies the values its output mappings name.</p>
+            </div>
+        </div>
+        <label class="form-label" for="signal-payload">Payload (JSON object)</label>
+        <textarea id="signal-payload" class="form-control font-monospace" rows="6" @bind="payloadText" @bind:after="OnPayloadEdited"
+                  aria-describedby="signal-payload-help" placeholder='{ "version": 7 }'></textarea>
+        <div id="signal-payload-help" class="form-text">At most 256 KiB. Leave it empty to send no payload.</div>
+        @if (payloadError is not null)
+        {
+            <div class="invalid-feedback d-block" role="alert">@payloadError</div>
+        }
+    </section>
+
+    <section class="panel mb-3" aria-labelledby="signal-review-heading">
+        <div class="section-heading">
+            <div>
+                <span class="page-eyebrow">3</span>
+                <h2 id="signal-review-heading">Throw</h2>
+                <p>Review what the signal will reach before you throw it.</p>
+            </div>
+        </div>
+        @if (review is null)
+        {
+            <button class="btn btn-primary" @onclick="ReviewAsync" disabled="@loading">Review signal</button>
+        }
+        else
+        {
+            <dl class="row">
+                <dt class="col-md-3">Signal</dt><dd class="col-md-9"><code>@review.Name</code></dd>
+                <dt class="col-md-3">Scope</dt><dd class="col-md-9">@ScopeLabel(review.WorkflowKey)</dd>
+                <dt class="col-md-3">Waiting now</dt><dd class="col-md-9">@review.Waiting.ToString("N0") @(review.Waiting == 1 ? "wait" : "waits")@(review.Truncated ? " or more" : null)</dd>
+                <dt class="col-md-3">Payload</dt>
+                <dd class="col-md-9">
+                    @if (review.Payload is null)
+                    {
+                        <span>None</span>
+                    }
+                    else
+                    {
+                        <pre class="signal-review-payload mb-0">@FormatJson(review.Payload)</pre>
+                    }
+                </dd>
+            </dl>
+            <p class="form-text">The waits may change before the request runs. The signal reaches the waits that are active at that moment.</p>
+            <div class="d-flex flex-wrap gap-2">
+                <button class="btn btn-primary" @onclick="ThrowAsync" disabled="@throwing">Throw signal</button>
+                <button class="btn btn-outline-secondary" @onclick="ClearReview" disabled="@throwing">Back</button>
+            </div>
+        }
+    </section>
+
+    @if (currentBroadcast is not null)
+    {
+        <section class="panel panel-flush mb-3" aria-labelledby="signal-current-heading">
+            <div class="section-heading px-3 pt-3">
+                <div>
+                    <span class="page-eyebrow">Broadcast #@currentBroadcast.Id</span>
+                    <h2 id="signal-current-heading">Deliveries</h2>
+                    <p>@ScopeLabel(currentBroadcast.WorkflowKey) · <code>@currentBroadcast.Name</code></p>
+                </div>
+                <div class="d-flex flex-wrap gap-2 align-items-center">
+                    <StatusBadge Status="@currentBroadcast.Status" Text="@BroadcastStatusLabel(currentBroadcast.Status)" />
+                    <button class="btn btn-sm btn-outline-secondary" @onclick="RefreshCurrentBroadcastAsync" disabled="@refreshingBroadcast"><AppIcon Name="refresh" /> Refresh</button>
+                </div>
+            </div>
+            <SignalBroadcastSummary Broadcast="currentBroadcast" />
+            <div class="d-flex flex-wrap gap-2 px-3 pb-3">
+                @if (CanCancel(currentBroadcast.Status))
+                {
+                    <input class="form-control signal-reason-input" maxlength="1000" @bind="cancellationReason"
+                           placeholder="Cancellation reason (optional)" aria-label="Cancellation reason" />
+                    <button class="btn btn-outline-danger" @onclick="CancelAsync" disabled="@broadcastOperation">Cancel pending deliveries</button>
+                }
+                @if (CanRetry(currentBroadcast))
+                {
+                    <button class="btn btn-outline-primary" @onclick="RetryFailedAsync" disabled="@broadcastOperation">Retry @currentBroadcast.FailedCount.ToString("N0") failed</button>
+                }
+            </div>
+            <div class="border-top px-3 pt-3">
+                <div class="section-heading">
+                    <div><h3 class="h6 mb-0">Paged deliveries</h3><p>@(deliveries is null ? "Loading deliveries…" : $"{deliveries.TotalCount:N0} matching deliveries")</p></div>
+                    <select class="form-select signal-status-filter" value="@deliveryStatus" @onchange="OnDeliveryStatusChangedAsync" aria-label="Filter deliveries by status">
+                        <option value="">All statuses</option>
+                        @foreach (var status in SignalDeliveryStatuses.All) { <option value="@status">@DeliveryStatusLabel(status)</option> }
+                    </select>
+                </div>
+            </div>
+            <SignalDeliveries Deliveries="@(deliveries?.Items)" />
+            @if (deliveries is not null && deliveries.Items.Count > 0)
+            {
+                <div class="pagination-bar">
+                    <span class="pagination-copy">Page @deliveryPage of @DeliveryTotalPages</span>
+                    <div class="d-flex gap-2">
+                        <button class="btn btn-sm btn-outline-secondary" disabled="@(deliveryPage <= 1 || refreshingBroadcast)" @onclick="PreviousDeliveryPageAsync">Previous</button>
+                        <button class="btn btn-sm btn-outline-secondary" disabled="@(deliveryPage >= DeliveryTotalPages || refreshingBroadcast)" @onclick="NextDeliveryPageAsync">Next</button>
+                    </div>
+                </div>
+            }
+        </section>
+    }
+
+    <section class="panel panel-flush" aria-labelledby="signal-history-heading">
+        <div class="section-heading px-3 pt-3">
+            <div><h2 id="signal-history-heading">Recent broadcasts</h2><p>Broadcasts are kept until the signal broadcast retention period removes them.</p></div>
+            <select class="form-select signal-status-filter" value="@historyStatus" @onchange="OnHistoryStatusChangedAsync" aria-label="Filter broadcasts by status">
+                <option value="">All statuses</option>
+                @foreach (var status in SignalBroadcastStatuses.All) { <option value="@status">@BroadcastStatusLabel(status)</option> }
+            </select>
+        </div>
+        <SignalBroadcastHistory Broadcasts="@(history?.Items)" CurrentBroadcastId="@(currentBroadcast?.Id)" OnOpenBroadcast="OpenBroadcastAsync" />
+        @if (history is not null && history.Items.Count > 0)
+        {
+            <div class="pagination-bar">
+                <span class="pagination-copy">Page @historyPage of @HistoryTotalPages · @history.TotalCount.ToString("N0") broadcasts</span>
+                <div class="d-flex gap-2">
+                    <button class="btn btn-sm btn-outline-secondary" disabled="@(historyPage <= 1 || loadingHistory)" @onclick="PreviousHistoryPageAsync">Previous</button>
+                    <button class="btn btn-sm btn-outline-secondary" disabled="@(historyPage >= HistoryTotalPages || loadingHistory)" @onclick="NextHistoryPageAsync">Next</button>
+                </div>
+            </div>
+        }
+    </section>
+}
+
+@code {
+    private const int DeliveryPageSize = 50;
+    private const int HistoryPageSize = 25;
+
+    [SupplyParameterFromQuery(Name = "broadcastId")] public long? RequestedBroadcastId { get; set; }
+
+    private readonly CancellationTokenSource pollCancellation = new();
+    private Task? pollTask;
+    private long identityEpoch;
+    private bool disposed;
+    private bool authorizationDenied;
+    private bool loading;
+    private bool throwing;
+    private bool refreshingBroadcast;
+    private bool broadcastOperation;
+    private bool loadingHistory;
+    private string? error;
+    private string? success;
+
+    private string signalName = string.Empty;
+    private bool allWorkflows;
+    private string workflowKey = string.Empty;
+    private string? payloadText;
+    private string? payloadError;
+    private SignalSubscriptionSummaryDto? summary;
+    private ThrowReview? review;
+    private string? draftIdempotencyKey;
+
+    // Each changes when a newer request replaces what an older one would show, so an
+    // older response that arrives late is dropped instead of overwriting the page.
+    private long broadcastView;
+    private long deliveriesRequest;
+    private long historyRequest;
+    private long formGeneration;
+
+    private SignalBroadcastDetailDto? currentBroadcast;
+    private PagedResult<SignalDeliveryDto>? deliveries;
+    private string? deliveryStatus;
+    private int deliveryPage = 1;
+    private string? cancellationReason;
+
+    private PagedResult<SignalBroadcastSummaryDto>? history;
+    private string? historyStatus;
+    private int historyPage = 1;
+
+    private sealed record ThrowReview(
+        string Name, string? WorkflowKey, int Waiting, bool Truncated, JsonElement? Payload, string? PayloadText);
+
+    private IEnumerable<string> KnownNames =>
+        (summary?.Items ?? []).Select(item => item.Name).Distinct().Order(StringComparer.Ordinal);
+
+    private IEnumerable<string> KnownFamilies => (summary?.Items ?? [])
+        .Where(item => string.IsNullOrEmpty(signalName) || item.Name == signalName)
+        .Select(item => item.WorkflowKey).Distinct().Order(StringComparer.Ordinal);
+
+    private string MatchSummary
+    {
+        get
+        {
+            if (summary is null || string.IsNullOrEmpty(signalName)) return "Choose a signal name to see how many waits match.";
+            var rows = summary.Items.Where(item => item.Name == signalName).ToList();
+            if (rows.Count == 0) return $"No instance is waiting for '{signalName}' now.";
+            var waits = rows.Sum(item => item.Count);
+            return $"{waits:N0} {(waits == 1 ? "wait" : "waits")} in {rows.Count:N0} {(rows.Count == 1 ? "family" : "families")}: "
+                + string.Join(", ", rows.Select(item => $"{item.WorkflowKey} ({item.Count:N0})"))
+                + (summary.Truncated ? " (list truncated)" : string.Empty);
+        }
+    }
+
+    private int DeliveryTotalPages => TotalPages(deliveries?.TotalCount ?? 0, DeliveryPageSize);
+    private int HistoryTotalPages => TotalPages(history?.TotalCount ?? 0, HistoryPageSize);
+
+    protected override async Task OnInitializedAsync()
+    {
+        Token.Changed += OnTokenChanged;
+        pollTask = PollCurrentBroadcastAsync(pollCancellation.Token);
+        if (Token.HasToken) await LoadInitialAsync();
+    }
+
+    private async Task LoadInitialAsync()
+    {
+        var epoch = Interlocked.Read(ref identityEpoch);
+        loading = true;
+        try
+        {
+            summary = await GuardAsync(() => Api.GetSignalSubscriptionSummaryAsync());
+            await LoadHistoryAsync();
+            if (RequestedBroadcastId is long requested) await OpenBroadcastAsync(requested);
+        }
+        catch (Exception ex) { HandleError(ex, epoch); }
+        finally { if (IsCurrentIdentity(epoch)) loading = false; }
+    }
+
+    private async Task RefreshAllAsync()
+    {
+        error = null;
+        success = null;
+        await LoadInitialAsync();
+        if (currentBroadcast is not null) await RefreshCurrentBroadcastAsync();
+    }
+
+    private async Task OnSignalNameChangedAsync(ChangeEventArgs args)
+    {
+        signalName = args.Value?.ToString()?.Trim() ?? string.Empty;
+        review = null;
+        var epoch = Interlocked.Read(ref identityEpoch);
+        try { summary = await GuardAsync(() => Api.GetSignalSubscriptionSummaryAsync()); }
+        catch (Exception ex) { HandleError(ex, epoch); }
+    }
+
+    private void OnWorkflowKeyChanged(ChangeEventArgs args)
+    {
+        workflowKey = args.Value?.ToString()?.Trim() ?? string.Empty;
+        review = null;
+    }
+
+    private void SetScope(bool all)
+    {
+        allWorkflows = all;
+        review = null;
+    }
+
+    private void OnPayloadEdited()
+    {
+        payloadError = null;
+        ClearReview();
+    }
+
+    private async Task ReviewAsync()
+    {
+        error = null;
+        success = null;
+        var text = payloadText;
+        payloadError = TryParsePayload(text, out var payload);
+        if (payloadError is not null) return;
+        if (string.IsNullOrEmpty(signalName))
+        {
+            error = "Enter a signal name.";
+            return;
+        }
+        if (!allWorkflows && string.IsNullOrEmpty(workflowKey))
+        {
+            error = "Enter a workflow key, or choose all workflows.";
+            return;
+        }
+
+        var epoch = Interlocked.Read(ref identityEpoch);
+        try
+        {
+            var name = signalName;
+            var scope = allWorkflows ? null : workflowKey;
+            var counts = await GuardAsync(() => Api.GetSignalSubscriptionSummaryAsync(name, scope));
+            // The draft may have changed while the counts were loading; that edit ended the review.
+            if (name != signalName || scope != (allWorkflows ? null : workflowKey) || text != payloadText) return;
+            review = new ThrowReview(name, scope, counts.Items.Sum(item => item.Count), counts.Truncated, payload, text);
+            // One key per reviewed draft, so a retried request after a timeout cannot throw twice.
+            draftIdempotencyKey = $"ui-{Guid.NewGuid():N}";
+        }
+        catch (Exception ex) { HandleError(ex, epoch); }
+    }
+
+    private void ClearReview()
+    {
+        review = null;
+        draftIdempotencyKey = null;
+    }
+
+    private async Task ThrowAsync()
+    {
+        if (review is null) return;
+        if (review.PayloadText != payloadText)
+        {
+            // An edit always ends the review; this only guards against a click that overtakes it.
+            ClearReview();
+            error = "The payload changed after the review. Review the signal again.";
+            return;
+        }
+
+        var epoch = Interlocked.Read(ref identityEpoch);
+        var reviewed = review;
+        var key = draftIdempotencyKey;
+        throwing = true;
+        error = null;
+        try
+        {
+            var thrown = await GuardAsync(() => Api.ThrowSignalAsync(new ThrowSignalRequest(
+                reviewed.Name,
+                reviewed.WorkflowKey,
+                reviewed.WorkflowKey is null,
+                reviewed.Payload,
+                key)));
+            success = thrown.TotalDeliveryCount == 0
+                ? $"Broadcast #{thrown.Id} found no waiting events; it completed with no deliveries."
+                : $"Broadcast #{thrown.Id} froze {thrown.TotalDeliveryCount:N0} {(thrown.TotalDeliveryCount == 1 ? "recipient" : "recipients")}; the Worker is delivering it.";
+            if (ReferenceEquals(review, reviewed)) ClearReview();
+            ShowBroadcast(thrown);
+            await LoadDeliveriesAsync();
+            await LoadHistoryAsync();
+        }
+        catch (Exception ex) { HandleError(ex, epoch); }
+        finally { if (IsCurrentIdentity(epoch)) throwing = false; }
+    }
+
+    /// <summary>Shows another broadcast, so responses for the one shown before are dropped.</summary>
+    private void ShowBroadcast(SignalBroadcastDetailDto broadcast)
+    {
+        broadcastView++;
+        currentBroadcast = broadcast;
+        deliveries = null;
+        deliveryStatus = null;
+        deliveryPage = 1;
+        cancellationReason = null;
+    }
+
+    private async Task OpenBroadcastAsync(long id)
+    {
+        var epoch = Interlocked.Read(ref identityEpoch);
+        var view = broadcastView;
+        try
+        {
+            var broadcast = await GuardAsync(() => Api.GetSignalBroadcastAsync(id));
+            if (view != broadcastView) return;
+            if (broadcast is null)
+            {
+                error = $"Signal broadcast #{id} was not found.";
+                return;
+            }
+            ShowBroadcast(broadcast);
+            await LoadDeliveriesAsync();
+        }
+        catch (Exception ex) { HandleError(ex, epoch); }
+    }
+
+    private async Task RefreshCurrentBroadcastAsync()
+    {
+        if (currentBroadcast is null || refreshingBroadcast) return;
+        var epoch = Interlocked.Read(ref identityEpoch);
+        var view = broadcastView;
+        refreshingBroadcast = true;
+        try
+        {
+            var id = currentBroadcast.Id;
+            var wasLive = IsLive(currentBroadcast.Status);
+            var refreshed = await GuardAsync(() => Api.GetSignalBroadcastAsync(id));
+            if (view != broadcastView) return;
+            currentBroadcast = refreshed;
+            await LoadDeliveriesAsync();
+            if (view == broadcastView && wasLive && currentBroadcast is not null && !IsLive(currentBroadcast.Status)) await LoadHistoryAsync();
+        }
+        catch (Exception ex) { HandleError(ex, epoch); }
+        finally { if (IsCurrentIdentity(epoch)) refreshingBroadcast = false; }
+    }
+
+    private async Task LoadDeliveriesAsync()
+    {
+        if (currentBroadcast is null) return;
+        var request = ++deliveriesRequest;
+        var id = currentBroadcast.Id;
+        var status = deliveryStatus;
+        var page = deliveryPage;
+        var loaded = await GuardAsync(() => Api.GetSignalDeliveriesAsync(id, status, page, DeliveryPageSize));
+        if (request == deliveriesRequest && currentBroadcast?.Id == id) deliveries = loaded;
+    }
+
+    private async Task LoadHistoryAsync()
+    {
+        var epoch = Interlocked.Read(ref identityEpoch);
+        var request = ++historyRequest;
+        var status = historyStatus;
+        var page = historyPage;
+        loadingHistory = true;
+        try
+        {
+            var loaded = await GuardAsync(() => Api.GetSignalBroadcastsAsync(status: status, page: page, pageSize: HistoryPageSize));
+            if (request == historyRequest) history = loaded;
+        }
+        catch (Exception ex) { HandleError(ex, epoch); }
+        finally { if (IsCurrentIdentity(epoch) && request == historyRequest) loadingHistory = false; }
+    }
+
+    private async Task CancelAsync()
+    {
+        if (currentBroadcast is null) return;
+        var epoch = Interlocked.Read(ref identityEpoch);
+        var view = broadcastView;
+        broadcastOperation = true;
+        error = null;
+        try
+        {
+            var id = currentBroadcast.Id;
+            var cancelled = await GuardAsync(() => Api.CancelSignalBroadcastAsync(id, cancellationReason));
+            success = $"Broadcast #{id} was cancelled; deliveries already running finished normally.";
+            if (view == broadcastView)
+            {
+                currentBroadcast = cancelled;
+                cancellationReason = null;
+                await LoadDeliveriesAsync();
+            }
+            await LoadHistoryAsync();
+        }
+        catch (Exception ex) { HandleError(ex, epoch); }
+        finally { if (IsCurrentIdentity(epoch)) broadcastOperation = false; }
+    }
+
+    private async Task RetryFailedAsync()
+    {
+        if (currentBroadcast is null) return;
+        var epoch = Interlocked.Read(ref identityEpoch);
+        var view = broadcastView;
+        broadcastOperation = true;
+        error = null;
+        try
+        {
+            var id = currentBroadcast.Id;
+            var fence = currentBroadcast.UpdatedAt;
+            var retried = await GuardAsync(() => Api.RetrySignalDeliveriesAsync(id, fence));
+            success = $"The failed deliveries of broadcast #{id} are queued again.";
+            if (view == broadcastView)
+            {
+                currentBroadcast = retried;
+                await LoadDeliveriesAsync();
+            }
+        }
+        catch (WorkflowApiException ex) when (ex.StatusCode == HttpStatusCode.Conflict && IsCurrentIdentity(epoch))
+        {
+            error = ex.Message + " The page shows the current state.";
+            await RefreshCurrentBroadcastAsync();
+        }
+        catch (Exception ex) { HandleError(ex, epoch); }
+        finally { if (IsCurrentIdentity(epoch)) broadcastOperation = false; }
+    }
+
+    private async Task OnDeliveryStatusChangedAsync(ChangeEventArgs args)
+    {
+        deliveryStatus = string.IsNullOrEmpty(args.Value?.ToString()) ? null : args.Value!.ToString();
+        deliveryPage = 1;
+        var epoch = Interlocked.Read(ref identityEpoch);
+        try { await LoadDeliveriesAsync(); }
+        catch (Exception ex) { HandleError(ex, epoch); }
+    }
+
+    private async Task OnHistoryStatusChangedAsync(ChangeEventArgs args)
+    {
+        historyStatus = string.IsNullOrEmpty(args.Value?.ToString()) ? null : args.Value!.ToString();
+        historyPage = 1;
+        await LoadHistoryAsync();
+    }
+
+    private async Task PreviousDeliveryPageAsync() { deliveryPage = Math.Max(1, deliveryPage - 1); await ReloadDeliveriesAsync(); }
+    private async Task NextDeliveryPageAsync() { deliveryPage = Math.Min(DeliveryTotalPages, deliveryPage + 1); await ReloadDeliveriesAsync(); }
+    private async Task PreviousHistoryPageAsync() { historyPage = Math.Max(1, historyPage - 1); await LoadHistoryAsync(); }
+    private async Task NextHistoryPageAsync() { historyPage = Math.Min(HistoryTotalPages, historyPage + 1); await LoadHistoryAsync(); }
+
+    private async Task ReloadDeliveriesAsync()
+    {
+        var epoch = Interlocked.Read(ref identityEpoch);
+        try { await LoadDeliveriesAsync(); }
+        catch (Exception ex) { HandleError(ex, epoch); }
+    }
+
+    private async Task PollCurrentBroadcastAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var timer = new PeriodicTimer(TimeSpan.FromSeconds(3));
+            while (await timer.WaitForNextTickAsync(cancellationToken))
+            {
+                await InvokeAsync(async () =>
+                {
+                    if (disposed || cancellationToken.IsCancellationRequested || currentBroadcast is null
+                        || !IsLive(currentBroadcast.Status) || refreshingBroadcast) return;
+                    await RefreshCurrentBroadcastAsync();
+                    // Timer callbacks do not receive Blazor's event-handler render.
+                    if (!disposed) StateHasChanged();
+                });
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
+    }
+
+    private void OnTokenChanged()
+    {
+        Interlocked.Increment(ref identityEpoch);
+        _ = InvokeAsync(async () =>
+        {
+            if (disposed) return;
+            ClearSignalData();
+            authorizationDenied = false;
+            StateHasChanged();
+            if (Token.HasToken) await LoadInitialAsync();
+            StateHasChanged();
+        });
+    }
+
+    private bool IsCurrentIdentity(long epoch) =>
+        !disposed && Token.HasToken && !authorizationDenied && epoch == Interlocked.Read(ref identityEpoch);
+
+    private void EnsureIdentity(long epoch)
+    {
+        if (!IsCurrentIdentity(epoch)) throw new SignalIdentityChangedException();
+    }
+
+    private async Task<T> GuardAsync<T>(Func<Task<T>> request)
+    {
+        var epoch = Interlocked.Read(ref identityEpoch);
+        var identity = Token.IdentityKey;
+        EnsureIdentity(epoch);
+        try
+        {
+            var result = await request();
+            EnsureIdentity(epoch);
+            if (!string.Equals(identity, Token.IdentityKey, StringComparison.Ordinal)) throw new SignalIdentityChangedException();
+            return result;
+        }
+        catch (WorkflowApiException ex) when (ex.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+        {
+            EnsureIdentity(epoch);
+            Interlocked.Increment(ref identityEpoch);
+            ClearSignalData();
+            authorizationDenied = true;
+            throw new SignalIdentityChangedException();
+        }
+        catch
+        {
+            EnsureIdentity(epoch);
+            throw;
+        }
+    }
+
+    private void HandleError(Exception ex, long epoch)
+    {
+        if (ex is not SignalIdentityChangedException && IsCurrentIdentity(epoch)) error = ex.Message;
+    }
+
+    private void ClearSignalData()
+    {
+        // The draft goes too: the next identity starts from an empty form.
+        signalName = string.Empty; allWorkflows = false; workflowKey = string.Empty; payloadText = null; formGeneration++;
+        summary = null; review = null; draftIdempotencyKey = null; payloadError = null;
+        broadcastView++; deliveriesRequest++; historyRequest++;
+        currentBroadcast = null; deliveries = null; deliveryStatus = null; deliveryPage = 1;
+        history = null; historyStatus = null; historyPage = 1; cancellationReason = null;
+        error = null; success = null;
+        loading = false; throwing = false; refreshingBroadcast = false; broadcastOperation = false; loadingHistory = false;
+    }
+
+    private sealed class SignalIdentityChangedException : OperationCanceledException;
+
+    private static int TotalPages(long totalCount, int pageSize) =>
+        totalCount == 0 ? 1 : (int)Math.Ceiling(totalCount / (double)pageSize);
+
+    public async ValueTask DisposeAsync()
+    {
+        disposed = true;
+        Interlocked.Increment(ref identityEpoch);
+        Token.Changed -= OnTokenChanged;
+        await pollCancellation.CancelAsync();
+        if (pollTask is not null)
+        {
+            try { await pollTask; }
+            catch (OperationCanceledException) { }
+        }
+        pollCancellation.Dispose();
+    }
+}

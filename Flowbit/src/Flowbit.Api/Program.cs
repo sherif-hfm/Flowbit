@@ -246,6 +246,14 @@ try
                         || string.Equals(
                             data.Policy,
                             SharedVariableAuthorizationPolicies.Write,
+                            StringComparison.Ordinal)
+                        || string.Equals(
+                            data.Policy,
+                            SignalAuthorizationPolicies.Throw,
+                            StringComparison.Ordinal)
+                        || string.Equals(
+                            data.Policy,
+                            SignalAuthorizationPolicies.Read,
                             StringComparison.Ordinal)) == true;
                 if (acceptsSharedVariableClient)
                 {

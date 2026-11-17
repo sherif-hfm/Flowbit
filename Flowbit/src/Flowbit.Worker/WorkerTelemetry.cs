@@ -75,12 +75,15 @@ public sealed class WorkerTelemetry : IDisposable
     private long _callStartQueueAgeMicroseconds;
     private long _callCancelAgeSamples;
     private long _callCancelAgeMicroseconds;
+    private readonly ConcurrentDictionary<(string Status, string ResultCode), long> _signalDeliveries = new();
+    private long _pendingSignalDeliveries;
+    private double _oldestOpenSignalBroadcastAgeMilliseconds;
 
     public WorkerTelemetry()
     {
         _runtimeListener.InstrumentPublished = static (instrument, listener) =>
         {
-            if (instrument.Meter.Name is "Flowbit.Runtime.Jobs" or "Flowbit.Runtime.CallActivities")
+            if (instrument.Meter.Name is "Flowbit.Runtime.Jobs" or "Flowbit.Runtime.CallActivities" or "Flowbit.Runtime.Signals")
             {
                 listener.EnableMeasurementEvents(instrument);
             }
@@ -175,6 +178,15 @@ public sealed class WorkerTelemetry : IDisposable
             "flowbit.worker.incidents.open",
             () => Interlocked.Read(ref _openIncidents),
             description: "Current database-observed open incident count.");
+        _meter.CreateObservableGauge(
+            "flowbit.signals.deliveries.pending",
+            () => Interlocked.Read(ref _pendingSignalDeliveries),
+            description: "Signal deliveries waiting for a Worker.");
+        _meter.CreateObservableGauge(
+            "flowbit.signals.broadcasts.oldest_open.age",
+            () => Volatile.Read(ref _oldestOpenSignalBroadcastAgeMilliseconds),
+            "ms",
+            "Age of the oldest signal broadcast that is still delivering.");
     }
 
     public void RecordAcquisition(
@@ -336,6 +348,16 @@ public sealed class WorkerTelemetry : IDisposable
                 : 0);
     }
 
+    public void RecordSignalBacklog(SignalBacklogRecord backlog)
+    {
+        Interlocked.Exchange(ref _pendingSignalDeliveries, backlog.PendingDeliveries);
+        Volatile.Write(
+            ref _oldestOpenSignalBroadcastAgeMilliseconds,
+            backlog.OldestOpenBroadcastAt is { } createdAt
+                ? Math.Max(0, (backlog.ObservedAt - createdAt).TotalMilliseconds)
+                : 0);
+    }
+
     public void RecordTimerStart()
     {
         _timerStarts.Add(1);
@@ -394,6 +416,15 @@ public sealed class WorkerTelemetry : IDisposable
             _runtimeAutomaticLoopLimitsTotal);
         WriteCounter(output, "flowbit_call_fence_stops_total", _callFenceStopsTotal);
         WriteCallEvents(output);
+        WriteGauge(
+            output,
+            "flowbit_signals_deliveries_pending",
+            Interlocked.Read(ref _pendingSignalDeliveries));
+        WriteGauge(
+            output,
+            "flowbit_signals_broadcasts_oldest_open_age_milliseconds",
+            Volatile.Read(ref _oldestOpenSignalBroadcastAgeMilliseconds));
+        WriteSignalDeliveries(output);
 
         WriteSummary(
             output,
@@ -461,6 +492,12 @@ public sealed class WorkerTelemetry : IDisposable
                 break;
             case "flowbit.call.fence_stops":
                 Interlocked.Add(ref _callFenceStopsTotal, measurement);
+                break;
+            case "flowbit.signals.deliveries":
+                _signalDeliveries.AddOrUpdate(
+                    (ReadTag(tags, "status"), ReadTag(tags, "result_code")),
+                    measurement,
+                    (_, total) => total + measurement);
                 break;
         }
     }
@@ -539,6 +576,20 @@ public sealed class WorkerTelemetry : IDisposable
     }
 
     // The labels are stable history notes and failure codes, never ids, names, or values.
+    private void WriteSignalDeliveries(StringBuilder output)
+    {
+        output.AppendLine("# TYPE flowbit_signal_deliveries_total counter");
+        foreach (var pair in _signalDeliveries
+                     .OrderBy(pair => pair.Key.Status, StringComparer.Ordinal)
+                     .ThenBy(pair => pair.Key.ResultCode, StringComparer.Ordinal))
+        {
+            output.Append("flowbit_signal_deliveries_total{status=\"").Append(pair.Key.Status)
+                .Append("\",result_code=\"").Append(pair.Key.ResultCode).Append("\"} ")
+                .Append(pair.Value.ToString(CultureInfo.InvariantCulture))
+                .AppendLine();
+        }
+    }
+
     private void WriteCallEvents(StringBuilder output)
     {
         output.AppendLine("# TYPE flowbit_call_events_total counter");

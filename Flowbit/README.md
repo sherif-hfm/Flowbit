@@ -379,6 +379,9 @@ diagrams, see the [database schema reference](../docs/database-schema.md).
 - Durable work is stored in `flowbit.workflow_jobs`,
   `flowbit.workflow_job_attempts`, `flowbit.workflow_job_snapshots`,
   `flowbit.workflow_incidents`, and `flowbit.timer_subscriptions`.
+- Signal waits are stored in `flowbit.signal_subscriptions`, and thrown signals
+  in `flowbit.signal_broadcasts`, `flowbit.signal_deliveries`, and
+  `flowbit.signal_broadcast_jobs`; see [Signal events](#signal-events).
 - The deployment-wide shared-variable catalog, current values, immutable
   revisions, request ledger, and API clients and
   secrets are stored in the `flowbit.shared_variable_*` tables. Definition
@@ -638,13 +641,13 @@ to a durable activity:
 Omitting `cancelActivity` makes the boundary interrupting; omitting
 `deliveryMode` selects `atomic`. A boundary has no incoming flow and exactly one
 unconditional outgoing flow. It may attach to a normal or multi-instance user
-task, an intermediate message/timer wait, a `task`, `serviceTask`, or
+task, an intermediate message, timer, or signal wait, a `task`, `serviceTask`, or
 `scriptTask` with `asyncBefore: true`, or a multi-instance `callActivity`. On an
 automatic multi-instance body the subscription belongs to the parent token
 activation, starts at token entry (also while it waits behind another body of the
-node), and never exists per item. A host may own at most eight timer and
-conditional boundaries combined; its optional error boundaries are counted
-separately. No HTTP endpoint manually triggers a conditional boundary.
+node), and never exists per item. A host may own at most eight timer,
+conditional, and [signal](#signal-events) boundaries combined; its optional error
+boundaries are counted separately. No HTTP endpoint manually triggers a conditional boundary.
 
 Every host activation owns persisted subscription rows fenced by instance,
 host token, activation, and boundary node. Initial truth starts at false, so a
@@ -818,6 +821,228 @@ node and strands the token, and no publication switch guards this. Before rollin
 binaries back, retire those definitions and finish or cancel their instances. See
 [deployment](../docs/deployment.md#upgrade-and-compatibility-rules).
 
+## Signal events
+
+An `intermediateSignalCatchEvent` rests until a signal with its `signal.name` is
+delivered, then maps the broadcast's payload through its typed
+`signal.outputMappings` and follows its one outgoing flow. A `signalBoundaryEvent`
+listens for its signal while its host is active: by default a delivery interrupts
+the host, and with `cancelActivity: false` it adds a branch at the boundary and
+keeps listening. Signals are thrown only through `POST /api/signal-broadcasts` in
+this release; signal start, throw, and end events do not exist yet. Authoring is in
+the node reference for the
+[catch](../docs/node-reference.md#intermediatesignalcatchevent) and the
+[boundary](../docs/node-reference.md#signalboundaryevent),
+integration in the [developer guide](../docs/developer-guide.md#broadcast-signals),
+routes in the [API reference](../docs/api-guide.md#signals), and rollout in
+[deployment](../docs/deployment.md#signal-events).
+
+`SignalEventRules` (`Flowbit.Shared`) owns the name rule (1 to 100 lowercase
+letters, digits, `.`, `_`, or `-`, starting with a letter or digit, compared
+exactly), the 100-mapping limit, the throw endpoint's name check, and
+`HasSignalEvents`, a per-definition flag computed once per definition object.
+`WorkflowDefinitionValidator.ValidateSignalCatch` adds the topology, the typed
+mapping shapes, and the shared-variable rule: a mapping cannot write a shared
+alias, and its default template, its validation, and a targeted process
+variable's validation cannot read one, found from parsed references, never by
+matching text. `ValidateSignalBoundary` applies the same name and mapping rules,
+then `ValidateObservableBoundary` with `allowAutomaticBodies: false`: the hosts of
+timer and conditional boundaries (a normal or multi-instance user task; a message,
+timer, or signal catch; a `task`, `serviceTask`, or `scriptTask` with
+`asyncBefore`) except any multi-instance body, so never a call activity or a
+conditional catch. `BoundaryEventRules.MaxObservableBoundariesPerHost` (eight)
+counts timer, conditional, and signal boundaries together
+(`BpmnFlowNodeTypes.IsObservableBoundary`), and
+`SignalEventRules.BoundaryNameProblems` refuses two signal boundaries with one
+name on a host and a boundary that repeats its host catch's name.
+`WorkflowModelMigrator` defaults a missing `cancelActivity` to true on every
+observable boundary, so a non-interrupting flag survives normalization.
+`RequiresDurableProcessing` returns true for a signal event, so the publication
+gate needs `WorkflowDurableProcessing:PublicationEnabled`.
+
+**Invariants.**
+
+1. A signal is a broadcast, not a queue. It reaches the waits that exist when it
+   is thrown and is never kept for a later wait.
+2. Recipients are frozen once, in one statement of the throw. Delivery adds no
+   recipient and repeats none.
+3. One outcome per recipient. `signal_deliveries` is unique per broadcast and
+   subscription, and a delivery's final status commits in the transaction that
+   makes the instance change it describes.
+4. A subscription lives exactly as long as its wait. Its rows are written only
+   under the instance lock, in the transaction that starts or ends the wait.
+5. Throwing never waits for an instance. The throw takes no runtime lock, and
+   delivery rows hold no foreign key to an instance, token, or subscription,
+   because a foreign-key check would wait for a transaction holding that row
+   `FOR UPDATE`.
+6. One instance per delivery transaction, locked in the established order, with
+   no external call inside it.
+7. Receivers are independent: one delivery's failure never rolls back another or
+   the throw.
+8. The Worker is required.
+9. Workflows without signals pay nothing: the subscription statements in routing
+   and on host exit are skipped for a definition without a signal event, and a
+   command-capturing test pins that a user action in such a workflow issues no
+   statement on a `signal_` table.
+
+**Subscriptions.** `EnsureSignalSubscriptionsAsync` runs in
+`ResolvePassThroughAsync` for the token's current node, after
+`EnsureAttachedConditionalBoundarySubscriptionsAsync` and its activation
+re-check, under the same guard that skips a resumed failed activity. A conditional
+boundary that is already true interrupts its host inside that earlier call, so a
+subscription created before the re-check could belong to a token that has left.
+It creates the catch's own row for a signal catch and, when
+`IsBoundaryHostEligibleAsync` accepts the host, one row per attached signal
+boundary, with `AttachedToNodeId` set to the host and `CancelActivity` from the
+boundary. That is host entry, before an `asyncBefore` job runs, as for
+conditional boundaries. It returns before any query unless the definition has
+signal events and the node is a signal catch or the host of a signal boundary, and
+the activation-fence uniqueness `(InstanceId, TokenId, ActivationId,
+SignalNodeId)` makes it idempotent. The catch then takes the existing resting
+branch, which arms its timer boundaries; its token has no wait state, like a token
+on a message catch.
+`CancelSignalSubscriptionsAsync` runs wherever conditional boundary subscriptions
+are cancelled: `CancelAttachedBoundaryWaitsAsync` (every host exit),
+`CancelDurableWorkForTokensAsync` (instance cancellation, terminate, fault, and
+cancelled gateway scopes), `InterruptBoundaryHostAsync` (an interrupting
+conditional or signal boundary), `FireTimerBoundaryAsync`, `FireTimerCatchAsync`,
+and the error-capture branch of `ResolvePassThroughAsync`. A host that starts an
+`asyncAfter` wait leaves through `CancelAttachedBoundaryWaitsAsync` too, so its
+signal boundaries stop listening while the continuation waits. Callers that pass
+the instance's definition skip the statement when `HasSignalEvents` is false; every caller does except instance
+cancellation, which has no definition at hand and runs the one statement anyway; that is safe across version changes,
+because an open subscription blocks a change to a definition without its signal
+event.
+
+**Throw.** `SignalBroadcastService.ThrowAsync` checks the name and the scope
+(exactly one of `workflowKey` and `allWorkflows`), then, in one transaction, takes
+a transaction advisory lock on the caller's idempotency key when one is given,
+replays or refuses an earlier broadcast with that key, counts unfinished
+broadcasts against `Signals.MaxOpenBroadcasts` without a lock (a soft threshold),
+inserts the broadcast, and freezes the recipients with one
+`INSERT ... SELECT ... LIMIT max + 1` over the active subscriptions of the name
+and optional family. More than `Signals.MaxSubscriptionsPerBroadcast` rows rolls
+the throw back. It then stores the counts and the recipients per family and
+enqueues one `signalBroadcastDeliver` job per represented definition, with a
+`signal_broadcast_jobs` link row. It snapshots the thrower (`user` or `client`,
+its identity, roles, and the claims `WorkflowAudit:AllowedClaims` selects) and
+never logs the payload. A client sees, cancels, and retries only its own
+broadcasts and receives result codes without descriptions.
+
+**Delivery.** `SignalBroadcastJobProcessor` handles one broadcast and one
+definition: it pages through pending deliveries 100 at a time in ascending ID with
+a cursor, so a failing delivery cannot starve later ones, runs each in its own
+scope and transaction through `ISignalDeliveryExecutor.DeliverSignalAsync`, and
+recounts the broadcast after each page. A delivery locks the instance hierarchy
+through `GetInstanceForUpdateAsync`, then the subscription row, then the delivery
+row; a delivery that is no longer pending ends there. It takes no shared-variable
+row. An ended subscription or a stopped instance makes it `skipped` with
+`subscription_ended`. An active subscription whose token is not active with its
+activation on the catch, or on the boundary's host, is an invariant failure
+(`SignalDeliveryInvariantException`, below). A boundary whose host is no longer
+eligible, because its token waits for the `asyncAfter` continuation, raises a
+`WorkflowConflictException` and ends `skipped` with `stale`; normally the host's
+exit has already cancelled the subscription, and the delivery ends
+`subscription_ended` first. Otherwise the executor resolves the mappings with
+`ResolveTypedOutputs` against the instance's current definition and the payload.
+For a catch it writes them on the catch's visit, lets conditional events observe
+them through `ResumeForVariableChangesAsync`, and,
+if the token is still the same runnable activation, completes the subscription,
+cancels the catch's boundary waits, records the `signalCatch` traversal, the
+`signalReceived` history row, and the `signalReceived` visit completion, and
+routes on with `forceDurableActivities`. It runs as `SignalActor()`, the fixed
+actor `signal` with no roles, claims, or delegation, and resets the automatic
+activation count as any external trigger does. A conditional boundary that took
+the token first ends the delivery as `delivered` with `superseded`.
+
+A boundary delivery takes one of two paths after the mappings resolve:
+
+- **Interrupting** (`CancelActivity`). It completes the subscription first, so the
+  host's cleanup cannot cancel it, then calls `InterruptBoundaryHostAsync` with
+  completion reason `signalReceived` and job-cancel reason
+  `interruptingSignalBoundary`. That helper is the one cancel sequence
+  `CaptureConditionalBoundaryAsync` also uses, so the two cannot drift: the
+  automatic body, open user tasks and multi-instance children, timer,
+  conditional, and signal subscriptions, other jobs, and calls; it then cancels
+  the host's visit with the given reason and moves the token onto the boundary. The
+  conditional capture passes the subscription it keeps; the signal path passes
+  none. The values are written on the boundary's visit, conditional events observe
+  them, and `AdvanceFromSignalEventAsync` records the `signalBoundary` traversal
+  and the `signalReceived` history row and completion and routes on. Result
+  `interrupted`.
+- **Non-interrupting.** `ReadMaxActiveTokensAsync` reads
+  `Workflow.Gateway.MaxActiveTokens` (1,000 when missing or not a positive whole
+  number); when the instance's active tokens plus one would exceed it,
+  `SignalTokenLimitException` makes the delivery `failed` with
+  `signal_token_limit`, nothing commits, and the boundary stays subscribed.
+  Otherwise `RecordOccurrenceAsync` increases `Occurrence` on the still-active
+  subscription, a sibling token is added on the boundary in the host's gateway
+  branch, and the values are written on its visit before it continues as above.
+  Result `branched`; each later broadcast adds another branch.
+
+The history payload has `eventKind` `boundary`, the subscription's
+`cancelActivity`, and the host token as `hostTokenId`; the row itself belongs to
+the token that continues, which for a non-interrupting boundary is the sibling.
+
+Failures settle in a separate short transaction: a mapping failure records
+`failed` with `signal_payload_invalid`, `SignalTokenLimitException`
+`signal_token_limit`, another `WorkflowDomainException`
+`signal_delivery_rejected`, and a `WorkflowConflictException`, such as the call
+fence, `skipped` with `stale`; `SignalDeliveryInvariantException` (an active
+subscription whose token is not waiting there) and `WorkflowCallChainException`
+fail the delivery at once with `delivery_error` and an error log, never a job
+incident, which would hold back every other recipient. The engine's message is
+bounded with `UnicodeText.Limit`. An unexpected exception leaves the delivery pending and is
+rethrown after the pass, so the job retries (four attempts, after 10 seconds, one
+minute, and five minutes); on the final attempt it becomes `failed` with
+`delivery_error`. `ReconcileExhaustedSignalBroadcastsAsync`, a branch of
+`OpenExhaustedLeaseIncidentsAsync`, fails the pending deliveries of a job whose
+final lease expired with `lease_exhausted` and recounts the broadcast. Cancel and
+retry lock the broadcast row and then update delivery rows; a delivery never locks
+the broadcast, so the two cannot deadlock. A transition that starts or ends a wait
+already holds the instance lock when it writes subscription rows, and a version
+change locks open signal subscriptions last, after jobs, incidents, timers, and
+conditional-boundary subscriptions.
+
+**Versions, reactivation, and analyses.** `WorkflowVersionCompatibilityEvaluator.ValidateOpenSignalSubscriptions`
+blocks with `open_signal_subscription_node_missing` or
+`open_signal_subscription_contract_changed` (node type, signal name, attachment,
+interrupting flag, or outgoing-flow contract) and warns with
+`signal_mapping_contract_changed` when only mappings differ.
+`ValidateAttachedSignalBoundaries` compares, for every node with an active token,
+the signal boundaries attached to it in both versions (ID, type, name, host,
+effective `cancelActivity`, and outgoing flow, not mappings) and blocks with
+`attached_signal_boundary_contract_changed` when the host gains, loses, or changes
+one, because the host subscribed on entry and a gained boundary would never be
+subscribed; it is skipped when neither version has signal events.
+`DurableNodeContract` includes signal boundaries, mappings included, so a host
+with an open job blocks with `open_job_contract_changed` on any change to them. A
+compatible change rebinds the open subscriptions to the target definition and node
+name; a pending delivery names its subscription and reads the node from the
+instance's current definition, so it needs no change. Reactivation blocks an
+instance with an active signal subscription as `unresolved_durable_work`; a
+reactivated target's signal boundaries subscribe through the same entry call. The
+shared-variable lock-order proof treats a signal catch as an external resting
+position, and a signal boundary, through `IsObservableBoundary` in
+`IsExternalRestingOrBoundary`, as an external continuation; each delivery starts a
+new segment. A `signalReceived` history row carries no action ID, so
+`IsActorActionHistory` never selects it and the `signal` actor never becomes a
+claim inheritance source.
+
+**Telemetry.** The `Flowbit.Runtime.Signals` meter (`SignalRuntimeTelemetry`)
+counts broadcasts by thrower kind and deliveries by status and result code, never
+names, payloads, or identities. `WorkerTelemetry` forwards the delivery counter
+to the Worker's `/metrics`, and `QueueTelemetryService` samples the pending
+deliveries and the age of the oldest unfinished broadcast. No lifecycle webhook
+event type is added: instance and task changes that a delivery causes are captured
+by the existing triggers, and `capture_workflow_incident_lifecycle()` lists
+`signalBroadcastDeliver` among the job kinds that report no node.
+
+Instance detail lists the instance's active subscriptions (`signalSubscriptions`,
+at most 50, with `signalSubscriptionCount`); the query runs only for a definition
+with signal events. `signalBroadcasts` is a [retention](#history-and-audit-retention)
+category; subscriptions stay with their instance.
+
 ## Instance-wide flow evidence (`FlowInfo`)
 
 Definitions can query fixed-size, instance-lifetime summaries for a sequence
@@ -943,7 +1168,9 @@ requires `asyncBefore`, whose job initializes the body; each item then runs as i
 own `multiInstanceItem` job, and `asyncAfter` runs once after the result is
 published (see [automatic multi-instance activities](#automatic-multi-instance-activities)).
 Conditional catches may use
-`conditional.deliveryMode: "durableAsync"` to enqueue control work. Definitions
+`conditional.deliveryMode: "durableAsync"` to enqueue control work, and signal
+catches and boundaries are always reached through `signalBroadcastDeliver` jobs (see
+[Signal events](#signal-events)). Definitions
 may also use
 `timerStartEvent`, `intermediateTimerCatchEvent`, and `timerBoundaryEvent` with
 exactly one ISO-8601 `timeDate`, `timeDuration`, or `timeCycle` schedule, or, on
@@ -1116,8 +1343,10 @@ bounded and identify lower-bound counts when the sample limit is reached.
 | Resolved incidents | Incidents aged from resolution. |
 | Settled webhook deliveries | Succeeded and discarded [webhook](#lifecycle-webhooks) deliveries, attempts first, aged from settlement. Pending, retrying, leased, and failed deliveries are protected. |
 | Lifecycle events | Fanned-out events that no delivery references, aged from the event time. |
+| Signal broadcasts | Finished [signal](#signal-events) broadcasts with their payloads, deliveries, and job links, aged from completion. A broadcast that is delivering or has a pending delivery is protected; deleting one frees its idempotency key. |
 
-The five history/audit policies initially keep data forever. The first upgraded
+The five history/audit policies, the two webhook policies, and signal broadcasts
+initially keep data forever. The first upgraded
 Worker initializes the operational policies from
 `FlowbitWorker:CompletedJobRetentionDays` and `ResolvedIncidentRetentionDays`
 (defaults 30/90; bootstrap values must be 1–36,500 days). Subsequent configuration changes use the saved policies;
@@ -1295,6 +1524,12 @@ and in-flight gateway executions are not migrated.
 - `POST /api/instances/{id}/administrative-actions` (immediate audited override)
 - `GET /api/multi-instance-executions/{executionId}/flows`
 - `POST /api/multi-instance-executions/{executionId}/flows/{flowId}`
+- `POST /api/signal-broadcasts` (`202`; `Signals.RequiredRole` or `signals.throw`)
+- `GET /api/signal-broadcasts`, `GET /api/signal-broadcasts/{id}`,
+  `GET /api/signal-broadcasts/{id}/deliveries` (a client sees only its own)
+- `POST /api/signal-broadcasts/{id}/cancel`,
+  `POST /api/signal-broadcasts/{id}/retry-failed`
+- `GET /api/signal-subscriptions/summary` (users only)
 
 ## Terminal instance reactivation
 
@@ -1749,7 +1984,7 @@ dotnet test ./tests/Flowbit.BrowserTests/Flowbit.BrowserTests.csproj -c Release 
 ```
 
 Set `FLOWBIT_BROWSER_HEADED=1` to launch Chromium headed for local diagnosis.
-The suite covers editor E1–E22 and runtime R1–R15 scenarios (see the project
+The suite covers editor E1–E23 and runtime R1–R16 scenarios (see the project
 README); manual native-picker and full acceptance checks remain the caller's
 responsibility.
 

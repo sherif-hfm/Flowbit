@@ -2373,7 +2373,7 @@ namespace Flowbit.Infrastructure.Data.Migrations
 
                     b.ToTable("node_executions", "flowbit", t =>
                         {
-                            t.HasCheckConstraint("CK_node_executions_completion_reason", "((\"Status\" IN ('pending', 'active') AND \"CompletionReason\" IS NULL) OR (\"Status\" IN ('completed', 'cancelled', 'faulted', 'merged') AND \"CompletionReason\" IN ('normal', 'userAction', 'administrativeAction', 'messageDelivery', 'multiInstanceItem', 'multiInstanceCompleted', 'multiInstanceInterrupt', 'boundaryCaught', 'normalEnd', 'terminateEnd', 'errorEnd', 'instanceCancelled', 'gatewayScopeCancelled', 'gatewayJoinMerged', 'parallelFork', 'parallelJoin', 'inclusiveSplit', 'inclusiveMerge', 'complexActivation', 'complexReset', 'scopedInterrupt', 'scopedInterruptSkipped', 'timerFired', 'conditionalTriggered', 'callCompleted', 'callFailed')))");
+                            t.HasCheckConstraint("CK_node_executions_completion_reason", "((\"Status\" IN ('pending', 'active') AND \"CompletionReason\" IS NULL) OR (\"Status\" IN ('completed', 'cancelled', 'faulted', 'merged') AND \"CompletionReason\" IN ('normal', 'userAction', 'administrativeAction', 'messageDelivery', 'multiInstanceItem', 'multiInstanceCompleted', 'multiInstanceInterrupt', 'boundaryCaught', 'normalEnd', 'terminateEnd', 'errorEnd', 'instanceCancelled', 'gatewayScopeCancelled', 'gatewayJoinMerged', 'parallelFork', 'parallelJoin', 'inclusiveSplit', 'inclusiveMerge', 'complexActivation', 'complexReset', 'scopedInterrupt', 'scopedInterruptSkipped', 'timerFired', 'conditionalTriggered', 'callCompleted', 'callFailed', 'signalReceived')))");
 
                             t.HasCheckConstraint("CK_node_executions_execution_kind", "\"ExecutionKind\" IN ('node', 'userTaskItem', 'automaticActivityItem')");
 
@@ -3106,6 +3106,367 @@ namespace Flowbit.Infrastructure.Data.Migrations
                             t.HasCheckConstraint("CK_shared_variable_revisions_revision", "\"Revision\" > 0");
 
                             t.HasCheckConstraint("CK_shared_variable_revisions_value_shape", "(\"HasValue\" AND \"ValueJson\" IS NOT NULL) OR (NOT \"HasValue\" AND \"ValueJson\" IS NULL)");
+                        });
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.SignalBroadcastEntity", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("CancellationReason")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.Property<DateTimeOffset?>("CancelledAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("CancelledBy")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<int>("CancelledCount")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTimeOffset?>("CompletedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<int>("DeliveredCount")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("FailedCount")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("IdempotencyKey")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)")
+                        .UseCollation("C");
+
+                    b.Property<string>("PayloadJson")
+                        .HasColumnType("jsonb");
+
+                    b.Property<string>("RecipientsJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
+
+                    b.Property<bool>("RecipientsTruncated")
+                        .HasColumnType("boolean");
+
+                    b.Property<byte[]>("RequestHash")
+                        .HasColumnType("bytea");
+
+                    b.Property<string>("SignalName")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .UseCollation("C");
+
+                    b.Property<int>("SkippedCount")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("ThrownBy")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<string>("ThrownByClaimsJson")
+                        .HasColumnType("jsonb");
+
+                    b.Property<string>("ThrownByKind")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<string>("ThrownByRolesJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
+
+                    b.Property<int>("TotalDeliveryCount")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<string>("WorkflowKey")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("SignalName", "CreatedAt", "Id");
+
+                    b.HasIndex("Status", "UpdatedAt", "Id");
+
+                    b.HasIndex("ThrownByKind", "ThrownBy", "IdempotencyKey")
+                        .IsUnique()
+                        .HasFilter("\"IdempotencyKey\" IS NOT NULL");
+
+                    b.HasIndex("ThrownByKind", "ThrownBy", "CreatedAt", "Id");
+
+                    b.ToTable("signal_broadcasts", "flowbit", t =>
+                        {
+                            t.HasCheckConstraint("CK_signal_broadcasts_counts", "\"TotalDeliveryCount\" BETWEEN 0 AND 100000 AND \"DeliveredCount\" >= 0 AND \"SkippedCount\" >= 0 AND \"FailedCount\" >= 0 AND \"CancelledCount\" >= 0 AND \"DeliveredCount\" + \"SkippedCount\" + \"FailedCount\" + \"CancelledCount\" <= \"TotalDeliveryCount\"");
+
+                            t.HasCheckConstraint("CK_signal_broadcasts_payload", "\"PayloadJson\" IS NULL OR (jsonb_typeof(\"PayloadJson\") = 'object' AND octet_length(\"PayloadJson\"::text) <= 262144)");
+
+                            t.HasCheckConstraint("CK_signal_broadcasts_status", "\"Status\" IN ('delivering', 'completed', 'completedWithIssues', 'cancelled')");
+
+                            t.HasCheckConstraint("CK_signal_broadcasts_terminal_time", "(\"Status\" = 'delivering' AND \"CompletedAt\" IS NULL) OR (\"Status\" <> 'delivering' AND \"CompletedAt\" IS NOT NULL)");
+
+                            t.HasCheckConstraint("CK_signal_broadcasts_thrower", "\"ThrownByKind\" IN ('user', 'client')");
+                        });
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.SignalBroadcastJobEntity", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<long>("BroadcastId")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long?>("JobId")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("OriginalJobId")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<string>("RequestedBy")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<long>("WorkflowDefinitionId")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("JobId")
+                        .IsUnique()
+                        .HasFilter("\"JobId\" IS NOT NULL");
+
+                    b.HasIndex("OriginalJobId")
+                        .IsUnique();
+
+                    b.HasIndex("BroadcastId", "Id");
+
+                    b.ToTable("signal_broadcast_jobs", "flowbit", t =>
+                        {
+                            t.HasCheckConstraint("CK_signal_broadcast_jobs_reason", "\"Reason\" IN ('throw', 'retry')");
+                        });
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.SignalDeliveryEntity", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<Guid>("ActivationId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int?>("AttachedToNodeId")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("AttemptCount")
+                        .HasColumnType("integer");
+
+                    b.Property<long>("BroadcastId")
+                        .HasColumnType("bigint");
+
+                    b.Property<bool>("CancelActivity")
+                        .HasColumnType("boolean");
+
+                    b.Property<DateTimeOffset?>("CompletedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<long>("InstanceId")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("ResultCode")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("ResultDescription")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.Property<int>("SignalNodeId")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<long>("SubscriptionId")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("TokenId")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<long>("WorkflowDefinitionId")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("WorkflowKey")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("BroadcastId", "SubscriptionId")
+                        .IsUnique();
+
+                    b.HasIndex("InstanceId", "Id");
+
+                    b.HasIndex("BroadcastId", "Status", "Id");
+
+                    b.HasIndex("BroadcastId", "WorkflowDefinitionId", "Status", "Id");
+
+                    b.ToTable("signal_deliveries", "flowbit", t =>
+                        {
+                            t.HasCheckConstraint("CK_signal_deliveries_attempts", "\"AttemptCount\" >= 0");
+
+                            t.HasCheckConstraint("CK_signal_deliveries_status", "\"Status\" IN ('pending', 'delivered', 'skipped', 'failed', 'cancelled')");
+
+                            t.HasCheckConstraint("CK_signal_deliveries_terminal_time", "(\"Status\" = 'pending' AND \"CompletedAt\" IS NULL) OR (\"Status\" <> 'pending' AND \"CompletedAt\" IS NOT NULL)");
+                        });
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.SignalSubscriptionEntity", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<Guid>("ActivationId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int?>("AttachedToNodeId")
+                        .HasColumnType("integer");
+
+                    b.Property<bool>("CancelActivity")
+                        .HasColumnType("boolean");
+
+                    b.Property<DateTimeOffset?>("CompletedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<long>("InstanceId")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("Occurrence")
+                        .HasColumnType("bigint");
+
+                    b.Property<int>("OutgoingFlowId")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("SignalName")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .UseCollation("C");
+
+                    b.Property<int>("SignalNodeId")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("SignalNodeName")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<long>("TokenId")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<long>("WorkflowDefinitionId")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("WorkflowKey")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TokenId");
+
+                    b.HasIndex("InstanceId", "TokenId")
+                        .HasDatabaseName("IX_signal_subscriptions_active_token")
+                        .HasFilter("\"Status\" = 'active'");
+
+                    b.HasIndex("WorkflowDefinitionId", "WorkflowKey");
+
+                    b.HasIndex("SignalName", "WorkflowKey", "Id")
+                        .HasDatabaseName("IX_signal_subscriptions_active_name")
+                        .HasFilter("\"Status\" = 'active'");
+
+                    b.HasIndex("InstanceId", "TokenId", "ActivationId", "SignalNodeId")
+                        .IsUnique();
+
+                    b.ToTable("signal_subscriptions", "flowbit", t =>
+                        {
+                            t.HasCheckConstraint("CK_signal_subscriptions_catch_consumes", "\"AttachedToNodeId\" IS NOT NULL OR \"CancelActivity\"");
+
+                            t.HasCheckConstraint("CK_signal_subscriptions_occurrence", "\"Occurrence\" >= 0");
+
+                            t.HasCheckConstraint("CK_signal_subscriptions_status", "\"Status\" IN ('active', 'completed', 'cancelled')");
+
+                            t.HasCheckConstraint("CK_signal_subscriptions_terminal_time", "(\"Status\" = 'active' AND \"CompletedAt\" IS NULL) OR (\"Status\" IN ('completed', 'cancelled') AND \"CompletedAt\" IS NOT NULL)");
                         });
                 });
 
@@ -6031,6 +6392,63 @@ namespace Flowbit.Infrastructure.Data.Migrations
                     b.Navigation("WorkflowDefinition");
                 });
 
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.SignalBroadcastJobEntity", b =>
+                {
+                    b.HasOne("Flowbit.Infrastructure.Entities.SignalBroadcastEntity", "Broadcast")
+                        .WithMany("JobLinks")
+                        .HasForeignKey("BroadcastId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("Flowbit.Infrastructure.Entities.WorkflowJobEntity", "Job")
+                        .WithMany()
+                        .HasForeignKey("JobId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.Navigation("Broadcast");
+
+                    b.Navigation("Job");
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.SignalDeliveryEntity", b =>
+                {
+                    b.HasOne("Flowbit.Infrastructure.Entities.SignalBroadcastEntity", "Broadcast")
+                        .WithMany("Deliveries")
+                        .HasForeignKey("BroadcastId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Broadcast");
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.SignalSubscriptionEntity", b =>
+                {
+                    b.HasOne("Flowbit.Infrastructure.Entities.WorkflowInstanceEntity", "Instance")
+                        .WithMany()
+                        .HasForeignKey("InstanceId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("Flowbit.Infrastructure.Entities.ExecutionTokenEntity", "Token")
+                        .WithMany()
+                        .HasForeignKey("TokenId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Flowbit.Infrastructure.Entities.WorkflowDefinitionEntity", "WorkflowDefinition")
+                        .WithMany()
+                        .HasForeignKey("WorkflowDefinitionId", "WorkflowKey")
+                        .HasPrincipalKey("Id", "WorkflowKey")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Instance");
+
+                    b.Navigation("Token");
+
+                    b.Navigation("WorkflowDefinition");
+                });
+
             modelBuilder.Entity("Flowbit.Infrastructure.Entities.TimerSubscriptionEntity", b =>
                 {
                     b.HasOne("Flowbit.Infrastructure.Entities.WorkflowInstanceEntity", "Instance")
@@ -6621,6 +7039,13 @@ namespace Flowbit.Infrastructure.Data.Migrations
             modelBuilder.Entity("Flowbit.Infrastructure.Entities.SharedVariableRevisionEntity", b =>
                 {
                     b.Navigation("CurrentValue");
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.SignalBroadcastEntity", b =>
+                {
+                    b.Navigation("Deliveries");
+
+                    b.Navigation("JobLinks");
                 });
 
             modelBuilder.Entity("Flowbit.Infrastructure.Entities.TimerSubscriptionEntity", b =>

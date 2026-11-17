@@ -749,7 +749,8 @@ public sealed class WorkflowJobProcessorRouter(
     WorkflowEngineService engine,
     IAdministrativeActionBatchJobProcessor administrativeBatches,
     IInstanceVersionChangeBatchJobProcessor instanceVersionChangeBatches,
-    IInstanceVariableUpdateBatchJobProcessor instanceVariableUpdateBatches)
+    IInstanceVariableUpdateBatchJobProcessor instanceVariableUpdateBatches,
+    ISignalBroadcastJobProcessor signalBroadcasts)
     : IWorkflowJobProcessor
 {
     public Task ProcessAsync(
@@ -766,6 +767,8 @@ public sealed class WorkflowJobProcessorRouter(
             WorkflowJobKinds.InstanceVariableUpdateBatchPrepare
                 or WorkflowJobKinds.InstanceVariableUpdateBatchExecute =>
                 instanceVariableUpdateBatches.ProcessAsync(lease, cancellationToken),
+            WorkflowJobKinds.SignalBroadcastDeliver =>
+                signalBroadcasts.ProcessAsync(lease, cancellationToken),
             _ => engine.ProcessAsync(lease, cancellationToken)
         };
 }

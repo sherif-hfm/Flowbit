@@ -29,6 +29,7 @@ Both applications use the connected F mark and blue [Flowbit identity](branding.
 - [Delegate work](#delegate-work)
 - [Monitor jobs and incidents](#monitor-jobs-and-incidents)
 - [Use administrative batches](#use-administrative-batches)
+- [Throw signals](#throw-signals)
 - [Manage settings and shared variables](#manage-settings-and-shared-variables)
 - [Manage retention](#manage-retention)
 - [Lifecycle webhooks](#lifecycle-webhooks)
@@ -166,6 +167,7 @@ Paths below are relative to the UI origin, not API endpoints. Most data screens 
 | **Business calendars** | `/business-calendars` | Working days, hours, holidays, and time zones that timer durations and task due dates can count in. |
 | **Retention policies** | `/retention` | Preview and configure cleanup policies and inspect runs. |
 | **Webhooks** | `/webhooks` | Lifecycle webhook subscriptions, signing secrets, test events, and delivery recovery. |
+| **Signals** | `/signals` | Throw a named signal to waiting signal events and follow its deliveries. |
 | **Workflow settings** | `/workflow-settings` | JSON settings consumed by workflow expressions/templates. |
 | **Shared variables** | `/shared-variables` | Shared catalog contracts, current values, revisions, and lifecycle. |
 | **Shared-variable clients** | `/shared-variable-clients` | Machine-client scopes, credentials, rotation, and revocation. |
@@ -258,6 +260,23 @@ A link replaces a long return or crossing flow, or lets several routes enter one
 - These lines update as you type the name, and screen readers announce the change. Selecting a link event draws a dashed ring in the selection color around its partners: the catch of a throw, or every throw of a catch. The node's tooltip names them too, such as `Continues at #12` or `Continued from #7, #9`. The **Upstream**, **Downstream**, and **Route** trace views follow a link like a flow, and **Local** keeps the partners visible; a trace follows the name as you type it.
 
 Saving reports a throw without an incoming flow or without a catch of its name, a catch with an incoming flow or without a throw, and catches that share a name. No line is drawn between the paired events. See the [node reference](node-reference.md#intermediatelinkthrowevent) and the [link events example](../examples/basics/11-link-events.json).
+
+### Signal catch events
+
+Set a node's **Type** to **Signal Catch Event (wait for a broadcast)** where an instance waits for a broadcast signal, such as a changed policy. It draws as an intermediate event circle with an outlined triangle, and its outgoing flow is solid, as a message catch's is, because the node rests. Its **Signal** section has:
+
+- **Signal name**: the exact name throws use, such as `claims.policy-changed`. It suggests names other signal events in the diagram use and reports a problem as you type, including an uppercase letter: names are 1 to 100 lowercase letters, digits, `.`, `_`, or `-`.
+- **Output mappings**: typed rows like a message catch's, whose path reads the signal's payload. Target suggestions leave out shared variables, which signal mappings cannot use.
+
+The section's help explains that a signal reaches only the waits that exist when it is thrown, and that signals are thrown from [Signals](#throw-signals) or the API. A signal catch can host timer, conditional, and signal boundaries. Saving reports the same problems the server does. See the [node reference](node-reference.md#intermediatesignalcatchevent).
+
+### Signal boundary events
+
+A signal boundary lets a task or wait react to a signal while it is in progress. Select the host, such as a user task, a message, timer, or signal catch, or an automatic task with **Async before**, and choose **+ Add signal boundary event** under **Boundary events**, beside the timer and conditional buttons. The new boundary is drawn on the host's border as a small event circle with an outlined triangle, is selected, and starts a connection from it, so the next node you click becomes its target. The button is not offered on a multi-instance service, script, or call activity, and the host's list of boundaries shows each signal boundary with whether it interrupts and where its flow goes.
+
+The boundary's inspector has **Attached to**, which names its host, the **Interrupt attached activity** checkbox, and the same **Signal** section as a signal catch. A new boundary interrupts: a delivered signal cancels the host's work and continues on the boundary's flow. Clear the checkbox to make it non-interrupting, which draws its ring dashed: each signal then starts a new branch while the host carries on. The boundary starts without a signal name, so saving reports it until you type one. Saving also reports two signal boundaries on one host with the same name, and a boundary on a signal catch that uses the catch's own name; the **Signal name** status line shows these as you type, and its suggestions leave out the names already used on the same host.
+
+A host can have eight timer, conditional, and signal boundaries together; at eight, the add buttons are replaced by a note. Changing a host to a type that cannot host boundaries removes its signal boundaries with its timer and conditional ones, and so does clearing **Async before** on an automatic task once you confirm; **Undo** restores them. See the [node reference](node-reference.md#signalboundaryevent) and the [signal boundaries example](../examples/signals/02-signal-boundaries-recall.json).
 
 ### Cron schedules
 
@@ -385,9 +404,10 @@ Section links scroll within the instance detail and update the URL fragment
 while preserving `/instances/{id}` and any query string. Reloading after using
 a section link therefore stays on the same instance.
 
-An action you take on this page, such as claiming or taking a flow, reloads the instance and everything else on the page, including its calls and **Administrative actions**. For changes made elsewhere, use **Refresh**. The page refreshes itself only while a multi-instance task, a message, a call, or several active positions are pending.
+An action you take on this page, such as claiming or taking a flow, reloads the instance and everything else on the page, including its calls and **Administrative actions**. For changes made elsewhere, use **Refresh**. The page refreshes itself only while a multi-instance task, a message, a signal catch, a call, or several active positions are pending.
 
 - **Execution positions** shows the active or terminal tokens and links to their human work. Do not infer the whole process from one node name.
+- **Waiting for signals** appears below the positions while the instance waits at a signal catch or has a signal boundary armed on an active task or wait. Each row names the signal and the event with its node ID. A catch's row adds **Catch event** and the waiting token; a boundary's row says **Interrupting boundary on node #N** or **Non-interrupting boundary on node #N**, naming its host. At most 50 are listed, with the total when there are more. While the instance waits at a signal catch, the action area says which signal it is waiting for and the page refreshes itself; an armed boundary alone does neither. A delivered signal appears in **History** as *Received signal 'name' from thrower (broadcast #N)*, with a link that opens the broadcast on [Signals](#throw-signals).
 - **Diagram** draws the instance's workflow version and marks where the instance is now. See [Read the instance diagram](#read-the-instance-diagram).
 - **Administrative actions** lists active human-task positions and their authored direct actions when the API grants workflow-administrator permission. See [the override procedure](#use-instance-administrative-actions).
 - **Variables** shows the latest displayed values and their attribution; **History** shows transition times, node/flow references, actors, and available event details.
@@ -426,7 +446,7 @@ The **Diagram** section draws the exact workflow version the instance runs, read
 
 | Marker | Meaning |
 | --- | --- |
-| Green ring | An active position. Its tooltip and the details panel say what it waits for: user work, a message, a timer, a condition, background processing, other branches at a gateway, or a call activity. |
+| Green ring | An active position. Its tooltip and the details panel say what it waits for: user work, a message, a timer, a condition, a signal, background processing, other branches at a gateway, or a call activity. |
 | Badge such as `2/5` | Multi-instance progress: completed work items out of the total. |
 | Badge such as `×2` | Several tokens wait at the same node. When they are several multi-instance executions, the tooltip adds up their progress. |
 | Blue ring | The finished instance ended here, at a normal or terminate end event. |
@@ -464,6 +484,8 @@ To inspect a node, click it, or press Tab to reach a marked node and then Enter.
 - A multi-instance node lists up to five of its work items, finished ones included.
 
 A selected link throw event lists its catch under **Continues at**, and a selected link catch event lists its throws under **Continued from**. Each is a button that selects that event and brings it into view without changing zoom. The diagram marks the partners with a dotted ring in the selection color, which differs from the dashed grey **Reached** marker. No flow is drawn between paired events, so recorded history shows both events as reached and counts the flow into the throw and the flow out of the catch, but no count for the hop between them. In **History**, a link appears as a row such as *Link throw #5 continued token #31 at link catch #7*, followed by *Continued from link catch #7* when the catch passes the token on.
+
+A selected signal event shows its signal name under the node type, such as **Signal** `claims.policy-changed`. A signal boundary, whose node type reads **Signal boundary**, adds whether it interrupts its host, such as **Signal** `warehouse.product-recall` · interrupting or · non-interrupting.
 
 Press Escape or **Clear** to clear the selection. Drag to move the diagram, and use the zoom buttons or hold Ctrl (Meta on macOS) while scrolling to zoom; the plain mouse wheel scrolls the page. **Fit** shows the whole workflow. The diagram opens on the whole workflow, or on current/final positions when the whole workflow would be too small to read. When those positions are too far apart to read together, it opens on the leftmost; drag to reach the others. Historical nodes do not affect the initial fit. Toggle, count, paging, and ordinary refresh updates preserve pan and zoom. On a touch screen, drag inside the diagram to move it and outside it to scroll the page. The diagram has no editing, search, or authoring trace tools; change a workflow from **Workflows**.
 
@@ -536,6 +558,23 @@ The open **Administrative actions** batch refreshes every three seconds while pr
 
 Cancellation can wait for an already-running action to release its database transaction. A long-running synchronous action can cause the cancellation request to time out; refresh the batch before retrying. Completed actions are preserved, and cancellation does not interrupt an action already in progress.
 
+## Throw signals
+
+**Signals** (`/signals`) throws a named signal to every waiting [signal catch event](#signal-catch-events) and every [signal boundary event](#signal-boundary-events) on an active task or wait, and follows its deliveries. It requires a role from `Signals.RequiredRole` (default `admin`). Without it, or after a `401` or `403`, the page clears every signal it showed and the draft you were writing, and says which permission is needed; changing identity clears the page and the draft and loads it again for the new identity.
+
+A signal reaches only the waits that exist when it is thrown, as the note at the top of the page says. Each wait receives it once, when the Worker delivers it, and nothing is kept for waits that start later. Use a message for one instance or for something that must not be missed.
+
+1. **Choose a signal and its scope.** Type the **Signal name**; the field suggests the names instances are waiting for now. Choose **One workflow family** and type its **Workflow key**, or **All workflows**. A line below shows how many waits match the name in each family.
+2. **Payload.** Optionally enter a JSON object, such as `{ "version": 7 }`, of at most 256 KiB. Each waiting event copies the values its output mappings name. Leave it empty to send no payload.
+3. **Throw.** Select **Review signal** to see the name, the scope, the payload, and how many waits match now, then **Throw signal**. The waits can change before the request runs; the signal reaches those active at that moment. **Back** returns to editing, and so does changing the name, the scope, or the payload: an edited draft is reviewed again before it can be thrown. The page sends one idempotency key per reviewed draft, so repeating a request whose answer was lost cannot throw the signal twice.
+
+The broadcast then opens under **Deliveries**: its status, its counts of recipients and pending, delivered, skipped, failed, and cancelled deliveries, who threw it and when, the recipients per workflow family, and its payload. The page refreshes it every three seconds while it is **Delivering**. The paged delivery table filters by status and shows each delivery's instance, with a link, its event, its status, and its result, such as **Catch continued**, **Boundary interrupted its host**, **Boundary added a branch**, **The payload failed a mapping**, or **The instance reached its token limit**, with the engine's explanation below.
+
+- **Cancel pending deliveries**, with an optional reason, is offered while the broadcast is delivering. Deliveries already running finish normally, and the waits that were not reached stay open.
+- **Retry N failed** is offered when the broadcast finished with failed deliveries. Correct the cause first, for example by moving the waiting instances to a version with corrected mappings on **Change version** or **Batch version changes**. If the broadcast changed since the page read it, the page says so and shows its current state.
+
+**Recent broadcasts** lists earlier broadcasts, newest first, with a status filter; open one to see its deliveries. A link such as `/signals?broadcastId=42`, which instance history uses, opens a broadcast directly. A delivery needs a running Worker: while none runs, deliveries stay pending and act when it returns. See [signals](bpmn-support.md#signals) and the [API](api-guide.md#signals).
+
 ## Manage settings and shared variables
 
 ### Engine and workflow settings
@@ -587,7 +626,9 @@ JSON value fields require quoted strings. To initialize explicit nullable null i
 
 **Shared-variable clients** uses the same shared-variable administrator permission. **Add client**, choose its ID, display name, scopes, and optional expiry (in your browser's time zone), then **Create and reveal secret**. Store the one-time secret using **Copy header template** and acknowledge **I saved it**. **Edit**, **Rotate**, and **Revoke** manage the lifecycle. Rotation offers a previous-secret grace period; choosing zero invalidates it immediately.
 
-These credentials authenticate shared-variable APIs, not the UI identity or message/distribution APIs. **Distribution search** is a Development-only diagnostic page using a workflow family's **Workflow key**, **Client ID**, and **Client secret**; **Search tasks** inspects eligible distribution work. Assign work through **Task management** or the distribution API. See [machine authentication](deployment.md#machine-integrations).
+Besides **Read shared variables** and **Create and update shared variables**, a client can receive **Throw signals, and cancel and retry its own broadcasts** (`signals.throw`) and **Read its own signal broadcasts** (`signals.read`). A client with signal scopes sees only the broadcasts it threw; see [signal API access](api-guide.md#signals).
+
+These credentials authenticate the shared-variable and signal APIs, not the UI identity or message/distribution APIs. **Distribution search** is a Development-only diagnostic page using a workflow family's **Workflow key**, **Client ID**, and **Client secret**; **Search tasks** inspects eligible distribution work. Assign work through **Task management** or the distribution API. See [machine authentication](deployment.md#machine-integrations).
 
 ## Manage retention
 
@@ -596,6 +637,8 @@ These credentials authenticate shared-variable APIs, not the UI identity or mess
 Saved policies apply to automatic Worker cleanup. **Run cleanup now** queues a run using those saved policies; it still requires the Worker. Inspect current/last runs and **Worker last seen**, and refresh for progress. Deleted history cannot be recovered through the UI, and pruning an instance's history permanently blocks reactivation. Follow [retention and backup guidance](deployment.md#retention-and-backup) before enabling deletion.
 
 **Settled webhook deliveries** and **Lifecycle events** clean up [webhook](#lifecycle-webhooks) records only. Deliveries age from when they succeed or are discarded; pending, retrying, and failed ones stay until they settle or you discard them. Events go only after every delivery for them is gone. Neither affects workflow history or reactivation.
+
+**Signal broadcasts** removes finished [signal broadcasts](#throw-signals) with their payloads, deliveries, and job links, aged from when each broadcast finished. A broadcast with pending deliveries stays. History rows and node visits that its deliveries wrote follow their own categories.
 
 ## Lifecycle webhooks
 
@@ -656,5 +699,8 @@ Each action reports its result, and the page then refreshes. If someone else cha
 | AI assistant shows no models, or a key/quota error | A settings administrator adds or fixes the model on **AI models**. If models are configured but still not offered, check that `WorkflowAi:Enabled` is not `false`. |
 | Creating, rotating, testing, or resuming a webhook fails with "key protection" | The webhook key-ring certificate is missing or unusable on the API. An operator fixes it as described in [deployment](deployment.md#lifecycle-webhooks); Flowbit never generates replacement secrets. |
 | Webhook deliveries stay **Pending** | Check that lifecycle capture is on, that a Worker runs with `Webhooks:DeliveryEnabled=true`, and that the subscription is active and not backing off. |
+| A signal broadcast stays **Delivering** | A Worker delivers signals. Check the Worker and its `signalBroadcastDeliver` jobs on **Jobs & incidents**. Deliveries wait while no Worker runs; cancel the broadcast if it is no longer wanted. |
+| A signal reached no instance, or fewer than expected | A signal reaches only the waits that exist when it is thrown, with the exact lowercase name, in the chosen family. Check the match count before throwing and each delivery's result: a wait that ended first is **Skipped**. |
+| A signal boundary's delivery failed with **The instance reached its token limit** | Each signal on a non-interrupting boundary starts a branch, and the instance already has `Workflow.Gateway.MaxActiveTokens` active tokens. The boundary still listens. Let branches finish, or ask an administrator to raise the [setting](engine-settings.md#workflowgatewaymaxactivetokens), then use **Retry N failed** on the broadcast. |
 
 [Documentation home](index.md) · [Developer guide](developer-guide.md) · [API reference](api-guide.md) · [Deployment](deployment.md)

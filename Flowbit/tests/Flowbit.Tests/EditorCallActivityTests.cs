@@ -606,7 +606,7 @@ public sealed class EditorCallActivityTests
         "idempotency", "scriptFormat", "assignments", "script", "usesFlowInfo", "assignee", "requiresAssignment",
         "assignmentMode", "inheritAssignmentFromNodeId", "inboxVisibilityCondition", "dueDate", "dueDateCalendar",
         "priority", "multiInstance", "attachedToRef", "errorVariable", "errorMatch", "errorCode", "errorDescription",
-        "activationCondition", "gatewayRef", "joinCancellation", "callOnly"
+        "activationCondition", "gatewayRef", "joinCancellation", "callOnly", "signal"
     ];
 
     private static readonly string[] CallFlowSettings =

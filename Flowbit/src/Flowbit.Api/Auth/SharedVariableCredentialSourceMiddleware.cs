@@ -2,7 +2,7 @@ namespace Flowbit.Api.Auth;
 
 /// <summary>
 /// Rejects ambiguous caller attribution before either authentication scheme runs.
-/// This applies to both shared-variable surfaces. Data routes accept either
+/// This applies to the shared-variable and signal surfaces. Data routes accept either
 /// credential source, while API-client administration remains JWT-only.
 /// </summary>
 public sealed class SharedVariableCredentialSourceMiddleware(RequestDelegate next)
@@ -33,5 +33,11 @@ public sealed class SharedVariableCredentialSourceMiddleware(RequestDelegate nex
             StringComparison.OrdinalIgnoreCase)
         || path.StartsWithSegments(
             "/api/shared-variable-clients",
+            StringComparison.OrdinalIgnoreCase)
+        || path.StartsWithSegments(
+            "/api/signal-broadcasts",
+            StringComparison.OrdinalIgnoreCase)
+        || path.StartsWithSegments(
+            "/api/signal-subscriptions",
             StringComparison.OrdinalIgnoreCase);
 }

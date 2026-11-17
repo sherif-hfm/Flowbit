@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Flowbit.Infrastructure.Entities;
 using Flowbit.Service.Models;
+using Flowbit.Shared.Dtos;
 using Flowbit.Shared.Models;
 
 namespace Flowbit.Infrastructure.Data;
@@ -134,6 +135,14 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
     public DbSet<ConditionalBoundarySubscriptionEntity> ConditionalBoundarySubscriptions =>
         Set<ConditionalBoundarySubscriptionEntity>();
+
+    public DbSet<SignalSubscriptionEntity> SignalSubscriptions => Set<SignalSubscriptionEntity>();
+
+    public DbSet<SignalBroadcastEntity> SignalBroadcasts => Set<SignalBroadcastEntity>();
+
+    public DbSet<SignalDeliveryEntity> SignalDeliveries => Set<SignalDeliveryEntity>();
+
+    public DbSet<SignalBroadcastJobEntity> SignalBroadcastJobs => Set<SignalBroadcastJobEntity>();
 
     public DbSet<LifecycleEventEntity> LifecycleEvents => Set<LifecycleEventEntity>();
 
@@ -673,7 +682,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                     + "'parallelJoin', 'inclusiveSplit', 'inclusiveMerge', "
                     + "'complexActivation', 'complexReset', 'scopedInterrupt', "
                     + "'scopedInterruptSkipped', 'timerFired', 'conditionalTriggered', "
-                    + "'callCompleted', 'callFailed')))");
+                    + "'callCompleted', 'callFailed', 'signalReceived')))");
                 table.HasCheckConstraint(
                     "CK_node_executions_multi_instance_shape",
                     "(\"ExecutionKind\" = 'node' AND \"MultiInstanceExecutionId\" IS NULL AND \"ItemIndex\" IS NULL AND \"AutomaticMultiInstanceItemId\" IS NULL) OR "
@@ -2361,6 +2370,171 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 .WithMany(e => e.ConditionalBoundarySubscriptions)
                 .HasForeignKey(e => e.HostTokenId)
                 .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<SignalSubscriptionEntity>(entity =>
+        {
+            entity.ToTable("signal_subscriptions", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_signal_subscriptions_status",
+                    "\"Status\" IN ('active', 'completed', 'cancelled')");
+                table.HasCheckConstraint(
+                    "CK_signal_subscriptions_occurrence",
+                    "\"Occurrence\" >= 0");
+                table.HasCheckConstraint(
+                    "CK_signal_subscriptions_terminal_time",
+                    "(\"Status\" = 'active' AND \"CompletedAt\" IS NULL) OR "
+                    + "(\"Status\" IN ('completed', 'cancelled') AND \"CompletedAt\" IS NOT NULL)");
+                // A catch always consumes the signal it receives.
+                table.HasCheckConstraint(
+                    "CK_signal_subscriptions_catch_consumes",
+                    "\"AttachedToNodeId\" IS NOT NULL OR \"CancelActivity\"");
+            });
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.WorkflowKey).HasMaxLength(300).IsRequired();
+            entity.Property(e => e.SignalNodeName).HasMaxLength(300).IsRequired();
+            entity.Property(e => e.SignalName)
+                .HasMaxLength(SignalEventRules.MaxNameLength)
+                .UseCollation("C")
+                .IsRequired();
+            entity.Property(e => e.Status).HasMaxLength(32).IsRequired();
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+            entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
+            entity.HasIndex(e => new { e.InstanceId, e.TokenId, e.ActivationId, e.SignalNodeId })
+                .IsUnique();
+            entity.HasIndex(e => new { e.SignalName, e.WorkflowKey, e.Id })
+                .HasDatabaseName("IX_signal_subscriptions_active_name")
+                .HasFilter("\"Status\" = 'active'");
+            entity.HasIndex(e => new { e.InstanceId, e.TokenId })
+                .HasDatabaseName("IX_signal_subscriptions_active_token")
+                .HasFilter("\"Status\" = 'active'");
+            entity.HasIndex(e => e.TokenId);
+            entity.HasOne(e => e.Instance)
+                .WithMany()
+                .HasForeignKey(e => e.InstanceId)
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(e => e.WorkflowDefinition)
+                .WithMany()
+                .HasForeignKey(e => new { e.WorkflowDefinitionId, e.WorkflowKey })
+                .HasPrincipalKey(e => new { e.Id, e.WorkflowKey })
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.Token)
+                .WithMany()
+                .HasForeignKey(e => e.TokenId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<SignalBroadcastEntity>(entity =>
+        {
+            entity.ToTable("signal_broadcasts", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_signal_broadcasts_status",
+                    "\"Status\" IN ('delivering', 'completed', 'completedWithIssues', 'cancelled')");
+                table.HasCheckConstraint(
+                    "CK_signal_broadcasts_counts",
+                    "\"TotalDeliveryCount\" BETWEEN 0 AND 100000 "
+                    + "AND \"DeliveredCount\" >= 0 AND \"SkippedCount\" >= 0 "
+                    + "AND \"FailedCount\" >= 0 AND \"CancelledCount\" >= 0 "
+                    + "AND \"DeliveredCount\" + \"SkippedCount\" + \"FailedCount\" + \"CancelledCount\" <= \"TotalDeliveryCount\"");
+                table.HasCheckConstraint(
+                    "CK_signal_broadcasts_payload",
+                    "\"PayloadJson\" IS NULL OR (jsonb_typeof(\"PayloadJson\") = 'object' "
+                    + $"AND octet_length(\"PayloadJson\"::text) <= {SignalConstraints.MaxPayloadBytes})");
+                table.HasCheckConstraint(
+                    "CK_signal_broadcasts_thrower",
+                    "\"ThrownByKind\" IN ('user', 'client')");
+                table.HasCheckConstraint(
+                    "CK_signal_broadcasts_terminal_time",
+                    "(\"Status\" = 'delivering' AND \"CompletedAt\" IS NULL) OR "
+                    + "(\"Status\" <> 'delivering' AND \"CompletedAt\" IS NOT NULL)");
+            });
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.SignalName)
+                .HasMaxLength(SignalEventRules.MaxNameLength)
+                .UseCollation("C")
+                .IsRequired();
+            entity.Property(e => e.WorkflowKey).HasMaxLength(300);
+            entity.Property(e => e.PayloadJson).HasColumnType("jsonb");
+            entity.Property(e => e.Status).HasMaxLength(32).IsRequired();
+            entity.Property(e => e.RecipientsJson).HasColumnType("jsonb").IsRequired();
+            entity.Property(e => e.ThrownByKind).HasMaxLength(16).IsRequired();
+            entity.Property(e => e.ThrownBy).HasMaxLength(300).IsRequired();
+            entity.Property(e => e.ThrownByRolesJson).HasColumnType("jsonb").IsRequired();
+            entity.Property(e => e.ThrownByClaimsJson).HasColumnType("jsonb");
+            entity.Property(e => e.IdempotencyKey)
+                .HasMaxLength(SignalConstraints.MaxIdempotencyKeyLength)
+                .UseCollation("C");
+            entity.Property(e => e.CancelledBy).HasMaxLength(300);
+            entity.Property(e => e.CancellationReason).HasMaxLength(SignalConstraints.MaxReasonLength);
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+            entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
+            entity.HasIndex(e => new { e.ThrownByKind, e.ThrownBy, e.IdempotencyKey })
+                .IsUnique()
+                .HasFilter("\"IdempotencyKey\" IS NOT NULL");
+            entity.HasIndex(e => new { e.Status, e.UpdatedAt, e.Id });
+            entity.HasIndex(e => new { e.SignalName, e.CreatedAt, e.Id });
+            entity.HasIndex(e => new { e.ThrownByKind, e.ThrownBy, e.CreatedAt, e.Id });
+        });
+
+        modelBuilder.Entity<SignalDeliveryEntity>(entity =>
+        {
+            entity.ToTable("signal_deliveries", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_signal_deliveries_status",
+                    "\"Status\" IN ('pending', 'delivered', 'skipped', 'failed', 'cancelled')");
+                table.HasCheckConstraint(
+                    "CK_signal_deliveries_terminal_time",
+                    "(\"Status\" = 'pending' AND \"CompletedAt\" IS NULL) OR "
+                    + "(\"Status\" <> 'pending' AND \"CompletedAt\" IS NOT NULL)");
+                table.HasCheckConstraint(
+                    "CK_signal_deliveries_attempts",
+                    "\"AttemptCount\" >= 0");
+            });
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.WorkflowKey).HasMaxLength(300).IsRequired();
+            entity.Property(e => e.Status).HasMaxLength(32).IsRequired();
+            entity.Property(e => e.ResultCode).HasMaxLength(64);
+            entity.Property(e => e.ResultDescription)
+                .HasMaxLength(SignalConstraints.MaxResultDescriptionLength);
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+            entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
+            entity.HasIndex(e => new { e.BroadcastId, e.SubscriptionId }).IsUnique();
+            entity.HasIndex(e => new { e.BroadcastId, e.WorkflowDefinitionId, e.Status, e.Id });
+            entity.HasIndex(e => new { e.BroadcastId, e.Status, e.Id });
+            entity.HasIndex(e => new { e.InstanceId, e.Id });
+            entity.HasOne(e => e.Broadcast)
+                .WithMany(e => e.Deliveries)
+                .HasForeignKey(e => e.BroadcastId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<SignalBroadcastJobEntity>(entity =>
+        {
+            entity.ToTable("signal_broadcast_jobs", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_signal_broadcast_jobs_reason",
+                    "\"Reason\" IN ('throw', 'retry')");
+            });
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Reason).HasMaxLength(16).IsRequired();
+            entity.Property(e => e.RequestedBy).HasMaxLength(300).IsRequired();
+            entity.HasIndex(e => new { e.BroadcastId, e.Id });
+            entity.HasIndex(e => e.OriginalJobId).IsUnique();
+            entity.HasIndex(e => e.JobId)
+                .IsUnique()
+                .HasFilter("\"JobId\" IS NOT NULL");
+            entity.HasOne(e => e.Broadcast)
+                .WithMany(e => e.JobLinks)
+                .HasForeignKey(e => e.BroadcastId)
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(e => e.Job)
+                .WithMany()
+                .HasForeignKey(e => e.JobId)
+                .OnDelete(DeleteBehavior.SetNull);
         });
 
         modelBuilder.Entity<WorkflowJobEntity>(entity =>

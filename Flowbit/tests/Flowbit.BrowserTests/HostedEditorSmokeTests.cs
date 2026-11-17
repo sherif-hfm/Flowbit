@@ -515,6 +515,97 @@ public sealed class HostedEditorSmokeTests(BrowserStackFixture stack)
         });
     }
 
+    [Fact]
+    public async Task H16_SignalCatchIsAuthoredInTheHostedEditorAndSaved()
+    {
+        await using var scenario = await stack.CreateScenario("h16-hosted-signal-catch", 1440, 900);
+        await scenario.RunAsync("hosted-signal-catch", async () =>
+        {
+            var json = JsonNode.Parse(await File.ReadAllTextAsync(
+                EditorInteractions.FixturePath("editor-signal-events.json")))!.AsObject();
+            json["id"] = "hosted-signal-catch-" + Guid.NewGuid().ToString("N");
+            var model = json.Deserialize<WorkflowModel>(new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+            var workflow = await stack.SetupClient.CreateUnpublishedAsync(model);
+            await RuntimeSupport.ApplyIdentityAsync(scenario, "editor-admin", ["admin"]);
+            var page = await scenario.OpenUiAsync($"workflows/{workflow.Id}/edit");
+            await ReadyAsync(page);
+            var editor = page.Locator("#workflow-editor-root");
+            await EditorInteractions.PinInspectorOpenAsync(page);
+            await EditorInteractions.SelectNodeAsync(page, 2);
+            await EditorInteractions.SelectTypeAsync(page, "intermediateSignalCatchEvent");
+            await Assertions.Expect(editor.Locator("#nodes .node[data-id='2']")).ToHaveClassAsync(new Regex("intermediateSignalCatchEvent"));
+
+            // Inside the application's styles the name check, mapping and type adoption behave as standalone.
+            var name = editor.GetByLabel("Signal name", new LocatorGetByLabelOptions { Exact = true });
+            await name.FillAsync("Claims.Policy");
+            await Assertions.Expect(editor.Locator("#signal-name-status-2")).ToContainTextAsync("Use lowercase letters");
+            await name.FillAsync("claims.policy-changed");
+            await name.PressAsync("Tab");
+            await Assertions.Expect(editor.Locator("#signal-name-status-2")).ToHaveTextAsync(string.Empty);
+            await editor.GetByRole(AriaRole.Button, new LocatorGetByRoleOptions { Name = "+ Add mapping" }).ClickAsync();
+            await Assertions.Expect(editor.Locator("[data-signal-mapping='0']")).ToBeFocusedAsync();
+            await page.Keyboard.TypeAsync("policyVersion");
+            await page.Keyboard.PressAsync("Tab");
+            await Assertions.Expect(editor.GetByLabel("Data type", new LocatorGetByLabelOptions { Exact = true })).ToHaveValueAsync("number");
+            var path = editor.GetByLabel("Payload path", new LocatorGetByLabelOptions { Exact = true });
+            await path.FillAsync("version");
+            await path.PressAsync("Tab");
+            await Assertions.Expect(page.Locator("#editor-status")).Not.ToHaveTextAsync("Saved");
+            await page.Locator("#inspectorPanel").ScreenshotAsync(new LocatorScreenshotOptions
+            {
+                Path = Path.Combine(scenario.ArtifactDirectory, "hosted-signal-catch.png"),
+            });
+
+            // A non-interrupting signal boundary on the review task, added from the host and connected to the end.
+            await page.Locator("#fitViewBtn").ClickAsync();
+            await EditorInteractions.SelectNodeAsync(page, 3);
+            await editor.GetByRole(AriaRole.Button, new LocatorGetByRoleOptions { Name = "+ Add signal boundary event" }).ClickAsync();
+            await EditorInteractions.ClickCenterAsync(page, await EditorInteractions.GetNodeBoxAsync(page, 4));
+            var boundary = editor.Locator("#nodes .node.signalBoundaryEvent");
+            await Assertions.Expect(boundary).ToHaveCountAsync(1);
+            var boundaryId = (await boundary.GetAttributeAsync("data-id"))!;
+            // Search selects the small circle reliably; hosted shortcuts need focus inside the editor.
+            await editor.Locator("#svg").ClickAsync(new LocatorClickOptions { Position = new Position { X = 4, Y = 4 } });
+            await page.Keyboard.PressAsync("/");
+            await Assertions.Expect(editor.Locator("#diagramSearchInput")).ToBeFocusedAsync();
+            await page.Keyboard.TypeAsync($"#{boundaryId}");
+            await page.Keyboard.PressAsync("Enter");
+            await Assertions.Expect(editor.Locator("#inspector").GetByRole(AriaRole.Heading,
+                new LocatorGetByRoleOptions { Name = $"Node #{boundaryId}", Exact = true })).ToHaveCountAsync(1);
+            var boundaryName = editor.Locator("#inspector").GetByLabel("Signal name", new LocatorGetByLabelOptions { Exact = true });
+            await boundaryName.FillAsync("claims.recall");
+            await boundaryName.PressAsync("Tab");
+            await editor.Locator("#inspector").GetByLabel("Interrupt attached activity", new LocatorGetByLabelOptions { Exact = true }).UncheckAsync();
+            await Assertions.Expect(editor.Locator($"#nodes .node[data-id='{boundaryId}']")).ToHaveClassAsync(new Regex(@"\bnon-interrupting\b"));
+
+            // The version saves unpublished, and the server reads back the catch as authored.
+            await page.Locator("#save-workflow-version").ClickAsync();
+            await Assertions.Expect(page.Locator("#editor-notice")).ToContainTextAsync("Saved unpublished version 2");
+            await Assertions.Expect(page.Locator("#editor-status")).ToHaveTextAsync("Saved");
+            var savedId = long.Parse(Regex.Match(page.Url, @"/workflows/(\d+)/edit").Groups[1].Value);
+            var saved = await stack.SetupClient.GetWorkflowAsync(savedId);
+            var savedCatch = saved.Definition.FlowNodes.Single(node => node.Id == 2);
+            Assert.Equal(BpmnFlowNodeTypes.IntermediateSignalCatchEvent, savedCatch.Type);
+            Assert.Equal("claims.policy-changed", savedCatch.Signal!.Name);
+            var mapping = Assert.Single(savedCatch.Signal.OutputMappings);
+            Assert.Equal(("policyVersion", "version", "number"), (mapping.Variable, mapping.Path, mapping.DataType));
+            var savedBoundary = saved.Definition.FlowNodes.Single(node => node.Id == int.Parse(boundaryId));
+            Assert.Equal((BpmnFlowNodeTypes.SignalBoundaryEvent, 3, false, "claims.recall"),
+                (savedBoundary.Type, savedBoundary.AttachedToRef, savedBoundary.CancelActivity, savedBoundary.Signal!.Name));
+
+            // At phone width the inspector section and the page stay within the viewport.
+            await page.SetViewportSizeAsync(390, 844);
+            await page.WaitForFunctionAsync("document.querySelector('#primary-navigation').getBoundingClientRect().right <= 0");
+            Assert.True(await page.EvaluateAsync<bool>("document.documentElement.scrollWidth <= window.innerWidth + 2"));
+            await page.ScreenshotAsync(new PageScreenshotOptions
+            {
+                Path = Path.Combine(scenario.ArtifactDirectory, "hosted-signal-catch-narrow.png"),
+            });
+            await page.SetViewportSizeAsync(1440, 900);
+            await Assertions.Expect(page.Locator("#editor-status")).ToHaveTextAsync("Saved");
+        });
+    }
+
     // The page also loads Bootstrap, whose .badge would stop the summary wrapping.
     [Theory]
     [InlineData(1440, 900)]

@@ -18,7 +18,8 @@ internal sealed class WorkflowInstanceProjectionService(
     IInstanceVariableUpdateRepository? variableUpdates = null,
     IWorkflowVariableStore? workflowVariables = null,
     ICallActivityRepository? callActivities = null,
-    IAutomaticMultiInstanceRepository? automaticMultiInstances = null) : IWorkflowInstanceProjectionService
+    IAutomaticMultiInstanceRepository? automaticMultiInstances = null,
+    ISignalSubscriptionRepository? signalSubscriptions = null) : IWorkflowInstanceProjectionService
 {
     private static readonly JsonSerializerOptions InstanceVariableUpdateJsonOptions =
         new(JsonSerializerDefaults.Web);
@@ -251,6 +252,11 @@ internal sealed class WorkflowInstanceProjectionService(
             : await workflowVariables.DescribeBindingsAsync(
                 workflow.Definition,
                 cancellationToken);
+        // A definition without signal events has no signal waits, so it pays no query.
+        IReadOnlyList<SignalSubscriptionRecord> signalWaits =
+            signalSubscriptions is null || !SignalEventRules.HasSignalEvents(workflow.Definition)
+                ? []
+                : await signalSubscriptions.ListActiveByInstanceAsync(instanceId, false, cancellationToken);
 
         return new InstanceDetailDto(
             instance.Id,
@@ -313,7 +319,20 @@ internal sealed class WorkflowInstanceProjectionService(
             Calls = await BuildCallCountsAsync(instanceId, workflow.Definition, history, cancellationToken),
             FinishedAt = instance.FinishedAt,
             HistoryPrunedAt = instance.HistoryPrunedAt,
-            LastReactivationTokenId = instance.LastReactivationTokenId
+            LastReactivationTokenId = instance.LastReactivationTokenId,
+            SignalSubscriptions = signalWaits
+                .Take(SignalConstraints.MaxInstanceSubscriptions)
+                .Select(subscription => new SignalSubscriptionDto(
+                    subscription.Id,
+                    subscription.SignalName,
+                    subscription.SignalNodeId,
+                    subscription.SignalNodeName,
+                    subscription.AttachedToNodeId,
+                    subscription.CancelActivity,
+                    subscription.TokenId,
+                    subscription.CreatedAt))
+                .ToArray(),
+            SignalSubscriptionCount = signalWaits.Count
         };
     }
 

@@ -371,6 +371,14 @@ public sealed class FlowNodeModel
     public MessageCatchModel? Message { get; set; }
 
     /// <summary>
+    /// Signal events only: the signal name this node waits for and the typed
+    /// mappings that copy values from a broadcast's payload.
+    /// </summary>
+    [JsonPropertyName("signal")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public SignalEventModel? Signal { get; set; }
+
+    /// <summary>
     /// Optional domain business-key configuration for a start or message-start event.
     /// </summary>
     [JsonPropertyName("businessKey")]
@@ -1661,7 +1669,7 @@ public static class UserTaskDueRules
 }
 
 /// <summary>
-/// Bounded authoring rules shared by timer and conditional boundary events.
+/// Bounded authoring rules shared by timer, conditional, and signal boundary events.
 /// Error boundaries remain separately constrained because they are not recurring
 /// observable subscriptions.
 /// </summary>
@@ -2078,6 +2086,20 @@ public sealed class MessageCatchModel
     [JsonPropertyName("idempotencyVariable")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? IdempotencyVariable { get; set; }
+}
+
+/// <summary>
+/// The configuration of a signal event: the literal signal name it waits for and the
+/// typed mappings that copy values from a broadcast's payload into instance variables.
+/// The mappings have the shape of message catch mappings; their paths read the payload.
+/// </summary>
+public sealed class SignalEventModel
+{
+    [JsonPropertyName("name")]
+    public string Name { get; set; } = string.Empty;
+
+    [JsonPropertyName("outputMappings")]
+    public List<MessageOutputMappingModel> OutputMappings { get; set; } = [];
 }
 
 /// <summary>
@@ -2717,6 +2739,15 @@ public static class BpmnFlowNodeTypes
     // name in the same transaction. LinkEventRules owns the pairing.
     public const string IntermediateLinkThrowEvent = "intermediateLinkThrowEvent";
     public const string IntermediateLinkCatchEvent = "intermediateLinkCatchEvent";
+    // Intermediate catch event that rests until a signal broadcast with its name is
+    // delivered by the Worker, then maps the broadcast's payload and follows its one
+    // outgoing flow. A broadcast reaches only the subscriptions that exist when it is
+    // thrown. SignalEventRules owns the name rules.
+    public const string IntermediateSignalCatchEvent = "intermediateSignalCatchEvent";
+    // Boundary signal event on the same durable hosts as timer and conditional
+    // boundaries. A delivered signal either interrupts the host or, with
+    // cancelActivity=false, adds a sibling branch and stays subscribed.
+    public const string SignalBoundaryEvent = "signalBoundaryEvent";
 
     public static bool IsStart(string type) =>
         string.Equals(type, StartEvent, StringComparison.Ordinal);
@@ -2747,8 +2778,16 @@ public static class BpmnFlowNodeTypes
     public static bool IsConditionalBoundary(string type) =>
         string.Equals(type, ConditionalBoundaryEvent, StringComparison.Ordinal);
 
+    public static bool IsSignalBoundary(string type) =>
+        string.Equals(type, SignalBoundaryEvent, StringComparison.Ordinal);
+
     public static bool IsBoundary(string type) =>
-        IsErrorBoundary(type) || IsTimerBoundary(type) || IsConditionalBoundary(type);
+        IsErrorBoundary(type) || IsTimerBoundary(type) || IsConditionalBoundary(type) || IsSignalBoundary(type);
+
+    // The boundaries that observe something while their host waits and count
+    // toward BoundaryEventRules.MaxObservableBoundariesPerHost.
+    public static bool IsObservableBoundary(string type) =>
+        IsTimerBoundary(type) || IsConditionalBoundary(type) || IsSignalBoundary(type);
 
     public static bool IsUserTask(string type) =>
         string.Equals(type, UserTask, StringComparison.Ordinal);
@@ -2813,6 +2852,14 @@ public static class BpmnFlowNodeTypes
     public static bool IsLinkEvent(string type) =>
         IsLinkThrow(type) || IsLinkCatch(type);
 
+    public static bool IsSignalCatch(string type) =>
+        string.Equals(type, IntermediateSignalCatchEvent, StringComparison.Ordinal);
+
+    // Every node type that carries a signal configuration and owns signal
+    // subscriptions.
+    public static bool IsSignalEvent(string type) =>
+        IsSignalCatch(type) || IsSignalBoundary(type);
+
     // Either kind of entry event: a user-facing startEvent or a system-only
     // messageStartEvent. A workflow must have at least one entry event.
     public static bool IsEntry(string type) =>
@@ -2836,7 +2883,7 @@ public static class BpmnFlowNodeTypes
         IsStart(type) || IsMessageStart(type) || IsTimerStart(type)
         || IsAutomatic(type) || IsServiceTask(type)
         || IsScriptTask(type) || IsGateway(type) || IsErrorBoundary(type)
-        || IsTimerBoundary(type) || IsConditionalBoundary(type)
+        || IsTimerBoundary(type) || IsConditionalBoundary(type) || IsSignalBoundary(type)
         || IsScopedInterrupt(type) || IsLinkEvent(type);
 
     public static bool IsSupported(string type) =>
@@ -2848,7 +2895,8 @@ public static class BpmnFlowNodeTypes
             or ConditionalBoundaryEvent
             or IntermediateMessageCatchEvent or IntermediateTimerCatchEvent
             or IntermediateConditionalCatchEvent or MessageStartEvent
-            or IntermediateLinkThrowEvent or IntermediateLinkCatchEvent;
+            or IntermediateLinkThrowEvent or IntermediateLinkCatchEvent
+            or IntermediateSignalCatchEvent or SignalBoundaryEvent;
 }
 
 public static class WorkflowVariableTypes
