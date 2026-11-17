@@ -56,6 +56,10 @@ such as the [webhook verification follow-ups](enhancements/int-02-webhook-verifi
 Each item records its status, the evidence for that status, open questions, and
 a plan section to complete before implementation starts.
 
+The later releases of [EVENT-04 signal events](enhancements/event-04-signal-events.md)
+are separate follow-up subtasks, listed in their
+[recommended order](enhancements/README.md#event-04-follow-up-subtasks).
+
 [TASK-05 automatic multi-instance activities](enhancements/task-05-multi-instance-automatic-activities.md)
 coordinates separate plans for the [shared core](enhancements/task-05a-multi-instance-core.md),
 [service activities](enhancements/task-05b-multi-instance-service-activities.md),

@@ -45,17 +45,21 @@ The work ships in two stages, described in [section 13](#13-delivery-sequence-ro
 
 ## Later releases
 
-- Signal start events, intermediate signal throw events, and signal end events. A throw from a workflow creates the same broadcast inside the throwing instance's transaction.
-- Limiting a signal to one business key or one instance.
-- A signal name built from an expression, such as a name that contains an order number.
-- Shared-variable aliases in signal mappings.
-- Signal boundaries on multi-instance service, script, and call activities.
-- Signal catches behind an event-based gateway ([EVENT-03](event-03-event-based-gateway.md)).
-- A catalog of signal definitions with declared payload contracts and permissions per signal.
-- Parallel delivery of one large broadcast, and a higher recipient limit.
-- An expiry time for a broadcast, after which undelivered work is skipped.
-- A general name for managed API clients, which this release still stores and manages as shared-variable clients.
-- Lifecycle webhook event types for broadcasts.
+Each item is a follow-up subtask with its own page. The list is in the [recommended order of implementation](README.md#event-04-follow-up-subtasks), which also gives the reasons for the order.
+
+1. [EVENT-04A](event-04a-signal-scope-by-business-key-or-instance.md): limiting a signal to one business key or one instance.
+2. [EVENT-04B](event-04b-signal-throw-and-end-events.md): intermediate signal throw events and signal end events. A throw from a workflow creates the same broadcast inside the throwing instance's transaction.
+3. [EVENT-04C](event-04c-signal-start-events.md): signal start events.
+4. [EVENT-04D](event-04d-webhook-events-for-signal-broadcasts.md): lifecycle webhook event types for broadcasts.
+5. [EVENT-04E](event-04e-signal-broadcast-expiry.md): an expiry time for a broadcast, after which undelivered work is skipped.
+6. [EVENT-04F](event-04f-signal-catalog.md): a catalog of signal definitions with declared payload contracts and permissions per signal.
+7. [EVENT-04G](event-04g-parallel-signal-delivery.md): parallel delivery of one large broadcast, and a higher recipient limit.
+8. [EVENT-04H](event-04h-expression-signal-names.md): a signal name built from an expression, such as a name that contains an order number.
+9. [EVENT-04I](event-04i-signal-boundaries-on-multi-instance-bodies.md): signal boundaries on multi-instance service, script, and call activities.
+10. [EVENT-04J](event-04j-shared-variables-in-signal-mappings.md): shared-variable aliases in signal mappings.
+11. [EVENT-04K](event-04k-rename-managed-api-clients.md): a general name for managed API clients, which this release still stores and manages as shared-variable clients.
+
+Signal catches behind an event-based gateway are recorded under [EVENT-03](event-03-event-based-gateway.md#later-releases).
 
 ## Current state
 
