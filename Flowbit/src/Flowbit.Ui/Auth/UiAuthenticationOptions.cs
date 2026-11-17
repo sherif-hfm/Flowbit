@@ -5,6 +5,7 @@ public sealed class UiAuthenticationOptions
     public string Mode { get; set; } = "OpenIdConnect";
     public bool IsDevelopmentToken => Mode == "DevelopmentToken";
     public bool IsLocal => Mode == "Local";
+    public bool AllowDevelopmentHttp { get; set; }
     public UiOidcOptions Oidc { get; set; } = new();
     public UiSessionOptions Session { get; set; } = new();
     public string? DataProtectionKeysPath { get; set; }
@@ -15,6 +16,8 @@ public sealed class UiAuthenticationOptions
     {
         if (Mode is not ("OpenIdConnect" or "Local" or "DevelopmentToken"))
             throw new InvalidOperationException("Authentication:Mode must be OpenIdConnect, Local or DevelopmentToken.");
+        if (AllowDevelopmentHttp && (!IsLocal || !environment.IsDevelopment()))
+            throw new InvalidOperationException("Authentication:AllowDevelopmentHttp is supported only in Local mode in Development.");
         if (IsDevelopmentToken)
         {
             if (!environment.IsDevelopment())

@@ -1,5 +1,6 @@
 # Local development stack. The UI shares one development identity per process.
-# Keep published ports on loopback; see docs/deployment.md for production setup.
+# For username/password login, see docs/local-authentication.md.
+# Base published ports bind to loopback; see docs/deployment.md for production setup.
 name: flowbit
 
 x-jwt-environment: &jwt-environment

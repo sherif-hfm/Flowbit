@@ -41,6 +41,8 @@ Terminate HTTPS at a configured hosting boundary or configure Kestrel certificat
 
 The root [compose.yaml](../compose.yaml) runs PostgreSQL 17, the API, UI, and Worker together. It is a local development setup: every published port binds to `127.0.0.1`, all application hosts use `Development`, and the UI retains its shared test identity. Docker with Linux containers and a current Docker Compose plugin is sufficient; the .NET SDK runs inside the image builds.
 
+For built-in username/password accounts, follow [Docker Compose with password login](local-authentication.md#docker-compose-with-password-login) for localhost HTTPS, or [password login over HTTP on a local network](local-authentication.md#password-login-over-http-on-a-local-network) for development access from other PCs. Both overrides reuse the database and Worker. The `.env` `COMPOSE_FILE` selection makes ordinary Compose commands use the selected override. The test-identity defaults below describe the base file.
+
 Run from the repository root. These commands work in PowerShell and Bash:
 
 ```text

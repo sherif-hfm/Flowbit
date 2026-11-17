@@ -1,0 +1,19 @@
+# Local password login over plain HTTP for development on a trusted network.
+# Use with compose.yaml instead of the HTTPS compose.local.yaml override.
+services:
+  api:
+    environment:
+      Authentication__Mode: Local
+      Authentication__Local__Issuer: ${FLOWBIT_LOCAL_ISSUER:-flowbit-local}
+      Authentication__Local__Audience: ${FLOWBIT_LOCAL_AUDIENCE:-flowbit-api}
+      Authentication__Local__SigningKey: ${FLOWBIT_LOCAL_SIGNING_KEY:?Set FLOWBIT_LOCAL_SIGNING_KEY in .env to a random secret of at least 32 bytes}
+      Authentication__Local__BootstrapUsername: ${FLOWBIT_LOCAL_BOOTSTRAP_USERNAME:-admin}
+      Authentication__Local__BootstrapPassword: ${FLOWBIT_LOCAL_BOOTSTRAP_PASSWORD:-}
+
+  ui:
+    environment:
+      Authentication__Mode: Local
+      Authentication__AllowDevelopmentHttp: "true"
+      Authentication__DataProtectionKeysPath: /home/app/.aspnet/DataProtection-Keys
+    ports: !override
+      - "0.0.0.0:${FLOWBIT_UI_PORT:-15152}:8080"

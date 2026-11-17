@@ -82,10 +82,11 @@ public static class UiAuthentication
             authentication.DefaultChallengeScheme = options.IsLocal ? CookieScheme : OidcScheme;
         }).AddCookie(CookieScheme, cookie =>
         {
-            cookie.Cookie.Name = "__Host-Flowbit.Session";
+            // Browsers require a Secure cookie for the __Host- prefix, including on LAN IPs.
+            cookie.Cookie.Name = options.AllowDevelopmentHttp ? "Flowbit.Development.Session" : "__Host-Flowbit.Session";
             cookie.LoginPath = "/auth/login";
             cookie.Cookie.HttpOnly = true;
-            cookie.Cookie.SecurePolicy = CookieSecurePolicy.Always;
+            cookie.Cookie.SecurePolicy = options.AllowDevelopmentHttp ? CookieSecurePolicy.SameAsRequest : CookieSecurePolicy.Always;
             cookie.Cookie.SameSite = SameSiteMode.Lax;
             cookie.Cookie.Path = "/";
             cookie.SlidingExpiration = false;

@@ -76,7 +76,7 @@ try
         app.UseHsts();
     }
     app.UseStatusCodePagesWithReExecute("/not-found", createScopeForStatusCodePages: true);
-    app.UseHttpsRedirection();
+    if (!authentication.AllowDevelopmentHttp) app.UseHttpsRedirection();
 
     if (!authentication.IsDevelopmentToken)
     {

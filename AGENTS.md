@@ -2341,6 +2341,17 @@ Development-only OpenAPI check gates UI/Worker startup after migrations.
 All published ports bind to loopback; API/UI explicitly select DevelopmentToken
 and the UI retains its shared development identity. UI health probes use
 anonymous `/health/live` plus the Blazor framework asset, independent of auth mode.
+The optional `compose.local.yaml` override selects Local username/password login
+on API/UI, adds the UI's localhost HTTPS port (15153), and overrides host-specific
+Data Protection paths with the container user's writable home. The mounted
+development certificate encrypts those container-local keys. It reuses the
+database and Worker; `.env` can select both files through `COMPOSE_FILE`. See
+[Local Compose login](docs/local-authentication.md#docker-compose-with-password-login).
+The alternative `compose.local-http.yaml` override publishes only the UI on all
+host IPv4 addresses over plain HTTP. `Authentication:AllowDevelopmentHttp` is
+valid only for Local mode in Development. It disables HTTPS redirection and
+uses a separate HttpOnly cookie name without the `__Host-` prefix, so HTTP
+requests can carry the session cookie. See [Local network access](docs/local-authentication.md#password-login-over-http-on-a-local-network).
 Application Dockerfiles use the repository root as build context.
 The guide also retains a host .NET setup alternative. See
 [Docker deployment guidance](docs/deployment.md#local-docker-compose-stack)

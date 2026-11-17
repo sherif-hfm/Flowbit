@@ -1,0 +1,36 @@
+# Local username/password login. Merge with compose.yaml; see
+# docs/local-authentication.md#docker-compose-with-password-login.
+# Development only: the UI uses HTTPS; API traffic stays on the local Docker network.
+services:
+  api:
+    environment:
+      Authentication__Mode: Local
+      Authentication__Local__Issuer: ${FLOWBIT_LOCAL_ISSUER:-flowbit-local}
+      Authentication__Local__Audience: ${FLOWBIT_LOCAL_AUDIENCE:-flowbit-api}
+      Authentication__Local__SigningKey: ${FLOWBIT_LOCAL_SIGNING_KEY:?Set FLOWBIT_LOCAL_SIGNING_KEY in .env to a random secret of at least 32 bytes}
+      Authentication__Local__BootstrapUsername: ${FLOWBIT_LOCAL_BOOTSTRAP_USERNAME:-admin}
+      Authentication__Local__BootstrapPassword: ${FLOWBIT_LOCAL_BOOTSTRAP_PASSWORD:-}
+
+  ui:
+    environment:
+      Authentication__Mode: Local
+      ASPNETCORE_HTTPS_PORTS: "8443"
+      ASPNETCORE_HTTPS_PORT: ${FLOWBIT_UI_HTTPS_PORT:-15153}
+      Kestrel__Certificates__Default__Path: /run/flowbit/https/flowbit-local.pfx
+      Kestrel__Certificates__Default__Password: ${FLOWBIT_HTTPS_CERT_PASSWORD:?Set FLOWBIT_HTTPS_CERT_PASSWORD in .env to the exported certificate password}
+      Authentication__DataProtectionKeysPath: /home/app/.aspnet/DataProtection-Keys
+      Authentication__DataProtectionCertificatePath: /run/flowbit/https/flowbit-local.pfx
+      Authentication__DataProtectionCertificatePassword: ${FLOWBIT_HTTPS_CERT_PASSWORD:?Set FLOWBIT_HTTPS_CERT_PASSWORD in .env to the exported certificate password}
+    ports:
+      - "127.0.0.1:${FLOWBIT_UI_HTTPS_PORT:-15153}:8443"
+    healthcheck:
+      # Probe HTTPS directly: HTTP redirects would otherwise hide missing assets.
+      # --insecure is only for these anonymous container-loopback probes of the dev certificate.
+      test: ["CMD-SHELL", "curl --insecure --fail --silent --show-error --max-time 5 --output /dev/null https://localhost:8443/health/live && curl --insecure --fail --silent --show-error --max-time 5 --output /dev/null https://localhost:8443/_framework/blazor.web.js"]
+    volumes:
+      - type: bind
+        source: ${FLOWBIT_HTTPS_CERT_DIR:-./dev/https}
+        target: /run/flowbit/https
+        read_only: true
+        bind:
+          create_host_path: false

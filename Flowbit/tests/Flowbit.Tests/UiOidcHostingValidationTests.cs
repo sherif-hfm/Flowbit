@@ -48,6 +48,26 @@ public sealed class UiOidcHostingValidationTests
     }
 
     [Theory]
+    [InlineData("Local", "Development", true)]
+    [InlineData("Local", "Staging", false)]
+    [InlineData("Local", "Production", false)]
+    [InlineData("OpenIdConnect", "Development", false)]
+    [InlineData("DevelopmentToken", "Development", false)]
+    public void Plain_http_login_requires_local_mode_in_development(string mode, string environment, bool allowed)
+    {
+        var options = ValidOptions();
+        options.Mode = mode;
+        options.AllowDevelopmentHttp = true;
+        var host = new Environment(environment);
+
+        if (allowed)
+            options.Validate(host);
+        else
+            Assert.Contains("Authentication:AllowDevelopmentHttp",
+                Assert.Throws<InvalidOperationException>(() => options.Validate(host)).Message);
+    }
+
+    [Theory]
     [InlineData("Production", "http", "/auth/login", false, 400)]
     [InlineData("Production", "http", "/auth/logout", false, 400)]
     [InlineData("Production", "http", "/signin-oidc", false, 400)]

@@ -52,6 +52,8 @@ The root [Compose file](../compose.yaml) builds the .NET applications and starts
 
 Defaults run without a `.env` file. Optional [.env.example](../.env.example) overrides are documented with storage, image builds, startup ordering, and shutdown in [the Docker deployment guide](deployment.md#local-docker-compose-stack). This stack explicitly selects DevelopmentToken authentication, with a shared process-wide UI test identity and public local credentials. For real provider sign-in, follow the separate [OpenID Connect and Keycloak walkthrough](openid-connect.md#local-keycloak-walkthrough).
 
+For built-in username/password accounts in Docker, use [localhost HTTPS](local-authentication.md#docker-compose-with-password-login) or [HTTP on a local network](local-authentication.md#password-login-over-http-on-a-local-network). Both reuse the database. The test-identity walkthrough below requires the base DevelopmentToken configuration.
+
 Once startup succeeds, skip the host database/API/UI startup commands below and continue at [Generate the token](#generate-the-token), then complete either HTTP walkthrough. Compose already runs the Worker for the later timer exercise. Keep the default API and UI ports to use the walkthrough unchanged, and run either this stack or the host setup at one time to avoid port conflicts. The standalone [editor](../flowbit-editor.html) still opens directly in your browser; keep its adjacent JS/CSS assets together when copying it. Flowbit.Ui also offers **Create workflow** and per-version **Edit**; see [visual authoring](ui-guide.md#design-workflows-in-the-ui).
 
 ## Host setup alternative
