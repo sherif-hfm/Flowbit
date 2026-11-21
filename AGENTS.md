@@ -2161,6 +2161,16 @@ what the cross-version `workflowKey` instance search matches.
   `503` at Error. Only an exception nothing maps reaches the request log, which logs
   it as a `500` error. Map a new exception type in that middleware, never outside
   the request log.
+- The one database error that middleware maps is PostgreSQL refusing a null
+  character (U+0000): SQLSTATE `22021` naming the byte `0x00` (a text value) or
+  `22P05` (a `jsonb` value), found anywhere in the exception chain by
+  `PostgresNullCharacter.FindSqlState`. It answers `400` with the fixed
+  `PostgresNullCharacter.Message` and a warning naming only the SQLSTATE; never
+  log that exception, because a `22P05` context line quotes the JSON. Stored data
+  cannot hold the character, so it comes from the request or from a synchronous
+  script or service response, and the failed transaction has rolled back. Every
+  other database error stays an unmapped `500`. Workers keep their own retries and
+  incidents.
 
 ### Blazor UI pages
 

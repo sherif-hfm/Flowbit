@@ -1079,7 +1079,7 @@ Inspect HTTP status **and** the response contract. A successful transport respon
 
 | Result | Client behavior |
 | --- | --- |
-| `400` | Show the validation/domain error and correct the request or workflow state. Some authored role mismatches also use this status. Do not classify every `400` as malformed JSON. |
+| `400` | Show the validation/domain error and correct the request or workflow state. Some authored role mismatches also use this status. Do not classify every `400` as malformed JSON. Text with a null character (U+0000) is refused this way too, because PostgreSQL cannot store it; strip the character before sending, since repeating the request cannot succeed. |
 | `401` | Obtain valid credentials or correct the configured actor claim. A message client must correct its message credentials, not acquire a user JWT. |
 | `403` | The authenticated caller lacks the endpoint's required authority. Repeating the same request will not add it. |
 | `404` | The resource is absent or unavailable in this caller's personal scope. Refresh the worklist; do not infer that hidden work has been deleted. |

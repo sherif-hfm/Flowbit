@@ -110,7 +110,8 @@ try
                     - 200 OK, 201 Created, 204 No Content for success
                     - 400 Bad Request for domain errors (WorkflowDomainException) - unpublished
                     workflow, missing variable, unavailable/forbidden flow, role/claim mismatch,
-                    gateway with no match, service/script task failure with no error boundary
+                    gateway with no match, service/script task failure with no error boundary,
+                    text containing a null character (U+0000), which PostgreSQL cannot store
                     - 401 Unauthorized for a client id/secret mismatch on machine endpoints
                     - 403 Forbidden for a missing required role on the workflow-definition endpoints
                     - 404 Not Found when a referenced instance or definition id does not exist
@@ -455,6 +456,14 @@ try
             Log.Error("Webhook key protection is unavailable: {Message}", ex.Message);
             context.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
             await context.Response.WriteAsJsonAsync(new { error = ex.Message });
+        }
+        // PostgreSQL refused a null character in text; the transaction that carried it rolled
+        // back. The exception is not logged: its text can quote the refused JSON.
+        catch (Exception ex) when (!context.Response.HasStarted && PostgresNullCharacter.FindSqlState(ex) is { } sqlState)
+        {
+            Log.Warning("PostgreSQL refused a text value with a null character (SQLSTATE {SqlState}).", sqlState);
+            context.Response.StatusCode = StatusCodes.Status400BadRequest;
+            await context.Response.WriteAsJsonAsync(new { error = PostgresNullCharacter.Message });
         }
     });
 

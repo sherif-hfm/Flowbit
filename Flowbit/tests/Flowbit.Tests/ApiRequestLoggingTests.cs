@@ -11,7 +11,9 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Npgsql;
 using Serilog.Core;
 using Serilog.Events;
 using Xunit;
@@ -46,6 +48,7 @@ public sealed class ApiRequestLoggingTests(PostgresApiFixture fixture)
                      ("conflict", HttpStatusCode.Conflict),
                      ("forbidden", HttpStatusCode.Forbidden),
                      ("unauthorized", HttpStatusCode.Unauthorized),
+                     ("null-character", HttpStatusCode.BadRequest),
                      ("key-protection", HttpStatusCode.ServiceUnavailable)
                  })
         {
@@ -77,6 +80,14 @@ public sealed class ApiRequestLoggingTests(PostgresApiFixture fixture)
         Assert.Equal(500, StatusCode(failed));
         Assert.Equal(LogEventLevel.Error, failed.Level);
         Assert.Same(thrown, failed.Exception);
+
+        // So is any other database error: only a refused null character is the client's.
+        var database = $"{FailurePath}/database";
+        var refused = await Assert.ThrowsAsync<DbUpdateException>(() => SendAsync(client, HttpMethod.Post, database));
+        var databaseEntry = Assert.Single(RequestLog(logs.Events, database));
+        Assert.Equal(500, StatusCode(databaseEntry));
+        Assert.Equal(LogEventLevel.Error, databaseEntry.Level);
+        Assert.Same(refused, databaseEntry.Exception);
     }
 
     [Fact]
@@ -168,6 +179,10 @@ public sealed class ApiRequestLoggingTests(PostgresApiFixture fixture)
             "forbidden" => new WorkflowForbiddenException("The actor lacks the required role."),
             "unauthorized" => new WorkflowUnauthorizedException("The client credentials do not match."),
             "key-protection" => new WebhookKeyProtectionUnavailableException("The webhook key ring cannot be read."),
+            "null-character" => new DbUpdateException("An error occurred while saving the entity changes.",
+                new PostgresException("invalid byte sequence for encoding \"UTF8\": 0x00", "ERROR", "ERROR", "22021")),
+            "database" => new DbUpdateException("An error occurred while saving the entity changes.",
+                new PostgresException("value too long for type character varying(300)", "ERROR", "ERROR", "22001")),
             _ => new InvalidOperationException("Nothing maps this failure.")
         };
     }

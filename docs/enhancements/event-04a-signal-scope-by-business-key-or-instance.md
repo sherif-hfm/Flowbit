@@ -78,9 +78,9 @@ A review of the implementation on 2026-11-20 found these gaps. Each is fixed, an
 - **Documentation.** The signal scope row under [Flowbit extensions](../bpmn-support.md#flowbit-extensions) still named only a family or all workflows, and the route and page summaries in AGENTS.md and the [runtime reference](../../Flowbit/README.md#signal-events) did not mention the new scopes. The lists of facts below read as the present state; they now say that they predate the implementation.
 - **Evidence.** The manual check's API ran at Warning level and so could not show what the request log records; the acceptance run's log now supplies that.
 
-Two findings are left as they are:
+Two findings were left out of this item:
 
-- **A null character returns `500`.** A `businessKey` that contains U+0000 reaches PostgreSQL, which refuses it, and the API maps no database error, so the throw and the summary answer `500`. A probe showed the same for a null character in `workflowKey`, `idempotencyKey`, and the payload, in the business-key filter of the instance list, and in a start's business key, all of which predate this item. It needs one fix for every route, not one for this field.
+- **A null character returned `500`. Fixed on 2026-11-21.** A `businessKey` that contains U+0000 reached PostgreSQL, which refuses it, and the API mapped no database error, so the throw and the summary answered `500`. A probe showed the same for a null character in `workflowKey`, `idempotencyKey`, and the payload, in the business-key filter of the instance list, and in a start's business key, all of which predate this item. The API's error middleware now answers `400` on every route when PostgreSQL refuses a null character, and writes nothing; see [errors and concurrency](../api-guide.md#errors-and-concurrency). `NullCharacterRequestTests` covers each case above.
 - **Later releases.** The backlog asks that later-release work that is still wanted becomes new items once an item is Done. The five entries under [Later releases](#later-releases) have no items yet.
 
 ### Facts the plan rested on
