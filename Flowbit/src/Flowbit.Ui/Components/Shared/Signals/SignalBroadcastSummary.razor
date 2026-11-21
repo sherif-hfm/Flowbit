@@ -11,7 +11,17 @@
     <h3 class="h6">Broadcast</h3>
     <dl class="row mb-2">
         <dt class="col-md-2">Signal</dt><dd class="col-md-10"><code>@Broadcast.Name</code></dd>
-        <dt class="col-md-2">Scope</dt><dd class="col-md-10">@ScopeLabel(Broadcast.WorkflowKey)</dd>
+        <dt class="col-md-2">Scope</dt>
+        <dd class="col-md-10 signal-scope">
+            @if (Broadcast.InstanceId is long instanceId)
+            {
+                <a href="@($"instances/{instanceId}")">Instance #@instanceId</a>@($" · {Broadcast.WorkflowKey}")
+            }
+            else
+            {
+                @ScopeLabel(Broadcast.WorkflowKey, Broadcast.BusinessKey)
+            }
+        </dd>
         <dt class="col-md-2">Thrown by</dt><dd class="col-md-10">@ThrowerLabel(Broadcast.ThrownBy, Broadcast.ThrownByKind)</dd>
         <dt class="col-md-2">Thrown</dt><dd class="col-md-10"><LocalTime Value="@Broadcast.CreatedAt" /></dd>
         <dt class="col-md-2">Finished</dt><dd class="col-md-10"><LocalTime Value="@Broadcast.CompletedAt" EmptyText="Still delivering" /></dd>

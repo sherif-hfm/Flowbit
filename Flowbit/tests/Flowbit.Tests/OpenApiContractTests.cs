@@ -176,6 +176,35 @@ public sealed class OpenApiContractTests
         Assert.False(matcher.AdditionalPropertiesAllowed);
     }
 
+    [Fact]
+    public async Task SignalScopeFieldsAndSummaryFiltersAreDocumented()
+    {
+        await using var factory = new WorkflowInstanceDetailEndpointTests.DetailApiFactory();
+        await using var scope = factory.Services.CreateAsyncScope();
+        var provider = scope.ServiceProvider.GetRequiredKeyedService<IOpenApiDocumentProvider>("v1");
+        var document = await provider.GetOpenApiDocumentAsync();
+        var schemas = document.Components!.Schemas!;
+
+        var request = schemas["ThrowSignalRequest"];
+        Assert.Equal(
+            ["allWorkflows", "businessKey", "idempotencyKey", "instanceId", "name", "payload", "workflowKey"],
+            request.Properties!.Keys.Order().ToArray());
+        Assert.Contains("workflowKey", request.Properties["businessKey"].Description);
+        Assert.Contains("whole scope", request.Properties["instanceId"].Description);
+        foreach (var name in new[] { "SignalBroadcastSummaryDto", "SignalBroadcastDetailDto" })
+        {
+            Assert.Contains("business-key scope", schemas[name].Properties!["businessKey"].Description);
+            Assert.Contains("instance scope", schemas[name].Properties!["instanceId"].Description);
+            Assert.Contains("family of the scope's instance", schemas[name].Properties!["workflowKey"].Description);
+        }
+
+        var summary = document.Paths["/api/signal-subscriptions/summary"].Operations![HttpMethod.Get];
+        Assert.Equal(
+            ["businessKey", "instanceId", "name", "workflowKey"],
+            summary.Parameters!.Select(parameter => parameter.Name!).Order().ToArray());
+        Assert.Equal(["200", "400", "401", "403"], summary.Responses!.Keys.Order().ToArray());
+    }
+
     private static void AssertRoleOperation(
         Microsoft.OpenApi.OpenApiDocument document,
         string path,

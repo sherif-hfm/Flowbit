@@ -3117,6 +3117,11 @@ namespace Flowbit.Infrastructure.Data.Migrations
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
 
+                    b.Property<string>("BusinessKey")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)")
+                        .UseCollation("C");
+
                     b.Property<string>("CancellationReason")
                         .HasMaxLength(1000)
                         .HasColumnType("character varying(1000)");
@@ -3149,6 +3154,9 @@ namespace Flowbit.Infrastructure.Data.Migrations
                         .HasMaxLength(300)
                         .HasColumnType("character varying(300)")
                         .UseCollation("C");
+
+                    b.Property<long?>("InstanceId")
+                        .HasColumnType("bigint");
 
                     b.Property<string>("PayloadJson")
                         .HasColumnType("jsonb");
@@ -3223,6 +3231,8 @@ namespace Flowbit.Infrastructure.Data.Migrations
                             t.HasCheckConstraint("CK_signal_broadcasts_counts", "\"TotalDeliveryCount\" BETWEEN 0 AND 100000 AND \"DeliveredCount\" >= 0 AND \"SkippedCount\" >= 0 AND \"FailedCount\" >= 0 AND \"CancelledCount\" >= 0 AND \"DeliveredCount\" + \"SkippedCount\" + \"FailedCount\" + \"CancelledCount\" <= \"TotalDeliveryCount\"");
 
                             t.HasCheckConstraint("CK_signal_broadcasts_payload", "\"PayloadJson\" IS NULL OR (jsonb_typeof(\"PayloadJson\") = 'object' AND octet_length(\"PayloadJson\"::text) <= 262144)");
+
+                            t.HasCheckConstraint("CK_signal_broadcasts_scope", "(\"BusinessKey\" IS NULL OR \"InstanceId\" IS NULL) AND ((\"BusinessKey\" IS NULL AND \"InstanceId\" IS NULL) OR \"WorkflowKey\" IS NOT NULL) AND (\"BusinessKey\" IS NULL OR \"BusinessKey\" <> '') AND (\"InstanceId\" IS NULL OR \"InstanceId\" > 0)");
 
                             t.HasCheckConstraint("CK_signal_broadcasts_status", "\"Status\" IN ('delivering', 'completed', 'completedWithIssues', 'cancelled')");
 

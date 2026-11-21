@@ -103,11 +103,11 @@ subtask table together.
 
 ### EVENT-04 follow-up subtasks
 
-[EVENT-04](event-04-signal-events.md) is Done. Its later releases are separate items, listed here in the recommended order of implementation. None is scheduled, and each needs its own plan before work starts. Update a subtask's status here, in its file, and in the parent's [later releases](event-04-signal-events.md#later-releases) together.
+[EVENT-04](event-04-signal-events.md) is Done. Its later releases are separate items, listed here in the recommended order of implementation. EVENT-04A is Done; none of the others is scheduled, and each needs its own plan before work starts. Update a subtask's status here, in its file, and in the parent's [later releases](event-04-signal-events.md#later-releases) together.
 
 | ID | Subtask | Effort | Depends on | Status |
 | --- | --- | --- | --- | --- |
-| [EVENT-04A](event-04a-signal-scope-by-business-key-or-instance.md) | Signal scope by business key or instance | S–M | [EVENT-04](event-04-signal-events.md) | Not started |
+| [EVENT-04A](event-04a-signal-scope-by-business-key-or-instance.md) | Signal scope by business key or instance | M | [EVENT-04](event-04-signal-events.md) | Done |
 | [EVENT-04B](event-04b-signal-throw-and-end-events.md) | Signal throw and end events | L | [EVENT-04](event-04-signal-events.md) | Not started |
 | [EVENT-04C](event-04c-signal-start-events.md) | Signal start events | M–L | [EVENT-04](event-04-signal-events.md) | Not started |
 | [EVENT-04D](event-04d-webhook-events-for-signal-broadcasts.md) | Webhook events for signal broadcasts | M | [EVENT-04](event-04-signal-events.md), [INT-01](int-01-outbound-lifecycle-webhooks.md) | Not started |

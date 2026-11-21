@@ -49,24 +49,19 @@ public sealed class SignalBroadcastService(
             throw new WorkflowDomainException(nameProblem);
         }
 
-        // A blank key is refused rather than read as "no key", so a request that names a
-        // family by mistake cannot reach every workflow.
-        var workflowKey = request.WorkflowKey;
-        if (workflowKey is not null && string.IsNullOrWhiteSpace(workflowKey))
-        {
-            throw new WorkflowDomainException(
-                "workflowKey cannot be blank; omit it and set allWorkflows to true to reach every workflow.");
-        }
-
-        if ((workflowKey is null) == !request.AllWorkflows)
-        {
-            throw new WorkflowDomainException(
-                "A signal must name one workflowKey or set allWorkflows to true, but not both.");
-        }
+        // A blank workflow or business key is refused rather than read as "no key", so a
+        // request that names a family or a case by mistake cannot reach more.
+        var scope = SignalBroadcastScope.FromRequest(
+                request.WorkflowKey,
+                request.AllWorkflows,
+                request.BusinessKey,
+                request.InstanceId,
+                out var scopeProblem)
+            ?? throw new WorkflowDomainException(scopeProblem!);
 
         var payloadJson = NormalizePayload(request.Payload);
         var idempotencyKey = NormalizeIdempotencyKey(request.IdempotencyKey);
-        var requestHash = HashRequest(name!, workflowKey, payloadJson);
+        var requestHash = HashRequest(name!, scope, payloadJson);
         if (idempotencyKey is not null
             && await broadcasts.FindByIdempotencyKeyAsync(caller.Kind, caller.Id, idempotencyKey, cancellationToken)
                 is { } earlier)
@@ -74,13 +69,9 @@ public sealed class SignalBroadcastService(
             return (ReplayOrConflict(earlier, requestHash, caller), true);
         }
 
-        // After the replay check: a retried request still gets its broadcast when the
-        // family's last version has been deleted since.
-        if (workflowKey is not null
-            && (await definitions.ListVersionsByKeyAsync(workflowKey, cancellationToken)).Count == 0)
-        {
-            throw new WorkflowDomainException($"No workflow definition has the key '{workflowKey}'.");
-        }
+        // After the replay check: a retried request still gets its broadcast whatever
+        // happened to its family or instance since.
+        scope = await ResolveScopeAsync(scope, cancellationToken);
 
         var maxRecipients = await ReadLimitAsync(
             SignalSettings.MaxSubscriptionsPerBroadcastKey,
@@ -117,7 +108,7 @@ public sealed class SignalBroadcastService(
         var broadcast = await broadcasts.AddAsync(
             new NewSignalBroadcastRecord(
                 name!,
-                workflowKey,
+                scope,
                 payloadJson,
                 caller.Kind,
                 caller.Id,
@@ -130,14 +121,14 @@ public sealed class SignalBroadcastService(
         var frozen = await broadcasts.FreezeDeliveriesAsync(
             broadcast.Id,
             name!,
-            workflowKey,
+            scope,
             maxRecipients,
             cancellationToken);
         if (frozen > maxRecipients)
         {
             throw new WorkflowDomainException(
                 $"Signal '{name}' would reach more than {maxRecipients} waiting subscriptions; "
-                + "limit it to one workflow family or raise Signals.MaxSubscriptionsPerBroadcast.");
+                + "narrow its scope or raise Signals.MaxSubscriptionsPerBroadcast.");
         }
 
         var recipients = await broadcasts.ListRecipientDefinitionsAsync(broadcast.Id, cancellationToken);
@@ -350,11 +341,17 @@ public sealed class SignalBroadcastService(
     public async Task<SignalSubscriptionSummaryDto> SummarizeSubscriptionsAsync(
         string? name,
         string? workflowKey,
+        string? businessKey,
+        long? instanceId,
         CancellationToken cancellationToken)
     {
+        // A read: an unknown instance or a family without business keys counts nothing,
+        // where a throw to them is refused.
+        var filter = SignalBroadcastScope.SummaryFilter(workflowKey, businessKey, instanceId, out var problem)
+            ?? throw new WorkflowDomainException(problem!);
         var rows = await subscriptions.SummarizeActiveAsync(
             string.IsNullOrWhiteSpace(name) ? null : name,
-            string.IsNullOrWhiteSpace(workflowKey) ? null : workflowKey,
+            filter,
             SignalConstraints.MaxSummaryRows + 1,
             cancellationToken);
         return new SignalSubscriptionSummaryDto(
@@ -437,6 +434,43 @@ public sealed class SignalBroadcastService(
         }
     }
 
+    /// <summary>
+    /// Checks the scope against the database without a lock: the family must exist, a
+    /// business key needs a family that has enabled business keys (no instance of any
+    /// other family has a key), and an instance scope learns its instance's family.
+    /// </summary>
+    private async Task<SignalBroadcastScope> ResolveScopeAsync(
+        SignalBroadcastScope scope,
+        CancellationToken cancellationToken)
+    {
+        switch (scope.Kind)
+        {
+            case SignalBroadcastScopeKind.Family:
+            case SignalBroadcastScopeKind.BusinessKey:
+                var workflowKey = scope.WorkflowKey!;
+                if ((await definitions.ListVersionsByKeyAsync(workflowKey, cancellationToken)).Count == 0)
+                {
+                    throw new WorkflowDomainException($"No workflow definition has the key '{workflowKey}'.");
+                }
+
+                if (scope.Kind == SignalBroadcastScopeKind.BusinessKey
+                    && !await definitions.IsBusinessKeyScopeActiveAsync(workflowKey, cancellationToken))
+                {
+                    throw new WorkflowDomainException(
+                        $"Workflow '{workflowKey}' has not enabled business keys, so businessKey can match none of its instances.");
+                }
+
+                return scope;
+            case SignalBroadcastScopeKind.Instance:
+                var instanceId = scope.InstanceId!.Value;
+                var family = await broadcasts.FindInstanceWorkflowKeyAsync(instanceId, cancellationToken)
+                    ?? throw new WorkflowDomainException($"No workflow instance has the ID {instanceId}.");
+                return scope.WithWorkflowKey(family);
+            default:
+                return scope;
+        }
+    }
+
     private async Task<int> ReadLimitAsync(string key, int fallback, int cap, CancellationToken cancellationToken)
     {
         var setting = await engineSettings.GetByKeyAsync(key, cancellationToken);
@@ -482,15 +516,36 @@ public sealed class SignalBroadcastService(
         return key;
     }
 
-    private static byte[] HashRequest(string name, string? workflowKey, string? payloadJson)
+    /// <summary>
+    /// The hash that decides whether a repeated idempotency key is the same request. A
+    /// family or all-workflows request hashes exactly as before business-key and instance
+    /// scopes existed, so keys stored earlier still replay; a business-key or instance
+    /// scope adds a fourth line, with the key's length so that no key can imitate
+    /// another line. The scope is the request's, before the instance's family is read.
+    /// </summary>
+    internal static byte[] HashRequest(string name, SignalBroadcastScope scope, string? payloadJson)
     {
         // The payload is compared as parsed JSON, so whitespace and member order in the
         // replayed request do not count as a different request.
         var canonicalPayload = payloadJson is null
             ? "null"
             : CanonicalJson(JsonDocument.Parse(payloadJson).RootElement);
-        var text = string.Join('\n', name, workflowKey ?? "*", canonicalPayload);
-        return SHA256.HashData(Encoding.UTF8.GetBytes(text));
+        var lines = new List<string>(4)
+        {
+            name,
+            scope.Kind == SignalBroadcastScopeKind.Instance ? "*" : scope.WorkflowKey ?? "*",
+            canonicalPayload
+        };
+        if (scope.BusinessKey is { } businessKey)
+        {
+            lines.Add(FormattableString.Invariant($"businessKey:{businessKey.Length}:{businessKey}"));
+        }
+        else if (scope.InstanceId is long instanceId)
+        {
+            lines.Add(FormattableString.Invariant($"instance:{instanceId}"));
+        }
+
+        return SHA256.HashData(Encoding.UTF8.GetBytes(string.Join('\n', lines)));
     }
 
     private static string CanonicalJson(JsonElement value) => value.ValueKind switch
@@ -532,6 +587,8 @@ public sealed class SignalBroadcastService(
             broadcast.SignalName,
             broadcast.WorkflowKey,
             broadcast.WorkflowKey is null,
+            broadcast.BusinessKey,
+            broadcast.InstanceId,
             broadcast.Status,
             broadcast.TotalDeliveryCount,
             broadcast.PendingCount,
@@ -566,6 +623,8 @@ public sealed class SignalBroadcastService(
             broadcast.SignalName,
             broadcast.WorkflowKey,
             broadcast.WorkflowKey is null,
+            broadcast.BusinessKey,
+            broadcast.InstanceId,
             broadcast.Status,
             broadcast.TotalDeliveryCount,
             broadcast.PendingCount,

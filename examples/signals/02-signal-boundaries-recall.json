@@ -53,6 +53,10 @@
           "validation": "Len(orderNumber) > 0"
         }
       ],
+      "businessKey": {
+        "variable": "orderNumber",
+        "uniqueness": "active"
+      },
       "assignee": null,
       "assignments": []
     },

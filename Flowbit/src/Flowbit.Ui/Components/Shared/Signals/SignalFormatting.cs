@@ -3,6 +3,17 @@ using Flowbit.Shared.Dtos;
 
 namespace Flowbit.Ui.Components.Shared.Signals;
 
+/// <summary>
+/// The scope choices of the Signals page's throw form. A business key is an optional
+/// narrowing of <see cref="Family"/>.
+/// </summary>
+internal enum SignalScopeChoice
+{
+    Family,
+    AllWorkflows,
+    Instance
+}
+
 /// <summary>Pure presentation rules for the Signals page and its display components.</summary>
 internal static class SignalFormatting
 {
@@ -46,8 +57,31 @@ internal static class SignalFormatting
         _ => code
     };
 
-    internal static string ScopeLabel(string? workflowKey) =>
-        workflowKey is null ? "All workflows" : workflowKey;
+    /// <summary>
+    /// A broadcast's scope in words. An instance scope names its family when it is known:
+    /// a broadcast records it, a review does not have it yet.
+    /// </summary>
+    internal static string ScopeLabel(string? workflowKey, string? businessKey = null, long? instanceId = null) =>
+        instanceId is long id
+            ? workflowKey is null ? $"Instance #{id}" : $"Instance #{id} · {workflowKey}"
+            : businessKey is not null ? $"{workflowKey} · business key {businessKey}"
+            : workflowKey ?? "All workflows";
+
+    /// <summary>The match line of a business-key or instance scope, from the summary's rows for the name.</summary>
+    internal static string ScopedMatchLine(
+        string signalName,
+        string? workflowKey,
+        string? businessKey,
+        long? instanceId,
+        int waits)
+    {
+        var target = instanceId is long id
+            ? $"in instance #{id}"
+            : $"with business key {businessKey} in {workflowKey}";
+        return waits == 0
+            ? $"No wait for '{signalName}' {target} now."
+            : $"{waits:N0} {(waits == 1 ? "wait" : "waits")} for '{signalName}' {target}.";
+    }
 
     internal static string ThrowerLabel(string thrownBy, string thrownByKind) =>
         thrownByKind == SignalThrowerKinds.Client ? $"{thrownBy} (API client)" : thrownBy;

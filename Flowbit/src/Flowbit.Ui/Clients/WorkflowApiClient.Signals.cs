@@ -105,11 +105,18 @@ public sealed partial class WorkflowApiClient
     public async Task<SignalSubscriptionSummaryDto> GetSignalSubscriptionSummaryAsync(
         string? name = null,
         string? workflowKey = null,
+        string? businessKey = null,
+        long? instanceId = null,
         CancellationToken cancellationToken = default)
     {
         var parameters = new List<string>();
         AddQueryValue(parameters, "name", name);
         AddQueryValue(parameters, "workflowKey", workflowKey);
+        AddQueryValue(parameters, "businessKey", businessKey);
+        if (instanceId is long id)
+        {
+            parameters.Add(FormattableString.Invariant($"instanceId={id}"));
+        }
         var query = parameters.Count == 0 ? string.Empty : "?" + string.Join("&", parameters);
         using var response = await httpClient.GetAsync($"/api/signal-subscriptions/summary{query}", cancellationToken);
         await EnsureSuccessAsync(response, cancellationToken);

@@ -18,7 +18,7 @@ else
                     <tr class="@(CurrentBroadcastId == item.Id ? "table-active" : null)">
                         <td>#@item.Id</td>
                         <td><code>@item.Name</code></td>
-                        <td>@ScopeLabel(item.WorkflowKey)</td>
+                        <td class="signal-scope-cell">@ScopeLabel(item.WorkflowKey, item.BusinessKey, item.InstanceId)</td>
                         <td>@ThrowerLabel(item.ThrownBy, item.ThrownByKind)</td>
                         <td>@item.DeliveredCount.ToString("N0") / @item.TotalDeliveryCount.ToString("N0")<span class="data-subtitle">@item.SkippedCount.ToString("N0") skipped · @item.FailedCount.ToString("N0") failed</span></td>
                         <td><StatusBadge Status="@item.Status" Text="@BroadcastStatusLabel(item.Status)" /></td>

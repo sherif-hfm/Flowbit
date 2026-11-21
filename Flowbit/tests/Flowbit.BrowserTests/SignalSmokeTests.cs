@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.RegularExpressions;
 using Flowbit.BrowserTests.Infrastructure;
 using Flowbit.BrowserTests.Support;
@@ -9,8 +10,10 @@ namespace Flowbit.BrowserTests;
 /// <summary>
 /// EVENT-04 signal events in a real browser. R16 drives the Signals page through Flowbit.Ui:
 /// a refused payload, a reviewed throw with no waiting events, the broadcast and its empty
-/// delivery list, the history row, an unknown workflow family refused by the API, and the
-/// permission screen for an identity without the signal role. The smoke stack has no Worker
+/// delivery list, the history row, an unknown workflow family refused by the API, an instance
+/// scope with its link, a business key whose edit ends the review, the API's refusals of a
+/// business key without business keys and of an unknown instance, and the permission screen
+/// for an identity without the signal role. The smoke stack has no Worker
 /// and refuses durable publication, so delivery to a waiting instance is the Worker
 /// acceptance suite's scenario.
 /// </summary>
@@ -277,6 +280,65 @@ public sealed class SignalSmokeTests(BrowserStackFixture stack)
             await review.GetByRole(AriaRole.Button, new LocatorGetByRoleOptions { Name = "Throw signal" }).ClickAsync();
             await Assertions.Expect(page.Locator(".alert-danger"))
                 .ToContainTextAsync("No workflow definition has the key 'browser-r16-missing-family'.");
+
+            // One instance: a running instance that is not waiting completes with no deliveries.
+            var workflow = await RuntimeSupport.PublishAsync(stack, "runtime-lifecycle.json");
+            var instance = (await RuntimeSupport.StartInstanceAsync(stack, workflow.Id)).Id;
+            await page.GetByLabel("One instance", new PageGetByLabelOptions { Exact = true }).CheckAsync();
+            await Assertions.Expect(page.GetByText("Enter an instance ID, a positive whole number, to see how many waits match."))
+                .ToBeVisibleAsync();
+            var instanceId = page.Locator("#signal-instance-id");
+            await instanceId.FillAsync(instance.ToString(CultureInfo.InvariantCulture));
+            await instanceId.PressAsync("Tab");
+            await Assertions.Expect(page.GetByText($"No wait for '{signalName}' in instance #{instance} now.")).ToBeVisibleAsync();
+            await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Review signal" }).ClickAsync();
+            await Assertions.Expect(review).ToContainTextAsync($"ScopeInstance #{instance}");
+            await Assertions.Expect(review).ToContainTextAsync("Waiting now0 waits");
+            await review.GetByRole(AriaRole.Button, new LocatorGetByRoleOptions { Name = "Throw signal" }).ClickAsync();
+            await Assertions.Expect(success).ToContainTextAsync("found no waiting events");
+            var instanceBroadcastId = Regex.Match(await success.InnerTextAsync(), @"#(\d+)").Groups[1].Value;
+            Assert.NotEqual(broadcastId, instanceBroadcastId);
+            await Assertions.Expect(current).ToContainTextAsync($"Instance #{instance} · {workflow.WorkflowKey}");
+            await Assertions.Expect(current.GetByRole(AriaRole.Link, new LocatorGetByRoleOptions { Name = $"Instance #{instance}", Exact = true }))
+                .ToHaveAttributeAsync("href", $"instances/{instance}");
+            await Assertions.Expect(history.Locator("tr.table-active")).ToContainTextAsync($"Instance #{instance} · {workflow.WorkflowKey}");
+            await page.ScreenshotAsync(new PageScreenshotOptions
+            {
+                Path = Path.Combine(scenario.ArtifactDirectory, "signals-instance-scope.png"),
+                FullPage = true,
+            });
+            Assert.True(
+                await page.EvaluateAsync<bool>("() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 2"),
+                $"The Signals page with an instance scope overflows horizontally at {viewportWidth}px.");
+
+            // A business key narrows a family; editing it ends the review, and the API refuses a
+            // business key for a family that has not enabled business keys.
+            await page.GetByLabel("One workflow family", new PageGetByLabelOptions { Exact = true }).CheckAsync();
+            await workflowKey.FillAsync(workflow.WorkflowKey);
+            await workflowKey.PressAsync("Tab");
+            var businessKey = page.Locator("#signal-business-key");
+            await businessKey.FillAsync("ORD-R16");
+            await businessKey.PressAsync("Tab");
+            await Assertions.Expect(page.GetByText($"No wait for '{signalName}' with business key ORD-R16 in {workflow.WorkflowKey} now."))
+                .ToBeVisibleAsync();
+            await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Review signal" }).ClickAsync();
+            await Assertions.Expect(review).ToContainTextAsync($"Scope{workflow.WorkflowKey} · business key ORD-R16");
+            await businessKey.FillAsync("ORD-R16-2");
+            await businessKey.PressAsync("Tab");
+            await Assertions.Expect(review.GetByRole(AriaRole.Button, new LocatorGetByRoleOptions { Name = "Review signal" })).ToBeVisibleAsync();
+            await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Review signal" }).ClickAsync();
+            await Assertions.Expect(review).ToContainTextAsync("business key ORD-R16-2");
+            await review.GetByRole(AriaRole.Button, new LocatorGetByRoleOptions { Name = "Throw signal" }).ClickAsync();
+            await Assertions.Expect(page.Locator(".alert-danger"))
+                .ToContainTextAsync($"Workflow '{workflow.WorkflowKey}' has not enabled business keys");
+
+            // The API refuses an instance ID that no instance has.
+            await page.GetByLabel("One instance", new PageGetByLabelOptions { Exact = true }).CheckAsync();
+            await instanceId.FillAsync("987654321987");
+            await instanceId.PressAsync("Tab");
+            await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Review signal" }).ClickAsync();
+            await review.GetByRole(AriaRole.Button, new LocatorGetByRoleOptions { Name = "Throw signal" }).ClickAsync();
+            await Assertions.Expect(page.Locator(".alert-danger")).ToContainTextAsync("No workflow instance has the ID 987654321987.");
 
             // A link opens the broadcast on a fresh page.
             page = await scenario.OpenUiAsync($"signals?broadcastId={broadcastId}");

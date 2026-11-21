@@ -164,7 +164,7 @@ public sealed class SignalSubscriptionRepository(AppDbContext dbContext) : ISign
 
     public async Task<IReadOnlyList<SignalSubscriptionCountRecord>> SummarizeActiveAsync(
         string? signalName,
-        string? workflowKey,
+        SignalSubscriptionFilter filter,
         int limit,
         CancellationToken cancellationToken)
     {
@@ -174,9 +174,23 @@ public sealed class SignalSubscriptionRepository(AppDbContext dbContext) : ISign
         {
             query = query.Where(subscription => subscription.SignalName == signalName);
         }
-        if (!string.IsNullOrEmpty(workflowKey))
+        if (filter.WorkflowKey is { } workflowKey)
         {
             query = query.Where(subscription => subscription.WorkflowKey == workflowKey);
+        }
+        if (filter.BusinessKey is { } businessKey)
+        {
+            // The key is on the instance; the family is on both rows. A plain read, as
+            // the throw's freeze statement is.
+            var familyKey = filter.WorkflowKey;
+            query = query.Where(subscription => dbContext.WorkflowInstances.Any(instance =>
+                instance.Id == subscription.InstanceId
+                && instance.WorkflowKey == familyKey
+                && instance.BusinessKey == businessKey));
+        }
+        if (filter.InstanceId is long instanceId)
+        {
+            query = query.Where(subscription => subscription.InstanceId == instanceId);
         }
 
         var rows = await query

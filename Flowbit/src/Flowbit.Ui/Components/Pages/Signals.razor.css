@@ -1,3 +1,4 @@
 .signal-status-filter { width: min(15rem, 100%); }
 .signal-reason-input { width: min(28rem, 100%); }
+.signal-scope, .signal-match-line { overflow-wrap: anywhere; }
 .signal-review-payload { max-height: 12rem; overflow: auto; white-space: pre-wrap; word-break: break-word; font-size: .85rem; }

@@ -177,6 +177,102 @@ public sealed class SignalAcceptanceTests(ExampleAcceptanceFixture fixture)
         });
     }
 
+    /// <summary>
+    /// S6: two orders of the signal boundaries example. A price update thrown by the first order's
+    /// business key adds a branch only there; a recall thrown by the second order's instance ID
+    /// interrupts only its shipment task.
+    /// </summary>
+    [Theory]
+    [InlineData(1440, 900)]
+    [InlineData(390, 844)]
+    public async Task S6_BusinessKeyAndInstanceScopesReachOnlyTheirOrder(int width, int height)
+    {
+        await using var scenario = await Stack.CreateScenario(
+            $"signal-s6-{width}x{height}", width, height, scenarioTimeout: ScenarioBudget);
+        await scenario.RunAsync("signal scopes", async () =>
+        {
+            await Stack.StartWorkerAsync();
+            await using var actor = await ApplyActorAsync(scenario, "signal-operator", OperatorRoles);
+            var suffix = Guid.NewGuid().ToString("N")[..8];
+            var path = Path.Combine(Stack.RepositoryRoot, "examples", "signals", "02-signal-boundaries-recall.json");
+            var model = JsonSerializer.Deserialize<WorkflowModel>(
+                await File.ReadAllTextAsync(path, ScenarioCancellation.Token), JsonOptions)!;
+            Assert.Equal("orderNumber", model.FlowNodes.Single(node => node.Id == 1).BusinessKey!.Variable);
+            model.Id = $"signal-s6-{suffix}";
+            var recall = $"accept.s6-recall-{suffix}";
+            var price = $"accept.s6-price-{suffix}";
+            model.FlowNodes.Single(node => node.Id == 3).Signal!.Name = recall;
+            model.FlowNodes.Single(node => node.Id == 4).Signal!.Name = price;
+            var workflow = await Stack.SetupClient.CreateAndPublishAsync(model);
+            // The orders' business keys are C-001 and C-002.
+            var orders = await StartManyAsync(actor, workflow.Id, 2, "orderNumber");
+            var page = scenario.Page;
+            var current = page.Locator("section[aria-labelledby='signal-current-heading']");
+
+            // The price update for C-001 only.
+            await scenario.OpenUiAsync("signals");
+            await FillSignalAsync(page, price);
+            await page.Locator("#signal-workflow-key").FillAsync(workflow.WorkflowKey);
+            await page.Locator("#signal-workflow-key").PressAsync("Tab");
+            await page.Locator("#signal-business-key").FillAsync("C-001");
+            await page.Locator("#signal-business-key").PressAsync("Tab");
+            await Assertions.Expect(page.GetByText($"1 wait for '{price}' with business key C-001 in {workflow.WorkflowKey}."))
+                .ToBeVisibleAsync();
+            await page.Locator("#signal-payload").FillAsync("{ \"unitPrice\": 13 }");
+            await page.Locator("#signal-payload").PressAsync("Tab");
+            await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Review signal" }).ClickAsync();
+            var review = page.Locator("section[aria-labelledby='signal-review-heading']");
+            await Assertions.Expect(review).ToContainTextAsync($"{workflow.WorkflowKey} · business key C-001");
+            await Assertions.Expect(review).ToContainTextAsync("Waiting now1 wait");
+            await CaptureAsync(scenario, "s6-business-key-review");
+            await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Throw signal" }).ClickAsync();
+            await Assertions.Expect(page.Locator(".alert-success")).ToContainTextAsync("froze 1 recipient; the Worker is delivering it.");
+            await Assertions.Expect(current.Locator("tbody tr"))
+                .ToContainTextAsync("Boundary added a branch", new LocatorAssertionsToContainTextOptions { Timeout = 60_000f });
+            await Assertions.Expect(current).ToContainTextAsync($"Instance #{orders[0]}");
+
+            var first = await actor.Runtime.GetInstanceAsync(orders[0]);
+            Assert.Contains(first.ExecutionPositions, position => position.NodeId == 8 && position.TokenStatus == "active");
+            var second = await actor.Runtime.GetInstanceAsync(orders[1]);
+            Assert.DoesNotContain(second.ExecutionPositions, position => position.NodeId == 8 && position.TokenStatus == "active");
+            Assert.Equal(2, second.SignalSubscriptions.Count);
+
+            // The second order's detail still lists both waits.
+            await scenario.OpenUiAsync($"instances/{orders[1]}");
+            var waits = page.Locator("ul[aria-labelledby='instance-signal-waits-heading']");
+            await Assertions.Expect(waits).ToContainTextAsync(recall);
+            await Assertions.Expect(waits).ToContainTextAsync(price);
+
+            // The recall for the second order by its instance ID.
+            await scenario.OpenUiAsync("signals");
+            await FillSignalAsync(page, recall);
+            await page.GetByLabel("One instance", new PageGetByLabelOptions { Exact = true }).CheckAsync();
+            await page.Locator("#signal-instance-id").FillAsync(orders[1].ToString(System.Globalization.CultureInfo.InvariantCulture));
+            await page.Locator("#signal-instance-id").PressAsync("Tab");
+            await Assertions.Expect(page.GetByText($"1 wait for '{recall}' in instance #{orders[1]}.")).ToBeVisibleAsync();
+            await page.Locator("#signal-payload").FillAsync("{ \"reason\": \"Supplier recall\" }");
+            await page.Locator("#signal-payload").PressAsync("Tab");
+            await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Review signal" }).ClickAsync();
+            await Assertions.Expect(review).ToContainTextAsync($"Instance #{orders[1]}");
+            await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Throw signal" }).ClickAsync();
+            await Assertions.Expect(current.Locator("tbody tr"))
+                .ToContainTextAsync("Boundary interrupted its host", new LocatorAssertionsToContainTextOptions { Timeout = 60_000f });
+            await Assertions.Expect(current).ToContainTextAsync($"Instance #{orders[1]} · {workflow.WorkflowKey}");
+            await Assertions.Expect(current.GetByRole(AriaRole.Link, new LocatorGetByRoleOptions { Name = $"Instance #{orders[1]}", Exact = true }).First)
+                .ToHaveAttributeAsync("href", $"instances/{orders[1]}");
+            await AssertNoHorizontalOverflowAsync(page);
+            await CaptureAsync(scenario, "s6-instance-broadcast");
+
+            var interrupted = await actor.Runtime.GetInstanceAsync(orders[1]);
+            Assert.DoesNotContain(interrupted.ExecutionPositions, position => position.NodeId == 2 && position.TokenStatus == "active");
+            Assert.Contains(interrupted.ExecutionPositions, position => position.NodeId == 6 && position.TokenStatus == "active");
+            Assert.Empty(interrupted.SignalSubscriptions);
+            first = await actor.Runtime.GetInstanceAsync(orders[0]);
+            Assert.Contains(first.ExecutionPositions, position => position.NodeId == 2 && position.TokenStatus == "active");
+            Assert.Contains(first.SignalSubscriptions, subscription => subscription.Name == recall);
+        });
+    }
+
     private static async Task ThrowFromPageAsync(IPage page, BrowserScenario scenario, string signal, string workflowKey, string payload)
     {
         await scenario.OpenUiAsync("signals");

@@ -11,6 +11,7 @@ using Microsoft.AspNetCore.Components.Web;
 using Microsoft.AspNetCore.Components.Web.HtmlRendering;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using SignalScopeChoice = FlowbitUi::Flowbit.Ui.Components.Shared.Signals.SignalScopeChoice;
 using SignalsPage = FlowbitUi::Flowbit.Ui.Components.Pages.Signals;
 using TokenState = FlowbitUi::Flowbit.Ui.Auth.TokenState;
 using WorkflowApiClient = FlowbitUi::Flowbit.Ui.Clients.WorkflowApiClient;
@@ -62,7 +63,7 @@ public sealed class SignalsPageTests
         await using var harness = new Harness();
         var component = await harness.RenderAsync();
         await harness.SetAsync("signalName", "claims.policy-changed");
-        await harness.SetAsync("allWorkflows", true);
+        await harness.SetAsync("scopeChoice", SignalScopeChoice.AllWorkflows);
         await harness.SetAsync("payloadText", "[1, 2]");
         await harness.CallAsync("ReviewAsync");
 
@@ -77,7 +78,7 @@ public sealed class SignalsPageTests
         await using var harness = new Harness();
         var component = await harness.RenderAsync();
         await harness.SetAsync("signalName", "claims.policy-changed");
-        await harness.SetAsync("allWorkflows", true);
+        await harness.SetAsync("scopeChoice", SignalScopeChoice.AllWorkflows);
         await harness.SetAsync("payloadText", "{ \"version\": 7 }");
         await harness.CallAsync("ReviewAsync");
         var html = await harness.HtmlAsync(component);
@@ -99,7 +100,7 @@ public sealed class SignalsPageTests
         await using var harness = new Harness();
         var component = await harness.RenderAsync();
         await harness.SetAsync("signalName", "claims.policy-changed");
-        await harness.SetAsync("allWorkflows", true);
+        await harness.SetAsync("scopeChoice", SignalScopeChoice.AllWorkflows);
         await harness.SetAsync("payloadText", "{ \"version\": 7 }");
         await harness.CallAsync("ReviewAsync");
 
@@ -143,7 +144,7 @@ public sealed class SignalsPageTests
         await using var harness = new Harness();
         await harness.RenderAsync();
         await harness.SetAsync("signalName", "claims.policy-changed");
-        await harness.SetAsync("allWorkflows", true);
+        await harness.SetAsync("scopeChoice", SignalScopeChoice.AllWorkflows);
         await harness.SetAsync("payloadText", "{ \"version\": 7 }");
         await harness.CallAsync("ReviewAsync");
         Assert.NotNull(await harness.ValueAsync<object?>("review"));
@@ -151,7 +152,7 @@ public sealed class SignalsPageTests
         await harness.ChangeIdentityAsync("other-token");
 
         Assert.Equal(string.Empty, await harness.ValueAsync<string>("signalName"));
-        Assert.False(await harness.ValueAsync<bool>("allWorkflows"));
+        Assert.Equal(SignalScopeChoice.Family, await harness.ValueAsync<SignalScopeChoice>("scopeChoice"));
         Assert.Null(await harness.ValueAsync<string?>("payloadText"));
         Assert.Null(await harness.ValueAsync<object?>("review"));
     }
@@ -221,8 +222,170 @@ public sealed class SignalsPageTests
         Assert.True(harness.Paths.Count(path => path == "/api/signal-broadcasts/41") > live);
     }
 
+    [Fact]
+    public async Task ReviewedThrow_WithABusinessKeySendsItWithItsWorkflowKey()
+    {
+        await using var harness = new Harness();
+        var component = await harness.RenderAsync();
+        await harness.SetAsync("signalName", "claims.policy-changed");
+        await harness.CallAsync("OnWorkflowKeyChangedAsync", new ChangeEventArgs { Value = "claims" });
+        await harness.CallAsync("OnBusinessKeyChangedAsync", new ChangeEventArgs { Value = "  ORD-2001 " });
+        Assert.Contains("1 wait for &#x27;claims.policy-changed&#x27; with business key ORD-2001 in claims.",
+            await harness.HtmlAsync(component), StringComparison.Ordinal);
+
+        await harness.CallAsync("ReviewAsync");
+        Assert.Contains(harness.Paths, path => path.StartsWith("/api/signal-subscriptions/summary?", StringComparison.Ordinal)
+            && path.Contains("workflowKey=claims", StringComparison.Ordinal)
+            && path.Contains("businessKey=ORD-2001", StringComparison.Ordinal));
+        Assert.Contains("claims · business key ORD-2001",
+            WebUtility.HtmlDecode(await harness.HtmlAsync(component)), StringComparison.Ordinal);
+
+        await harness.CallAsync("ThrowAsync");
+        var post = Assert.Single(harness.Posts);
+        Assert.Equal("claims", post.Body.GetProperty("workflowKey").GetString());
+        Assert.Equal("ORD-2001", post.Body.GetProperty("businessKey").GetString());
+        Assert.False(post.Body.GetProperty("allWorkflows").GetBoolean());
+        Assert.Equal(JsonValueKind.Null, post.Body.GetProperty("instanceId").ValueKind);
+    }
+
+    [Fact]
+    public async Task ReviewedThrow_ForOneInstanceSendsOnlyItsId()
+    {
+        await using var harness = new Harness();
+        var component = await harness.RenderAsync();
+        await harness.SetAsync("signalName", "claims.policy-changed");
+        // Fields typed under another choice stay out of the request.
+        await harness.SetAsync("workflowKey", "claims");
+        await harness.SetAsync("businessKey", "ORD-2001");
+        await harness.CallAsync("SetScopeAsync", SignalScopeChoice.Instance);
+        await harness.CallAsync("OnInstanceIdChangedAsync", new ChangeEventArgs { Value = "42" });
+
+        await harness.CallAsync("ReviewAsync");
+        Assert.Contains(harness.Paths, path => path.StartsWith("/api/signal-subscriptions/summary?", StringComparison.Ordinal)
+            && path.Contains("instanceId=42", StringComparison.Ordinal)
+            && !path.Contains("workflowKey=", StringComparison.Ordinal)
+            && !path.Contains("businessKey=", StringComparison.Ordinal));
+        Assert.Contains("Instance #42", await harness.HtmlAsync(component), StringComparison.Ordinal);
+
+        await harness.CallAsync("ThrowAsync");
+        var post = Assert.Single(harness.Posts);
+        Assert.Equal(42, post.Body.GetProperty("instanceId").GetInt64());
+        Assert.Equal(JsonValueKind.Null, post.Body.GetProperty("workflowKey").ValueKind);
+        Assert.Equal(JsonValueKind.Null, post.Body.GetProperty("businessKey").ValueKind);
+        Assert.False(post.Body.GetProperty("allWorkflows").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Review_RefusesAnInstanceScopeWithoutAnId()
+    {
+        await using var harness = new Harness();
+        var component = await harness.RenderAsync();
+        await harness.SetAsync("signalName", "claims.policy-changed");
+        await harness.CallAsync("SetScopeAsync", SignalScopeChoice.Instance);
+        await harness.CallAsync("OnInstanceIdChangedAsync", new ChangeEventArgs { Value = "-3" });
+
+        // The status line says what the field needs while the box may still show the refused text.
+        Assert.Contains("Enter an instance ID, a positive whole number, to see how many waits match.",
+            await harness.HtmlAsync(component), StringComparison.Ordinal);
+
+        await harness.CallAsync("ReviewAsync");
+        Assert.Null(await harness.ValueAsync<long?>("instanceId"));
+        Assert.Null(await harness.ValueAsync<object?>("review"));
+        Assert.Contains("Enter an instance ID.", await harness.HtmlAsync(component), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task FailedScopedCount_SaysSoInsteadOfCounting()
+    {
+        await using var harness = new Harness();
+        var component = await harness.RenderAsync();
+        await harness.SetAsync("signalName", "claims.policy-changed");
+        await harness.SetAsync("workflowKey", "claims");
+        harness.FailScopedMarker = "businessKey=ORD-FAIL";
+
+        await harness.CallAsync("OnBusinessKeyChangedAsync", new ChangeEventArgs { Value = "ORD-FAIL" });
+        var html = WebUtility.HtmlDecode(await harness.HtmlAsync(component));
+        Assert.Contains("The matching waits could not be counted. Review signal counts them again.", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("Counting the matching waits", html, StringComparison.Ordinal);
+        Assert.True(await harness.ValueAsync<bool>("scopedCountFailed"));
+
+        // The next edit counts again.
+        await harness.CallAsync("OnBusinessKeyChangedAsync", new ChangeEventArgs { Value = "ORD-2001" });
+        Assert.False(await harness.ValueAsync<bool>("scopedCountFailed"));
+        Assert.Contains("1 wait for 'claims.policy-changed' with business key ORD-2001 in claims.",
+            WebUtility.HtmlDecode(await harness.HtmlAsync(component)), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ScopeEdits_EndTheReview()
+    {
+        await using var harness = new Harness();
+        await harness.RenderAsync();
+        await harness.SetAsync("signalName", "claims.policy-changed");
+        await harness.SetAsync("workflowKey", "claims");
+
+        await ReviewAndEditAsync("OnBusinessKeyChangedAsync", new ChangeEventArgs { Value = "ORD-2001" });
+        await ReviewAndEditAsync("OnBusinessKeyChangedAsync", new ChangeEventArgs { Value = "" });
+        await ReviewAndEditAsync("SetScopeAsync", SignalScopeChoice.Instance);
+        await harness.CallAsync("OnInstanceIdChangedAsync", new ChangeEventArgs { Value = "42" });
+        await ReviewAndEditAsync("OnInstanceIdChangedAsync", new ChangeEventArgs { Value = "43" });
+        await ReviewAndEditAsync("SetScopeAsync", SignalScopeChoice.AllWorkflows);
+        Assert.Empty(harness.Posts);
+
+        async Task ReviewAndEditAsync(string method, object argument)
+        {
+            await harness.CallAsync("ReviewAsync");
+            Assert.NotNull(await harness.ValueAsync<object?>("review"));
+            await harness.CallAsync(method, argument);
+            Assert.Null(await harness.ValueAsync<object?>("review"));
+            Assert.Null(await harness.ValueAsync<string?>("draftIdempotencyKey"));
+        }
+    }
+
+    [Fact]
+    public async Task IdentityChange_ClearsTheBusinessKeyAndTheInstance()
+    {
+        await using var harness = new Harness();
+        await harness.RenderAsync();
+        await harness.SetAsync("signalName", "claims.policy-changed");
+        await harness.SetAsync("workflowKey", "claims");
+        await harness.SetAsync("businessKey", "ORD-2001");
+        await harness.SetAsync("instanceId", (long?)42);
+        await harness.SetAsync("scopeChoice", SignalScopeChoice.Instance);
+
+        await harness.ChangeIdentityAsync("other-token");
+
+        Assert.Equal(string.Empty, await harness.ValueAsync<string>("businessKey"));
+        Assert.Null(await harness.ValueAsync<long?>("instanceId"));
+        Assert.Equal(SignalScopeChoice.Family, await harness.ValueAsync<SignalScopeChoice>("scopeChoice"));
+        Assert.Null(await harness.ValueAsync<SignalSubscriptionSummaryDto?>("scopedSummary"));
+    }
+
+    [Fact]
+    public async Task LateScopedCount_DoesNotReplaceANewerOne()
+    {
+        await using var harness = new Harness();
+        var component = await harness.RenderAsync();
+        await harness.SetAsync("signalName", "claims.policy-changed");
+        await harness.SetAsync("workflowKey", "claims");
+
+        var held = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        harness.HoldScopedMarker = "businessKey=ORD-A";
+        harness.HoldScoped = held.Task;
+        var counting = harness.CallAsync("OnBusinessKeyChangedAsync", new ChangeEventArgs { Value = "ORD-A" });
+        await Harness.WaitForAsync(() => harness.Paths.Any(path => path.Contains("businessKey=ORD-A", StringComparison.Ordinal)));
+
+        await harness.CallAsync("OnBusinessKeyChangedAsync", new ChangeEventArgs { Value = "ORD-B" });
+        held.SetResult();
+        await counting;
+
+        Assert.Equal(2, (await harness.ValueAsync<SignalSubscriptionSummaryDto?>("scopedSummary"))!.Items.Single().Count);
+        Assert.Contains("2 waits for &#x27;claims.policy-changed&#x27; with business key ORD-B in claims.",
+            await harness.HtmlAsync(component), StringComparison.Ordinal);
+    }
+
     private static SignalBroadcastDetailDto Detail(long id, string status) =>
-        new(id, "claims.policy-changed", "claims", false, status, 3,
+        new(id, "claims.policy-changed", "claims", false, null, null, status, 3,
             status == SignalBroadcastStatuses.Delivering ? 3 : 0,
             status == SignalBroadcastStatuses.Delivering ? 0 : 3, 0, 0, 0,
             "admin", SignalThrowerKinds.User, ["admin"],
@@ -249,6 +412,14 @@ public sealed class SignalsPageTests
 
         /// <summary>When set, a request for broadcast 41's deliveries with no filter waits for this task.</summary>
         public Task? HoldUnfilteredDeliveries { get; set; }
+
+        /// <summary>When set, a scoped summary request whose path contains <see cref="HoldScopedMarker"/> waits for this task.</summary>
+        public Task? HoldScoped { get; set; }
+
+        public string? HoldScopedMarker { get; set; }
+
+        /// <summary>When set, a scoped summary request whose path contains it fails with 500.</summary>
+        public string? FailScopedMarker { get; set; }
 
         private readonly TokenState token = new();
 
@@ -340,6 +511,28 @@ public sealed class SignalsPageTests
                     var body = await request.Content!.ReadFromJsonAsync<JsonElement>(cancellationToken);
                     lock (harness.Posts) harness.Posts.Add(new RecordedPost(path, body));
                     return Json(HttpStatusCode.Accepted, Detail(41, SignalBroadcastStatuses.Delivering));
+                }
+
+                if (path.StartsWith("/api/signal-subscriptions/summary", StringComparison.Ordinal)
+                    && (path.Contains("businessKey=", StringComparison.Ordinal)
+                        || path.Contains("instanceId=", StringComparison.Ordinal)))
+                {
+                    if (harness.HoldScoped is { } hold && harness.HoldScopedMarker is { } marker
+                        && path.Contains(marker, StringComparison.Ordinal))
+                    {
+                        await hold.WaitAsync(cancellationToken);
+                    }
+                    if (harness.FailScopedMarker is { } failing && path.Contains(failing, StringComparison.Ordinal))
+                    {
+                        return new HttpResponseMessage(HttpStatusCode.InternalServerError)
+                        {
+                            Content = JsonContent.Create(new { error = "The count failed." })
+                        };
+                    }
+                    // One wait for a business key or an instance; two for the key ORD-B.
+                    var count = path.Contains("businessKey=ORD-B", StringComparison.Ordinal) ? 2 : 1;
+                    return Json(HttpStatusCode.OK, new SignalSubscriptionSummaryDto(
+                        [new SignalSubscriptionCountDto("claims.policy-changed", "claims", count)], false));
                 }
 
                 if (path.StartsWith("/api/signal-subscriptions/summary", StringComparison.Ordinal))

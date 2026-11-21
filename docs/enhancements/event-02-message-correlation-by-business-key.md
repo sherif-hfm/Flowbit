@@ -40,6 +40,7 @@ Verified on 2026-10-24: not implemented.
 ## Builds on
 
 - Business-key claims, which already guarantee at most one running instance per key in a workflow family.
+- `BusinessKeyRules` (`Flowbit.Shared`) from [EVENT-04A](event-04a-signal-scope-by-business-key-or-instance.md), the one normalization of a key for starts and signal throws, and the business-key signal scope's lookup of the running instance through the (`WorkflowKey`, `BusinessKey`, `Status`) index of `workflow_instances` without a lock.
 - Message-catch authentication, typed output mappings, and delivery idempotency.
 - Selection of a parallel wait by its `catchEvent` external ID.
 

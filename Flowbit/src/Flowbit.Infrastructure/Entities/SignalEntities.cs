@@ -31,13 +31,19 @@ public sealed class SignalSubscriptionEntity
 
 /// <summary>
 /// One thrown signal with its frozen recipient count and outcome counters. Its
-/// deliveries are frozen in the throw's transaction.
+/// deliveries are frozen in the throw's transaction. Its scope is every family
+/// (<see cref="WorkflowKey"/> null), one family, the instance with one
+/// <see cref="BusinessKey"/> in a family, or one <see cref="InstanceId"/>, whose family
+/// <see cref="WorkflowKey"/> then records. <see cref="InstanceId"/> is a plain column:
+/// a foreign-key check would make the throw wait for a transaction holding the instance.
 /// </summary>
 public sealed class SignalBroadcastEntity
 {
     public long Id { get; set; }
     public string SignalName { get; set; } = string.Empty;
     public string? WorkflowKey { get; set; }
+    public string? BusinessKey { get; set; }
+    public long? InstanceId { get; set; }
     public string? PayloadJson { get; set; }
     public string Status { get; set; } = "delivering";
     public int TotalDeliveryCount { get; set; }

@@ -1227,7 +1227,7 @@ One row per conditional boundary per host activation. Evaluation compares the ne
 Waits for signals and the broadcasts that reach them. See [signals](bpmn-support.md#signals) and [signal event operations](deployment.md#signal-events).
 
 - **Subscriptions** are written only under the owning instance's lock, in the transaction that starts or ends the wait: routing creates one when a token reaches a signal catch, and one per signal boundary when a token enters that boundary's host, and every path that ends the wait or the host completes or cancels it. A delivery to a non-interrupting boundary only increases the row's `Occurrence`.
-- **A throw** inserts the broadcast, then copies every matching active subscription into `signal_deliveries` in one `INSERT ... SELECT` statement, and links one delivery job per represented definition. It takes no runtime lock. Delivery rows name their subscription, instance, and token by plain ID, because a foreign-key check would wait for a recipient's transaction that holds those rows `FOR UPDATE`.
+- **A throw** inserts the broadcast, then copies every matching active subscription into `signal_deliveries` in one `INSERT ... SELECT` statement, and links one delivery job per represented definition. It takes no runtime lock. A business-key scope joins the subscriptions to `workflow_instances` through its (`WorkflowKey`, `BusinessKey`, `Status`) index in that statement, without a locking clause; an instance scope filters the subscriptions by `InstanceId` and first reads the instance's family by primary key, also without a lock. Delivery rows name their subscription, instance, and token by plain ID, because a foreign-key check would wait for a recipient's transaction that holds those rows `FOR UPDATE`.
 - **A delivery** locks the instance hierarchy, then the subscription row, then the delivery row, and commits the delivery's final status with the instance change it describes. Cancel and retry lock the broadcast row, then update delivery rows; a delivery never locks the broadcast. A delivery job recounts a broadcast's counters and status only while holding its row, so a recount never overwrites a cancel or retry. A retry moves each delivery's `WorkflowDefinitionId` to the version its instance runs now. Only a delivering broadcast has pending deliveries, so pending-delivery queries start from the open broadcasts.
 - **Retention.** The `signalBroadcasts` category deletes finished broadcasts aged from `CompletedAt`, and their deliveries and job links cascade. Subscriptions stay with their instance.
 
@@ -1289,13 +1289,15 @@ One thrown signal. Its recipients are frozen in the throw's transaction; a broad
 | Column | Meaning |
 | --- | --- |
 | `SignalName` | The signal name, with `C` collation. |
-| `WorkflowKey` | The family the throw named; null for a broadcast to all workflows. |
+| `WorkflowKey` | The family the throw named, or the family of the instance it named, read when it was thrown; null for a broadcast to all workflows. |
+| `BusinessKey` | The trimmed business key of a business-key scope, at most 300 characters, with `C` collation; null otherwise. |
+| `InstanceId` | The instance of an instance scope; null otherwise. A plain column without a foreign key, because the check would make the throw wait for a transaction holding the instance row. |
 | `PayloadJson` | The `jsonb` object payload, or null. |
 | `Status`, `CompletedAt` | `delivering`, `completed`, `completedWithIssues`, or `cancelled`; `CompletedAt` is set exactly when the broadcast is not delivering. |
 | `TotalDeliveryCount`, `DeliveredCount`, `SkippedCount`, `FailedCount`, `CancelledCount` | Frozen recipient count and outcome counters, recounted from `signal_deliveries` by the delivery jobs and by cancel and retry. |
 | `RecipientsJson`, `RecipientsTruncated` | Recipients per workflow family, at most 50, and whether more families were reached. |
 | `ThrownByKind`, `ThrownBy`, `ThrownByRolesJson`, `ThrownByClaimsJson` | `user` or `client`, the actor identity or client ID, the user's roles, and the claims `WorkflowAudit:AllowedClaims` selects; null claims for a client. |
-| `IdempotencyKey`, `RequestHash` | Optional thrower-scoped key, with `C` collation, and a SHA-256 hash of the name, scope, and canonical payload that decides whether a repeated key is the same request. |
+| `IdempotencyKey`, `RequestHash` | Optional thrower-scoped key, with `C` collation, and a SHA-256 hash of the name, scope, and canonical payload that decides whether a repeated key is the same request. A family or all-workflows scope hashes as it did before business-key and instance scopes existed, so stored keys still replay; a business-key or instance scope adds a line with the key, prefixed by its length, or the instance ID. |
 | `CancelledBy`, `CancellationReason`, `CancelledAt` | Cancellation attribution. |
 | `CreatedAt`, `UpdatedAt` | Throw time and last counter or status change. `UpdatedAt` is the fence of a retry. |
 
@@ -1304,7 +1306,7 @@ One thrown signal. Its recipients are frozen in the throw's transaction; a broad
 - **Referenced by:** [`signal_deliveries`](#signal_deliveries).`BroadcastId`, [`signal_broadcast_jobs`](#signal_broadcast_jobs).`BroadcastId`
 - **Unique:** (`ThrownByKind`, `ThrownBy`, `IdempotencyKey`) where `IdempotencyKey IS NOT NULL`
 - **Indexes:** (`Status`, `UpdatedAt`, `Id`); (`SignalName`, `CreatedAt`, `Id`); (`ThrownByKind`, `ThrownBy`, `CreatedAt`, `Id`), for a client's own list
-- **Checks:** `CK_signal_broadcasts_status`; `_counts` (non-negative counters whose sum is at most `TotalDeliveryCount`, which is at most 100,000); `_payload` (null, or a JSON object of at most 262,144 bytes as `octet_length("PayloadJson"::text)` measures it); `_thrower` (`user` or `client`); `_terminal_time`
+- **Checks:** `CK_signal_broadcasts_status`; `_counts` (non-negative counters whose sum is at most `TotalDeliveryCount`, which is at most 100,000); `_payload` (null, or a JSON object of at most 262,144 bytes as `octet_length("PayloadJson"::text)` measures it); `_thrower` (`user` or `client`); `_terminal_time`; `_scope` (`BusinessKey` and `InstanceId` not both set, `WorkflowKey` set when either is, a nonempty `BusinessKey`, and a positive `InstanceId`), added by `AddSignalBroadcastScope`
 
 ### `signal_deliveries`
 

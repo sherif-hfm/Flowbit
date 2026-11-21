@@ -350,7 +350,7 @@ Two limits bound signal broadcasts; the [Signals.RequiredRole](#signalsrequiredr
 - **Seed:** `10000` in `AddSignalEvents` when missing.
 - **Takes effect:** the next throw.
 
-The most waiting signal events one broadcast may reach. A throw freezes its recipients in one statement; when more active subscriptions match than this limit, it returns `400` and stores nothing, rather than reaching only some of them. Narrow the throw to one workflow family, or raise the limit. A throw inserts all its recipients in one statement, so the limit also bounds the work of one request.
+The most waiting signal events one broadcast may reach. A throw freezes its recipients in one statement; when more active subscriptions match than this limit, it returns `400` and stores nothing, rather than reaching only some of them. Narrow the throw's scope (one workflow family, one business key, or one instance), or raise the limit. A throw inserts all its recipients in one statement, so the limit also bounds the work of one request.
 
 ### Signals.MaxOpenBroadcasts
 
@@ -359,7 +359,7 @@ The most waiting signal events one broadcast may reach. A throw freezes its reci
 - **Seed:** `20` in `AddSignalEvents` when missing.
 - **Takes effect:** the next throw.
 
-How many broadcasts may be delivering at once. While this many or more are `delivering`, a throw returns `409`. The count is read without a lock, so concurrent throws can pass the limit by a few. A broadcast stays `delivering` while no Worker runs, so a long Worker outage can reach the limit; cancel broadcasts that are no longer wanted. Implementation: [setting rules](../Flowbit/src/Flowbit.Service/Models/SignalModels.cs) and [throw service](../Flowbit/src/Flowbit.Service/Services/SignalBroadcastService.cs).
+How many broadcasts may be delivering at once. While this many or more are `delivering`, a throw returns `409`. The count is read without a lock, so concurrent throws can pass the limit by a few. A broadcast stays `delivering` while no Worker runs, so a long Worker outage can reach the limit; cancel broadcasts that are no longer wanted. A broadcast without recipients is `completed` at once and never counts. An integration that throws one narrow signal per case, by [business key or instance](developer-guide.md#limit-a-signal-to-one-case), keeps one broadcast open for each case until the Worker delivers it: raise the limit to its peak number of throws in flight, and repeat a throw that returns `409` with its idempotency key. Implementation: [setting rules](../Flowbit/src/Flowbit.Service/Models/SignalModels.cs) and [throw service](../Flowbit/src/Flowbit.Service/Services/SignalBroadcastService.cs).
 
 ## Task settings
 

@@ -77,10 +77,17 @@ public sealed class SignalBroadcastRepository(AppDbContext dbContext) : ISignalB
         NewSignalBroadcastRecord broadcast,
         CancellationToken cancellationToken)
     {
+        if (broadcast.Scope.Kind == SignalBroadcastScopeKind.Instance && broadcast.Scope.WorkflowKey is null)
+        {
+            throw new InvalidOperationException("An instance-scoped broadcast records its instance's family.");
+        }
+
         var entity = new SignalBroadcastEntity
         {
             SignalName = broadcast.SignalName,
-            WorkflowKey = broadcast.WorkflowKey,
+            WorkflowKey = broadcast.Scope.WorkflowKey,
+            BusinessKey = broadcast.Scope.BusinessKey,
+            InstanceId = broadcast.Scope.InstanceId,
             PayloadJson = broadcast.PayloadJson,
             Status = SignalBroadcastStatuses.Delivering,
             RecipientsJson = "[]",
@@ -102,15 +109,18 @@ public sealed class SignalBroadcastRepository(AppDbContext dbContext) : ISignalB
     public Task<int> FreezeDeliveriesAsync(
         long broadcastId,
         string signalName,
-        string? workflowKey,
+        SignalBroadcastScope scope,
         int limit,
         CancellationToken cancellationToken)
     {
         var take = limit + 1;
-        // One statement, so the recipients are exactly the subscriptions that are
-        // committed and active in its snapshot.
-        return workflowKey is null
-            ? dbContext.Database.ExecuteSqlInterpolatedAsync(
+        // One literal statement per scope, so each keeps a stable plan. Each is one
+        // statement without a locking clause: the recipients are exactly the
+        // subscriptions committed and active in its snapshot, and no transaction that
+        // holds a recipient's instance or token delays it.
+        return scope.Kind switch
+        {
+            SignalBroadcastScopeKind.AllWorkflows => dbContext.Database.ExecuteSqlInterpolatedAsync(
                 $"""
                 INSERT INTO flowbit.signal_deliveries
                     ("BroadcastId", "SubscriptionId", "InstanceId", "WorkflowDefinitionId", "WorkflowKey",
@@ -125,8 +135,8 @@ public sealed class SignalBroadcastRepository(AppDbContext dbContext) : ISignalB
                 ORDER BY s."Id"
                 LIMIT {take}
                 """,
-                cancellationToken)
-            : dbContext.Database.ExecuteSqlInterpolatedAsync(
+                cancellationToken),
+            SignalBroadcastScopeKind.Family => dbContext.Database.ExecuteSqlInterpolatedAsync(
                 $"""
                 INSERT INTO flowbit.signal_deliveries
                     ("BroadcastId", "SubscriptionId", "InstanceId", "WorkflowDefinitionId", "WorkflowKey",
@@ -138,12 +148,60 @@ public sealed class SignalBroadcastRepository(AppDbContext dbContext) : ISignalB
                 FROM flowbit.signal_subscriptions s
                 WHERE s."Status" = 'active'
                   AND s."SignalName" = {signalName}
-                  AND s."WorkflowKey" = {workflowKey}
+                  AND s."WorkflowKey" = {scope.WorkflowKey}
                 ORDER BY s."Id"
                 LIMIT {take}
                 """,
-                cancellationToken);
+                cancellationToken),
+            // Starts from the (WorkflowKey, BusinessKey, Status) index of the instances,
+            // which returns the one running owner and any finished instances with the
+            // key, and probes each one's active subscriptions. A subscription is active
+            // only while its instance runs, so the instance's status needs no filter.
+            SignalBroadcastScopeKind.BusinessKey => dbContext.Database.ExecuteSqlInterpolatedAsync(
+                $"""
+                INSERT INTO flowbit.signal_deliveries
+                    ("BroadcastId", "SubscriptionId", "InstanceId", "WorkflowDefinitionId", "WorkflowKey",
+                     "TokenId", "ActivationId", "SignalNodeId", "AttachedToNodeId", "CancelActivity",
+                     "Status", "AttemptCount", "CreatedAt", "UpdatedAt")
+                SELECT {broadcastId}, s."Id", s."InstanceId", s."WorkflowDefinitionId", s."WorkflowKey",
+                       s."TokenId", s."ActivationId", s."SignalNodeId", s."AttachedToNodeId", s."CancelActivity",
+                       'pending', 0, now(), now()
+                FROM flowbit.workflow_instances w
+                JOIN flowbit.signal_subscriptions s ON s."InstanceId" = w."Id"
+                WHERE w."WorkflowKey" = {scope.WorkflowKey}
+                  AND w."BusinessKey" = {scope.BusinessKey}
+                  AND s."Status" = 'active'
+                  AND s."SignalName" = {signalName}
+                ORDER BY s."Id"
+                LIMIT {take}
+                """,
+                cancellationToken),
+            SignalBroadcastScopeKind.Instance => dbContext.Database.ExecuteSqlInterpolatedAsync(
+                $"""
+                INSERT INTO flowbit.signal_deliveries
+                    ("BroadcastId", "SubscriptionId", "InstanceId", "WorkflowDefinitionId", "WorkflowKey",
+                     "TokenId", "ActivationId", "SignalNodeId", "AttachedToNodeId", "CancelActivity",
+                     "Status", "AttemptCount", "CreatedAt", "UpdatedAt")
+                SELECT {broadcastId}, s."Id", s."InstanceId", s."WorkflowDefinitionId", s."WorkflowKey",
+                       s."TokenId", s."ActivationId", s."SignalNodeId", s."AttachedToNodeId", s."CancelActivity",
+                       'pending', 0, now(), now()
+                FROM flowbit.signal_subscriptions s
+                WHERE s."Status" = 'active'
+                  AND s."SignalName" = {signalName}
+                  AND s."InstanceId" = {scope.InstanceId!.Value}
+                ORDER BY s."Id"
+                LIMIT {take}
+                """,
+                cancellationToken),
+            _ => throw new InvalidOperationException($"Unknown signal broadcast scope {scope.Kind}.")
+        };
     }
+
+    public Task<string?> FindInstanceWorkflowKeyAsync(long instanceId, CancellationToken cancellationToken) =>
+        dbContext.WorkflowInstances.AsNoTracking()
+            .Where(instance => instance.Id == instanceId)
+            .Select(instance => instance.WorkflowKey)
+            .SingleOrDefaultAsync(cancellationToken);
 
     public async Task<IReadOnlyList<SignalRecipientDefinitionRecord>> ListRecipientDefinitionsAsync(
         long broadcastId,
@@ -562,6 +620,8 @@ public sealed class SignalBroadcastRepository(AppDbContext dbContext) : ISignalB
             entity.Id,
             entity.SignalName,
             entity.WorkflowKey,
+            entity.BusinessKey,
+            entity.InstanceId,
             entity.PayloadJson,
             entity.Status,
             entity.TotalDeliveryCount,

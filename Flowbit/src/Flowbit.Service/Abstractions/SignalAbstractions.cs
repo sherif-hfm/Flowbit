@@ -44,10 +44,13 @@ public interface ISignalSubscriptionRepository
 
     Task<int> CancelByInstanceAsync(long instanceId, CancellationToken cancellationToken);
 
-    /// <summary>Counts of active subscriptions by signal name and workflow family.</summary>
+    /// <summary>
+    /// Counts of active subscriptions by signal name and workflow family, optionally for
+    /// one family, the instance with one business key in it, or one instance. Takes no lock.
+    /// </summary>
     Task<IReadOnlyList<SignalSubscriptionCountRecord>> SummarizeActiveAsync(
         string? signalName,
-        string? workflowKey,
+        SignalSubscriptionFilter filter,
         int limit,
         CancellationToken cancellationToken);
 }
@@ -78,16 +81,21 @@ public interface ISignalBroadcastRepository
         CancellationToken cancellationToken);
 
     /// <summary>
-    /// Inserts a delivery for every active subscription of the name, and of the family
-    /// when one is given, in one statement, reading at most <paramref name="limit"/>
-    /// plus one. Returns the number inserted.
+    /// Inserts a delivery for every active subscription of the name within the scope, in
+    /// one statement that takes no lock, reading at most <paramref name="limit"/> plus one.
+    /// Returns the number inserted.
     /// </summary>
     Task<int> FreezeDeliveriesAsync(
         long broadcastId,
         string signalName,
-        string? workflowKey,
+        SignalBroadcastScope scope,
         int limit,
         CancellationToken cancellationToken);
+
+    /// <summary>
+    /// The workflow key of an instance, read without a lock; null when no instance has the ID.
+    /// </summary>
+    Task<string?> FindInstanceWorkflowKeyAsync(long instanceId, CancellationToken cancellationToken);
 
     /// <summary>The frozen deliveries grouped by workflow definition.</summary>
     Task<IReadOnlyList<SignalRecipientDefinitionRecord>> ListRecipientDefinitionsAsync(
@@ -268,6 +276,8 @@ public interface ISignalBroadcastService
     Task<SignalSubscriptionSummaryDto> SummarizeSubscriptionsAsync(
         string? name,
         string? workflowKey,
+        string? businessKey,
+        long? instanceId,
         CancellationToken cancellationToken);
 
     /// <summary>Active signal waits of one instance, for instance detail.</summary>

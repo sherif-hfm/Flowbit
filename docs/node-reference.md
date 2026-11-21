@@ -773,7 +773,7 @@ Declare persisted instance variable `approved`. Timer, conditional, and signal b
 
 ### intermediateSignalCatchEvent
 
-Persists a wait for a named signal. A signal is thrown through `POST /api/signal-broadcasts`, never by a workflow in this release, and reaches every signal catch that is waiting for its name, in one workflow family or in all of them, when it is thrown. The Worker then delivers it to each waiting token: the catch maps the broadcast's JSON payload into variables and continues through its outgoing flow. Use it when many instances must react to one announcement, such as a changed policy; use an [intermediate message catch](#intermediatemessagecatchevent) for one instance or for something that must not be missed.
+Persists a wait for a named signal. A signal is thrown through `POST /api/signal-broadcasts`, never by a workflow in this release, and reaches every signal catch that is waiting for its name, in one workflow family or in all of them, when it is thrown. The Worker then delivers it to each waiting token: the catch maps the broadcast's JSON payload into variables and continues through its outgoing flow. Use it when many instances must react to one announcement, such as a changed policy; use an [intermediate message catch](#intermediatemessagecatchevent) for something that must not be missed. A throw can still be limited to the instance with one business key, or to one instance ([signal scope](developer-guide.md#limit-a-signal-to-one-case)).
 
 **Topology:** at least one incoming flow; exactly one unconditional outgoing flow. **Worker:** required, and the definition publishes only when durable publication is enabled.
 
@@ -1135,7 +1135,7 @@ The catch-delivery key is trimmed, nonblank, case-sensitive, and at most 300 Uni
 | `variable` | string | Required | Exact name of a required scalar `string` start input, or required scalar-string message-start mapping. It must have no `defaultValue`; a message-start mapping must have an explicit payload `path`. It must differ from the idempotency variable. |
 | `uniqueness` | string enum | Required; no implicit default | `active` reserves the case key while its instance is active; completion, cancellation, or fault releases it. `all` reserves it permanently. Recognized casing is canonicalized. |
 
-Input keys are trimmed, nonblank, case-sensitive, and limited to 300 Unicode scalar values. The reservation is workflow-family scoped, across versions and external entry points. Duplicate business identity returns a conflict. Enabling a family's policy also constrains starts through older unkeyed versions; see [business identity and retries](developer-guide.md#separate-retries-from-business-identity).
+Input keys are trimmed, nonblank, case-sensitive, and limited to 300 Unicode scalar values. The reservation is workflow-family scoped, across versions and external entry points. Duplicate business identity returns a conflict. Enabling a family's policy also constrains starts through older unkeyed versions; see [business identity and retries](developer-guide.md#separate-retries-from-business-identity). A signal throw can be limited to the family's instance with one business key ([signal scope](developer-guide.md#limit-a-signal-to-one-case)); instances started before the family enabled business keys have none and are never reached that way.
 
 ## Start idempotency configuration
 

@@ -1,4 +1,193 @@
+using Flowbit.Shared.Models;
+
 namespace Flowbit.Service.Models;
+
+/// <summary>The four ways a throw can name its recipients.</summary>
+public enum SignalBroadcastScopeKind
+{
+    AllWorkflows,
+    Family,
+    BusinessKey,
+    Instance
+}
+
+/// <summary>
+/// Whom a broadcast addresses: every family (no field set), one family
+/// (<see cref="WorkflowKey"/>), the instance with one business key in a family
+/// (<see cref="WorkflowKey"/> and <see cref="BusinessKey"/>), or one instance
+/// (<see cref="InstanceId"/>). An instance scope learns its instance's family when the
+/// throw resolves it (<see cref="WithWorkflowKey"/>); the family is recorded on the
+/// broadcast but never selects recipients. <see cref="BusinessKey"/> is always the
+/// trimmed key that <see cref="BusinessKeyRules"/> accepted.
+/// </summary>
+public sealed record SignalBroadcastScope
+{
+    private SignalBroadcastScope(string? workflowKey, string? businessKey, long? instanceId)
+    {
+        WorkflowKey = workflowKey;
+        BusinessKey = businessKey;
+        InstanceId = instanceId;
+    }
+
+    public string? WorkflowKey { get; }
+
+    public string? BusinessKey { get; }
+
+    public long? InstanceId { get; }
+
+    public SignalBroadcastScopeKind Kind =>
+        InstanceId is not null ? SignalBroadcastScopeKind.Instance
+        : BusinessKey is not null ? SignalBroadcastScopeKind.BusinessKey
+        : WorkflowKey is null ? SignalBroadcastScopeKind.AllWorkflows
+        : SignalBroadcastScopeKind.Family;
+
+    public static SignalBroadcastScope AllWorkflows { get; } = new(null, null, null);
+
+    public static SignalBroadcastScope Family(string workflowKey) =>
+        new(Required(workflowKey, nameof(workflowKey)), null, null);
+
+    /// <summary>A business-key scope; <paramref name="businessKey"/> must already be normalized.</summary>
+    public static SignalBroadcastScope ForBusinessKey(string workflowKey, string businessKey) =>
+        new(Required(workflowKey, nameof(workflowKey)), Required(businessKey, nameof(businessKey)), null);
+
+    public static SignalBroadcastScope ForInstance(long instanceId) =>
+        instanceId > 0
+            ? new(null, null, instanceId)
+            : throw new ArgumentOutOfRangeException(nameof(instanceId), instanceId, "An instance ID is positive.");
+
+    /// <summary>The same instance scope with its instance's family, read when the signal is thrown.</summary>
+    public SignalBroadcastScope WithWorkflowKey(string workflowKey) =>
+        Kind == SignalBroadcastScopeKind.Instance
+            ? new(Required(workflowKey, nameof(workflowKey)), null, InstanceId)
+            : throw new InvalidOperationException("Only an instance scope learns its family after it is built.");
+
+    /// <summary>
+    /// Builds the scope of a throw request, or returns the problem with its fields, in the
+    /// order the API reference documents. <paramref name="allWorkflows"/> false counts as
+    /// absent.
+    /// </summary>
+    public static SignalBroadcastScope? FromRequest(
+        string? workflowKey,
+        bool allWorkflows,
+        string? businessKey,
+        long? instanceId,
+        out string? problem)
+    {
+        if (workflowKey is not null && string.IsNullOrWhiteSpace(workflowKey))
+        {
+            problem = "workflowKey cannot be blank; omit it and set allWorkflows to true to reach every workflow.";
+            return null;
+        }
+
+        string? key = null;
+        if (businessKey is not null)
+        {
+            switch (BusinessKeyRules.Normalize(businessKey, out var normalized))
+            {
+                case BusinessKeyProblem.Blank:
+                    problem = "businessKey cannot be blank; omit it to reach every instance of the workflow family.";
+                    return null;
+                case BusinessKeyProblem.TooLong:
+                    problem = TooLongMessage;
+                    return null;
+            }
+            key = normalized;
+        }
+
+        if (instanceId is < 1)
+        {
+            problem = PositiveInstanceMessage;
+            return null;
+        }
+
+        if (instanceId is long id)
+        {
+            if (workflowKey is not null || allWorkflows || key is not null)
+            {
+                problem = "instanceId states the whole scope; do not combine it with workflowKey, allWorkflows, or businessKey.";
+                return null;
+            }
+
+            problem = null;
+            return ForInstance(id);
+        }
+
+        if (key is not null && workflowKey is null)
+        {
+            problem = BusinessKeyNeedsFamilyMessage;
+            return null;
+        }
+
+        if ((workflowKey is null) == !allWorkflows)
+        {
+            problem = "A signal must name one workflowKey, set allWorkflows to true, or name one instanceId.";
+            return null;
+        }
+
+        problem = null;
+        return workflowKey is null ? AllWorkflows
+            : key is null ? Family(workflowKey)
+            : ForBusinessKey(workflowKey, key);
+    }
+
+    /// <summary>
+    /// Reads the filters of the subscription summary. A blank value means no filter, as
+    /// for the summary's other parameters, and the summary has no allWorkflows.
+    /// </summary>
+    public static SignalSubscriptionFilter? SummaryFilter(
+        string? workflowKey,
+        string? businessKey,
+        long? instanceId,
+        out string? problem)
+    {
+        var family = string.IsNullOrWhiteSpace(workflowKey) ? null : workflowKey;
+        string? key = null;
+        if (!string.IsNullOrWhiteSpace(businessKey))
+        {
+            if (BusinessKeyRules.Normalize(businessKey, out var normalized) == BusinessKeyProblem.TooLong)
+            {
+                problem = TooLongMessage;
+                return null;
+            }
+            key = normalized;
+        }
+
+        if (instanceId is < 1)
+        {
+            problem = PositiveInstanceMessage;
+            return null;
+        }
+
+        if (instanceId is not null && (family is not null || key is not null))
+        {
+            problem = "instanceId cannot be combined with workflowKey or businessKey.";
+            return null;
+        }
+
+        if (key is not null && family is null)
+        {
+            problem = BusinessKeyNeedsFamilyMessage;
+            return null;
+        }
+
+        problem = null;
+        return new SignalSubscriptionFilter(family, key, instanceId);
+    }
+
+    private const string TooLongMessage = "businessKey can have at most 300 characters.";
+    private const string PositiveInstanceMessage = "instanceId must be a positive whole number.";
+    private const string BusinessKeyNeedsFamilyMessage =
+        "businessKey needs a workflowKey: a business key identifies an instance only within one workflow family.";
+
+    private static string Required(string value, string name) =>
+        string.IsNullOrWhiteSpace(value) ? throw new ArgumentException("A value is required.", name) : value;
+}
+
+/// <summary>
+/// The optional filters of the subscription summary: a family, the instance with a
+/// normalized business key in that family, or one instance.
+/// </summary>
+public sealed record SignalSubscriptionFilter(string? WorkflowKey, string? BusinessKey, long? InstanceId);
 
 public static class SignalSubscriptionStatuses
 {
@@ -84,7 +273,7 @@ public sealed record SignalSubscriptionCountRecord(string SignalName, string Wor
 
 public sealed record NewSignalBroadcastRecord(
     string SignalName,
-    string? WorkflowKey,
+    SignalBroadcastScope Scope,
     string? PayloadJson,
     string ThrownByKind,
     string ThrownBy,
@@ -98,6 +287,8 @@ public sealed record SignalBroadcastRecord(
     long Id,
     string SignalName,
     string? WorkflowKey,
+    string? BusinessKey,
+    long? InstanceId,
     string? PayloadJson,
     string Status,
     int TotalDeliveryCount,

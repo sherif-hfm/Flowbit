@@ -26,7 +26,7 @@ public static class SignalEndpoints
             .Accepts<ThrowSignalRequest>("application/json")
             .WithMetadata(new RequestSizeLimitAttribute(MaxThrowBodyBytes))
             .WithSummary("Throw a signal")
-            .WithDescription("Freezes the signal subscriptions that are active now as the recipients and queues their delivery. Name one workflowKey or set allWorkflows to true. A repeated idempotencyKey returns the first broadcast with 200.")
+            .WithDescription("Freezes the signal subscriptions that are active now as the recipients and queues their delivery. State one scope: a workflowKey, a workflowKey with a businessKey, allWorkflows set to true, or an instanceId alone. A repeated idempotencyKey returns the first broadcast with 200.")
             .Produces<SignalBroadcastDetailDto>(StatusCodes.Status202Accepted)
             .Produces<SignalBroadcastDetailDto>()
             .Produces(StatusCodes.Status400BadRequest)
@@ -93,8 +93,9 @@ public static class SignalEndpoints
             .WithTags("Signals")
             .RequireAuthorization(SignalAuthorizationPolicies.Summary)
             .WithSummary("Count active signal subscriptions by signal name and workflow family")
-            .WithDescription("At most 200 rows, with truncated set when more exist. Users only.")
+            .WithDescription("Optionally for one family, the instance with one businessKey in a family, or one instanceId. At most 200 rows, with truncated set when more exist. Users only.")
             .Produces<SignalSubscriptionSummaryDto>()
+            .Produces(StatusCodes.Status400BadRequest)
             .Produces(StatusCodes.Status401Unauthorized)
             .Produces(StatusCodes.Status403Forbidden);
 
@@ -205,6 +206,9 @@ public static class SignalEndpoints
         [FromServices] ISignalBroadcastService service,
         [FromQuery] string? name,
         [FromQuery] string? workflowKey,
+        [FromQuery] string? businessKey,
+        [FromQuery] long? instanceId,
         CancellationToken cancellationToken) =>
-        Results.Ok(await service.SummarizeSubscriptionsAsync(name, workflowKey, cancellationToken));
+        Results.Ok(await service.SummarizeSubscriptionsAsync(
+            name, workflowKey, businessKey, instanceId, cancellationToken));
 }

@@ -57,6 +57,7 @@ Verified on 2026-11-17: not implemented.
 ## Builds on
 
 - `ThrowAsync`, `FreezeDeliveriesAsync`, and `EnqueueDeliveryJobsAsync`, which already freeze recipients in one statement without a runtime lock.
+- `SignalBroadcastScope` from [EVENT-04A](event-04a-signal-scope-by-business-key-or-instance.md): the four scopes (a family, the instance with one business key in a family, one instance, or all families) as a record that the freeze statement and the request hash take, so a throw event can build its scope from the throwing instance, for example its own business key, without the HTTP request type. EVENT-04A kept `Signals.MaxOpenBroadcasts` as it was; a throw from a workflow still has to decide what happens when that limit refuses it.
 - The pass-through loop `ResolvePassThroughAsync` and the link throw event, the nearest existing throw event in the model, the validators, and the editor.
 - The call activity's whole-variable input mappings (`CallActivityRules`) as a model for a payload built from variables.
 - [SignalEventRules.cs](../../Flowbit/src/Flowbit.Shared/Models/SignalEventRules.cs), `HasSignalEvents`, and `SignalEventFixtures`, which keep the API and the editor on the same rules.

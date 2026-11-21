@@ -390,17 +390,17 @@ Message correlation is instance-scoped; it is not a cross-instance BPMN message 
 
 ## Broadcast signals
 
-Use a signal when many running instances must react to one announcement, such as a changed policy, a product recall, or a closed fiscal year, and the sender does not know which instances are waiting. The workflow models the wait as an [`intermediateSignalCatchEvent`](node-reference.md#intermediatesignalcatchevent) with a literal `signal.name`, or reacts while other work is in progress with a [`signalBoundaryEvent`](node-reference.md#signalboundaryevent) on that work; your application throws the signal over HTTP. Use a message instead to address one instance, or for an event that must not be missed.
+Use a signal when many running instances must react to one announcement, such as a changed policy, a product recall, or a closed fiscal year, and the sender does not know which instances are waiting. The workflow models the wait as an [`intermediateSignalCatchEvent`](node-reference.md#intermediatesignalcatchevent) with a literal `signal.name`, or reacts while other work is in progress with a [`signalBoundaryEvent`](node-reference.md#signalboundaryevent) on that work; your application throws the signal over HTTP. Use a message instead for an event that must not be missed, or when the sender must learn that nothing was waiting.
 
 | | Message catch | Signal catch |
 | --- | --- | --- |
-| Addressed by | Instance ID, plus the catch's external ID when needed. | Signal name, within one workflow family or all of them. |
+| Addressed by | Instance ID, plus the catch's external ID when needed. | Signal name, within one workflow family, the instance with one business key in a family, one instance, or all families. |
 | Sender authenticates with | The node's configured client credentials and correlation header. | A JWT with a role from `Signals.RequiredRole`, or a managed API client with `signals.throw`. |
 | When no wait exists yet | The delivery is rejected, and the sender can deliver again later. | Nothing is stored: a wait that starts later never receives an earlier signal. |
 | Applied | In the request's transaction. | By the Worker, one recipient per transaction, after the request returns. |
 | Continues as | The message client ID. | The fixed system actor `signal`. |
 
-Give related workflows one naming convention, such as `claims.policy-changed`. Names are lowercase and compared exactly, and a throw names one `workflowKey` or sets `allWorkflows: true`, so an unrelated family that happens to use the same name is reached only when you ask for all of them.
+Give related workflows one naming convention, such as `claims.policy-changed`. Names are lowercase and compared exactly, and a throw always states its scope (one `workflowKey`, a `workflowKey` with a `businessKey`, one `instanceId`, or `allWorkflows: true`), so an unrelated family that happens to use the same name is reached only when you ask for all of them.
 
 ### Throw a signal
 
@@ -423,20 +423,56 @@ A managed client sends `X-Client-Id` and `X-Client-Secret` in place of `Authoriz
 
 Choose one `idempotencyKey` per announcement and persist it before sending. After a timeout or a lost response, send the same request with the same key: it returns the first broadcast with `200` instead of reaching the waits twice. The same key with a different name, scope, or payload returns `409`. Keys are scoped to the thrower.
 
+### Limit a signal to one case
+
+A signal can also address a single case. Send the family's `workflowKey` with the case's `businessKey`, the domain identifier the instance was started with, to reach the instance that owns that key:
+
+```http
+POST /api/signal-broadcasts HTTP/1.1
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{
+  "name": "warehouse.product-recall",
+  "workflowKey": "example-signal-boundaries-recall",
+  "businessKey": "ORD-2001",
+  "payload": { "reason": "Supplier recall" }
+}
+```
+
+Or send an `instanceId` alone to reach one instance whose ID you stored:
+
+```http
+POST /api/signal-broadcasts HTTP/1.1
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{
+  "name": "warehouse.product-recall",
+  "instanceId": 42,
+  "payload": { "reason": "Supplier recall" }
+}
+```
+
+- **One case, several waits.** A family has at most one running instance per [business key](#separate-retries-from-business-identity), so a business-key throw reaches at most one instance. That instance can still receive several deliveries: one for each parallel catch and for each armed boundary with the name.
+- **Exact keys.** The key is trimmed, then compared exactly and case-sensitively. The family must have enabled business keys, and instances started before it did have no key, so they never match. A key in another family is never reached: name each family in its own throw.
+- **Still a signal.** Compared with a message, a narrow signal needs no credentials on the node, reaches boundaries on work in progress as well as catches, and is delivered by the Worker. It also reports no error when nothing waits: a throw to a key whose instance has finished, or to an instance that is not waiting for the name, completes with no deliveries. Check `totalDeliveryCount`, or use a message when the sender must know.
+- **Many narrow throws.** Each broadcast counts against `Signals.MaxOpenBroadcasts` until its deliveries finish, which takes seconds while a Worker runs; one without recipients never counts. An integration that throws one signal per order should raise the [setting](engine-settings.md#signalsmaxopenbroadcasts) to its peak and repeat a throw that returns `409`, with the same `idempotencyKey`.
+
 ### Which waits receive it
 
 The throw freezes its recipients in one statement: the signal waits that are committed and active at that moment. It does not wait for any instance's transaction, and nothing is added later, however long delivery takes. A signal therefore reaches neither an instance that arrives at its catch a moment later nor a second catch of the same name that the same instance reaches after the first one received it.
 
 Delivery happens when the Worker runs each recipient, not at the moment of the throw. A wait that ended in between, for example because a timer boundary fired or the instance was cancelled, is skipped with `subscription_ended`. While no Worker runs, deliveries wait and act when it returns; nothing expires. If a signal is no longer wanted, cancel the broadcast: pending deliveries become `cancelled` and the waits stay subscribed.
 
-A throw that would reach more than `Signals.MaxSubscriptionsPerBroadcast` waits is rejected with `400` rather than truncated; narrow it to one family or raise the [setting](engine-settings.md#signal-settings). When `Signals.MaxOpenBroadcasts` broadcasts are still delivering, a throw returns `409`; wait for one to finish or cancel one.
+A throw that would reach more than `Signals.MaxSubscriptionsPerBroadcast` waits is rejected with `400` rather than truncated; narrow its scope or raise the [setting](engine-settings.md#signal-settings). When `Signals.MaxOpenBroadcasts` broadcasts are still delivering, a throw returns `409`; wait for one to finish or cancel one.
 
 ### Read progress
 
 - Poll `GET /api/signal-broadcasts/{id}` until `status` leaves `delivering`. It ends `completed`, or `completedWithIssues` when any delivery failed.
 - Page through `GET /api/signal-broadcasts/{id}/deliveries`, filtered by `status` or `instanceId`, for each recipient's `resultCode`. A managed client sees only its own broadcasts and no `resultDescription`.
 - Instance detail's `signalSubscriptions` lists the signals an instance is waiting for now, armed boundaries included, and its history records each delivered signal as a `signalReceived` row naming the broadcast and its thrower.
-- Before throwing, a user can count the current waits per name and family with `GET /api/signal-subscriptions/summary`. The count can change before the throw runs.
+- Before throwing, a user can count the current waits per name and family with `GET /api/signal-subscriptions/summary`, optionally for one `workflowKey` with a `businessKey`, or for one `instanceId`. The count can change before the throw runs.
 
 ### Handle failed deliveries
 
@@ -474,7 +510,7 @@ Changing only a boundary's mappings is allowed, unless its host has an open job:
 | Business identity | Entry-node `businessKey` with a required string `variable` and `uniqueness: "active"` or `"all"` | Prevents duplicate domain cases for the family while active, or permanently. A new transport request can still conflict with an existing business case. |
 | Catch delivery idempotency | `message.deliveryIdempotency` and optional `deliveryIdempotencyHeaderName` | Reserves a successfully committed delivery key for that instance; duplicates are `409`. It is independent of message correlation. |
 
-Keys are trimmed, bounded to 300 Unicode characters, and case-sensitive. A start's transport header defaults to `Idempotency-Key` and also accepts the documented `X-Idempotency-Key` alias for that standard name; conflicting values are rejected. The header-derived start variable must not also be submitted in the body. Sending an arbitrary idempotency header to an unconfigured operation does not make that operation idempotent.
+Keys are trimmed, bounded to 300 Unicode characters, and case-sensitive. A business key also lets a [signal reach one case](#limit-a-signal-to-one-case) without its instance ID. A start's transport header defaults to `Idempotency-Key` and also accepts the documented `X-Idempotency-Key` alias for that standard name; conflicting values are rejected. The header-derived start variable must not also be submitted in the body. Sending an arbitrary idempotency header to an unconfigured operation does not make that operation idempotent.
 
 For a concrete keyed start, import and publish the [business-key example](../examples/start-events/README.md), choose its default, and use a token with `ActiveCaseStarter`:
 

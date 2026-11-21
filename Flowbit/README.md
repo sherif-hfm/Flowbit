@@ -914,19 +914,33 @@ cancellation, which has no definition at hand and runs the one statement anyway;
 because an open subscription blocks a change to a definition without its signal
 event.
 
-**Throw.** `SignalBroadcastService.ThrowAsync` checks the name and the scope
-(exactly one of `workflowKey` and `allWorkflows`), then, in one transaction, takes
-a transaction advisory lock on the caller's idempotency key when one is given,
+**Throw.** `SignalBroadcastService.ThrowAsync` checks the name and builds a
+`SignalBroadcastScope` from the request: one family (`workflowKey`), the
+instance with one business key in a family (`workflowKey` and `businessKey`),
+one instance (`instanceId` alone), or every family (`allWorkflows`). It hashes
+the request before reading anything, so a repeated idempotency key replays
+whatever happened to the family since; a family or all-workflows request hashes
+exactly as before the narrow scopes existed. It then checks the scope without a
+lock: the family exists, a business key's family has enabled business keys, and
+an instance scope reads its instance's family, which the broadcast records in
+`WorkflowKey`. `BusinessKeyRules` (`Flowbit.Shared`) is the one normalization of
+a business key, shared with starts. In one transaction the throw takes a
+transaction advisory lock on the caller's idempotency key when one is given,
 replays or refuses an earlier broadcast with that key, counts unfinished
 broadcasts against `Signals.MaxOpenBroadcasts` without a lock (a soft threshold),
 inserts the broadcast, and freezes the recipients with one
 `INSERT ... SELECT ... LIMIT max + 1` over the active subscriptions of the name
-and optional family. More than `Signals.MaxSubscriptionsPerBroadcast` rows rolls
+in the scope: one literal statement per scope kind. The business-key statement
+starts from the (`WorkflowKey`, `BusinessKey`, `Status`) index of
+`workflow_instances`, the instance statement filters subscriptions by
+`InstanceId`, and neither has a locking clause. `signal_broadcasts.InstanceId`
+has no foreign key, because the check would wait for a transaction holding the
+instance row. More than `Signals.MaxSubscriptionsPerBroadcast` rows rolls
 the throw back. It then stores the counts and the recipients per family and
 enqueues one `signalBroadcastDeliver` job per represented definition, with a
 `signal_broadcast_jobs` link row. It snapshots the thrower (`user` or `client`,
 its identity, roles, and the claims `WorkflowAudit:AllowedClaims` selects) and
-never logs the payload. A client sees, cancels, and retries only its own
+never logs the payload or a business key. A client sees, cancels, and retries only its own
 broadcasts and receives result codes without descriptions.
 
 **Delivery.** `SignalBroadcastJobProcessor` handles one broadcast and one
@@ -1524,12 +1538,14 @@ and in-flight gateway executions are not migrated.
 - `POST /api/instances/{id}/administrative-actions` (immediate audited override)
 - `GET /api/multi-instance-executions/{executionId}/flows`
 - `POST /api/multi-instance-executions/{executionId}/flows/{flowId}`
-- `POST /api/signal-broadcasts` (`202`; `Signals.RequiredRole` or `signals.throw`)
+- `POST /api/signal-broadcasts` (`202`; `Signals.RequiredRole` or `signals.throw`;
+  scope: `workflowKey`, `workflowKey` with `businessKey`, `instanceId`, or `allWorkflows`)
 - `GET /api/signal-broadcasts`, `GET /api/signal-broadcasts/{id}`,
   `GET /api/signal-broadcasts/{id}/deliveries` (a client sees only its own)
 - `POST /api/signal-broadcasts/{id}/cancel`,
   `POST /api/signal-broadcasts/{id}/retry-failed`
-- `GET /api/signal-subscriptions/summary` (users only)
+- `GET /api/signal-subscriptions/summary` (users only; optional `businessKey` with
+  `workflowKey`, or `instanceId`)
 
 ## Terminal instance reactivation
 

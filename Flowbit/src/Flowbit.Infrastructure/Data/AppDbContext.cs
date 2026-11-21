@@ -2449,6 +2449,14 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                     "CK_signal_broadcasts_terminal_time",
                     "(\"Status\" = 'delivering' AND \"CompletedAt\" IS NULL) OR "
                     + "(\"Status\" <> 'delivering' AND \"CompletedAt\" IS NOT NULL)");
+                // A business-key or instance scope also records its family, so a null
+                // WorkflowKey still means every workflow.
+                table.HasCheckConstraint(
+                    "CK_signal_broadcasts_scope",
+                    "(\"BusinessKey\" IS NULL OR \"InstanceId\" IS NULL) "
+                    + "AND ((\"BusinessKey\" IS NULL AND \"InstanceId\" IS NULL) OR \"WorkflowKey\" IS NOT NULL) "
+                    + "AND (\"BusinessKey\" IS NULL OR \"BusinessKey\" <> '') "
+                    + "AND (\"InstanceId\" IS NULL OR \"InstanceId\" > 0)");
             });
             entity.HasKey(e => e.Id);
             entity.Property(e => e.SignalName)
@@ -2456,6 +2464,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 .UseCollation("C")
                 .IsRequired();
             entity.Property(e => e.WorkflowKey).HasMaxLength(300);
+            entity.Property(e => e.BusinessKey)
+                .HasMaxLength(BusinessKeyRules.MaxLength)
+                .UseCollation("C");
             entity.Property(e => e.PayloadJson).HasColumnType("jsonb");
             entity.Property(e => e.Status).HasMaxLength(32).IsRequired();
             entity.Property(e => e.RecipientsJson).HasColumnType("jsonb").IsRequired();

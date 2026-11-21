@@ -10446,15 +10446,13 @@ public sealed partial class WorkflowEngineService(
                 $"Business key variable '{variableName}' must be supplied as an explicit JSON string.");
         }
 
-        var businessKey = supplied.GetString()?.Trim() ?? string.Empty;
-        if (businessKey.Length == 0)
+        switch (BusinessKeyRules.Normalize(supplied.GetString(), out var businessKey))
         {
-            throw new WorkflowDomainException("Business key must not be blank.");
-        }
-
-        if (businessKey.EnumerateRunes().Count() > 300)
-        {
-            throw new WorkflowDomainException("Business key must not exceed 300 characters.");
+            case BusinessKeyProblem.Blank:
+                throw new WorkflowDomainException("Business key must not be blank.");
+            case BusinessKeyProblem.TooLong:
+                throw new WorkflowDomainException(
+                    $"Business key must not exceed {BusinessKeyRules.MaxLength} characters.");
         }
 
         var normalized = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);

@@ -2,15 +2,16 @@
 
 A signal is a broadcast: one throw reaches every signal event that is waiting for
 its name when the throw runs, in every instance of the chosen workflow family or
-of all families. A wait that starts later does not receive it, and nothing is
-stored for later. The Worker delivers each recipient in its own transaction.
+of all families, or only in the instance with one business key or ID. A wait
+that starts later does not receive it, and nothing is stored for later. The
+Worker delivers each recipient in its own transaction.
 See [signals](../../docs/bpmn-support.md#signals) and the
 [node reference](../../docs/node-reference.md#intermediatesignalcatchevent).
 
 | Example | Start values | Actors and actions | Expected result | Runtime requirements |
 | --- | --- | --- | --- | --- |
 | [`01-signal-catch-policy-change.json`](01-signal-catch-policy-change.json) | Supply `claimNumber`, for example `CLM-1001`. | Throw `claims.policy-changed` with a `version` number and an optional `effectiveDate`; then complete **Recalculate under the new policy**. Alternatively let the one-hour timer expire and complete **Review under the current policy**. | The claim waits at **Wait for the new policy**. A delivered signal writes `policyVersion` and `effectiveDate` and continues to the recalculation task. The timer boundary cancels the wait, and its subscription, after an hour. | Published definition, API, and `Flowbit.Worker`. The thrower needs a role from `Signals.RequiredRole` (default `admin`) or a managed API client with the `signals.throw` scope. |
-| [`02-signal-boundaries-recall.json`](02-signal-boundaries-recall.json) | Supply `orderNumber`, for example `ORD-2001`. | Throw `warehouse.price-update` with a `unitPrice` number, as often as you like; complete each **Update the invoice**. Then throw `warehouse.product-recall` with an optional `reason`, or complete **Prepare the shipment** with **Ship**. | A price update adds a branch to **Update the invoice** with `unitPrice` set and leaves the shipment task waiting for the next one. A recall interrupts **Prepare the shipment**, ends both boundary waits, and opens **Stop the shipment** with `recallReason`. Shipping first ends both waits, so later signals reach nothing. | Published definition, API, and `Flowbit.Worker`. The thrower needs a role from `Signals.RequiredRole` (default `admin`) or a managed API client with the `signals.throw` scope. |
+| [`02-signal-boundaries-recall.json`](02-signal-boundaries-recall.json) | Supply `orderNumber`, for example `ORD-2001`. It is the family's business key, so a second running order with the same number is refused. | Throw `warehouse.price-update` with a `unitPrice` number, as often as you like; complete each **Update the invoice**. Then throw `warehouse.product-recall` with an optional `reason`, or complete **Prepare the shipment** with **Ship**. | A price update adds a branch to **Update the invoice** with `unitPrice` set and leaves the shipment task waiting for the next one. A recall interrupts **Prepare the shipment**, ends both boundary waits, and opens **Stop the shipment** with `recallReason`. Shipping first ends both waits, so later signals reach nothing. | Published definition, API, and `Flowbit.Worker`. The thrower needs a role from `Signals.RequiredRole` (default `admin`) or a managed API client with the `signals.throw` scope. |
 
 ## Example 01: throw a policy change
 
@@ -105,6 +106,60 @@ on the Signals page delivers it again after the cause is fixed.
    The delivery ends with result `interrupted`: **Prepare the shipment** is cancelled,
    both waits end, and **Stop the shipment** opens with `recallReason` set. Open invoice
    tasks are separate branches and stay open.
+
+4. Signal one order only. Start a second order, such as `ORD-2002`, and throw
+   `warehouse.price-update` with the first order's business key:
+
+   ```powershell
+   $body = @{
+     name = "warehouse.price-update"
+     workflowKey = "example-signal-boundaries-recall"
+     businessKey = "ORD-2001"
+     payload = @{ unitPrice = 13 }
+   } | ConvertTo-Json
+   Invoke-RestMethod -Method Post -Uri "http://localhost:5017/api/signal-broadcasts" `
+     -Headers @{ Authorization = "Bearer $env:FLOWBIT_TOKEN" } `
+     -ContentType "application/json" -Body $body
+   ```
+
+   ```bash
+   curl -s -X POST "http://localhost:5017/api/signal-broadcasts" \
+     -H "Authorization: Bearer $FLOWBIT_TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{"name":"warehouse.price-update","workflowKey":"example-signal-boundaries-recall","businessKey":"ORD-2001","payload":{"unitPrice":13}}'
+   ```
+
+   The response shows `"businessKey": "ORD-2001"` and one recipient, and only
+   `ORD-2001` gets a new **Update the invoice** task. To address an order by its
+   instance ID instead, send `instanceId` alone, for example for instance 42:
+
+   ```powershell
+   $body = @{
+     name = "warehouse.price-update"
+     instanceId = 42
+     payload = @{ unitPrice = 13 }
+   } | ConvertTo-Json
+   Invoke-RestMethod -Method Post -Uri "http://localhost:5017/api/signal-broadcasts" `
+     -Headers @{ Authorization = "Bearer $env:FLOWBIT_TOKEN" } `
+     -ContentType "application/json" -Body $body
+   ```
+
+   ```bash
+   curl -s -X POST "http://localhost:5017/api/signal-broadcasts" \
+     -H "Authorization: Bearer $FLOWBIT_TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{"name":"warehouse.price-update","instanceId":42,"payload":{"unitPrice":13}}'
+   ```
+
+   A business key that no running order has, or an order that has shipped,
+   completes with no deliveries. On the Signals page, choose **One workflow
+   family** with a **Business key**, or **One instance**.
+
+The business key was added to this example with signal scopes. Business keys
+cannot be turned off for a workflow key once enabled. If your database already
+holds an earlier version of this example, the imported version starts only once
+it is the published default, and from then on the earlier version without a
+business key cannot start.
 
 A price update whose `unitPrice` is missing, not a number, or not above zero fails with
 `signal_payload_invalid`, and the shipment task keeps waiting. A non-interrupting

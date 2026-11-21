@@ -991,6 +991,14 @@ Storage follows the hybrid design:
     `INSERT ... SELECT` over active `signal_subscriptions`, takes no runtime
     lock, and rejects (never truncates) more than
     `Signals.MaxSubscriptionsPerBroadcast` recipients.
+  - A throw states one `SignalBroadcastScope`: a family, the instance with one
+    business key in a family, one instance, or every family. Keep one literal
+    freeze statement per scope kind; the business-key statement joins
+    `workflow_instances` without a locking clause, and
+    `signal_broadcasts.InstanceId` stays a plain column. `BusinessKeyRules`
+    (`Flowbit.Shared`) is the one normalization of a business key, for starts
+    and throws alike. A family or all-workflows request must keep hashing as it
+    did, so stored idempotency keys replay. Never log a business key.
   - `SignalEventRules` (`Flowbit.Shared`) owns the lowercase name rule, the
     mapping limit, and `HasSignalEvents`; the throw endpoint and the validator
     use it, and the editor mirrors it.
@@ -2035,7 +2043,11 @@ what the cross-version `workflowKey` instance search matches.
   optimistic (`409`); unusable key protection returns `503`.
 - `SignalEndpoints` (`/api/signal-broadcasts`, `/api/signal-subscriptions/summary`):
   throw (`202`, or `200` replaying an `idempotencyKey`), list, read, list
-  deliveries, cancel, and retry failed (`expectedUpdatedAt`) broadcasts; JWT users
+  deliveries, cancel, and retry failed (`expectedUpdatedAt`) broadcasts. A throw
+  states one scope: `workflowKey`, `workflowKey` with `businessKey`, `instanceId`
+  alone, or `allWorkflows`; any other combination, a `businessKey` for a family
+  without business keys, and an unknown instance are `400`. The summary takes
+  `businessKey` (with `workflowKey`) or `instanceId` as filters. JWT users
   need `Signals.RequiredRole` (`SignalAuthorizationPolicies`), managed clients the
   `signals.throw`/`signals.read` scopes and see only their own broadcasts (others
   `404`). The summary is JWT-only. Over the recipient limit is `400`; a reused
@@ -2224,7 +2236,11 @@ what the cross-version `workflowKey` instance search matches.
   in transient component state and are cleared on dismissal, identity change,
   permission loss, and disposal.
 - `/signals` (`Signals.razor`) - `Signals.RequiredRole` page that reviews and
-  throws a signal (one idempotency key per reviewed draft), follows the open
+  throws a signal (one idempotency key per reviewed draft) to one workflow
+  family, optionally narrowed by a business key, to all workflows, or to one
+  instance. A business-key or instance scope is counted through the filtered
+  summary (a request counter drops a late reply), any scope edit ends the
+  review, and only the reviewed scope's fields are sent. The page follows the open
   broadcast with a three-second poll while it is delivering, pages deliveries,
   and offers cancel and retry failed; `?broadcastId=` opens one. Display-only
   children under `Components/Shared/Signals/` with the pure `SignalFormatting`;
@@ -3308,7 +3324,7 @@ when extending the model so new features stay close to BPMN terminology.
 | `type: "conditionalBoundaryEvent"` | Conditional Boundary Event | Attached to a durable activity and observes declared persisted instance variables. Missing `cancelActivity` is interrupting (solid ring); `false` is non-interrupting (dashed ring) and retriggers on each false-to-true edge. Flowbit applies its `atomic`/`durableAsync` delivery policies and persistent activation/occurrence fencing. |
 | `type: "intermediateLinkThrowEvent"` | Intermediate Link Throw Event | Double-ring event with a filled arrow. Has incoming flows and no outgoing flow; continues at the link catch with the same `name` in the same transaction. Simplified: the link name is the event's `name`, compared exactly after trimming; links stay within one definition. |
 | `type: "intermediateLinkCatchEvent"` | Intermediate Link Catch Event | Double-ring event with an outlined arrow. No incoming flow; one unconditional outgoing flow. Several throws may share it, and catch names are unique ignoring letter case. |
-| `type: "intermediateSignalCatchEvent"` | Intermediate Signal Catch Event | Double-ring event with an outlined triangle. Rests until a signal with its literal lowercase `signal.name` is delivered, maps the payload through typed mappings, and follows one unconditional flow. Simplified: signals are thrown only through the API, scoped to one workflow family or explicitly to all; a throw reaches only the waits that exist when it is thrown, and the Worker delivers each in its own transaction. |
+| `type: "intermediateSignalCatchEvent"` | Intermediate Signal Catch Event | Double-ring event with an outlined triangle. Rests until a signal with its literal lowercase `signal.name` is delivered, maps the payload through typed mappings, and follows one unconditional flow. Simplified: signals are thrown only through the API, scoped to one workflow family, the instance with one business key in a family, one instance, or explicitly to all; a throw reaches only the waits that exist when it is thrown, and the Worker delivers each in its own transaction. |
 | `type: "signalBoundaryEvent"` | Signal Boundary Event | Attached to a durable host; listens for its `signal.name` while the host is active. Missing `cancelActivity` is interrupting (solid ring); `false` is non-interrupting (dashed ring) and adds a branch for every delivered signal. Simplified: not on call activities or multi-instance bodies, and a non-interrupting delivery that would exceed the instance's active-token limit fails rather than waiting. |
 | `type: "messageStartEvent"` | Message Start Event | An entry point started by an external system via `POST /api/workflows/{workflowKey}/message-start`; thin single-ring circle with an envelope glyph. Typed `message.outputMappings` declare its start variables. System-only (`IsStart` is false). The engine creates the instance and auto-advances off it (pass-through, history note `messageStart`). Simplified: instance-less credential resolution (no `sys.user`/`sys.roles`/`sys.instanceId` for credentials since there is no caller/instance yet). It shares the same optional node-level, database-claimed transport idempotency as `startEvent`. |
 | `sequenceFlow` | Sequence Flow | First-class directed edge with its own id, `sourceRef`, `targetRef`. |

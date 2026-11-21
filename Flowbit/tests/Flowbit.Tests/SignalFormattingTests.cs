@@ -61,6 +61,30 @@ public sealed class SignalFormattingTests
     }
 
     [Fact]
+    public void ScopeLabel_NamesEachOfTheFourScopes()
+    {
+        Assert.Equal("All workflows", SignalFormatting.ScopeLabel(null, null, null));
+        Assert.Equal("claims-handling", SignalFormatting.ScopeLabel("claims-handling", null, null));
+        Assert.Equal("example-signal-boundaries-recall · business key ORD-2001",
+            SignalFormatting.ScopeLabel("example-signal-boundaries-recall", "ORD-2001", null));
+        Assert.Equal("Instance #42 · example-signal-boundaries-recall",
+            SignalFormatting.ScopeLabel("example-signal-boundaries-recall", null, 42));
+        // A review does not know the instance's family yet.
+        Assert.Equal("Instance #42", SignalFormatting.ScopeLabel(null, null, 42));
+    }
+
+    [Fact]
+    public void ScopedMatchLine_CountsTheWaitsOfABusinessKeyOrAnInstance()
+    {
+        Assert.Equal("2 waits for 'warehouse.price-update' with business key ORD-2001 in orders.",
+            SignalFormatting.ScopedMatchLine("warehouse.price-update", "orders", "ORD-2001", null, 2));
+        Assert.Equal("1 wait for 'warehouse.price-update' in instance #42.",
+            SignalFormatting.ScopedMatchLine("warehouse.price-update", null, null, 42, 1));
+        Assert.Equal("No wait for 'warehouse.price-update' in instance #42 now.",
+            SignalFormatting.ScopedMatchLine("warehouse.price-update", null, null, 42, 0));
+    }
+
+    [Fact]
     public void LiveCancelAndRetry_FollowTheBroadcastStatus()
     {
         Assert.True(SignalFormatting.IsLive(SignalBroadcastStatuses.Delivering));
@@ -79,7 +103,7 @@ public sealed class SignalFormattingTests
     }
 
     private static SignalBroadcastDetailDto Broadcast(string status, int failed) =>
-        new(1, "a.b", null, true, status, 3, 0, 3 - failed, 0, failed, 0,
+        new(1, "a.b", null, true, null, null, status, 3, 0, 3 - failed, 0, failed, 0,
             "admin", SignalThrowerKinds.User, ["admin"], null, [], false, null, null,
             DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch, null);
 }

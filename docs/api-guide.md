@@ -1880,14 +1880,24 @@ Content-Type: application/json
 
 ## Signals
 
-A signal broadcast reaches every [`intermediateSignalCatchEvent`](node-reference.md#intermediatesignalcatchevent) that is waiting for its name when it is thrown, and every [`signalBoundaryEvent`](node-reference.md#signalboundaryevent) with its name whose host is active then, in one workflow family or in all of them. The throw freezes those recipients in one statement and returns at once; the Worker then delivers each recipient in its own transaction. A wait that starts after the throw never receives it. See [BPMN semantics](bpmn-support.md#signals) and the [integration guide](developer-guide.md#broadcast-signals).
+A signal broadcast reaches every [`intermediateSignalCatchEvent`](node-reference.md#intermediatesignalcatchevent) that is waiting for its name when it is thrown, and every [`signalBoundaryEvent`](node-reference.md#signalboundaryevent) with its name whose host is active then, within the throw's scope: one workflow family, the instance with one business key in a family, one instance, or all families. The throw freezes those recipients in one statement and returns at once; the Worker then delivers each recipient in its own transaction. A wait that starts after the throw never receives it. See [BPMN semantics](bpmn-support.md#signals) and the [integration guide](developer-guide.md#broadcast-signals).
 
 - **Authorization.** A JWT user needs a role from `Signals.RequiredRole` (default `admin`) on every route. A managed API client, created on the [shared-variable client routes](#shared-variable-clients), sends `X-Client-Id` and `X-Client-Secret` and needs `signals.throw` to throw, cancel, and retry, or `signals.read` to list and read broadcasts and deliveries; a client that throws and follows its broadcasts needs both. Sending both a bearer token and client headers returns `400`.
 - **What a client sees.** A client lists, reads, cancels, and retries only the broadcasts it threw; any other broadcast returns `404`. Its delivery rows carry `resultCode` with a null `resultDescription`, because the engine's message can quote a validation expression of the receiving workflow. When a user cancels a client's broadcast, the client sees `status: "cancelled"` and `cancelledAt`, but `cancelledBy` and `cancellationReason` are null. The subscription summary is for users only.
-- **Name and scope.** `name` follows the [signal-name rule](node-reference.md#signal-configuration), and an uppercase letter returns `400` rather than missing its waits. Name one `workflowKey`, or set `allWorkflows` to `true`; neither or both return `400`, and so does a blank `workflowKey` or a key that no workflow definition has. A repeated `idempotencyKey` returns its broadcast even after the family's last version has been deleted.
+- **Name.** `name` follows the [signal-name rule](node-reference.md#signal-configuration), and an uppercase letter returns `400` rather than missing its waits.
+- **Scope.** A throw states exactly one scope; any other combination returns `400` with a message that names it:
+
+  | Scope | Fields | Recipients |
+  | --- | --- | --- |
+  | Family | `workflowKey` | Every waiting event with the name in that family. |
+  | Business key | `workflowKey` and `businessKey` | The waiting events with the name in the family's instance that has this [business key](node-reference.md#business-key-configuration): at most one running instance, which can wait in several places. |
+  | Instance | `instanceId` alone | The waiting events with the name in that instance. The broadcast records the instance's family in `workflowKey`. |
+  | All workflows | `allWorkflows: true` | Every waiting event with the name. |
+
+  A blank `workflowKey` or `businessKey` returns `400` instead of reaching more. `businessKey` is trimmed as a start trims it, then compared exactly and case-sensitively, and has at most 300 characters. `400` also answers a `workflowKey` that no workflow definition has, a `businessKey` for a family that has not enabled business keys, and an `instanceId` that no instance has. A scope that matches no waiting event is accepted and completes with no deliveries: no running instance owns the key, or the instance is not waiting for the name or has finished. A repeated `idempotencyKey` returns its broadcast before any of these lookups, so it replays even after the family's last version has been deleted.
 - **Paging.** The two list routes take `page` (default 1) and `pageSize` (default 50, clamped to 1-200).
 - **Limits.** A payload is an optional JSON object of at most 256 KiB; the throw body is limited to 1 MiB and the cancel and retry bodies to 64 KiB (`413` beyond). A throw that would reach more than `Signals.MaxSubscriptionsPerBroadcast` waits (default 10,000, at most 100,000) returns `400` and stores nothing. When `Signals.MaxOpenBroadcasts` broadcasts (default 20, at most 1,000) are still delivering, a throw returns `409`; concurrent throws can pass this soft limit by a few.
-- **Idempotency.** `idempotencyKey` is optional, trimmed, at most 300 characters, and unique per thrower (user or client). Repeating the same name, scope, and payload with it returns the first broadcast with `200`; the payload is compared as parsed JSON, so whitespace and member order do not matter. The same key with a different request returns `409`. The key can be used again only after retention has removed the broadcast.
+- **Idempotency.** `idempotencyKey` is optional, trimmed, at most 300 characters, and unique per thrower (user or client). Repeating the same name, scope, and payload with it returns the first broadcast with `200`; the payload is compared as parsed JSON, so whitespace and member order do not matter, and a business key is compared after trimming. The same key with a different request, including another business key, another instance, or another kind of scope, returns `409`. The key can be used again only after retention has removed the broadcast.
 - **Outcomes.** A broadcast is `delivering` until no delivery is pending, then `completed`, or `completedWithIssues` when any delivery failed; `cancelled` stops its pending deliveries. Each delivery ends once:
 
 | Status | `resultCode` | Meaning |
@@ -1936,7 +1946,15 @@ Content-Type: application/json
 }
 ```
 
-A broadcast to every family sends `"allWorkflows": true` in place of `workflowKey`.
+A broadcast to every family sends `"allWorkflows": true` in place of `workflowKey`. To reach only the order with one business key, or only one instance:
+
+```json
+{ "name": "warehouse.price-update", "workflowKey": "example-signal-boundaries-recall", "businessKey": "ORD-2001", "payload": { "unitPrice": 12.5 } }
+```
+
+```json
+{ "name": "warehouse.price-update", "instanceId": 42, "payload": { "unitPrice": 12.5 } }
+```
 
 Response example (object bodies may be excerpts; see the full linked schema):
 
@@ -1950,6 +1968,8 @@ Content-Type: application/json
   "name": "claims.policy-changed",
   "workflowKey": "example-signal-catch-policy-change",
   "allWorkflows": false,
+  "businessKey": null,
+  "instanceId": null,
   "status": "delivering",
   "totalDeliveryCount": 3,
   "pendingCount": 3,
@@ -1981,7 +2001,7 @@ List broadcasts, newest first, without payloads.
 | Parameter | Location | Type | Required | Meaning / default |
 | --- | --- | --- | --- | --- |
 | `name` | query | string | No | Exact signal name. |
-| `workflowKey` | query | string | No | Exact workflow family named by the throw; broadcasts to all workflows have none. |
+| `workflowKey` | query | string | No | Exact workflow family named by the throw, or the family of the instance it named; broadcasts to all workflows have none. |
 | `status` | query | string | No | `delivering`, `completed`, `completedWithIssues`, or `cancelled`; another value returns `400`. |
 | `page` | query | integer (int32) | No | Default 1. |
 | `pageSize` | query | integer (int32) | No | Default 50; clamped to 1–200. |
@@ -2156,7 +2176,7 @@ The response is the broadcast with `status: "delivering"` and the retried delive
 
 ### GET /api/signal-subscriptions/summary
 
-Count the active signal waits by signal name and workflow family. It writes nothing.
+Count the active signal waits by signal name and workflow family. It writes nothing and takes no lock.
 
 **Access:** Signal administrator only; managed API clients are refused. See [authentication](#http-conventions-and-authentication).
 
@@ -2164,11 +2184,15 @@ Count the active signal waits by signal name and workflow family. It writes noth
 | --- | --- | --- | --- | --- |
 | `name` | query | string | No | Exact signal name. |
 | `workflowKey` | query | string | No | Exact workflow family. |
+| `businessKey` | query | string | No | Only the waits of the family's instance with this business key, trimmed and then compared exactly. Requires `workflowKey`. |
+| `instanceId` | query | integer (int64) | No | Only the waits of this instance. Not combined with `workflowKey` or `businessKey`. |
+
+A blank value means no filter. `businessKey` without `workflowKey`, `instanceId` with either, an `instanceId` below 1, and a `businessKey` longer than 300 characters return `400`. Unlike a throw, an unknown instance or a family that has not enabled business keys counts nothing instead of returning `400`.
 
 **Body:** none.
 
 **Success:** `200` [SignalSubscriptionSummaryDto](#schema-signalsubscriptionsummarydto).
-**Errors:** `401` Unauthorized; `403` Forbidden. See [error envelopes](#errors-and-concurrency) and the family rules above.
+**Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden. See [error envelopes](#errors-and-concurrency) and the family rules above.
 
 The counts describe this moment; a throw counts again when it runs.
 
@@ -11080,8 +11104,10 @@ One thrown signal with its counters, payload, and recipients per workflow family
 | --- | --- | --- | --- |
 | `id` | integer (int64) | Yes | Broadcast ID. |
 | `name` | string | Yes | The signal name. |
-| `workflowKey` | null or string | Yes | The workflow family the throw named; null when it addressed all workflows. |
+| `workflowKey` | null or string | Yes | The workflow family the throw named, or the family of the instance it named; null when it addressed all workflows. |
 | `allWorkflows` | boolean | Yes | True when `workflowKey` is null. |
+| `businessKey` | null or string | Yes | The trimmed business key of a business-key scope; otherwise null. |
+| `instanceId` | null or integer (int64) | Yes | The instance of an instance scope; otherwise null. |
 | `status` | string | Yes | `delivering`, `completed`, `completedWithIssues` (finished with at least one failed delivery), or `cancelled`. A broadcast with no recipients is `completed` at once. |
 | `totalDeliveryCount` | integer (int32) | Yes | Recipients frozen by the throw. |
 | `pendingCount` | integer (int32) | Yes | Deliveries not yet finished. |
@@ -11117,6 +11143,8 @@ A list row of a broadcast, without its payload, roles, recipients, or cancellati
 | `name` | string | Yes | — |
 | `workflowKey` | null or string | Yes | — |
 | `allWorkflows` | boolean | Yes | — |
+| `businessKey` | null or string | Yes | — |
+| `instanceId` | null or integer (int64) | Yes | — |
 | `status` | string | Yes | — |
 | `totalDeliveryCount` | integer (int32) | Yes | — |
 | `pendingCount` | integer (int32) | Yes | — |
@@ -11321,13 +11349,15 @@ Machine credentials for the workflow-family task-distribution API.
 <details>
 <summary>ThrowSignalRequest</summary>
 
-Throws a signal. Exactly one of `workflowKey` and `allWorkflows: true` states the scope.
+Throws a signal. It states exactly one scope: `workflowKey`, `workflowKey` with `businessKey`, `instanceId` alone, or `allWorkflows: true`. See [Signals](#signals).
 
 | Field | JSON type / schema | Required | Meaning / default |
 | --- | --- | --- | --- |
 | `name` | string | Yes | 1 to 100 lowercase letters, digits, `.`, `_`, or `-`, starting with a letter or digit; compared exactly with the waiting events' names. |
 | `workflowKey` | null or string | No | One workflow family. At least one version with this key must exist; a family without waits is accepted. |
 | `allWorkflows` | boolean | No | True addresses every workflow family. Default: `false`. |
+| `businessKey` | null or string | No | With `workflowKey`: only the family's instance with this business key. Trimmed, then 1 to 300 characters, compared exactly and case-sensitively. The family must have enabled business keys. |
+| `instanceId` | null or integer (int64) | No | Only this instance; not combined with any other scope field. The instance must exist; it need not be waiting or running. |
 | `payload` | null or object | No | A JSON object of at most 262,144 bytes as PostgreSQL prints it. Missing and null both mean no payload. |
 | `idempotencyKey` | null or string | No | Trimmed, at most 300 characters, unique per thrower. Repeating the same request with it returns the first broadcast with `200`; a different request with it returns `409`. |
 

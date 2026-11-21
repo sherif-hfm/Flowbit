@@ -19,7 +19,7 @@
 <div class="alert alert-info" role="note">
     <strong>A signal reaches only the waits that exist when it is thrown.</strong>
     Each waiting signal event receives it once, when the Worker delivers it. A wait that starts later does not receive it, and nothing is stored for later.
-    Use a message for one instance or for something that must not be missed.
+    Use a message for something that must not be missed.
 </div>
 
 @if (!string.IsNullOrWhiteSpace(error))
@@ -72,29 +72,50 @@ else
                     <legend class="form-label">Scope</legend>
                     <div class="form-check">
                         <input class="form-check-input" type="radio" name="signal-scope" id="signal-scope-family"
-                               checked="@(!allWorkflows)" @onchange="@(() => SetScope(false))" />
+                               checked="@(scopeChoice == SignalScopeChoice.Family)" @onchange="@(() => SetScopeAsync(SignalScopeChoice.Family))" />
                         <label class="form-check-label" for="signal-scope-family">One workflow family</label>
                     </div>
                     <div class="form-check">
                         <input class="form-check-input" type="radio" name="signal-scope" id="signal-scope-all"
-                               checked="@allWorkflows" @onchange="@(() => SetScope(true))" />
+                               checked="@(scopeChoice == SignalScopeChoice.AllWorkflows)" @onchange="@(() => SetScopeAsync(SignalScopeChoice.AllWorkflows))" />
                         <label class="form-check-label" for="signal-scope-all">All workflows</label>
+                    </div>
+                    <div class="form-check">
+                        <input class="form-check-input" type="radio" name="signal-scope" id="signal-scope-instance"
+                               checked="@(scopeChoice == SignalScopeChoice.Instance)" @onchange="@(() => SetScopeAsync(SignalScopeChoice.Instance))" />
+                        <label class="form-check-label" for="signal-scope-instance">One instance</label>
                     </div>
                 </fieldset>
             </div>
-            @if (!allWorkflows)
+            @if (scopeChoice == SignalScopeChoice.Family)
             {
                 <div class="col-md-6">
                     <label class="form-label" for="signal-workflow-key">Workflow key</label>
                     <input id="signal-workflow-key" class="form-control" list="signal-family-options" maxlength="300"
-                           value="@workflowKey" @onchange="OnWorkflowKeyChanged" autocomplete="off" />
+                           value="@workflowKey" @onchange="OnWorkflowKeyChangedAsync" autocomplete="off" />
                     <datalist id="signal-family-options">
                         @foreach (var family in KnownFamilies) { <option value="@family"></option> }
                     </datalist>
                 </div>
+                <div class="col-md-6">
+                    <label class="form-label" for="signal-business-key">Business key (optional)</label>
+                    @* No maxlength: it counts UTF-16 units, the rule counts characters; the review checks the length. *@
+                    <input id="signal-business-key" class="form-control" value="@businessKey" @onchange="OnBusinessKeyChangedAsync"
+                           autocomplete="off" aria-describedby="signal-business-key-help" />
+                    <div id="signal-business-key-help" class="form-text">Limits the signal to the instance with this business key. Leave it empty to reach every instance of the family.</div>
+                </div>
+            }
+            else if (scopeChoice == SignalScopeChoice.Instance)
+            {
+                <div class="col-md-6">
+                    <label class="form-label" for="signal-instance-id">Instance ID</label>
+                    <input id="signal-instance-id" type="number" min="1" step="1" class="form-control" placeholder="42"
+                           value="@instanceId" @onchange="OnInstanceIdChangedAsync" aria-describedby="signal-instance-id-help" />
+                    <div id="signal-instance-id-help" class="form-text">The signal reaches only this instance's waits for the name.</div>
+                </div>
             }
             <div class="col-12">
-                <p class="mb-0" role="status" aria-live="polite">@MatchSummary</p>
+                <p class="mb-0 signal-match-line" role="status" aria-live="polite">@MatchSummary</p>
             </div>
         </div>
     </section>
@@ -133,7 +154,7 @@ else
         {
             <dl class="row">
                 <dt class="col-md-3">Signal</dt><dd class="col-md-9"><code>@review.Name</code></dd>
-                <dt class="col-md-3">Scope</dt><dd class="col-md-9">@ScopeLabel(review.WorkflowKey)</dd>
+                <dt class="col-md-3">Scope</dt><dd class="col-md-9 signal-scope">@ScopeLabel(review.WorkflowKey, review.BusinessKey, review.InstanceId)</dd>
                 <dt class="col-md-3">Waiting now</dt><dd class="col-md-9">@review.Waiting.ToString("N0") @(review.Waiting == 1 ? "wait" : "waits")@(review.Truncated ? " or more" : null)</dd>
                 <dt class="col-md-3">Payload</dt>
                 <dd class="col-md-9">
@@ -162,7 +183,7 @@ else
                 <div>
                     <span class="page-eyebrow">Broadcast #@currentBroadcast.Id</span>
                     <h2 id="signal-current-heading">Deliveries</h2>
-                    <p>@ScopeLabel(currentBroadcast.WorkflowKey) · <code>@currentBroadcast.Name</code></p>
+                    <p class="signal-scope">@ScopeLabel(currentBroadcast.WorkflowKey, currentBroadcast.BusinessKey, currentBroadcast.InstanceId) · <code>@currentBroadcast.Name</code></p>
                 </div>
                 <div class="d-flex flex-wrap gap-2 align-items-center">
                     <StatusBadge Status="@currentBroadcast.Status" Text="@BroadcastStatusLabel(currentBroadcast.Status)" />
@@ -247,11 +268,15 @@ else
     private string? success;
 
     private string signalName = string.Empty;
-    private bool allWorkflows;
+    private SignalScopeChoice scopeChoice = SignalScopeChoice.Family;
     private string workflowKey = string.Empty;
+    private string businessKey = string.Empty;
+    private long? instanceId;
     private string? payloadText;
     private string? payloadError;
     private SignalSubscriptionSummaryDto? summary;
+    private SignalSubscriptionSummaryDto? scopedSummary;
+    private bool scopedCountFailed;
     private ThrowReview? review;
     private string? draftIdempotencyKey;
 
@@ -260,6 +285,7 @@ else
     private long broadcastView;
     private long deliveriesRequest;
     private long historyRequest;
+    private long scopedSummaryRequest;
     private long formGeneration;
 
     private SignalBroadcastDetailDto? currentBroadcast;
@@ -272,8 +298,36 @@ else
     private string? historyStatus;
     private int historyPage = 1;
 
+    /// <summary>
+    /// The draft as reviewed. Only the fields of its scope are set: a family scope has a
+    /// workflow key and maybe a business key, an instance scope only its ID.
+    /// </summary>
     private sealed record ThrowReview(
-        string Name, string? WorkflowKey, int Waiting, bool Truncated, JsonElement? Payload, string? PayloadText);
+        string Name,
+        SignalScopeChoice Scope,
+        string? WorkflowKey,
+        string? BusinessKey,
+        long? InstanceId,
+        int Waiting,
+        bool Truncated,
+        JsonElement? Payload,
+        string? PayloadText);
+
+    /// <summary>The draft's scope fields that a throw would send, as one comparable value.</summary>
+    private sealed record DraftScope(SignalScopeChoice Scope, string? WorkflowKey, string? BusinessKey, long? InstanceId);
+
+    private DraftScope CurrentScope => scopeChoice switch
+    {
+        SignalScopeChoice.AllWorkflows => new(scopeChoice, null, null, null),
+        SignalScopeChoice.Instance => new(scopeChoice, null, null, instanceId),
+        _ => new(scopeChoice,
+            string.IsNullOrEmpty(workflowKey) ? null : workflowKey,
+            string.IsNullOrEmpty(businessKey) ? null : businessKey,
+            null)
+    };
+
+    /// <summary>A scope that the unfiltered summary cannot count: a business key or an instance.</summary>
+    private static bool IsNarrow(DraftScope scope) => scope.BusinessKey is not null || scope.InstanceId is not null;
 
     private IEnumerable<string> KnownNames =>
         (summary?.Items ?? []).Select(item => item.Name).Distinct().Order(StringComparer.Ordinal);
@@ -287,6 +341,21 @@ else
         get
         {
             if (summary is null || string.IsNullOrEmpty(signalName)) return "Choose a signal name to see how many waits match.";
+            var scope = CurrentScope;
+            if (scope.Scope == SignalScopeChoice.Instance && scope.InstanceId is null) return "Enter an instance ID, a positive whole number, to see how many waits match.";
+            if (scope.BusinessKey is not null && scope.WorkflowKey is null) return "Enter a workflow key to see how many waits match the business key.";
+            if (scope.BusinessKey is not null && BusinessKeyRules.Normalize(scope.BusinessKey, out _) == BusinessKeyProblem.TooLong)
+                return $"The business key can have at most {BusinessKeyRules.MaxLength} characters.";
+            if (IsNarrow(scope))
+            {
+                if (scopedSummary is null)
+                    return scopedCountFailed
+                        ? "The matching waits could not be counted. Review signal counts them again."
+                        : "Counting the matching waits…";
+                var scopedWaits = scopedSummary.Items.Where(item => item.Name == signalName).Sum(item => item.Count);
+                return ScopedMatchLine(signalName, scope.WorkflowKey, scope.BusinessKey, scope.InstanceId, scopedWaits);
+            }
+
             var rows = summary.Items.Where(item => item.Name == signalName).ToList();
             if (rows.Count == 0) return $"No instance is waiting for '{signalName}' now.";
             var waits = rows.Sum(item => item.Count);
@@ -331,22 +400,78 @@ else
     private async Task OnSignalNameChangedAsync(ChangeEventArgs args)
     {
         signalName = args.Value?.ToString()?.Trim() ?? string.Empty;
-        review = null;
+        ClearReview();
         var epoch = Interlocked.Read(ref identityEpoch);
-        try { summary = await GuardAsync(() => Api.GetSignalSubscriptionSummaryAsync()); }
+        try
+        {
+            summary = await GuardAsync(() => Api.GetSignalSubscriptionSummaryAsync());
+            await RefreshScopedCountAsync();
+        }
         catch (Exception ex) { HandleError(ex, epoch); }
     }
 
-    private void OnWorkflowKeyChanged(ChangeEventArgs args)
+    private async Task OnWorkflowKeyChangedAsync(ChangeEventArgs args)
     {
         workflowKey = args.Value?.ToString()?.Trim() ?? string.Empty;
-        review = null;
+        await OnScopeEditedAsync();
     }
 
-    private void SetScope(bool all)
+    private async Task OnBusinessKeyChangedAsync(ChangeEventArgs args)
     {
-        allWorkflows = all;
-        review = null;
+        businessKey = args.Value?.ToString()?.Trim() ?? string.Empty;
+        await OnScopeEditedAsync();
+    }
+
+    private async Task OnInstanceIdChangedAsync(ChangeEventArgs args)
+    {
+        // A number box reports an empty value for text it cannot read.
+        instanceId = long.TryParse(args.Value?.ToString(), System.Globalization.NumberStyles.None,
+            System.Globalization.CultureInfo.InvariantCulture, out var parsed) && parsed > 0 ? parsed : null;
+        await OnScopeEditedAsync();
+    }
+
+    private async Task SetScopeAsync(SignalScopeChoice choice)
+    {
+        scopeChoice = choice;
+        await OnScopeEditedAsync();
+    }
+
+    /// <summary>Any scope edit ends the review and recounts a business-key or instance scope.</summary>
+    private async Task OnScopeEditedAsync()
+    {
+        ClearReview();
+        var epoch = Interlocked.Read(ref identityEpoch);
+        try { await RefreshScopedCountAsync(); }
+        catch (Exception ex) { HandleError(ex, epoch); }
+    }
+
+    /// <summary>
+    /// Counts the waits of a business-key or instance scope for the name. The unfiltered
+    /// summary cannot: it counts per family. A newer request drops an older reply.
+    /// </summary>
+    private async Task RefreshScopedCountAsync()
+    {
+        var request = ++scopedSummaryRequest;
+        scopedSummary = null;
+        scopedCountFailed = false;
+        var scope = CurrentScope;
+        var name = signalName;
+        if (string.IsNullOrEmpty(name) || !IsNarrow(scope)) return;
+        if (scope.BusinessKey is not null
+            && (scope.WorkflowKey is null || BusinessKeyRules.Normalize(scope.BusinessKey, out _) != BusinessKeyProblem.None)) return;
+
+        try
+        {
+            var counted = await GuardAsync(() => Api.GetSignalSubscriptionSummaryAsync(
+                name, scope.WorkflowKey, scope.BusinessKey, scope.InstanceId));
+            if (request == scopedSummaryRequest) scopedSummary = counted;
+        }
+        catch (Exception ex) when (ex is not SignalIdentityChangedException)
+        {
+            // The caller shows the error; the status line must not keep saying "Counting".
+            if (request == scopedSummaryRequest) scopedCountFailed = true;
+            throw;
+        }
     }
 
     private void OnPayloadEdited()
@@ -367,9 +492,21 @@ else
             error = "Enter a signal name.";
             return;
         }
-        if (!allWorkflows && string.IsNullOrEmpty(workflowKey))
+        var scope = CurrentScope;
+        if (scope.Scope == SignalScopeChoice.Family && scope.WorkflowKey is null)
         {
             error = "Enter a workflow key, or choose all workflows.";
+            return;
+        }
+        if (scope.Scope == SignalScopeChoice.Instance && scope.InstanceId is null)
+        {
+            error = "Enter an instance ID.";
+            return;
+        }
+        if (scope.BusinessKey is not null
+            && BusinessKeyRules.Normalize(scope.BusinessKey, out _) == BusinessKeyProblem.TooLong)
+        {
+            error = $"The business key can have at most {BusinessKeyRules.MaxLength} characters.";
             return;
         }
 
@@ -377,11 +514,14 @@ else
         try
         {
             var name = signalName;
-            var scope = allWorkflows ? null : workflowKey;
-            var counts = await GuardAsync(() => Api.GetSignalSubscriptionSummaryAsync(name, scope));
+            var counts = await GuardAsync(() => Api.GetSignalSubscriptionSummaryAsync(
+                name, scope.WorkflowKey, scope.BusinessKey, scope.InstanceId));
             // The draft may have changed while the counts were loading; that edit ended the review.
-            if (name != signalName || scope != (allWorkflows ? null : workflowKey) || text != payloadText) return;
-            review = new ThrowReview(name, scope, counts.Items.Sum(item => item.Count), counts.Truncated, payload, text);
+            if (name != signalName || scope != CurrentScope || text != payloadText) return;
+            var waiting = counts.Items.Where(item => item.Name == name).Sum(item => item.Count);
+            review = new ThrowReview(
+                name, scope.Scope, scope.WorkflowKey, scope.BusinessKey, scope.InstanceId,
+                waiting, counts.Truncated, payload, text);
             // One key per reviewed draft, so a retried request after a timeout cannot throw twice.
             draftIdempotencyKey = $"ui-{Guid.NewGuid():N}";
         }
@@ -412,12 +552,16 @@ else
         error = null;
         try
         {
+            // Only the reviewed scope's fields: a business key typed before the scope
+            // changed to one instance is never sent.
             var thrown = await GuardAsync(() => Api.ThrowSignalAsync(new ThrowSignalRequest(
                 reviewed.Name,
                 reviewed.WorkflowKey,
-                reviewed.WorkflowKey is null,
+                reviewed.Scope == SignalScopeChoice.AllWorkflows,
                 reviewed.Payload,
-                key)));
+                key,
+                reviewed.BusinessKey,
+                reviewed.InstanceId)));
             success = thrown.TotalDeliveryCount == 0
                 ? $"Broadcast #{thrown.Id} found no waiting events; it completed with no deliveries."
                 : $"Broadcast #{thrown.Id} froze {thrown.TotalDeliveryCount:N0} {(thrown.TotalDeliveryCount == 1 ? "recipient" : "recipients")}; the Worker is delivering it.";
@@ -664,8 +808,9 @@ else
     private void ClearSignalData()
     {
         // The draft goes too: the next identity starts from an empty form.
-        signalName = string.Empty; allWorkflows = false; workflowKey = string.Empty; payloadText = null; formGeneration++;
-        summary = null; review = null; draftIdempotencyKey = null; payloadError = null;
+        signalName = string.Empty; scopeChoice = SignalScopeChoice.Family; workflowKey = string.Empty;
+        businessKey = string.Empty; instanceId = null; payloadText = null; formGeneration++;
+        summary = null; scopedSummary = null; scopedCountFailed = false; scopedSummaryRequest++; review = null; draftIdempotencyKey = null; payloadError = null;
         broadcastView++; deliveriesRequest++; historyRequest++;
         currentBroadcast = null; deliveries = null; deliveryStatus = null; deliveryPage = 1;
         history = null; historyStatus = null; historyPage = 1; cancellationReason = null;
