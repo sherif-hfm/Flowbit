@@ -650,7 +650,7 @@ public static class WorkflowVersionCompatibilityEvaluator
             foreach (var declaration in matching)
             {
                 var isNull = pair.Value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined;
-                if ((!isNull || !declaration.Nullable)
+                if ((!isNull || !declaration.AcceptsNull)
                     && (isNull || !TypedOutputValueValidator.IsValid(
                         pair.Value,
                         declaration.DataType,
@@ -1115,14 +1115,19 @@ public static class WorkflowVersionCompatibilityEvaluator
         return false;
     }
 
+    // Only a process variable decides whether a stored null is allowed: its `nullable`
+    // says whether the target may store null under its name. Inputs and output mappings
+    // constrain only the non-null values they write. A null is checked against them no
+    // more than a value that is absent, which ValidateCurrentVariables never sees, so a
+    // nullable variable still waiting for its first value can move to a target that maps it.
     private static IReadOnlyList<TargetVariableDeclaration> TargetVariableDeclarations(
         WorkflowModel target)
     {
         var result = new List<TargetVariableDeclaration>();
-        Add(target.Variables, "process variable", allowNullable: true);
+        Add(target.Variables, "process variable", processVariable: true);
         foreach (var node in target.FlowNodes.OrderBy(node => node.Id))
         {
-            Add(node.Variables, $"node #{node.Id} variable", allowNullable: false);
+            Add(node.Variables, $"node #{node.Id} variable", processVariable: false);
             foreach (var mapping in node.Service?.OutputMappings ?? [])
             {
                 // An item-local output lives on its automatic item, never as an
@@ -1138,7 +1143,7 @@ public static class WorkflowVersionCompatibilityEvaluator
                     mapping.Variable,
                     mapping.DataType ?? WorkflowVariableTypes.Json,
                     mapping.IsArray ?? false,
-                    false,
+                    AcceptsNull: true,
                     mapping.Validation));
             }
             foreach (var mapping in node.Message?.OutputMappings ?? [])
@@ -1153,7 +1158,7 @@ public static class WorkflowVersionCompatibilityEvaluator
                     mapping.Variable,
                     mapping.DataType ?? WorkflowVariableTypes.Json,
                     mapping.IsArray ?? false,
-                    false,
+                    AcceptsNull: true,
                     mapping.Validation));
             }
             foreach (var mapping in node.Signal?.OutputMappings ?? [])
@@ -1168,18 +1173,18 @@ public static class WorkflowVersionCompatibilityEvaluator
                     mapping.Variable,
                     mapping.DataType ?? WorkflowVariableTypes.Json,
                     mapping.IsArray ?? false,
-                    false,
+                    AcceptsNull: true,
                     mapping.Validation));
             }
         }
         foreach (var flow in target.SequenceFlows.OrderBy(flow => flow.Id))
         {
-            Add(flow.Variables, $"sequence flow #{flow.Id} variable", allowNullable: false);
+            Add(flow.Variables, $"sequence flow #{flow.Id} variable", processVariable: false);
         }
 
         return result;
 
-        void Add(IEnumerable<VariableModel> variables, string owner, bool allowNullable)
+        void Add(IEnumerable<VariableModel> variables, string owner, bool processVariable)
         {
             foreach (var variable in variables)
             {
@@ -1193,7 +1198,7 @@ public static class WorkflowVersionCompatibilityEvaluator
                     variable.Name,
                     variable.DataType,
                     variable.IsArray,
-                    allowNullable && variable.Nullable,
+                    !processVariable || variable.Nullable,
                     variable.Validation));
             }
         }
@@ -1638,6 +1643,6 @@ public static class WorkflowVersionCompatibilityEvaluator
         string Name,
         string DataType,
         bool IsArray,
-        bool Nullable,
+        bool AcceptsNull,
         string? Validation);
 }

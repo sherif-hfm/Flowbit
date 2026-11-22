@@ -738,18 +738,14 @@ public sealed partial class SignalThrowRuntimeTests
 
     /// <summary>
     /// A running instance moves to a version that changes a throw's name, scope, and payload
-    /// with no blocker, and its next throw uses the target's configuration.
+    /// with no blocker, and its next throw uses the target's configuration. Its nullable
+    /// `stopReason`, which a signal boundary maps, is still null and blocks nothing.
     /// </summary>
     [Fact]
     public async Task VersionChange_OfAThrowsNameScopeAndPayloadHasNoBlocker()
     {
         var signal = UniqueSignal();
         var model = OrderModel(signal);
-        // A null current value of a variable that a signal boundary maps blocks a version change
-        // (variable_type_incompatible) whatever the throw does, so this one starts with a value.
-        var stopReason = model.Variables.Single(variable => variable.Name == "stopReason");
-        stopReason.Nullable = false;
-        stopReason.DefaultValue = JsonSerializer.SerializeToElement("none");
         var source = await CreateAsync(model);
         var order = await StartAsync(source);
         var renamed = UniqueSignal();
@@ -772,6 +768,17 @@ public sealed partial class SignalThrowRuntimeTests
         {
             updatedAt = await db.WorkflowInstances.AsNoTracking().Where(item => item.Id == order.Id)
                 .Select(item => item.UpdatedAt).SingleAsync();
+            Assert.Equal(JsonValueKind.Null, (await db.InstanceVariableCurrentValues.AsNoTracking()
+                .SingleAsync(item => item.InstanceId == order.Id && item.VariableName == "stopReason"))
+                .ValueJson.RootElement.ValueKind);
+        }
+
+        using (var preview = await SendAsync(HttpMethod.Post, $"/api/instances/{order.Id}/version-change/preview",
+                   new PreviewInstanceVersionChangeRequest(target)))
+        {
+            Assert.True(preview.IsSuccessStatusCode, await preview.Content.ReadAsStringAsync());
+            var result = (await preview.Content.ReadFromJsonAsync<InstanceVersionChangePreviewDto>(JsonOptions))!;
+            Assert.True(result.Compatible, string.Join(" ", result.Blockers.Select(issue => issue.Message)));
         }
 
         using (var change = await SendAsync(HttpMethod.Post, $"/api/instances/{order.Id}/version-change",

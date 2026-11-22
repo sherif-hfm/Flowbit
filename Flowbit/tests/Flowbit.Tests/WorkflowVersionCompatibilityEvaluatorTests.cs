@@ -426,6 +426,86 @@ public sealed class WorkflowVersionCompatibilityEvaluatorTests
             WorkflowVersionCompatibilityCodes.VariableValidationFailed);
     }
 
+    /// <summary>
+    /// A nullable variable still waiting for its first value can move to a target that also
+    /// writes it: a mapping or input judges only the values it writes, never a stored null.
+    /// </summary>
+    [Theory]
+    [InlineData("service")]
+    [InlineData("message")]
+    [InlineData("signal")]
+    [InlineData("input")]
+    public void Null_value_of_a_nullable_variable_satisfies_the_declarations_that_write_it(string writer)
+    {
+        var model = WrittenVariableModel(writer, nullable: true);
+        var context = Context(Definition(11, 1, model), Definition(12, 2, Clone(model))) with
+        {
+            CurrentVariables = NullPolicyVersion()
+        };
+
+        var result = WorkflowVersionCompatibilityEvaluator.Evaluate(context);
+
+        Assert.True(result.IsCompatible, string.Join(" ", result.Blockers.Select(issue => issue.Message)));
+        Assert.Empty(result.Warnings);
+    }
+
+    /// <summary>
+    /// A null is still refused when the target's process variable is not nullable, once,
+    /// by that process variable, whatever else writes the name.
+    /// </summary>
+    [Theory]
+    [InlineData("service")]
+    [InlineData("message")]
+    [InlineData("signal")]
+    [InlineData("input")]
+    public void Null_value_of_a_non_nullable_variable_is_refused_by_its_process_variable(string writer)
+    {
+        var model = WrittenVariableModel(writer, nullable: false);
+        var context = Context(Definition(11, 1, model), Definition(12, 2, Clone(model))) with
+        {
+            CurrentVariables = NullPolicyVersion()
+        };
+
+        var result = WorkflowVersionCompatibilityEvaluator.Evaluate(context);
+
+        var blocker = Assert.Single(result.Blockers);
+        Assert.Equal(
+            (WorkflowVersionCompatibilityCodes.VariableTypeIncompatible, "policyVersion"),
+            (blocker.Code, blocker.VariableName));
+        Assert.Equal(
+            "Current variable 'policyVersion' does not satisfy target process variable type 'number'.",
+            blocker.Message);
+    }
+
+    /// <summary>
+    /// A mapping whose target has no process variable accepts a stored null, as it accepts
+    /// a value it has not written yet, but still checks a value of the wrong type.
+    /// </summary>
+    [Fact]
+    public void Mapping_without_a_process_variable_accepts_null_and_checks_a_value()
+    {
+        var model = WrittenVariableModel("signal", nullable: null);
+        var source = Definition(11, 1, model);
+        var target = Definition(12, 2, Clone(model));
+
+        var accepted = WorkflowVersionCompatibilityEvaluator.Evaluate(
+            Context(source, target) with { CurrentVariables = NullPolicyVersion() });
+        var refused = WorkflowVersionCompatibilityEvaluator.Evaluate(Context(source, target) with
+        {
+            CurrentVariables = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["policyVersion"] = Json("draft")
+            }
+        });
+
+        Assert.True(accepted.IsCompatible);
+        Assert.Empty(accepted.Warnings);
+        var blocker = Assert.Single(refused.Blockers);
+        Assert.Equal(
+            "Current variable 'policyVersion' does not satisfy target signal node #4 output mapping type 'number'.",
+            blocker.Message);
+    }
+
     [Fact]
     public void Variable_validation_uses_supplied_trusted_context()
     {
@@ -1086,6 +1166,91 @@ public sealed class WorkflowVersionCompatibilityEvaluatorTests
                 Required = true
             }
         ];
+        return model;
+    }
+
+    private static Dictionary<string, JsonElement> NullPolicyVersion() =>
+        new(StringComparer.OrdinalIgnoreCase) { ["policyVersion"] = Json<string?>(null) };
+
+    // The user task waits while `policyVersion` is declared by a process variable (none when
+    // nullable is null) and written by one more declaration: a service, message, or signal
+    // output mapping on node #4, or an input of the task's flow #20.
+    private static WorkflowModel WrittenVariableModel(string writer, bool? nullable)
+    {
+        var model = BasicModel();
+        if (nullable is { } isNullable)
+        {
+            model.Variables.Add(new VariableModel
+            {
+                Id = 1,
+                Name = "policyVersion",
+                DataType = WorkflowVariableTypes.Number,
+                Nullable = isNullable,
+                DefaultValue = isNullable ? null : Json(1),
+                Validation = "policyVersion > 0"
+            });
+        }
+
+        MessageOutputMappingModel Mapping() => new()
+        {
+            Variable = "policyVersion",
+            Path = "version",
+            DataType = WorkflowVariableTypes.Number,
+            IsArray = false,
+            Validation = "policyVersion > 0"
+        };
+
+        switch (writer)
+        {
+            case "service":
+                model.FlowNodes.Add(new FlowNodeModel
+                {
+                    Id = 4, Name = "Fetch policy", ExternalId = "fetch-policy", Type = BpmnFlowNodeTypes.ServiceTask,
+                    Service = new ServiceTaskModel
+                    {
+                        Url = "https://example.test/policy",
+                        OutputMappings =
+                        [
+                            new ServiceOutputMappingModel
+                            {
+                                Variable = "policyVersion", Path = "version", DataType = WorkflowVariableTypes.Number,
+                                IsArray = false, Validation = "policyVersion > 0"
+                            }
+                        ]
+                    }
+                });
+                break;
+            case "message":
+                var message = Message("secret");
+                message.OutputMappings = [Mapping()];
+                model.FlowNodes.Add(new FlowNodeModel
+                {
+                    Id = 4, Name = "Policy message", ExternalId = "policy-message",
+                    Type = BpmnFlowNodeTypes.IntermediateMessageCatchEvent, Message = message
+                });
+                break;
+            case "signal":
+                model.FlowNodes.Add(new FlowNodeModel
+                {
+                    Id = 4, Name = "Policy changed", ExternalId = "policy-changed",
+                    Type = BpmnFlowNodeTypes.IntermediateSignalCatchEvent,
+                    Signal = new SignalEventModel { Name = "policy.changed", OutputMappings = [Mapping()] }
+                });
+                break;
+            case "input":
+                model.SequenceFlows.Single(flow => flow.Id == 20).Variables =
+                [
+                    new VariableModel
+                    {
+                        Id = 2, Name = "policyVersion", DataType = WorkflowVariableTypes.Number,
+                        Validation = "policyVersion > 0"
+                    }
+                ];
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(writer), writer, null);
+        }
+
         return model;
     }
 
