@@ -390,12 +390,13 @@ Message correlation is instance-scoped; it is not a cross-instance BPMN message 
 
 ## Broadcast signals
 
-Use a signal when many running instances must react to one announcement, such as a changed policy, a product recall, or a closed fiscal year, and the sender does not know which instances are waiting. The workflow models the wait as an [`intermediateSignalCatchEvent`](node-reference.md#intermediatesignalcatchevent) with a literal `signal.name`, or reacts while other work is in progress with a [`signalBoundaryEvent`](node-reference.md#signalboundaryevent) on that work; your application throws the signal over HTTP. Use a message instead for an event that must not be missed, or when the sender must learn that nothing was waiting.
+Use a signal when many running instances must react to one announcement, such as a changed policy, a product recall, or a closed fiscal year, and the sender does not know which instances are waiting. The workflow models the wait as an [`intermediateSignalCatchEvent`](node-reference.md#intermediatesignalcatchevent) with a literal `signal.name`, or reacts while other work is in progress with a [`signalBoundaryEvent`](node-reference.md#signalboundaryevent) on that work. Your application throws the signal over HTTP, or another workflow throws it with a signal throw or end event ([throw a signal from a workflow](#throw-a-signal-from-a-workflow)). Use a message instead for an event that must not be missed, or when the sender must learn that nothing was waiting.
 
 | | Message catch | Signal catch |
 | --- | --- | --- |
 | Addressed by | Instance ID, plus the catch's external ID when needed. | Signal name, within one workflow family, the instance with one business key in a family, one instance, or all families. |
-| Sender authenticates with | The node's configured client credentials and correlation header. | A JWT with a role from `Signals.RequiredRole`, or a managed API client with `signals.throw`. |
+| Sent by | An external system over HTTP. | An external system over HTTP, or a workflow's signal throw or end event. |
+| Sender authenticates with | The node's configured client credentials and correlation header. | A JWT with a role from `Signals.RequiredRole`, or a managed API client with `signals.throw`. A workflow needs neither: publishing its definition is the authority. |
 | When no wait exists yet | The delivery is rejected, and the sender can deliver again later. | Nothing is stored: a wait that starts later never receives an earlier signal. |
 | Applied | In the request's transaction. | By the Worker, one recipient per transaction, after the request returns. |
 | Continues as | The message client ID. | The fixed system actor `signal`. |
@@ -457,7 +458,7 @@ Content-Type: application/json
 - **One case, several waits.** A family has at most one running instance per [business key](#separate-retries-from-business-identity), so a business-key throw reaches at most one instance. That instance can still receive several deliveries: one for each parallel catch and for each armed boundary with the name.
 - **Exact keys.** The key is trimmed, then compared exactly and case-sensitively. The family must have enabled business keys, and instances started before it did have no key, so they never match. A key in another family is never reached: name each family in its own throw.
 - **Still a signal.** Compared with a message, a narrow signal needs no credentials on the node, reaches boundaries on work in progress as well as catches, and is delivered by the Worker. It also reports no error when nothing waits: a throw to a key whose instance has finished, or to an instance that is not waiting for the name, completes with no deliveries. Check `totalDeliveryCount`, or use a message when the sender must know.
-- **Many narrow throws.** Each broadcast counts against `Signals.MaxOpenBroadcasts` until its deliveries finish, which takes seconds while a Worker runs; one without recipients never counts. An integration that throws one signal per order should raise the [setting](engine-settings.md#signalsmaxopenbroadcasts) to its peak and repeat a throw that returns `409`, with the same `idempotencyKey`.
+- **Many narrow throws.** Each broadcast thrown through the API counts against `Signals.MaxOpenBroadcasts` until its deliveries finish, which takes seconds while a Worker runs; one without recipients never counts. An integration that throws one signal per order should raise the [setting](engine-settings.md#signalsmaxopenbroadcasts) to its peak and repeat a throw that returns `409`, with the same `idempotencyKey`.
 
 ### Which waits receive it
 
@@ -465,12 +466,13 @@ The throw freezes its recipients in one statement: the signal waits that are com
 
 Delivery happens when the Worker runs each recipient, not at the moment of the throw. A wait that ended in between, for example because a timer boundary fired or the instance was cancelled, is skipped with `subscription_ended`. While no Worker runs, deliveries wait and act when it returns; nothing expires. If a signal is no longer wanted, cancel the broadcast: pending deliveries become `cancelled` and the waits stay subscribed.
 
-A throw that would reach more than `Signals.MaxSubscriptionsPerBroadcast` waits is rejected with `400` rather than truncated; narrow its scope or raise the [setting](engine-settings.md#signal-settings). When `Signals.MaxOpenBroadcasts` broadcasts are still delivering, a throw returns `409`; wait for one to finish or cancel one.
+A throw that would reach more than `Signals.MaxSubscriptionsPerBroadcast` waits is rejected with `400` rather than truncated; narrow its scope or raise the [setting](engine-settings.md#signal-settings). When `Signals.MaxOpenBroadcasts` broadcasts thrown through the API are still delivering, a throw returns `409`; wait for one to finish or cancel one. Broadcasts that workflows threw do not count toward that limit.
 
 ### Read progress
 
 - Poll `GET /api/signal-broadcasts/{id}` until `status` leaves `delivering`. It ends `completed`, or `completedWithIssues` when any delivery failed.
 - Page through `GET /api/signal-broadcasts/{id}/deliveries`, filtered by `status` or `instanceId`, for each recipient's `resultCode`. A managed client sees only its own broadcasts and no `resultDescription`.
+- `GET /api/signal-broadcasts` lists every thrower's broadcasts; repeat `thrownByKind` (`user`, `client`, or `instance`) to keep only some, for example `thrownByKind=instance` for the broadcasts workflows threw.
 - Instance detail's `signalSubscriptions` lists the signals an instance is waiting for now, armed boundaries included, and its history records each delivered signal as a `signalReceived` row naming the broadcast and its thrower.
 - Before throwing, a user can count the current waits per name and family with `GET /api/signal-subscriptions/summary`, optionally for one `workflowKey` with a `businessKey`, or for one `instanceId`. The count can change before the throw runs.
 
@@ -489,6 +491,48 @@ A signal catch waits at one point of the process. To react to a signal while a t
 
 Every branch is an active token of the instance, and `Workflow.Gateway.MaxActiveTokens` (default 1,000) bounds them. A delivery that would pass that limit fails with `signal_token_limit`, writes nothing, and leaves the boundary listening; once branches have finished, `POST /api/signal-broadcasts/{id}/retry-failed` delivers it again if the host is still active. A host that ends before its delivery runs, including one that starts an `asyncAfter` wait, is skipped. The [signal boundaries example](../examples/signals/02-signal-boundaries-recall.json) has one boundary of each kind on one task.
 
+### Throw a signal from a workflow
+
+A workflow throws a signal itself with an [`intermediateSignalThrowEvent`](node-reference.md#intermediatesignalthrowevent), which throws and continues, or a [`signalEndEvent`](node-reference.md#signalendevent), which ends its token as it throws. Use one when the announcement is a step of the process: cancelling an order interrupts the shipment branch of the same order, or a recall decision stops one order's shipment in another workflow. The workflow does not call the signal API for this, and should not: a throw over HTTP from a service task escapes the [loop guard](#guard-against-signal-loops).
+
+```json
+{
+  "id": 9,
+  "name": "Announce the cancellation",
+  "type": "intermediateSignalThrowEvent",
+  "signal": {
+    "name": "orders.cancelled",
+    "scope": { "kind": "thisInstance" },
+    "payload": [ { "name": "reason", "variable": "cancelReason", "required": true } ]
+  }
+}
+```
+
+- **Scope.** The event states one of six kinds in `signal.scope.kind`, and every kind requires all of the members it lists and no others. Choose the narrowest one that works: `thisInstance` for other waits of the same instance, such as another branch; `thisWorkflow` for every instance of the thrower's own family, under whatever key it was imported; `workflow` with a `workflowKey` for every instance of another family; `businessKey` with a `workflowKey` and a `businessKeyVariable` for the one case whose key the thrower holds in a variable; `ownBusinessKey` with a `workflowKey` for the case that shares the thrower's own business key; and `allWorkflows`. Publishing requires every family a scope names to have a definition. See [signal scope](node-reference.md#signal-scope).
+- **Payload.** Each entry copies one stored instance variable whole, or the thrower's `instanceId` or `businessKey`, under a member name that the receivers' mappings read as their `path`. Shared variables cannot be sent. A receiver that must answer the thrower can map the thrower's business key from the payload and throw back with the scope `businessKey`. Every user with a role from `Signals.RequiredRole` can read the payload on the broadcast routes, even without access to the throwing instance, so never send a secret. See [signal payload](node-reference.md#signal-payload).
+- **What the thrower records.** The throw commits with its step and the token continues at once; it never waits for a delivery. History records a `signalThrown` row with the broadcast ID and `recipientCount`, and the broadcast names the instance and event as its thrower: `thrownByKind` `instance`, `thrownBy` the instance ID as text, and `thrownByInstanceId`, `thrownByNodeId`, and `thrownByNodeName`. A managed API client never sees such a broadcast. The broadcast outlives its thrower: cancelling or ending the instance does not cancel it, and a user with the signal role cancels or retries it as any other.
+- **Which waits of the same instance.** The throwing token is never a recipient, and only waits that exist when the event throws are reached: one that a parallel branch reaches later in the same step is missed, and a signal end event that a fork leads straight into throws before any sibling branch has subscribed. See [which waits a thrown signal reaches](node-reference.md#which-waits-a-thrown-signal-reaches).
+- **Refusals.** A throw that cannot be built or that a limit stops fails its step and is never dropped. In a request, such as a user's action, the request returns `400` and nothing changes, so the user's action fails. In a Worker job the job retries by its failure policy and then opens a `job_execution_failed` incident; in a signal delivery the delivery fails with `signal_delivery_rejected` and the receiving wait stays. See [refused throws](node-reference.md#refused-signal-throws).
+- **Budgets.** Broadcasts that workflows threw and that are still delivering count toward `Signals.MaxOpenWorkflowBroadcasts` (default 10,000); those thrown through the API count toward `Signals.MaxOpenBroadcasts` (default 20); a broadcast without recipients counts toward neither. While no Worker runs, broadcasts stay open, so a long outage can make throws from workflows fail at the budget. See the [engine settings](engine-settings.md#signal-settings).
+
+**Put an automatic task in front of the throw** (`"type": "task"` with `"asyncBefore": true`) when a refused throw must not fail a user's action, when the waits created in the same step must receive the signal, or when a throw to many recipients should not hold a request. The throw then runs in a Worker job after the earlier step has committed, with the job's retries and incident on refusal.
+
+The [order cancellation example](../examples/signals/03-signal-throw-order-cancellation.json) throws to its own instance, and the [recall decision example](../examples/signals/04-signal-end-recall-decision.json) ends by throwing to one order of another workflow by business key.
+
+### Guard against signal loops
+
+A workflow that receives a signal and throws one that reaches a waiting workflow, its own instance included, can circulate without end. The automatic-activation guard, [`Workflow.Async.MaxConsecutiveAutomaticActivations`](engine-settings.md#workflowasyncmaxconsecutiveautomaticactivations) (default 1,000), bounds such a chain:
+
+- **At the throw.** A broadcast thrown by a workflow stores the throwing token's count of consecutive automatic activations plus one. A throw whose token has reached the limit is refused.
+- **At the delivery.** A delivery gives the receiving token the broadcast's count instead of starting a new chain: the catch's token, the host token of an interrupting boundary, and the new branch of a non-interrupting boundary. A broadcast thrown through the API stores 0, so its deliveries start a new chain as before.
+- **Where the work changes tokens.** A conditional boundary's new branch, or the host token it interrupts, continues the count of the step whose values woke it, or of the token that entered its host when the boundary is already true then, and a released conditional catch continues the greater of its own count and that step's. The writes of a multi-instance service, script, or call body count as its own token's step. A call activity's child starts at the calling token's count (entering the call counts one activation), and when the child's result returns the parent's token, or a multi-instance call body's, continues at the greater of its own count and the child's. Forks and joins hand the count on as before.
+- **New chains.** A person's action, a delivered message, a timer, an administrative variable update, and a throw through the API start a new chain, so a throw behind a timer or a user task never reaches the limit.
+- **What it does not see.** A workflow that reaches Flowbit over HTTP from a service task, by throwing through the API or by starting an instance with a message, starts a new chain. Throw from a workflow with a throw or end event instead.
+
+At the limit the refused throw fails its step, usually a signal delivery, which leaves the receiving instance waiting and shows the reason on the **Signals** page. Raise the setting to allow a longer chain, then use **Retry failed** on the broadcast.
+
+The hand-over through conditional events and call activities applies to every definition, with or without signals: a chain of automatic steps through them can now reach the limit and open an `automatic_loop_limit` incident where it ran without a bound before. See the [upgrade notes](deployment.md#upgrade-and-compatibility-rules).
+
 ### Signals and version changes
 
 Version-change preview checks every open signal wait of the instance, including armed signal boundaries, and the signal boundaries of every node where the instance has an active token:
@@ -496,7 +540,7 @@ Version-change preview checks every open signal wait of the instance, including 
 | Code | Kind | Cause |
 | --- | --- | --- |
 | `open_signal_subscription_node_missing` | Blocker | The source or target definition has no node with the wait's ID. |
-| `open_signal_subscription_contract_changed` | Blocker | The target node's type, `signal.name`, attachment, interrupting flag, or outgoing-flow contract differs, or it is not a signal event. |
+| `open_signal_subscription_contract_changed` | Blocker | The target node's type, `signal.name`, attachment, interrupting flag, or outgoing-flow contract differs, or it is not a signal catch or signal boundary event. |
 | `attached_signal_boundary_contract_changed` | Blocker | A node with an active token gains, loses, or changes a signal boundary: its ID, type, `signal.name`, host, interrupting flag, or outgoing flow. A boundary added in the target would never be subscribed. |
 | `signal_mapping_contract_changed` | Warning | Only `signal.outputMappings` differ; the target's mappings apply to later deliveries. |
 

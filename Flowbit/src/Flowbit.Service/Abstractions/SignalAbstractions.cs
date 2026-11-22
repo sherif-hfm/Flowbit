@@ -71,7 +71,11 @@ public interface ISignalBroadcastRepository
         string idempotencyKey,
         CancellationToken cancellationToken);
 
-    Task<int> CountOpenAsync(CancellationToken cancellationToken);
+    /// <summary>
+    /// The broadcasts of the given thrower kinds still delivering, counted without a lock up
+    /// to <paramref name="stopAt"/>: a budget needs to know only whether it is used up.
+    /// </summary>
+    Task<int> CountOpenAsync(IReadOnlyList<string> thrownByKinds, int stopAt, CancellationToken cancellationToken);
 
     /// <summary>Pending deliveries and the creation time of the oldest broadcast still delivering.</summary>
     Task<SignalBacklogRecord> GetBacklogAsync(CancellationToken cancellationToken);
@@ -79,6 +83,12 @@ public interface ISignalBroadcastRepository
     Task<SignalBroadcastRecord> AddAsync(
         NewSignalBroadcastRecord broadcast,
         CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Deletes a broadcast inserted in the current transaction, with its frozen deliveries, so a
+    /// throw refused after the freeze leaves nothing a caller that catches the refusal could commit.
+    /// </summary>
+    Task DeleteAsync(long broadcastId, CancellationToken cancellationToken);
 
     /// <summary>
     /// Inserts a delivery for every active subscription of the name within the scope, in
@@ -238,6 +248,10 @@ public interface ISignalBroadcastService
         SignalCaller caller,
         CancellationToken cancellationToken);
 
+    /// <summary>
+    /// A page of broadcasts, newest first. <paramref name="thrownByKinds"/> keeps only the
+    /// broadcasts of those thrower kinds (user, client, instance); empty keeps every kind.
+    /// </summary>
     Task<PagedResult<SignalBroadcastSummaryDto>> ListAsync(
         SignalCaller caller,
         string? name,
@@ -245,7 +259,8 @@ public interface ISignalBroadcastService
         string? status,
         int page,
         int pageSize,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken,
+        IReadOnlyList<string>? thrownByKinds = null);
 
     Task<SignalBroadcastDetailDto?> GetAsync(
         SignalCaller caller,

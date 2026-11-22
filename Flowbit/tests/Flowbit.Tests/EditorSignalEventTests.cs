@@ -256,7 +256,7 @@ public sealed class EditorSignalEventTests
                 option: NODE_TYPE_OPTIONS.findIndex(option => option.value === type) -
                   NODE_TYPE_OPTIONS.findIndex(option => option.value === 'intermediateConditionalCatchEvent'),
                 event: isEventType(type), single: isSingleOutgoingType(type), passThrough: isPassThroughType(type),
-                signalEvent: isSignalEventType(type), size: nodeSize(getNode(9)),
+                signalEvent: isSignalWaitType(type), size: nodeSize(getNode(9)),
                 classes: String(group.attributes.class),
                 rings: parts.filter(part => part.attributes?.class === 'ring').length,
                 icon: parts.find(part => String(part.attributes?.class) === 'node-icon')?.attributes.href,
@@ -725,7 +725,7 @@ public sealed class EditorSignalEventTests
                 label: typeLabel(type),
                 inTypeList: NODE_TYPE_OPTIONS.some(option => option.value === type),
                 boundary: isBoundaryEventType(type), event: isEventType(type), single: isSingleOutgoingType(type),
-                passThrough: isPassThroughType(type), signalEvent: isSignalEventType(type),
+                passThrough: isPassThroughType(type), signalEvent: isSignalWaitType(type),
                 size: nodeSize(getNode(14)),
                 before,
                 rings: parts(14).filter(part => part.attributes?.class === 'ring').length,

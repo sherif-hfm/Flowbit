@@ -22,7 +22,8 @@
                 @ScopeLabel(Broadcast.WorkflowKey, Broadcast.BusinessKey)
             }
         </dd>
-        <dt class="col-md-2">Thrown by</dt><dd class="col-md-10">@ThrowerLabel(Broadcast.ThrownBy, Broadcast.ThrownByKind)</dd>
+        @* One line, so the definition's text has no white space around the thrower. *@
+        <dt class="col-md-2">Thrown by</dt><dd class="col-md-10">@if (Broadcast.ThrownByInstanceId is long throwerId) {<a href="@($"instances/{throwerId}")">@ThrowerLabel(Broadcast.ThrownBy, Broadcast.ThrownByKind, throwerId, Broadcast.ThrownByNodeId, Broadcast.ThrownByNodeName)</a>} else {@ThrowerLabel(Broadcast.ThrownBy, Broadcast.ThrownByKind)}</dd>
         <dt class="col-md-2">Thrown</dt><dd class="col-md-10"><LocalTime Value="@Broadcast.CreatedAt" /></dd>
         <dt class="col-md-2">Finished</dt><dd class="col-md-10"><LocalTime Value="@Broadcast.CompletedAt" EmptyText="Still delivering" /></dd>
         @if (Broadcast.CancelledBy is not null)

@@ -1360,7 +1360,7 @@ public static class WorkflowVersionCompatibilityEvaluator
                     SignalNodeContract(source, sourceNode),
                     SignalNodeContract(target, targetNode),
                     StringComparison.Ordinal)
-                || !BpmnFlowNodeTypes.IsSignalEvent(targetNode.Type)
+                || !BpmnFlowNodeTypes.IsSignalWait(targetNode.Type)
                 || !string.Equals(subscription.SignalName, targetNode.Signal?.Name, StringComparison.Ordinal)
                 || subscription.AttachedToNodeId != (BpmnFlowNodeTypes.IsSignalCatch(targetNode.Type) ? null : targetNode.AttachedToRef)
                 || subscription.WorkflowDefinitionId != context.SourceDefinition.Id
@@ -1397,7 +1397,7 @@ public static class WorkflowVersionCompatibilityEvaluator
         WorkflowModel target,
         ICollection<WorkflowVersionCompatibilityIssue> blockers)
     {
-        if (!SignalEventRules.HasSignalEvents(source) && !SignalEventRules.HasSignalEvents(target))
+        if (!SignalEventRules.HasSignalWaits(source) && !SignalEventRules.HasSignalWaits(target))
         {
             return;
         }

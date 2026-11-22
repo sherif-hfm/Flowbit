@@ -416,7 +416,8 @@ public sealed class WorkflowDefinitionValidator(
                     || BpmnFlowNodeTypes.IsMessageStart(node.Type)
                     || BpmnFlowNodeTypes.IsCallActivity(node.Type)
                     || BpmnFlowNodeTypes.IsLinkCatch(node.Type)
-                    || BpmnFlowNodeTypes.IsSignalEvent(node.Type))
+                    || BpmnFlowNodeTypes.IsSignalWait(node.Type)
+                    || BpmnFlowNodeTypes.IsSignalThrow(node.Type))
                 && outgoing.Count != 1)
             {
                 var kind = BpmnFlowNodeTypes.IsStart(node.Type)
@@ -425,6 +426,8 @@ public sealed class WorkflowDefinitionValidator(
                         ? "Link catch event"
                     : BpmnFlowNodeTypes.IsSignalCatch(node.Type)
                         ? "Signal catch event"
+                    : BpmnFlowNodeTypes.IsSignalThrow(node.Type)
+                        ? "Signal throw event"
                     : BpmnFlowNodeTypes.IsSignalBoundary(node.Type)
                         ? "Signal boundary event"
                     : BpmnFlowNodeTypes.IsServiceTask(node.Type)
@@ -509,6 +512,11 @@ public sealed class WorkflowDefinitionValidator(
             if (BpmnFlowNodeTypes.IsSignalCatch(node.Type))
             {
                 ValidateSignalCatch(node, definition, incoming, outgoing);
+            }
+
+            if (BpmnFlowNodeTypes.ThrowsSignal(node.Type))
+            {
+                ValidateSignalThrow(node, definition, incoming, outgoing);
             }
 
             if (BpmnFlowNodeTypes.IsMessageStart(node.Type))
@@ -2672,6 +2680,7 @@ public sealed class WorkflowDefinitionValidator(
             throw new WorkflowDomainException(nameProblem);
         }
 
+        RejectThrowSettingsOnWait(node);
         ValidateObservableBoundary(
             node,
             definition,
@@ -2737,6 +2746,7 @@ public sealed class WorkflowDefinitionValidator(
             throw new WorkflowDomainException(nameProblem);
         }
 
+        RejectThrowSettingsOnWait(node);
         var label = SignalEventRules.Label(node);
         if (incoming.Count == 0)
         {
@@ -2751,6 +2761,54 @@ public sealed class WorkflowDefinitionValidator(
         }
 
         ValidateSignalMappings(node, definition, "Signal catch event");
+    }
+
+    // Only throw and end events send a signal; a wait's scope or payload would be ignored.
+    private static void RejectThrowSettingsOnWait(FlowNodeModel node)
+    {
+        if (node.Signal is { } signal && (signal.Scope is not null || signal.Payload is not null))
+        {
+            throw new WorkflowDomainException(
+                $"{SignalEventRules.Label(node)} cannot define signal.scope or signal.payload; only signal throw and end events send a signal.");
+        }
+    }
+
+    /// <summary>
+    /// A signal throw or end event: its name, then a throw's own topology, then the scope,
+    /// payload, and wait rules of <see cref="SignalEventRules.ThrowProblems"/>. The shared
+    /// outgoing-count and end-event rules have already run.
+    /// </summary>
+    private static void ValidateSignalThrow(
+        FlowNodeModel node,
+        WorkflowModel definition,
+        IReadOnlyCollection<SequenceFlowModel> incoming,
+        IReadOnlyList<SequenceFlowModel> outgoing)
+    {
+        if (SignalEventRules.ThrowEventNameProblem(node) is { } nameProblem)
+        {
+            throw new WorkflowDomainException(nameProblem);
+        }
+
+        var label = SignalEventRules.Label(node);
+        if (BpmnFlowNodeTypes.IsSignalThrow(node.Type))
+        {
+            if (incoming.Count == 0)
+            {
+                throw new WorkflowDomainException(
+                    $"{label} must have at least one incoming sequence flow.");
+            }
+
+            if (outgoing.Count == 1 && HasUnsupportedPassThroughMetadata(outgoing[0]))
+            {
+                throw new WorkflowDomainException(
+                    $"{label} must have one unconditional outgoing sequence flow without user-action or multi-instance metadata.");
+            }
+        }
+
+        if (SignalEventRules.ThrowProblems(definition, node).FirstOrDefault() is { } problem)
+        {
+            throw new WorkflowDomainException(problem);
+        }
     }
 
     /// <summary>

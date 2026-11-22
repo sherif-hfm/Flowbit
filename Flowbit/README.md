@@ -828,19 +828,28 @@ delivered, then maps the broadcast's payload through its typed
 `signal.outputMappings` and follows its one outgoing flow. A `signalBoundaryEvent`
 listens for its signal while its host is active: by default a delivery interrupts
 the host, and with `cancelActivity: false` it adds a branch at the boundary and
-keeps listening. Signals are thrown only through `POST /api/signal-broadcasts` in
-this release; signal start, throw, and end events do not exist yet. Authoring is in
-the node reference for the
-[catch](../docs/node-reference.md#intermediatesignalcatchevent) and the
-[boundary](../docs/node-reference.md#signalboundaryevent),
+keeps listening. A signal is thrown through `POST /api/signal-broadcasts`, or by
+a workflow: an `intermediateSignalThrowEvent` throws and follows its one outgoing
+flow, and a `signalEndEvent` throws as its token ends there (see
+[throw and end events](#signal-throw-and-end-events)). Signal start events do not
+exist yet. Authoring is in the node reference for the
+[catch](../docs/node-reference.md#intermediatesignalcatchevent), the
+[boundary](../docs/node-reference.md#signalboundaryevent), the
+[throw](../docs/node-reference.md#intermediatesignalthrowevent), and the
+[end event](../docs/node-reference.md#signalendevent),
 integration in the [developer guide](../docs/developer-guide.md#broadcast-signals),
 routes in the [API reference](../docs/api-guide.md#signals), and rollout in
 [deployment](../docs/deployment.md#signal-events).
 
 `SignalEventRules` (`Flowbit.Shared`) owns the name rule (1 to 100 lowercase
 letters, digits, `.`, `_`, or `-`, starting with a letter or digit, compared
-exactly), the 100-mapping limit, the throw endpoint's name check, and
-`HasSignalEvents`, a per-definition flag computed once per definition object.
+exactly), the 100-mapping limit, the throw endpoint's name check, the scope kinds
+and payload rules of throw and end events (`ThrowProblems`), the four-type `Label`,
+and `HasSignalWaits`, a per-definition flag computed once per definition object
+that is true only for a catch or boundary (`BpmnFlowNodeTypes.IsSignalWait`).
+`BpmnFlowNodeTypes.IsSignalEvent` is true for all four signal types,
+`IsSignalThrow`, `IsSignalEnd`, and `ThrowsSignal` name the two that throw, and a
+definition whose only signal events throw runs no subscription statement.
 `WorkflowDefinitionValidator.ValidateSignalCatch` adds the topology, the typed
 mapping shapes, and the shared-variable rule: a mapping cannot write a shared
 alias, and its default template, its validation, and a targeted process
@@ -857,8 +866,9 @@ counts timer, conditional, and signal boundaries together
 name on a host and a boundary that repeats its host catch's name.
 `WorkflowModelMigrator` defaults a missing `cancelActivity` to true on every
 observable boundary, so a non-interrupting flag survives normalization.
-`RequiresDurableProcessing` returns true for a signal event, so the publication
-gate needs `WorkflowDurableProcessing:PublicationEnabled`.
+`RequiresDurableProcessing` returns true for every signal event, throw and end
+events included, so the publication gate needs
+`WorkflowDurableProcessing:PublicationEnabled`.
 
 **Invariants.**
 
@@ -881,9 +891,12 @@ gate needs `WorkflowDurableProcessing:PublicationEnabled`.
    the throw.
 8. The Worker is required.
 9. Workflows without signals pay nothing: the subscription statements in routing
-   and on host exit are skipped for a definition without a signal event, and a
+   and on host exit are skipped for a definition without a signal wait, and a
    command-capturing test pins that a user action in such a workflow issues no
-   statement on a `signal_` table.
+   statement on a `signal_` table. A transition runs a throw statement only when
+   it enters a throw or end event.
+10. A throw from a workflow commits with its step, never waits for another
+    instance or for a delivery, and a refused throw fails its step.
 
 **Subscriptions.** `EnsureSignalSubscriptionsAsync` runs in
 `ResolvePassThroughAsync` for the token's current node, after
@@ -896,7 +909,7 @@ It creates the catch's own row for a signal catch and, when
 boundary, with `AttachedToNodeId` set to the host and `CancelActivity` from the
 boundary. That is host entry, before an `asyncBefore` job runs, as for
 conditional boundaries. It returns before any query unless the definition has
-signal events and the node is a signal catch or the host of a signal boundary, and
+signal waits and the node is a signal catch or the host of a signal boundary, and
 the activation-fence uniqueness `(InstanceId, TokenId, ActivationId,
 SignalNodeId)` makes it idempotent. The catch then takes the existing resting
 branch, which arms its timer boundaries; its token has no wait state, like a token
@@ -909,7 +922,7 @@ conditional or signal boundary), `FireTimerBoundaryAsync`, `FireTimerCatchAsync`
 and the error-capture branch of `ResolvePassThroughAsync`. A host that starts an
 `asyncAfter` wait leaves through `CancelAttachedBoundaryWaitsAsync` too, so its
 signal boundaries stop listening while the continuation waits. Callers that pass
-the instance's definition skip the statement when `HasSignalEvents` is false; every caller does except instance
+the instance's definition skip the statement when `HasSignalWaits` is false; every caller does except instance
 cancellation, which has no definition at hand and runs the one statement anyway; that is safe across version changes,
 because an open subscription blocks a change to a definition without its signal
 event.
@@ -940,7 +953,10 @@ the throw back. It then stores the counts and the recipients per family and
 enqueues one `signalBroadcastDeliver` job per represented definition, with a
 `signal_broadcast_jobs` link row. It snapshots the thrower (`user` or `client`,
 its identity, roles, and the claims `WorkflowAudit:AllowedClaims` selects) and
-never logs the payload or a business key. A client sees, cancels, and retries only its own
+never logs the payload or a business key. The open-broadcast count reads only
+`user` and `client` broadcasts (`SignalSettings.ApiThrowerKinds`). Everything
+after the replay and the count, from the insert to the delivery jobs, is
+`SignalBroadcastWriter`, which the engine's throws share. A client sees, cancels, and retries only its own
 broadcasts and receives result codes without descriptions.
 
 **Delivery.** `SignalBroadcastJobProcessor` handles one broadcast and one
@@ -965,8 +981,10 @@ if the token is still the same runnable activation, completes the subscription,
 cancels the catch's boundary waits, records the `signalCatch` traversal, the
 `signalReceived` history row, and the `signalReceived` visit completion, and
 routes on with `forceDurableActivities`. It runs as `SignalActor()`, the fixed
-actor `signal` with no roles, claims, or delegation, and resets the automatic
-activation count as any external trigger does. A conditional boundary that took
+actor `signal` with no roles, claims, or delegation, and gives the token the
+broadcast's `AutomaticActivationCount`: 0 for a broadcast thrown through the API,
+which starts a new chain as any external trigger does, and the thrower's count
+plus one for a broadcast a workflow threw ([loop guard](#signal-throw-and-end-events)). A conditional boundary that took
 the token first ends the delivery as `delivered` with `superseded`.
 
 A boundary delivery takes one of two paths after the mappings resolve:
@@ -1028,7 +1046,7 @@ the signal boundaries attached to it in both versions (ID, type, name, host,
 effective `cancelActivity`, and outgoing flow, not mappings) and blocks with
 `attached_signal_boundary_contract_changed` when the host gains, loses, or changes
 one, because the host subscribed on entry and a gained boundary would never be
-subscribed; it is skipped when neither version has signal events.
+subscribed; it is skipped when neither version has signal waits.
 `DurableNodeContract` includes signal boundaries, mappings included, so a host
 with an open job blocks with `open_job_contract_changed` on any change to them. A
 compatible change rebinds the open subscriptions to the target definition and node
@@ -1044,18 +1062,145 @@ new segment. A `signalReceived` history row carries no action ID, so
 claim inheritance source.
 
 **Telemetry.** The `Flowbit.Runtime.Signals` meter (`SignalRuntimeTelemetry`)
-counts broadcasts by thrower kind and deliveries by status and result code, never
-names, payloads, or identities. `WorkerTelemetry` forwards the delivery counter
-to the Worker's `/metrics`, and `QueueTelemetryService` samples the pending
-deliveries and the age of the oldest unfinished broadcast. No lifecycle webhook
+counts broadcasts by thrower kind (`user`, `client`, or `instance`), deliveries by
+status and result code, and refused throws from workflows by cause
+(`flowbit.signals.throw_refusals`), never names, payloads, or identities.
+`WorkerTelemetry` forwards the delivery and refusal counters to the Worker's `/metrics`, and
+`QueueTelemetryService` samples the pending deliveries and the age of the oldest
+unfinished broadcast. `GetBacklogAsync` sums the pending count from the counters
+stored on the delivering broadcasts, through `IX_signal_broadcasts_open_thrower`,
+instead of probing `signal_deliveries` once per open broadcast, because workflows
+can keep thousands of narrow broadcasts open; every delivery page, cancel, and
+retry recounts those counters under the broadcast's row lock. No lifecycle webhook
 event type is added: instance and task changes that a delivery causes are captured
 by the existing triggers, and `capture_workflow_incident_lifecycle()` lists
 `signalBroadcastDeliver` among the job kinds that report no node.
 
 Instance detail lists the instance's active subscriptions (`signalSubscriptions`,
 at most 50, with `signalSubscriptionCount`); the query runs only for a definition
-with signal events. `signalBroadcasts` is a [retention](#history-and-audit-retention)
+with signal waits. `signalBroadcasts` is a [retention](#history-and-audit-retention)
 category; subscriptions stay with their instance.
+
+### Signal throw and end events
+
+An `intermediateSignalThrowEvent` (pass-through: at least one incoming flow and
+one unconditional outgoing flow) and a `signalEndEvent` (an end event for
+`BpmnFlowNodeTypes.IsEnd`, so every end rule, the lock-order proof, and instance
+completion treat it as one) carry `signal: { name, scope, payload }`.
+`SignalEventModel` gained `Scope` (`SignalThrowScopeModel`: `kind`, `workflowKey`,
+`businessKeyVariable`) and `Payload` (`SignalPayloadEntryModel`: `name`,
+`variable` or `source`, `required`), both null and omitted on a catch or boundary,
+so stored definitions keep their shape; the two new models reject unknown members
+(`JsonUnmappedMemberHandling.Disallow`), as the call activity models do, while
+`SignalEventModel` stays tolerant. `SignalEventRules.ThrowProblems` gives the
+ordered problems of one event, reading declarations from
+`CallActivityRules.SourceDeclarations`; `WorkflowDefinitionValidator` runs it for
+both types, rejects `scope` and `payload` on a wait, and rejects task, role,
+variable, timer, conditional, message, async, and multi-instance settings on both.
+`SignalThrowFixtures` feeds the same cases to the API and the editor.
+`WorkflowDefinitionReadinessChecker.FindSignalTargetProblemsAsync` requires every
+family a `workflow`, `businessKey`, or `ownBusinessKey` scope names, other than
+the definition's own key, to have a definition; publication, set-default, and
+create or update with publish call it, drafts do not, and the AI assistant
+reports it as a publication blocker only. Both types make a definition need the
+Worker. See the [node reference](../docs/node-reference.md#signal-scope) for the
+scope kinds and payload, and [deployment](../docs/deployment.md#signal-events)
+for rollout.
+
+**Writer.** `SignalBroadcastWriter` inserts the broadcast, freezes the recipients
+with the scope's literal statement, checks the recipient limit, lists the
+recipient definitions, stores the counts and status, and enqueues the delivery
+jobs. It refuses to run without an ambient transaction. `ThrowAsync` calls it in
+its own transaction after its validation, replay, and count; the engine calls it
+inside the step's transaction, which already holds the instance hierarchy and any
+shared rows of the segment. The throw locks no existing row, its freeze reads
+other instances' subscriptions from its statement's snapshot, and its inserts
+reference only the new broadcast and a workflow definition. When the recipient
+limit is exceeded, the writer deletes the broadcast it inserted, with its frozen
+deliveries, before reporting it, so a caller that catches the refusal cannot
+commit part of a broadcast.
+
+**Engine throw.** `WorkflowEngineService.SignalThrows.cs` has
+`ThrowSignalFromNodeAsync`, which both events use. In order, it evaluates the
+throwing token's `AutomaticActivationCount` with
+`WorkflowAutomaticActivationGuard.EvaluateNext` against
+`Workflow.Async.MaxConsecutiveAutomaticActivations`; flushes the step's tracked
+changes, so the raw freeze sees a subscription created earlier in the same pass;
+reads stored instance variables once with `LoadInstanceVariablesAsync` when a
+payload entry or `businessKeyVariable` needs them, never the routing overlay;
+builds the `SignalBroadcastScope` (`thisInstance` as the instance with its
+family, `thisWorkflow` and `workflow` as a family, `businessKey` and
+`ownBusinessKey` through `BusinessKeyRules.Normalize`, `allWorkflows`) and the
+payload (at most 256 KiB by `JsonbText.ByteCount`); counts open `instance`
+broadcasts against `Signals.MaxOpenWorkflowBroadcasts` without a lock; and calls
+the writer with thrower kind `instance`, `ThrownBy` the instance ID in invariant
+digits, roles `[]`, no idempotency key, the node's ID and name, and the count plus
+one. It never looks a family up. It returns the history payload (`broadcastId`,
+`signalName`, `eventNodeId`, `eventKind`, `scopeKind`, `workflowKey`,
+`recipientCount`). Its broadcast metric and its information line with IDs and
+counts go through `IUnitOfWork.AfterCommit`, so they run only once the step
+commits and never for a step that rolls back or is retried. A refusal
+goes through `Refuse`, which records `flowbit.signals.throw_refusals` with its
+cause, logs `Instance {id} node {id} did not throw its signal: {cause}.`, and
+throws a `WorkflowDomainException` whose message starts with the event's label
+and never holds a business key or a payload value. That exception fails the step
+the usual way: `400` and rollback in a request, the job's failure policy and a
+`job_execution_failed` incident in a Worker job, `signal_delivery_rejected` in a
+delivery, `call_start_failed` in a call child's start, and a failed item in an
+administrative batch.
+
+**Where each event throws.** `ResolvePassThroughAsync` has a branch for
+`IsSignalThrow` after the link throw's: it throws, then advances through
+`AdvanceAutomaticTokenAsync` with the note `signalThrown` and the returned payload,
+which also becomes the outgoing flow's traversal kind; the visit completes as
+`normal`. A signal end event throws where its token enters it, through
+`ThrowSignalAtEndAsync`, which returns at once for any other end event. It is
+called at the five places that complete a token at an end event, after the
+token's update is saved and before the instance's completion is decided, so the
+instance is still running when its other waits are frozen: `TakeFlowCoreAsync`
+(a user action), `CloseAndAdvanceMultiInstanceAsync` (a multi-instance outcome or
+interrupt), `DeliverMessageAsync` (a message), `AdvanceAutomaticTokenAsync` (every
+automatic advance, including gateways, jobs, calls, and administrative actions),
+and `AdvanceFromSignalEventAsync` (a delivered signal). Each passes the token's ID,
+and the helper rereads the token, so it reads the chain count the update left. It
+adds a history row from the end event to itself with note `signalThrown`, after
+the row that moved the token there; the visit completes as `normalEnd`. A new path
+that completes a token at an end event must call this helper. Because the end
+event throws in the step that moves its token there, an end event behind a fork
+throws in the fork's own step, before any sibling branch has subscribed.
+
+**Loop guard.** A broadcast thrown by a workflow stores the throwing token's chain
+count plus one in `AutomaticActivationCount`; one thrown through the API stores 0.
+A delivery gives the receiving token the broadcast's count at the three places it
+used to reset it: a non-interrupting boundary's sibling token, the host token that
+`InterruptBoundaryHostAsync` moves onto an interrupting boundary, and the advance
+from the event. The count also follows the work where it changes tokens or
+instances, for every definition: `ResumeConditionalWaitsAsync` and the routing
+drain take the count of the step whose values were written, so a conditional
+boundary's branch or interrupted host continues it and a released conditional
+catch takes the greater of its own and that count; a person's action, a message,
+and an administrative variable update pass 0, so they start a new chain. A
+conditional boundary already true when its host is entered continues the entering
+token's count, and the conditional events an automatic multi-instance body's writes
+wake continue the body token's. A call activity's child
+starts at the calling token's count (the `callStart` job carries it, and entering
+the call counted one activation), and `callResume` gives the parent's token the
+greater of its own count and the count of the child's last token; a multi-instance
+call item's result does the same for the body token. A new way to
+create or wake a token must hand the count over in the same way, or a loop through
+it is never counted. A throw does not change the throwing token's own count.
+
+**Records and analyses.** The broadcast keeps `ThrowerInstanceId` (a plain column,
+no foreign key), `ThrowerNodeId`, and `ThrowerNodeName`; the DTOs return them as
+`thrownByInstanceId`, `thrownByNodeId`, and `thrownByNodeName`, and a receiver's
+`signalReceived` payload adds `thrownByInstanceId` and `thrownByNodeId`. A managed
+client never sees such a broadcast. The broadcast outlives its thrower. The
+`signalThrown` rows carry no action ID, so claim and assignment inheritance ignore
+them. No token rests on either event and no job or subscription names one, so a
+version change adds no blocker and the graph analyses need no case; the
+shared-variable access plan of both types is empty. No job kind, completion
+reason, route, or lifecycle event type is added; an instance that ends at a signal
+end event is captured as one that ends at a plain end event.
 
 ## Instance-wide flow evidence (`FlowInfo`)
 
@@ -1136,7 +1281,7 @@ A `callActivity` starts a child instance of another workflow family and rests un
 
 **Row ownership.** `call_activity_executions` rows are written only under the parent's instance lock, and `call_activity_results` rows are written once under the child's lock and never change. Each side reads the other without locking. Stored states are `queued`, `running`, `completed`, `failed`, and `cancelled`; `resultReady` is a read projection of `running` plus a result row. `failed` means a failure was delivered, and `cancelled` means the parent activation abandoned the call, which differs from a child cancelled on its own.
 
-**Admission.** Depth is exact because it is immutable. Reserved unsettled calls are counted under the entering instance's lock, including this transaction's own, so the open-call limit is a soft threshold rather than an exact quota. A call blocked before admission has `CapacityReserved = false`, no child, and an incident; its retry repeats admission. An admitted retry reuses its slot. Every settlement clears the flag atomically, and every call entry counts against the automatic-activation guard, even when delivery follows a person's action. That includes an entry its boundary catches, which creates no job: at the limit it falls through to the guard's incident, and the retry reaches the boundary from `callStart`.
+**Admission.** Depth is exact because it is immutable. Reserved unsettled calls are counted under the entering instance's lock, including this transaction's own, so the open-call limit is a soft threshold rather than an exact quota. A call blocked before admission has `CapacityReserved = false`, no child, and an incident; its retry repeats admission. An admitted retry reuses its slot. Every settlement clears the flag atomically, and every call entry counts against the automatic-activation guard, even when delivery follows a person's action. The child's first token starts at the calling token's count, and delivery gives the parent's token the greater of its own count and that of the child's last token. That includes an entry its boundary catches, which creates no job: at the limit it falls through to the guard's incident, and the retry reaches the boundary from `callStart`.
 
 **Phases.**
 
@@ -1255,8 +1400,11 @@ invalid, or nonpositive values use that default). The 1,001st consecutive
 automatic `task`, `serviceTask`, or `scriptTask` activation is persisted as an
 `automatic_loop_limit` incident before its body can run. User-task actions,
 multi-instance completion, message delivery, and timer triggers start a fresh
-allowance. An administrator can retry the incident to queue the same stable job
-as activation one of a new allowance.
+allowance. A conditional event that an automatic step wakes, a call activity's
+child and the parent it returns to, and a delivery of a signal that a workflow
+threw continue the chain instead (see the
+[signal loop guard](#signal-throw-and-end-events)). An administrator can retry the
+incident to queue the same stable job as activation one of a new allowance.
 
 The Blazor **Operations** page and `/api/jobs` / `/api/incidents` resources
 default to the `admin` role. Override the comma-separated global role list with
@@ -1540,7 +1688,8 @@ and in-flight gateway executions are not migrated.
 - `POST /api/multi-instance-executions/{executionId}/flows/{flowId}`
 - `POST /api/signal-broadcasts` (`202`; `Signals.RequiredRole` or `signals.throw`;
   scope: `workflowKey`, `workflowKey` with `businessKey`, `instanceId`, or `allWorkflows`)
-- `GET /api/signal-broadcasts`, `GET /api/signal-broadcasts/{id}`,
+- `GET /api/signal-broadcasts` (optional repeated `thrownByKind`: `user`,
+  `client`, or `instance`), `GET /api/signal-broadcasts/{id}`,
   `GET /api/signal-broadcasts/{id}/deliveries` (a client sees only its own)
 - `POST /api/signal-broadcasts/{id}/cancel`,
   `POST /api/signal-broadcasts/{id}/retry-failed`
@@ -2000,13 +2149,13 @@ dotnet test ./tests/Flowbit.BrowserTests/Flowbit.BrowserTests.csproj -c Release 
 ```
 
 Set `FLOWBIT_BROWSER_HEADED=1` to launch Chromium headed for local diagnosis.
-The suite covers editor E1–E23 and runtime R1–R16 scenarios (see the project
+The suite covers editor E1–E24, hosted-editor H1–H17, and runtime R1–R16 scenarios (see the project
 README); manual native-picker and full acceptance checks remain the caller's
 responsibility.
 
 The browser project also checks its own auxiliary-page diagnostics, retained
 warnings/network failures, one-shot native browser dialogs, and timeout cleanup
-(133 cases, of which 129 are editor, hosted-editor, runtime, and authentication
+(142 cases, of which 138 are editor, hosted-editor, runtime, and authentication
 product scenarios). Each scenario retains
 `diagnostics.json`, including successful runs.
 The UI shell and instance summary expose nonvisual `data-interactive` markers

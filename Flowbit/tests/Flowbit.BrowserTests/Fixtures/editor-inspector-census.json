@@ -95,6 +95,22 @@
         "name": "census.recall",
         "outputMappings": [{ "variable": "subject", "path": "reason", "dataType": "string", "isArray": false, "required": false, "defaultValue": null, "validation": null }]
       }
+    },
+    {
+      "id": 34, "name": "Announce the recall", "type": "intermediateSignalThrowEvent", "laneId": 1, "x": 1300, "y": 640,
+      "signal": {
+        "name": "census.recall",
+        "scope": { "kind": "businessKey", "workflowKey": "census-claims", "businessKeyVariable": "subject" },
+        "payload": [{ "name": "amount", "variable": "amount", "required": true }]
+      }
+    },
+    {
+      "id": 35, "name": "Recall announced", "type": "signalEndEvent", "laneId": 1, "x": 1500, "y": 640,
+      "signal": {
+        "name": "census.policy-changed",
+        "scope": { "kind": "thisInstance" },
+        "payload": [{ "name": "claim", "source": "instanceId" }]
+      }
     }
   ],
   "sequenceFlows": [
@@ -113,6 +129,8 @@
     { "id": 1101, "name": "", "sourceRef": 11, "targetRef": 12 },
     { "id": 1201, "name": "Either", "sourceRef": 12, "targetRef": 13, "condition": "amount > 2" },
     { "id": 2501, "name": "", "sourceRef": 25, "targetRef": 30 },
-    { "id": 3101, "name": "", "sourceRef": 31, "targetRef": 18 }
+    { "id": 3101, "name": "", "sourceRef": 31, "targetRef": 18 },
+    { "id": 3201, "name": "", "sourceRef": 32, "targetRef": 34 },
+    { "id": 3401, "name": "", "sourceRef": 34, "targetRef": 35 }
   ]
 }

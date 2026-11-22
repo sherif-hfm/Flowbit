@@ -45,7 +45,7 @@
                             {
                                 <a href="@($"administrative-actions?batchId={batchId}")">Batch #@batchId</a>
                             }
-                            else if (item.Note is "signalReceived" && HistoryPayloadString(item, "broadcastId") is { } broadcastId)
+                            else if (item.Note is "signalReceived" or "signalThrown" && HistoryPayloadString(item, "broadcastId") is { } broadcastId)
                             {
                                 <a href="@($"signals?broadcastId={broadcastId}")">Broadcast #@broadcastId</a>
                             }
@@ -67,6 +67,32 @@
 
     [Parameter]
     public IReadOnlyList<InstanceHistoryDto> HistoryItems { get; set; } = [];
+
+    // A throw or end event's history row: the signal, the scope in words, and the
+    // recipient count. The row never holds a business key or a payload value.
+    internal static string SignalThrownText(InstanceHistoryDto item)
+    {
+        var signal = HistoryPayloadString(item, "signalName") ?? "a signal";
+        var family = HistoryPayloadString(item, "workflowKey");
+        var scope = HistoryPayloadString(item, "scopeKind") switch
+        {
+            "thisInstance" => "this instance",
+            "thisWorkflow" => "this workflow",
+            "workflow" => family is null ? "one workflow" : $"workflow {family}",
+            "businessKey" or "ownBusinessKey" => family is null ? "one business key" : $"one business key in workflow {family}",
+            "allWorkflows" => "all workflows",
+            _ => "its scope"
+        };
+        var count = HistoryPayloadString(item, "recipientCount");
+        var recipients = count switch
+        {
+            null => string.Empty,
+            "1" => ": 1 recipient",
+            _ => $": {count} recipients"
+        };
+        var verb = HistoryPayloadString(item, "eventKind") == "end" ? "Ended and threw" : "Threw";
+        return $"{verb} signal '{signal}' to {scope}{recipients}";
+    }
 
     private static string HistoryDetails(InstanceHistoryDto item)
     {
@@ -140,9 +166,16 @@
             var signal = HistoryPayloadString(item, "signalName") ?? "a signal";
             var thrower = HistoryPayloadString(item, "thrownBy");
             var kind = HistoryPayloadString(item, "thrownByKind");
-            var by = thrower is null ? null : kind == "client" ? $" from API client {thrower}" : $" from {thrower}";
+            var by = thrower is null ? null
+                : kind == "client" ? $" from API client {thrower}"
+                : kind == "instance" ? $" from instance #{thrower}"
+                : $" from {thrower}";
             var broadcast = HistoryPayloadString(item, "broadcastId");
             return $"Received signal '{signal}'{by}" + (broadcast is null ? string.Empty : $" (broadcast #{broadcast})");
+        }
+        if (item.Note is "signalThrown")
+        {
+            return SignalThrownText(item);
         }
         if (item.Note is "scopedInterruptSkipped")
         {

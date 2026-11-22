@@ -107,6 +107,7 @@ public sealed partial class WorkflowAiAuthoringService(
         catch (WorkflowDomainException error) { saveBlockers.Add(SafeDiagnostic(error)); }
         try { readiness.EnsureDurablePublicationAllowed(model, publish: true); }
         catch (WorkflowDomainException error) { publicationBlockers.Add(SafeDiagnostic(error)); }
+        publicationBlockers.AddRange(await readiness.FindSignalTargetProblemsAsync(model, cancellationToken));
         foreach (var problem in await readiness.FindCallTargetProblemsAsync(model, cancellationToken))
         {
             publicationBlockers.Add(problem.Message);

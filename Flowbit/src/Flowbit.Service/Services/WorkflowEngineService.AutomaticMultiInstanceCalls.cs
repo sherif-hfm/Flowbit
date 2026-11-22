@@ -479,7 +479,12 @@ public sealed partial class WorkflowEngineService
                 cancellationToken,
                 joinAmbientTransaction: true,
                 forceDurableActivities: true,
-                callLink: new CallChildLinkRecord(invocation.Id, invocation.RootInstanceId, invocation.ChildDepth));
+                callLink: new CallChildLinkRecord(
+                    invocation.Id,
+                    invocation.RootInstanceId,
+                    invocation.ChildDepth,
+                    (await runtime.GetExecutionTokenAsync(invocation.ParentTokenId, false, cancellationToken))
+                        ?.AutomaticActivationCount ?? 0));
             return null;
         }
         catch (BusinessKeyConflictException error)
@@ -617,6 +622,24 @@ public sealed partial class WorkflowEngineService
         await using (var transaction = await unitOfWork.BeginTransactionAsync(cancellationToken))
         {
             var owner = await LockAutomaticCallItemOwnerAsync(lease, fence, seed, cancellationToken);
+            // The body continues the greater of its own chain and the child's, which the job
+            // carries from the token that ended the child, as a single call does (EVENT-04B).
+            if (lease.Job.AutomaticActivationCount > owner.Token.AutomaticActivationCount)
+            {
+                if (!await runtime.SetExecutionTokenAutomaticActivationCountAsync(
+                        owner.Token.Id, owner.Token.ActivationId, lease.Job.AutomaticActivationCount, cancellationToken))
+                {
+                    throw new WorkflowConflictException(
+                        "The call body's token changed while its automatic chain was being continued.");
+                }
+
+                owner = owner with
+                {
+                    Token = owner.Token with { AutomaticActivationCount = lease.Job.AutomaticActivationCount },
+                    ControlTemplate = owner.ControlTemplate with { AutomaticActivationCount = lease.Job.AutomaticActivationCount }
+                };
+            }
+
             try
             {
                 await automaticMultiInstanceCoordinator!.PublishCandidateAsync(owner.Body.Id, owner.Item.Id,

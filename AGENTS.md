@@ -10,7 +10,8 @@ The model is a simplified, BPMN 2.0-aligned subset. Flow nodes are typed as
 `inclusiveGateway`, `complexGateway`, or `endEvent`, plus `parallelGateway`,
 `intermediateConditionalCatchEvent`, `conditionalBoundaryEvent`, `scopedInterruptEvent`,
 `intermediateLinkThrowEvent`, `intermediateLinkCatchEvent`,
-`intermediateSignalCatchEvent`, `signalBoundaryEvent`, and
+`intermediateSignalCatchEvent`, `signalBoundaryEvent`,
+`intermediateSignalThrowEvent`, `signalEndEvent`, and
 `terminateEndEvent`, drawn with BPMN-style shapes (event circles, task rounded
 rectangles, gateway diamonds). `scopedInterruptEvent` is a documented Flowbit
 extension; strict BPMN would normally model that scope with an interruptible
@@ -227,7 +228,9 @@ The key pieces:
   script tasks, variable contracts, variable presentation, declared producers,
   async/job/timer settings, per-node-type settings (error boundaries, wait
   boundaries, then `validateSaveCallActivities`, which mirrors
-  `CallActivityRules.FindLocalProblem`), end events, link events
+  `CallActivityRules.FindLocalProblem`, the message, timer, and conditional
+  events, then `validateSaveSignalEvents` and `validateSaveSignalThrows`), end
+  events, link events
   (`validateSaveLinkEvents`), node types, gateway
   topology, graph scopes, entry identity,
   and multi-instance outcomes. Rule helpers such as `validateTypedOutputMappings`
@@ -267,7 +270,7 @@ A repeatable Chromium smoke suite exists at
 real copied editor and the real published API/UI over localhost with a
 disposable PostgreSQL container; see its
 [README](Flowbit/tests/Flowbit.BrowserTests/README.md) for setup and the
-E1–E23/H1–H16/R1–R16 coverage matrix. It is the baseline for editor/runtime UI changes,
+E1–E24/H1–H17/R1–R16 coverage matrix. It is the baseline for editor/runtime UI changes,
 but it does not replace scenario-specific manual verification: the native
 file-picker success/cancel path, visual comparisons, and behaviors outside the
 matrix still need the manual steps above.
@@ -944,7 +947,7 @@ Storage follows the hybrid design:
   `messageStartEvent`, automatic `task`, `serviceTask`, `scriptTask`,
   `exclusiveGateway`, `parallelGateway`, `inclusiveGateway`, `complexGateway`,
   `scopedInterruptEvent`, `intermediateLinkThrowEvent`,
-  `intermediateLinkCatchEvent`, and
+  `intermediateLinkCatchEvent`, `intermediateSignalThrowEvent`, and
   `errorBoundaryEvent` nodes are resolved in the same
   transaction until the instance rests on a `userTask`, `callActivity`,
   `intermediateMessageCatchEvent`, `intermediateTimerCatchEvent`,
@@ -954,8 +957,8 @@ Storage follows the hybrid design:
   written with a `start`, `messageStart`, `automatic`, `service`, `script`,
   `gateway`, `parallelFork`, `parallelJoin`, `inclusiveSplit`, `inclusiveMerge`,
   `complexActivation`, `complexReset`, `scopedInterrupt`,
-  `scopedInterruptSkipped`, `linkThrow`, `linkCatch`, `boundary`, `error`, or
-  `message` note. Gateway history also stores
+  `scopedInterruptSkipped`, `linkThrow`, `linkCatch`, `signalThrown`, `boundary`,
+  `error`, or `message` note. Gateway history also stores
   the selected sequence-flow id; automatic gateway rows are excluded from
   previous-actor claim inheritance even though that audit id is populated.
 - **Link events.** `intermediateLinkThrowEvent` and `intermediateLinkCatchEvent`
@@ -979,13 +982,16 @@ Storage follows the hybrid design:
   migration, job, completion reason, or route exists for links; every replica
   must be upgraded before a link is saved, because an older one strands a token
   on a throw.
-- **Signal events (EVENT-04).** An `intermediateSignalCatchEvent`
+- **Signal events (EVENT-04, EVENT-04B).** An `intermediateSignalCatchEvent`
   (`signal: { name, outputMappings }`) rests until a broadcast with its name is
   delivered, and a `signalBoundaryEvent` (the same `signal`, plus `attachedToRef`
   and `cancelActivity`) listens while its host is active; see the
-  [runtime reference](Flowbit/README.md#signal-events). Signals are thrown only
-  through `POST /api/signal-broadcasts`; signal start/throw/end events do not
-  exist yet. Preserve these invariants:
+  [runtime reference](Flowbit/README.md#signal-events). A signal is thrown
+  through `POST /api/signal-broadcasts`, by a pass-through
+  `intermediateSignalThrowEvent`, or by a `signalEndEvent`
+  (`signal: { name, scope, payload }`; see
+  [throw and end events](Flowbit/README.md#signal-throw-and-end-events)); signal
+  start events do not exist yet. Preserve these invariants:
   - A signal is a broadcast, not a queue: it reaches the waits that exist when
     it is thrown and is never kept. The throw freezes its recipients in one
     `INSERT ... SELECT` over active `signal_subscriptions`, takes no runtime
@@ -1000,8 +1006,16 @@ Storage follows the hybrid design:
     and throws alike. A family or all-workflows request must keep hashing as it
     did, so stored idempotency keys replay. Never log a business key.
   - `SignalEventRules` (`Flowbit.Shared`) owns the lowercase name rule, the
-    mapping limit, and `HasSignalEvents`; the throw endpoint and the validator
-    use it, and the editor mirrors it.
+    mapping limit, `HasSignalWaits`, the four-type `Label`, and `ThrowProblems`
+    (scope kinds, payload rules and `PayloadNamePattern`, the 100-entry limit);
+    the throw endpoint and the validator use it, and the editor mirrors it
+    (`SignalEventFixtures`, `SignalThrowFixtures`). Two meanings of "signal
+    event" stay apart: `BpmnFlowNodeTypes.IsSignalWait` (catch, boundary) and
+    `HasSignalWaits` gate every subscription statement, the single-outgoing rule
+    of the waits, the open-subscription version rule, and **Waiting for
+    signals**; `IsSignalEvent` (all four types) gates `signal` on a node, the
+    migrator's clearing of `signal`, and `RequiresDurableProcessing`.
+    `IsSignalThrow`, `IsSignalEnd`, and `ThrowsSignal` name the two that throw.
   - A subscription lives exactly as long as its wait. Its rows are written only
     under the instance lock: `EnsureSignalSubscriptionsAsync` runs in routing
     after the conditional-boundary activation re-check, and
@@ -1010,9 +1024,9 @@ Storage follows the hybrid design:
     `CancelDurableWorkForTokensAsync`, `InterruptBoundaryHostAsync`, timer
     boundary and timer catch firing, the administrative timer-boundary override,
     and error capture). Pass the instance's definition so a
-    definition without signal events (`HasSignalEvents`) runs no signal
-    statement; only instance cancellation, which has no definition at hand, runs
-    it unconditionally. A new path that ends a wait must cancel signal
+    definition without signal waits (`HasSignalWaits`) runs no subscription
+    statement, also when its only signal events throw; only instance
+    cancellation, which has no definition at hand, runs it unconditionally. A new path that ends a wait must cancel signal
     subscriptions too.
   - Delivery rows (`signal_deliveries`) hold plain IDs, never foreign keys to an
     instance, token, or subscription, so a throw never waits on a recipient's
@@ -1032,7 +1046,56 @@ Storage follows the hybrid design:
     pending-delivery queries start from the open broadcasts. A retry moves each
     delivery to the version its instance runs now.
   - Signal mappings write instance variables only and read no shared alias.
-    A signal event requires the Worker (`RequiresDurableProcessing`).
+    Every signal event, throw and end events included, requires the Worker
+    (`RequiresDurableProcessing`).
+  - One writer for both throwers: `SignalBroadcastWriter` inserts the broadcast,
+    freezes its recipients, checks the recipient limit, stores the counts, and
+    enqueues the delivery jobs, only inside an ambient transaction. `ThrowAsync`
+    calls it in its own transaction; the engine calls it inside the throwing
+    step's transaction. The throw locks no existing row. At the recipient limit
+    the writer deletes the broadcast and its frozen deliveries before reporting
+    it, so no caller can commit part of a broadcast. Never add a second insert
+    or freeze path.
+  - A throw from a workflow (`ThrowSignalFromNodeAsync`) checks the chain count,
+    flushes, reads stored instance variables only (never the routing overlay or a
+    shared alias), builds the scope and the payload, counts open `instance`
+    broadcasts against `Signals.MaxOpenWorkflowBroadcasts` (the API's
+    `Signals.MaxOpenBroadcasts` counts only `user` and `client`), and writes with
+    thrower kind `instance`, `ThrownBy` the instance ID, roles `[]`, and no
+    idempotency key. A refused throw is a `WorkflowDomainException` that fails its
+    step; it is never caught to continue. Messages, logs, metrics, and the
+    `signalThrown` history payload never hold a business key or a payload value.
+    The broadcast metric and information line go through
+    `IUnitOfWork.AfterCommit`, so a step that rolls back records nothing; use it
+    for any observation of work that its transaction may still undo.
+    A broadcast outlives its thrower: `ThrowerInstanceId` is a plain column.
+  - The intermediate throw runs in its own `ResolvePassThroughAsync` step and
+    advances with note `signalThrown`. A signal end event throws where its token
+    enters it, through `ThrowSignalAtEndAsync`, called at the five places that
+    complete a token at an end event (`TakeFlowCoreAsync`,
+    `CloseAndAdvanceMultiInstanceAsync`, `DeliverMessageAsync`,
+    `AdvanceAutomaticTokenAsync`, `AdvanceFromSignalEventAsync`), after the
+    token's update and before the instance's completion is decided. A new path
+    that completes a token at an end event must call it, passing the token as its
+    update left it, never a count of its own.
+  - Loop guard: a broadcast thrown by a workflow stores the throwing token's
+    `AutomaticActivationCount` plus one (an API throw stores 0), a throw at
+    `Workflow.Async.MaxConsecutiveAutomaticActivations` is refused, and a
+    delivery gives the receiving token the broadcast's count at the three places
+    it used to reset it. The count follows the work for every definition: a
+    conditional boundary's branch or interrupted host continues the count of the
+    step whose values woke it, a released conditional catch takes the greater of
+    its own and that count, a call's child starts at the calling token's count,
+    and a call's result gives the parent the greater of its own and the child's.
+    A person, a message, a timer, an administrative update, and an API throw
+    start a new chain. Every caller of `TriggerConditionalEventsAsync` passes a
+    count: the routing drains, a boundary already true on host entry
+    (`EnsureAttachedConditionalBoundarySubscriptionsAsync`, the entering token's),
+    and an automatic multi-instance body's drain (the body token's); a
+    multi-instance call item's result raises the body token as a single call's
+    does. `chainCount` defaults to 0, so a forgotten caller silently restarts
+    the chain. A new way to create or wake a token must hand the count over, or
+    a loop through it is never counted.
   - Signal boundaries attach to the hosts of timer and conditional boundaries and
     share their combined limit of eight (`BpmnFlowNodeTypes.IsObservableBoundary`,
     `BoundaryEventRules.MaxObservableBoundariesPerHost`), except that
@@ -1060,11 +1123,19 @@ Storage follows the hybrid design:
     `DurableNodeContract` includes signal boundaries for hosts with open jobs.
     Reactivation blocks an active subscription (`unresolved_durable_work`).
   - A managed API client (`signals.throw`, `signals.read`) sees and changes only
-    the broadcasts it threw and never receives `resultDescription`.
+    the broadcasts it threw and never receives `resultDescription`; a broadcast
+    thrown by an instance is never its own.
+  - Publication and set-default require every family that a `workflow`,
+    `businessKey`, or `ownBusinessKey` scope names, other than the definition's
+    own key, to have a definition (`FindSignalTargetProblemsAsync`); drafts save
+    without it, and the AI assistant reports it as a publication blocker only.
   Every replica must be upgraded before a signal definition is saved: an older
   API routes a token onto a catch, or into a boundary's host, without a
-  subscription. Signal boundaries need no migration beyond `AddSignalEvents` and
-  `ValidateSignalEventConstraints`.
+  subscription, and strands a token on a throw or signal end event. Signal
+  boundaries need no migration beyond `AddSignalEvents` and
+  `ValidateSignalEventConstraints`; throw and end events need
+  `AddSignalThrowEvents`, whose down migration refuses while an `instance`
+  broadcast remains.
 - **Intermediate conditional catch events.** An
   `intermediateConditionalCatchEvent` is a persisted resting position with at
   least one incoming flow and exactly one unconditional outgoing flow. Its
@@ -1398,7 +1469,8 @@ Storage follows the hybrid design:
   event variables) and when taking a sequence flow (flow variables); missing
   required values are rejected.
 - Instances move through `Running`, `Completed` (when the last active token
-  reaches a normal `endEvent`, or immediately on `terminateEndEvent`), `Faulted`
+  reaches a normal `endEvent` or a `signalEndEvent`, or immediately on
+  `terminateEndEvent`), `Faulted`
   (on entering an `errorEndEvent`), and `Cancelled` (`POST /cancel`) statuses.
 - **Terminal reactivation.** Workflow administrators (the dynamic
   `Workflow.RequiredRole`) can preview `GET /api/instances/{id}/reactivation`
@@ -2051,8 +2123,11 @@ what the cross-version `workflowKey` instance search matches.
   need `Signals.RequiredRole` (`SignalAuthorizationPolicies`), managed clients the
   `signals.throw`/`signals.read` scopes and see only their own broadcasts (others
   `404`). The summary is JWT-only. Over the recipient limit is `400`; a reused
-  key with a different request, the open-broadcast limit, a finished broadcast's
-  cancel, and a stale retry are `409`. `SharedVariableCredentialSourceMiddleware`
+  key with a different request, the open-broadcast limit (API throwers only), a
+  finished broadcast's cancel, and a stale retry are `409`. The list takes a
+  repeatable `thrownByKind` (`user`, `client`, `instance`; another value is
+  `400`), and broadcasts thrown by instances carry `thrownByInstanceId`,
+  `thrownByNodeId`, and `thrownByNodeName`. `SharedVariableCredentialSourceMiddleware`
   rejects bearer plus client headers.
 - `TaskDistributionEndpoints`
   (`/api/task-distribution/workflows/{workflowKey}/tasks`): `GET /` returns a
@@ -2252,7 +2327,12 @@ what the cross-version `workflowKey` instance search matches.
   summary (a request counter drops a late reply), any scope edit ends the
   review, and only the reviewed scope's fields are sent. The page follows the open
   broadcast with a three-second poll while it is delivering, pages deliveries,
-  and offers cancel and retry failed; `?broadcastId=` opens one. Display-only
+  and offers cancel and retry failed; `?broadcastId=` opens one. **Recent
+  broadcasts** has a **Thrown by** filter (**People and API clients**, the
+  default, **Workflows**, **Everyone**; `SignalFormatting.ThrownByChoices`) that
+  goes through the same guard and request counter as the other reloads, and a
+  broadcast thrown by an instance shows `Instance #42 · <event name>` linked to
+  the instance (`SignalFormatting.ThrowerLabel`). Display-only
   children under `Components/Shared/Signals/` with the pure `SignalFormatting`;
   every call goes through an identity epoch guard, and `401`/`403` or an identity
   change clears all signal data.
@@ -2272,9 +2352,10 @@ what the cross-version `workflowKey` instance search matches.
   an exact version filter. An async-after wait links the completed visit it
   follows. A selected link event lists its partners, paired through
   `LinkEventRules`, as buttons that select them. **Waiting for signals** lists
-  `signalSubscriptions`, a boundary's row naming its host and whether it
-  interrupts, and a `signalReceived` history row links its broadcast
-  on `/signals`. Identity changes clear the previous instance and its related data
+  `signalSubscriptions` (waits only), a boundary's row naming its host and
+  whether it interrupts, and `signalReceived` and `signalThrown` history rows
+  link their broadcast on `/signals`; a selected throw or end event shows its
+  scope in words (`SignalFormatting.ThrowScopeLabel`). Identity changes clear the previous instance and its related data
   before reloading; history resets off and stale responses cannot restore it.
 
 Display sections live in shared child components so pages keep their own
@@ -2446,7 +2527,7 @@ A node in the workflow. `type` is one of `startEvent`, `userTask`, `task`,
 `errorBoundaryEvent`, `conditionalBoundaryEvent`, `intermediateMessageCatchEvent`,
 `intermediateConditionalCatchEvent`, `intermediateLinkThrowEvent`,
 `intermediateLinkCatchEvent`, `intermediateSignalCatchEvent`, `signalBoundaryEvent`,
-or `messageStartEvent`.
+`intermediateSignalThrowEvent`, `signalEndEvent`, or `messageStartEvent`.
 
 ```jsonc
 {
@@ -2483,7 +2564,7 @@ or `messageStartEvent`.
   "callOnly": false,           // startEvent selected by initialEventId only; omitted when false
   "message": { /* MessageCatchConfig */ }, // intermediateMessageCatchEvent only (see MessageCatchConfig)
   "conditional": { /* ConditionalDefinition */ }, // conditional catch/boundary only
-  "signal": { /* SignalDefinition */ } // intermediateSignalCatchEvent / signalBoundaryEvent only
+  "signal": { /* SignalDefinition */ } // the four signal events only (see SignalDefinition)
 }
 ```
 
@@ -2531,6 +2612,33 @@ signal boundaries. A signal boundary has no incoming flow and one unconditional
 outgoing flow, `attachedToRef`, and optional `cancelActivity` (missing means
 interrupting). Two signal boundaries on one host cannot share a name, and a
 boundary on a signal catch cannot use the catch's name.
+
+An `intermediateSignalThrowEvent` or a `signalEndEvent` names the signal it
+throws, a required `scope`, and an optional `payload`, and leaves
+`outputMappings` missing or empty; `scope` and `payload` are rejected on a catch
+or boundary:
+
+```jsonc
+{
+  "name": "orders.cancelled",
+  "scope": { "kind": "thisInstance" }, // thisInstance | thisWorkflow | workflow | businessKey | ownBusinessKey | allWorkflows
+  "payload": [                         // optional, at most 100 entries
+    { "name": "reason", "variable": "cancelReason", "required": true },
+    { "name": "orderInstance", "source": "instanceId" } // or "businessKey"
+  ]
+}
+```
+
+`workflowKey` is required for `workflow`, `businessKey`, and `ownBusinessKey`,
+and `businessKeyVariable` (a declared single `string`, not a shared alias) for
+`businessKey`; every other member is rejected, and the scope and payload-entry
+models reject unknown members. `ownBusinessKey` and a `businessKey` source need
+entry events with `businessKey`, and `thisInstance` needs a catch or boundary of
+the same name. Payload names match `^[A-Za-z_][A-Za-z0-9_-]{0,99}$` and are
+unique ignoring case; each entry has exactly one of `variable` (a declared or
+produced variable, not a shared alias, copied whole) and `source`. A throw has at
+least one incoming and one unconditional outgoing flow; a signal end event follows
+the end-event rules. Neither takes other settings or boundaries.
 
 ### Assignment
 An ordered variable write performed by a `scriptTask` node during its pass-through
@@ -2687,6 +2795,17 @@ Node kinds and their outgoing-flow rules:
   non-interrupting one adds a sibling branch each time and keeps listening
   (`branched`), bounded by `Workflow.Gateway.MaxActiveTokens`
   (`signal_token_limit`).
+- **`intermediateSignalThrowEvent`**: a pass-through event that throws a signal;
+  an intermediate event circle with a filled triangle. In its own routing step it
+  writes the broadcast, its frozen recipients, and its delivery jobs in the
+  instance's transaction, records the `signalThrown` note on its advance, and
+  follows its one unconditional outgoing flow (dashed, no automatic label)
+  without waiting for the deliveries. A refused throw fails the step.
+- **`signalEndEvent`**: an end event that throws a signal when its token enters
+  it, then ends the token as a plain `endEvent` does; the filled triangle in a
+  thick end-event ring. At least one incoming flow, none outgoing. It adds a
+  `signalThrown` history row from the end event to itself and completes the
+  visit as `normalEnd`.
 - **`messageStartEvent`**: an entry point (like a `startEvent`) started by an
   external system via `POST /api/workflows/{workflowKey}/message-start`; a thin
   single-ring circle with an envelope glyph on canvas. Its `message.outputMappings`
@@ -3334,8 +3453,10 @@ when extending the model so new features stay close to BPMN terminology.
 | `type: "conditionalBoundaryEvent"` | Conditional Boundary Event | Attached to a durable activity and observes declared persisted instance variables. Missing `cancelActivity` is interrupting (solid ring); `false` is non-interrupting (dashed ring) and retriggers on each false-to-true edge. Flowbit applies its `atomic`/`durableAsync` delivery policies and persistent activation/occurrence fencing. |
 | `type: "intermediateLinkThrowEvent"` | Intermediate Link Throw Event | Double-ring event with a filled arrow. Has incoming flows and no outgoing flow; continues at the link catch with the same `name` in the same transaction. Simplified: the link name is the event's `name`, compared exactly after trimming; links stay within one definition. |
 | `type: "intermediateLinkCatchEvent"` | Intermediate Link Catch Event | Double-ring event with an outlined arrow. No incoming flow; one unconditional outgoing flow. Several throws may share it, and catch names are unique ignoring letter case. |
-| `type: "intermediateSignalCatchEvent"` | Intermediate Signal Catch Event | Double-ring event with an outlined triangle. Rests until a signal with its literal lowercase `signal.name` is delivered, maps the payload through typed mappings, and follows one unconditional flow. Simplified: signals are thrown only through the API, scoped to one workflow family, the instance with one business key in a family, one instance, or explicitly to all; a throw reaches only the waits that exist when it is thrown, and the Worker delivers each in its own transaction. |
+| `type: "intermediateSignalCatchEvent"` | Intermediate Signal Catch Event | Double-ring event with an outlined triangle. Rests until a signal with its literal lowercase `signal.name` is delivered, maps the payload through typed mappings, and follows one unconditional flow. Simplified: signals are thrown through the API or by signal throw and end events, scoped to one workflow family, the instance with one business key in a family, one instance, or explicitly to all; a throw reaches only the waits that exist when it is thrown, and the Worker delivers each in its own transaction. |
 | `type: "signalBoundaryEvent"` | Signal Boundary Event | Attached to a durable host; listens for its `signal.name` while the host is active. Missing `cancelActivity` is interrupting (solid ring); `false` is non-interrupting (dashed ring) and adds a branch for every delivered signal. Simplified: not on call activities or multi-instance bodies, and a non-interrupting delivery that would exceed the instance's active-token limit fails rather than waiting. |
+| `type: "intermediateSignalThrowEvent"` | Intermediate Signal Throw Event | Double-ring event with a filled triangle. Throws its `signal.name` in its own step, inside the instance's transaction, and follows one unconditional flow without waiting for the deliveries. Simplified: the scope is one of six explicit kinds that reach one instance, one family, one business key in a family, or all families, not every catcher; the payload copies whole instance variables; a refused throw fails its step; signals thrown by workflows count toward the automatic-activation loop guard. |
+| `type: "signalEndEvent"` | Signal End Event | Thick-ring end event with a filled triangle. Throws its signal when the token enters it, then ends the token as a none end event does. Simplified as the throw event; it throws in the step that moves the token there, so behind a fork it reaches no sibling branch. |
 | `type: "messageStartEvent"` | Message Start Event | An entry point started by an external system via `POST /api/workflows/{workflowKey}/message-start`; thin single-ring circle with an envelope glyph. Typed `message.outputMappings` declare its start variables. System-only (`IsStart` is false). The engine creates the instance and auto-advances off it (pass-through, history note `messageStart`). Simplified: instance-less credential resolution (no `sys.user`/`sys.roles`/`sys.instanceId` for credentials since there is no caller/instance yet). It shares the same optional node-level, database-claimed transport idempotency as `startEvent`. |
 | `sequenceFlow` | Sequence Flow | First-class directed edge with its own id, `sourceRef`, `targetRef`. |
 | `sequenceFlow.condition` | Condition Expression | NCalc expression on user-task and gateway flows (comparisons, boolean/arithmetic operators, functions, bare-variable truthiness). |
@@ -3361,12 +3482,11 @@ when extending the model so new features stay close to BPMN terminology.
   implementations remain out of scope. See [durable execution](docs/developer-guide.md).
 - **A bounded event subset.** Flowbit supports none/message/timer starts,
   message/timer/conditional/signal intermediate catches, link throw/catch pairs within one
-  definition, timer/conditional/signal/error boundaries,
-  and none/error/terminate ends. Conditional events observe persisted instance variables
+  definition, an intermediate signal throw, timer/conditional/signal/error boundaries,
+  and none/error/terminate/signal ends. Conditional events observe persisted instance variables
   rather than arbitrary engine context. Message correlation remains instance
-  scoped, signals are thrown only through the API, and signal start, throw, and
-  end events, escalation, compensation, and event-based gateways remain out of
-  scope.
+  scoped, a thrown signal states an explicit scope, and signal start events,
+  escalation, compensation, and event-based gateways remain out of scope.
 - **No pools / collaboration.** Lanes exist without a multi-party pool or message
   flow.
 - **NCalc condition language.** Gateway conditions are evaluated with NCalc, so
@@ -3400,7 +3520,8 @@ when extending the model so new features stay close to BPMN terminology.
 - Update `BpmnFlowNodeTypes` predicates (`IsStart`, `IsEnd`, `IsErrorEnd`,
   `IsErrorBoundary`, `IsAutomatic`, `IsServiceTask`, `IsScriptTask`, `IsCallActivity`,
   `IsUserTask`, `IsGateway`, `IsMessageCatch`, `IsLinkThrow`, `IsLinkCatch`,
-  `IsLinkEvent`, `IsSignalCatch`, `IsSignalBoundary`, `IsSignalEvent`,
+  `IsLinkEvent`, `IsSignalCatch`, `IsSignalBoundary`, `IsSignalWait`,
+  `IsSignalThrow`, `IsSignalEnd`, `ThrowsSignal`, `IsSignalEvent`,
   `IsBoundary`, `IsObservableBoundary`, `IsPassThrough`) and
   `ValidateDefinition` together so the engine and editor agree.
 
@@ -3520,6 +3641,45 @@ when extending the model so new features stay close to BPMN terminology.
   alias read by a signal mapping is the one referenced first
   (`automaticExpressionReadIndex`), as the server's parsed references give it. The boundary's status line also reports a
   duplicate or host-catch name as it is typed, on both boundaries involved.
+- **Signal throw and end events**: the editor predicates mirror the server's.
+  `isSignalWaitType` (catch, boundary, renamed from the old `isSignalEventType`)
+  and `throwsSignalType` (`isSignalThrowEventType` or `isSignalEndEventType`)
+  choose the normalizer in the loader and export, the signal kept on a type
+  change, and the mode of the **Signal** section; the new `isSignalEventType` is
+  true for all four and keeps `signal` in `applyTypeInvariants`, feeds the name
+  suggestions, and gates `renderMisplacedSignal`. The throw is an event, single-outgoing,
+  and pass-through type, so its flow is dashed, and `flowLabelInfo` adds no label
+  of its own; the end event is an `isEndEventType`, which refuses outgoing
+  connections, hides **Outgoing flows**, and guards the type change. Both draw
+  `icon-signal-throw` (the catch's triangle filled with `currentColor`); the throw
+  joins the inner-ring list and the end event the thick-ring end-event CSS groups.
+  Options "Signal Throw Event (broadcast a signal)" follows the signal catch, and
+  "Signal End Event (end and broadcast a signal)" the error end event; every
+  option needs a `NODE_ICON_SYMBOL` entry or it silently draws the task icon.
+  `renderSignalThrowSection` is the throw mode of the **Signal** section: name
+  field and status line, **Scope** (`SIGNAL_SCOPE_OPTIONS`; choosing a kind
+  deletes the other kinds' members and refocuses the select), **Workflow key** and
+  **Business key variable** only where `signalScopeMembers` requires them,
+  **Payload** cards with **+ Add payload entry**, removal buttons for unknown
+  members, imported mappings, and malformed values, and help through
+  `attachInspectorHelp`. One `role="status"` region (`signal-throw-notes`) holds
+  the first scope problem, the first payload problem, and `signalThrowWaitProblem`.
+  `normalizeSignalThrowDefinition` keeps `name`, `scope`, `payload`, and a
+  non-empty `outputMappings` as authored for save validation, and drops an empty
+  `outputMappings` and the unknown members of `signal`, which the server's binding
+  ignores; the loader and `prepareWorkflowExport` choose it by type. A
+  type change into a thrower gives `{ name, scope: { kind: "" }, payload: [] }`
+  and into a wait `{ name, outputMappings: [] }`, never carrying mappings or
+  payload across. `validateSaveSignalThrows` runs after `validateSaveSignalEvents`
+  with `SignalEventRules.ThrowProblems`' messages and order, reading declarations
+  from `callSourceDeclarations`; it and `signalScopeMembers`,
+  `signalThrowScopeProblems`, `signalThrowPayloadProblems`,
+  `signalThrowWaitProblem`, `SIGNAL_SCOPE_KINDS`, `SIGNAL_SCOPE_KNOWN_MEMBERS`,
+  `SIGNAL_PAYLOAD_KNOWN_MEMBERS`, and `SIGNAL_PAYLOAD_NAME_PATTERN` (equal to
+  `SignalEventRules.PayloadNamePattern`, which a test checks) live inside the
+  `// BEGIN/END WORKFLOW SAVE VALIDATOR` markers. The phase names an unknown
+  member of `scope` or of a payload entry in words, where the server's binding
+  gives only a path. `SignalThrowFixtures` runs every case through both sides.
 - **Link events**: `linkEventIndex(candidate)`, inside the save-validator
   markers, is the editor's only pairing code and mirrors `LinkEventRules`
   (`trimAttributeKey`, `ordinalIgnoreCaseAttributeKey`); `validateSaveLinkEvents`

@@ -59,6 +59,20 @@ public sealed class SignalBroadcastEntity
     public string? ThrownByClaimsJson { get; set; }
     public string? IdempotencyKey { get; set; }
     public byte[]? RequestHash { get; set; }
+
+    /// <summary>
+    /// The instance whose throw or end event threw the signal, when <see cref="ThrownByKind"/> is
+    /// <c>instance</c>. A plain column, as <see cref="InstanceId"/> is.
+    /// </summary>
+    public long? ThrowerInstanceId { get; set; }
+    public int? ThrowerNodeId { get; set; }
+    public string? ThrowerNodeName { get; set; }
+
+    /// <summary>
+    /// The automatic chain count a delivery gives its receiving token: the thrower's count plus
+    /// one for a throw from a workflow, and 0 for a throw through the API.
+    /// </summary>
+    public int AutomaticActivationCount { get; set; }
     public string? CancelledBy { get; set; }
     public string? CancellationReason { get; set; }
     public DateTimeOffset CreatedAt { get; set; }

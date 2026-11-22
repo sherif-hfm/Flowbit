@@ -122,7 +122,7 @@ public sealed class AutomaticMultiInstanceBoundaryTests
             new SequenceFlowModel { Id = 40, SourceRef = 4, TargetRef = 5 }, Array.Empty<string>());
         var task = (Task<ExecutionTokenRecord>)typeof(WorkflowEngineService).GetMethod("CaptureConditionalBoundaryAsync",
             BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(f.Engine,
-                [f.Instance, f.Actor, rise, f.Definition, CancellationToken.None])!;
+                [f.Instance, f.Actor, rise, f.Definition, CancellationToken.None, 0])!;
         var captured = await task;
         Assert.Equal(4, captured.NodeId);
         Assert.Null(captured.WaitingMultiInstanceExecutionId);

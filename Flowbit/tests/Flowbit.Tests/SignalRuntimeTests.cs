@@ -21,9 +21,14 @@ namespace Flowbit.Tests;
 /// payload and moving the token, exactly once.
 /// </summary>
 [Collection(PostgresApiCollection.Name)]
-public sealed class SignalRuntimeTests(PostgresApiFixture fixture)
+public sealed class SignalRuntimeTests(PostgresApiFixture fixture) : IAsyncLifetime
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
+    public Task InitializeAsync() => Task.CompletedTask;
+
+    // Some tests leave a broadcast delivering on purpose; later classes must not lease its jobs.
+    public Task DisposeAsync() => SignalDeliveryJobLeftovers.RetireAsync(fixture);
 
     [Fact]
     public async Task Catch_SubscribesAndADeliveredSignalMapsThePayloadAndContinues()
@@ -384,7 +389,9 @@ public sealed class SignalRuntimeTests(PostgresApiFixture fixture)
         int openCount;
         await using (var db = fixture.CreateDbContext())
         {
-            openCount = await db.SignalBroadcasts.CountAsync(item => item.Status == SignalBroadcastStatuses.Delivering);
+            // Only broadcasts thrown through the API count; workflows have their own budget.
+            openCount = await db.SignalBroadcasts.CountAsync(item => item.Status == SignalBroadcastStatuses.Delivering
+                && (item.ThrownByKind == SignalThrowerKinds.User || item.ThrownByKind == SignalThrowerKinds.Client));
         }
         var previousOpen = await SetEngineSettingAsync("Signals", "MaxOpenBroadcasts", openCount.ToString());
         try

@@ -2,7 +2,7 @@
 
 [Documentation home](index.md) · [Deployment and operations](deployment.md#configuration) · [Settings API](api-guide.md#settings) · [Settings UI](ui-guide.md#engine-and-workflow-settings)
 
-This is the complete reference for the **21 current built-in settings** read from PostgreSQL's `flowbit.engine_settings` table. These are deployment-wide string records, shared by API and Worker replicas using that database. They are distinct from [host configuration](deployment.md#configuration) in `appsettings.json` or environment variables, JSON [workflow-context settings](developer-guide.md#output-mappings-and-expression-context), and properties authored in workflow definitions.
+This is the complete reference for the **24 current built-in settings** read from PostgreSQL's `flowbit.engine_settings` table. These are deployment-wide string records, shared by API and Worker replicas using that database. They are distinct from [host configuration](deployment.md#configuration) in `appsettings.json` or environment variables, JSON [workflow-context settings](developer-guide.md#output-mappings-and-expression-context), and properties authored in workflow definitions.
 
 A **runtime default** is what a consumer uses without a usable setting. A **seed value** is a row inserted by a migration when the setting is missing. Deleting a seeded row does not rerun an already-applied migration; consumers still apply their documented fallback. The AI catalog, `AiAuthoring.Models`, is reserved and has its own management API. `Webhooks.CaptureEnabled` is a protected Boolean setting that can be edited but cannot be deleted.
 
@@ -23,12 +23,13 @@ A **runtime default** is what a consumer uses without a usable setting. A **seed
 | [Workflow.MultiInstance.MaxInstances](#workflowmultiinstancemaxinstances) | Multi-instance item count, for user tasks and automatic bodies, and durable-job capacity. | `1000`; job capacity `2000` |
 | [Workflow.MultiInstance.DefaultConcurrency](#automatic-multi-instance-concurrency) | Default window of a parallel service, script, or call body. | `4` |
 | [Workflow.MultiInstance.MaxConcurrency](#automatic-multi-instance-concurrency) | Cap on the window of every service, script, or call body. | `1000` |
-| [Workflow.Async.MaxConsecutiveAutomaticActivations](#workflowasyncmaxconsecutiveautomaticactivations) | Consecutive durable automatic activity activations. | `1000` |
+| [Workflow.Async.MaxConsecutiveAutomaticActivations](#workflowasyncmaxconsecutiveautomaticactivations) | Consecutive durable automatic activity activations, including signals thrown by workflows. | `1000` |
 | [WorkflowBatchActions.MaxAffectedTasks](#workflowbatchactionsmaxaffectedtasks) | Tasks affected by one administrative action batch. | `10000` |
 | [WorkflowVersionChanges.MaxBatchInstances](#workflowversionchangesmaxbatchinstances) | Instances frozen into one version-change batch. | `10000` |
 | [WorkflowVariableUpdates.MaxBatchInstances](#workflowvariableupdatesmaxbatchinstances) | Instances frozen into one variable-update batch. | `10000` |
 | [Signals.MaxSubscriptionsPerBroadcast](#signalsmaxsubscriptionsperbroadcast) | Waiting signal events one broadcast may reach. | `10000` |
-| [Signals.MaxOpenBroadcasts](#signalsmaxopenbroadcasts) | Signal broadcasts that may be delivering at once. | `20` |
+| [Signals.MaxOpenBroadcasts](#signalsmaxopenbroadcasts) | Signal broadcasts thrown through the API that may be delivering at once. | `20` |
+| [Signals.MaxOpenWorkflowBroadcasts](#signalsmaxopenworkflowbroadcasts) | Signal broadcasts thrown by workflows that may be delivering at once. | `10000` |
 | [UserTasks.DueSoonThreshold](#usertasksduesoonthreshold) | How long before its due time an open user task counts as due soon. | `P1D` |
 | [Authentication.UserIdentityClaim](#authenticationuseridentityclaim) | Authoritative JWT claim identifying the actor. | Unset: identity selection chain |
 | [AiAuthoring.Models](#aiauthoringmodels) | Assistant model catalog, including provider keys. | Empty catalog |
@@ -296,7 +297,11 @@ the [shared resolver](../Flowbit/src/Flowbit.Service/Services/AutomaticMultiInst
 
 Bounds consecutive durable automatic `task`, `serviceTask`, `scriptTask`, and `callActivity` activations along an execution-token lineage. Async phases and retries of the same activation do not each consume another activation. Every call entry counts, including one that fails before admission and is caught by its error boundary, which schedules no job. At the limit such an entry pauses on the same incident instead of taking its boundary, and retrying the incident reaches the boundary. Forks inherit the parent's count; a join continues with the greatest contributing count rather than summing parallel work.
 
-With the default, the first 1,000 activations are allowed; attempting the 1,001st persists an `automatic_loop_limit` incident before that activity body runs. The blocked activation retains a stable job identity. User-task actions, multi-instance completion, message delivery, and timer triggers reset the allowance; conditional-event handling also resets counters at its external-trigger continuation. An operator with `WorkflowJobs.RequiredRole` can retry the incident: the blocked activation is queued as activation one of a new allowance. Increasing the setting alone does not retry an incident.
+With the default, the first 1,000 activations are allowed; attempting the 1,001st persists an `automatic_loop_limit` incident before that activity body runs. The blocked activation retains a stable job identity. User-task actions, multi-instance completion, message delivery, timer triggers, administrative variable updates, and signals thrown through the API reset the allowance. An operator with `WorkflowJobs.RequiredRole` can retry the incident: the blocked activation is queued as activation one of a new allowance. Increasing the setting alone does not retry an incident.
+
+The count follows the work where it changes tokens or instances. A conditional boundary's new branch, or the host token it interrupts, continues the count of the step whose values woke it (or of the token that entered its host, when the boundary is already true then), and a released conditional catch continues the greater of its own count and that step's; a conditional event that a person, a message, or an administrative update wakes starts a new chain. A call activity's child starts at the calling token's count, and the call's result gives the parent's token the greater of its own count and the child's. These hand-overs apply to every definition. Before signal throw events, a conditional boundary's branch or interrupted host and a call's child started at 0, and a released conditional catch and a call's result kept the count they had, so a chain through them can now reach the limit where it ran without a bound.
+
+The setting also bounds signals that workflows throw at each other. A [signal throw or end event](node-reference.md#intermediatesignalthrowevent) whose token has reached the limit is refused and fails its step; otherwise the broadcast stores the token's count plus one, and each delivery gives that count to the receiving token instead of resetting it. A delivery of a signal thrown through the API resets the count. See the [signal loop guard](developer-guide.md#guard-against-signal-loops).
 
 This is a durable-lineage guard, not a replacement for the engine's synchronous pass-through protection or a bound on total parallel work.
 
@@ -341,7 +346,7 @@ See [administrative variable updates](api-guide.md#variable-update-batches) and 
 
 ## Signal settings
 
-Two limits bound signal broadcasts; the [Signals.RequiredRole](#signalsrequiredrole) permission setting controls who throws them. Both accept a positive signed 32-bit integer as a string, with surrounding whitespace and a leading `+` allowed. A parseable value above the hard cap is capped; missing, blank, malformed, overflowing, zero, or negative values use the default. No value disables a limit. Both are read for each throw, so a change applies to the next throw without a restart and never changes a broadcast already thrown. See [signals](bpmn-support.md#signals) and [signal operations](deployment.md#signal-events).
+Three limits bound signal broadcasts; the [Signals.RequiredRole](#signalsrequiredrole) permission setting controls who throws them through the API, and a workflow's signal throw or end event needs no role. All three accept a positive signed 32-bit integer as a string, with surrounding whitespace and a leading `+` allowed. A parseable value above the hard cap is capped; missing, blank, malformed, overflowing, zero, or negative values use the default. No value disables a limit. All are read for each throw, so a change applies to the next throw without a restart and never changes a broadcast already thrown. See [signals](bpmn-support.md#signals) and [signal operations](deployment.md#signal-events).
 
 ### Signals.MaxSubscriptionsPerBroadcast
 
@@ -350,7 +355,7 @@ Two limits bound signal broadcasts; the [Signals.RequiredRole](#signalsrequiredr
 - **Seed:** `10000` in `AddSignalEvents` when missing.
 - **Takes effect:** the next throw.
 
-The most waiting signal events one broadcast may reach. A throw freezes its recipients in one statement; when more active subscriptions match than this limit, it returns `400` and stores nothing, rather than reaching only some of them. Narrow the throw's scope (one workflow family, one business key, or one instance), or raise the limit. A throw inserts all its recipients in one statement, so the limit also bounds the work of one request.
+The most waiting signal events one broadcast may reach. A throw freezes its recipients in one statement; when more active subscriptions match than this limit, it returns `400` and stores nothing, rather than reaching only some of them. Narrow the throw's scope (one workflow family, one business key, or one instance), or raise the limit. A throw inserts all its recipients in one statement, so the limit also bounds the work of one request. It applies to a workflow's signal throw and end events too: such a throw is refused, and fails its step, with `... would reach more than 10000 waiting subscriptions; narrow its scope or raise Signals.MaxSubscriptionsPerBroadcast.`
 
 ### Signals.MaxOpenBroadcasts
 
@@ -359,7 +364,18 @@ The most waiting signal events one broadcast may reach. A throw freezes its reci
 - **Seed:** `20` in `AddSignalEvents` when missing.
 - **Takes effect:** the next throw.
 
-How many broadcasts may be delivering at once. While this many or more are `delivering`, a throw returns `409`. The count is read without a lock, so concurrent throws can pass the limit by a few. A broadcast stays `delivering` while no Worker runs, so a long Worker outage can reach the limit; cancel broadcasts that are no longer wanted. A broadcast without recipients is `completed` at once and never counts. An integration that throws one narrow signal per case, by [business key or instance](developer-guide.md#limit-a-signal-to-one-case), keeps one broadcast open for each case until the Worker delivers it: raise the limit to its peak number of throws in flight, and repeat a throw that returns `409` with its idempotency key. Implementation: [setting rules](../Flowbit/src/Flowbit.Service/Models/SignalModels.cs) and [throw service](../Flowbit/src/Flowbit.Service/Services/SignalBroadcastService.cs).
+How many broadcasts thrown through the API, by users and managed clients, may be delivering at once. While this many or more are `delivering`, a throw returns `409`. Broadcasts that workflows threw do not count; they have their own budget, [Signals.MaxOpenWorkflowBroadcasts](#signalsmaxopenworkflowbroadcasts). The count is read without a lock, so concurrent throws can pass the limit by a few. A broadcast stays `delivering` while no Worker runs, so a long Worker outage can reach the limit; cancel broadcasts that are no longer wanted. A broadcast without recipients is `completed` at once and never counts. An integration that throws one narrow signal per case, by [business key or instance](developer-guide.md#limit-a-signal-to-one-case), keeps one broadcast open for each case until the Worker delivers it: raise the limit to its peak number of throws in flight, and repeat a throw that returns `409` with its idempotency key. Implementation: [setting rules](../Flowbit/src/Flowbit.Service/Models/SignalModels.cs) and [throw service](../Flowbit/src/Flowbit.Service/Services/SignalBroadcastService.cs).
+
+### Signals.MaxOpenWorkflowBroadcasts
+
+- **Namespace / key:** `Signals` / `MaxOpenWorkflowBroadcasts`.
+- **Value / fallback:** the integer format above; default `10000`, hard cap `100000`; example `20000`.
+- **Seed:** `10000` in `AddSignalThrowEvents` when missing.
+- **Takes effect:** the next throw by a workflow.
+
+How many broadcasts thrown by workflows' [signal throw and end events](node-reference.md#intermediatesignalthrowevent) may be delivering at once. When this many or more are `delivering`, a further throw from a workflow is refused with `... was not thrown: 10000 signal broadcasts thrown by workflows are still delivering; see Signals.MaxOpenWorkflowBroadcasts.`, and its step fails: a request returns `400` and changes nothing, a Worker job retries and then opens an incident, and a signal delivery fails with `signal_delivery_rejected`. The count is read without a lock, so concurrent throws can pass the limit by a few, and a broadcast without recipients is `completed` at once and never counts. Broadcasts thrown through the API count toward [Signals.MaxOpenBroadcasts](#signalsmaxopenbroadcasts) instead, so the two kinds of thrower never use up each other's budget.
+
+The budget is large because each instance that throws keeps one broadcast open until the Worker has delivered it, which takes seconds while a Worker runs. While no Worker runs, these broadcasts accumulate, and a workflow whose user action leads to a throw can then fail that action at the limit; an automatic task with `asyncBefore: true` in front of the event moves the throw, and such a failure, into a Worker job. Raise the limit for a deployment whose workflows throw many narrow signals at once. Implementation: [setting rules](../Flowbit/src/Flowbit.Service/Models/SignalModels.cs) and [engine throw](../Flowbit/src/Flowbit.Service/Services/WorkflowEngineService.SignalThrows.cs).
 
 ## Task settings
 
@@ -449,6 +465,7 @@ Migration names below link to their actual seed implementation. Seeds are applie
 | [ConsolidateLifecycleCaptureSettings](../Flowbit/src/Flowbit.Infrastructure/Data/Migrations/20261108120000_ConsolidateLifecycleCaptureSettings.cs) | `Webhooks.CaptureEnabled` from the previous database capture switch; fresh installs retain `false`. Adds nullable actor columns for all engine settings. |
 | [AddAutomaticMultiInstanceCore](../Flowbit/src/Flowbit.Infrastructure/Data/Migrations/20261111144523_AddAutomaticMultiInstanceCore.cs) | `Workflow.MultiInstance.DefaultConcurrency` = `4` and `Workflow.MultiInstance.MaxConcurrency` = `1000`, with descriptions. |
 | [AddSignalEvents](../Flowbit/src/Flowbit.Infrastructure/Data/Migrations/20261116135625_AddSignalEvents.cs) | `Signals.RequiredRole` = `admin`, `Signals.MaxSubscriptionsPerBroadcast` = `10000`, and `Signals.MaxOpenBroadcasts` = `20`, with descriptions. Down removes the three rows. |
+| [AddSignalThrowEvents](../Flowbit/src/Flowbit.Infrastructure/Data/Migrations/20261121134938_AddSignalThrowEvents.cs) | `Signals.MaxOpenWorkflowBroadcasts` = `10000`, with a description. Down removes the row, after refusing while a broadcast thrown by an instance remains. |
 
 Capture consolidation requires a coordinated upgrade of API/UI/Worker versions; stop API and Worker writers before migration. It removes the old capture table without a compatibility view and refuses any existing canonical or equivalent capture key rather than overwrite it. The imported setting uses the old `ChangedAt` for both initial timestamps (its original creation time is unknown), copies `ChangedBy` to `UpdatedBy`, and leaves `CreatedBy` null. Other existing rows retain null actors. Down restores the current capture state and original functions but removes the new actor columns. See [rollout](deployment.md#rollout).
 

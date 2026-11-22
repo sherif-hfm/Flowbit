@@ -41,27 +41,33 @@ public sealed class SignalBroadcastRepository(AppDbContext dbContext) : ISignalB
             cancellationToken);
     }
 
-    public Task<int> CountOpenAsync(CancellationToken cancellationToken) =>
+    public Task<int> CountOpenAsync(
+        IReadOnlyList<string> thrownByKinds,
+        int stopAt,
+        CancellationToken cancellationToken) =>
         dbContext.SignalBroadcasts.AsNoTracking()
-            .CountAsync(broadcast => broadcast.Status == SignalBroadcastStatuses.Delivering, cancellationToken);
+            .Where(broadcast =>
+                broadcast.Status == SignalBroadcastStatuses.Delivering
+                && thrownByKinds.Contains(broadcast.ThrownByKind))
+            .Take(stopAt)
+            .CountAsync(cancellationToken);
 
     public async Task<SignalBacklogRecord> GetBacklogAsync(CancellationToken cancellationToken)
     {
         // Only a delivering broadcast has pending deliveries: a broadcast leaves that status
         // under its row lock once its recount finds none pending, and a cancel or retry
-        // changes deliveries under the same lock. So the count starts from the few open
-        // broadcasts and reads each one's pending rows through its (BroadcastId, Status, Id)
-        // index, never the whole delivery table, which keeps every finished delivery.
+        // changes deliveries under the same lock. Every delivery page, cancel, and retry
+        // recounts the broadcast's stored counters under that lock, so the pending count is
+        // the frozen total minus the finished counters, read from the open broadcasts alone.
+        // It can run ahead of the deliveries by at most the page a job is working on.
+        // Workflows can keep thousands of narrow broadcasts open, so the gauge no longer
+        // probes the delivery table once per broadcast.
         var pending = await dbContext.Database.SqlQuery<long>(
                 $"""
-                SELECT COALESCE(sum(open."Pending"), 0)::bigint AS "Value"
+                SELECT COALESCE(sum(GREATEST(
+                    broadcast."TotalDeliveryCount" - broadcast."DeliveredCount" - broadcast."SkippedCount"
+                        - broadcast."FailedCount" - broadcast."CancelledCount", 0)), 0)::bigint AS "Value"
                 FROM flowbit.signal_broadcasts AS broadcast
-                CROSS JOIN LATERAL (
-                    SELECT count(*) AS "Pending"
-                    FROM flowbit.signal_deliveries AS delivery
-                    WHERE delivery."BroadcastId" = broadcast."Id"
-                      AND delivery."Status" = 'pending'
-                ) AS open
                 WHERE broadcast."Status" = 'delivering'
                 """)
             .SingleAsync(cancellationToken);
@@ -82,6 +88,13 @@ public sealed class SignalBroadcastRepository(AppDbContext dbContext) : ISignalB
             throw new InvalidOperationException("An instance-scoped broadcast records its instance's family.");
         }
 
+        // The insert, the freeze, and the delivery jobs commit or roll back together, in
+        // the API's transaction or in the throwing instance's.
+        if (dbContext.Database.CurrentTransaction is null)
+        {
+            throw new InvalidOperationException("A signal broadcast is written only inside a transaction.");
+        }
+
         var entity = new SignalBroadcastEntity
         {
             SignalName = broadcast.SignalName,
@@ -97,6 +110,10 @@ public sealed class SignalBroadcastRepository(AppDbContext dbContext) : ISignalB
             ThrownByClaimsJson = broadcast.ThrownByClaimsJson,
             IdempotencyKey = broadcast.IdempotencyKey,
             RequestHash = broadcast.RequestHash,
+            ThrowerInstanceId = broadcast.ThrowerInstanceId,
+            ThrowerNodeId = broadcast.ThrowerNodeId,
+            ThrowerNodeName = broadcast.ThrowerNodeName,
+            AutomaticActivationCount = broadcast.AutomaticActivationCount,
             CreatedAt = broadcast.CreatedAt,
             UpdatedAt = broadcast.CreatedAt
         };
@@ -104,6 +121,22 @@ public sealed class SignalBroadcastRepository(AppDbContext dbContext) : ISignalB
         await dbContext.SaveChangesAsync(cancellationToken);
         dbContext.Entry(entity).State = EntityState.Detached;
         return Map(entity);
+    }
+
+    public async Task DeleteAsync(long broadcastId, CancellationToken cancellationToken)
+    {
+        if (dbContext.Database.CurrentTransaction is null)
+        {
+            throw new InvalidOperationException(
+                "A signal broadcast is deleted only inside the transaction that inserted it.");
+        }
+
+        await dbContext.SignalDeliveries
+            .Where(delivery => delivery.BroadcastId == broadcastId)
+            .ExecuteDeleteAsync(cancellationToken);
+        await dbContext.SignalBroadcasts
+            .Where(broadcast => broadcast.Id == broadcastId)
+            .ExecuteDeleteAsync(cancellationToken);
     }
 
     public Task<int> FreezeDeliveriesAsync(
@@ -322,6 +355,10 @@ public sealed class SignalBroadcastRepository(AppDbContext dbContext) : ISignalB
             source = source.Where(broadcast =>
                 broadcast.ThrownByKind == query.ThrownByKind
                 && broadcast.ThrownBy == query.ThrownBy);
+        }
+        if (query.ThrownByKinds is { Count: > 0 } kinds)
+        {
+            source = source.Where(broadcast => kinds.Contains(broadcast.ThrownByKind));
         }
 
         var total = await source.LongCountAsync(cancellationToken);
@@ -642,7 +679,11 @@ public sealed class SignalBroadcastRepository(AppDbContext dbContext) : ISignalB
             entity.CreatedAt,
             entity.UpdatedAt,
             entity.CompletedAt,
-            entity.CancelledAt);
+            entity.CancelledAt,
+            entity.ThrowerInstanceId,
+            entity.ThrowerNodeId,
+            entity.ThrowerNodeName,
+            entity.AutomaticActivationCount);
 
     private static SignalDeliveryRecord MapDelivery(SignalDeliveryEntity entity) =>
         new(

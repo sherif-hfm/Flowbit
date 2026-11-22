@@ -11,6 +11,10 @@ public interface IWorkflowDefinitionRepository
 
     Task<IReadOnlyList<WorkflowDefinitionRecord>> ListVersionsByKeyAsync(string workflowKey, CancellationToken cancellationToken);
 
+    /// <summary>Whether any version of the family exists, without loading one.</summary>
+    async Task<bool> ExistsByKeyAsync(string workflowKey, CancellationToken cancellationToken) =>
+        (await ListVersionsByKeyAsync(workflowKey, cancellationToken)).Count > 0;
+
     Task<WorkflowDefinitionRecord?> GetAsync(long id, CancellationToken cancellationToken);
 
     Task<IReadOnlyDictionary<long, WorkflowDefinitionRecord>> GetManyAsync(
@@ -1005,4 +1009,11 @@ public interface IUnitOfWork
     /// that belonged to the failed transaction.
     /// </summary>
     void DiscardChanges();
+
+    /// <summary>
+    /// Runs <paramref name="callback"/> once the open transaction commits, and never when it
+    /// rolls back, so a metric or log line describes only work that exists. Without an open
+    /// transaction it runs at once. Use it for observation only, never for writes.
+    /// </summary>
+    void AfterCommit(Action callback) => callback();
 }

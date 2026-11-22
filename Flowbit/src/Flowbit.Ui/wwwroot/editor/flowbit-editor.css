@@ -1327,6 +1327,7 @@
   .flowbit-editor .node.complexGateway polygon.body { fill: var(--node-gateway-fill); stroke: var(--amber); }
   .flowbit-editor .node.errorEndEvent circle.body { fill: var(--node-end-fill); stroke: var(--red); stroke-width: 5; }
   .flowbit-editor .node.terminateEndEvent circle.body { fill: var(--node-end-fill); stroke: var(--red); stroke-width: 5; }
+  .flowbit-editor .node.signalEndEvent circle.body { fill: var(--node-end-fill); stroke: var(--red); stroke-width: 5; }
   .flowbit-editor .node.scopedInterruptEvent circle.body { fill: var(--node-interrupt-fill); stroke: var(--node-interrupt-stroke); stroke-width: 3; }
   .flowbit-editor .node.scopedInterruptEvent circle.ring { fill: none; stroke: var(--node-interrupt-stroke); stroke-width: 1.5; }
   .flowbit-editor .node.errorBoundaryEvent circle.body { fill: var(--node-boundary-fill); stroke: var(--red); stroke-width: 3; }
@@ -1349,6 +1350,8 @@
   .flowbit-editor .node.intermediateConditionalCatchEvent circle.ring { fill: none; stroke: var(--node-message-stroke); stroke-width: 1.5; }
   .flowbit-editor .node.intermediateSignalCatchEvent circle.body { fill: var(--node-message-fill); stroke: var(--node-message-stroke); stroke-width: 2; }
   .flowbit-editor .node.intermediateSignalCatchEvent circle.ring { fill: none; stroke: var(--node-message-stroke); stroke-width: 1.5; }
+  .flowbit-editor .node.intermediateSignalThrowEvent circle.body { fill: var(--node-message-fill); stroke: var(--node-message-stroke); stroke-width: 2; }
+  .flowbit-editor .node.intermediateSignalThrowEvent circle.ring { fill: none; stroke: var(--node-message-stroke); stroke-width: 1.5; }
   .flowbit-editor .node.messageStartEvent circle.body { fill: var(--node-start-fill); stroke: var(--node-message-stroke); stroke-width: 2; }
   .flowbit-editor .node.intermediateLinkThrowEvent circle.body,
   .flowbit-editor .node.intermediateLinkCatchEvent circle.body { fill: var(--node-task-fill); stroke: var(--node-task-stroke); stroke-width: 2; }
@@ -1367,11 +1370,13 @@
   .flowbit-editor .node.selected.callActivity rect { stroke-width: 4; }
   .flowbit-editor .node.selected.endEvent circle.body,
   .flowbit-editor .node.selected.errorEndEvent circle.body,
-  .flowbit-editor .node.selected.terminateEndEvent circle.body { stroke: var(--node-selection-stroke); stroke-width: 5; }
+  .flowbit-editor .node.selected.terminateEndEvent circle.body,
+  .flowbit-editor .node.selected.signalEndEvent circle.body { stroke: var(--node-selection-stroke); stroke-width: 5; }
   .flowbit-editor .node.selected.scopedInterruptEvent circle.body { stroke: var(--node-selection-stroke); stroke-width: 3; }
   .flowbit-editor .node.selected.intermediateLinkThrowEvent circle.ring,
   .flowbit-editor .node.selected.intermediateLinkCatchEvent circle.ring,
-  .flowbit-editor .node.selected.intermediateSignalCatchEvent circle.ring { stroke: var(--node-selection-stroke); }
+  .flowbit-editor .node.selected.intermediateSignalCatchEvent circle.ring,
+  .flowbit-editor .node.selected.intermediateSignalThrowEvent circle.ring { stroke: var(--node-selection-stroke); }
   .flowbit-editor .node.selected.errorBoundaryEvent circle.body { stroke: var(--node-selection-stroke); stroke-width: 3; }
   .flowbit-editor .node.selected.timerBoundaryEvent circle.body { stroke: var(--node-selection-stroke); stroke-width: 3; }
   .flowbit-editor .node.selected.conditionalBoundaryEvent circle.body { stroke: var(--node-selection-stroke); stroke-width: 3; }
@@ -1390,12 +1395,14 @@
   .flowbit-editor .node.intermediateTimerCatchEvent .node-icon,
   .flowbit-editor .node.intermediateConditionalCatchEvent .node-icon,
   .flowbit-editor .node.intermediateSignalCatchEvent .node-icon,
+  .flowbit-editor .node.intermediateSignalThrowEvent .node-icon,
   .flowbit-editor .node.timerBoundaryEvent .node-icon,
   .flowbit-editor .node.conditionalBoundaryEvent .node-icon,
   .flowbit-editor .node.signalBoundaryEvent .node-icon { color: var(--node-message-icon); }
   .flowbit-editor .node.endEvent .node-icon,
   .flowbit-editor .node.errorEndEvent .node-icon,
   .flowbit-editor .node.terminateEndEvent .node-icon,
+  .flowbit-editor .node.signalEndEvent .node-icon,
   .flowbit-editor .node.scopedInterruptEvent .node-icon,
   .flowbit-editor .node.errorBoundaryEvent .node-icon { color: var(--node-error-icon); }
   .flowbit-editor .node.exclusiveGateway .node-icon,

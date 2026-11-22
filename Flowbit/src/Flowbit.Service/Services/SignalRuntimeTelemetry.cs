@@ -20,6 +20,23 @@ internal static class SignalRuntimeTelemetry
     private static readonly Histogram<long> Recipients = Meter.CreateHistogram<long>(
         "flowbit.signals.recipients",
         description: "Recipients a broadcast froze when it was thrown.");
+    private static readonly Counter<long> ThrowRefusals = Meter.CreateCounter<long>(
+        "flowbit.signals.throw_refusals",
+        description: "Signal throw and end events whose throw was refused, tagged with the cause.");
+
+    /// <summary>The causes a throw from a workflow is refused for.</summary>
+    public static class RefusalCauses
+    {
+        public const string ChainLimit = "chain_limit";
+        public const string BusinessKey = "business_key";
+        public const string Payload = "payload";
+        public const string PayloadSize = "payload_size";
+        public const string OpenBroadcasts = "open_broadcasts";
+        public const string Recipients = "recipients";
+    }
+
+    public static void RecordThrowRefusal(string cause) =>
+        ThrowRefusals.Add(1, new KeyValuePair<string, object?>("cause", cause));
 
     public static void RecordBroadcast(string throwerKind, int recipients)
     {

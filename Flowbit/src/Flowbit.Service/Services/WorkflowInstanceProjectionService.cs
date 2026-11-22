@@ -254,7 +254,7 @@ internal sealed class WorkflowInstanceProjectionService(
                 cancellationToken);
         // A definition without signal events has no signal waits, so it pays no query.
         IReadOnlyList<SignalSubscriptionRecord> signalWaits =
-            signalSubscriptions is null || !SignalEventRules.HasSignalEvents(workflow.Definition)
+            signalSubscriptions is null || !SignalEventRules.HasSignalWaits(workflow.Definition)
                 ? []
                 : await signalSubscriptions.ListActiveByInstanceAsync(instanceId, false, cancellationToken);
 

@@ -1,0 +1,146 @@
+{
+  "id": "example-signal-end-recall-decision",
+  "name": "Signal Example 04 - Recall Decision That Stops One Shipment",
+  "initialEventId": 1,
+  "variables": [],
+  "lanes": [
+    {
+      "id": 1,
+      "name": "Quality",
+      "externalId": "LANE_QUALITY",
+      "x": 40,
+      "y": 30,
+      "w": 900,
+      "h": 330
+    }
+  ],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Recall requested",
+      "externalId": "START_RECALL_REQUEST",
+      "attributes": [],
+      "type": "startEvent",
+      "laneId": 1,
+      "x": 100,
+      "y": 128,
+      "roles": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [
+        {
+          "id": 1,
+          "name": "orderNumber",
+          "dataType": "string",
+          "isArray": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": "Len(orderNumber) > 0"
+        }
+      ],
+      "assignee": null,
+      "assignments": []
+    },
+    {
+      "id": 2,
+      "name": "Decide on the recall",
+      "externalId": "TASK_DECIDE_RECALL",
+      "attributes": [],
+      "type": "userTask",
+      "laneId": 1,
+      "x": 280,
+      "y": 116,
+      "roles": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null
+    },
+    {
+      "id": 3,
+      "name": "Recall announced",
+      "externalId": "END_RECALL_ANNOUNCED",
+      "attributes": [],
+      "type": "signalEndEvent",
+      "laneId": 1,
+      "x": 640,
+      "y": 128,
+      "signal": {
+        "name": "warehouse.product-recall",
+        "scope": {
+          "kind": "businessKey",
+          "workflowKey": "example-signal-boundaries-recall",
+          "businessKeyVariable": "orderNumber"
+        },
+        "payload": [
+          {
+            "name": "reason",
+            "variable": "recallReason"
+          }
+        ]
+      }
+    },
+    {
+      "id": 4,
+      "name": "No recall",
+      "externalId": "END_NO_RECALL",
+      "attributes": [],
+      "type": "endEvent",
+      "laneId": 1,
+      "x": 640,
+      "y": 268,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "",
+      "externalId": null,
+      "attributes": [],
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 201,
+      "name": "Recall",
+      "externalId": "FLOW_RECALL",
+      "attributes": [],
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [],
+      "variables": [
+        {
+          "id": 2,
+          "name": "recallReason",
+          "dataType": "string",
+          "isArray": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": "Len(recallReason) > 0"
+        }
+      ]
+    },
+    {
+      "id": 202,
+      "name": "No recall",
+      "externalId": "FLOW_NO_RECALL",
+      "attributes": [],
+      "sourceRef": 2,
+      "targetRef": 4,
+      "roles": [],
+      "variables": []
+    }
+  ]
+}

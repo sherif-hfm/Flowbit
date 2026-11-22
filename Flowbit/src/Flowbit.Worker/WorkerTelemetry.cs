@@ -76,6 +76,7 @@ public sealed class WorkerTelemetry : IDisposable
     private long _callCancelAgeSamples;
     private long _callCancelAgeMicroseconds;
     private readonly ConcurrentDictionary<(string Status, string ResultCode), long> _signalDeliveries = new();
+    private readonly ConcurrentDictionary<string, long> _signalThrowRefusals = new(StringComparer.Ordinal);
     private long _pendingSignalDeliveries;
     private double _oldestOpenSignalBroadcastAgeMilliseconds;
 
@@ -499,6 +500,12 @@ public sealed class WorkerTelemetry : IDisposable
                     measurement,
                     (_, total) => total + measurement);
                 break;
+            case "flowbit.signals.throw_refusals":
+                _signalThrowRefusals.AddOrUpdate(
+                    ReadTag(tags, "cause"),
+                    measurement,
+                    (_, total) => total + measurement);
+                break;
         }
     }
 
@@ -585,6 +592,16 @@ public sealed class WorkerTelemetry : IDisposable
         {
             output.Append("flowbit_signal_deliveries_total{status=\"").Append(pair.Key.Status)
                 .Append("\",result_code=\"").Append(pair.Key.ResultCode).Append("\"} ")
+                .Append(pair.Value.ToString(CultureInfo.InvariantCulture))
+                .AppendLine();
+        }
+
+        // A signal throw or end event refused in a Worker job or a delivery, by cause. A throw
+        // refused in an API request is counted by the API process, which exports no metrics.
+        output.AppendLine("# TYPE flowbit_signal_throw_refusals_total counter");
+        foreach (var pair in _signalThrowRefusals.OrderBy(pair => pair.Key, StringComparer.Ordinal))
+        {
+            output.Append("flowbit_signal_throw_refusals_total{cause=\"").Append(pair.Key).Append("\"} ")
                 .Append(pair.Value.ToString(CultureInfo.InvariantCulture))
                 .AppendLine();
         }

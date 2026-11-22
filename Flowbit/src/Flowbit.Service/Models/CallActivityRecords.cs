@@ -112,7 +112,11 @@ public sealed record CallResultRecord(
 public sealed record InstanceCallIdentityRecord(long? RootInstanceId, int Depth);
 
 /// <summary>Links a child to its call while it is being created.</summary>
-public sealed record CallChildLinkRecord(long InvocationId, long RootInstanceId, int Depth);
+/// <summary>
+/// Links a child instance to the call that starts it. The child's first token continues
+/// <see cref="AutomaticActivationCount"/>, the calling token's automatic chain (EVENT-04B).
+/// </summary>
+public sealed record CallChildLinkRecord(long InvocationId, long RootInstanceId, int Depth, int AutomaticActivationCount = 0);
 
 /// <summary>A page of one parent's call visits with their read-side context.</summary>
 public sealed record CallInvocationListRow(

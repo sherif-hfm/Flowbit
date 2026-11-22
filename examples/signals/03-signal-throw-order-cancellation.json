@@ -1,0 +1,345 @@
+{
+  "id": "example-signal-throw-order-cancellation",
+  "name": "Signal Example 03 - Cancel an Order from Its Own Review",
+  "initialEventId": 1,
+  "variables": [],
+  "lanes": [
+    {
+      "id": 1,
+      "name": "Order",
+      "externalId": "LANE_ORDER",
+      "x": 40,
+      "y": 30,
+      "w": 1240,
+      "h": 520
+    }
+  ],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Order placed",
+      "externalId": "START_ORDER",
+      "attributes": [],
+      "type": "startEvent",
+      "laneId": 1,
+      "x": 90,
+      "y": 128,
+      "roles": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [
+        {
+          "id": 1,
+          "name": "orderNumber",
+          "dataType": "string",
+          "isArray": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": "Len(orderNumber) > 0"
+        }
+      ],
+      "assignee": null,
+      "assignments": []
+    },
+    {
+      "id": 2,
+      "name": "Ship and review",
+      "externalId": "SPLIT_ORDER",
+      "attributes": [],
+      "type": "parallelGateway",
+      "laneId": 1,
+      "x": 200,
+      "y": 122,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 3,
+      "name": "Prepare the shipment",
+      "externalId": "TASK_PREPARE_SHIPMENT",
+      "attributes": [],
+      "type": "userTask",
+      "laneId": 1,
+      "x": 330,
+      "y": 116,
+      "roles": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null
+    },
+    {
+      "id": 4,
+      "name": "Order cancelled",
+      "externalId": "SIGNAL_ORDER_CANCELLED",
+      "attributes": [],
+      "type": "signalBoundaryEvent",
+      "laneId": null,
+      "x": 410,
+      "y": 190,
+      "attachedToRef": 3,
+      "cancelActivity": true,
+      "signal": {
+        "name": "orders.cancelled",
+        "outputMappings": [
+          {
+            "variable": "stopReason",
+            "path": "reason",
+            "required": false,
+            "dataType": "string",
+            "isArray": false,
+            "defaultValue": "No reason given"
+          }
+        ]
+      }
+    },
+    {
+      "id": 5,
+      "name": "Shipped",
+      "externalId": "END_SHIPPED",
+      "attributes": [],
+      "type": "endEvent",
+      "laneId": 1,
+      "x": 640,
+      "y": 128,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 6,
+      "name": "Stop the shipment",
+      "externalId": "TASK_STOP_SHIPMENT",
+      "attributes": [],
+      "type": "userTask",
+      "laneId": 1,
+      "x": 600,
+      "y": 230,
+      "roles": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null
+    },
+    {
+      "id": 7,
+      "name": "Shipment stopped",
+      "externalId": "END_SHIPMENT_STOPPED",
+      "attributes": [],
+      "type": "endEvent",
+      "laneId": 1,
+      "x": 880,
+      "y": 242,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 8,
+      "name": "Review the order",
+      "externalId": "TASK_REVIEW_ORDER",
+      "attributes": [],
+      "type": "userTask",
+      "laneId": 1,
+      "x": 330,
+      "y": 380,
+      "roles": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null
+    },
+    {
+      "id": 9,
+      "name": "Announce the cancellation",
+      "externalId": "THROW_ORDER_CANCELLED",
+      "attributes": [],
+      "type": "intermediateSignalThrowEvent",
+      "laneId": 1,
+      "x": 640,
+      "y": 392,
+      "signal": {
+        "name": "orders.cancelled",
+        "scope": {
+          "kind": "thisInstance"
+        },
+        "payload": [
+          {
+            "name": "reason",
+            "variable": "cancelReason",
+            "required": true
+          }
+        ]
+      }
+    },
+    {
+      "id": 10,
+      "name": "Confirm the cancellation",
+      "externalId": "TASK_CONFIRM_CANCELLATION",
+      "attributes": [],
+      "type": "userTask",
+      "laneId": 1,
+      "x": 780,
+      "y": 380,
+      "roles": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null
+    },
+    {
+      "id": 11,
+      "name": "Cancelled",
+      "externalId": "END_CANCELLED",
+      "attributes": [],
+      "type": "endEvent",
+      "laneId": 1,
+      "x": 1080,
+      "y": 392,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 12,
+      "name": "Order kept",
+      "externalId": "END_ORDER_KEPT",
+      "attributes": [],
+      "type": "endEvent",
+      "laneId": 1,
+      "x": 380,
+      "y": 480,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "",
+      "externalId": null,
+      "attributes": [],
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 201,
+      "name": "",
+      "externalId": null,
+      "attributes": [],
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 202,
+      "name": "",
+      "externalId": null,
+      "attributes": [],
+      "sourceRef": 2,
+      "targetRef": 8,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 301,
+      "name": "Ship",
+      "externalId": "FLOW_SHIP",
+      "attributes": [],
+      "sourceRef": 3,
+      "targetRef": 5,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 401,
+      "name": "",
+      "externalId": null,
+      "attributes": [],
+      "sourceRef": 4,
+      "targetRef": 6,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 601,
+      "name": "Stopped",
+      "externalId": "FLOW_STOPPED",
+      "attributes": [],
+      "sourceRef": 6,
+      "targetRef": 7,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 801,
+      "name": "Cancel the order",
+      "externalId": "FLOW_CANCEL_ORDER",
+      "attributes": [],
+      "sourceRef": 8,
+      "targetRef": 9,
+      "roles": [],
+      "variables": [
+        {
+          "id": 2,
+          "name": "cancelReason",
+          "dataType": "string",
+          "isArray": false,
+          "required": true,
+          "defaultValue": null,
+          "validation": "Len(cancelReason) > 0"
+        }
+      ]
+    },
+    {
+      "id": 802,
+      "name": "Keep the order",
+      "externalId": "FLOW_KEEP_ORDER",
+      "attributes": [],
+      "sourceRef": 8,
+      "targetRef": 12,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 901,
+      "name": "",
+      "externalId": null,
+      "attributes": [],
+      "sourceRef": 9,
+      "targetRef": 10,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 1001,
+      "name": "Confirmed",
+      "externalId": "FLOW_CONFIRMED",
+      "attributes": [],
+      "sourceRef": 10,
+      "targetRef": 11,
+      "roles": [],
+      "variables": []
+    }
+  ]
+}

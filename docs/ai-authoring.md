@@ -2,7 +2,7 @@
 
 [Documentation home](index.md) · [UI guide](ui-guide.md) · [API reference](api-guide.md) · [Node reference](node-reference.md)
 
-The Flowbit.Ui workflow editor's **AI assistant** creates and modifies complete workflow definitions from requirements. It supports the same 26 node types and canonical properties as the editor/runtime, including JavaScript and NCalc, REST services, messages, timers, conditional, boundary, and link events, signal catch and boundary events, advanced gateways, shared variables, roles, assignments, and multi-instance outcomes. It does not restrict workflows to approvals.
+The Flowbit.Ui workflow editor's **AI assistant** creates and modifies complete workflow definitions from requirements. It supports the same 28 node types and canonical properties as the editor/runtime, including JavaScript and NCalc, REST services, messages, timers, conditional, boundary, and link events, signal catch, boundary, throw, and end events, advanced gateways, shared variables, roles, assignments, and multi-instance outcomes. It does not restrict workflows to approvals.
 
 The assistant returns a proposal for review. Applying a proposal changes the editable diagram; saving creates an unpublished version using the normal editor action. Generation does not save, publish, start an instance, run generated scripts, or call authored service endpoints. Business correctness and external integration contracts still need review even when Flowbit validation succeeds.
 
@@ -76,7 +76,7 @@ The generated JSON Schema checks the structural canonical contract. It includes 
 
 Schema matching alone cannot check graph semantics, expression rules, catalog existence, deployment settings, or script behavior. When you have Flowbit authorization, optional `POST /api/workflows/validate` accepts the complete workflow JSON and performs the same read-only authored/normalized validation and readiness checks used for the assistant's proposals. The endpoint requires the normal workflow-author role and calls no AI model. Because that role can also create, publish, and delete definitions, give an external agent a token only for this call; the skill tells the agent to use it for nothing else and never print or store it. It does not save, publish, execute JavaScript, or call external services; the [API reference](api-guide.md) owns its exact response and status contract.
 
-Without a server, the external agent can still produce a workflow file, but must report semantic/deployment validation as pending. Import it into Flowbit for authoritative review and save validation. Missing shared-catalog contracts can block saving; Worker publication configuration can block publication. Generated scripts require behavior review even after syntax validation, and REST endpoints/configuration references must be supplied and verified by the workflow owner.
+Without a server, the external agent can still produce a workflow file, but must report semantic/deployment validation as pending. Import it into Flowbit for authoritative review and save validation. Missing shared-catalog contracts can block saving; Worker publication configuration, and a signal throw or end event whose scope names a workflow family without a definition, can block publication. Generated scripts require behavior review even after syntax validation, and REST endpoints/configuration references must be supplied and verified by the workflow owner.
 
 ## Use the same skill in another agent
 

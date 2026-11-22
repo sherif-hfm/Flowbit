@@ -337,15 +337,25 @@ public sealed record ErrorBoundaryLogEntry(
 public sealed class ErrorBoundaryLogProbe
 {
     private readonly ConcurrentQueue<ErrorBoundaryLogEntry> entries = new();
+    private readonly ConcurrentQueue<ErrorBoundaryLogEntry> signalEntries = new();
 
     public IReadOnlyList<ErrorBoundaryLogEntry> ForInstance(long instanceId) =>
         entries.Where(entry => Equals(entry.Fields.GetValueOrDefault("InstanceId"), instanceId)).ToArray();
+
+    /// <summary>The engine's lines about signals an instance threw or did not throw.</summary>
+    public IReadOnlyList<ErrorBoundaryLogEntry> SignalLinesForInstance(long instanceId) =>
+        signalEntries.Where(entry => Equals(entry.Fields.GetValueOrDefault("InstanceId"), instanceId)).ToArray();
 
     internal void Record(LogLevel level, string message, IEnumerable<KeyValuePair<string, object?>>? fields)
     {
         if (fields is not null && message.Contains("error boundary", StringComparison.Ordinal))
         {
             entries.Enqueue(new ErrorBoundaryLogEntry(level, message, fields.ToDictionary()));
+        }
+
+        if (fields is not null && message.Contains("signal", StringComparison.Ordinal))
+        {
+            signalEntries.Enqueue(new ErrorBoundaryLogEntry(level, message, fields.ToDictionary()));
         }
     }
 }

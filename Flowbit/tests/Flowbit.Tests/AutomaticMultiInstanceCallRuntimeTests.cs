@@ -2358,6 +2358,8 @@ public sealed class AutomaticMultiInstanceCallRuntimeTests(PostgresApiFixture fi
 
         public Task SaveChangesAsync(CancellationToken cancellationToken) => inner.SaveChangesAsync(cancellationToken);
 
+        public void AfterCommit(Action callback) => inner.AfterCommit(callback);
+
         public void DiscardChanges()
         {
             inner.DiscardChanges();

@@ -55,6 +55,7 @@ public static class ServiceCollectionExtensions
             provider.GetRequiredService<InstanceVariableUpdateService>());
         services.AddScoped<IInstanceVariableUpdateBatchService, InstanceVariableUpdateBatchService>();
         services.AddScoped<IInstanceVariableUpdateBatchJobProcessor, InstanceVariableUpdateBatchJobProcessor>();
+        services.AddScoped<SignalBroadcastWriter>();
         services.AddScoped<ISignalBroadcastService, SignalBroadcastService>();
         services.AddScoped<ISignalBroadcastJobProcessor, SignalBroadcastJobProcessor>();
         services.AddScoped<ISignalDeliveryExecutor>(provider =>

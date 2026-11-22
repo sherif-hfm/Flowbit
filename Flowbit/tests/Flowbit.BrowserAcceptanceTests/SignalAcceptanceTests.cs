@@ -273,6 +273,234 @@ public sealed class SignalAcceptanceTests(ExampleAcceptanceFixture fixture)
         });
     }
 
+    /// <summary>
+    /// S7 (EVENT-04B): two orders of the throw example. Cancelling the first from its review task throws
+    /// to that instance only: the Worker interrupts its shipment task, and the second order keeps its own.
+    /// The history row links the broadcast, and the Signals page shows it under Workflows with its thrower.
+    /// </summary>
+    [Theory]
+    [InlineData(1440, 900)]
+    [InlineData(390, 844)]
+    public async Task S7_ThrowEventInterruptsTheShipmentOfItsOwnOrderOnly(int width, int height)
+    {
+        await using var scenario = await Stack.CreateScenario(
+            $"signal-s7-{width}x{height}", width, height, scenarioTimeout: ScenarioBudget);
+        await scenario.RunAsync("signal throw", async () =>
+        {
+            await Stack.StartWorkerAsync();
+            await using var actor = await ApplyActorAsync(scenario, "signal-operator", OperatorRoles);
+            var suffix = Guid.NewGuid().ToString("N")[..8];
+            var path = Path.Combine(Stack.RepositoryRoot, "examples", "signals", "03-signal-throw-order-cancellation.json");
+            var model = JsonSerializer.Deserialize<WorkflowModel>(
+                await File.ReadAllTextAsync(path, ScenarioCancellation.Token), JsonOptions)!;
+            model.Id = $"signal-s7-{suffix}";
+            var signal = $"accept.s7-cancel-{suffix}";
+            model.FlowNodes.Single(node => node.Id == 4).Signal!.Name = signal;
+            model.FlowNodes.Single(node => node.Id == 9).Signal!.Name = signal;
+            var workflow = await Stack.SetupClient.CreateAndPublishAsync(model);
+            var orders = await StartManyAsync(actor, workflow.Id, 2, "orderNumber");
+
+            var review = (await actor.Runtime.GetInboxAsync(orders[0])).Single(item => item.CurrentNodeId == 8);
+            await actor.Runtime.TakeUserTaskFlowAsync(review.UserTaskId, 801, new Dictionary<string, JsonElement>
+            {
+                ["cancelReason"] = JsonSerializer.SerializeToElement("Customer request"),
+            });
+            var cancelled = await UntilAsync(() => actor.Runtime.GetInstanceAsync(orders[0]),
+                detail => detail.ExecutionPositions.Any(position => position.NodeId == 6 && position.TokenStatus == "active"),
+                "the Worker to interrupt the first order's shipment", TimeSpan.FromSeconds(60), TimeSpan.FromMilliseconds(250));
+            Assert.DoesNotContain(cancelled.ExecutionPositions, position => position.NodeId == 3 && position.TokenStatus == "active");
+            Assert.Contains(cancelled.ExecutionPositions, position => position.NodeId == 10 && position.TokenStatus == "active");
+            var kept = await actor.Runtime.GetInstanceAsync(orders[1]);
+            Assert.Contains(kept.ExecutionPositions, position => position.NodeId == 3 && position.TokenStatus == "active");
+
+            // The history row names the throw and links the broadcast.
+            var page = scenario.Page;
+            await scenario.OpenUiAsync($"instances/{orders[0]}");
+            var history = page.Locator("#history");
+            await Assertions.Expect(history).ToContainTextAsync($"Threw signal '{signal}' to this instance: 1 recipient");
+            var link = history.GetByRole(AriaRole.Link, new LocatorGetByRoleOptions { NameRegex = new Regex(@"^Broadcast #\d+$") }).First;
+            var broadcastText = await link.InnerTextAsync();
+            await AssertNoHorizontalOverflowAsync(page);
+            await CaptureAsync(scenario, "s7-history");
+
+            // The Signals page lists it under Workflows, with its thrower linked to the order.
+            await link.ClickAsync();
+            var current = page.Locator("section[aria-labelledby='signal-current-heading']");
+            await Assertions.Expect(current).ToContainTextAsync(broadcastText);
+            await Assertions.Expect(current.GetByRole(AriaRole.Link, new LocatorGetByRoleOptions
+            {
+                Name = $"Instance #{orders[0]} · Announce the cancellation", Exact = true
+            })).ToHaveAttributeAsync("href", $"instances/{orders[0]}");
+            var historyList = page.Locator("section[aria-labelledby='signal-history-heading']");
+            await Assertions.Expect(historyList).Not.ToContainTextAsync(signal);
+            await page.Locator(".signal-thrower-filter").SelectOptionAsync("workflows");
+            await Assertions.Expect(historyList).ToContainTextAsync(signal);
+            await Assertions.Expect(historyList).ToContainTextAsync($"Instance #{orders[0]} · Announce the cancellation");
+            await AssertNoHorizontalOverflowAsync(page);
+            await CaptureAsync(scenario, "s7-signals");
+        });
+    }
+
+    /// <summary>
+    /// S8 (EVENT-04B): a recall decision of Example 04 ends in a signal end event that throws to the order of
+    /// Example 02 with the same business key. The fixture rewrites Example 04's scope to Example 02's key for the run.
+    /// </summary>
+    [Fact]
+    public async Task S8_SignalEndEventInterruptsTheOrderWithTheSameBusinessKey()
+    {
+        await using var scenario = await Stack.CreateScenario("signal-s8", 1440, 900, scenarioTimeout: ScenarioBudget);
+        await scenario.RunAsync("signal end event", async () =>
+        {
+            await Stack.StartWorkerAsync();
+            await using var actor = await ApplyActorAsync(scenario, "signal-operator", OperatorRoles);
+            var suffix = Guid.NewGuid().ToString("N")[..8];
+            var signal = $"accept.s8-recall-{suffix}";
+            var ordersModel = JsonSerializer.Deserialize<WorkflowModel>(await File.ReadAllTextAsync(
+                Path.Combine(Stack.RepositoryRoot, "examples", "signals", "02-signal-boundaries-recall.json"),
+                ScenarioCancellation.Token), JsonOptions)!;
+            ordersModel.Id = $"signal-s8-orders-{suffix}";
+            ordersModel.FlowNodes.Single(node => node.Id == 3).Signal!.Name = signal;
+            var orders = await Stack.SetupClient.CreateAndPublishAsync(ordersModel);
+            var decisionModel = JsonSerializer.Deserialize<WorkflowModel>(await File.ReadAllTextAsync(
+                Path.Combine(Stack.RepositoryRoot, "examples", "signals", "04-signal-end-recall-decision.json"),
+                ScenarioCancellation.Token), JsonOptions)!;
+            decisionModel.Id = $"signal-s8-decision-{suffix}";
+            var end = decisionModel.FlowNodes.Single(node => node.Id == 3).Signal!;
+            end.Name = signal;
+            end.Scope!.WorkflowKey = orders.WorkflowKey;
+            var decisions = await Stack.SetupClient.CreateAndPublishAsync(decisionModel);
+
+            // Orders C-001 and C-002; the decision is for C-001.
+            var order = await StartManyAsync(actor, orders.Id, 2, "orderNumber");
+            var decision = (await StartManyAsync(actor, decisions.Id, 1, "orderNumber"))[0];
+            var task = (await actor.Runtime.GetInboxAsync(decision)).Single(item => item.CurrentNodeId == 2);
+            await actor.Runtime.TakeUserTaskFlowAsync(task.UserTaskId, 201, new Dictionary<string, JsonElement>
+            {
+                ["recallReason"] = JsonSerializer.SerializeToElement("Supplier recall"),
+            });
+
+            var finished = await actor.Runtime.GetInstanceAsync(decision);
+            Assert.Equal("completed", finished.Status);
+            Assert.Single(finished.History, item => item.Note == "signalThrown");
+            var recalled = await UntilAsync(() => actor.Runtime.GetInstanceAsync(order[0]),
+                detail => detail.ExecutionPositions.Any(position => position.NodeId == 6 && position.TokenStatus == "active"),
+                "the Worker to interrupt the shipment of C-001", TimeSpan.FromSeconds(60), TimeSpan.FromMilliseconds(250));
+            Assert.Equal("Supplier recall", recalled.Variables
+                .Where(variable => variable.VariableName == "recallReason")
+                .MaxBy(variable => variable.Id)!.Value.GetString());
+            var other = await actor.Runtime.GetInstanceAsync(order[1]);
+            Assert.Contains(other.ExecutionPositions, position => position.NodeId == 2 && position.TokenStatus == "active");
+
+            await scenario.OpenUiAsync($"instances/{decision}");
+            await Assertions.Expect(scenario.Page.Locator("#history"))
+                .ToContainTextAsync($"Ended and threw signal '{signal}' to one business key in workflow {orders.WorkflowKey}: 1 recipient");
+            await CaptureAsync(scenario, "s8-decision");
+        });
+    }
+
+    /// <summary>
+    /// S9 (EVENT-04B): with the Worker stopped, the workflow budget is set one above the broadcasts already
+    /// delivering, so the first order's cancellation fills it. The second order's cancellation, taken in task
+    /// detail, shows the refusal and changes nothing. Once the Worker delivers the first broadcast, the same
+    /// action succeeds. The setting goes back to its earlier value, also when the scenario fails, because the
+    /// suite's other scenarios share the stack.
+    /// </summary>
+    [Fact]
+    public async Task S9_RefusedThrowShowsItsMessageThenSucceedsOnceTheWorkerDelivers()
+    {
+        await using var scenario = await Stack.CreateScenario("signal-s9", 1440, 900, scenarioTimeout: ScenarioBudget);
+        await scenario.RunAsync("refused signal throw", async () =>
+        {
+            await Stack.StopWorkerAsync();
+            await using var actor = await ApplyActorAsync(scenario, "signal-operator", OperatorRoles);
+            var suffix = Guid.NewGuid().ToString("N")[..8];
+            var path = Path.Combine(Stack.RepositoryRoot, "examples", "signals", "03-signal-throw-order-cancellation.json");
+            var model = JsonSerializer.Deserialize<WorkflowModel>(
+                await File.ReadAllTextAsync(path, ScenarioCancellation.Token), JsonOptions)!;
+            model.Id = $"signal-s9-{suffix}";
+            var signal = $"accept.s9-cancel-{suffix}";
+            model.FlowNodes.Single(node => node.Id == 4).Signal!.Name = signal;
+            model.FlowNodes.Single(node => node.Id == 9).Signal!.Name = signal;
+            var workflow = await Stack.SetupClient.CreateAndPublishAsync(model);
+            var orders = await StartManyAsync(actor, workflow.Id, 2, "orderNumber");
+
+            var setting = Assert.Single(await Stack.SetupClient.ListEngineSettingsAsync(),
+                item => item.Namespace == "Signals" && item.Key == "MaxOpenWorkflowBroadcasts");
+            var open = await OpenWorkflowBroadcastsAsync(actor.Http);
+            var limit = open + 1;
+            try
+            {
+                await Stack.SetupClient.UpdateEngineSettingAsync(setting.Id, new(
+                    limit.ToString(System.Globalization.CultureInfo.InvariantCulture), setting.Description, setting.UpdatedAt));
+
+                // The first cancellation fills the budget: its broadcast waits for the stopped Worker.
+                var firstReview = (await actor.Runtime.GetInboxAsync(orders[0])).Single(item => item.CurrentNodeId == 8);
+                await actor.Runtime.TakeUserTaskFlowAsync(firstReview.UserTaskId, 801, new Dictionary<string, JsonElement>
+                {
+                    ["cancelReason"] = JsonSerializer.SerializeToElement("Customer request"),
+                });
+                var thrown = Assert.Single((await actor.Runtime.GetInstanceAsync(orders[0])).History,
+                    item => item.Note == "signalThrown");
+                var firstBroadcast = thrown.Payload!["broadcastId"].GetInt64();
+                Assert.Equal(limit, await OpenWorkflowBroadcastsAsync(actor.Http));
+
+                // The second cancellation is refused in task detail, and nothing changes.
+                var secondReview = (await actor.Runtime.GetInboxAsync(orders[1])).Single(item => item.CurrentNodeId == 8);
+                var page = scenario.Page;
+                await scenario.OpenUiAsync($"user-tasks/{secondReview.UserTaskId}");
+                await WaitForInteractiveAsync(page);
+                var card = page.Locator(".action-card").Filter(new LocatorFilterOptions { HasText = "Cancel the order" });
+                var reason = card.Locator($"#task-{secondReview.UserTaskId}-flow-801-cancelReason");
+                var takeAction = card.GetByRole(AriaRole.Button, new LocatorGetByRoleOptions { Name = "Take action", Exact = true });
+                await reason.FillAsync("Address unknown");
+                await takeAction.ClickAsync();
+                await Assertions.Expect(page.Locator(".alert-danger")).ToContainTextAsync(
+                    $"Signal throw event #9 was not thrown: {limit} signal broadcasts thrown by workflows are still delivering; "
+                    + "see Signals.MaxOpenWorkflowBroadcasts.");
+                await AssertNoHorizontalOverflowAsync(page);
+                await CaptureAsync(scenario, "s9-refused");
+                var unchanged = await actor.Runtime.GetInstanceAsync(orders[1]);
+                Assert.Contains(unchanged.ExecutionPositions, position => position.NodeId == 8 && position.TokenStatus == "active");
+                Assert.Contains(unchanged.ExecutionPositions, position => position.NodeId == 3 && position.TokenStatus == "active");
+                Assert.DoesNotContain(unchanged.History, item => item.Note == "signalThrown");
+                Assert.DoesNotContain(unchanged.Variables, variable => variable.VariableName == "cancelReason");
+                Assert.Equal(limit, await OpenWorkflowBroadcastsAsync(actor.Http));
+
+                // The Worker delivers the first broadcast; then the same action succeeds.
+                await Stack.StartWorkerAsync();
+                await UntilAsync(() => GetAsync<SignalBroadcastDetailDto>(actor.Http, $"/api/signal-broadcasts/{firstBroadcast}"),
+                    item => item.Status == SignalBroadcastStatuses.Completed, "the Worker to deliver the first cancellation",
+                    TimeSpan.FromSeconds(60));
+                await takeAction.ClickAsync();
+                await page.WaitForURLAsync(new Regex("/inbox$"));
+                var cancelled = await UntilAsync(() => actor.Runtime.GetInstanceAsync(orders[1]),
+                    detail => detail.ExecutionPositions.Any(position => position.NodeId == 6 && position.TokenStatus == "active"),
+                    "the Worker to interrupt the second order's shipment", TimeSpan.FromSeconds(60), TimeSpan.FromMilliseconds(250));
+                Assert.Single(cancelled.History, item => item.Note == "signalThrown");
+                Assert.DoesNotContain(cancelled.ExecutionPositions, position => position.NodeId == 3 && position.TokenStatus == "active");
+
+                await scenario.OpenUiAsync($"instances/{orders[1]}");
+                await Assertions.Expect(page.Locator("#history"))
+                    .ToContainTextAsync($"Threw signal '{signal}' to this instance: 1 recipient");
+                await CaptureAsync(scenario, "s9-succeeded");
+            }
+            finally
+            {
+                // Read the row again, because a failure can come before or after the change.
+                var current = Assert.Single(await Stack.SetupClient.ListEngineSettingsAsync(), item => item.Id == setting.Id);
+                if (current.Value != setting.Value)
+                {
+                    await Stack.SetupClient.UpdateEngineSettingAsync(setting.Id,
+                        new(setting.Value, setting.Description, current.UpdatedAt));
+                }
+            }
+        });
+    }
+
+    private static async Task<long> OpenWorkflowBroadcastsAsync(HttpClient http) =>
+        (await GetAsync<PagedResult<SignalBroadcastSummaryDto>>(http,
+            $"/api/signal-broadcasts?status={SignalBroadcastStatuses.Delivering}&thrownByKind={SignalThrowerKinds.Instance}&page=1&pageSize=1")).TotalCount;
+
     private static async Task ThrowFromPageAsync(IPage page, BrowserScenario scenario, string signal, string workflowKey, string payload)
     {
         await scenario.OpenUiAsync("signals");

@@ -578,6 +578,13 @@ public static class WorkflowModelMigrator
         {
             node.Signal = null;
         }
+        else if (BpmnFlowNodeTypes.ThrowsSignal(node.Type) && node.Signal is { } thrown)
+        {
+            // A throw's name, scope, and entries are never rewritten; mappings stay for
+            // validation to reject.
+            thrown.OutputMappings ??= [];
+            thrown.Payload ??= [];
+        }
 
         if (BpmnFlowNodeTypes.IsComplexGateway(node.Type))
         {
@@ -682,13 +689,16 @@ public static class WorkflowModelMigrator
             node.AttachedToRef = null;
             node.ErrorVariable = null;
         }
-        else if (BpmnFlowNodeTypes.IsScopedInterrupt(node.Type) || BpmnFlowNodeTypes.IsLinkEvent(node.Type))
+        else if (BpmnFlowNodeTypes.IsScopedInterrupt(node.Type)
+                 || BpmnFlowNodeTypes.IsLinkEvent(node.Type)
+                 || BpmnFlowNodeTypes.IsSignalThrow(node.Type))
         {
             // A scoped interrupt is a Flowbit pass-through control event. Its
             // only authored behavior is the gateway reference; routing lives on
             // its sole unconditional outgoing sequence flow. A link event's only
             // authored behavior is its name, which pairs a throw with a catch;
-            // names are never rewritten here.
+            // names are never rewritten here. A signal throw's only authored
+            // behavior lives under node.Signal.
             node.RequiresClaim = false;
             node.ClaimMode = ClaimModes.Fresh;
             node.InheritClaimFromNodeId = null;
@@ -919,7 +929,7 @@ public static class WorkflowModelMigrator
             node.AttachedToRef = null;
             node.ErrorVariable = null;
         }
-        else if (BpmnFlowNodeTypes.IsSignalEvent(node.Type))
+        else if (BpmnFlowNodeTypes.IsSignalWait(node.Type))
         {
             // A signal catch rests until a broadcast with its name is delivered, and a
             // signal boundary waits on its host. Their only authored data lives under

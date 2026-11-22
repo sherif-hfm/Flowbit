@@ -72,6 +72,68 @@ public sealed class WorkflowDefinitionReadinessChecker(
     }
 
     /// <summary>
+    /// Requires every workflow family that a signal throw or end event names to exist, most
+    /// likely a mistyped key otherwise. Drafts do not call this, so two definitions that throw
+    /// to each other can both be saved and then published.
+    /// </summary>
+    public async Task ValidateSignalTargetsAsync(
+        WorkflowModel definition,
+        CancellationToken cancellationToken)
+    {
+        var problems = await FindSignalTargetProblemsAsync(definition, cancellationToken);
+        if (problems.Count > 0)
+        {
+            throw new WorkflowDomainException(problems[0]);
+        }
+    }
+
+    /// <summary>
+    /// Every signal throw or end event, in node order, whose scope names a workflow family
+    /// without a definition. The definition's own key always passes.
+    /// </summary>
+    public async Task<IReadOnlyList<string>> FindSignalTargetProblemsAsync(
+        WorkflowModel definition,
+        CancellationToken cancellationToken)
+    {
+        var throws = (definition.FlowNodes ?? [])
+            .Where(node => node is not null
+                && BpmnFlowNodeTypes.ThrowsSignal(node.Type)
+                && SignalThrowScopeKinds.RequiresWorkflowKey(node.Signal?.Scope?.Kind)
+                && !string.IsNullOrWhiteSpace(node.Signal?.Scope?.WorkflowKey))
+            .OrderBy(node => node.Id)
+            .ToArray();
+        if (throws.Length == 0)
+        {
+            return [];
+        }
+
+        var problems = new List<string>();
+        var known = new Dictionary<string, bool>(StringComparer.Ordinal);
+        foreach (var node in throws)
+        {
+            var key = node.Signal!.Scope!.WorkflowKey!;
+            if (string.Equals(key, definition.Id, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (!known.TryGetValue(key, out var exists))
+            {
+                exists = definitions is not null
+                    && await definitions.ExistsByKeyAsync(key, cancellationToken);
+                known[key] = exists;
+            }
+
+            if (!exists)
+            {
+                problems.Add($"{SignalEventRules.Label(node)} throws to workflow '{key}', which has no definition.");
+            }
+        }
+
+        return problems;
+    }
+
+    /// <summary>
     /// What a call can pass to and read from each family's published default: declarations,
     /// never values. A family without one is reported so, rather than failing the request.
     /// </summary>

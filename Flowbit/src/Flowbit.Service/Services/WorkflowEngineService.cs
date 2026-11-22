@@ -40,7 +40,8 @@ public sealed partial class WorkflowEngineService(
     IAutomaticMultiInstanceRepository? automaticMultiInstances = null,
     AutomaticMultiInstanceCoordinator? automaticMultiInstanceCoordinator = null,
     ISignalSubscriptionRepository? signalSubscriptions = null,
-    ISignalBroadcastRepository? signalBroadcasts = null)
+    ISignalBroadcastRepository? signalBroadcasts = null,
+    SignalBroadcastWriter? signalBroadcastWriter = null)
     : IWorkflowEngineService, IWorkflowJobProcessor,
       IInstanceVersionChangeBatchExecutor, IConditionalEventRuntimeCoordinator,
       IAdministrativeActionExecutor
@@ -81,9 +82,27 @@ public sealed partial class WorkflowEngineService(
         _settingsCache = (Dictionary<string, JsonElement>)await settings.LoadAllAsync(cancellationToken);
     }
 
-    public async Task ResumeForVariableChangesAsync(
+    public Task ResumeForVariableChangesAsync(
         WorkflowInstanceRecord instance,
         ActorContext actor,
+        CancellationToken cancellationToken) =>
+        ResumeConditionalWaitsAsync(
+            instance,
+            actor,
+            WorkflowAutomaticActivationGuard.ResetAfterExternalWaitOrTrigger(),
+            cancellationToken);
+
+    /// <summary>
+    /// Wakes the conditional events a complete variable batch changes. A conditional
+    /// event woken by a person, a message, or an administrative update starts a new
+    /// automatic chain (<paramref name="chainCount"/> 0). One woken by an automatic step or
+    /// a signal thrown by a workflow continues that step's chain, so a loop through a
+    /// conditional event is counted (EVENT-04B).
+    /// </summary>
+    private async Task ResumeConditionalWaitsAsync(
+        WorkflowInstanceRecord instance,
+        ActorContext actor,
+        int chainCount,
         CancellationToken cancellationToken)
     {
         if (variableMutationTracker is null || conditionalEventPlans is null)
@@ -143,7 +162,8 @@ public sealed partial class WorkflowEngineService(
             conditionallyTriggeredTokenIds,
             maxTriggers: 10_000,
             onlyTokenId: null,
-            cancellationToken);
+            cancellationToken,
+            chainCount);
 
         while (triggered.Count > 0
                && await IsInstanceRunningAsync(instance.Id, cancellationToken))
@@ -175,7 +195,8 @@ public sealed partial class WorkflowEngineService(
         ISet<long> forceDurableTokenIds,
         long maxTriggers,
         long? onlyTokenId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int chainCount = 0)
     {
         var started = Stopwatch.GetTimestamp();
         if (changedNames.Count == 0 || plan.EventsByNodeId.Count == 0)
@@ -215,7 +236,8 @@ public sealed partial class WorkflowEngineService(
             onlyCatchTokenId: onlyTokenId,
             onlyBoundaryHostTokenId: onlyTokenId,
             source: "variableWrite",
-            cancellationToken);
+            cancellationToken,
+            chainCount);
 
         ConditionalEventRuntimeTelemetry.RecordWave(
             candidateNodeIds.Count,
@@ -239,7 +261,8 @@ public sealed partial class WorkflowEngineService(
         long? onlyCatchTokenId,
         long? onlyBoundaryHostTokenId,
         string source,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int chainCount = 0)
     {
         var candidateSet = candidateNodeIds.ToHashSet();
         var catchNodeIds = includeCatchEvents
@@ -343,6 +366,16 @@ public sealed partial class WorkflowEngineService(
             {
                 foreach (var token in tokens!)
                 {
+                    // A released catch continues the greater of its own chain and the
+                    // waking step's, so a loop through it is counted.
+                    if (chainCount > token.AutomaticActivationCount
+                        && !await runtime.SetExecutionTokenAutomaticActivationCountAsync(
+                            token.Id, token.ActivationId, chainCount, cancellationToken))
+                    {
+                        throw new WorkflowConflictException(
+                            "The conditional catch token changed while its automatic chain was being continued.");
+                    }
+
                     if (eventPlan.DeliveryMode == ConditionalEventDeliveryModes.DurableAsync)
                     {
                         durable.Add(new ConditionalWakeLatchRequest(
@@ -492,8 +525,7 @@ public sealed partial class WorkflowEngineService(
                     GatewayBranchId: capture.Rise.HostToken.GatewayBranchId,
                     ArrivedViaFlowId: null,
                     TriggeredBy: completionActor,
-                    AutomaticActivationCount:
-                        WorkflowAutomaticActivationGuard.ResetAfterExternalWaitOrTrigger(),
+                    AutomaticActivationCount: chainCount,
                     AutomaticActivationStateIds:
                         capture.Rise.HostToken.AutomaticActivationStateIds))
                 .ToArray(),
@@ -514,7 +546,8 @@ public sealed partial class WorkflowEngineService(
                     actor,
                     rise,
                     definition,
-                    cancellationToken)
+                    cancellationToken,
+                    chainCount)
                 : siblingTokens[siblingIndex++];
             if (rise.Subscription.DeliveryMode
                 == ConditionalEventDeliveryModes.DurableAsync)
@@ -615,7 +648,8 @@ public sealed partial class WorkflowEngineService(
         ActorContext actor,
         ConditionalBoundaryRise rise,
         WorkflowModel definition,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int chainCount = 0)
     {
         var subscription = rise.Subscription;
         var host = rise.HostToken;
@@ -630,8 +664,7 @@ public sealed partial class WorkflowEngineService(
                 null,
                 completionActor,
                 cancellationToken,
-                automaticActivationCount:
-                    WorkflowAutomaticActivationGuard.ResetAfterExternalWaitOrTrigger(),
+                automaticActivationCount: chainCount,
                 automaticActivationStateIds: host.AutomaticActivationStateIds);
             return sibling;
         }
@@ -645,7 +678,8 @@ public sealed partial class WorkflowEngineService(
             NodeExecutionCompletionReasons.ConditionalTriggered,
             "interruptingConditionalBoundary",
             keepConditionalSubscriptionId: subscription.Id,
-            cancellationToken);
+            cancellationToken,
+            chainCount);
         return await runtime.GetExecutionTokenAsync(
                 host.Id,
                 false,
@@ -659,7 +693,9 @@ public sealed partial class WorkflowEngineService(
     /// its token onto the boundary: the automatic body, open user tasks and
     /// multi-instance children, timer, conditional, and signal subscriptions, other
     /// jobs, and calls. One sequence for both kinds, so they cannot drift. The
-    /// conditional capture keeps its own subscription, which it settles itself.
+    /// conditional capture keeps its own subscription, which it settles itself. The
+    /// token continues <paramref name="chainCount"/>: 0 starts a new automatic chain, and
+    /// the count of the step or signal that caused the interrupt continues that chain.
     /// </summary>
     private async Task InterruptBoundaryHostAsync(
         WorkflowInstanceRecord instance,
@@ -670,7 +706,8 @@ public sealed partial class WorkflowEngineService(
         string completionReason,
         string jobCancelReason,
         long? keepConditionalSubscriptionId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int chainCount = 0)
     {
         var ids = new[] { host.Id };
         var completionActor = ToNodeExecutionActor(actor);
@@ -730,8 +767,7 @@ public sealed partial class WorkflowEngineService(
                 host.GatewayBranchId,
                 completionActor),
             cancellationToken,
-            automaticActivationCount:
-                WorkflowAutomaticActivationGuard.ResetAfterExternalWaitOrTrigger(),
+            automaticActivationCount: chainCount,
             automaticActivationStateIds: host.AutomaticActivationStateIds);
     }
 
@@ -830,7 +866,10 @@ public sealed partial class WorkflowEngineService(
             onlyCatchTokenId: null,
             onlyBoundaryHostTokenId: hostToken.Id,
             source: "entry",
-            cancellationToken);
+            cancellationToken,
+            // A boundary already true on entry continues the entering token's chain, so a
+            // loop that re-enters its host is counted (EVENT-04B).
+            chainCount: hostToken.AutomaticActivationCount);
     }
 
     private async Task<int> DrainConditionalVariableChangesAsync(
@@ -843,7 +882,8 @@ public sealed partial class WorkflowEngineService(
         Queue<long> routingQueue,
         ISet<long> forceDurableTokenIds,
         long maxTriggers,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int chainCount = 0)
     {
         if (variableMutationTracker is null
             || !variableMutationTracker.HasPending(instance.Id))
@@ -875,7 +915,8 @@ public sealed partial class WorkflowEngineService(
             forceDurableTokenIds,
             maxTriggers,
             onlyTokenId: null,
-            cancellationToken);
+            cancellationToken,
+            chainCount);
     }
 
     private static Dictionary<string, JsonElement> ConditionalHistoryPayload(
@@ -1143,6 +1184,18 @@ public sealed partial class WorkflowEngineService(
                 cancellationToken,
                 actorClaims: actor.AuditClaims,
                 callLink: callLink);
+
+            // A child continues its calling token's automatic chain, so a loop through calls
+            // is counted. Set before routing, which reads the count.
+            if (callLink is { AutomaticActivationCount: > 0 }
+                && instance.ActiveTokenId is long childTokenId
+                && await runtime.GetExecutionTokenAsync(childTokenId, false, cancellationToken) is { } childToken
+                && !await runtime.SetExecutionTokenAutomaticActivationCountAsync(
+                    childToken.Id, childToken.ActivationId, callLink.AutomaticActivationCount, cancellationToken))
+            {
+                throw new WorkflowConflictException(
+                    "The child's first token changed while its automatic chain was being continued.");
+            }
 
             // Linked before routing, so a child that finishes in this pass already has its call.
             if (callLink is not null
@@ -3412,6 +3465,7 @@ public sealed partial class WorkflowEngineService(
         }
         else if (BpmnFlowNodeTypes.IsEnd(nextNode.Type))
         {
+            await ThrowSignalAtEndAsync(lockedInstance, token.Id, nextNode, workflow.Definition, actor, cancellationToken);
             var remaining = await runtime.ListExecutionTokensAsync(
                 instance.Id, ExecutionTokenRecordStatuses.Active, cancellationToken);
             if (remaining.Count == 0)
@@ -3925,6 +3979,7 @@ public sealed partial class WorkflowEngineService(
             }
             else if (BpmnFlowNodeTypes.IsEnd(nextNode.Type))
             {
+                await ThrowSignalAtEndAsync(taskInstance, token.Id, nextNode, workflow.Definition, executionActor, cancellationToken);
                 var remaining = await runtime.ListExecutionTokensAsync(
                     instance.Id, ExecutionTokenRecordStatuses.Active, cancellationToken);
                 if (remaining.Count == 0)
@@ -4260,6 +4315,7 @@ public sealed partial class WorkflowEngineService(
             }
             else if (BpmnFlowNodeTypes.IsEnd(nextNode.Type))
             {
+                await ThrowSignalAtEndAsync(tokenInstance, token.Id, nextNode, workflow.Definition, actor, cancellationToken);
                 var remaining = await runtime.ListExecutionTokensAsync(
                     instance.Id, ExecutionTokenRecordStatuses.Active, cancellationToken);
                 if (remaining.Count == 0)
@@ -5341,6 +5397,19 @@ public sealed partial class WorkflowEngineService(
         // that batch until the loop has selected a boundary for the failed host
         // and cancelled the host's conditions, or thrown because none matches.
         var resumesFailedActivity = resume is { ActivityAlreadyExecuted: true, Outcome.Success: false };
+        // Values written before routing continue the starting token's automatic chain. Read
+        // only when a conditional event could observe them.
+        var startingChainCount = 0;
+        if (!resumesFailedActivity
+            && conditionalPlan.EventsByNodeId.Count > 0
+            && variableMutationTracker?.HasPending(instance.Id) == true)
+        {
+            startingChainCount = (await runtime.GetExecutionTokenAsync(startingTokenId, false, cancellationToken))
+                ?.AutomaticActivationCount ?? 0;
+        }
+        // The chain count of the token routed last, for values that conditional events
+        // observe after the queue empties.
+        var lastChainCount = startingChainCount;
         if (!resumesFailedActivity)
         {
             routingSteps += await DrainConditionalVariableChangesAsync(
@@ -5353,7 +5422,8 @@ public sealed partial class WorkflowEngineService(
                 queue,
                 conditionalDurableTokenIds,
                 maxRoutingSteps - routingSteps,
-                cancellationToken);
+                cancellationToken,
+                startingChainCount);
         }
 
         while (true)
@@ -5393,6 +5463,7 @@ public sealed partial class WorkflowEngineService(
                     throw new WorkflowDomainException("Pass-through routing cycle detected.");
                 }
                 tokenHops[tokenId] = hop + 1;
+                lastChainCount = token.AutomaticActivationCount;
 
                 var currentNode = GetFlowNode(definition, token.NodeId);
                 var tokenInstance = instance with
@@ -5715,7 +5786,8 @@ public sealed partial class WorkflowEngineService(
                     queue,
                     conditionalDurableTokenIds,
                     maxRoutingSteps - routingSteps,
-                    cancellationToken);
+                    cancellationToken,
+                    token.AutomaticActivationCount);
                 if (!await IsInstanceRunningAsync(instance.Id, cancellationToken))
                 {
                     queue.Clear();
@@ -5768,7 +5840,8 @@ public sealed partial class WorkflowEngineService(
                     queue,
                     conditionalDurableTokenIds,
                     maxRoutingSteps - routingSteps,
-                    cancellationToken);
+                    cancellationToken,
+                    token.AutomaticActivationCount);
                 if (!await IsInstanceRunningAsync(instance.Id, cancellationToken))
                 {
                     queue.Clear();
@@ -5937,8 +6010,18 @@ public sealed partial class WorkflowEngineService(
                 var t when BpmnFlowNodeTypes.IsScriptTask(t) => "script",
                 var t when BpmnFlowNodeTypes.IsErrorBoundary(t) => "boundary",
                 var t when BpmnFlowNodeTypes.IsCallActivity(t) => InstanceHistoryNotes.CallCompleted,
+                var t when BpmnFlowNodeTypes.IsSignalThrow(t) => InstanceHistoryNotes.SignalThrown,
                 _ => "automatic"
             };
+
+            // A signal throw event throws in its own routing step, then follows its one
+            // flow. A refused throw fails the step; the token never waits for deliveries.
+            Dictionary<string, JsonElement>? signalThrowPayload = null;
+            if (BpmnFlowNodeTypes.IsSignalThrow(currentNode.Type))
+            {
+                signalThrowPayload = await ThrowSignalFromNodeAsync(
+                    instance, token, currentNode, definition, actor, cancellationToken);
+            }
 
             long? continuationBranchId = token.GatewayBranchId;
             if (BpmnFlowNodeTypes.IsScopedInterrupt(currentNode.Type))
@@ -5984,7 +6067,8 @@ public sealed partial class WorkflowEngineService(
                     administrativeTraversal?.MultiInstanceExecutionId,
                 administrativeValues: administrativeTraversal?.Values,
                 administrativeBatch: administrativeTraversal?.AdministrativeBatch,
-                historyPayload: resumesCurrentActivation ? resume!.HistoryPayload : null);
+                historyPayload: signalThrowPayload
+                    ?? (resumesCurrentActivation ? resume!.HistoryPayload : null));
             }
 
             routingSteps += await DrainConditionalVariableChangesAsync(
@@ -5997,7 +6081,8 @@ public sealed partial class WorkflowEngineService(
                 queue,
                 conditionalDurableTokenIds,
                 maxRoutingSteps - routingSteps,
-                cancellationToken);
+                cancellationToken,
+                lastChainCount);
             if (!await IsInstanceRunningAsync(instance.Id, cancellationToken))
             {
                 break;
@@ -8138,6 +8223,7 @@ public sealed partial class WorkflowEngineService(
         if (BpmnFlowNodeTypes.IsEnd(nextNode.Type))
         {
             await unitOfWork.SaveChangesAsync(cancellationToken);
+            await ThrowSignalAtEndAsync(instance, token.Id, nextNode, definition, actor, cancellationToken);
             var remaining = await runtime.ListExecutionTokensAsync(
                 instance.Id, ExecutionTokenRecordStatuses.Active, cancellationToken);
             if (remaining.Count == 0)
@@ -8403,6 +8489,7 @@ public sealed partial class WorkflowEngineService(
 
         var tokens = await runtime.ListExecutionTokensAsync(
             instance.Id, ExecutionTokenRecordStatuses.Active, cancellationToken);
+        var chainCount = WorkflowAutomaticActivationGuard.ResetAfterExternalWaitOrTrigger();
         foreach (var token in tokens)
         {
             var node = GetFlowNode(definition, token.NodeId);
@@ -8410,12 +8497,15 @@ public sealed partial class WorkflowEngineService(
             {
                 await EnsureMultiInstanceInitializedForTokenAsync(
                     instance, token, node, definition, actor, cancellationToken);
+                chainCount = Math.Max(chainCount, token.AutomaticActivationCount);
             }
         }
 
         if (variableMutationTracker?.HasPending(instance.Id) == true)
         {
-            await ResumeForVariableChangesAsync(instance, actor, cancellationToken);
+            // The values come from the routing that reached the tasks, so a conditional
+            // event they wake continues that routing's automatic chain.
+            await ResumeConditionalWaitsAsync(instance, actor, chainCount, cancellationToken);
         }
     }
 
@@ -8841,7 +8931,9 @@ public sealed partial class WorkflowEngineService(
                                 ? "Error boundary event"
                                 : BpmnFlowNodeTypes.IsLinkCatch(node.Type)
                                     ? "Link catch event"
-                                    : "Automatic task";
+                                    : BpmnFlowNodeTypes.IsSignalThrow(node.Type)
+                                        ? "Signal throw event"
+                                        : "Automatic task";
             throw new WorkflowDomainException($"{kind} #{node.Id} must have exactly one outgoing sequence flow.");
         }
 

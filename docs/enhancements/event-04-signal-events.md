@@ -48,7 +48,7 @@ The work ships in two stages, described in [section 13](#13-delivery-sequence-ro
 Each item is a follow-up subtask with its own page. The list is in the [recommended order of implementation](README.md#event-04-follow-up-subtasks), which also gives the reasons for the order.
 
 1. [EVENT-04A](event-04a-signal-scope-by-business-key-or-instance.md): limiting a signal to one business key or one instance. Done.
-2. [EVENT-04B](event-04b-signal-throw-and-end-events.md): intermediate signal throw events and signal end events. A throw from a workflow creates the same broadcast inside the throwing instance's transaction.
+2. [EVENT-04B](event-04b-signal-throw-and-end-events.md): intermediate signal throw events and signal end events. A throw from a workflow creates the same broadcast inside the throwing instance's transaction. Done.
 3. [EVENT-04C](event-04c-signal-start-events.md): signal start events.
 4. [EVENT-04D](event-04d-webhook-events-for-signal-broadcasts.md): lifecycle webhook event types for broadcasts.
 5. [EVENT-04E](event-04e-signal-broadcast-expiry.md): an expiry time for a broadcast, after which undelivered work is skipped.

@@ -580,6 +580,26 @@ public sealed class CallActivityAdmissionTests(PostgresApiFixture fixture) : IAs
     }
 
     // Start -> call -> boundary -> second call -> boundary -> end, with the mapped input never supplied.
+    // EVENT-04B: a child continues its calling token's automatic chain instead of starting a new one,
+    // so a loop of signals or automatic work through calls is counted.
+    [Fact]
+    public async Task A_child_continues_the_calling_tokens_automatic_chain()
+    {
+        var childKey = Key("child");
+        await harness.PublishAsync(WaitingChild(childKey));
+        var parent = await harness.PublishAsync(Parent(Key("parent"), childKey));
+        var parentId = await harness.StartAsync(parent.Id);
+        await harness.DrainAsync(parentId, maxJobs: 10);
+
+        await using var db = fixture.CreateDbContext();
+        var calling = await AutomaticActivationCountAsync(parentId);
+        Assert.Equal(1, calling);
+        var childId = await db.WorkflowInstances.AsNoTracking()
+            .Where(instance => instance.CallRootInstanceId == parentId)
+            .Select(instance => instance.Id)
+            .SingleAsync();
+        Assert.Equal(calling, await AutomaticActivationCountAsync(childId));
+    }
     private async Task<WorkflowModel> TwoCallsThatFailOnEntryAsync()
     {
         var childKey = Key("child");

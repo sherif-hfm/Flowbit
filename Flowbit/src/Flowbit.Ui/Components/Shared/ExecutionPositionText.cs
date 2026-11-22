@@ -34,6 +34,8 @@ internal static class ExecutionPositionText
         BpmnFlowNodeTypes.TimerBoundaryEvent => "Timer boundary",
         BpmnFlowNodeTypes.ConditionalBoundaryEvent => "Conditional boundary",
         BpmnFlowNodeTypes.SignalBoundaryEvent => "Signal boundary",
+        BpmnFlowNodeTypes.IntermediateSignalThrowEvent => "Signal throw",
+        BpmnFlowNodeTypes.SignalEndEvent => "Signal end",
         BpmnFlowNodeTypes.TerminateEndEvent => "Terminate end",
         BpmnFlowNodeTypes.ErrorEndEvent => "Error end",
         BpmnFlowNodeTypes.EndEvent => "End event",

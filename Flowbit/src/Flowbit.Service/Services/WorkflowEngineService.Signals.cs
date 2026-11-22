@@ -50,7 +50,7 @@ public sealed partial class WorkflowEngineService : ISignalDeliveryExecutor
         WorkflowModel definition,
         CancellationToken cancellationToken)
     {
-        if (signalSubscriptions is null || !SignalEventRules.HasSignalEvents(definition))
+        if (signalSubscriptions is null || !SignalEventRules.HasSignalWaits(definition))
         {
             return;
         }
@@ -127,7 +127,7 @@ public sealed partial class WorkflowEngineService : ISignalDeliveryExecutor
     {
         if (signalSubscriptions is null
             || tokenIds.Count == 0
-            || (definition is not null && !SignalEventRules.HasSignalEvents(definition)))
+            || (definition is not null && !SignalEventRules.HasSignalWaits(definition)))
         {
             return;
         }
@@ -247,11 +247,14 @@ public sealed partial class WorkflowEngineService : ISignalDeliveryExecutor
         }
 
         var history = SignalHistoryPayload(broadcast, subscription);
+        // A signal thrown through the API starts a new automatic chain (count 0); one thrown
+        // by a workflow continues the thrower's chain, so a loop of signals is counted.
+        var chainCount = broadcast.AutomaticActivationCount;
         if (!isBoundary)
         {
             return await ApplySignalAsync(
                 transaction, deliveryId, instance, token, workflow, node, actor, stored, values, history,
-                completeSubscriptionId: subscription.Id, SignalDeliveryResultCodes.Caught, cancellationToken);
+                completeSubscriptionId: subscription.Id, SignalDeliveryResultCodes.Caught, chainCount, cancellationToken);
         }
 
         if (subscription.CancelActivity)
@@ -272,13 +275,14 @@ public sealed partial class WorkflowEngineService : ISignalDeliveryExecutor
                 NodeExecutionCompletionReasons.SignalReceived,
                 "interruptingSignalBoundary",
                 keepConditionalSubscriptionId: null,
-                cancellationToken);
+                cancellationToken,
+                chainCount);
             var moved = await runtime.GetExecutionTokenAsync(token.Id, false, cancellationToken)
                 ?? throw new WorkflowConflictException(
                     "The interrupted host token disappeared while the signal was being delivered.");
             return await ApplySignalAsync(
                 transaction, deliveryId, instance, moved, workflow, node, actor, stored, values, history,
-                completeSubscriptionId: null, SignalDeliveryResultCodes.Interrupted, cancellationToken);
+                completeSubscriptionId: null, SignalDeliveryResultCodes.Interrupted, chainCount, cancellationToken);
         }
 
         var maxActiveTokens = await ReadMaxActiveTokensAsync(cancellationToken);
@@ -304,12 +308,11 @@ public sealed partial class WorkflowEngineService : ISignalDeliveryExecutor
             null,
             ToNodeExecutionActor(actor),
             cancellationToken,
-            automaticActivationCount:
-                WorkflowAutomaticActivationGuard.ResetAfterExternalWaitOrTrigger(),
+            automaticActivationCount: chainCount,
             automaticActivationStateIds: token.AutomaticActivationStateIds);
         return await ApplySignalAsync(
             transaction, deliveryId, instance, sibling, workflow, node, actor, stored, values, history,
-            completeSubscriptionId: null, SignalDeliveryResultCodes.Branched, cancellationToken);
+            completeSubscriptionId: null, SignalDeliveryResultCodes.Branched, chainCount, cancellationToken);
     }
 
     /// <summary>
@@ -332,6 +335,7 @@ public sealed partial class WorkflowEngineService : ISignalDeliveryExecutor
         Dictionary<string, JsonElement> history,
         long? completeSubscriptionId,
         string resultCode,
+        int chainCount,
         CancellationToken cancellationToken)
     {
         var processVariables = workflow.Definition.Variables;
@@ -351,7 +355,7 @@ public sealed partial class WorkflowEngineService : ISignalDeliveryExecutor
 
         // The mapped values are one observable batch while the token is still at the
         // event, so an interrupting conditional boundary may take it first.
-        await ResumeForVariableChangesAsync(instance, actor, cancellationToken);
+        await ResumeConditionalWaitsAsync(instance, actor, chainCount, cancellationToken);
         var current = await runtime.GetExecutionTokenAsync(token.Id, false, cancellationToken);
         if (!IsSameRunnableActivation(token, current))
         {
@@ -380,6 +384,7 @@ public sealed partial class WorkflowEngineService : ISignalDeliveryExecutor
             actor,
             stored,
             history,
+            chainCount,
             cancellationToken);
 
         return await FinishDeliveryAsync(
@@ -400,6 +405,7 @@ public sealed partial class WorkflowEngineService : ISignalDeliveryExecutor
         ActorContext actor,
         Dictionary<string, JsonElement> stored,
         Dictionary<string, JsonElement> historyPayload,
+        int chainCount,
         CancellationToken cancellationToken)
     {
         var boundary = BpmnFlowNodeTypes.IsSignalBoundary(node.Type);
@@ -486,8 +492,7 @@ public sealed partial class WorkflowEngineService : ISignalDeliveryExecutor
                 token.GatewayBranchId,
                 ToNodeExecutionActor(actor)),
             cancellationToken,
-            automaticActivationCount:
-                WorkflowAutomaticActivationGuard.ResetAfterExternalWaitOrTrigger());
+            automaticActivationCount: chainCount);
         await unitOfWork.SaveChangesAsync(cancellationToken);
         if (BpmnFlowNodeTypes.IsTerminateEnd(nextNode.Type))
         {
@@ -499,6 +504,7 @@ public sealed partial class WorkflowEngineService : ISignalDeliveryExecutor
         }
         else if (BpmnFlowNodeTypes.IsEnd(nextNode.Type))
         {
+            await ThrowSignalAtEndAsync(tokenInstance, token.Id, nextNode, definition, actor, cancellationToken);
             var remaining = await runtime.ListExecutionTokensAsync(
                 instance.Id, ExecutionTokenRecordStatuses.Active, cancellationToken);
             if (remaining.Count == 0)
@@ -540,6 +546,12 @@ public sealed partial class WorkflowEngineService : ISignalDeliveryExecutor
             ["thrownBy"] = JsonSerializer.SerializeToElement(broadcast.ThrownBy),
             ["thrownByKind"] = JsonSerializer.SerializeToElement(broadcast.ThrownByKind)
         };
+        if (broadcast.ThrowerInstanceId is long throwerInstanceId)
+        {
+            payload["thrownByInstanceId"] = JsonSerializer.SerializeToElement(throwerInstanceId);
+            payload["thrownByNodeId"] = JsonSerializer.SerializeToElement(broadcast.ThrowerNodeId);
+        }
+
         return payload;
     }
 

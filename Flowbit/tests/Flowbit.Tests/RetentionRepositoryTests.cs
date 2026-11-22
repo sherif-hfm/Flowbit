@@ -479,51 +479,65 @@ public sealed class RetentionRepositoryTests(PostgresApiFixture fixture)
         Assert.Equal(23, await verify.InstanceHistory.CountAsync(h => h.InstanceId == instances[0]));
     }
 
+    /// <summary>
+    /// Runs in a database of its own. Every later migration's Down refuses while rows of its
+    /// feature exist (call activities, automatic multi-instance bodies, signals, cron timers),
+    /// and the tests sharing the fixture's database leave such rows, so a downgrade there
+    /// passed or failed with the order in which the classes happened to run.
+    /// </summary>
     [Fact]
     public async Task MigrationDowngradeCannotRemovePermanentPruningMarkers()
     {
-        await using var scope = await Scope.CreateAsync(fixture);
-        var (_, instances) = await scope.WorkflowAsync("completed");
-        await using var db = fixture.CreateDbContext();
-        await db.WorkflowInstances.Where(i => i.Id == instances[0])
-            .ExecuteUpdateAsync(set => set.SetProperty(i => i.HistoryPrunedAt, scope.Now));
-        await WebhookTestDatabase.CheckpointCatchAllCaptureAsync(fixture.DataSource);
-        await ClearSignalStateForDowngradeAsync();
+        var databaseName = "retention_downgrade_" + Guid.NewGuid().ToString("N");
+        var admin = new NpgsqlConnectionStringBuilder(fixture.ConnectionString) { Database = "postgres" }.ConnectionString;
+        await ExecuteAdminAsync(admin, $"CREATE DATABASE \"{databaseName}\"");
+        var connectionString = new NpgsqlConnectionStringBuilder(fixture.ConnectionString) { Database = databaseName }.ConnectionString;
+        var dataSourceBuilder = new NpgsqlDataSourceBuilder(connectionString);
+        dataSourceBuilder.EnableDynamicJson();
+        await using var dataSource = dataSourceBuilder.Build();
         try
         {
+            var options = new DbContextOptionsBuilder<AppDbContext>()
+                .UseNpgsql(dataSource, FlowbitDatabase.ConfigureProvider)
+                .Options;
+            await using var db = new AppDbContext(options);
+            await db.Database.MigrateAsync();
+            var now = DateTimeOffset.UtcNow;
+            var definition = new WorkflowDefinitionEntity
+            {
+                Name = "Pruned", WorkflowKey = "retention-downgrade", Version = 1, IsPublished = true,
+                Definition = new WorkflowModel { Id = "retention-downgrade", Name = "Pruned" }
+            };
+            db.WorkflowDefinitions.Add(definition);
+            await db.SaveChangesAsync();
+            var instance = new WorkflowInstanceEntity
+            {
+                WorkflowDefinitionId = definition.Id, WorkflowKey = definition.WorkflowKey, Status = "completed",
+                CreatedAt = now, UpdatedAt = now, FinishedAt = now, HistoryPrunedAt = now
+            };
+            db.WorkflowInstances.Add(instance);
+            await db.SaveChangesAsync();
+
             var exception = await Assert.ThrowsAsync<PostgresException>(() => db.GetService<IMigrator>()
                 .MigrateAsync("20260905143652_AddUserTaskRolePolicies"));
             Assert.Contains("Cannot downgrade retention", exception.MessageText);
             Assert.True(await db.RetentionCoordinators.AnyAsync());
             // Read only the marker: newer migrations' columns may already be gone.
-            Assert.NotNull(await db.WorkflowInstances.Where(i => i.Id == instances[0])
+            Assert.NotNull(await db.WorkflowInstances.Where(i => i.Id == instance.Id)
                 .Select(i => i.HistoryPrunedAt).SingleAsync());
         }
         finally
         {
-            // EF can commit newer migrations' Down operations before the retention
-            // guard rejects its own downgrade. Restore the shared fixture for the
-            // current model even when an assertion above fails.
-            await db.Database.MigrateAsync();
-            await WebhookTestDatabase.ReinstateCatchAllCaptureAsync(fixture.DataSource);
+            NpgsqlConnection.ClearAllPools();
+            await ExecuteAdminAsync(admin, $"DROP DATABASE \"{databaseName}\" WITH (FORCE)");
         }
-        Assert.Empty(await db.Database.GetPendingMigrationsAsync());
     }
 
-    /// <summary>
-    /// The downgrade passes AddSignalEvents, whose Down refuses while signal rows exist so that a
-    /// real deployment cannot drop them by accident. Signal tests earlier in the shared database
-    /// leave such rows; the downgrade would drop the signal tables anyway, so clear them first.
-    /// </summary>
-    private async Task ClearSignalStateForDowngradeAsync()
+    private static async Task ExecuteAdminAsync(string connectionString, string sql)
     {
-        await using var connection = await fixture.DataSource.OpenConnectionAsync();
-        await using var command = new NpgsqlCommand("""
-            DELETE FROM flowbit.signal_broadcasts;
-            DELETE FROM flowbit.signal_subscriptions;
-            DELETE FROM flowbit.workflow_jobs WHERE "Kind" = 'signalBroadcastDeliver';
-            UPDATE flowbit.node_executions SET "CompletionReason" = 'normal' WHERE "CompletionReason" = 'signalReceived';
-            """, connection);
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+        await using var command = new NpgsqlCommand(sql, connection);
         await command.ExecuteNonQueryAsync();
     }
 

@@ -851,7 +851,8 @@ public sealed class EditorValidatorTests
               CONDITIONAL_BOUNDARY_EVENT: 'conditionalBoundaryEvent',
               MESSAGE_CATCH_EVENT: 'intermediateMessageCatchEvent',
               TIMER_CATCH_EVENT: 'intermediateTimerCatchEvent',
-              CONDITIONAL_CATCH_EVENT: 'intermediateConditionalCatchEvent'
+              CONDITIONAL_CATCH_EVENT: 'intermediateConditionalCatchEvent',
+              SIGNAL_THROW_EVENT: 'intermediateSignalThrowEvent', SIGNAL_END_EVENT: 'signalEndEvent'
             };
             const CLAIM_MODE = { FRESH: 'fresh' };
             const ASSIGNMENT_MODE = { FRESH: 'fresh', PREVIOUS: 'previous', FROM_NODE: 'fromNode' };
@@ -898,7 +899,11 @@ public sealed class EditorValidatorTests
             function isMessageCatchEventType(type) { return type === NODE_TYPE.MESSAGE_CATCH_EVENT; }
             function isSignalCatchEventType(type) { return type === 'intermediateSignalCatchEvent'; }
             function isSignalBoundaryEventType(type) { return type === 'signalBoundaryEvent'; }
-            function isSignalEventType(type) { return isSignalCatchEventType(type) || isSignalBoundaryEventType(type); }
+            function isSignalWaitType(type) { return isSignalCatchEventType(type) || isSignalBoundaryEventType(type); }
+            function isSignalThrowEventType(type) { return type === 'intermediateSignalThrowEvent'; }
+            function isSignalEndEventType(type) { return type === 'signalEndEvent'; }
+            function throwsSignalType(type) { return isSignalThrowEventType(type) || isSignalEndEventType(type); }
+            function isSignalEventType(type) { return isSignalWaitType(type) || throwsSignalType(type); }
             function isSingleOutgoingType() { return false; }
             """);
         engine.Execute(match.Value);
@@ -958,7 +963,9 @@ public sealed class EditorValidatorTests
               END_EVENT: 'endEvent', ERROR_END_EVENT: 'errorEndEvent',
               ERROR_BOUNDARY_EVENT: 'errorBoundaryEvent', MESSAGE_CATCH_EVENT: 'intermediateMessageCatchEvent',
               USER_TASK: 'userTask', TASK: 'task', SERVICE_TASK: 'serviceTask',
-              SCRIPT_TASK: 'scriptTask', EXCLUSIVE_GATEWAY: 'exclusiveGateway'
+              SCRIPT_TASK: 'scriptTask', EXCLUSIVE_GATEWAY: 'exclusiveGateway',
+              SIGNAL_CATCH_EVENT: 'intermediateSignalCatchEvent', SIGNAL_THROW_EVENT: 'intermediateSignalThrowEvent',
+              SIGNAL_END_EVENT: 'signalEndEvent'
             };
             let created = 0;
             let appended = 0;
@@ -1469,7 +1476,8 @@ public sealed class EditorValidatorTests
             function isMessageStartEventType(type) { return type === 'messageStartEvent'; }
             function isSignalCatchEventType(type) { return type === 'intermediateSignalCatchEvent'; }
             function isSignalBoundaryEventType(type) { return type === 'signalBoundaryEvent'; }
-            function isSignalEventType(type) { return isSignalCatchEventType(type) || isSignalBoundaryEventType(type); }
+            function isSignalWaitType(type) { return isSignalCatchEventType(type) || isSignalBoundaryEventType(type); }
+            function throwsSignalType(type) { return type === 'intermediateSignalThrowEvent' || type === 'signalEndEvent'; }
             function isStartEventType(type) { return type === NODE_TYPE.START_EVENT; }
             function normalizeMultiInstanceForLoad(value) { return value; }
             function normalizeService(value) { return value; }
@@ -1665,7 +1673,8 @@ public sealed class EditorValidatorTests
               CONDITIONAL_BOUNDARY_EVENT: 'conditionalBoundaryEvent',
               MESSAGE_CATCH_EVENT: 'intermediateMessageCatchEvent',
               TIMER_CATCH_EVENT: 'intermediateTimerCatchEvent',
-              CONDITIONAL_CATCH_EVENT: 'intermediateConditionalCatchEvent'
+              CONDITIONAL_CATCH_EVENT: 'intermediateConditionalCatchEvent',
+              SIGNAL_THROW_EVENT: 'intermediateSignalThrowEvent', SIGNAL_END_EVENT: 'signalEndEvent'
             };
             const CLAIM_MODE = { FRESH: 'fresh' };
             const ASSIGNMENT_MODE = { FRESH: 'fresh' };
@@ -1720,7 +1729,11 @@ public sealed class EditorValidatorTests
             function isMessageCatchEventType(type) { return type === NODE_TYPE.MESSAGE_CATCH_EVENT; }
             function isSignalCatchEventType(type) { return type === 'intermediateSignalCatchEvent'; }
             function isSignalBoundaryEventType(type) { return type === 'signalBoundaryEvent'; }
-            function isSignalEventType(type) { return isSignalCatchEventType(type) || isSignalBoundaryEventType(type); }
+            function isSignalWaitType(type) { return isSignalCatchEventType(type) || isSignalBoundaryEventType(type); }
+            function isSignalThrowEventType(type) { return type === 'intermediateSignalThrowEvent'; }
+            function isSignalEndEventType(type) { return type === 'signalEndEvent'; }
+            function throwsSignalType(type) { return isSignalThrowEventType(type) || isSignalEndEventType(type); }
+            function isSignalEventType(type) { return isSignalWaitType(type) || throwsSignalType(type); }
             function isSingleOutgoingType() { return false; }
             """);
         engine.Execute(match.Value);

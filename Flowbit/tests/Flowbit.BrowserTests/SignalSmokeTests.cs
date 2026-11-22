@@ -196,6 +196,174 @@ public sealed class SignalSmokeTests(BrowserStackFixture stack)
     [Theory]
     [InlineData(1440, 900)]
     [InlineData(1024, 768)]
+    public async Task E24_SignalThrowAndEndEventsAreScopedValidatedUndoneAndSaved(int viewportWidth, int viewportHeight)
+    {
+        await using var scenario = await stack.CreateScenario(
+            $"e24-signal-throw-{viewportWidth}x{viewportHeight}", viewportWidth, viewportHeight, blockNativeFilePicker: true);
+        scenario.ExpectDialogStartingWith(IdentityScreen.FallbackAlertPrefix);
+        await scenario.RunAsync("signal-throw", async () =>
+        {
+            await scenario.OpenEditorAsync(stack.EditorBaseAddress);
+            await EditorInteractions.PinInspectorOpenAsync(scenario.Page);
+            var page = scenario.Page;
+            await EditorInteractions.LoadWorkflowAsync(page, EditorInteractions.FixturePath("editor-signal-events.json"));
+            var inspector = page.Locator("#inspector");
+            ILocator Labeled(string label) => inspector.GetByLabel(label, new LocatorGetByLabelOptions { Exact = true });
+
+            // The automatic task becomes a signal throw: a pass-through event with a dashed flow.
+            await EditorInteractions.SelectNodeAsync(page, 2);
+            await EditorInteractions.SelectTypeAsync(page, "intermediateSignalThrowEvent");
+            var throwNode = page.Locator("#nodes .node[data-id='2']");
+            await Assertions.Expect(throwNode).ToHaveClassAsync(new Regex("intermediateSignalThrowEvent"));
+            await Assertions.Expect(page.Locator("#edges .edge-path-layer .edge[data-flow='201']")).ToHaveClassAsync(new Regex(@"\bauto\b"));
+
+            // Save names the missing name, then the missing scope.
+            await page.Locator("#fileMenuSummary").ClickAsync();
+            await page.Locator("#saveBtn").ClickAsync();
+            Assert.Contains("Signal throw event #2 must define signal.name.",
+                await EditorInteractions.WaitForValidationDialogAsync(page), StringComparison.Ordinal);
+            await EditorInteractions.CloseValidationDialogWithEscapeAsync(page);
+            await Labeled("Signal name").FillAsync("claims.policy-changed");
+            await Labeled("Signal name").PressAsync("Tab");
+            await page.Locator("#fileMenuSummary").ClickAsync();
+            await page.Locator("#saveBtn").ClickAsync();
+            Assert.Contains(
+                "Signal throw event #2 signal.scope.kind must be 'thisInstance', 'thisWorkflow', 'workflow', 'businessKey', 'ownBusinessKey', or 'allWorkflows'.",
+                await EditorInteractions.WaitForValidationDialogAsync(page), StringComparison.Ordinal);
+            await EditorInteractions.CloseValidationDialogWithEscapeAsync(page);
+
+            // This instance without a wait for the name is reported as chosen.
+            var scope = Labeled("Scope");
+            await scope.SelectOptionAsync("thisInstance");
+            await Assertions.Expect(inspector).ToContainTextAsync(
+                "throws 'claims.policy-changed' to this instance, but no signal catch or boundary event in this workflow waits for it.");
+
+            // Each kind shows exactly the members it requires.
+            await scope.SelectOptionAsync("workflow");
+            await Assertions.Expect(Labeled("Workflow key")).ToHaveCountAsync(1);
+            await Assertions.Expect(Labeled("Business key variable")).ToHaveCountAsync(0);
+            await Labeled("Workflow key").FillAsync("claims");
+            await Labeled("Workflow key").PressAsync("Tab");
+            await scope.SelectOptionAsync("businessKey");
+            await Assertions.Expect(Labeled("Workflow key")).ToHaveCountAsync(1);
+            await Assertions.Expect(Labeled("Business key variable")).ToHaveCountAsync(1);
+            await scope.SelectOptionAsync("ownBusinessKey");
+            await Assertions.Expect(Labeled("Workflow key")).ToHaveValueAsync("claims");
+            await Assertions.Expect(Labeled("Business key variable")).ToHaveCountAsync(0);
+            await scope.SelectOptionAsync("thisWorkflow");
+            await Assertions.Expect(Labeled("Workflow key")).ToHaveCountAsync(0);
+            await scope.SelectOptionAsync("businessKey");
+            await scope.SelectOptionAsync("allWorkflows");
+            await Assertions.Expect(Labeled("Workflow key")).ToHaveCountAsync(0);
+            await Assertions.Expect(Labeled("Business key variable")).ToHaveCountAsync(0);
+
+            // Undo returns to the business-key scope; redo to all workflows.
+            await page.EvaluateAsync("document.activeElement?.blur()");
+            await page.WaitForTimeoutAsync(700);
+            await page.Keyboard.PressAsync("Control+z");
+            await EditorInteractions.SelectNodeAsync(page, 2);
+            await Assertions.Expect(Labeled("Scope")).ToHaveValueAsync("businessKey");
+            await page.EvaluateAsync("document.activeElement?.blur()");
+            await page.Keyboard.PressAsync("Control+y");
+            await EditorInteractions.SelectNodeAsync(page, 2);
+            await Assertions.Expect(Labeled("Scope")).ToHaveValueAsync("allWorkflows");
+
+            // A payload entry that sends this instance's ID.
+            await inspector.GetByRole(AriaRole.Button, new LocatorGetByRoleOptions { Name = "+ Add payload entry" }).ClickAsync();
+            await Labeled("Name in the payload").FillAsync("claim");
+            await Labeled("Name in the payload").PressAsync("Tab");
+            await Labeled("Value").SelectOptionAsync("source:instanceId");
+            await page.Locator("#inspectorPanel").ScreenshotAsync(new LocatorScreenshotOptions
+            {
+                Path = Path.Combine(scenario.ArtifactDirectory, "signal-throw-inspector.png"),
+            });
+
+            // The end event becomes a signal end event with the thick end ring. Search selects it
+            // whatever the open select or the canvas position, as E23 selects its boundaries.
+            await page.EvaluateAsync("document.activeElement?.blur()");
+            await page.Keyboard.PressAsync("/");
+            await Assertions.Expect(page.Locator("#diagramSearchInput")).ToBeFocusedAsync();
+            await page.Keyboard.PressAsync("Control+a");
+            await page.Keyboard.TypeAsync("#4");
+            await page.Keyboard.PressAsync("Enter");
+            await Assertions.Expect(inspector.GetByRole(AriaRole.Heading, new LocatorGetByRoleOptions { Name = "Node #4", Exact = true }))
+                .ToHaveCountAsync(1);
+            await EditorInteractions.SelectTypeAsync(page, "signalEndEvent");
+            var endNode = page.Locator("#nodes .node[data-id='4']");
+            await Assertions.Expect(endNode).ToHaveClassAsync(new Regex("signalEndEvent"));
+            await Assertions.Expect(endNode.Locator("circle.body")).ToHaveCSSAsync("stroke-width", "5px");
+            await Labeled("Signal name").FillAsync("claims.recall");
+            await Labeled("Signal name").PressAsync("Tab");
+            await Labeled("Scope").SelectOptionAsync("thisWorkflow");
+
+            // The throw has the intermediate event's inner ring and the end event none; both draw
+            // the filled triangle, and the end ring stays thick in both themes.
+            await Assertions.Expect(throwNode.Locator("circle.ring")).ToHaveCountAsync(1);
+            await Assertions.Expect(endNode.Locator("circle.ring")).ToHaveCountAsync(0);
+            foreach (var shape in new[] { throwNode, endNode })
+            {
+                await Assertions.Expect(shape.Locator("use.node-icon")).ToHaveAttributeAsync("href", "#icon-signal-throw");
+            }
+
+            await page.Locator("#svg").ScreenshotAsync(new LocatorScreenshotOptions
+            {
+                Path = Path.Combine(scenario.ArtifactDirectory, "signal-throw-shapes.png"),
+            });
+            async Task ToggleThemeAsync()
+            {
+                await page.Locator("#viewMenuSummary").ClickAsync();
+                await page.Locator("#themeToggleBtn").ClickAsync();
+                await page.Keyboard.PressAsync("Escape");
+            }
+
+            await ToggleThemeAsync();
+            await Assertions.Expect(endNode.Locator("circle.body")).ToHaveCSSAsync("stroke-width", "5px");
+            await Assertions.Expect(throwNode.Locator("circle.ring")).ToHaveCountAsync(1);
+            await page.Locator("#svg").ScreenshotAsync(new LocatorScreenshotOptions
+            {
+                Path = Path.Combine(scenario.ArtifactDirectory, "signal-throw-shapes-other-theme.png"),
+            });
+            await ToggleThemeAsync();
+            Assert.True(await page.EvaluateAsync<bool>("document.documentElement.scrollWidth <= window.innerWidth + 2"));
+
+            using var saved = await EditorInteractions.SaveAndCaptureDownloadAsync(page, scenario, scenario.ArtifactDirectory);
+            var nodes = saved.RootElement.GetProperty("flowNodes").EnumerateArray()
+                .ToDictionary(node => node.GetProperty("id").GetInt32());
+            Assert.Equal("intermediateSignalThrowEvent", nodes[2].GetProperty("type").GetString());
+            var thrown = nodes[2].GetProperty("signal");
+            Assert.Equal("allWorkflows", thrown.GetProperty("scope").GetProperty("kind").GetString());
+            Assert.False(thrown.GetProperty("scope").TryGetProperty("workflowKey", out _));
+            Assert.False(thrown.TryGetProperty("outputMappings", out _));
+            var entry = Assert.Single(thrown.GetProperty("payload").EnumerateArray().ToArray());
+            Assert.Equal(("claim", "instanceId"), (entry.GetProperty("name").GetString(), entry.GetProperty("source").GetString()));
+            Assert.Equal("signalEndEvent", nodes[4].GetProperty("type").GetString());
+            Assert.Equal("thisWorkflow", nodes[4].GetProperty("signal").GetProperty("scope").GetProperty("kind").GetString());
+
+            // A fresh page reloads both events.
+            var freshPage = await scenario.Context.NewPageAsync();
+            try
+            {
+                await freshPage.GotoAsync($"{stack.EditorBaseAddress}/", new PageGotoOptions { WaitUntil = WaitUntilState.Load });
+                await EditorInteractions.PinInspectorOpenAsync(freshPage);
+                await EditorInteractions.LoadSavedFileAsync(freshPage, scenario.LastSavedFile!);
+                await EditorInteractions.SelectNodeAsync(freshPage, 2);
+                var freshInspector = freshPage.Locator("#inspector");
+                await Assertions.Expect(freshInspector.GetByLabel("Scope", new LocatorGetByLabelOptions { Exact = true }))
+                    .ToHaveValueAsync("allWorkflows");
+                await Assertions.Expect(freshInspector.GetByLabel("Name in the payload", new LocatorGetByLabelOptions { Exact = true }))
+                    .ToHaveValueAsync("claim");
+                await Assertions.Expect(freshPage.Locator("#nodes .node[data-id='4']")).ToHaveClassAsync(new Regex("signalEndEvent"));
+            }
+            finally
+            {
+                await freshPage.CloseAsync();
+            }
+        });
+    }
+
+    [Theory]
+    [InlineData(1440, 900)]
+    [InlineData(1024, 768)]
     [InlineData(390, 844)]
     public async Task R16_SignalsPageReviewsThrowsAndListsABroadcast(int viewportWidth, int viewportHeight)
     {

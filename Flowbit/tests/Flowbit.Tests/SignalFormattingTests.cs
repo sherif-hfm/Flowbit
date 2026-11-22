@@ -12,6 +12,42 @@ namespace Flowbit.Tests;
 /// <summary>The Signals page's pure presentation rules.</summary>
 public sealed class SignalFormattingTests
 {
+    [Fact]
+    public void ThrowerLabel_NamesAnInstanceThrowerByItsInstanceAndEvent()
+    {
+        Assert.Equal("alice", SignalFormatting.ThrowerLabel("alice", SignalThrowerKinds.User));
+        Assert.Equal("svc (API client)", SignalFormatting.ThrowerLabel("svc", SignalThrowerKinds.Client));
+        Assert.Equal("Instance #42 · Announce the cancellation",
+            SignalFormatting.ThrowerLabel("42", SignalThrowerKinds.Instance, 42, 9, "Announce the cancellation"));
+        // An unnamed event is named by its node number, so two throws of one instance differ.
+        Assert.Equal("Instance #42 · node #9", SignalFormatting.ThrowerLabel("42", SignalThrowerKinds.Instance, 42, 9, " "));
+        Assert.Equal("Instance #42 · node #9", SignalFormatting.ThrowerLabel("42", SignalThrowerKinds.Instance, 42, 9, null));
+        Assert.Equal("Instance #42", SignalFormatting.ThrowerLabel("42", SignalThrowerKinds.Instance, 42));
+        Assert.Equal("Instance #42", SignalFormatting.ThrowerLabel("42", SignalThrowerKinds.Instance));
+    }
+
+    [Fact]
+    public void ThrownByFilter_StartsAtPeopleAndApiClients()
+    {
+        Assert.Equal([SignalThrowerKinds.User, SignalThrowerKinds.Client], SignalFormatting.ThrownByKinds(null));
+        Assert.Equal([SignalThrowerKinds.User, SignalThrowerKinds.Client], SignalFormatting.ThrownByKinds("unknown"));
+        Assert.Equal([SignalThrowerKinds.Instance], SignalFormatting.ThrownByKinds("workflows"));
+        Assert.Empty(SignalFormatting.ThrownByKinds("everyone"));
+        Assert.Equal("people", SignalFormatting.ThrownByChoices[0].Value);
+    }
+
+    [Fact]
+    public void ThrowScopeLabel_DescribesEveryKindInWords()
+    {
+        Assert.Equal("this instance", SignalFormatting.ThrowScopeLabel(new SignalThrowScopeModel { Kind = SignalThrowScopeKinds.ThisInstance }));
+        Assert.Equal("workflow shipping", SignalFormatting.ThrowScopeLabel(
+            new SignalThrowScopeModel { Kind = SignalThrowScopeKinds.Workflow, WorkflowKey = "shipping" }));
+        Assert.Equal("this instance's business key in workflow shipping", SignalFormatting.ThrowScopeLabel(
+            new SignalThrowScopeModel { Kind = SignalThrowScopeKinds.OwnBusinessKey, WorkflowKey = "shipping" }));
+        Assert.Equal("no valid scope", SignalFormatting.ThrowScopeLabel(null));
+        Assert.Equal("Signal throw", ExecutionPositionText.NodeTypeLabel(BpmnFlowNodeTypes.IntermediateSignalThrowEvent));
+        Assert.Equal("Signal end", ExecutionPositionText.NodeTypeLabel(BpmnFlowNodeTypes.SignalEndEvent));
+    }
     [Theory]
     [InlineData(null, null)]
     [InlineData("", null)]

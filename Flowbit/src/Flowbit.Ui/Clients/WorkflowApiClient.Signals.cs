@@ -22,7 +22,8 @@ public sealed partial class WorkflowApiClient
         string? status = null,
         int page = 1,
         int pageSize = 25,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IReadOnlyList<string>? thrownByKinds = null)
     {
         var parameters = new List<string>
         {
@@ -32,6 +33,10 @@ public sealed partial class WorkflowApiClient
         AddQueryValue(parameters, "name", name);
         AddQueryValue(parameters, "workflowKey", workflowKey);
         AddQueryValue(parameters, "status", status);
+        foreach (var kind in thrownByKinds ?? [])
+        {
+            AddQueryValue(parameters, "thrownByKind", kind);
+        }
         using var response = await httpClient.GetAsync(
             $"/api/signal-broadcasts?{string.Join("&", parameters)}",
             cancellationToken);

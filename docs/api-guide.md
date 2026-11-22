@@ -207,7 +207,7 @@ Standard errors include configuration `400`, credentials/session `401`, permissi
 
 ## Workflow definitions
 
-All operations here require workflow-administrator access except `message-start`, which authenticates the configured message client. The two `timer-schedules` routes are read-only authoring help for cron timer starts. Definition JSON is a versioned immutable snapshot. POST with an existing model `id` and PUT both create new version rows; neither mutates a running version. Multiple versions can be published, but only one is the default for key-based starts. Publication of durable features requires the configured Worker deployment capability. Definition deletion returns `409` when runtime state or retained audit references the version; it does not detach existing instances from their definition.
+All operations here require workflow-administrator access except `message-start`, which authenticates the configured message client. The two `timer-schedules` routes are read-only authoring help for cron timer starts. Definition JSON is a versioned immutable snapshot. POST with an existing model `id` and PUT both create new version rows; neither mutates a running version. Multiple versions can be published, but only one is the default for key-based starts. Publication of durable features requires the configured Worker deployment capability. Publishing a version, creating or updating one with `publish: true`, and setting a default also return `400` when a signal throw or end event names, in its scope, a workflow family that has no definition, such as `Signal end event #3 throws to workflow 'shipping', which has no definition.`; a draft saves without that check. Definition deletion returns `409` when runtime state or retained audit references the version; it does not detach existing instances from their definition.
 
 ### GET /api/workflows
 
@@ -770,7 +770,10 @@ Validation returns `{isValid,errors,warnings,canSave,canPublish,saveBlockers,pub
 The service strictly parses, validates authored configuration, normalizes, validates
 the normalized definition, and checks read-only prerequisites. `isValid` concerns
 structure and authored rules. A structurally valid draft can still have missing
-shared-catalog entries, durability configuration, or other setup blockers. Save and
+shared-catalog entries, durability configuration, or other setup blockers. A signal
+throw or end event that names a workflow family without a definition is a
+publication blocker, never a save blocker, so two drafts that throw to each other
+can both be saved. Save and
 publication operations re-check their authoritative gates at the time of mutation;
 a successful validation is not a reservation or permission to bypass them.
 
@@ -1172,7 +1175,7 @@ This is an authenticated deployment-level detail read, not a personal-task visib
 
 Each history row may include `actorClaims`, a snapshot of the actual actor's selected JWT claims, separate from the business `payload`. Claim names map to arrays of strings, including repeated values. `null` or an absent property means not recorded; `{}` means capture was enabled but no selected claim was present. These values have the same access boundary as instance detail; select suitable claims through [audit configuration](deployment.md#selected-claim-audit).
 
-A history row's `note` names the kind of step. A token that enters a [link throw event](node-reference.md#intermediatelinkthrowevent) records a `linkThrow` row from the throw to its link catch event, with null `sequenceFlowId`; the catch's own step records a `linkCatch` row from the catch to the node its outgoing flow reaches, also with null `sequenceFlowId`, as other automatic steps have. A delivered [signal](#signals) records a `signalReceived` row from the signal catch or signal boundary to the next node, performed by the fixed actor `signal`; its `payload` holds `broadcastId`, `signalName`, `subscriptionId`, `eventNodeId`, `eventKind` (`catch` or `boundary`), `hostTokenId` (the catch's token, or the boundary's host token), `cancelActivity`, `thrownBy`, and `thrownByKind`, never the signal's payload. For a non-interrupting boundary the row belongs to the new branch's token.
+A history row's `note` names the kind of step. A token that enters a [link throw event](node-reference.md#intermediatelinkthrowevent) records a `linkThrow` row from the throw to its link catch event, with null `sequenceFlowId`; the catch's own step records a `linkCatch` row from the catch to the node its outgoing flow reaches, also with null `sequenceFlowId`, as other automatic steps have. A delivered [signal](#signals) records a `signalReceived` row from the signal catch or signal boundary to the next node, performed by the fixed actor `signal`; its `payload` holds `broadcastId`, `signalName`, `subscriptionId`, `eventNodeId`, `eventKind` (`catch` or `boundary`), `hostTokenId` (the catch's token, or the boundary's host token), `cancelActivity`, `thrownBy`, and `thrownByKind`, never the signal's payload; a signal that a workflow threw adds `thrownByInstanceId` and `thrownByNodeId`. For a non-interrupting boundary the row belongs to the new branch's token. A [signal throw event](node-reference.md#intermediatesignalthrowevent) records its throw on the row of its advance to the next node, and a [signal end event](node-reference.md#signalendevent) on an additional row from the end event to itself, both with note `signalThrown`, performed by the step's actor, with no action ID; the `payload` holds `broadcastId`, `signalName`, `eventNodeId`, `eventKind` (`throw` or `end`), `scopeKind`, `workflowKey` (the target family, null for all workflows), and `recipientCount`, never a business key or a payload value. The throw's outgoing flow records flow evidence of kind `signalThrown`.
 
 `signalSubscriptions` lists the instance's active signal waits, at most 50, with `signalSubscriptionCount` giving the total: one for each token waiting at a signal catch, and one for each signal boundary armed on an active host, with the host's node ID in `attachedToNodeId` and the boundary's `cancelActivity`. Both are empty for a definition without signal events.
 
@@ -1880,7 +1883,7 @@ Content-Type: application/json
 
 ## Signals
 
-A signal broadcast reaches every [`intermediateSignalCatchEvent`](node-reference.md#intermediatesignalcatchevent) that is waiting for its name when it is thrown, and every [`signalBoundaryEvent`](node-reference.md#signalboundaryevent) with its name whose host is active then, within the throw's scope: one workflow family, the instance with one business key in a family, one instance, or all families. The throw freezes those recipients in one statement and returns at once; the Worker then delivers each recipient in its own transaction. A wait that starts after the throw never receives it. See [BPMN semantics](bpmn-support.md#signals) and the [integration guide](developer-guide.md#broadcast-signals).
+A signal broadcast reaches every [`intermediateSignalCatchEvent`](node-reference.md#intermediatesignalcatchevent) that is waiting for its name when it is thrown, and every [`signalBoundaryEvent`](node-reference.md#signalboundaryevent) with its name whose host is active then, within the throw's scope: one workflow family, the instance with one business key in a family, one instance, or all families. The throw freezes those recipients in one statement and returns at once; the Worker then delivers each recipient in its own transaction. A wait that starts after the throw never receives it. A workflow's [signal throw](node-reference.md#intermediatesignalthrowevent) or [signal end event](node-reference.md#signalendevent) creates the same kind of broadcast inside the throwing instance's transaction, without a request to these routes; the routes below list, read, cancel, and retry it like any other. See [BPMN semantics](bpmn-support.md#signals) and the [integration guide](developer-guide.md#broadcast-signals).
 
 - **Authorization.** A JWT user needs a role from `Signals.RequiredRole` (default `admin`) on every route. A managed API client, created on the [shared-variable client routes](#shared-variable-clients), sends `X-Client-Id` and `X-Client-Secret` and needs `signals.throw` to throw, cancel, and retry, or `signals.read` to list and read broadcasts and deliveries; a client that throws and follows its broadcasts needs both. Sending both a bearer token and client headers returns `400`.
 - **What a client sees.** A client lists, reads, cancels, and retries only the broadcasts it threw; any other broadcast returns `404`. Its delivery rows carry `resultCode` with a null `resultDescription`, because the engine's message can quote a validation expression of the receiving workflow. When a user cancels a client's broadcast, the client sees `status: "cancelled"` and `cancelledAt`, but `cancelledBy` and `cancellationReason` are null. The subscription summary is for users only.
@@ -1896,7 +1899,8 @@ A signal broadcast reaches every [`intermediateSignalCatchEvent`](node-reference
 
   A blank `workflowKey` or `businessKey` returns `400` instead of reaching more. `businessKey` is trimmed as a start trims it, then compared exactly and case-sensitively, and has at most 300 characters. `400` also answers a `workflowKey` that no workflow definition has, a `businessKey` for a family that has not enabled business keys, and an `instanceId` that no instance has. A scope that matches no waiting event is accepted and completes with no deliveries: no running instance owns the key, or the instance is not waiting for the name or has finished. A repeated `idempotencyKey` returns its broadcast before any of these lookups, so it replays even after the family's last version has been deleted.
 - **Paging.** The two list routes take `page` (default 1) and `pageSize` (default 50, clamped to 1-200).
-- **Limits.** A payload is an optional JSON object of at most 256 KiB; the throw body is limited to 1 MiB and the cancel and retry bodies to 64 KiB (`413` beyond). A throw that would reach more than `Signals.MaxSubscriptionsPerBroadcast` waits (default 10,000, at most 100,000) returns `400` and stores nothing. When `Signals.MaxOpenBroadcasts` broadcasts (default 20, at most 1,000) are still delivering, a throw returns `409`; concurrent throws can pass this soft limit by a few.
+- **Limits.** A payload is an optional JSON object of at most 256 KiB; the throw body is limited to 1 MiB and the cancel and retry bodies to 64 KiB (`413` beyond). A throw that would reach more than `Signals.MaxSubscriptionsPerBroadcast` waits (default 10,000, at most 100,000) returns `400` and stores nothing. When `Signals.MaxOpenBroadcasts` broadcasts thrown through the API (default 20, at most 1,000) are still delivering, a throw returns `409`; concurrent throws can pass this soft limit by a few. Broadcasts that workflows threw do not count toward it; they have their own budget, `Signals.MaxOpenWorkflowBroadcasts`.
+- **Throwers.** `thrownByKind` is `user` or `client` for a throw through these routes, and `instance` for a broadcast a workflow threw. Such a broadcast has `thrownBy` set to the instance ID as text, `thrownByInstanceId`, `thrownByNodeId`, and `thrownByNodeName` naming the throwing instance and event, empty `thrownByRoles`, and no idempotency key. A user with a role from `Signals.RequiredRole` lists, reads, cancels, and retries it as any other; a managed client never sees it (`404`). It outlives its thrower: cancelling the throwing instance does not cancel it.
 - **Idempotency.** `idempotencyKey` is optional, trimmed, at most 300 characters, and unique per thrower (user or client). Repeating the same name, scope, and payload with it returns the first broadcast with `200`; the payload is compared as parsed JSON, so whitespace and member order do not matter, and a business key is compared after trimming. The same key with a different request, including another business key, another instance, or another kind of scope, returns `409`. The key can be used again only after retention has removed the broadcast.
 - **Outcomes.** A broadcast is `delivering` until no delivery is pending, then `completed`, or `completedWithIssues` when any delivery failed; `cancelled` stops its pending deliveries. Each delivery ends once:
 
@@ -2003,6 +2007,7 @@ List broadcasts, newest first, without payloads.
 | `name` | query | string | No | Exact signal name. |
 | `workflowKey` | query | string | No | Exact workflow family named by the throw, or the family of the instance it named; broadcasts to all workflows have none. |
 | `status` | query | string | No | `delivering`, `completed`, `completedWithIssues`, or `cancelled`; another value returns `400`. |
+| `thrownByKind` | query | array of string | No | Repeatable: `user`, `client`, or `instance`. Keeps only broadcasts with one of the given thrower kinds; without it every kind is listed. Another value returns `400` with `Unknown thrownByKind 'x'; use user, client, or instance.` |
 | `page` | query | integer (int32) | No | Default 1. |
 | `pageSize` | query | integer (int32) | No | Default 50; clamped to 1–200. |
 
@@ -8555,7 +8560,7 @@ Type-specific requirements and defaults are in BPMN support. Missing cancelActiv
 | `variables` | array of [VariableModel](#schema-variablemodel) or null | No | Start input declarations. Message starts use typed outputMappings instead of a separate variables declaration section. |
 | `service` | null or [ServiceTaskModel](#schema-servicetaskmodel) | No | — |
 | `message` | null or [MessageCatchModel](#schema-messagecatchmodel) | No | — |
-| `signal` | null or [SignalEventModel](#schema-signaleventmodel) | No | `intermediateSignalCatchEvent` and `signalBoundaryEvent` only: the signal name and typed payload mappings. See [signal configuration](node-reference.md#signal-configuration). |
+| `signal` | null or [SignalEventModel](#schema-signaleventmodel) | No | The four signal events only: the signal name with typed payload mappings on `intermediateSignalCatchEvent` and `signalBoundaryEvent`, or with a scope and payload on `intermediateSignalThrowEvent` and `signalEndEvent`. See [signal configuration](node-reference.md#signal-configuration). |
 | `businessKey` | null or [BusinessKeyModel](#schema-businesskeymodel) | No | — |
 | `idempotency` | null or [IdempotencyModel](#schema-idempotencymodel) | No | — |
 | `scriptFormat` | string | No | ncalc (default) or javascript. Default: `"ncalc"`. |
@@ -11115,9 +11120,9 @@ One thrown signal with its counters, payload, and recipients per workflow family
 | `skippedCount` | integer (int32) | Yes | Deliveries whose wait had ended or whose instance had changed. |
 | `failedCount` | integer (int32) | Yes | Deliveries that failed; these can be retried. |
 | `cancelledCount` | integer (int32) | Yes | Deliveries cancelled with the broadcast. |
-| `thrownBy` | string | Yes | The user's actor identity, or the managed client's ID. |
-| `thrownByKind` | string | Yes | `user` or `client`. |
-| `thrownByRoles` | array of string | Yes | The user's roles when it threw; empty for a client. |
+| `thrownBy` | string | Yes | The user's actor identity, the managed client's ID, or the throwing instance's ID as text. |
+| `thrownByKind` | string | Yes | `user`, `client`, or `instance` (a workflow's signal throw or end event). |
+| `thrownByRoles` | array of string | Yes | The user's roles when it threw; empty for a client and an instance. |
 | `payload` | null or [JsonElement](#schema-jsonelement) | Yes | The JSON object the throw sent, or null. |
 | `recipientsByWorkflowKey` | array of [SignalRecipientCountDto](#schema-signalrecipientcountdto) | Yes | Recipients per workflow family, most first, at most 50. |
 | `recipientsTruncated` | boolean | Yes | True when more than 50 families received the signal. |
@@ -11127,6 +11132,9 @@ One thrown signal with its counters, payload, and recipients per workflow family
 | `updatedAt` | string (date-time) | Yes | Last change to the counters or status; send it as `expectedUpdatedAt` to retry failed deliveries. |
 | `completedAt` | null or string (date-time) | Yes | When the broadcast finished or was cancelled; null while delivering. |
 | `cancelledAt` | null or string (date-time) | Yes | When it was cancelled. |
+| `thrownByInstanceId` | null or integer (int64) | No | The throwing instance when `thrownByKind` is `instance`; otherwise null. |
+| `thrownByNodeId` | null or integer (int32) | No | The signal throw or end event that threw the signal when `thrownByKind` is `instance`; otherwise null. |
+| `thrownByNodeName` | null or string | No | That event's name when it threw; otherwise null. |
 
 </details>
 
@@ -11157,6 +11165,9 @@ A list row of a broadcast, without its payload, roles, recipients, or cancellati
 | `createdAt` | string (date-time) | Yes | — |
 | `updatedAt` | string (date-time) | Yes | — |
 | `completedAt` | null or string (date-time) | Yes | — |
+| `thrownByInstanceId` | null or integer (int64) | No | — |
+| `thrownByNodeId` | null or integer (int32) | No | — |
+| `thrownByNodeName` | null or string | No | — |
 
 </details>
 
@@ -11192,12 +11203,30 @@ One frozen recipient of a broadcast and its outcome. A managed API client receiv
 <details>
 <summary>SignalEventModel</summary>
 
-The `signal` object of an `intermediateSignalCatchEvent` or a `signalBoundaryEvent`. See [signal configuration](node-reference.md#signal-configuration).
+The `signal` object of the four signal events. A catch or boundary names the signal it waits for and maps its payload; a throw or end event names the signal it throws, its scope, and its payload. See [signal configuration](node-reference.md#signal-configuration).
 
 | Field | JSON type / schema | Required | Meaning / default |
 | --- | --- | --- | --- |
 | `name` | string | Yes | Literal signal name: 1 to 100 lowercase letters, digits, `.`, `_`, or `-`, starting with a letter or digit. |
-| `outputMappings` | array of [MessageOutputMappingModel](#schema-messageoutputmappingmodel) | No | At most 100 typed mappings whose `path` reads the broadcast's payload; `dataType` and `isArray` are required. Default: `[]`. |
+| `outputMappings` | array of [MessageOutputMappingModel](#schema-messageoutputmappingmodel) | No | Catch and boundary: at most 100 typed mappings whose `path` reads the broadcast's payload; `dataType` and `isArray` are required. Must be empty on a throw or end event. Default: `[]`. |
+| `scope` | null or [SignalThrowScopeModel](#schema-signalthrowscopemodel) | No | Required on a throw or end event; rejected on a catch or boundary. Omitted when null. |
+| `payload` | null or array of [SignalPayloadEntryModel](#schema-signalpayloadentrymodel) | No | Throw or end event only: at most 100 entries; missing, null, or empty sends no payload. Rejected on a catch or boundary. Omitted when null. |
+
+</details>
+
+<a id="schema-signalpayloadentrymodel"></a>
+
+<details>
+<summary>SignalPayloadEntryModel</summary>
+
+One member of the payload a signal throw or end event sends. Exactly one of `variable` and `source` is set. An unknown member fails binding with its path. See [signal payload](node-reference.md#signal-payload).
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `name` | null or string | No | The member name: 1 to 100 letters, digits, `_`, or `-`, starting with a letter or `_`; unique ignoring letter case. Required by validation. |
+| `variable` | null or string | No | A declared or produced instance variable, copied whole. Omitted when null. |
+| `source` | null or string | No | `instanceId` (a JSON number) or `businessKey` (text) of the throwing instance. Omitted when null. |
+| `required` | boolean | No | When true, a missing or null value refuses the throw. Default: `false`; omitted when false. |
 
 </details>
 
@@ -11255,6 +11284,21 @@ An active wait for a signal, listed on instance detail.
 | --- | --- | --- | --- |
 | `items` | array of [SignalSubscriptionCountDto](#schema-signalsubscriptioncountdto) | Yes | Counts by signal name and workflow family, ordered by name and then workflow key, at most 200 rows. |
 | `truncated` | boolean | Yes | True when more rows match than were returned. |
+
+</details>
+
+<a id="schema-signalthrowscopemodel"></a>
+
+<details>
+<summary>SignalThrowScopeModel</summary>
+
+Which waits a signal throw or end event reaches. Every kind requires the members it lists and allows no other; an unknown member fails binding with its path. See [signal scope](node-reference.md#signal-scope).
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `kind` | null or string | No | `thisInstance`, `thisWorkflow`, `workflow`, `businessKey`, `ownBusinessKey`, or `allWorkflows`, compared exactly. Required by validation. |
+| `workflowKey` | null or string | No | The literal target family, for `workflow`, `businessKey`, and `ownBusinessKey` only. Omitted when null. |
+| `businessKeyVariable` | null or string | No | The declared single `string` variable holding the target business key, for `businessKey` only. Omitted when null. |
 
 </details>
 

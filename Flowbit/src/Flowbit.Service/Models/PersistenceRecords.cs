@@ -834,6 +834,10 @@ public static class InstanceHistoryNotes
     public const string LinkCatch = "linkCatch";
     // A broadcast signal moved a token off a signal catch, or through a signal boundary.
     public const string SignalReceived = "signalReceived";
+    // A signal throw event threw its signal and its token left through the outgoing flow,
+    // or a token entering a signal end event threw its signal (a row from the end event to
+    // itself). The row has no action id, so claim and assignment inheritance ignore it.
+    public const string SignalThrown = "signalThrown";
 }
 
 public static class ExecutionTokenTerminationReasons

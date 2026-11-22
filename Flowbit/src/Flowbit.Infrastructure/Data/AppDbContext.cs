@@ -2442,9 +2442,15 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                     "CK_signal_broadcasts_payload",
                     "\"PayloadJson\" IS NULL OR (jsonb_typeof(\"PayloadJson\") = 'object' "
                     + $"AND octet_length(\"PayloadJson\"::text) <= {SignalConstraints.MaxPayloadBytes})");
+                // A throw from a workflow names its instance and node and has no idempotency
+                // key; a throw through the API names neither and starts a new chain.
                 table.HasCheckConstraint(
                     "CK_signal_broadcasts_thrower",
-                    "\"ThrownByKind\" IN ('user', 'client')");
+                    "\"ThrownByKind\" IN ('user', 'client', 'instance') "
+                    + "AND ((\"ThrownByKind\" = 'instance' AND \"ThrowerInstanceId\" IS NOT NULL AND \"ThrowerInstanceId\" > 0 AND \"ThrowerNodeId\" IS NOT NULL "
+                    + "AND \"IdempotencyKey\" IS NULL AND \"AutomaticActivationCount\" >= 0) "
+                    + "OR (\"ThrownByKind\" <> 'instance' AND \"ThrowerInstanceId\" IS NULL AND \"ThrowerNodeId\" IS NULL "
+                    + "AND \"ThrowerNodeName\" IS NULL AND \"AutomaticActivationCount\" = 0))");
                 table.HasCheckConstraint(
                     "CK_signal_broadcasts_terminal_time",
                     "(\"Status\" = 'delivering' AND \"CompletedAt\" IS NULL) OR "
@@ -2477,6 +2483,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(e => e.IdempotencyKey)
                 .HasMaxLength(SignalConstraints.MaxIdempotencyKeyLength)
                 .UseCollation("C");
+            entity.Property(e => e.ThrowerNodeName).HasMaxLength(300);
+            entity.Property(e => e.AutomaticActivationCount).HasDefaultValue(0);
             entity.Property(e => e.CancelledBy).HasMaxLength(300);
             entity.Property(e => e.CancellationReason).HasMaxLength(SignalConstraints.MaxReasonLength);
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
@@ -2484,6 +2492,11 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.HasIndex(e => new { e.ThrownByKind, e.ThrownBy, e.IdempotencyKey })
                 .IsUnique()
                 .HasFilter("\"IdempotencyKey\" IS NOT NULL");
+            // Both open-broadcast budgets and the Worker's backlog gauge read only the
+            // unfinished broadcasts.
+            entity.HasIndex(e => e.ThrownByKind)
+                .HasDatabaseName("IX_signal_broadcasts_open_thrower")
+                .HasFilter("\"Status\" = 'delivering'");
             entity.HasIndex(e => new { e.Status, e.UpdatedAt, e.Id });
             entity.HasIndex(e => new { e.SignalName, e.CreatedAt, e.Id });
             entity.HasIndex(e => new { e.ThrownByKind, e.ThrownBy, e.CreatedAt, e.Id });

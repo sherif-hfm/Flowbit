@@ -1,3 +1,4 @@
+using Flowbit.Shared.Dtos;
 using Flowbit.Shared.Models;
 
 namespace Flowbit.Service.Models;
@@ -213,6 +214,15 @@ public static class SignalSettings
     public const string MaxOpenBroadcastsKey = "Signals.MaxOpenBroadcasts";
     public const int DefaultMaxOpenBroadcasts = 20;
     public const int MaxOpenBroadcastsCap = 1_000;
+    public const string MaxOpenWorkflowBroadcastsKey = "Signals.MaxOpenWorkflowBroadcasts";
+    public const int DefaultMaxOpenWorkflowBroadcasts = 10_000;
+    public const int MaxOpenWorkflowBroadcastsCap = 100_000;
+
+    /// <summary>The thrower kinds whose broadcasts count toward <see cref="MaxOpenBroadcastsKey"/>.</summary>
+    public static IReadOnlyList<string> ApiThrowerKinds { get; } = [SignalThrowerKinds.User, SignalThrowerKinds.Client];
+
+    /// <summary>The thrower kinds whose broadcasts count toward <see cref="MaxOpenWorkflowBroadcastsKey"/>.</summary>
+    public static IReadOnlyList<string> WorkflowThrowerKinds { get; } = [SignalThrowerKinds.Instance];
 
     /// <summary>
     /// Reads a positive whole number: a missing or invalid value gives the default,
@@ -271,6 +281,11 @@ public sealed record SignalSubscriptionRecord(
 
 public sealed record SignalSubscriptionCountRecord(string SignalName, string WorkflowKey, int Count);
 
+/// <summary>
+/// A broadcast to insert. A throw from a workflow sets <see cref="ThrownByKind"/> to
+/// <c>instance</c>, names its instance and node, and carries the chain count its deliveries
+/// continue; a throw through the API leaves those null and 0.
+/// </summary>
 public sealed record NewSignalBroadcastRecord(
     string SignalName,
     SignalBroadcastScope Scope,
@@ -281,7 +296,11 @@ public sealed record NewSignalBroadcastRecord(
     string? ThrownByClaimsJson,
     string? IdempotencyKey,
     byte[]? RequestHash,
-    DateTimeOffset CreatedAt);
+    DateTimeOffset CreatedAt,
+    long? ThrowerInstanceId = null,
+    int? ThrowerNodeId = null,
+    string? ThrowerNodeName = null,
+    int AutomaticActivationCount = 0);
 
 public sealed record SignalBroadcastRecord(
     long Id,
@@ -309,7 +328,11 @@ public sealed record SignalBroadcastRecord(
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
     DateTimeOffset? CompletedAt,
-    DateTimeOffset? CancelledAt)
+    DateTimeOffset? CancelledAt,
+    long? ThrowerInstanceId = null,
+    int? ThrowerNodeId = null,
+    string? ThrowerNodeName = null,
+    int AutomaticActivationCount = 0)
 {
     public int PendingCount =>
         Math.Max(0, TotalDeliveryCount - DeliveredCount - SkippedCount - FailedCount - CancelledCount);
@@ -348,6 +371,11 @@ public sealed record SignalDeliveryRecord(
     DateTimeOffset UpdatedAt,
     DateTimeOffset? CompletedAt);
 
+/// <summary>
+/// A page of broadcasts. <see cref="ThrownByKind"/> with <see cref="ThrownBy"/> limits a
+/// managed client to its own throws; <see cref="ThrownByKinds"/> is the list's optional
+/// filter by kind of thrower.
+/// </summary>
 public sealed record SignalBroadcastQuery(
     string? Name,
     string? WorkflowKey,
@@ -355,7 +383,8 @@ public sealed record SignalBroadcastQuery(
     string? ThrownByKind,
     string? ThrownBy,
     int Page,
-    int PageSize);
+    int PageSize,
+    IReadOnlyList<string>? ThrownByKinds = null);
 
 public sealed record SignalDeliveryQuery(
     long BroadcastId,

@@ -1,5 +1,7 @@
+using System.Globalization;
 using System.Text.Json;
 using Flowbit.Shared.Dtos;
+using Flowbit.Shared.Models;
 
 namespace Flowbit.Ui.Components.Shared.Signals;
 
@@ -83,8 +85,62 @@ internal static class SignalFormatting
             : $"{waits:N0} {(waits == 1 ? "wait" : "waits")} for '{signalName}' {target}.";
     }
 
-    internal static string ThrowerLabel(string thrownBy, string thrownByKind) =>
-        thrownByKind == SignalThrowerKinds.Client ? $"{thrownBy} (API client)" : thrownBy;
+    /// <summary>
+    /// Who threw a broadcast: a user's identity, a managed client's ID, or, for a throw from a
+    /// workflow, the instance and its throw or end event: the event's name, or its node number
+    /// when it has none.
+    /// </summary>
+    internal static string ThrowerLabel(
+        string thrownBy,
+        string thrownByKind,
+        long? throwerInstanceId = null,
+        int? throwerNodeId = null,
+        string? throwerNodeName = null)
+    {
+        if (thrownByKind == SignalThrowerKinds.Client)
+        {
+            return $"{thrownBy} (API client)";
+        }
+
+        if (thrownByKind != SignalThrowerKinds.Instance)
+        {
+            return thrownBy;
+        }
+
+        var instance = $"Instance #{throwerInstanceId?.ToString(CultureInfo.InvariantCulture) ?? thrownBy}";
+        if (!string.IsNullOrWhiteSpace(throwerNodeName))
+        {
+            return $"{instance} · {throwerNodeName}";
+        }
+
+        return throwerNodeId is int nodeId
+            ? $"{instance} · node #{nodeId.ToString(CultureInfo.InvariantCulture)}"
+            : instance;
+    }
+
+    /// <summary>The recipients a throw or end event's scope names, in words.</summary>
+    internal static string ThrowScopeLabel(SignalThrowScopeModel? scope) => scope?.Kind switch
+    {
+        SignalThrowScopeKinds.ThisInstance => "this instance",
+        SignalThrowScopeKinds.ThisWorkflow => "this workflow",
+        SignalThrowScopeKinds.Workflow => $"workflow {scope.WorkflowKey}",
+        SignalThrowScopeKinds.BusinessKey => $"the business key in {scope.BusinessKeyVariable} in workflow {scope.WorkflowKey}",
+        SignalThrowScopeKinds.OwnBusinessKey => $"this instance's business key in workflow {scope.WorkflowKey}",
+        SignalThrowScopeKinds.AllWorkflows => "all workflows",
+        _ => "no valid scope"
+    };
+
+    /// <summary>The Thrown by filter of the broadcast list, with the kinds each choice requests.</summary>
+    internal static IReadOnlyList<(string Value, string Label, IReadOnlyList<string> Kinds)> ThrownByChoices { get; } =
+    [
+        ("people", "People and API clients", [SignalThrowerKinds.User, SignalThrowerKinds.Client]),
+        ("workflows", "Workflows", [SignalThrowerKinds.Instance]),
+        ("everyone", "Everyone", [])
+    ];
+
+    /// <summary>The thrower kinds a Thrown by choice requests; an unknown choice means the default.</summary>
+    internal static IReadOnlyList<string> ThrownByKinds(string? choice) =>
+        ThrownByChoices.FirstOrDefault(item => item.Value == choice).Kinds ?? ThrownByChoices[0].Kinds;
 
     /// <summary>A broadcast the page keeps refreshing: one that still delivers.</summary>
     internal static bool IsLive(string status) =>

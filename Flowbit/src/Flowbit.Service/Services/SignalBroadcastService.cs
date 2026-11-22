@@ -18,21 +18,14 @@ public sealed class SignalBroadcastService(
     ISignalBroadcastRepository broadcasts,
     ISignalSubscriptionRepository subscriptions,
     IWorkflowDefinitionRepository definitions,
-    IWorkflowJobRepository jobs,
     IEngineSettingsRepository engineSettings,
     IUnitOfWork unitOfWork,
     TimeProvider timeProvider,
-    ILogger<SignalBroadcastService> logger)
+    ILogger<SignalBroadcastService> logger,
+    SignalBroadcastWriter writer)
     : ISignalBroadcastService
 {
-    public const string DeliverPhase = "deliver";
-
-    private static readonly TimeSpan[] DeliveryRetryDelays =
-    [
-        TimeSpan.FromSeconds(10),
-        TimeSpan.FromMinutes(1),
-        TimeSpan.FromMinutes(5)
-    ];
+    public const string DeliverPhase = SignalBroadcastWriter.DeliverPhase;
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
@@ -98,69 +91,45 @@ public sealed class SignalBroadcastService(
         }
 
         // A soft limit: counted without a lock, so no throw queues behind another
-        // throw's recipient insert, and concurrent throws may pass it by a few.
-        if (await broadcasts.CountOpenAsync(cancellationToken) >= maxOpen)
+        // throw's recipient insert, and concurrent throws may pass it by a few. Only
+        // broadcasts thrown through the API count: workflows have their own budget.
+        if (await broadcasts.CountOpenAsync(SignalSettings.ApiThrowerKinds, maxOpen, cancellationToken) >= maxOpen)
         {
             throw new WorkflowConflictException(
                 $"{maxOpen} signal broadcasts are still delivering; wait for one to finish or cancel one.");
         }
 
-        var broadcast = await broadcasts.AddAsync(
-            new NewSignalBroadcastRecord(
-                name!,
-                scope,
-                payloadJson,
-                caller.Kind,
-                caller.Id,
-                JsonSerializer.Serialize(caller.Roles, JsonOptions),
-                caller.AuditClaims is null ? null : JsonSerializer.Serialize(caller.AuditClaims, JsonOptions),
-                idempotencyKey,
-                requestHash,
-                now),
+        var written = await writer.WriteAsync(
+            new SignalBroadcastWrite(
+                new NewSignalBroadcastRecord(
+                    name!,
+                    scope,
+                    payloadJson,
+                    caller.Kind,
+                    caller.Id,
+                    JsonSerializer.Serialize(caller.Roles, JsonOptions),
+                    caller.AuditClaims is null ? null : JsonSerializer.Serialize(caller.AuditClaims, JsonOptions),
+                    idempotencyKey,
+                    requestHash,
+                    now),
+                maxRecipients,
+                caller.Id),
             cancellationToken);
-        var frozen = await broadcasts.FreezeDeliveriesAsync(
-            broadcast.Id,
-            name!,
-            scope,
-            maxRecipients,
-            cancellationToken);
-        if (frozen > maxRecipients)
+        if (written.RecipientLimitExceeded)
         {
             throw new WorkflowDomainException(
                 $"Signal '{name}' would reach more than {maxRecipients} waiting subscriptions; "
                 + "narrow its scope or raise Signals.MaxSubscriptionsPerBroadcast.");
         }
 
-        var recipients = await broadcasts.ListRecipientDefinitionsAsync(broadcast.Id, cancellationToken);
-        var families = recipients
-            .GroupBy(recipient => recipient.WorkflowKey, StringComparer.Ordinal)
-            .Select(group => new SignalRecipientCountDto(group.Key, group.Sum(recipient => recipient.Count)))
-            .OrderByDescending(family => family.Count)
-            .ThenBy(family => family.WorkflowKey, StringComparer.Ordinal)
-            .ToList();
-        await broadcasts.SetRecipientsAsync(
-            broadcast.Id,
-            frozen,
-            JsonSerializer.Serialize(families.Take(SignalConstraints.MaxRecipientFamilies), JsonOptions),
-            families.Count > SignalConstraints.MaxRecipientFamilies,
-            frozen == 0 ? SignalBroadcastStatuses.Completed : SignalBroadcastStatuses.Delivering,
-            now,
-            cancellationToken);
-        await EnqueueDeliveryJobsAsync(
-            broadcast.Id,
-            recipients.Select(recipient => recipient.WorkflowDefinitionId).Distinct().ToArray(),
-            SignalBroadcastJobReasons.Throw,
-            caller.Id,
-            now,
-            cancellationToken);
         await transaction.CommitAsync(cancellationToken);
 
-        SignalRuntimeTelemetry.RecordBroadcast(caller.Kind, frozen);
+        SignalRuntimeTelemetry.RecordBroadcast(caller.Kind, written.RecipientCount);
         logger.LogInformation(
             "Signal broadcast {BroadcastId} froze {RecipientCount} recipients in {FamilyCount} workflow families.",
-            broadcast.Id, frozen, families.Count);
-        var stored = await broadcasts.GetAsync(broadcast.Id, false, cancellationToken)
-            ?? throw new InvalidOperationException($"Signal broadcast #{broadcast.Id} disappeared after it was thrown.");
+            written.BroadcastId, written.RecipientCount, written.FamilyCount);
+        var stored = await broadcasts.GetAsync(written.BroadcastId, false, cancellationToken)
+            ?? throw new InvalidOperationException($"Signal broadcast #{written.BroadcastId} disappeared after it was thrown.");
         return (ToDetail(stored, caller), false);
     }
 
@@ -171,11 +140,22 @@ public sealed class SignalBroadcastService(
         string? status,
         int page,
         int pageSize,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlyList<string>? thrownByKinds = null)
     {
         if (!string.IsNullOrEmpty(status) && !SignalBroadcastStatuses.All.Contains(status))
         {
             throw new WorkflowDomainException($"Unknown signal broadcast status '{status}'.");
+        }
+
+        var kinds = (thrownByKinds ?? [])
+            .Where(kind => !string.IsNullOrWhiteSpace(kind))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        if (kinds.FirstOrDefault(kind => !KnownThrowerKinds.Contains(kind, StringComparer.Ordinal)) is { } unknown)
+        {
+            throw new WorkflowDomainException(
+                $"Unknown thrownByKind '{unknown}'; use {SignalThrowerKinds.User}, {SignalThrowerKinds.Client}, or {SignalThrowerKinds.Instance}.");
         }
 
         var (safePage, safeSize) = ClampPage(page, pageSize);
@@ -187,7 +167,8 @@ public sealed class SignalBroadcastService(
                 caller.IsClient ? caller.Kind : null,
                 caller.IsClient ? caller.Id : null,
                 safePage,
-                safeSize),
+                safeSize,
+                kinds.Length == 0 ? null : kinds),
             cancellationToken);
         return new PagedResult<SignalBroadcastSummaryDto>(
             result.Items.Select(ToSummary).ToArray(),
@@ -323,7 +304,7 @@ public sealed class SignalBroadcastService(
         }
 
         await broadcasts.ReopenAsync(broadcastId, now, cancellationToken);
-        await EnqueueDeliveryJobsAsync(
+        await writer.EnqueueDeliveryJobsAsync(
             broadcastId,
             definitionIds,
             SignalBroadcastJobReasons.Retry,
@@ -378,60 +359,6 @@ public sealed class SignalBroadcastService(
                 subscription.TokenId,
                 subscription.CreatedAt))
             .ToArray();
-    }
-
-    private async Task EnqueueDeliveryJobsAsync(
-        long broadcastId,
-        IReadOnlyCollection<long> definitionIds,
-        string reason,
-        string requestedBy,
-        DateTimeOffset now,
-        CancellationToken cancellationToken)
-    {
-        if (definitionIds.Count == 0)
-        {
-            return;
-        }
-
-        var records = await definitions.GetManyAsync(definitionIds, cancellationToken);
-        foreach (var definitionId in definitionIds.Order())
-        {
-            var definition = records.GetValueOrDefault(definitionId)
-                ?? throw new InvalidOperationException($"Workflow definition #{definitionId} does not exist.");
-            // The job names the definition's initial start event only to anchor its row;
-            // it reports no node in incident lifecycle events.
-            var anchor = definition.Definition.FlowNodes.FirstOrDefault(node =>
-                             node.Id == definition.Definition.InitialEventId)
-                         ?? definition.Definition.FlowNodes.First();
-            var job = await jobs.EnqueueAsync(
-                new WorkflowJobCreateRecord
-                {
-                    WorkflowDefinitionId = definition.Id,
-                    WorkflowKey = definition.WorkflowKey,
-                    ActivationId = Guid.NewGuid(),
-                    NodeId = anchor.Id,
-                    NodeName = anchor.Name,
-                    NodeType = anchor.Type,
-                    Kind = WorkflowJobKinds.SignalBroadcastDeliver,
-                    QueueClass = WorkflowJobClasses.Activity,
-                    Phase = DeliverPhase,
-                    DueAt = now,
-                    MaxAttempts = DeliveryRetryDelays.Length + 1,
-                    RetryDelays = DeliveryRetryDelays,
-                    FailureHandling = WorkflowJobFailureHandling.RetryFirst,
-                    Payload = JsonSerializer.SerializeToElement(
-                        new SignalBroadcastJobPayload(broadcastId, definition.Id))
-                },
-                cancellationToken);
-            await broadcasts.AddJobLinkAsync(
-                broadcastId,
-                definition.Id,
-                job.Id,
-                reason,
-                requestedBy,
-                now,
-                cancellationToken);
-        }
     }
 
     /// <summary>
@@ -600,7 +527,13 @@ public sealed class SignalBroadcastService(
             broadcast.ThrownByKind,
             broadcast.CreatedAt,
             broadcast.UpdatedAt,
-            broadcast.CompletedAt);
+            broadcast.CompletedAt,
+            broadcast.ThrowerInstanceId,
+            broadcast.ThrowerNodeId,
+            broadcast.ThrowerNodeName);
+
+    private static readonly string[] KnownThrowerKinds =
+        [SignalThrowerKinds.User, SignalThrowerKinds.Client, SignalThrowerKinds.Instance];
 
     private static SignalBroadcastDetailDto ToDetail(SignalBroadcastRecord broadcast, SignalCaller caller)
     {
@@ -643,7 +576,10 @@ public sealed class SignalBroadcastService(
             broadcast.CreatedAt,
             broadcast.UpdatedAt,
             broadcast.CompletedAt,
-            broadcast.CancelledAt);
+            broadcast.CancelledAt,
+            broadcast.ThrowerInstanceId,
+            broadcast.ThrowerNodeId,
+            broadcast.ThrowerNodeName);
     }
 
     private static SignalDeliveryDto ToDelivery(SignalDeliveryRecord delivery, SignalCaller caller) =>

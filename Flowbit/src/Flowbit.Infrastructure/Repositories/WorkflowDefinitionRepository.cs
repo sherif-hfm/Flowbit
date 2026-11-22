@@ -60,6 +60,10 @@ public sealed class WorkflowDefinitionRepository(
         return definitions.Select(ToRecord).ToList();
     }
 
+    public Task<bool> ExistsByKeyAsync(string workflowKey, CancellationToken cancellationToken) =>
+        dbContext.WorkflowDefinitions.AsNoTracking()
+            .AnyAsync(w => w.WorkflowKey == workflowKey, cancellationToken);
+
     public async Task<WorkflowDefinitionRecord?> GetAsync(long id, CancellationToken cancellationToken)
     {
         var cacheKey = KeyPrefix + id;

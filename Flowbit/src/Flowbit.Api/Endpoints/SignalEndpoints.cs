@@ -39,7 +39,7 @@ public static class SignalEndpoints
         group.MapGet(string.Empty, List)
             .RequireAuthorization(SignalAuthorizationPolicies.Read)
             .WithSummary("List signal broadcasts")
-            .WithDescription("Newest first, without payloads. A managed API client sees only the broadcasts it threw.")
+            .WithDescription("Newest first, without payloads. Repeat thrownByKind (user, client, or instance) to keep only those throwers. A managed API client sees only the broadcasts it threw.")
             .Produces<PagedResult<SignalBroadcastSummaryDto>>()
             .Produces(StatusCodes.Status400BadRequest)
             .Produces(StatusCodes.Status401Unauthorized)
@@ -127,6 +127,7 @@ public static class SignalEndpoints
         [FromQuery] string? status,
         [FromQuery] int? page,
         [FromQuery] int? pageSize,
+        [FromQuery] string[]? thrownByKind,
         CancellationToken cancellationToken) =>
         Results.Ok(await service.ListAsync(
             callerResolver.Resolve(principal),
@@ -135,7 +136,8 @@ public static class SignalEndpoints
             status,
             page ?? 1,
             pageSize ?? 50,
-            cancellationToken));
+            cancellationToken,
+            thrownByKind));
 
     private static async Task<IResult> Get(
         long id,

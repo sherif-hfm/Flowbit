@@ -29,8 +29,13 @@ namespace Flowbit.Tests;
 /// records its scope, and a repeated idempotency key compares the scope.
 /// </summary>
 [Collection(PostgresApiCollection.Name)]
-public sealed class SignalScopeTests(PostgresApiFixture fixture)
+public sealed class SignalScopeTests(PostgresApiFixture fixture) : IAsyncLifetime
 {
+    public Task InitializeAsync() => Task.CompletedTask;
+
+    // Some tests leave a broadcast delivering on purpose; later classes must not lease its jobs.
+    public Task DisposeAsync() => SignalDeliveryJobLeftovers.RetireAsync(fixture);
+
     private const string Actor = "signal-scope";
     private const string PreviousMigration = "20261116135758_ValidateSignalEventConstraints";
     private const string ScopeMigration = "20261120144115_AddSignalBroadcastScope";

@@ -68,7 +68,7 @@ public sealed class WorkflowAuthoringPackageTests
         }
         var nodes = definitions.GetProperty(nameof(FlowNodeModel)).GetProperty("properties").GetProperty("type").GetProperty("enum")
             .EnumerateArray().Select(value => value.GetString()!).ToArray();
-        Assert.Equal(26, nodes.Length);
+        Assert.Equal(28, nodes.Length);
         Assert.Equal(WorkflowAuthoringJson.NodeTypes, nodes);
         Assert.All(nodes, type => Assert.True(BpmnFlowNodeTypes.IsSupported(type!)));
         Assert.False(definitions.GetProperty(nameof(MessageCatchModel)).GetProperty("properties").TryGetProperty("idempotencyVariable", out _));
@@ -145,6 +145,18 @@ public sealed class WorkflowAuthoringPackageTests
         // (checked by the loop above).
         Assert.DoesNotContain(loaded.Resources.Keys, key => key.StartsWith("references/docs/plans/", StringComparison.Ordinal));
         Assert.DoesNotContain(loaded.Resources.Keys, key => key.StartsWith("references/docs/enhancements/", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Capabilities_NameEverySignalEvent()
+    {
+        using var output = new TemporaryDirectory();
+        AuthoringPackageBuilder.Export(RepositoryRoot, output.Path);
+        var capabilities = new AuthoringKnowledge(System.IO.Path.Combine(output.Path, "flowbit-authoring"))
+            .Resources["references/capabilities.json"];
+        Assert.Contains("signal catch events and interrupting or non-interrupting signal boundaries", capabilities, StringComparison.Ordinal);
+        Assert.Contains("signal throw and signal end events that broadcast a signal from the workflow to a stated scope",
+            capabilities, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -326,7 +326,7 @@ public sealed partial class WorkflowEngineService
         // Signal subscriptions are locked last. A definition without signal events
         // never has any.
         IReadOnlyList<SignalSubscriptionRecord> openSignalSubscriptions =
-            signalSubscriptions is null || !SignalEventRules.HasSignalEvents(source.Definition)
+            signalSubscriptions is null || !SignalEventRules.HasSignalWaits(source.Definition)
                 ? []
                 : await signalSubscriptions.ListActiveByInstanceAsync(
                     instance.Id,

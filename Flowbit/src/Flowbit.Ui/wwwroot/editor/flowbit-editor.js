@@ -96,6 +96,8 @@ const NODE_TYPE = {
   TIMER_CATCH_EVENT: "intermediateTimerCatchEvent",
   CONDITIONAL_CATCH_EVENT: "intermediateConditionalCatchEvent",
   SIGNAL_CATCH_EVENT: "intermediateSignalCatchEvent",
+  SIGNAL_THROW_EVENT: "intermediateSignalThrowEvent",
+  SIGNAL_END_EVENT: "signalEndEvent",
   MESSAGE_START_EVENT: "messageStartEvent",
   LINK_THROW_EVENT: "intermediateLinkThrowEvent",
   LINK_CATCH_EVENT: "intermediateLinkCatchEvent"
@@ -116,10 +118,12 @@ const NODE_TYPE_OPTIONS = [
   { value: NODE_TYPE.SCOPED_INTERRUPT_EVENT, label: "Scoped Interrupt Event" },
   { value: NODE_TYPE.TERMINATE_END_EVENT, label: "Terminate End Event" },
   { value: NODE_TYPE.ERROR_END_EVENT, label: "Error End Event (fault)" },
+  { value: NODE_TYPE.SIGNAL_END_EVENT, label: "Signal End Event (end and broadcast a signal)" },
   { value: NODE_TYPE.MESSAGE_CATCH_EVENT, label: "Message Catch Event (wait for callback)" },
   { value: NODE_TYPE.TIMER_CATCH_EVENT, label: "Timer Catch Event (delay)" },
   { value: NODE_TYPE.CONDITIONAL_CATCH_EVENT, label: "Conditional Catch Event (wait for condition)" },
   { value: NODE_TYPE.SIGNAL_CATCH_EVENT, label: "Signal Catch Event (wait for a broadcast)" },
+  { value: NODE_TYPE.SIGNAL_THROW_EVENT, label: "Signal Throw Event (broadcast a signal)" },
   { value: NODE_TYPE.MESSAGE_START_EVENT, label: "Message Start Event (webhook start)" },
   { value: NODE_TYPE.LINK_THROW_EVENT, label: "Link Throw Event (go to)" },
   { value: NODE_TYPE.LINK_CATCH_EVENT, label: "Link Catch Event (continue here)" }
@@ -298,6 +302,7 @@ function searchDiagram(candidate, query, limit = 20) {
     endEvent: "End Event",
     terminateEndEvent: "Terminate End Event",
     errorEndEvent: "Error End Event",
+    signalEndEvent: "Signal End Event",
     errorBoundaryEvent: "Error Boundary Event",
     timerBoundaryEvent: "Timer Boundary Event",
     conditionalBoundaryEvent: "Conditional Boundary Event",
@@ -306,6 +311,7 @@ function searchDiagram(candidate, query, limit = 20) {
     intermediateTimerCatchEvent: "Timer Catch Event",
     intermediateConditionalCatchEvent: "Conditional Catch Event",
     intermediateSignalCatchEvent: "Signal Catch Event",
+    intermediateSignalThrowEvent: "Signal Throw Event",
     intermediateLinkThrowEvent: "Link Throw Event",
     intermediateLinkCatchEvent: "Link Catch Event"
   };
@@ -1418,6 +1424,7 @@ function isEventType(type) {
     type === NODE_TYPE.MESSAGE_CATCH_EVENT || type === NODE_TYPE.MESSAGE_START_EVENT ||
     type === NODE_TYPE.TIMER_START_EVENT || type === NODE_TYPE.TIMER_CATCH_EVENT ||
     type === NODE_TYPE.CONDITIONAL_CATCH_EVENT || type === NODE_TYPE.SIGNAL_CATCH_EVENT ||
+    type === NODE_TYPE.SIGNAL_THROW_EVENT || type === NODE_TYPE.SIGNAL_END_EVENT ||
     isLinkEventType(type);
 }
 function isAutomaticType(type) {
@@ -1443,7 +1450,7 @@ function isTimerStartEventType(type) {
 }
 function isEndEventType(type) {
   return type === NODE_TYPE.END_EVENT || type === NODE_TYPE.ERROR_END_EVENT ||
-    type === NODE_TYPE.TERMINATE_END_EVENT;
+    type === NODE_TYPE.TERMINATE_END_EVENT || type === NODE_TYPE.SIGNAL_END_EVENT;
 }
 function isErrorEndEventType(type) {
   return type === NODE_TYPE.ERROR_END_EVENT;
@@ -1499,9 +1506,23 @@ function isSignalCatchEventType(type) {
 function isSignalBoundaryEventType(type) {
   return type === NODE_TYPE.SIGNAL_BOUNDARY_EVENT;
 }
+// The two types that wait for a signal: each owns a subscription while it waits.
+function isSignalWaitType(type) {
+  return isSignalCatchEventType(type) || isSignalBoundaryEventType(type);
+}
+function isSignalThrowEventType(type) {
+  return type === NODE_TYPE.SIGNAL_THROW_EVENT;
+}
+function isSignalEndEventType(type) {
+  return type === NODE_TYPE.SIGNAL_END_EVENT;
+}
+// The two types that broadcast a signal: they carry a scope and a payload, never mappings.
+function throwsSignalType(type) {
+  return isSignalThrowEventType(type) || isSignalEndEventType(type);
+}
 // Every type that carries node.signal.
 function isSignalEventType(type) {
-  return isSignalCatchEventType(type) || isSignalBoundaryEventType(type);
+  return isSignalWaitType(type) || throwsSignalType(type);
 }
 function isTimerEventType(type) {
   return isTimerStartEventType(type) || isTimerCatchEventType(type) ||
@@ -1717,6 +1738,7 @@ function isSingleOutgoingType(type) {
     || type === NODE_TYPE.TIMER_CATCH_EVENT
     || type === NODE_TYPE.CONDITIONAL_CATCH_EVENT
     || type === NODE_TYPE.SIGNAL_CATCH_EVENT
+    || type === NODE_TYPE.SIGNAL_THROW_EVENT
     || type === NODE_TYPE.MESSAGE_START_EVENT
     || type === NODE_TYPE.LINK_CATCH_EVENT;
 }
@@ -1737,12 +1759,13 @@ function nodeSize(node) {
 }
 // pass-through nodes advance without a user action (start / message start /
 // automatic task / service task / script task / gateway / interrupt / boundary /
-// link catch).
+// link catch / signal throw).
 function isPassThroughType(type) {
   return isAutomaticType(type) || isServiceTaskType(type) || isScriptTaskType(type) ||
     isStartEventType(type) || isMessageStartEventType(type) || isTimerStartEventType(type) ||
     isGatewayType(type) ||
-    isScopedInterruptEventType(type) || isBoundaryEventType(type) || isLinkCatchEventType(type);
+    isScopedInterruptEventType(type) || isBoundaryEventType(type) || isLinkCatchEventType(type) ||
+    isSignalThrowEventType(type);
 }
 function normalizeJobPolicy(value) {
   if (value === undefined || value === null) return null;
@@ -1928,6 +1951,10 @@ function applyTypeInvariants(node) {
     delete node.errorVariable;
     delete node.gatewayRef;
     delete node.message;
+    // A signal end event keeps its signal; the other end events lost theirs above.
+    if (isSignalEndEventType(node.type) && node.signal !== undefined && node.signal !== null) {
+      node.signal = normalizeSignalThrowDefinition(node.signal);
+    }
   } else if (isAutomaticType(node.type) || isGatewayType(node.type)) {
     node.requiresClaim = false;
     node.claimMode = CLAIM_MODE.FRESH;
@@ -2094,6 +2121,25 @@ function applyTypeInvariants(node) {
     delete node.attachedToRef;
     delete node.errorVariable;
     delete node.message;
+  } else if (isSignalThrowEventType(node.type)) {
+    // A signal throw is pass-through like a link event. Its name, scope, and payload live
+    // only in node.signal; its routing lives on its one outgoing flow.
+    node.requiresClaim = false;
+    node.claimMode = CLAIM_MODE.FRESH;
+    node.inheritClaimFromNodeId = null;
+    node.roles = [];
+    node.variables = [];
+    node.assignee = null;
+    delete node.service;
+    node.assignments = [];
+    delete node.scriptFormat;
+    delete node.script;
+    delete node.attachedToRef;
+    delete node.errorVariable;
+    delete node.message;
+    if (node.signal !== undefined && node.signal !== null) {
+      node.signal = normalizeSignalThrowDefinition(node.signal);
+    }
   } else if (isMessageCatchEventType(node.type)) {
     // A message catch event rests (like a userTask) until a matching message is
     // delivered via POST /api/instances/{id}/message. The delivery configuration
@@ -2396,6 +2442,8 @@ const NODE_ICON_SYMBOL = {
   [NODE_TYPE.MESSAGE_START_EVENT]: "icon-message",
   [NODE_TYPE.END_EVENT]: null,
   [NODE_TYPE.ERROR_END_EVENT]: "icon-error-throw",
+  // Throwing events use the filled triangle, as the link throw fills the link catch's arrow.
+  [NODE_TYPE.SIGNAL_END_EVENT]: "icon-signal-throw",
   [NODE_TYPE.ERROR_BOUNDARY_EVENT]: "icon-error-catch",
   [NODE_TYPE.TIMER_BOUNDARY_EVENT]: "icon-timer",
   [NODE_TYPE.CONDITIONAL_BOUNDARY_EVENT]: "icon-conditional",
@@ -2405,6 +2453,7 @@ const NODE_ICON_SYMBOL = {
   [NODE_TYPE.TIMER_CATCH_EVENT]: "icon-timer",
   [NODE_TYPE.CONDITIONAL_CATCH_EVENT]: "icon-conditional",
   [NODE_TYPE.SIGNAL_CATCH_EVENT]: "icon-signal-catch",
+  [NODE_TYPE.SIGNAL_THROW_EVENT]: "icon-signal-throw",
   [NODE_TYPE.USER_TASK]: "icon-user",
   [NODE_TYPE.TASK]: "icon-task",
   [NODE_TYPE.SERVICE_TASK]: "icon-service",
@@ -2944,7 +2993,7 @@ function renderNodes() {
       g.appendChild(el("circle", { class: "body", cx: r, cy: r, r: r - 2 }));
       if (isMessageCatchEventType(node.type) || isTimerCatchEventType(node.type) ||
           isConditionalCatchEventType(node.type) || isSignalCatchEventType(node.type) ||
-          isLinkEventType(node.type)) {
+          isSignalThrowEventType(node.type) || isLinkEventType(node.type)) {
         g.appendChild(el("circle", { class: "ring", cx: r, cy: r, r: r - 6 }));
       }
       if (isScopedInterruptEventType(node.type)) {
@@ -3998,10 +4047,18 @@ function changeNodeTypeFromInspector(node, nextType) {
   if (isConditionalCatchEventType(nextType) && !isConditionalCatchEventType(previousType)) {
     node.conditional = { condition: "" };
   }
-  // A signal catch and a signal boundary keep the signal across a change between them;
-  // any other type loses it in applyTypeInvariants below.
-  if (isSignalEventType(nextType) && !isSignalEventType(previousType)) {
-    node.signal = { name: "", outputMappings: [] };
+  // A signal catch and a signal boundary keep the signal across a change between them, and
+  // so do a signal throw and a signal end event. A change between a wait and a throw keeps
+  // only the name: mappings and payload entries never cross from one form to the other.
+  // Any other type loses the signal in applyTypeInvariants below.
+  const keptSignalName = isSignalEventType(previousType) && node.signal &&
+    typeof node.signal === "object" && !Array.isArray(node.signal) &&
+    typeof node.signal.name === "string" ? node.signal.name : "";
+  if (isSignalWaitType(nextType) && !isSignalWaitType(previousType)) {
+    node.signal = { name: keptSignalName, outputMappings: [] };
+  }
+  if (throwsSignalType(nextType) && !throwsSignalType(previousType)) {
+    node.signal = { name: keptSignalName, scope: { kind: "" }, payload: [] };
   }
   if (isStartEventType(previousType) && !isStartEventType(nextType)) {
     delete node.callOnly;
@@ -4140,7 +4197,7 @@ function renderNodeInspector() {
   }
 
   // A signal boundary draws its Signal section after its host and interruption fields.
-  if (isSignalCatchEventType(node.type)) {
+  if (isSignalCatchEventType(node.type) || throwsSignalType(node.type)) {
     renderSignalSection(node);
   }
 
@@ -5370,9 +5427,9 @@ function renderConditionalSection(node) {
   ]);
 }
 
-// The names the other signal events in the diagram use, offered as suggestions. A boundary
-// is not offered the names save would refuse for it: its host catch's name and the names of
-// the other signal boundaries on the same host.
+// The names the other signal events in the diagram use, waits and throws alike, offered as
+// suggestions. A boundary is not offered the names save would refuse for it: its host
+// catch's name and the names of the other signal boundaries on the same host.
 function signalNamesInDiagram(exceptNode) {
   const nameOf = candidate => {
     const signal = candidate && candidate.signal;
@@ -5398,6 +5455,12 @@ function signalNamesInDiagram(exceptNode) {
 }
 
 function renderSignalSection(node) {
+  // A throw or end event sends a signal, so it gets the throw mode: a scope and a payload
+  // instead of output mappings.
+  if (throwsSignalType(node.type)) {
+    renderSignalThrowSection(node);
+    return;
+  }
   const title = document.createElement("h2");
   title.textContent = "Signal";
   title.style.marginTop = "16px";
@@ -5407,7 +5470,7 @@ function renderSignalSection(node) {
       ? "Reacts to a signal with this name while the attached activity is active, then continues along its one outgoing flow. An interrupting boundary cancels the activity first; a non-interrupting one leaves it waiting and reacts to every later signal too. "
       : "Waits until a signal with this name is thrown, then continues along its one outgoing flow. ") +
       "A signal reaches only the waits that exist when it is thrown and is never kept for a wait that starts later, so use a message event when an instance must not miss it.",
-    "Throw a signal from the Signals page or with `POST /api/signal-broadcasts`. A running Worker delivers it to each waiting instance."
+    "Throw a signal from the Signals page, with `POST /api/signal-broadcasts`, or from a workflow with a signal throw event or a signal end event. A running Worker delivers it to each waiting instance."
   ]);
 
   const signal = node.signal && typeof node.signal === "object" && !Array.isArray(node.signal)
@@ -5432,9 +5495,23 @@ function renderSignalSection(node) {
     return;
   }
 
+  renderSignalNameField(node, signal);
+
+  const outTitle = document.createElement("h2");
+  outTitle.textContent = "Output mappings";
+  outTitle.style.marginTop = "16px";
+  inspector.appendChild(outTitle);
+  renderSignalOutputMappings(node, signal, outTitle);
+}
+
+// The Signal name field of every signal event, with the names of the diagram's other signal
+// events as suggestions and a live status line. onChange runs after each edit, so a throw can
+// refresh the status lines that depend on the name.
+function renderSignalNameField(node, signal, onChange = null) {
   const nameInput = field("Signal name", "text", signal.name == null ? "" : String(signal.name), value => {
     signal.name = value;
     updateNameStatus();
+    if (onChange) onChange();
   });
   nameInput.setAttribute("data-signal-name", "true");
   nameInput.placeholder = "claims.policy-changed";
@@ -5479,11 +5556,11 @@ function renderSignalSection(node) {
   attachInspectorHelp(nameInput, "signal-name",
     "A literal name compared exactly: 1 to 100 lowercase letters, digits, '.', '_', or '-', starting with a letter or digit. Start it with a dotted prefix, such as `claims.policy-changed`, so that unrelated workflows do not share a name by accident.",
     ["claims.policy-changed"]);
+  return nameInput;
+}
 
-  const outTitle = document.createElement("h2");
-  outTitle.textContent = "Output mappings";
-  outTitle.style.marginTop = "16px";
-  inspector.appendChild(outTitle);
+// The output mappings of a signal catch or boundary, under their heading.
+function renderSignalOutputMappings(node, signal, outTitle) {
   attachInspectorHelp(outTitle, "signal-output-mappings",
     "Each mapping copies a value from the signal's payload into a typed instance variable. A signal reaches many instances at once, so its mappings never write or read shared variables. The payload path may be blank only when a default value is configured.");
 
@@ -5581,6 +5658,432 @@ function renderSignalSection(node) {
   inspector.appendChild(addMappingBtn);
 }
 
+// The scope kinds a signal throw or end event offers, in the order the save messages list
+// them. The members each kind requires live in the save validator (signalScopeMembers).
+const SIGNAL_SCOPE_OPTIONS = [
+  { value: "", label: "Choose a scope" },
+  { value: "thisInstance", label: "This instance" },
+  { value: "thisWorkflow", label: "This workflow" },
+  { value: "workflow", label: "Another workflow family" },
+  { value: "businessKey", label: "A business key from a variable" },
+  { value: "ownBusinessKey", label: "This instance's business key" },
+  { value: "allWorkflows", label: "All workflows" }
+];
+
+// Shows an imported value without changing it: text as it is, any other value as JSON.
+function signalInspectorText(value) {
+  return value === undefined || value === null ? ""
+    : typeof value === "string" ? value : JSON.stringify(value);
+}
+
+function signalThrowWarning(text) {
+  const warning = document.createElement("p");
+  warning.className = "empty-note";
+  warning.style.color = "var(--warning-text)";
+  warning.style.marginTop = "8px";
+  warning.style.overflowWrap = "anywhere";
+  warning.textContent = text;
+  return warning;
+}
+
+function signalThrowButton(text, onClick, marker = null) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = text;
+  button.style.marginTop = "8px";
+  if (marker) button.setAttribute(marker, "true");
+  button.onclick = onClick;
+  return button;
+}
+
+// A labelled field in container. Select options are elements, so a value keeps every character.
+function signalThrowControl(container, labelText, tag, marker, markerValue) {
+  const box = document.createElement("div");
+  box.className = "field";
+  box.innerHTML = `<label>${labelText}</label>`;
+  const control = document.createElement(tag);
+  if (tag === "input") {
+    control.type = "text";
+    control.spellcheck = false;
+  }
+  control.setAttribute(marker, markerValue);
+  box.appendChild(control);
+  container.appendChild(box);
+  return control;
+}
+
+function setSignalThrowOptions(select, options, value) {
+  options.forEach(option => {
+    const element = document.createElement("option");
+    element.value = option.value;
+    element.textContent = option.label;
+    if (option.value === value) element.selected = true;
+    select.appendChild(element);
+  });
+  select.value = value;
+}
+
+// The names a scope's business key variable can take: declared single strings that are not
+// shared aliases, as save requires.
+function signalThrowKeyVariableNames(declarations) {
+  const names = [];
+  for (const list of declarations.values()) {
+    if (list.some(item => item.isShared)) continue;
+    if (list.some(item => item.dataType === "string" && !item.isArray)) names.push(list[0].name);
+  }
+  return names;
+}
+
+// The throw mode of the Signal section, for a signal throw or end event: the name, the scope
+// with the members its kind requires, and the payload. Its status region reports the first
+// problem of the scope and of the payload, and a throw to this instance that nothing waits for,
+// with the messages save gives.
+function renderSignalThrowSection(node) {
+  const isEnd = isSignalEndEventType(node.type);
+  const label = signalEventLabel(node);
+  const title = document.createElement("h2");
+  title.textContent = "Signal";
+  title.style.marginTop = "16px";
+  inspector.appendChild(title);
+  attachInspectorHelp(title, "signal-throw-event", [
+    (isEnd
+      ? "When a token enters this event, it broadcasts a signal with this name, then the token ends as at a plain end event. "
+      : "When a token reaches this event, it broadcasts a signal with this name and continues along its one outgoing flow at once. ") +
+      "The token never waits for the deliveries: a running Worker delivers the signal to each wait afterwards.",
+    "The signal reaches the signal catch and boundary events in its scope that are waiting when it is thrown, including other waits of this instance. A wait that a parallel branch of the same step reaches later does not exist yet, so it is missed.",
+    "When a throw cannot be built or a limit refuses it, its step fails: a request returns an error and changes nothing, and a Worker job retries and then opens an incident.",
+    "Put an automatic task with `asyncBefore` in front of this event to throw in a later Worker transaction: every wait of the earlier step then exists, and a refused throw never fails a user's action."
+  ]);
+
+  const signal = isPlainSignalObject(node.signal) ? node.signal : null;
+  if (!signal) {
+    // Drawing never writes: the imported value stays for save validation until replaced.
+    inspector.appendChild(signalThrowWarning("The imported signal configuration is missing or malformed."));
+    inspector.appendChild(signalThrowButton("Replace with a signal configuration", () => {
+      node.signal = { name: "", scope: { kind: "" }, payload: [] };
+      renderInspector();
+      inspector.querySelector("[data-signal-name]")?.focus();
+    }));
+    return;
+  }
+
+  // The lines that change while the section is edited stay in one region, appended last.
+  const notes = document.createElement("div");
+  notes.className = "signal-throw-notes";
+  notes.setAttribute("role", "status");
+  notes.setAttribute("aria-live", "polite");
+  notes.id = "signal-throw-status-" + String(node.id);
+  const refreshStatus = () => {
+    const declarations = callSourceDeclarations(model);
+    const lines = [
+      ...signalThrowScopeProblems(model, label, signal.scope, declarations).slice(0, 1),
+      ...signalThrowPayloadProblems(model, label, signal.payload, declarations).slice(0, 1)
+    ];
+    const waitProblem = signalThrowWaitProblem(model, label, signal);
+    if (waitProblem) lines.push(waitProblem);
+    notes.replaceChildren(...lines.map(text => {
+      const line = document.createElement("p");
+      line.className = "expression-validation";
+      line.textContent = text;
+      return line;
+    }));
+  };
+
+  renderSignalNameField(node, signal, refreshStatus);
+
+  const mappings = signal.outputMappings;
+  if (mappings !== undefined && mappings !== null && !(Array.isArray(mappings) && mappings.length === 0)) {
+    inspector.appendChild(signalThrowWarning(
+      "This imported event has output mappings, which only a signal catch or boundary event can use, so the workflow cannot be saved."));
+    inspector.appendChild(signalThrowButton("Remove the output mappings", () => {
+      delete signal.outputMappings;
+      renderInspector();
+      inspector.querySelector("[data-signal-name]")?.focus();
+    }));
+  }
+
+  renderSignalThrowScope(signal, notes, refreshStatus);
+  renderSignalThrowPayload(signal, notes, refreshStatus);
+
+  inspector.appendChild(notes);
+  refreshStatus();
+}
+
+function renderSignalThrowScope(signal, notes, refreshStatus) {
+  const focusScope = () => inspector.querySelector("[data-signal-scope]")?.focus();
+  const scope = signal.scope;
+  const scopeIsObject = isPlainSignalObject(scope);
+  if (scope !== undefined && scope !== null && !scopeIsObject) {
+    inspector.appendChild(signalThrowWarning("The imported signal.scope is not an object, so it cannot be edited here."));
+    inspector.appendChild(signalThrowButton("Replace it with a scope", () => {
+      signal.scope = { kind: "" };
+      renderInspector();
+      focusScope();
+    }));
+    return;
+  }
+
+  const kind = scopeIsObject ? scope.kind : undefined;
+  const current = signalInspectorText(kind);
+  const options = SIGNAL_SCOPE_OPTIONS.slice();
+  if (!options.some(option => option.value === current)) {
+    options.push({ value: current, label: current + " (unsupported imported value)" });
+  }
+  const scopeSelect = signalThrowControl(inspector, "Scope", "select", "data-signal-scope", "true");
+  setSignalThrowOptions(scopeSelect, options, current);
+  scopeSelect.setAttribute("aria-describedby", notes.id);
+  // A kind shows the members it requires and drops the members of the other kinds at once;
+  // the redraw replaces the select, so focus returns to the new one.
+  scopeSelect.onchange = () => {
+    const next = scopeSelect.value;
+    if (!isPlainSignalObject(signal.scope)) signal.scope = {};
+    const target = signal.scope;
+    target.kind = next;
+    const members = signalScopeMembers(next);
+    if (!members.includes("workflowKey")) delete target.workflowKey;
+    if (!members.includes("businessKeyVariable")) delete target.businessKeyVariable;
+    renderInspector();
+    focusScope();
+  };
+  attachInspectorHelp(scopeSelect.parentNode, "signal-throw-scope", [
+    "Which waits the signal reaches. This instance: the other waits of this instance. This workflow: every instance of this workflow family, in every version. Another workflow family: every instance of the family with the workflow key below.",
+    "A business key from a variable: that family's instance whose business key the variable holds. This instance's business key: that family's instance with this instance's own business key. All workflows: every wait with this name.",
+    "A scope needs every setting its kind shows. A missing one is a problem, never another recipient."
+  ]);
+  if (!scopeIsObject) return;
+
+  const members = signalScopeMembers(scope.kind);
+  if (members.includes("workflowKey")) {
+    const keyInput = field("Workflow key", "text", signalInspectorText(scope.workflowKey), value => {
+      scope.workflowKey = value;
+      refreshStatus();
+    });
+    keyInput.setAttribute("data-signal-workflow-key", "true");
+    keyInput.spellcheck = false;
+    keyInput.placeholder = "shipping";
+    keyInput.setAttribute("aria-describedby", notes.id);
+    attachInspectorHelp(keyInput, "signal-throw-workflow-key",
+      "The literal key of the workflow family to reach: the Workflow ID its definitions show. It is compared exactly, `${...}` is not replaced, and it may be this workflow's own key. Publishing checks that the family exists.");
+  }
+  if (members.includes("businessKeyVariable")) {
+    const variableInput = field("Business key variable", "text", signalInspectorText(scope.businessKeyVariable), value => {
+      scope.businessKeyVariable = value;
+      refreshStatus();
+    });
+    variableInput.setAttribute("data-signal-business-key-variable", "true");
+    variableInput.spellcheck = false;
+    variableInput.placeholder = "orderNumber";
+    variableInput.setAttribute("aria-describedby", notes.id);
+    const names = signalThrowKeyVariableNames(callSourceDeclarations(model));
+    if (names.length > 0) {
+      const list = document.createElement("datalist");
+      list.id = `signal-business-key-suggestions-${++writableTargetSuggestionId}`;
+      names.forEach(name => {
+        const option = document.createElement("option");
+        option.value = name;
+        list.appendChild(option);
+      });
+      variableInput.setAttribute("list", list.id);
+      variableInput.parentNode.appendChild(list);
+    }
+    attachInspectorHelp(variableInput, "signal-throw-business-key-variable",
+      "A declared single string variable holding the business key of the instance to reach. A throw whose variable has no value is refused. For this instance's own business key, choose the scope This instance's business key.");
+  }
+
+  // Members save refuses: those of another kind, and members no kind has. Neither has a field.
+  if (SIGNAL_SCOPE_KINDS.includes(scope.kind)) {
+    const unused = ["workflowKey", "businessKeyVariable"].filter(member =>
+      scope[member] !== undefined && scope[member] !== null && !members.includes(member));
+    if (unused.length > 0) {
+      inspector.appendChild(signalThrowWarning(
+        `This scope kind does not use ${unused.join(" or ")}, so the workflow cannot be saved.`));
+      inspector.appendChild(signalThrowButton("Remove the settings this scope does not use", () => {
+        unused.forEach(member => { delete scope[member]; });
+        renderInspector();
+        focusScope();
+      }));
+    }
+  }
+  const unknown = Object.keys(scope).filter(key => !SIGNAL_SCOPE_KNOWN_MEMBERS.includes(key));
+  if (unknown.length > 0) {
+    inspector.appendChild(signalThrowWarning(
+      `signal.scope has unknown ${unknown.length === 1 ? "member" : "members"} ` +
+      `${unknown.map(key => `'${key}'`).join(", ")}, so the workflow cannot be saved.`));
+    inspector.appendChild(signalThrowButton("Remove unknown scope members", () => {
+      unknown.forEach(key => { delete scope[key]; });
+      renderInspector();
+      focusScope();
+    }));
+  }
+}
+
+function renderSignalThrowPayload(signal, notes, refreshStatus) {
+  const focusAdd = () => inspector.querySelector("[data-signal-add-payload]")?.focus();
+  const title = document.createElement("h2");
+  title.textContent = "Payload";
+  title.style.marginTop = "16px";
+  inspector.appendChild(title);
+  attachInspectorHelp(title, "signal-throw-payload", [
+    "Each entry sends one member of the payload: a whole declared instance variable, this instance's ID, or its business key. A receiving mapping reads the member by its name.",
+    "A required entry whose value is missing or null refuses the throw; an optional one is left out. Shared variables cannot be sent.",
+    "Signal administrators can read every broadcast's payload on the Signals page, even without access to this instance, so never send a secret."
+  ]);
+
+  const payload = signal.payload;
+  if (payload !== undefined && payload !== null && !Array.isArray(payload)) {
+    inspector.appendChild(signalThrowWarning("This imported payload value is not a list, so it cannot be edited here."));
+    inspector.appendChild(signalThrowButton("Replace it with an empty list", () => {
+      signal.payload = [];
+      renderInspector();
+      focusAdd();
+    }));
+    return;
+  }
+
+  const entries = Array.isArray(payload) ? payload : [];
+  if (entries.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "empty-note";
+    empty.textContent = "No payload entries, so the signal carries no payload.";
+    inspector.appendChild(empty);
+  }
+  const declarations = callSourceDeclarations(model);
+  const valueOptions = [{ value: "", label: "Choose a value" }];
+  for (const list of declarations.values()) {
+    if (list.some(item => item.isShared)) continue;
+    const first = list[0];
+    valueOptions.push({
+      value: "variable:" + first.name,
+      label: `${first.name} (${String(first.dataType || "json")}${first.isArray ? "[]" : ""})`
+    });
+  }
+  valueOptions.push({ value: "source:instanceId", label: "This instance's ID" });
+  valueOptions.push({ value: "source:businessKey", label: "This instance's business key" });
+
+  entries.forEach((entry, index) => {
+    const box = document.createElement("div");
+    box.className = "field inspector-card";
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.textContent = "Delete entry";
+    remove.className = "danger";
+    remove.style.width = "100%";
+    remove.onclick = () => {
+      signal.payload.splice(index, 1);
+      renderInspector();
+      focusAdd();
+    };
+    if (!isPlainSignalObject(entry)) {
+      box.appendChild(signalThrowWarning(
+        `Payload entry ${index + 1} is not an object with a name and a value, so it cannot be edited here.`));
+      box.appendChild(remove);
+      inspector.appendChild(box);
+      return;
+    }
+
+    const nameInput = signalThrowControl(box, "Name in the payload", "input",
+      "data-signal-payload-name", String(index));
+    nameInput.value = signalInspectorText(entry.name);
+    nameInput.placeholder = "reason";
+    nameInput.setAttribute("aria-describedby", notes.id);
+    nameInput.oninput = () => {
+      entry.name = nameInput.value;
+      refreshStatus();
+    };
+
+    const options = valueOptions.slice();
+    const variable = entry.variable;
+    const source = entry.source;
+    let current = "";
+    if (variable !== undefined && variable !== null && variable !== "") {
+      const match = typeof variable === "string" ? options.find(option =>
+        option.value.startsWith("variable:") &&
+        option.value.slice("variable:".length).toLowerCase() === variable.toLowerCase()) : null;
+      if (match) {
+        current = match.value;
+      } else {
+        const declared = typeof variable === "string" ? declarations.get(variable.toLowerCase()) : null;
+        current = "variable:" + signalInspectorText(variable);
+        options.push({
+          value: current,
+          label: signalInspectorText(variable) +
+            (declared && declared.some(item => item.isShared) ? " (shared variable)" : " (not declared)")
+        });
+      }
+    } else if (source !== undefined && source !== null && source !== "") {
+      current = "source:" + signalInspectorText(source);
+      if (!options.some(option => option.value === current)) {
+        options.push({ value: current, label: signalInspectorText(source) + " (unsupported imported source)" });
+      }
+    }
+    const valueSelect = signalThrowControl(box, "Value", "select", "data-signal-payload-value", String(index));
+    setSignalThrowOptions(valueSelect, options, current);
+    valueSelect.setAttribute("aria-describedby", notes.id);
+    // Choosing a value keeps the entry's one value member; a variable also names an unnamed entry.
+    valueSelect.onchange = () => {
+      const value = valueSelect.value;
+      if (value.startsWith("variable:")) {
+        const name = value.slice("variable:".length);
+        entry.variable = name;
+        delete entry.source;
+        if ((typeof entry.name !== "string" || trimAttributeKey(entry.name) === "") &&
+            SIGNAL_PAYLOAD_NAME_PATTERN.test(name)) {
+          entry.name = name;
+          nameInput.value = name;
+        }
+      } else if (value.startsWith("source:")) {
+        entry.source = value.slice("source:".length);
+        delete entry.variable;
+      } else {
+        delete entry.variable;
+        delete entry.source;
+      }
+      refreshStatus();
+    };
+
+    box.appendChild(variableCheckbox("Required", entry.required === true, checked => {
+      if (checked) entry.required = true;
+      else delete entry.required;
+      refreshStatus();
+    }));
+
+    // An imported entry can name both; Value shows the variable, so the source is named here.
+    const hasVariable = variable !== undefined && variable !== null && variable !== "";
+    const hasSource = source !== undefined && source !== null && source !== "";
+    if (hasVariable && hasSource) {
+      box.appendChild(signalThrowWarning(
+        `Payload entry ${index + 1} also names the source '${signalInspectorText(source)}', ` +
+        "but an entry sends either a variable or a source, so the workflow cannot be saved."));
+      box.appendChild(signalThrowButton("Remove the source", () => {
+        delete entry.source;
+        renderInspector();
+        inspector.querySelector(`[data-signal-payload-value="${index}"]`)?.focus();
+      }, "data-signal-payload-remove-source"));
+    }
+
+    const unknown = Object.keys(entry).filter(key => !SIGNAL_PAYLOAD_KNOWN_MEMBERS.includes(key));
+    if (unknown.length > 0) {
+      box.appendChild(signalThrowWarning(
+        `Payload entry ${index + 1} has unknown ${unknown.length === 1 ? "member" : "members"} ` +
+        `${unknown.map(key => `'${key}'`).join(", ")}, so the workflow cannot be saved.`));
+      box.appendChild(signalThrowButton("Remove unknown members", () => {
+        unknown.forEach(key => { delete entry[key]; });
+        renderInspector();
+        inspector.querySelector(`[data-signal-payload-name="${index}"]`)?.focus();
+      }));
+    }
+    box.appendChild(remove);
+    inspector.appendChild(box);
+  });
+
+  inspector.appendChild(signalThrowButton("+ Add payload entry", () => {
+    if (!Array.isArray(signal.payload)) signal.payload = [];
+    signal.payload.push({ name: "" });
+    renderInspector();
+    inspector.querySelector(`[data-signal-payload-name="${signal.payload.length - 1}"]`)?.focus();
+  }, "data-signal-add-payload"));
+}
+
 // Save refuses a signal configuration on any other node type, so this is the way to remove one
 // that an import kept, such as on a call.
 function renderMisplacedSignal(node) {
@@ -5595,7 +6098,15 @@ function renderMisplacedSignal(node) {
   remove.type = "button";
   remove.textContent = "Remove this signal";
   remove.style.marginTop = "8px";
-  remove.onclick = () => { delete node.signal; renderInspector(); };
+  // The redraw removes this button, so focus moves to the node's heading and stays in the editor.
+  remove.onclick = () => {
+    delete node.signal;
+    renderInspector();
+    const heading = inspector.querySelector("h2");
+    if (!heading) return;
+    heading.tabIndex = -1;
+    heading.focus();
+  };
   inspector.appendChild(remove);
 }
 
@@ -11923,6 +12434,7 @@ function validateModelForSave(candidate) {
   validateSaveTimerCatches(ctx);
   validateSaveConditionalEvents(ctx);
   validateSaveSignalEvents(ctx);
+  validateSaveSignalThrows(ctx);
   validateSaveMessageStarts(ctx);
   validateSaveEntries(ctx);
   validateSaveEndEvents(ctx);
@@ -14480,9 +14992,13 @@ const SIGNAL_NAME_PATTERN = /^[a-z0-9][a-z0-9._-]{0,99}$/;
 const SIGNAL_NAME_RULE =
   "1 to 100 lowercase letters, digits, '.', '_', or '-', starting with a letter or digit";
 const SIGNAL_MAX_OUTPUT_MAPPINGS = 100;
+// Mirrors SignalEventRules.Label.
 function signalEventLabel(node) {
-  return (node && node.type === "signalBoundaryEvent" ? "Signal boundary event #" : "Signal catch event #") +
-    String(node && node.id);
+  const type = node && node.type;
+  return (type === "signalBoundaryEvent" ? "Signal boundary event #"
+    : type === "intermediateSignalThrowEvent" ? "Signal throw event #"
+    : type === "signalEndEvent" ? "Signal end event #"
+    : "Signal catch event #") + String(node && node.id);
 }
 // Mirrors SignalEventRules.BoundaryNameProblems, in its order: by boundary id, a later signal
 // boundary repeating an earlier one's name on the same host, then a boundary repeating its
@@ -14570,6 +15086,11 @@ function validateSaveSignalEvents(ctx) {
     if (mappings.length > SIGNAL_MAX_OUTPUT_MAPPINGS) {
       errors.push(label + " defines more than " + SIGNAL_MAX_OUTPUT_MAPPINGS + " output mappings.");
     }
+    // Mirrors RejectThrowSettingsOnWait: a wait's scope or payload would be ignored.
+    if (signal && ((signal.scope !== undefined && signal.scope !== null) ||
+        (signal.payload !== undefined && signal.payload !== null))) {
+      errors.push(label + " cannot define signal.scope or signal.payload; only signal throw and end events send a signal.");
+    }
     if (boundary) {
       // Mirrors ValidateObservableBoundary with automatic bodies refused.
       const hostId = node.attachedToRef;
@@ -14654,6 +15175,282 @@ function validateSaveSignalEvents(ctx) {
           read.name + "' in its default or validation.");
       }
     }
+  }
+}
+
+// Mirrors SignalEventRules: a payload member name has no dot, because a receiving mapping's
+// path uses dots for nesting. A JavaScript $ matches only at the end, as the server's \z does.
+const SIGNAL_PAYLOAD_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_-]{0,99}$/;
+const SIGNAL_PAYLOAD_NAME_RULE = "1 to 100 letters, digits, '_', or '-', starting with a letter or '_'";
+const SIGNAL_MAX_PAYLOAD_ENTRIES = 100;
+const SIGNAL_WORKFLOW_KEY_MAX_LENGTH = 300;
+// Mirrors SignalThrowScopeKinds: the kinds in the order the messages list them, each with the
+// members it requires. Every other member is refused for that kind.
+const SIGNAL_SCOPE_KINDS = ["thisInstance", "thisWorkflow", "workflow", "businessKey", "ownBusinessKey", "allWorkflows"];
+const SIGNAL_SCOPE_MEMBERS = new Map([
+  ["thisInstance", []],
+  ["thisWorkflow", []],
+  ["workflow", ["workflowKey"]],
+  ["businessKey", ["workflowKey", "businessKeyVariable"]],
+  ["ownBusinessKey", ["workflowKey"]],
+  ["allWorkflows", []]
+]);
+// The members the server's strict scope and payload entry models know; binding refuses others.
+const SIGNAL_SCOPE_KNOWN_MEMBERS = ["kind", "workflowKey", "businessKeyVariable"];
+const SIGNAL_PAYLOAD_KNOWN_MEMBERS = ["name", "variable", "source", "required"];
+const SIGNAL_PAYLOAD_SOURCES = ["instanceId", "businessKey"];
+function signalScopeMembers(kind) {
+  return (typeof kind === "string" && SIGNAL_SCOPE_MEMBERS.get(kind)) || [];
+}
+function isPlainSignalObject(value) {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+// Mirrors SignalEventRules.HasBusinessKeys.
+function signalThrowHasBusinessKeys(candidate) {
+  const nodes = Array.isArray(candidate && candidate.flowNodes) ? candidate.flowNodes : [];
+  return nodes.some(node => node &&
+    ["startEvent", "messageStartEvent", "timerStartEvent"].includes(node.type) && node.businessKey != null);
+}
+function signalThrowOwnKeyProblem(label) {
+  return label + " uses this instance's business key, but this workflow's entry events do not configure businessKey.";
+}
+// The problem with a literal workflow key, after the property name, or null. Trimming
+// matches .NET's Trim, which the server uses.
+function signalThrowWorkflowKeyProblem(key) {
+  if (key !== trimAttributeKey(key)) return "cannot have surrounding whitespace.";
+  if (Array.from(key).length > SIGNAL_WORKFLOW_KEY_MAX_LENGTH) {
+    return "must contain at most " + SIGNAL_WORKFLOW_KEY_MAX_LENGTH + " characters.";
+  }
+  return key.includes("${") ? "is a literal key; ${...} is not replaced." : null;
+}
+function isBlankSignalText(value) {
+  return value === undefined || value === null || (typeof value === "string" && trimAttributeKey(value) === "");
+}
+
+// What the server's binding refuses in a scope, with only a JSON path: a scope that is not an
+// object, a member its model does not know, and text members of another type.
+function signalThrowScopeShapeProblems(label, scope) {
+  if (scope === undefined || scope === null) return [];
+  if (!isPlainSignalObject(scope)) return [label + " signal.scope must be an object with a kind."];
+  const problems = [];
+  for (const key of Object.keys(scope)) {
+    if (!SIGNAL_SCOPE_KNOWN_MEMBERS.includes(key)) {
+      problems.push(label + " signal.scope has an unknown member '" + key + "'.");
+    }
+  }
+  for (const member of ["workflowKey", "businessKeyVariable"]) {
+    if (scope[member] !== undefined && scope[member] !== null && typeof scope[member] !== "string") {
+      problems.push(label + " signal.scope." + member + " must be text.");
+    }
+  }
+  return problems;
+}
+// Mirrors SignalEventRules.ScopeProblems, in its order. A value whose type binding refuses has
+// its own shape problem, so no rule repeats it.
+function signalThrowScopeRuleProblems(candidate, label, scope, declarations) {
+  if (scope !== undefined && scope !== null && !isPlainSignalObject(scope)) return [];
+  const kind = scope ? scope.kind : undefined;
+  if (!scope || typeof kind !== "string" || !SIGNAL_SCOPE_KINDS.includes(kind)) {
+    return [label + " signal.scope.kind must be " +
+      SIGNAL_SCOPE_KINDS.slice(0, -1).map(value => "'" + value + "'").join(", ") +
+      ", or '" + SIGNAL_SCOPE_KINDS[SIGNAL_SCOPE_KINDS.length - 1] + "'."];
+  }
+  const problems = [];
+  const members = signalScopeMembers(kind);
+  const key = scope.workflowKey;
+  if (members.includes("workflowKey")) {
+    if (isBlankSignalText(key)) {
+      problems.push(label + " signal.scope needs a workflowKey for kind '" + kind + "'.");
+    } else if (typeof key === "string") {
+      const keyProblem = signalThrowWorkflowKeyProblem(key);
+      if (keyProblem) problems.push(label + " signal.scope.workflowKey " + keyProblem);
+    }
+  } else if (key !== undefined && key !== null) {
+    problems.push(label + " signal.scope cannot define workflowKey for kind '" + kind + "'.");
+  }
+  const variable = scope.businessKeyVariable;
+  if (members.includes("businessKeyVariable")) {
+    if (isBlankSignalText(variable)) {
+      problems.push(label + " signal.scope needs a businessKeyVariable for kind '" + kind +
+        "'; use kind 'ownBusinessKey' for this instance's own business key.");
+    } else if (typeof variable === "string") {
+      const declared = declarations.get(variable.toLowerCase());
+      if (!declared) {
+        problems.push(label + " signal.scope.businessKeyVariable '" + variable +
+          "' is never declared or produced by this workflow.");
+      } else if (!declared.some(item => item.dataType === "string" && !item.isArray)) {
+        problems.push(label + " signal.scope.businessKeyVariable '" + variable + "' is not declared as string.");
+      } else if (declared.some(item => item.isShared)) {
+        problems.push(label + " signal.scope.businessKeyVariable '" + variable +
+          "' is a shared-variable alias, which a signal scope cannot read.");
+      }
+    }
+  } else if (variable !== undefined && variable !== null) {
+    problems.push(label + " signal.scope cannot define businessKeyVariable for kind '" + kind + "'.");
+  }
+  if (kind === "ownBusinessKey" && !signalThrowHasBusinessKeys(candidate)) {
+    problems.push(signalThrowOwnKeyProblem(label));
+  }
+  return problems;
+}
+function signalThrowScopeProblems(candidate, label, scope, declarations) {
+  return [...signalThrowScopeShapeProblems(label, scope),
+    ...signalThrowScopeRuleProblems(candidate, label, scope, declarations)];
+}
+
+// What the server's binding refuses in a payload: a payload that is not a list, an entry that
+// is not an object, a member its model does not know, and members of another type. A null
+// entry is a rule problem.
+function signalThrowPayloadShapeProblems(label, payload) {
+  if (payload === undefined || payload === null) return [];
+  if (!Array.isArray(payload)) return [label + " signal.payload must be a list."];
+  const problems = [];
+  payload.forEach((entry, index) => {
+    if (entry === undefined || entry === null) return;
+    const prefix = label + " payload entry " + String(index + 1);
+    if (!isPlainSignalObject(entry)) {
+      problems.push(prefix + " must be an object with a name and a variable or source.");
+      return;
+    }
+    for (const key of Object.keys(entry)) {
+      if (!SIGNAL_PAYLOAD_KNOWN_MEMBERS.includes(key)) {
+        problems.push(prefix + " has an unknown member '" + key + "'.");
+      }
+    }
+    for (const member of ["variable", "source"]) {
+      if (entry[member] !== undefined && entry[member] !== null && typeof entry[member] !== "string") {
+        problems.push(prefix + " " + member + " must be text.");
+      }
+    }
+    if (entry.required !== undefined && typeof entry.required !== "boolean") {
+      problems.push(prefix + " required must be true or false.");
+    }
+  });
+  return problems;
+}
+// Mirrors SignalEventRules.PayloadProblems, in its order.
+function signalThrowPayloadRuleProblems(candidate, label, payload, declarations) {
+  if (!Array.isArray(payload)) return [];
+  if (payload.length > SIGNAL_MAX_PAYLOAD_ENTRIES) {
+    return [label + " defines more than " + SIGNAL_MAX_PAYLOAD_ENTRIES + " payload entries."];
+  }
+  if (payload.some(entry => entry === undefined || entry === null)) {
+    return [label + " payload cannot contain null entries."];
+  }
+  const problems = [];
+  const names = new Set();
+  payload.forEach((entry, index) => {
+    if (!isPlainSignalObject(entry)) return;
+    const name = entry.name;
+    if (typeof name !== "string" || !SIGNAL_PAYLOAD_NAME_PATTERN.test(name)) {
+      problems.push(label + " payload entry " + String(index + 1) + " name must be " + SIGNAL_PAYLOAD_NAME_RULE + ".");
+      return;
+    }
+    // A valid name is ASCII, so lower-casing matches the server's OrdinalIgnoreCase.
+    if (names.has(name.toLowerCase())) {
+      problems.push(label + " payload sends '" + name + "' more than once.");
+      return;
+    }
+    names.add(name.toLowerCase());
+    const hasVariable = entry.variable !== undefined && entry.variable !== null && entry.variable !== "";
+    const hasSource = entry.source !== undefined && entry.source !== null && entry.source !== "";
+    if (hasVariable === hasSource) {
+      problems.push(label + " payload entry '" + name + "' must define either variable or source.");
+      return;
+    }
+    if (hasSource) {
+      if (typeof entry.source !== "string") return;
+      if (!SIGNAL_PAYLOAD_SOURCES.includes(entry.source)) {
+        problems.push(label + " payload entry '" + name + "' source must be '" +
+          SIGNAL_PAYLOAD_SOURCES[0] + "' or '" + SIGNAL_PAYLOAD_SOURCES[1] + "'.");
+      } else if (entry.source === "businessKey" && !signalThrowHasBusinessKeys(candidate)) {
+        problems.push(signalThrowOwnKeyProblem(label));
+      }
+      return;
+    }
+    if (typeof entry.variable !== "string") return;
+    const declared = declarations.get(entry.variable.toLowerCase());
+    if (!declared) {
+      problems.push(label + " payload entry '" + name + "' reads '" + entry.variable +
+        "', which is never declared or produced by this workflow.");
+    } else if (declared.some(item => item.isShared)) {
+      problems.push(label + " payload entry '" + name + "' reads shared-variable alias '" + entry.variable +
+        "', which a signal payload cannot read.");
+    }
+  });
+  return problems;
+}
+function signalThrowPayloadProblems(candidate, label, payload, declarations) {
+  return [...signalThrowPayloadShapeProblems(label, payload),
+    ...signalThrowPayloadRuleProblems(candidate, label, payload, declarations)];
+}
+// A throw to this instance that no catch or boundary in the definition waits for.
+function signalThrowWaitProblem(candidate, label, signal) {
+  if (!isPlainSignalObject(signal) || !isPlainSignalObject(signal.scope) ||
+      signal.scope.kind !== "thisInstance") {
+    return null;
+  }
+  const name = signal.name;
+  if (typeof name !== "string" || !SIGNAL_NAME_PATTERN.test(name)) return null;
+  const nodes = Array.isArray(candidate && candidate.flowNodes) ? candidate.flowNodes : [];
+  const waited = nodes.some(node => node &&
+    (node.type === "intermediateSignalCatchEvent" || node.type === "signalBoundaryEvent") &&
+    isPlainSignalObject(node.signal) && node.signal.name === name);
+  return waited ? null : label + " throws '" + name +
+    "' to this instance, but no signal catch or boundary event in this workflow waits for it.";
+}
+
+// Mirrors ValidateSignalThrow and SignalEventRules.ThrowProblems, in the server's order for each
+// event after the values its binding refuses: a throw's outgoing count, the name, a throw's
+// incoming flow and outgoing flow's metadata, then the mappings, the scope, the payload, and a
+// throw to this instance that nothing waits for. An end event's topology is validateSaveEndEvents'.
+function validateSaveSignalThrows(ctx) {
+  const errors = ctx.errors;
+  const throwEvents = ctx.nodes.filter(candidate => candidate &&
+    (candidate.type === "intermediateSignalThrowEvent" || candidate.type === "signalEndEvent"));
+  if (throwEvents.length === 0) return;
+  const declarations = callSourceDeclarations(ctx.candidate);
+  for (const node of throwEvents) {
+    const isThrow = node.type === "intermediateSignalThrowEvent";
+    const label = signalEventLabel(node);
+    const configured = node.signal !== undefined && node.signal !== null;
+    const signal = isPlainSignalObject(node.signal) ? node.signal : null;
+    if (configured && !signal) {
+      errors.push(label + " signal must be an object with a name, a scope, and an optional payload.");
+    }
+    if (signal) {
+      const mappings = signal.outputMappings;
+      if (mappings !== undefined && mappings !== null && !Array.isArray(mappings)) {
+        errors.push(label + " signal.outputMappings must be a list.");
+      }
+      errors.push(...signalThrowScopeShapeProblems(label, signal.scope));
+      errors.push(...signalThrowPayloadShapeProblems(label, signal.payload));
+    }
+    const incoming = ctx.incomingFor(node.id);
+    const outgoing = ctx.outgoingFor(node.id);
+    if (isThrow && outgoing.length !== 1) {
+      errors.push(label + " must have exactly one outgoing sequence flow.");
+    }
+    if (!configured || signal) {
+      const nameProblem = signalNameProblem(signal ? signal.name : undefined, label);
+      if (nameProblem) errors.push(nameProblem);
+    }
+    if (isThrow) {
+      if (incoming.length === 0) errors.push(label + " must have at least one incoming sequence flow.");
+      if (outgoing.length === 1 &&
+          (hasUnsupportedPassThroughMetadata(outgoing[0]) || outgoing[0].conditionPriority != null)) {
+        errors.push(label + " must have one unconditional outgoing sequence flow without " +
+          "user-action or multi-instance metadata.");
+      }
+    }
+    if (!signal) continue;
+    if (Array.isArray(signal.outputMappings) && signal.outputMappings.length > 0) {
+      errors.push(label + " cannot define output mappings; it sends signal.payload.");
+    }
+    errors.push(...signalThrowScopeRuleProblems(ctx.candidate, label, signal.scope, declarations));
+    errors.push(...signalThrowPayloadRuleProblems(ctx.candidate, label, signal.payload, declarations));
+    const waitProblem = signalThrowWaitProblem(ctx.candidate, label, signal);
+    if (waitProblem) errors.push(waitProblem);
   }
 }
 
@@ -14773,7 +15570,7 @@ function validateSaveEndEvents(ctx) {
   const flows = ctx.flows;
   for (const node of nodes.filter(node => node &&
       (node.type === "endEvent" || node.type === "errorEndEvent" ||
-       node.type === "terminateEndEvent"))) {
+       node.type === "terminateEndEvent" || node.type === "signalEndEvent"))) {
     if (!flows.some(flow => flow && flow.targetRef === node.id)) {
       errors.push("End event #" + node.id + " must have at least one incoming sequence flow.");
     }
@@ -14854,9 +15651,9 @@ const supportedNodeTypes = new Set([
   "startEvent", "messageStartEvent", "timerStartEvent", "userTask", "task", "serviceTask",
   "scriptTask", "callActivity", "exclusiveGateway", "parallelGateway", "inclusiveGateway",
   "complexGateway", "scopedInterruptEvent", "endEvent", "terminateEndEvent",
-  "errorEndEvent", "errorBoundaryEvent", "timerBoundaryEvent", "conditionalBoundaryEvent",
+  "errorEndEvent", "signalEndEvent", "errorBoundaryEvent", "timerBoundaryEvent", "conditionalBoundaryEvent",
   "signalBoundaryEvent", "intermediateMessageCatchEvent", "intermediateTimerCatchEvent",
-  "intermediateConditionalCatchEvent", "intermediateSignalCatchEvent",
+  "intermediateConditionalCatchEvent", "intermediateSignalCatchEvent", "intermediateSignalThrowEvent",
   "intermediateLinkThrowEvent", "intermediateLinkCatchEvent"
 ]);
 function validateSaveNodeTypes(ctx) {
@@ -14884,8 +15681,8 @@ function validateSaveNodeTypes(ctx) {
       errors.push("Flow node #" + String(node.id) +
         " can define conditional only when its type is a conditional catch or boundary event.");
     }
-    if (node.type !== "intermediateSignalCatchEvent" && node.type !== "signalBoundaryEvent" &&
-        node.signal != null) {
+    if (!["intermediateSignalCatchEvent", "signalBoundaryEvent", "intermediateSignalThrowEvent",
+        "signalEndEvent"].includes(node.type) && node.signal != null) {
       errors.push("Flow node #" + String(node.id) + " defines signal but is not a signal event.");
     }
   }
@@ -15631,8 +16428,10 @@ function prepareWorkflowExport(candidate = model) {
     if (isConditionalEventType(node.type) && node.conditional != null) {
       node.conditional = normalizeConditionalDefinition(node.conditional);
     }
-    if (isSignalEventType(node.type) && node.signal != null) {
+    if (isSignalWaitType(node.type) && node.signal != null) {
       node.signal = normalizeSignalDefinition(node.signal, exportModel.variables);
+    } else if (throwsSignalType(node.type) && node.signal != null) {
+      node.signal = normalizeSignalThrowDefinition(node.signal);
     }
     if (isScriptTaskType(node.type)) {
       node.scriptFormat = canonicalizeKnownValue(
@@ -16062,8 +16861,12 @@ function normalizeLoadedModel(obj) {
           ? normalizeMessage(s.message, isMessageStartEventType(s.type), loadedProcessVariables) : undefined,
         conditional: ["intermediateConditionalCatchEvent", "conditionalBoundaryEvent"].includes(s.type)
           ? normalizeConditionalDefinition(s.conditional) : undefined,
-        signal: isSignalEventType(s.type)
-          ? normalizeSignalDefinition(s.signal, loadedProcessVariables) : undefined,
+        // A wait and a throw each normalize their own form; neither crosses into the other.
+        signal: isSignalWaitType(s.type)
+          ? normalizeSignalDefinition(s.signal, loadedProcessVariables)
+          : throwsSignalType(s.type)
+            ? normalizeSignalThrowDefinition(s.signal == null ? s.signal : JSON.parse(JSON.stringify(s.signal)))
+            : undefined,
         // Keep every non-null value on any node type, as authored: an invalid one stays
         // visible and fails save, and a default is never invented for it.
         callActivity: s.callActivity == null
@@ -16184,6 +16987,22 @@ function normalizeSignalDefinition(value, processVariables = []) {
         ? mappings.map(mapping => normalizeTypedOutputMapping(mapping, processVariables, true))
         : mappings
   };
+}
+// A throw's or end event's signal keeps its name, scope, and payload as authored, including
+// members and values save refuses, so the inspector can show them and offer their removal. An
+// empty or null outputMappings goes; any other value stays for save validation to report. Other
+// members of signal go too, as the server's model ignores them. It changes the object in place,
+// so an inspector drawn from it keeps editing the node's own signal.
+function normalizeSignalThrowDefinition(value) {
+  if (value === undefined || value === null) return value;
+  if (typeof value !== "object" || Array.isArray(value)) return value;
+  for (const key of Object.keys(value)) {
+    if (!["name", "scope", "payload", "outputMappings"].includes(key)) delete value[key];
+  }
+  if (value.name === undefined) value.name = "";
+  const mappings = value.outputMappings;
+  if (mappings === null || (Array.isArray(mappings) && mappings.length === 0)) delete value.outputMappings;
+  return value;
 }
 
 function loadFromObject(obj) {

@@ -664,6 +664,8 @@ public sealed class UserTaskRoleManagementServiceTests(PostgresApiFixture fixtur
         }
 
         public void DiscardChanges() => inner.DiscardChanges();
+
+        public void AfterCommit(Action callback) => inner.AfterCommit(callback);
     }
 
     private sealed class FaultingTransaction(IWorkflowTransaction inner, FaultState state) : IWorkflowTransaction

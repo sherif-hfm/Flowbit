@@ -129,7 +129,7 @@ public sealed partial class WorkflowEngineService
         {
             await WriteAutomaticErrorTargetAsync(instance, definition, node, boundary, token.CurrentNodeExecutionId,
                 actor, failureCode, executionId, cancellationToken);
-            await ResumeForVariableChangesAsync(instance, actor, cancellationToken);
+            await ResumeConditionalWaitsAsync(instance, actor, token.AutomaticActivationCount, cancellationToken);
             if (!IsSameRunnableActivation(token,
                     await runtime.GetExecutionTokenAsync(token.Id, false, cancellationToken))) return false;
         }
@@ -285,8 +285,13 @@ public sealed partial class WorkflowEngineService
         var flowInfo = await LoadSequenceFlowInfoAsync(instance.Id, definition, cancellationToken);
         var queue = new Queue<long>();
         var durable = new HashSet<long>();
+        // The body's writes continue the body token's automatic chain, so a loop through a
+        // conditional event that they wake is counted (EVENT-04B).
+        var chainCount = plan.EventsByNodeId.Count == 0 ? 0
+            : (await runtime.GetExecutionTokenAsync(body.TokenId, false, cancellationToken))
+                ?.AutomaticActivationCount ?? 0;
         await DrainConditionalVariableChangesAsync(instance, definition, plan, actor,
-            overlay, flowInfo, queue, durable, 10_000, cancellationToken);
+            overlay, flowInfo, queue, durable, 10_000, cancellationToken, chainCount);
         while (queue.TryDequeue(out var tokenId))
         {
             if (!await IsInstanceRunningAsync(instance.Id, cancellationToken)) break;

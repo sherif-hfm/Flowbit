@@ -1,4 +1,9 @@
-.signal-status-filter { width: min(15rem, 100%); }
+.signal-status-filter, .signal-thrower-filter { width: min(15rem, 100%); }
+/* Two filters do not fit beside the heading on a phone, so the row wraps instead of truncating them. */
+.signal-history-heading { flex-wrap: wrap; }
+.signal-history-filters { display: flex; flex-wrap: wrap; gap: .5rem; }
+/* A fixed width lets both fit side by side when there is room; a percentage would size them by the group. */
+.signal-history-filters .form-select { width: 15rem; max-width: 100%; }
 .signal-reason-input { width: min(28rem, 100%); }
 .signal-scope, .signal-match-line { overflow-wrap: anywhere; }
 .signal-review-payload { max-height: 12rem; overflow: auto; white-space: pre-wrap; word-break: break-word; font-size: .85rem; }

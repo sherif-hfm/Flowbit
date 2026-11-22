@@ -2,7 +2,7 @@
 
 [Documentation home](index.md) · [BPMN behavior](bpmn-support.md) · [Developer guide](developer-guide.md) · [Example catalog](../examples/README.md)
 
-Use this reference when choosing a task, event, or gateway and authoring its Flowbit JSON properties. It covers all **26 supported node types**, their shared and nested configuration, and the sequence flows that supply actions and routing. For execution semantics across a whole process, read [BPMN support](bpmn-support.md); for HTTP requests, read the [API reference](api-guide.md).
+Use this reference when choosing a task, event, or gateway and authoring its Flowbit JSON properties. It covers all **28 supported node types**, their shared and nested configuration, and the sequence flows that supply actions and routing. For execution semantics across a whole process, read [BPMN support](bpmn-support.md); for HTTP requests, read the [API reference](api-guide.md).
 
 The tables describe current authoring contracts and effective defaults. **Required** means needed for that configuration to work and pass validation; **conditional** means required only in the stated situation. Omit optional properties that do not apply to the selected type. The model uses one shared node class: a property existing on that class does not make it meaningful on every node. Some irrelevant legacy fields are cleared during normalization, while explicitly invalid combinations are rejected. Do not rely on normalization to repair newly authored definitions.
 
@@ -46,6 +46,7 @@ JSON blocks below are **fragments**, not standalone workflows, unless stated oth
 | Catch | [intermediateTimerCatchEvent](#intermediatetimercatchevent) | Wait for a scheduled trigger. |
 | Catch | [intermediateConditionalCatchEvent](#intermediateconditionalcatchevent) | Wait for a persisted-variable condition. |
 | Catch | [intermediateSignalCatchEvent](#intermediatesignalcatchevent) | Wait for a signal broadcast with its name. |
+| Throw | [intermediateSignalThrowEvent](#intermediatesignalthrowevent) | Broadcast a signal to a stated scope and continue. |
 | Link | [intermediateLinkThrowEvent](#intermediatelinkthrowevent) | "Go to" the link catch event with the same name. |
 | Link | [intermediateLinkCatchEvent](#intermediatelinkcatchevent) | Continue here from every link throw event with the same name. |
 | Boundary | [errorBoundaryEvent](#errorboundaryevent) | Handle an attached service, script, or call failure. |
@@ -56,6 +57,7 @@ JSON blocks below are **fragments**, not standalone workflows, unless stated oth
 | End | [endEvent](#endevent) | Complete this token. |
 | End | [terminateEndEvent](#terminateendevent) | Complete the instance and cancel its remaining work. |
 | End | [errorEndEvent](#errorendevent) | Fault the instance and cancel its remaining work. |
+| End | [signalEndEvent](#signalendevent) | Complete this token and broadcast a signal. |
 | Gateway | [exclusiveGateway](#exclusivegateway) | Choose one branch or merge arrivals without synchronization. |
 | Gateway | [parallelGateway](#parallelgateway) | Start all branches or synchronize all static inputs. |
 | Gateway | [inclusiveGateway](#inclusivegateway) | Start matching branches or merge using reachability. |
@@ -773,7 +775,7 @@ Declare persisted instance variable `approved`. Timer, conditional, and signal b
 
 ### intermediateSignalCatchEvent
 
-Persists a wait for a named signal. A signal is thrown through `POST /api/signal-broadcasts`, never by a workflow in this release, and reaches every signal catch that is waiting for its name, in one workflow family or in all of them, when it is thrown. The Worker then delivers it to each waiting token: the catch maps the broadcast's JSON payload into variables and continues through its outgoing flow. Use it when many instances must react to one announcement, such as a changed policy; use an [intermediate message catch](#intermediatemessagecatchevent) for something that must not be missed. A throw can still be limited to the instance with one business key, or to one instance ([signal scope](developer-guide.md#limit-a-signal-to-one-case)).
+Persists a wait for a named signal. A signal is thrown through `POST /api/signal-broadcasts`, or by a workflow's [signal throw](#intermediatesignalthrowevent) or [signal end event](#signalendevent), and reaches every signal catch that is waiting for its name, in one workflow family or in all of them, when it is thrown. The Worker then delivers it to each waiting token: the catch maps the broadcast's JSON payload into variables and continues through its outgoing flow. Use it when many instances must react to one announcement, such as a changed policy; use an [intermediate message catch](#intermediatemessagecatchevent) for something that must not be missed. A throw can still be limited to the instance with one business key, or to one instance ([signal scope](developer-guide.md#limit-a-signal-to-one-case)).
 
 **Topology:** at least one incoming flow; exactly one unconditional outgoing flow. **Worker:** required, and the definition publishes only when durable publication is enabled.
 
@@ -799,12 +801,49 @@ The example assumes `policyVersion` is undeclared or a declared scalar `number` 
 
 - **When it waits.** A token that arrives on the catch creates a signal subscription for that visit and rests there. The subscription ends in the same transaction as the wait: when a signal is delivered, when an attached boundary interrupts the catch, or when the instance or the token's branch is cancelled. A loop that returns to the catch subscribes again for the new visit.
 - **What it receives.** A throw freezes its recipients when it runs, so a catch reached after the throw does not receive it, and a signal is not stored for later waits. One broadcast advances one wait: when a catch is followed by another catch of the same name, the second subscribes after the first was delivered, and the same broadcast does not reach it.
-- **Delivery.** The delivery runs as the fixed system actor `signal`, with no roles or claims. It writes the mapped values on the catch's visit, lets conditional events observe them, and then follows the outgoing flow if the token is still waiting. History records a `signalReceived` row whose payload names the broadcast, the signal, and its thrower; the catch's visit completes with reason `signalReceived`, and the outgoing flow's traversal evidence has kind `signalCatch`. Routing after the catch runs in the Worker, so a later service or script task becomes a durable job of its own.
+- **Delivery.** The delivery runs as the fixed system actor `signal`, with no roles or claims. It writes the mapped values on the catch's visit, lets conditional events observe them, and then follows the outgoing flow if the token is still waiting. History records a `signalReceived` row whose payload names the broadcast, the signal, and its thrower, with `thrownByInstanceId` and `thrownByNodeId` when a workflow threw it; the catch's visit completes with reason `signalReceived`, and the outgoing flow's traversal evidence has kind `signalCatch`. Routing after the catch runs in the Worker, so a later service or script task becomes a durable job of its own.
 - **Failures.** A payload that fails a mapping fails only that delivery with `signal_payload_invalid`, writes nothing, and leaves the catch waiting and subscribed.
 - **Boundaries.** Timer, conditional, and [signal](#signalboundaryevent) boundaries may attach, for example to stop waiting after seven days; see [boundary host rules](#boundary-host-rules). A signal boundary on the catch must use another signal name than the catch. A conditional boundary that the mapped values make true can take the token before the catch continues.
 - **Other settings.** Only the [common node properties](#common-node-properties) and `signal` are accepted. Task, role, variable, timer, conditional, message, async, job, and multi-instance settings are rejected, as is `signal` on any other node type.
 
 See [signals](bpmn-support.md#signals), [broadcasting signals](developer-guide.md#broadcast-signals), and the [signal catch example](../examples/signals/01-signal-catch-policy-change.json).
+
+### intermediateSignalThrowEvent
+
+Throws a signal from the workflow and continues at once. When a token reaches the event, it creates the same broadcast that `POST /api/signal-broadcasts` creates, with its `signal.name`, the recipients its `signal.scope` names, and an optional payload copied from the instance, and then follows its one outgoing flow without waiting for the deliveries. A running Worker delivers the signal to every waiting [signal catch](#intermediatesignalcatchevent) and every [signal boundary](#signalboundaryevent) with that name on an active host in the scope, including other waits of the throwing instance. Use it when one part of a process announces something that other work must react to, such as a cancelled order that stops the shipment branch of the same order, or a decision that stops the work of another workflow. To throw as a branch ends, use a [signal end event](#signalendevent).
+
+**Topology:** at least one incoming flow; exactly one unconditional outgoing flow, with no condition, default flag, priority, roles, inputs, claim bypass, or multi-instance outcome settings. **Worker:** required for the deliveries, and the definition publishes only when durable publication is enabled.
+
+| Property | Type | Required / default | Meaning and constraints |
+| --- | --- | --- | --- |
+| `signal` | [signal configuration](#signal-configuration) | Required | The literal signal name, the required [`scope`](#signal-scope), and an optional [`payload`](#signal-payload). `outputMappings` must be missing or empty. |
+
+```json
+{
+  "id": 9,
+  "name": "Announce the cancellation",
+  "type": "intermediateSignalThrowEvent",
+  "signal": {
+    "name": "orders.cancelled",
+    "scope": { "kind": "thisInstance" },
+    "payload": [
+      { "name": "reason", "variable": "cancelReason", "required": true },
+      { "name": "orderInstance", "source": "instanceId" }
+    ]
+  }
+}
+```
+
+The example assumes the workflow declares or produces `cancelReason`, and that one of its signal catch or boundary events waits for `orders.cancelled`, which the scope `thisInstance` requires.
+
+- **When it throws.** In its own routing step, inside the transaction that moved the token there. The throw locks no other instance and waits for none: it freezes the matching signal waits that are active at that moment and queues their delivery jobs, then the token continues. The broadcast commits or rolls back with the step, so a step that fails later leaves no broadcast, and a retried job throws once. [Which waits receive it](#which-waits-a-thrown-signal-reaches) explains the waits of the throwing instance.
+- **After the throw.** The token never waits for a delivery, and no delivery failure reaches the throwing instance. The broadcast outlives its thrower: cancelling, ending, or faulting the instance afterwards does not cancel it. It is listed, cancelled, and retried on the **Signals** page and the [broadcast routes](api-guide.md#signals) like one thrown through the API, with this instance and node as its thrower.
+- **Records.** History records the advance from the throw to the next node with note `signalThrown`; its payload holds `broadcastId`, `signalName`, `eventNodeId`, `eventKind` `throw`, `scopeKind`, `workflowKey` (the target family, null for all workflows), and `recipientCount`, never a business key or a payload value. The visit completes with reason `normal`, and the outgoing flow's traversal evidence has kind `signalThrown`, with no action. A receiving instance's `signalReceived` row names the throwing instance and node as `thrownByInstanceId` and `thrownByNodeId`, and the receiver continues as the fixed system actor `signal`.
+- **Refusals.** A throw that cannot be built, or that a limit stops, fails its step; it is never dropped. See [refused throws](#refused-signal-throws).
+- **Versions and reactivation.** No token rests on the event, so a version change that alters its name, scope, or payload adds no blocker and applies to the next token that enters it. A token that passes the event again, for example after a reactivation or in a loop, throws again.
+- **Other settings.** Only the [common node properties](#common-node-properties) and `signal` are accepted. Task, role, variable, timer, conditional, message, async, job, and multi-instance settings are rejected, and no boundary can attach to the event.
+
+See [signals](bpmn-support.md#signals), [throwing a signal from a workflow](developer-guide.md#throw-a-signal-from-a-workflow), and the [order cancellation example](../examples/signals/03-signal-throw-order-cancellation.json).
 
 ### intermediateLinkThrowEvent
 
@@ -1001,7 +1040,7 @@ Declare persisted instance variable `riskScore`. In one matching batch, non-inte
 
 ### signalBoundaryEvent
 
-Listens for a named signal while its host is active. A signal thrown through `POST /api/signal-broadcasts` reaches every signal boundary with its name whose host is active in the chosen scope when it is thrown, as it reaches waiting [signal catches](#intermediatesignalcatchevent). An interrupting boundary ends the host and takes the boundary route; a non-interrupting one starts a new branch for each signal while the host carries on. Use it when an announcement must reach work in progress, such as a product recall that stops a shipment, or a price update that adds a step beside it.
+Listens for a named signal while its host is active. A signal thrown through `POST /api/signal-broadcasts`, or by a [signal throw](#intermediatesignalthrowevent) or [signal end event](#signalendevent), reaches every signal boundary with its name whose host is active in the chosen scope when it is thrown, as it reaches waiting [signal catches](#intermediatesignalcatchevent). An interrupting boundary ends the host and takes the boundary route; a non-interrupting one starts a new branch for each signal while the host carries on. Use it when an announcement must reach work in progress, such as a product recall that stops a shipment, or a price update that adds a step beside it.
 
 **Topology:** no incoming flows; exactly one unconditional outgoing flow. **Worker:** required, and the definition publishes only when durable publication is enabled.
 
@@ -1105,6 +1144,41 @@ Faults the instance with a stable authored code and optional public description,
 ```
 
 See the [REST error-boundary/error-end example](../examples/service-tasks/02-rest-error-boundary-and-error-end.json).
+
+### signalEndEvent
+
+Completes its token as an [endEvent](#endevent) does and throws a signal as it ends. The broadcast is the one an [intermediateSignalThrowEvent](#intermediatesignalthrowevent) creates, with the same `signal.name`, [`scope`](#signal-scope), and [`payload`](#signal-payload). Other branches keep running, and the instance completes after its remaining work finishes. Use it when the end of a route is the announcement, such as a recall decision that stops the shipment of one order in another workflow.
+
+**Topology:** at least one incoming flow; no outgoing flows, as for every end event. **Worker:** required for the deliveries, and the definition publishes only when durable publication is enabled.
+
+| Property | Type | Required / default | Meaning and constraints |
+| --- | --- | --- | --- |
+| `signal` | [signal configuration](#signal-configuration) | Required | The literal signal name, the required `scope`, and an optional `payload`. `outputMappings` must be missing or empty. |
+
+```json
+{
+  "id": 3,
+  "name": "Recall announced",
+  "type": "signalEndEvent",
+  "signal": {
+    "name": "warehouse.product-recall",
+    "scope": {
+      "kind": "businessKey",
+      "workflowKey": "example-signal-boundaries-recall",
+      "businessKeyVariable": "orderNumber"
+    },
+    "payload": [ { "name": "reason", "variable": "recallReason" } ]
+  }
+}
+```
+
+The example assumes the workflow declares `orderNumber` as a single `string` and declares or produces `recallReason`.
+
+- **When it throws.** When its token enters it, in the step that moves the token there: after the token's update and before the instance's completion is decided, so the instance is still running when its other waits are frozen. That is earlier than an intermediate throw, which takes a routing step of its own. An end event that a fork's flow leads straight into therefore throws in the fork's own step, before any other branch of that fork has reached its wait, and reaches none of them whatever the order of the flows; see [which waits receive it](#which-waits-a-thrown-signal-reaches).
+- **Records.** History records the row that moves the token onto the end event, then an additional row from the end event to itself with note `signalThrown` and the payload described for the [throw event](#intermediatesignalthrowevent), with `eventKind` `end`. The visit completes with reason `normalEnd`. An instance that ends here is completed and reported as one that ends at a plain end event; a call activity's child that ends here returns its result to the parent as usual.
+- **Refusals, versions, and other settings.** As for the [throw event](#intermediatesignalthrowevent): a refused throw fails the step that moved the token there ([refused throws](#refused-signal-throws)), a version change adds no blocker, and only the common node properties and `signal` are accepted.
+
+See [signals](bpmn-support.md#signals), [throwing a signal from a workflow](developer-guide.md#throw-a-signal-from-a-workflow), and the [recall decision example](../examples/signals/04-signal-end-recall-decision.json).
 
 ## Message configuration
 
@@ -1300,22 +1374,106 @@ Conditions support NCalc built-ins plus the pure string helpers `Length`, `Len`,
 
 ## Signal configuration
 
-The required `signal` object belongs only to `intermediateSignalCatchEvent` and `signalBoundaryEvent`.
+The required `signal` object belongs only to the four signal events. On `intermediateSignalCatchEvent` and `signalBoundaryEvent` it names the signal the event waits for and maps its payload; on `intermediateSignalThrowEvent` and `signalEndEvent` it names the signal the event throws, its scope, and its payload.
 
 | Property | Type | Required / default | Meaning and constraints |
 | --- | --- | --- | --- |
 | `name` | string | Required | Literal signal name: 1 to 100 lowercase ASCII letters, digits, `.`, `_`, or `-`, starting with a letter or digit (`^[a-z0-9][a-z0-9._-]{0,99}$`). It is not a template and is not trimmed; throws match it exactly. An uppercase letter is rejected. Prefer a dotted prefix, such as `claims.policy-changed`, so that unrelated workflows do not share a name by accident. |
-| `outputMappings` | [output-mapping array](#output-mappings) | Optional; `[]` | At most 100 typed mappings, in the shape message mappings use. `path` reads the broadcast's JSON payload. `dataType` and `isArray` are required: signals have no untyped legacy form. |
+| `outputMappings` | [output-mapping array](#output-mappings) | Optional; `[]` | Catch and boundary only: at most 100 typed mappings, in the shape message mappings use. `path` reads the broadcast's JSON payload. `dataType` and `isArray` are required: signals have no untyped legacy form. A throw or end event must leave it missing or empty. |
+| `scope` | [scope object](#signal-scope) | Required on a throw or end event | Which waits the thrown signal reaches. Rejected on a catch or boundary. |
+| `payload` | array of [payload entries](#signal-payload) | Optional on a throw or end event | At most 100 entries, each one member of the payload object. A missing, null, or empty list sends no payload. Rejected on a catch or boundary. |
 
 A mapping writes an instance variable: a declared instance-scoped process variable, whose type, array shape, nullability, and validation then apply, or a new instance variable that the mapping declares. It cannot write a shared-variable alias, and neither its `defaultValue` template, its `validation`, nor the validation of a targeted process variable may read one, because one broadcast would otherwise touch the same shared key from every recipient. Reserved `sys.`, `config.`, `setting.`, and `mi.` names are rejected as for other mappings.
 
 A broadcast without a payload leaves every path missing, so each mapping's default or required check applies. All mappings resolve and validate before anything is written; a failure fails that delivery with `signal_payload_invalid` and leaves the catch waiting, or the boundary listening.
 
-Validation messages start with `Signal catch event #<id>` or `Signal boundary event #<id>`, for example `Signal catch event #9 signal.name must be 1 to 100 lowercase letters, digits, '.', '_', or '-', starting with a letter or digit.` A `signal` object on another node type returns `Flow node #<id> defines signal but is not a signal event.` The boundary name rules return `Signal boundary event #15 uses signal 'warehouse.product-recall', which signal boundary event #14 on host #3 already uses.` and `Signal boundary event #14 uses signal 'claims.policy-changed', the signal its host signal catch event #9 waits for.`
+Validation messages start with `Signal catch event #<id>`, `Signal boundary event #<id>`, `Signal throw event #<id>`, or `Signal end event #<id>`, for example `Signal catch event #9 signal.name must be 1 to 100 lowercase letters, digits, '.', '_', or '-', starting with a letter or digit.` A `signal` object on another node type returns `Flow node #<id> defines signal but is not a signal event.` The boundary name rules return `Signal boundary event #15 uses signal 'warehouse.product-recall', which signal boundary event #14 on host #3 already uses.` and `Signal boundary event #14 uses signal 'claims.policy-changed', the signal its host signal catch event #9 waits for.` A catch or boundary with `scope` or `payload` returns `Signal catch event #9 cannot define signal.scope or signal.payload; only signal throw and end events send a signal.`
+
+### Signal scope
+
+A throw or end event states one of six scope kinds in `signal.scope.kind`, written from the throwing instance's point of view. Every member a kind lists is required, and no other member is allowed, so a forgotten or mistyped member is an error and never chooses other recipients.
+
+| `kind` | Members | Recipients |
+| --- | --- | --- |
+| `thisInstance` | None | The waits with the name in the throwing instance. Saving requires a signal catch or boundary event with the same name in the definition. |
+| `thisWorkflow` | None | The waits with the name in every instance of the throwing instance's workflow family, in every version. |
+| `workflow` | `workflowKey` | The waits with the name in every instance of that family. |
+| `businessKey` | `workflowKey`, `businessKeyVariable` | The waits with the name in the instance of that family whose [business key](#business-key-configuration) is the variable's value. |
+| `ownBusinessKey` | `workflowKey` | The waits with the name in the instance of that family whose business key is the throwing instance's own. |
+| `allWorkflows` | None | Every wait with the name, in every family. |
+
+- **`kind`.** Compared exactly; a missing scope, a missing kind, or another value, such as `ThisInstance`, returns `Signal throw event #7 signal.scope.kind must be 'thisInstance', 'thisWorkflow', 'workflow', 'businessKey', 'ownBusinessKey', or 'allWorkflows'.` A member the model does not know, such as a misspelled `businesKeyVariable`, fails binding with its JSON path in the `{"error": ...}` body; the editor names the member before the request is sent.
+- **`workflowKey`.** A literal family key: no surrounding white space, at most 300 characters, and no `${...}`, which is not replaced. It may be the definition's own key, but prefer `thisWorkflow` for the own family: a definition copied or imported under another key would otherwise still throw to the family it was copied from. Publishing a version, creating or updating one with `publish: true`, and setting a default require every other family named here to have a definition: `Signal end event #3 throws to workflow 'shipping', which has no definition.` A draft saves without it, so two workflows that throw to each other can both be saved and then published. At run time nothing is looked up: a family without running instances, or one deleted since, simply has no waits.
+- **`businessKeyVariable`.** A variable the definition declares or produces as a single `string`, matched ignoring letter case, and not a shared-variable alias. When the event throws, its stored value is trimmed as a start trims a business key; a value that is missing, not text, blank, or longer than 300 characters refuses the throw.
+- **`ownBusinessKey`.** The definition's entry events must configure `businessKey`, or saving returns `Signal throw event #7 uses this instance's business key, but this workflow's entry events do not configure businessKey.` An instance without a key, such as one started before business keys were enabled, refuses the throw.
+- **No match.** A scope that names a family without enabled business keys, a key that no running instance has, or a family where nothing waits completes the broadcast with no deliveries; its `recipientCount` of 0 appears in the history row and on the broadcast.
+
+### Signal payload
+
+Each entry of `signal.payload` sends one member of the payload object. A receiving catch or boundary reads it through its mappings, with the entry's name as `path`.
+
+| Property | Type | Required / default | Meaning and constraints |
+| --- | --- | --- | --- |
+| `name` | string | Required | The member name: 1 to 100 letters, digits, `_`, or `-`, starting with a letter or `_` (`^[A-Za-z_][A-Za-z0-9_-]{0,99}$`), unique in the payload ignoring letter case. It has no dot, because a mapping path uses dots for nesting. |
+| `variable` | string | Exactly one of `variable` and `source` | A variable the definition declares or produces, of any type, that is not a shared-variable alias. Its stored JSON value is copied whole. |
+| `source` | string | Exactly one of `variable` and `source` | `instanceId`, the throwing instance's ID as a JSON number, or `businessKey`, its business key as text. `businessKey` needs the definition's entry events to configure `businessKey`. |
+| `required` | Boolean | Optional; `false` | When true, a variable with no value or a stored JSON null, or an instance without a business key, refuses the throw. An optional entry without a value is left out, and an optional variable holding null sends null. |
+
+A member of an entry that the model does not know fails binding, as in the scope. Values are read from the stored instance variables once, after the step's earlier writes, never from a shared variable, so a throw adds no shared key to the [lock-order proof](../Flowbit/README.md#shared-variables). An empty list sends no payload, and a list whose optional entries all have no value sends `{}`. The payload object is limited to 256 KiB, measured as PostgreSQL stores it.
+
+**Who can read a payload.** The broadcast stores the payload, and the [broadcast routes](api-guide.md#signals) and the **Signals** page return it to every user with a role from `Signals.RequiredRole`, whether or not that user can read the throwing instance; the receiving definitions read it through their mappings. Send only what the receivers need, and never a secret. Finished broadcasts are kept until the `signalBroadcasts` [retention](deployment.md#retention-and-backup) category removes them.
+
+Payload messages include `Signal throw event #7 payload entry 1 name must be 1 to 100 letters, digits, '_', or '-', starting with a letter or '_'.`, `Signal throw event #7 payload sends 'reason' more than once.`, `Signal throw event #7 payload entry 'reason' must define either variable or source.`, and `Signal throw event #7 payload entry 'reason' reads 'cancelReason', which is never declared or produced by this workflow.`
+
+### Which waits a thrown signal reaches
+
+A throw freezes its recipients in one statement, inside the transaction of the step that throws. Other instances' waits count when they are committed and active at that moment. The throwing instance's own waits count as that transaction has left them:
+
+| Wait of the throwing instance | Receives the signal? |
+| --- | --- |
+| A wait of the host the throwing token just left | No: leaving the host cancelled it earlier in the transaction. The throwing token itself is never a recipient. |
+| A wait another token has held since an earlier transaction | Yes. |
+| A wait another token reached earlier in the same routing pass | Yes. |
+| A wait a token reaches later in the same routing pass | No: it does not exist yet. Do not rely on the order in which parallel branches are routed. |
+| A wait on another branch of a fork whose flow leads straight into a signal end event | No, whatever the order of the flows: the end event throws in the fork's own step. An intermediate throw takes a step of its own, so it reaches the branches routed before it. |
+| A wait that ends later in the same transaction, for example at a terminate end event | It is frozen, and its delivery is skipped with `subscription_ended`. |
+
+**An automatic task in front of the throw.** Put a `task` with `asyncBefore: true` before a throw or end event when any of these matters. The throw then runs in a Worker job, in a transaction that starts after the earlier step has committed, so:
+
+- every wait that the earlier step created exists and receives the signal;
+- a user's action, or another request, commits even when the throw is refused, and the job retries and then opens an incident instead;
+- a throw to many recipients holds its locks in the Worker, not in a request.
+
+The [order cancellation example](../examples/signals/03-signal-throw-order-cancellation.json) needs no such task, because its shipment task has waited since an earlier transaction.
+
+### Refused signal throws
+
+A throw that cannot be built, or that a limit stops, raises an error whose message starts with the event's label, and its step fails; nothing is dropped silently, and no transaction commits part of a broadcast. No message contains a business key or a payload value.
+
+| Cause | Message after the label, for example `Signal throw event #9` |
+| --- | --- |
+| The token's chain of automatic steps and signals reached the [loop guard](developer-guide.md#guard-against-signal-loops) | `was not thrown: its chain of automatic steps and signals reached Workflow.Async.MaxConsecutiveAutomaticActivations (1000).` |
+| The business key variable has no value, is not text, is blank, or is longer than 300 characters | `cannot read a business key from variable 'orderNumber': it has no value.`, with the cause that applies |
+| The scope `ownBusinessKey`, or a required `businessKey` source, in an instance without a business key | `uses this instance's business key, but this instance has none.` |
+| A required payload variable has no value, or holds null | `cannot send payload entry 'reason': variable 'cancelReason' has no value.`, or `... is null.` |
+| The payload is larger than 256 KiB | `payload is 300000 bytes; the limit is 262144.` |
+| `Signals.MaxOpenWorkflowBroadcasts` broadcasts thrown by workflows are still delivering | `was not thrown: 10000 signal broadcasts thrown by workflows are still delivering; see Signals.MaxOpenWorkflowBroadcasts.` |
+| More waits match than `Signals.MaxSubscriptionsPerBroadcast` | `would reach more than 10000 waiting subscriptions; narrow its scope or raise Signals.MaxSubscriptionsPerBroadcast.` |
+
+What fails depends on where the step runs:
+
+| Where the throw runs | Result of a refusal |
+| --- | --- |
+| A request: a start, a user action, a delivered message, an immediate administrative action, or an administrative variable update whose values wake a conditional event | `400` with the message, and the transaction rolls back. |
+| A Worker job's continuation, such as `asyncBefore`, `asyncAfter`, a timer, a durable conditional wake, a call result, or a multi-instance completion | The job fails by its failure policy: retries where it has them, then a `job_execution_failed` incident that names the job's node; the job's failure description names the throw event. Retrying the incident runs the step again. |
+| A signal delivery whose continuation reaches the throw | The delivery fails with `signal_delivery_rejected`, and the receiving wait stays; **Retry failed** delivers it again. |
+| The start of a call activity's child | The attempt's changes are discarded and the call fails with `call_start_failed`. |
+| An item of an administrative action batch | The item's transaction rolls back and the item is `failed` with the message; other items are unaffected. |
+| An item of a variable-update batch | The item's transaction rolls back and the item is `skipped` with the message, as for any business failure in that batch; other items are unaffected. |
 
 ## Boundary host rules
 
-A `callActivity` hosts only one catch-all `errorBoundaryEvent`; timer and conditional boundaries attach to it only when it is multi-instance, and signal boundaries never. Timer, conditional, and signal boundaries attach to a normal or multi-instance `userTask`, an `intermediateMessageCatchEvent`, an `intermediateTimerCatchEvent`, an `intermediateSignalCatchEvent`, or a `task`/`serviceTask`/`scriptTask` with `asyncBefore: true`. Timer and conditional boundaries also attach to a multi-instance service or script task, which always has `asyncBefore: true`, and to a multi-instance `callActivity`; a signal boundary on any of these [multi-instance bodies](#automatic-multi-instance-properties) is rejected. A conditional catch, gateway, start, end, or another boundary is not an eligible host. A host may have at most **eight timer, conditional, and signal boundaries combined**, plus its separate error-boundary allowance when it is a service, script, or call activity.
+A `callActivity` hosts only one catch-all `errorBoundaryEvent`; timer and conditional boundaries attach to it only when it is multi-instance, and signal boundaries never. Timer, conditional, and signal boundaries attach to a normal or multi-instance `userTask`, an `intermediateMessageCatchEvent`, an `intermediateTimerCatchEvent`, an `intermediateSignalCatchEvent`, or a `task`/`serviceTask`/`scriptTask` with `asyncBefore: true`. Timer and conditional boundaries also attach to a multi-instance service or script task, which always has `asyncBefore: true`, and to a multi-instance `callActivity`; a signal boundary on any of these [multi-instance bodies](#automatic-multi-instance-properties) is rejected. A conditional catch, gateway, start, end, throw event, or another boundary is not an eligible host. A host may have at most **eight timer, conditional, and signal boundaries combined**, plus its separate error-boundary allowance when it is a service, script, or call activity.
 
 Host problems are reported with the boundary's kind, for example `Signal boundary event #14 host #3 must be a durable wait or an automatic task with asyncBefore enabled.` and `Signal boundary event #14 host #3 is a multi-instance service, script, or call activity, which signal boundaries do not support.` The limit returns `Host node #3 has 9 timer, conditional, and signal boundary events; at most 8 are allowed.` whichever kinds the nine are, and `cancelActivity` on any other node type returns `Flow node #5 defines cancelActivity but is not a timer, conditional, or signal boundary event.`
 

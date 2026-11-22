@@ -49,6 +49,9 @@ public static class SignalThrowerKinds
 {
     public const string User = "user";
     public const string Client = "client";
+
+    /// <summary>A workflow instance's signal throw or end event.</summary>
+    public const string Instance = "instance";
 }
 
 public static class SignalConstraints
@@ -106,11 +109,14 @@ public sealed record SignalRecipientCountDto(string WorkflowKey, int Count);
 /// <param name="SkippedCount">Deliveries whose wait had ended or whose instance had changed.</param>
 /// <param name="FailedCount">Deliveries that failed.</param>
 /// <param name="CancelledCount">Deliveries cancelled with the broadcast.</param>
-/// <param name="ThrownBy">The user's actor identity, or the managed client's ID.</param>
-/// <param name="ThrownByKind">user or client.</param>
+/// <param name="ThrownBy">The user's actor identity, the managed client's ID, or the throwing instance's ID as text.</param>
+/// <param name="ThrownByKind">user, client, or instance.</param>
 /// <param name="CreatedAt">When the signal was thrown.</param>
 /// <param name="UpdatedAt">The last change to the counters or status.</param>
 /// <param name="CompletedAt">When the broadcast finished or was cancelled; null while delivering.</param>
+/// <param name="ThrownByInstanceId">The throwing instance when thrownByKind is instance; otherwise null.</param>
+/// <param name="ThrownByNodeId">The throw or end event that threw the signal when thrownByKind is instance; otherwise null.</param>
+/// <param name="ThrownByNodeName">That event's name when it threw; otherwise null.</param>
 public sealed record SignalBroadcastSummaryDto(
     long Id,
     string Name,
@@ -129,7 +135,10 @@ public sealed record SignalBroadcastSummaryDto(
     string ThrownByKind,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
-    DateTimeOffset? CompletedAt);
+    DateTimeOffset? CompletedAt,
+    long? ThrownByInstanceId = null,
+    int? ThrownByNodeId = null,
+    string? ThrownByNodeName = null);
 
 /// <summary>One broadcast with its counts, thrower, payload, and recipients by workflow family.</summary>
 /// <param name="Id">The broadcast ID.</param>
@@ -145,9 +154,9 @@ public sealed record SignalBroadcastSummaryDto(
 /// <param name="SkippedCount">Deliveries whose wait had ended or whose instance had changed.</param>
 /// <param name="FailedCount">Deliveries that failed; they can be retried.</param>
 /// <param name="CancelledCount">Deliveries cancelled with the broadcast.</param>
-/// <param name="ThrownBy">The user's actor identity, or the managed client's ID.</param>
-/// <param name="ThrownByKind">user or client.</param>
-/// <param name="ThrownByRoles">The user's roles when it threw; empty for a client.</param>
+/// <param name="ThrownBy">The user's actor identity, the managed client's ID, or the throwing instance's ID as text.</param>
+/// <param name="ThrownByKind">user, client, or instance.</param>
+/// <param name="ThrownByRoles">The user's roles when it threw; empty for a client or an instance.</param>
 /// <param name="Payload">The JSON object the throw sent, or null.</param>
 /// <param name="RecipientsByWorkflowKey">Recipients per workflow family, most first, at most 50.</param>
 /// <param name="RecipientsTruncated">True when more than 50 families received the signal.</param>
@@ -157,6 +166,9 @@ public sealed record SignalBroadcastSummaryDto(
 /// <param name="UpdatedAt">The last change to the counters or status; the fence of a retry.</param>
 /// <param name="CompletedAt">When the broadcast finished or was cancelled; null while delivering.</param>
 /// <param name="CancelledAt">When it was cancelled.</param>
+/// <param name="ThrownByInstanceId">The throwing instance when thrownByKind is instance; otherwise null.</param>
+/// <param name="ThrownByNodeId">The throw or end event that threw the signal when thrownByKind is instance; otherwise null.</param>
+/// <param name="ThrownByNodeName">That event's name when it threw; otherwise null.</param>
 public sealed record SignalBroadcastDetailDto(
     long Id,
     string Name,
@@ -182,7 +194,10 @@ public sealed record SignalBroadcastDetailDto(
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
     DateTimeOffset? CompletedAt,
-    DateTimeOffset? CancelledAt);
+    DateTimeOffset? CancelledAt,
+    long? ThrownByInstanceId = null,
+    int? ThrownByNodeId = null,
+    string? ThrownByNodeName = null);
 
 /// <summary>
 /// One recipient of a broadcast. A managed API client receives the result code

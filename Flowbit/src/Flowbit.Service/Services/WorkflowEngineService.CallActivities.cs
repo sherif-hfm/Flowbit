@@ -446,7 +446,8 @@ public sealed partial class WorkflowEngineService
                 callLink: new CallChildLinkRecord(
                     invocation.Id,
                     invocation.RootInstanceId,
-                    invocation.ChildDepth));
+                    invocation.ChildDepth,
+                    token.AutomaticActivationCount));
             return null;
         }
         catch (BusinessKeyConflictException error)
@@ -703,6 +704,20 @@ public sealed partial class WorkflowEngineService
             {
                 throw new WorkflowJobInvariantException(
                     $"Unsettled call invocation #{invocationId} no longer matches its parent token.");
+            }
+
+            // The parent continues the greater of its own chain and the child's, which the
+            // job carries from the token that ended the child, so a loop through a call is counted.
+            if (job.AutomaticActivationCount > token.AutomaticActivationCount)
+            {
+                if (!await runtime.SetExecutionTokenAutomaticActivationCountAsync(
+                        token.Id, token.ActivationId, job.AutomaticActivationCount, cancellationToken))
+                {
+                    throw new WorkflowConflictException(
+                        "The calling token changed while its automatic chain was being continued.");
+                }
+
+                token = token with { AutomaticActivationCount = job.AutomaticActivationCount };
             }
 
             var delivered = await DeliverCallResultAsync(

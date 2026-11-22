@@ -227,12 +227,17 @@ else
     }
 
     <section class="panel panel-flush" aria-labelledby="signal-history-heading">
-        <div class="section-heading px-3 pt-3">
+        <div class="section-heading signal-history-heading px-3 pt-3">
             <div><h2 id="signal-history-heading">Recent broadcasts</h2><p>Broadcasts are kept until the signal broadcast retention period removes them.</p></div>
-            <select class="form-select signal-status-filter" value="@historyStatus" @onchange="OnHistoryStatusChangedAsync" aria-label="Filter broadcasts by status">
-                <option value="">All statuses</option>
-                @foreach (var status in SignalBroadcastStatuses.All) { <option value="@status">@BroadcastStatusLabel(status)</option> }
-            </select>
+            <div class="signal-history-filters">
+                <select class="form-select signal-status-filter" value="@historyStatus" @onchange="OnHistoryStatusChangedAsync" aria-label="Filter broadcasts by status">
+                    <option value="">All statuses</option>
+                    @foreach (var status in SignalBroadcastStatuses.All) { <option value="@status">@BroadcastStatusLabel(status)</option> }
+                </select>
+                <select class="form-select signal-thrower-filter" value="@historyThrownBy" @onchange="OnHistoryThrownByChangedAsync" aria-label="Filter broadcasts by who threw them">
+                    @foreach (var choice in ThrownByChoices) { <option value="@choice.Value">@choice.Label</option> }
+                </select>
+            </div>
         </div>
         <SignalBroadcastHistory Broadcasts="@(history?.Items)" CurrentBroadcastId="@(currentBroadcast?.Id)" OnOpenBroadcast="OpenBroadcastAsync" />
         @if (history is not null && history.Items.Count > 0)
@@ -296,6 +301,8 @@ else
 
     private PagedResult<SignalBroadcastSummaryDto>? history;
     private string? historyStatus;
+    // Starts at people and API clients, so throws from workflows do not bury manual ones.
+    private string historyThrownBy = ThrownByChoices[0].Value;
     private int historyPage = 1;
 
     /// <summary>
@@ -640,11 +647,13 @@ else
         var epoch = Interlocked.Read(ref identityEpoch);
         var request = ++historyRequest;
         var status = historyStatus;
+        var thrownByKinds = ThrownByKinds(historyThrownBy);
         var page = historyPage;
         loadingHistory = true;
         try
         {
-            var loaded = await GuardAsync(() => Api.GetSignalBroadcastsAsync(status: status, page: page, pageSize: HistoryPageSize));
+            var loaded = await GuardAsync(() => Api.GetSignalBroadcastsAsync(
+                status: status, page: page, pageSize: HistoryPageSize, thrownByKinds: thrownByKinds));
             if (request == historyRequest) history = loaded;
         }
         catch (Exception ex) { HandleError(ex, epoch); }
@@ -710,6 +719,13 @@ else
         var epoch = Interlocked.Read(ref identityEpoch);
         try { await LoadDeliveriesAsync(); }
         catch (Exception ex) { HandleError(ex, epoch); }
+    }
+
+    private async Task OnHistoryThrownByChangedAsync(ChangeEventArgs args)
+    {
+        historyThrownBy = args.Value?.ToString() ?? ThrownByChoices[0].Value;
+        historyPage = 1;
+        await LoadHistoryAsync();
     }
 
     private async Task OnHistoryStatusChangedAsync(ChangeEventArgs args)
@@ -813,7 +829,7 @@ else
         summary = null; scopedSummary = null; scopedCountFailed = false; scopedSummaryRequest++; review = null; draftIdempotencyKey = null; payloadError = null;
         broadcastView++; deliveriesRequest++; historyRequest++;
         currentBroadcast = null; deliveries = null; deliveryStatus = null; deliveryPage = 1;
-        history = null; historyStatus = null; historyPage = 1; cancellationReason = null;
+        history = null; historyStatus = null; historyThrownBy = ThrownByChoices[0].Value; historyPage = 1; cancellationReason = null;
         error = null; success = null;
         loading = false; throwing = false; refreshingBroadcast = false; broadcastOperation = false; loadingHistory = false;
     }

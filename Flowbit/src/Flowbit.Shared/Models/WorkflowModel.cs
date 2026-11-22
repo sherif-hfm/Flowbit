@@ -2089,9 +2089,11 @@ public sealed class MessageCatchModel
 }
 
 /// <summary>
-/// The configuration of a signal event: the literal signal name it waits for and the
-/// typed mappings that copy values from a broadcast's payload into instance variables.
-/// The mappings have the shape of message catch mappings; their paths read the payload.
+/// The configuration of a signal event. A catch or boundary names the signal it waits
+/// for and maps a broadcast's payload into instance variables; its mappings have the
+/// shape of message catch mappings, and their paths read the payload. A throw or end
+/// event names the signal it throws, the scope it reaches, and the payload it sends,
+/// and has no mappings.
 /// </summary>
 public sealed class SignalEventModel
 {
@@ -2100,6 +2102,121 @@ public sealed class SignalEventModel
 
     [JsonPropertyName("outputMappings")]
     public List<MessageOutputMappingModel> OutputMappings { get; set; } = [];
+
+    /// <summary>
+    /// The recipients of a throw or end event. Null on a catch and a boundary, and
+    /// omitted from their JSON, so stored definitions keep their exact shape.
+    /// </summary>
+    [JsonPropertyName("scope")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public SignalThrowScopeModel? Scope { get; set; }
+
+    /// <summary>
+    /// The payload a throw or end event sends, one member per entry. Null on a catch and
+    /// a boundary, and omitted from their JSON.
+    /// </summary>
+    [JsonPropertyName("payload")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<SignalPayloadEntryModel?>? Payload { get; set; }
+}
+
+// The strict attributes stop the web JSON defaults from dropping a misspelled member,
+// which would otherwise send the signal to other instances without an error.
+/// <summary>
+/// Which waits a signal throw or end event reaches. Every kind requires all of its members
+/// and allows no other (<see cref="SignalThrowScopeKinds"/>).
+/// </summary>
+[JsonNumberHandling(JsonNumberHandling.Strict)]
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed class SignalThrowScopeModel
+{
+    /// <summary>One of <see cref="SignalThrowScopeKinds"/>, compared exactly.</summary>
+    [JsonPropertyName("kind")]
+    public string? Kind { get; set; }
+
+    /// <summary>The literal key of the target family, for workflow, businessKey, and ownBusinessKey.</summary>
+    [JsonPropertyName("workflowKey")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? WorkflowKey { get; set; }
+
+    /// <summary>The declared single string variable holding the business key, for businessKey only.</summary>
+    [JsonPropertyName("businessKeyVariable")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? BusinessKeyVariable { get; set; }
+}
+
+/// <summary>
+/// One member of a thrown signal's payload: a stored instance variable copied whole, or a
+/// value of the throwing instance (<see cref="SignalPayloadSources"/>). Exactly one of
+/// <see cref="Variable"/> and <see cref="Source"/> is set.
+/// </summary>
+[JsonNumberHandling(JsonNumberHandling.Strict)]
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed class SignalPayloadEntryModel
+{
+    /// <summary>The member name in the payload object.</summary>
+    [JsonPropertyName("name")]
+    public string? Name { get; set; }
+
+    /// <summary>The stored instance variable copied into the member.</summary>
+    [JsonPropertyName("variable")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Variable { get; set; }
+
+    /// <summary>A value of the throwing instance: instanceId or businessKey.</summary>
+    [JsonPropertyName("source")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Source { get; set; }
+
+    /// <summary>When true, a missing value or JSON null refuses the throw. Omitted means false.</summary>
+    [JsonPropertyName("required")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool Required { get; set; }
+}
+
+/// <summary>The scope kinds a signal throw or end event states.</summary>
+public static class SignalThrowScopeKinds
+{
+    /// <summary>The waits of the throwing instance.</summary>
+    public const string ThisInstance = "thisInstance";
+
+    /// <summary>The waits in every instance of the throwing instance's family.</summary>
+    public const string ThisWorkflow = "thisWorkflow";
+
+    /// <summary>The waits in every instance of the named family.</summary>
+    public const string Workflow = "workflow";
+
+    /// <summary>The waits in the named family's instance whose business key a variable holds.</summary>
+    public const string BusinessKey = "businessKey";
+
+    /// <summary>The waits in the named family's instance with the throwing instance's own business key.</summary>
+    public const string OwnBusinessKey = "ownBusinessKey";
+
+    /// <summary>Every wait with the name.</summary>
+    public const string AllWorkflows = "allWorkflows";
+
+    /// <summary>The kinds in the order the messages list them.</summary>
+    public static IReadOnlyList<string> All { get; } =
+        [ThisInstance, ThisWorkflow, Workflow, BusinessKey, OwnBusinessKey, AllWorkflows];
+
+    public static bool IsKnown(string? kind) => kind is not null && All.Contains(kind, StringComparer.Ordinal);
+
+    public static bool RequiresWorkflowKey(string? kind) =>
+        kind is Workflow or BusinessKey or OwnBusinessKey;
+
+    public static bool RequiresBusinessKeyVariable(string? kind) => kind is BusinessKey;
+}
+
+/// <summary>The values of the throwing instance a payload entry can send.</summary>
+public static class SignalPayloadSources
+{
+    /// <summary>The throwing instance's ID, as a JSON number.</summary>
+    public const string InstanceId = "instanceId";
+
+    /// <summary>The throwing instance's business key, as text.</summary>
+    public const string BusinessKey = "businessKey";
+
+    public static IReadOnlyList<string> All { get; } = [InstanceId, BusinessKey];
 }
 
 /// <summary>
@@ -2748,6 +2865,12 @@ public static class BpmnFlowNodeTypes
     // boundaries. A delivered signal either interrupts the host or, with
     // cancelActivity=false, adds a sibling branch and stays subscribed.
     public const string SignalBoundaryEvent = "signalBoundaryEvent";
+    // Intermediate throw event that broadcasts a signal inside the step's transaction,
+    // then follows its one outgoing flow. The token never waits for the deliveries.
+    public const string IntermediateSignalThrowEvent = "intermediateSignalThrowEvent";
+    // End event that broadcasts a signal when a token enters it, then ends the token
+    // as a plain endEvent does.
+    public const string SignalEndEvent = "signalEndEvent";
 
     public static bool IsStart(string type) =>
         string.Equals(type, StartEvent, StringComparison.Ordinal);
@@ -2757,11 +2880,13 @@ public static class BpmnFlowNodeTypes
 
     // A plain endEvent completes one branch, an errorEndEvent faults the
     // instance, and a terminateEndEvent completes the instance while cancelling
-    // its other work. All are terminal and share the end-like invariants.
+    // its other work. A signalEndEvent throws its signal, then ends like a plain
+    // endEvent. All are terminal and share the end-like invariants.
     public static bool IsEnd(string type) =>
         string.Equals(type, EndEvent, StringComparison.Ordinal)
         || string.Equals(type, ErrorEndEvent, StringComparison.Ordinal)
-        || string.Equals(type, TerminateEndEvent, StringComparison.Ordinal);
+        || string.Equals(type, TerminateEndEvent, StringComparison.Ordinal)
+        || string.Equals(type, SignalEndEvent, StringComparison.Ordinal);
 
     public static bool IsErrorEnd(string type) =>
         string.Equals(type, ErrorEndEvent, StringComparison.Ordinal);
@@ -2855,10 +2980,23 @@ public static class BpmnFlowNodeTypes
     public static bool IsSignalCatch(string type) =>
         string.Equals(type, IntermediateSignalCatchEvent, StringComparison.Ordinal);
 
-    // Every node type that carries a signal configuration and owns signal
-    // subscriptions.
-    public static bool IsSignalEvent(string type) =>
+    // The node types that wait for a signal and own signal subscriptions.
+    public static bool IsSignalWait(string type) =>
         IsSignalCatch(type) || IsSignalBoundary(type);
+
+    public static bool IsSignalThrow(string type) =>
+        string.Equals(type, IntermediateSignalThrowEvent, StringComparison.Ordinal);
+
+    public static bool IsSignalEnd(string type) =>
+        string.Equals(type, SignalEndEvent, StringComparison.Ordinal);
+
+    // The node types that throw a signal when a token enters them.
+    public static bool ThrowsSignal(string type) =>
+        IsSignalThrow(type) || IsSignalEnd(type);
+
+    // Every node type that carries a signal configuration.
+    public static bool IsSignalEvent(string type) =>
+        IsSignalWait(type) || ThrowsSignal(type);
 
     // Either kind of entry event: a user-facing startEvent or a system-only
     // messageStartEvent. A workflow must have at least one entry event.
@@ -2878,13 +3016,14 @@ public static class BpmnFlowNodeTypes
     // A message start event IS pass-through: the engine creates the instance on
     // it then auto-advances, exactly like a plain startEvent.
     // Both link events are pass-through: a throw hops to its catch, and a catch
-    // follows its one outgoing flow.
+    // follows its one outgoing flow. A signal throw event throws, then follows
+    // its one outgoing flow.
     public static bool IsPassThrough(string type) =>
         IsStart(type) || IsMessageStart(type) || IsTimerStart(type)
         || IsAutomatic(type) || IsServiceTask(type)
         || IsScriptTask(type) || IsGateway(type) || IsErrorBoundary(type)
         || IsTimerBoundary(type) || IsConditionalBoundary(type) || IsSignalBoundary(type)
-        || IsScopedInterrupt(type) || IsLinkEvent(type);
+        || IsScopedInterrupt(type) || IsLinkEvent(type) || IsSignalThrow(type);
 
     public static bool IsSupported(string type) =>
         type is StartEvent or TimerStartEvent or EndEvent or UserTask or Task or ServiceTask or ScriptTask
@@ -2896,7 +3035,8 @@ public static class BpmnFlowNodeTypes
             or IntermediateMessageCatchEvent or IntermediateTimerCatchEvent
             or IntermediateConditionalCatchEvent or MessageStartEvent
             or IntermediateLinkThrowEvent or IntermediateLinkCatchEvent
-            or IntermediateSignalCatchEvent or SignalBoundaryEvent;
+            or IntermediateSignalCatchEvent or SignalBoundaryEvent
+            or IntermediateSignalThrowEvent or SignalEndEvent;
 }
 
 public static class WorkflowVariableTypes

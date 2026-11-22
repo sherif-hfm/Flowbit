@@ -150,6 +150,7 @@ Some ID columns intentionally have **no foreign key**, either because the refere
 | `lifecycle_events.TargetRevisionIds` | `webhook_subscription_revisions.Id`; revisions are retained indefinitely because an uncommitted capture holds no fence |
 | `signal_deliveries.SubscriptionId`, `InstanceId`, `TokenId`, `WorkflowDefinitionId` | Signal subscription and runtime rows, kept as plain IDs so a throw never waits on a recipient's instance or token lock |
 | `signal_broadcast_jobs.WorkflowDefinitionId`, `OriginalJobId`; `signal_broadcasts.WorkflowKey` | `workflow_definitions.Id`, `workflow_jobs.Id` kept after the job is pruned, and `workflow_definitions.WorkflowKey` |
+| `signal_broadcasts.InstanceId`, `ThrowerInstanceId` | `workflow_instances.Id`: the instance a scope names and the instance that threw, kept as plain IDs so a throw never waits on that instance's row lock and a broadcast outlives its thrower |
 
 ## Workflow definitions
 
@@ -968,7 +969,7 @@ The instance's event and audit trail: flow traversals, automatic routing, claims
 | `InstanceId`, `WorkflowDefinitionId` | Owning instance and the version in effect when the row was written. |
 | `FromStepId`, `ToStepId` | Source and target node IDs (legacy "step" naming). |
 | `ActionId` | Sequence flow taken, when the event selected one. |
-| `Note` | Event kind, for example `start`, `automatic`, `gateway`, `message`, `linkThrow`, `linkCatch`, `taskClaim`, `taskAssignment`, `taskRolesChanged`, or `instanceReactivated`. Notes are not constrained by the database. A `linkThrow` row goes from a link throw event to its link catch event and has no `ActionId`. |
+| `Note` | Event kind, for example `start`, `automatic`, `gateway`, `message`, `linkThrow`, `linkCatch`, `taskClaim`, `taskAssignment`, `taskRolesChanged`, or `instanceReactivated`. Notes are not constrained by the database. A `linkThrow` row goes from a link throw event to its link catch event and has no `ActionId`. A `signalThrown` row records a signal throw event's advance, or goes from a signal end event to itself, and has no `ActionId`. |
 | `Payload` | Event-specific JSON details. |
 | `PerformedBy`, `PerformedAt`, `ActingFor`, `DelegationId`, `ActorClaimsJson` | Actor, time, delegation attribution, and allowlisted JWT claims (`WorkflowAudit:AllowedClaims`). |
 | `TokenId`, `UserTaskId`, `MultiInstanceExecutionId`, `ItemIndex` | Runtime correlation. These columns have no foreign keys. |
@@ -1227,7 +1228,7 @@ One row per conditional boundary per host activation. Evaluation compares the ne
 Waits for signals and the broadcasts that reach them. See [signals](bpmn-support.md#signals) and [signal event operations](deployment.md#signal-events).
 
 - **Subscriptions** are written only under the owning instance's lock, in the transaction that starts or ends the wait: routing creates one when a token reaches a signal catch, and one per signal boundary when a token enters that boundary's host, and every path that ends the wait or the host completes or cancels it. A delivery to a non-interrupting boundary only increases the row's `Occurrence`.
-- **A throw** inserts the broadcast, then copies every matching active subscription into `signal_deliveries` in one `INSERT ... SELECT` statement, and links one delivery job per represented definition. It takes no runtime lock. A business-key scope joins the subscriptions to `workflow_instances` through its (`WorkflowKey`, `BusinessKey`, `Status`) index in that statement, without a locking clause; an instance scope filters the subscriptions by `InstanceId` and first reads the instance's family by primary key, also without a lock. Delivery rows name their subscription, instance, and token by plain ID, because a foreign-key check would wait for a recipient's transaction that holds those rows `FOR UPDATE`.
+- **A throw** inserts the broadcast, then copies every matching active subscription into `signal_deliveries` in one `INSERT ... SELECT` statement, and links one delivery job per represented definition. It takes no runtime lock. A business-key scope joins the subscriptions to `workflow_instances` through its (`WorkflowKey`, `BusinessKey`, `Status`) index in that statement, without a locking clause; an instance scope filters the subscriptions by `InstanceId` and first reads the instance's family by primary key, also without a lock. Delivery rows name their subscription, instance, and token by plain ID, because a foreign-key check would wait for a recipient's transaction that holds those rows `FOR UPDATE`. A workflow's signal throw or end event writes the same rows inside the throwing instance's transaction, which already holds that instance's locks; the throw itself locks no existing row, and the freeze statement sees the subscriptions that transaction created or ended. A throw refused at the recipient limit deletes the broadcast it inserted, with its frozen deliveries, before it reports the refusal.
 - **A delivery** locks the instance hierarchy, then the subscription row, then the delivery row, and commits the delivery's final status with the instance change it describes. Cancel and retry lock the broadcast row, then update delivery rows; a delivery never locks the broadcast. A delivery job recounts a broadcast's counters and status only while holding its row, so a recount never overwrites a cancel or retry. A retry moves each delivery's `WorkflowDefinitionId` to the version its instance runs now. Only a delivering broadcast has pending deliveries, so pending-delivery queries start from the open broadcasts.
 - **Retention.** The `signalBroadcasts` category deletes finished broadcasts aged from `CompletedAt`, and their deliveries and job links cascade. Subscriptions stay with their instance.
 
@@ -1284,7 +1285,7 @@ One wait for a signal by one visit of a token to a signal event. A loop that ret
 
 ### `signal_broadcasts`
 
-One thrown signal. Its recipients are frozen in the throw's transaction; a broadcast without recipients is stored as `completed`.
+One thrown signal, thrown through the API or by a workflow's signal throw or end event. Its recipients are frozen in the throw's transaction, which for a workflow is the transaction of the throwing step; a broadcast without recipients is stored as `completed`.
 
 | Column | Meaning |
 | --- | --- |
@@ -1296,7 +1297,9 @@ One thrown signal. Its recipients are frozen in the throw's transaction; a broad
 | `Status`, `CompletedAt` | `delivering`, `completed`, `completedWithIssues`, or `cancelled`; `CompletedAt` is set exactly when the broadcast is not delivering. |
 | `TotalDeliveryCount`, `DeliveredCount`, `SkippedCount`, `FailedCount`, `CancelledCount` | Frozen recipient count and outcome counters, recounted from `signal_deliveries` by the delivery jobs and by cancel and retry. |
 | `RecipientsJson`, `RecipientsTruncated` | Recipients per workflow family, at most 50, and whether more families were reached. |
-| `ThrownByKind`, `ThrownBy`, `ThrownByRolesJson`, `ThrownByClaimsJson` | `user` or `client`, the actor identity or client ID, the user's roles, and the claims `WorkflowAudit:AllowedClaims` selects; null claims for a client. |
+| `ThrownByKind`, `ThrownBy`, `ThrownByRolesJson`, `ThrownByClaimsJson` | `user`, `client`, or `instance`; the actor identity, the client ID, or the throwing instance's ID in invariant digits; the user's roles (`[]` for an instance); and the claims `WorkflowAudit:AllowedClaims` selects, null for a client and an instance. |
+| `ThrowerInstanceId`, `ThrowerNodeId`, `ThrowerNodeName` | For an `instance` thrower: the throwing instance, the signal throw or end event, and the event's name when it threw, at most 300 characters; null for the other kinds. `ThrowerInstanceId` is a plain column without a foreign key, so a broadcast outlives its thrower and the throw adds no foreign-key check. |
+| `AutomaticActivationCount` | The automatic chain count a delivery gives its receiving token: the throwing token's count plus one for an `instance` thrower, and `0` for a broadcast thrown through the API. `NOT NULL DEFAULT 0`. |
 | `IdempotencyKey`, `RequestHash` | Optional thrower-scoped key, with `C` collation, and a SHA-256 hash of the name, scope, and canonical payload that decides whether a repeated key is the same request. A family or all-workflows scope hashes as it did before business-key and instance scopes existed, so stored keys still replay; a business-key or instance scope adds a line with the key, prefixed by its length, or the instance ID. |
 | `CancelledBy`, `CancellationReason`, `CancelledAt` | Cancellation attribution. |
 | `CreatedAt`, `UpdatedAt` | Throw time and last counter or status change. `UpdatedAt` is the fence of a retry. |
@@ -1305,8 +1308,8 @@ One thrown signal. Its recipients are frozen in the throw's transaction; a broad
 - **References:** none
 - **Referenced by:** [`signal_deliveries`](#signal_deliveries).`BroadcastId`, [`signal_broadcast_jobs`](#signal_broadcast_jobs).`BroadcastId`
 - **Unique:** (`ThrownByKind`, `ThrownBy`, `IdempotencyKey`) where `IdempotencyKey IS NOT NULL`
-- **Indexes:** (`Status`, `UpdatedAt`, `Id`); (`SignalName`, `CreatedAt`, `Id`); (`ThrownByKind`, `ThrownBy`, `CreatedAt`, `Id`), for a client's own list
-- **Checks:** `CK_signal_broadcasts_status`; `_counts` (non-negative counters whose sum is at most `TotalDeliveryCount`, which is at most 100,000); `_payload` (null, or a JSON object of at most 262,144 bytes as `octet_length("PayloadJson"::text)` measures it); `_thrower` (`user` or `client`); `_terminal_time`; `_scope` (`BusinessKey` and `InstanceId` not both set, `WorkflowKey` set when either is, a nonempty `BusinessKey`, and a positive `InstanceId`), added by `AddSignalBroadcastScope`
+- **Indexes:** (`Status`, `UpdatedAt`, `Id`); (`SignalName`, `CreatedAt`, `Id`); (`ThrownByKind`, `ThrownBy`, `CreatedAt`, `Id`), for a client's own list; `IX_signal_broadcasts_open_thrower` on (`ThrownByKind`) where `Status = 'delivering'`, added by `AddSignalThrowEvents`, which the two open-broadcast budgets (`Signals.MaxOpenBroadcasts` for `user` and `client`, `Signals.MaxOpenWorkflowBroadcasts` for `instance`) and the Worker's backlog gauge read
+- **Checks:** `CK_signal_broadcasts_status`; `_counts` (non-negative counters whose sum is at most `TotalDeliveryCount`, which is at most 100,000); `_payload` (null, or a JSON object of at most 262,144 bytes as `octet_length("PayloadJson"::text)` measures it); `_thrower`, replaced by `AddSignalThrowEvents` (`ThrownByKind` is `user`, `client`, or `instance`; an `instance` row has a positive `ThrowerInstanceId`, a `ThrowerNodeId`, no `IdempotencyKey`, and an `AutomaticActivationCount` of 0 or more; a `user` or `client` row has null thrower columns and an `AutomaticActivationCount` of 0); `_terminal_time`; `_scope` (`BusinessKey` and `InstanceId` not both set, `WorkflowKey` set when either is, a nonempty `BusinessKey`, and a positive `InstanceId`), added by `AddSignalBroadcastScope`
 
 ### `signal_deliveries`
 
@@ -1337,7 +1340,7 @@ One row per delivery job of a broadcast: one per represented definition for the 
 | `BroadcastId`, `WorkflowDefinitionId` | The broadcast, and the definition whose deliveries the job handles. |
 | `JobId` | The live job; set to null if the job is deleted. |
 | `OriginalJobId` | Permanent copy of the job ID (unique). |
-| `Reason`, `RequestedBy`, `CreatedAt` | `throw` or `retry`, who threw or retried, and when. |
+| `Reason`, `RequestedBy`, `CreatedAt` | `throw` or `retry`, who threw or retried (the instance ID as text for a throw by a workflow), and when. |
 
 - **Primary key:** `Id`
 - **References:** `BroadcastId` → [`signal_broadcasts`](#signal_broadcasts) (required, `CASCADE`); `JobId` → [`workflow_jobs`](#workflow_jobs) (optional, `SET NULL`)

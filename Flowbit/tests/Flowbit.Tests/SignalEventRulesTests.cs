@@ -39,13 +39,22 @@ public sealed class SignalEventRulesTests
     }
 
     [Fact]
-    public void HasSignalEvents_IsTrueOnlyForADefinitionWithASignalEvent()
+    public void HasSignalWaits_IsTrueOnlyForADefinitionWithASignalWait()
     {
-        Assert.True(SignalEventRules.HasSignalEvents(SignalRuntimeTests.CatchModel("a.b")));
+        Assert.True(SignalEventRules.HasSignalWaits(SignalRuntimeTests.CatchModel("a.b")));
         var plain = SignalRuntimeTests.CatchModel("a.b");
         plain.FlowNodes.RemoveAll(node => node.Id == 2);
-        Assert.False(SignalEventRules.HasSignalEvents(plain));
+        Assert.False(SignalEventRules.HasSignalWaits(plain));
         Assert.True(WorkflowDefinitionReadinessChecker.RequiresDurableProcessing(SignalRuntimeTests.CatchModel("a.b")));
+
+        // A definition whose only signal events throw has no wait, but still needs the Worker.
+        foreach (var type in new[] { BpmnFlowNodeTypes.IntermediateSignalThrowEvent, BpmnFlowNodeTypes.SignalEndEvent })
+        {
+            var throwing = SignalRuntimeTests.CatchModel("a.b");
+            Catch(throwing).Type = type;
+            Assert.False(SignalEventRules.HasSignalWaits(throwing));
+            Assert.True(WorkflowDefinitionReadinessChecker.RequiresDurableProcessing(throwing));
+        }
     }
 
     public static TheoryData<string, Action<WorkflowModel>> InvalidDefinitions() => new()
@@ -211,7 +220,7 @@ public sealed class SignalEventRulesTests
         Boundary(interrupting).CancelActivity = null;
         WorkflowModelMigrator.Normalize(interrupting);
         Assert.True(Boundary(interrupting).CancelActivity);
-        Assert.True(SignalEventRules.HasSignalEvents(interrupting));
+        Assert.True(SignalEventRules.HasSignalWaits(interrupting));
     }
 
     private static FlowNodeModel Boundary(WorkflowModel model) => model.FlowNodes.Single(node => node.Id == 3);

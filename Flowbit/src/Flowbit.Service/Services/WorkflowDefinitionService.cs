@@ -58,6 +58,7 @@ public sealed class WorkflowDefinitionService(
         if (publish)
         {
             await readiness.ValidateCallTargetsAsync(definition, cancellationToken);
+            await readiness.ValidateSignalTargetsAsync(definition, cancellationToken);
         }
         var name = definition.Name.Trim();
         var created = await definitions.AddAsync(name, definition, publish, cancellationToken);
@@ -92,6 +93,7 @@ public sealed class WorkflowDefinitionService(
         if (publish)
         {
             await readiness.ValidateCallTargetsAsync(definition, cancellationToken);
+            await readiness.ValidateSignalTargetsAsync(definition, cancellationToken);
         }
         var name = string.IsNullOrWhiteSpace(definition.Name) ? source.Name : definition.Name.Trim();
         var created = await definitions.AddAsync(name, definition, publish, cancellationToken);
@@ -120,6 +122,7 @@ public sealed class WorkflowDefinitionService(
         readiness.ValidateSharedTransactionLockOrder(definition.Definition);
         readiness.EnsureDurablePublicationAllowed(definition.Definition, publish: true);
         await readiness.ValidateCallTargetsAsync(definition.Definition, cancellationToken);
+        await readiness.ValidateSignalTargetsAsync(definition.Definition, cancellationToken);
         var published = await definitions.SetPublishedAsync(id, true, cancellationToken);
         if (published)
         {
@@ -165,6 +168,7 @@ public sealed class WorkflowDefinitionService(
         readiness.ValidateSharedTransactionLockOrder(definition.Definition);
         readiness.EnsureDurablePublicationAllowed(definition.Definition, publish: true);
         await readiness.ValidateCallTargetsAsync(definition.Definition, cancellationToken);
+        await readiness.ValidateSignalTargetsAsync(definition.Definition, cancellationToken);
         var set = await definitions.SetDefaultAsync(id, true, cancellationToken);
         if (set)
         {

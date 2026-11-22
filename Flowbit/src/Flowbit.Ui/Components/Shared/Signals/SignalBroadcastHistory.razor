@@ -5,7 +5,7 @@
 }
 else if (Broadcasts.Count == 0)
 {
-    <div class="px-3 pb-3"><EmptyState Icon="jobs" Title="No signal broadcasts" Description="No broadcast matches the selected status." /></div>
+    <div class="px-3 pb-3"><EmptyState Icon="jobs" Title="No signal broadcasts" Description="No broadcast matches the selected status and thrower." /></div>
 }
 else
 {
@@ -19,7 +19,7 @@ else
                         <td>#@item.Id</td>
                         <td><code>@item.Name</code></td>
                         <td class="signal-scope-cell">@ScopeLabel(item.WorkflowKey, item.BusinessKey, item.InstanceId)</td>
-                        <td>@ThrowerLabel(item.ThrownBy, item.ThrownByKind)</td>
+                        <td>@ThrowerLabel(item.ThrownBy, item.ThrownByKind, item.ThrownByInstanceId, item.ThrownByNodeId, item.ThrownByNodeName)</td>
                         <td>@item.DeliveredCount.ToString("N0") / @item.TotalDeliveryCount.ToString("N0")<span class="data-subtitle">@item.SkippedCount.ToString("N0") skipped · @item.FailedCount.ToString("N0") failed</span></td>
                         <td><StatusBadge Status="@item.Status" Text="@BroadcastStatusLabel(item.Status)" /></td>
                         <td><LocalTime Value="@item.CreatedAt" /></td>

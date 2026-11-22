@@ -48,6 +48,7 @@ Verified on 2026-11-17: not implemented.
 - A delivery locks an existing instance and moves its token. Nothing in the delivery path creates an instance.
 - `messageStartEvent` is the existing system-only entry with typed mappings, and [TimerStartReconciliationService.cs](../../Flowbit/src/Flowbit.Worker/TimerStartReconciliationService.cs) keeps timer start subscriptions in step with the published defaults.
 - Once one entry of a definition enables a business key, every entry must configure it, so a signal start in such a definition needs a key in its payload.
+- Since [EVENT-04B](event-04b-signal-throw-and-end-events.md) (2026-11-21), a workflow throws signals with `intermediateSignalThrowEvent` and `signalEndEvent`. Such a broadcast has the thrower kind `instance`, with `ThrowerInstanceId`, `ThrowerNodeId`, and `ThrowerNodeName`, and every broadcast carries `AutomaticActivationCount`: the throwing token's chain count plus one for a throw from a workflow, and 0 for a throw through the API. A delivery gives that count to the receiving token, and a throw at `Workflow.Async.MaxConsecutiveAutomaticActivations` is refused. A call activity's child already starts at its calling token's count.
 
 ## Builds on
 
@@ -55,12 +56,14 @@ Verified on 2026-11-17: not implemented.
 - Timer start reconciliation, for subscriptions that belong to a definition and not to an instance.
 - The delivery job processor, its outcomes, and its exhausted-lease reconciliation.
 - Start idempotency and business key claims, which already reject a duplicate start inside the start transaction.
+- The chain count of [EVENT-04B](event-04b-signal-throw-and-end-events.md#loop-guard): a started instance's first token can take the delivering broadcast's `AutomaticActivationCount`, as a call activity's child takes its caller's, and the rule in AGENTS.md that a new way to create a token hands the count over.
+- The `instance` thrower, so a started instance's history can name the instance and event that threw the signal, as a `signalReceived` row does with `thrownByInstanceId` and `thrownByNodeId`.
 
 ## Open questions
 
 - Where does a start subscription live: in `signal_subscriptions` with optional instance columns, or in a table keyed by definition?
 - Which scopes reach a start? A family scope and all workflows are clear. A business key or instance scope ([EVENT-04A](event-04a-signal-scope-by-business-key-or-instance.md)) names existing instances and probably starts nothing.
-- A workflow that throws ([EVENT-04B](event-04b-signal-throw-and-end-events.md)) the signal that starts it creates instances without end. Does saving reject that, or does a limit stop it?
+- A workflow that throws ([EVENT-04B](event-04b-signal-throw-and-end-events.md)) the signal that starts it creates instances without end. Does saving reject that, or does a limit stop it? EVENT-04B suggests the limit: if the started instance's first token continues the broadcast's chain count, such a loop stops at `Workflow.Async.MaxConsecutiveAutomaticActivations` with a refused throw, while a start that a person, a message, a timer, or a throw through the API causes starts a new chain.
 - Does a start delivery count toward the same recipient limit as a wait, given that it costs a whole start transaction?
 
 ## Plan

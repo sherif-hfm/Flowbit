@@ -606,6 +606,91 @@ public sealed class HostedEditorSmokeTests(BrowserStackFixture stack)
         });
     }
 
+    [Fact]
+    public async Task H17_SignalThrowAndEndEventsSaveAndTheClosedGateRefusesPublishing()
+    {
+        await using var scenario = await stack.CreateScenario("h17-hosted-signal-throw", 1440, 900);
+        await scenario.RunAsync("hosted-signal-throw", async () =>
+        {
+            var json = JsonNode.Parse(await File.ReadAllTextAsync(
+                EditorInteractions.FixturePath("editor-signal-events.json")))!.AsObject();
+            var key = "hosted-signal-throw-" + Guid.NewGuid().ToString("N");
+            json["id"] = key;
+            var model = json.Deserialize<WorkflowModel>(new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+            var workflow = await stack.SetupClient.CreateUnpublishedAsync(model);
+            await RuntimeSupport.ApplyIdentityAsync(scenario, "editor-admin", ["admin"]);
+            var page = await scenario.OpenUiAsync($"workflows/{workflow.Id}/edit");
+            await ReadyAsync(page);
+            var editor = page.Locator("#workflow-editor-root");
+            ILocator Labeled(string label) =>
+                editor.Locator("#inspector").GetByLabel(label, new LocatorGetByLabelOptions { Exact = true });
+            await EditorInteractions.PinInspectorOpenAsync(page);
+
+            // Inside the application's styles the throw's scope and payload controls behave as standalone.
+            await EditorInteractions.SelectNodeAsync(page, 2);
+            await EditorInteractions.SelectTypeAsync(page, "intermediateSignalThrowEvent");
+            await Assertions.Expect(editor.Locator("#nodes .node[data-id='2']")).ToHaveClassAsync(new Regex("intermediateSignalThrowEvent"));
+            await Labeled("Signal name").FillAsync("claims.policy-changed");
+            await Labeled("Signal name").PressAsync("Tab");
+            await Labeled("Scope").SelectOptionAsync("workflow");
+            await Labeled("Workflow key").FillAsync(key);
+            await Labeled("Workflow key").PressAsync("Tab");
+            await editor.GetByRole(AriaRole.Button, new LocatorGetByRoleOptions { Name = "+ Add payload entry" }).ClickAsync();
+            await Labeled("Name in the payload").FillAsync("claim");
+            await Labeled("Name in the payload").PressAsync("Tab");
+            await Labeled("Value").SelectOptionAsync("source:instanceId");
+            await page.Locator("#inspectorPanel").ScreenshotAsync(new LocatorScreenshotOptions
+            {
+                Path = Path.Combine(scenario.ArtifactDirectory, "hosted-signal-throw.png"),
+            });
+            // Search selects the end event; hosted shortcuts need focus inside the editor.
+            await editor.Locator("#svg").ClickAsync(new LocatorClickOptions { Position = new Position { X = 4, Y = 4 } });
+            await page.Keyboard.PressAsync("/");
+            await Assertions.Expect(editor.Locator("#diagramSearchInput")).ToBeFocusedAsync();
+            await page.Keyboard.TypeAsync("#4");
+            await page.Keyboard.PressAsync("Enter");
+            await Assertions.Expect(editor.Locator("#inspector").GetByRole(AriaRole.Heading,
+                new LocatorGetByRoleOptions { Name = "Node #4", Exact = true })).ToHaveCountAsync(1);
+            await EditorInteractions.SelectTypeAsync(page, "signalEndEvent");
+            await Labeled("Signal name").FillAsync("claims.recall");
+            await Labeled("Signal name").PressAsync("Tab");
+            await Labeled("Scope").SelectOptionAsync("allWorkflows");
+            Assert.True(await page.EvaluateAsync<bool>("document.documentElement.scrollWidth <= window.innerWidth + 2"));
+
+            // The version saves unpublished, and the server reads back both events as authored.
+            await page.Locator("#save-workflow-version").ClickAsync();
+            await Assertions.Expect(page.Locator("#editor-notice")).ToContainTextAsync("Saved unpublished version 2");
+            var savedId = long.Parse(Regex.Match(page.Url, @"/workflows/(\d+)/edit").Groups[1].Value);
+            var saved = await stack.SetupClient.GetWorkflowAsync(savedId);
+            var thrown = saved.Definition.FlowNodes.Single(node => node.Id == 2);
+            Assert.Equal((BpmnFlowNodeTypes.IntermediateSignalThrowEvent, SignalThrowScopeKinds.Workflow, key),
+                (thrown.Type, thrown.Signal!.Scope!.Kind, thrown.Signal.Scope.WorkflowKey));
+            Assert.Equal(("claim", SignalPayloadSources.InstanceId),
+                (thrown.Signal.Payload![0]!.Name, thrown.Signal.Payload[0]!.Source));
+            var ended = saved.Definition.FlowNodes.Single(node => node.Id == 4);
+            Assert.Equal((BpmnFlowNodeTypes.SignalEndEvent, SignalThrowScopeKinds.AllWorkflows),
+                (ended.Type, ended.Signal!.Scope!.Kind));
+
+            // At phone width the hosted page stays within the viewport.
+            await page.SetViewportSizeAsync(390, 844);
+            await page.WaitForFunctionAsync("document.querySelector('#primary-navigation').getBoundingClientRect().right <= 0");
+            Assert.True(await page.EvaluateAsync<bool>("document.documentElement.scrollWidth <= window.innerWidth + 2"));
+            await page.ScreenshotAsync(new PageScreenshotOptions
+            {
+                Path = Path.Combine(scenario.ArtifactDirectory, "hosted-signal-throw-narrow.png"),
+            });
+            await page.SetViewportSizeAsync(1440, 900);
+
+            // The smoke stack runs without a Worker, so its closed gate refuses a definition that throws.
+            var workflows = await scenario.OpenUiAsync("workflows");
+            await workflows.Locator(".accordion-button", new PageLocatorOptions { HasText = key }).ClickAsync();
+            await workflows.Locator("tr", new PageLocatorOptions { HasText = "v2" })
+                .GetByRole(AriaRole.Button, new LocatorGetByRoleOptions { Name = "Publish", Exact = true }).ClickAsync();
+            await Assertions.Expect(workflows.Locator(".alert-danger")).ToContainTextAsync("PublicationEnabled is false");
+            Assert.False((await stack.SetupClient.GetWorkflowAsync(savedId)).IsPublished);
+        });
+    }
+
     // The page also loads Bootstrap, whose .badge would stop the summary wrapping.
     [Theory]
     [InlineData(1440, 900)]
